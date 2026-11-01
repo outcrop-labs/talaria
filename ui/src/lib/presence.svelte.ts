@@ -1,57 +1,111 @@
-// The global presence heartbeat (KTD6). While Talaria is open, the client
-// pings `PUT /api/me/presence`; the server keeps a 90s TTL key per person and
-// the directory reports `online` from it. Mounted once, by AppLayout.
+// The global presence heartbeat (KTD6, I-17). While Talaria is open, every
+// tab reports itself on `PUT /api/me/presence`; mounted once, by AppLayout.
 //
-// BACKGROUND TABS COUNT: by default the heartbeat pings on mount and every 30s
-// whether or not the tab is visible, so "online" means "had Talaria open
-// within 90 seconds" — a teammate with Talaria behind another window still
-// reads as online. `visibleOnly: true` narrows it to visible tabs (pings on
-// mount, every 30s, and once on regaining visibility; hidden tabs skip).
+// Since the notification contract the beat carries a BODY — `{clientId,
+// kind, state, osIdleMs?}` — computed by notify-presence.ts: which tab this
+// is, whether it is the browser or the desktop shell, and whether the person
+// is looking at it, active on it, idle, or elsewhere. The server keeps the
+// person's clients, names the one they are on, and announces it (the
+// decider reads that: only the device you are on alerts). The same route
+// still sets the directory's `online` key — for a web tab unless it is
+// hidden, and for the shell only while its OS is in use — so "online" keeps
+// meaning what it meant. The old no-body ping is gone.
+//
+// BACKGROUND TABS STILL BEAT (as `hidden`): the store holds every client the
+// person has open, and a hidden tab must not vanish from it.
+//
+// Sent at once, on every state change (at most one per 5 s), and every 30 s.
 import { putJson } from '@/lib/fetch-json'
+import { inDesktopShell, shellOsIdleMs } from '@/lib/desktop-shell'
+import { lastInputAt, onInput, trackInput } from '@/lib/looking'
+import { clientId, notePresence, presenceView, startHeartbeat, BEAT_MS, type Heartbeat } from '@/lib/notify-presence'
+import { setPresence } from '@/lib/notify-status.svelte'
+import type { PresenceBody } from '@/lib/notify-wire'
 
-export const PRESENCE_INTERVAL_MS = 30_000
+export const PRESENCE_INTERVAL_MS = BEAT_MS
 
 /** The slice of `document` the heartbeat reads — injectable for tests. */
 export interface VisibilitySource {
   visibilityState: DocumentVisibilityState
+  hasFocus?: () => boolean
   addEventListener(type: 'visibilitychange', fn: () => void): void
   removeEventListener(type: 'visibilitychange', fn: () => void): void
 }
 
 export interface PresenceOptions {
   doc?: VisibilitySource
-  ping?: () => Promise<unknown>
-  /** Ping only while the tab is visible. Default false: background tabs ping. */
-  visibleOnly?: boolean
+  /** Where the beat goes (tests). Default: `PUT /api/me/presence` with the body. */
+  send?: (body: PresenceBody) => Promise<unknown>
+  /** Window events (focus/blur/pageshow); tests pass a stub (and then the
+   *  page's input listeners are not installed). */
+  win?: EventTarget
   intervalMs?: number
+  now?: () => number
+  /** The shell's OS idle source; default `shellOsIdleMs` inside the shell. */
+  osIdle?: (() => Promise<number | null>) | null
+  kind?: 'web' | 'desktop'
+  clientId?: string
 }
 
-const defaultPing = () => putJson<{ ok: true }>('/api/me/presence')
+const defaultSend = async (body: PresenceBody) => {
+  const res = await putJson<{ ok: true; looking?: string | null; active?: string | null }>('/api/me/presence', body)
+  // The answer names the winner as of this beat: a tab keeps its view fresh
+  // without waiting for a frame (frames come only when the winner changes).
+  if (res && ('looking' in res || 'active' in res)) {
+    notePresence({ looking: res.looking ?? null, active: res.active ?? null })
+    const v = presenceView()
+    setPresence({ looking: v.looking, active: v.active, clients: v.clients, self: body.clientId })
+  }
+  return res
+}
+
+function safeFocus(doc: VisibilitySource): boolean {
+  try {
+    return doc.hasFocus ? doc.hasFocus() : true
+  } catch {
+    return false
+  }
+}
 
 /** Start the heartbeat; returns the stop function. */
 export function startPresenceHeartbeat(opts: PresenceOptions = {}): () => void {
   const doc = opts.doc ?? document
-  const ping = opts.ping ?? defaultPing
-  const visibleOnly = opts.visibleOnly ?? false
-  const intervalMs = opts.intervalMs ?? PRESENCE_INTERVAL_MS
-
-  const beat = () => {
-    if (visibleOnly && doc.visibilityState !== 'visible') return
-    // Presence is best-effort: a failed ping just means one missed beat.
-    void ping().catch(() => {})
-  }
-  // Regaining visibility pings at once, so a returning person shows online
-  // without waiting for the next tick.
-  const onVisibility = () => {
-    if (doc.visibilityState === 'visible') beat()
-  }
-
-  beat()
-  const timer = setInterval(beat, intervalMs)
-  if (visibleOnly) doc.addEventListener('visibilitychange', onVisibility)
+  const win = opts.win ?? (typeof window === 'undefined' ? undefined : window)
+  const shell = inDesktopShell()
+  const kind = opts.kind ?? (shell ? 'desktop' : 'web')
+  const id = opts.clientId ?? clientId()
+  setPresence({ self: id })
+  const releaseInput = opts.win ? () => {} : trackInput()
+  const hb: Heartbeat = startHeartbeat({
+    clientId: id,
+    kind,
+    read: () => {
+      const visible = doc.visibilityState === 'visible'
+      return { visible, focused: visible && safeFocus(doc), lastInputAt: lastInputAt() }
+    },
+    osIdle: opts.osIdle === undefined ? (shell ? shellOsIdleMs : undefined) : (opts.osIdle ?? undefined),
+    send: opts.send ?? defaultSend,
+    now: opts.now,
+    beatMs: opts.intervalMs,
+  })
+  const poke = () => hb.poke()
+  doc.addEventListener('visibilitychange', poke)
+  win?.addEventListener('focus', poke)
+  win?.addEventListener('blur', poke)
+  win?.addEventListener('pageshow', poke)
+  // Input moves the state only toward looking; the heartbeat's own rate limit
+  // keeps a typing person from beating more than once per 5 s.
+  const offInput = onInput(() => {
+    if (hb.state() !== 'looking') poke()
+  })
   return () => {
-    clearInterval(timer)
-    if (visibleOnly) doc.removeEventListener('visibilitychange', onVisibility)
+    hb.stop()
+    offInput()
+    releaseInput()
+    doc.removeEventListener('visibilitychange', poke)
+    win?.removeEventListener('focus', poke)
+    win?.removeEventListener('blur', poke)
+    win?.removeEventListener('pageshow', poke)
   }
 }
 

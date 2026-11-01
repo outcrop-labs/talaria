@@ -6,7 +6,7 @@
 // alert it: found by the #634 + #635 integration run (a DM to a conversation
 // open behind the launcher posted no banner, and no badge).
 import { describe, expect, it } from 'vitest'
-import { lookingNow, readCursorToPost, watchLooking } from './looking'
+import { LOOKING_INPUT_MS, lastInputAt, lookingNow, lookingWithInput, noteInput, onInput, readCursorToPost, resetInputForTests, trackInput, watchLooking } from './looking'
 
 class FakeDoc extends EventTarget {
   visibilityState: DocumentVisibilityState = 'visible'
@@ -77,3 +77,68 @@ describe('readCursorToPost', () => {
     expect(readCursorToPost({ channelId: 'c1', latest: 0, posted: { id: '', seq: 0 }, looking: true })).toBeNull()
   })
 })
+
+describe('input: the half of looking a document cannot answer', () => {
+  it('trackInput records pointer, key, wheel and touch, samples moves once a second, and releases when the last holder does', () => {
+    resetInputForTests()
+    const win = Object.assign(new EventTarget(), { document: Object.assign(new FakeDoc(), { visibilityState: 'hidden' as DocumentVisibilityState }) })
+    let t = 1000
+    const a = trackInput(win, () => t)
+    const b = trackInput(win, () => t)
+    expect(lastInputAt()).toBe(0) // a hidden page's load is not input
+    for (const k of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+      t += 10
+      win.dispatchEvent(new Event(k))
+      expect(lastInputAt()).toBe(t)
+    }
+    const at0 = lastInputAt()
+    t += 1500
+    win.dispatchEvent(new Event('pointermove'))
+    expect(lastInputAt()).toBe(t)
+    t += 200
+    win.dispatchEvent(new Event('pointermove'))
+    expect(lastInputAt()).toBe(t - 200) // sampled
+    expect(at0).toBeLessThan(lastInputAt())
+    a()
+    t += 5000
+    win.dispatchEvent(new Event('keydown'))
+    expect(lastInputAt()).toBe(t) // b still holds it
+    b()
+    t += 5000
+    win.dispatchEvent(new Event('keydown'))
+    expect(lastInputAt()).toBe(t - 5000) // released
+    resetInputForTests()
+  })
+
+  it('a page that opens shown and focused counts its load as input', () => {
+    resetInputForTests()
+    const win = Object.assign(new EventTarget(), { document: new FakeDoc() })
+    const stop = trackInput(win, () => 777)
+    expect(lastInputAt()).toBe(777)
+    stop()
+    resetInputForTests()
+  })
+
+  it('lookingWithInput is shown, focused AND touched within 60 s', () => {
+    const doc = new FakeDoc()
+    expect(lookingWithInput(doc, 100_000, 100_000 - LOOKING_INPUT_MS)).toBe(true)
+    expect(lookingWithInput(doc, 100_000, 100_000 - LOOKING_INPUT_MS - 1)).toBe(false)
+    expect(lookingWithInput(doc, 100_000, 0)).toBe(false)
+    doc.focused = false
+    expect(lookingWithInput(doc, 100_000, 99_000)).toBe(false)
+  })
+
+  it('onInput hears each new input; an older timestamp is ignored', () => {
+    resetInputForTests()
+    const seen: number[] = []
+    const off = onInput((at) => seen.push(at))
+    noteInput(10)
+    noteInput(5)
+    noteInput(20)
+    off()
+    noteInput(30)
+    expect(seen).toEqual([10, 20])
+    resetInputForTests()
+  })
+})
+
