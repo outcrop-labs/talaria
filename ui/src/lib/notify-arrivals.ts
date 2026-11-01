@@ -24,6 +24,20 @@
  *  unseen OR its createdAt moved later than the one recorded — the second
  *  case is a RE-ALERT (a DM row refreshed in place by a newer message).
  *
+ *  V2 (I-20, docs/notifications/contract.md): the same key, and the record
+ *  gains `v: 2` and `seq` — the person's notify seq this browser has read
+ *  THROUGH. Since the contract every alerting write takes the next seq in its
+ *  own transaction (I-10), and `GET /api/notifications?since=S` answers every
+ *  row with a seq past S, in seq order. So when the api serves `since`, the
+ *  tracker reads exactly the rows past its cursor — on every `notification`
+ *  frame, every `resync`, every stream (re)open and every poll — and a row
+ *  with a seq is an arrival iff it is unread, its seq is past `rec.seq`, and
+ *  it is unseen or re-alerted. No margin, nothing absorbed, nothing twice: a
+ *  60-row outage is 60 arrivals, the cursor at the server's seq after. A row
+ *  with no seq (filed before the contract) and a wave-1 record keep wave 1's
+ *  rule. A wave-1 reader (the desktop shell's suspend handoff) reads only
+ *  `hw`/`seen`/`at` and keeps the rest.
+ *
  *  Framework-free so it is testable without a DOM. */
 
 export const ARRIVALS_KEY = 'talaria.notify.arrivals.v1'
@@ -39,12 +53,18 @@ export interface ArrivalRecord {
   hw: string
   seen: Record<string, string>
   at: number
+  /** 2 once a v2 tracker wrote it (I-20). */
+  v?: 2
+  /** The notify seq this browser has read through: a complete `?since` read. */
+  seq?: number
 }
 
 export interface ArrivalRow {
   id: string
   createdAt: string
   readAt: string | null
+  /** The row's notify seq (I-10); null on a row filed before the contract. */
+  seq?: number | null
 }
 
 export interface Arrival<T> {
@@ -69,8 +89,9 @@ function trimSeen(seen: Record<string, string>): Record<string, string> {
 }
 
 /** Fold a page into a record: every row seen at its createdAt, the
- *  high-water at the newest createdAt either holds. */
-function absorb(rec: ArrivalRecord | null, rows: readonly ArrivalRow[], now: number): ArrivalRecord {
+ *  high-water at the newest createdAt either holds; the seq cursor kept (and
+ *  moved to `through` when the page was a complete `?since` read). */
+function absorb(rec: ArrivalRecord | null, rows: readonly ArrivalRow[], now: number, through?: number | null): ArrivalRecord {
   const seen: Record<string, string> = { ...(rec?.seen ?? {}) }
   let hw = rec?.hw ?? ''
   for (const r of rows) {
@@ -78,30 +99,126 @@ function absorb(rec: ArrivalRecord | null, rows: readonly ArrivalRow[], now: num
     if (!known || ms(r.createdAt) > ms(known)) seen[r.id] = r.createdAt
     if (!hw || ms(r.createdAt) > ms(hw)) hw = r.createdAt
   }
-  return { hw, seen: trimSeen(seen), at: now }
+  const out: ArrivalRecord = { hw, seen: trimSeen(seen), at: now }
+  const seq = maxSeq(rec?.seq, through)
+  if (seq !== undefined) {
+    out.v = 2
+    out.seq = seq
+  } else if (rec?.v === 2) out.v = 2
+  return out
+}
+
+const isSeq = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0
+function maxSeq(a: number | null | undefined, b: number | null | undefined): number | undefined {
+  if (isSeq(a) && isSeq(b)) return Math.max(a, b)
+  if (isSeq(a)) return a
+  if (isSeq(b)) return b
+  return undefined
 }
 
 /** The pure rule: given what this browser had surfaced (or `null` — never)
- *  and a page of rows (newest first, as /api/notifications serves it),
- *  the arrivals, oldest first, and the record after them. */
+ *  and a page of rows (the newest 50 as /api/notifications serves them, or a
+ *  `?since` page in seq order), the arrivals, oldest first, and the record
+ *  after them. `through`: the page was a complete `?since` read through this
+ *  seq — the record's cursor moves there (and, with no record, it is where a
+ *  fresh profile's silent baseline starts). */
 export function computeArrivals<T extends ArrivalRow>(
   rec: ArrivalRecord | null,
   rows: readonly T[],
   now: number,
+  through?: number | null,
 ): { arrivals: Arrival<T>[]; next: ArrivalRecord } {
-  if (!rec) return { arrivals: [], next: absorb(null, rows, now) }
+  if (!rec) return { arrivals: [], next: absorb(null, rows, now, through) }
   const floor = rec.hw ? ms(rec.hw) - MARGIN_MS : -Infinity
+  const cursor = isSeq(rec.seq) ? rec.seq : null
   const arrivals: Arrival<T>[] = []
   for (const r of rows) {
     if (r.readAt) continue // read elsewhere: never surfaced
     const created = ms(r.createdAt)
-    if (created <= floor) continue
+    if (cursor !== null && isSeq(r.seq)) {
+      // v2: the cursor is exact. At or below it, this browser already
+      // decided about the row (and a Quiet coalesce that kept its createdAt
+      // is not news either).
+      if (r.seq <= cursor) continue
+    } else if (created <= floor) continue // v1: the margin
     const known = rec.seen[r.id]
     if (known === undefined) arrivals.push({ row: r, realert: false })
     else if (created > ms(known)) arrivals.push({ row: r, realert: true })
   }
   arrivals.sort((a, b) => ms(a.row.createdAt) - ms(b.row.createdAt))
-  return { arrivals, next: absorb(rec, rows, now) }
+  return { arrivals, next: absorb(rec, rows, now, through) }
+}
+
+// ── The `?since` read (I-19, I-20) ───────────────────────────────────────────
+
+/** One `GET /api/notifications?since=S` page: rows with a seq past S in seq
+ *  order (≤ 200), whether more remain, and the person's seq in the same
+ *  snapshot. */
+export interface SincePage<T> {
+  notifications: T[]
+  more?: boolean
+  seq?: number
+}
+
+/** Pages a single catch-up may read before it yields. */
+export const SINCE_PAGES = 10
+
+/** Read every row past `from`, page by page. `through` is how far the read
+ *  is complete: the snapshot's seq when the last page said `more: false`;
+ *  after `SINCE_PAGES` pages, the last row's seq (a page is every row up to
+ *  its last one, I-10), and `complete` is false — the caller reads on. */
+export async function readSince<T extends ArrivalRow>(
+  fetchPage: (since: number) => Promise<SincePage<T>>,
+  from: number,
+  maxPages = SINCE_PAGES,
+): Promise<{ rows: T[]; through: number | null; complete: boolean }> {
+  const rows: T[] = []
+  let cursor = from
+  for (let i = 0; i < maxPages; i++) {
+    const page = await fetchPage(cursor)
+    const got = Array.isArray(page.notifications) ? page.notifications : []
+    rows.push(...got)
+    let last = cursor
+    for (const r of got) if (isSeq(r.seq) && r.seq > last) last = r.seq
+    if (!page.more) {
+      const snap = isSeq(page.seq) ? page.seq : last
+      return { rows, through: Math.max(snap, last), complete: true }
+    }
+    // `more` with no progress would loop forever: stop where we are.
+    if (last <= cursor) return { rows, through: cursor > from ? cursor : null, complete: false }
+    cursor = last
+  }
+  return { rows, through: cursor > from ? cursor : null, complete: false }
+}
+
+/** One run at a time; a call while one runs asks for exactly one more after
+ *  it. Every `notification` frame, `resync`, open and poll asks for a
+ *  `?since` read — a burst of 60 frames is two reads, not sixty. */
+export function coalesce(run: () => Promise<void>): () => Promise<void> {
+  let running: Promise<void> | null = null
+  let again = false
+  const go = (): Promise<void> => {
+    if (running) {
+      again = true
+      return running
+    }
+    running = (async () => {
+      try {
+        do {
+          again = false
+          try {
+            await run()
+          } catch {
+            /* the next ask reads again */
+          }
+        } while (again)
+      } finally {
+        running = null
+      }
+    })()
+    return running
+  }
+  return go
 }
 
 /** How a batch of arrivals is shown: up to three one by one, oldest first;
@@ -150,7 +267,10 @@ const localStore: ArrivalStore = {
 function isRecord(v: unknown): v is ArrivalRecord {
   if (!v || typeof v !== 'object') return false
   const r = v as Record<string, unknown>
-  return typeof r.hw === 'string' && !!r.seen && typeof r.seen === 'object' && typeof r.at === 'number'
+  if (!(typeof r.hw === 'string' && !!r.seen && typeof r.seen === 'object' && typeof r.at === 'number')) return false
+  // A junk cursor is no cursor: the record falls back to wave 1's rule.
+  if (r.seq !== undefined && !isSeq(r.seq)) delete r.seq
+  return true
 }
 
 function readAll(store: ArrivalStore): Record<string, ArrivalRecord> {
@@ -175,11 +295,17 @@ function merge(a: ArrivalRecord | undefined, b: ArrivalRecord): ArrivalRecord {
     const known = seen[id]
     if (!known || ms(at) > ms(known)) seen[id] = at
   }
-  return {
+  const out: ArrivalRecord = {
     hw: !a.hw || ms(b.hw) > ms(a.hw) ? b.hw : a.hw,
     seen: trimSeen(seen),
     at: Math.max(a.at, b.at),
   }
+  // The union's cursor is the furthest either read through: each tab's view
+  // only ever advances on a complete read.
+  const seq = maxSeq(a.seq, b.seq)
+  if (seq !== undefined) out.seq = seq
+  if (a.v === 2 || b.v === 2 || seq !== undefined) out.v = 2
+  return out
 }
 
 /** One tab's tracker for one person. The persisted record is read at the
@@ -197,16 +323,42 @@ export class PersistedArrivals<T extends ArrivalRow> {
     private readonly store: ArrivalStore = localStore,
   ) {}
 
-  arrive(rows: readonly T[], now = Date.now()): Arrival<T>[] {
-    if (!this.primed) {
-      this.primed = true
-      this.view = readAll(this.store)[this.userId] ?? null
-    }
-    const { arrivals, next } = computeArrivals(this.view, rows, now)
+  /** Judge a page of rows. `through`: the page was a complete `?since`
+   *  read up to this seq (the cursor moves there). */
+  arrive(rows: readonly T[], now = Date.now(), through?: number | null): Arrival<T>[] {
+    this.prime()
+    const { arrivals, next } = computeArrivals(this.view, rows, now, through)
     this.view = next
     const all = readAll(this.store)
     all[this.userId] = merge(all[this.userId], next)
     this.store.write(JSON.stringify(all))
     return arrivals
+  }
+
+  /** Where this tab's `?since` read starts: its cursor, or null when it has
+   *  none yet (a wave-1 record, or no record at all). */
+  cursor(): number | null {
+    this.prime()
+    return isSeq(this.view?.seq) ? (this.view?.seq as number) : null
+  }
+
+  /** Has this browser any record for the person (else the first read is a
+   *  silent baseline)? */
+  hasRecord(): boolean {
+    this.prime()
+    return this.view !== null
+  }
+
+  /** The furthest cursor any tab of this browser has persisted — what a
+   *  stream opened now replays from (`/api/me/events?since=`). */
+  persistedCursor(): number | null {
+    const rec = readAll(this.store)[this.userId]
+    return rec && isSeq(rec.seq) ? rec.seq : this.cursor()
+  }
+
+  private prime(): void {
+    if (this.primed) return
+    this.primed = true
+    this.view = readAll(this.store)[this.userId] ?? null
   }
 }
