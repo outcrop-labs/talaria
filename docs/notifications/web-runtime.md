@@ -145,7 +145,10 @@ The heartbeat AppLayout mounts now sends a body on `PUT /api/me/presence`:
   pointer, a key, the wheel or a touch (pointer moves sampled once a second;
   `looking.ts`). A page that opens shown and focused counts its load as input.
 - It is sent at once, on every change (at most one beat per 5 s), and every
-  30 s. Hidden tabs keep beating as `hidden`. The old no-body ping is gone;
+  30 s. Hidden tabs keep beating as `hidden`. A tab that goes away (closed,
+  navigated off, into the back/forward cache) sends a last `hidden` beat with
+  `keepalive`, so the winner moves to the person's other device at once rather
+  than when the entry ages out (75 s). The old no-body ping is gone;
   the route still sets the directory's online key (for a web tab unless it is
   hidden, per the contract's `marks_online`).
 - The winner comes from `presence` frames, from each heartbeat's answer

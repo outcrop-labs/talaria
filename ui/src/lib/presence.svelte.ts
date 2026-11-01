@@ -37,6 +37,9 @@ export interface PresenceOptions {
   doc?: VisibilitySource
   /** Where the beat goes (tests). Default: `PUT /api/me/presence` with the body. */
   send?: (body: PresenceBody) => Promise<unknown>
+  /** The last beat, as the page goes away (tests). Default: the same PUT
+   *  with `keepalive`, so it outlives the page. */
+  sendFinal?: (body: PresenceBody) => void
   /** Window events (focus/blur/pageshow); tests pass a stub (and then the
    *  page's input listeners are not installed). */
   win?: EventTarget
@@ -58,6 +61,10 @@ const defaultSend = async (body: PresenceBody) => {
     untrack(() => setPresence({ looking: v.looking, active: v.active, clients: v.clients, self: body.clientId }))
   }
   return res
+}
+
+const defaultFinal = (body: PresenceBody) => {
+  void putJson('/api/me/presence', body, { keepalive: true }).catch(() => {})
 }
 
 function safeFocus(doc: VisibilitySource): boolean {
@@ -92,10 +99,16 @@ export function startPresenceHeartbeat(opts: PresenceOptions = {}): () => void {
     beatMs: opts.intervalMs,
   })
   const poke = () => hb.poke()
+  // THE TAB GOES AWAY (closed, navigated off, put in the back/forward cache):
+  // a last beat says `hidden`, so the server's winner moves to the person's
+  // other device now rather than when this entry ages out (75 s). A page
+  // restored from the cache beats again on `pageshow`.
+  const bye = () => (opts.sendFinal ?? defaultFinal)({ clientId: id, kind, state: 'hidden' })
   doc.addEventListener('visibilitychange', poke)
   win?.addEventListener('focus', poke)
   win?.addEventListener('blur', poke)
   win?.addEventListener('pageshow', poke)
+  win?.addEventListener('pagehide', bye)
   // Input moves the state only toward looking; the heartbeat's own rate limit
   // keeps a typing person from beating more than once per 5 s.
   const offInput = onInput(() => {
@@ -109,6 +122,7 @@ export function startPresenceHeartbeat(opts: PresenceOptions = {}): () => void {
     win?.removeEventListener('focus', poke)
     win?.removeEventListener('blur', poke)
     win?.removeEventListener('pageshow', poke)
+    win?.removeEventListener('pagehide', bye)
   }
 }
 

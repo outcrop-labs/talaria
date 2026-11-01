@@ -122,6 +122,18 @@ describe('startPresenceHeartbeat — the I-17 body', () => {
     expect(send).toHaveBeenCalledTimes(1)
   })
 
+  it('a closing tab sends a last beat: hidden', () => {
+    noteInput(NOW0)
+    const win = new EventTarget()
+    const finals: PresenceBody[] = []
+    const stop = startPresenceHeartbeat({ doc: fakeDoc(), send: async () => {}, sendFinal: (b) => void finals.push(b), win, now, clientId: 'tab-test-0003', osIdle: null })
+    win.dispatchEvent(new Event('pagehide'))
+    expect(finals).toEqual([{ clientId: 'tab-test-0003', kind: 'web', state: 'hidden' }])
+    stop()
+    win.dispatchEvent(new Event('pagehide'))
+    expect(finals).toHaveLength(1)
+  })
+
   it('inside the shell: kind desktop and osIdleMs, and OS input keeps it active with the window hidden', async () => {
     const sent: PresenceBody[] = []
     const stop = startPresenceHeartbeat({
