@@ -5,10 +5,14 @@
     "linux": {
       "deb": {
         "section": "utils",
-        "priority": "optional"
+        "priority": "optional",
+        "desktopTemplate": "../packaging/linux/Talaria.desktop.hbs",
+        "recommends": ["libayatana-appindicator3-1"]
       },
       "rpm": {
-        "depends": ["webkit2gtk4.1", "gtk3"]
+        "depends": ["webkit2gtk4.1", "gtk3"],
+        "desktopTemplate": "../packaging/linux/Talaria.desktop.hbs",
+        "recommends": ["libayatana-appindicator3.so.1()(64bit)"]
       }
     }
   }
