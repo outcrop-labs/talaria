@@ -115,6 +115,13 @@ pub enum JobName {
     SkillsIndexRefresh,
     AppTriggers,
     CronOutputPull,
+    // The notification delivery engine (talaria-notify, docs/notifications/delivery.md):
+    // the presence-deferred push, the missed-activity mail batcher, row retention,
+    // and the push-subscription prune.
+    NotifyDeferredPush,
+    NotifyMissedMail,
+    NotifyRetention,
+    PushPrune,
 }
 
 impl JobName {
@@ -143,6 +150,10 @@ impl JobName {
             JobName::SkillsIndexRefresh => "skills-index-refresh",
             JobName::AppTriggers => "app-triggers",
             JobName::CronOutputPull => "cron-output-pull",
+            JobName::NotifyDeferredPush => "notify-deferred-push",
+            JobName::NotifyMissedMail => "notify-missed-mail",
+            JobName::NotifyRetention => "notify-retention",
+            JobName::PushPrune => "push-prune",
         }
     }
 }
