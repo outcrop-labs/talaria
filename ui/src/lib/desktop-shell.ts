@@ -211,8 +211,8 @@ export async function shellCloseNotifications(tags: string[]): Promise<boolean> 
 
 /** Milliseconds since the last OS input (I-22) — what a desktop client's
  *  presence `state` is computed from. Null: a browser, a shell that predates
- *  the command, or an OS that cannot say. The shell answers once a second per
- *  page at most. */
+ *  the command, or an OS that cannot say. One reading answers every page for
+ *  half a second, so asking often costs nothing. */
 export async function shellOsIdleMs(): Promise<number | null> {
   try {
     const ms = await optional<number>('desktop_os_idle')

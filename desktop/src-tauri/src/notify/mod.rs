@@ -69,9 +69,10 @@ pub const BADGE_MAX: u32 = 99_999;
 
 /// `desktop_notify_close`: the most tags one call may close.
 pub const CLOSE_MAX: usize = 100;
-/// `desktop_os_idle`, per caller: a heartbeat asks every 30 s, so once a
-/// second is ample.
-pub const IDLE_EVERY: Duration = Duration::from_secs(1);
+/// How long one reading of the OS idle time answers every caller: pages and
+/// watchers ask on schedules of their own (a page's heartbeat asks twice in
+/// a few milliseconds), and the answer is the machine's, not theirs.
+pub const IDLE_FRESH: Duration = Duration::from_millis(500);
 
 /// The catch-up summary's tag (I-21): a click on it opens the bell.
 pub const SUMMARY_TAG: &str = crate::watch::SUMMARY_TAG;
@@ -908,9 +909,20 @@ pub async fn close_label(app: &AppHandle, label: &str) -> u32 {
 
 /// Milliseconds since the person last touched this machine, as the OS
 /// reports it (I-22), or None where it cannot say: presence's "active" is
-/// OS input in the last two minutes.
+/// OS input in the last two minutes. One reading serves every caller for
+/// `IDLE_FRESH` (aged by the time since), so no caller, however often it
+/// asks, sends more than two bus calls a second.
 pub async fn os_idle() -> Option<u64> {
-    os::os_idle().await
+    static LAST: Mutex<Option<(Instant, Option<u64>)>> = Mutex::new(None);
+    let cached = *LAST.lock().unwrap();
+    if let Some((at, value)) = cached
+        && at.elapsed() < IDLE_FRESH
+    {
+        return value.map(|ms| ms.saturating_add(at.elapsed().as_millis() as u64));
+    }
+    let value = os::os_idle().await;
+    *LAST.lock().unwrap() = Some((Instant::now(), value));
+    value
 }
 
 /// An instance is gone: its badge share, its banners' map entries, its rate

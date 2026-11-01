@@ -595,7 +595,7 @@ may call, keyed by the caller's label:
   them: the label is the IPC caller's, never a value from the page. The watcher closes its
   own banners the same way, from its stream.
 - `desktop_os_idle()` answers the milliseconds since the person last touched the machine,
-  or null where the OS cannot say. Linux: mutter's `org.gnome.Mutter.IdleMonitor`
+  or null where the OS cannot say; one reading serves every caller for half a second. Linux: mutter's `org.gnome.Mutter.IdleMonitor`
   `GetIdletime` on GNOME, else `org.freedesktop.ScreenSaver.GetSessionIdleTime` — KDE's
   kscreenlocker answers it on X11 in milliseconds (KIdleTime's), though the interface's XML
   calls the value seconds, and refuses it on Plasma's Wayland — else null. macOS:

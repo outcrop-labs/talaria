@@ -1703,13 +1703,11 @@ pub async fn desktop_notify_close(
 }
 
 /// Milliseconds since the last OS input (I-22), for a page computing its
-/// presence: null where the OS cannot say. Once a second per caller.
+/// presence: null where the OS cannot say. One reading serves every caller
+/// for half a second (notify::os_idle), so asking often costs nothing.
 #[tauri::command]
-pub async fn desktop_os_idle(app: AppHandle, webview: Webview) -> Result<Option<u64>, String> {
-    if !notify::allow_every(&app, "idle", webview.label(), notify::IDLE_EVERY) {
-        return Err("rate limited".into());
-    }
-    Ok(notify::os_idle().await)
+pub async fn desktop_os_idle() -> Option<u64> {
+    notify::os_idle().await
 }
 
 /// How long after launch the first never-shown instance is loaded (D8), and
