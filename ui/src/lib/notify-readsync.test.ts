@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { applyReadSync, type ReadSyncDeps, type ShownBanner } from './notify-readsync'
+import { SHELL_CLOSE_MAX, applyReadSync, type ReadSyncDeps, type ShownBanner } from './notify-readsync'
 import { SUMMARY_TAG } from './notify-wire'
 
 const A = '00000000-0000-4000-8000-00000000000a'
@@ -76,7 +76,33 @@ describe('applyReadSync (I-16)', () => {
     const r = rig([], [], { shell: true })
     await applyReadSync({ type: 'notifications', unread: 1, readIds: [A, B] }, r.deps)
     await applyReadSync({ type: 'notifications', unread: 0, all: true }, r.deps)
-    expect(r.shellCalls).toEqual([[A, B], [A, B, C, SUMMARY_TAG]])
+    expect(r.shellCalls).toEqual([[A, B], [SUMMARY_TAG, A, B, C]])
+  })
+
+  it('inside the shell: never more than the shell takes in one call (100), the summary tag first', async () => {
+    const many = Array.from({ length: 200 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`)
+    const calls: string[][] = []
+    const deps: ReadSyncDeps = {
+      shown: async () => [],
+      dismiss: () => {},
+      toastKeys: () => [],
+      shellClose: async (t) => {
+        calls.push(t)
+        return true
+      },
+      recentTags: async () => many,
+      summaryIds: () => many.slice(0, 100),
+      summaryClosed: () => {},
+    }
+    await applyReadSync({ type: 'notifications', unread: 0, all: true }, deps)
+    expect(calls.map((c) => c.length)).toEqual([SHELL_CLOSE_MAX, SHELL_CLOSE_MAX, 1])
+    expect(calls[0]?.[0]).toBe(SUMMARY_TAG)
+    expect(calls.flat()).toHaveLength(201)
+    calls.length = 0
+    // 100 read ids that complete the summary: 101 tags, two calls, none dropped.
+    await applyReadSync({ type: 'notifications', unread: 0, readIds: many.slice(0, 100) }, deps)
+    expect(calls.map((c) => c.length)).toEqual([SHELL_CLOSE_MAX, 1])
+    expect(calls[0]?.[0]).toBe(SUMMARY_TAG)
   })
 
   it('resync: refetch, then close every banner whose row is no longer unread', async () => {

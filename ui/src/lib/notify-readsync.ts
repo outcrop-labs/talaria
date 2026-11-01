@@ -24,6 +24,10 @@ import { SUMMARY_TAG } from './notify-wire'
 
 const ROW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** The most tags the shell's `desktop_notify_close` takes in one call (it
+ *  drops the rest): longer lists go in chunks, the summary tag first. */
+export const SHELL_CLOSE_MAX = 100
+
 /** One banner the registration still shows. */
 export interface ShownBanner {
   tag: string
@@ -77,9 +81,9 @@ export async function applyReadSync(ev: NotificationsEventV2, deps: ReadSyncDeps
     out.dismissed = 'all'
     if (deps.summaryIds?.().length) deps.summaryClosed?.()
     if (deps.shellClose) {
-      const tags = uniq([...(await safe(deps.recentTags ?? (async () => []), [])), SUMMARY_TAG])
+      const tags = uniq([SUMMARY_TAG, ...(await safe(deps.recentTags ?? (async () => []), []))])
       out.shell = tags
-      await deps.shellClose(tags).catch(() => false)
+      await closeInShell(deps.shellClose, tags)
     }
     return out
   }
@@ -99,9 +103,9 @@ export async function applyReadSync(ev: NotificationsEventV2, deps: ReadSyncDeps
     out.dismissed = keys
     if (summaryDone) deps.summaryClosed?.()
     if (deps.shellClose) {
-      const tags = uniq([...ev.readIds, ...(summaryDone ? [SUMMARY_TAG] : [])])
+      const tags = uniq([...(summaryDone ? [SUMMARY_TAG] : []), ...ev.readIds])
       out.shell = tags
-      await deps.shellClose(tags).catch(() => false)
+      await closeInShell(deps.shellClose, tags)
     }
     return out
   }
@@ -122,7 +126,7 @@ export async function applyReadSync(ev: NotificationsEventV2, deps: ReadSyncDeps
     if (deps.shellClose) {
       const tags = (await safe(deps.recentTags ?? (async () => []), [])).filter(gone)
       out.shell = tags
-      if (tags.length) await deps.shellClose(tags).catch(() => false)
+      await closeInShell(deps.shellClose, tags)
     }
   }
   return out
@@ -137,6 +141,13 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 const uniq = (xs: string[]) => [...new Set(xs)]
+
+/** Ask the shell to close these tags, `SHELL_CLOSE_MAX` per call. */
+async function closeInShell(close: (tags: string[]) => Promise<boolean>, tags: string[]): Promise<void> {
+  for (let i = 0; i < tags.length; i += SHELL_CLOSE_MAX) {
+    await close(tags.slice(i, i + SHELL_CLOSE_MAX)).catch(() => false)
+  }
+}
 
 /** The browser's banners, from the service worker registration. */
 export async function registrationBanners(): Promise<ShownBanner[]> {
