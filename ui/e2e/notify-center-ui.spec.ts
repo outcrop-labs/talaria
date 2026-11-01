@@ -466,11 +466,15 @@ test.describe('the status panel', () => {
     const res = await answered
     const result = thisRow.locator('[data-device-result]')
     if (res.status() === 501) {
+      // The contract alone: the test send is a stub.
       await expect(result).toHaveText('Server test not available on this instance yet.')
-    } else {
-      expect(res.status()).toBe(200)
+    } else if (res.status() === 200) {
+      // With the delivery engine: the push service's answer, either way.
       await expect(result).toHaveAttribute('data-device-result', 'sent')
       await expect(result).toContainText(/Delivered to the push service in \d+ ms|Not delivered/)
+    } else {
+      // Any other refusal is shown as the server's sentence, not swallowed.
+      await expect(result).toHaveAttribute('data-device-result', /^(error|gone)$/)
     }
     for (let i = 2; i <= 6; i++) {
       const r = page.waitForResponse((x) => x.url().endsWith('/api/notifications/test'))
@@ -497,8 +501,18 @@ test.describe('the status panel', () => {
     await page.goto('/settings/notifications')
     const r = await page.request.put('/api/me/presence', { data: { clientId: 'desk-nc-e2e-0001', kind: 'desktop', state: 'active', osIdleMs: 1000 } })
     expect(r.status()).toBe(200)
-    await expect(page.locator('[data-live="target"]')).toHaveAttribute('data-state', 'desktop', { timeout: 20_000 })
-    await expect(page.locator('[data-live="target"]')).toContainText('Talaria Desktop')
+    await expect(page.locator('[data-live="clients"]')).toContainText('Talaria Desktop (active)', { timeout: 20_000 })
+    // The winner rule (I-17): the client being looked at, else the active
+    // one. A web runtime that heartbeats (W2-R) makes this tab the one being
+    // looked at; without it the desktop client is the only one.
+    const snap = (await (await page.request.get('/api/me/presence')).json()) as { looking: string | null; active: string | null }
+    const winner = snap.looking ?? snap.active
+    await expect(page.locator('[data-live="target"]')).toHaveAttribute(
+      'data-state',
+      winner === 'desk-nc-e2e-0001' ? 'desktop' : /^(this-browser|other-browser)$/,
+      { timeout: 20_000 },
+    )
+    if (winner === 'desk-nc-e2e-0001') await expect(page.locator('[data-live="target"]')).toContainText('Talaria Desktop')
     await ctx.close()
   })
 
