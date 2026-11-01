@@ -94,7 +94,7 @@ const TOP = {
     "channel-levels-store"
   ],
   "next": null
-} satisfies NotificationsPayloadV2Fields
+} satisfies NotificationsPayloadV2Fields & { unread: number }
 
 const CLASS = {
   "id": "mention",

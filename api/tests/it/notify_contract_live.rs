@@ -28,6 +28,11 @@ use talaria_api::realtime::RealtimeDeps;
 
 const IN_APP: &str = r#"{"mention":"in_app","dm":"in_app","approval_pending":"in_app","judge_escalation":"in_app","agent_blocked":"in_app","gap_reported":"in_app","work_complete":"in_app","workchain_turn":"in_app","workchain_paused":"in_app","digest":"off"}"#;
 
+/// One test at a time, even when the harness runs a module's tests in
+/// parallel (CI does): the seq test commits 16,000 rows, and a coalescing
+/// test sharing the database with it measures that load, not its own rule.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Every (topic, payload) the writes publish, in order.
 #[derive(Clone, Default)]
 struct Captured(Arc<Mutex<Vec<(String, String)>>>);
@@ -60,8 +65,16 @@ impl Captured {
     }
 }
 
-async fn cleanup(pg: &PgPool) {
-    sqlx::query("delete from users where email like 'notify-contract-%@test.invalid'")
+/// Delete this test's own throwaway people (the cascade takes their rows).
+/// Scoped by tag: CI runs a module's tests concurrently, so one test's
+/// cleanup must never reach another's people.
+async fn cleanup(pg: &PgPool, tags: &[&str]) {
+    let emails: Vec<String> = tags
+        .iter()
+        .map(|t| format!("notify-contract-{t}@test.invalid"))
+        .collect();
+    sqlx::query("delete from users where email = any($1)")
+        .bind(&emails)
         .execute(pg)
         .await
         .unwrap();
@@ -104,7 +117,8 @@ fn input<'a>(kind: &'a str, title: &'a str, body: &'a str, href: &'a str) -> Not
 async fn wide_pool() -> PgPool {
     let url = std::env::var("DATABASE_URL").expect(crate::support::DATABASE_URL_EXPECT);
     PgPoolOptions::new()
-        .max_connections(24)
+        .max_connections(12)
+        .acquire_timeout(Duration::from_secs(120))
         .connect(&url)
         .await
         .unwrap()
@@ -115,8 +129,9 @@ async fn wide_pool() -> PgPool {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn seq_commit_order() {
+    let _serial = SERIAL.lock().await;
     let pg = wide_pool().await;
-    cleanup(&pg).await;
+    cleanup(&pg, &["seq"]).await;
     let ada = person(&pg, "seq").await;
     let base = notify_seq(&pg, &ada).await;
     const WRITERS: usize = 8;
@@ -205,7 +220,7 @@ async fn seq_commit_order() {
     assert_eq!(last, base + total);
     // Unique and contiguous: exactly base+1 ..= base+total, once each.
     assert_eq!(seqs, ((base + 1)..=(base + total)).collect::<Vec<_>>());
-    cleanup(&pg).await;
+    cleanup(&pg, &["seq"]).await;
 }
 
 // ── I-24: the group-key upsert ───────────────────────────────────────────────
@@ -220,8 +235,9 @@ fn keyed(key: &str) -> NotifyMeta {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn fifty_concurrent_writes_to_one_key_are_one_row() {
+    let _serial = SERIAL.lock().await;
     let pg = wide_pool().await;
-    cleanup(&pg).await;
+    cleanup(&pg, &["group50"]).await;
     let ada = person(&pg, "group50").await;
     let base = notify_seq(&pg, &ada).await;
     let key = group_key::dm("5e000000-0000-4000-8000-0000000000d1");
@@ -281,14 +297,15 @@ async fn fifty_concurrent_writes_to_one_key_are_one_row() {
             .count(),
         50
     );
-    cleanup(&pg).await;
+    cleanup(&pg, &["group50"]).await;
 }
 
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn coalesce_quiet_realert_window_read_and_adoption() {
+    let _serial = SERIAL.lock().await;
     let pg = pg().await;
-    cleanup(&pg).await;
+    cleanup(&pg, &["group"]).await;
     let ada = person(&pg, "group").await;
     let deps = NotifyDeps::publishing(pg.clone(), None);
     let created = |id: String| {
@@ -451,14 +468,15 @@ async fn coalesce_quiet_realert_window_read_and_adoption() {
     println!(
         "coalesce: quiet kept {t0}, realert moved it; window split a/b; adopted {legacy} with its snooze"
     );
-    cleanup(&pg).await;
+    cleanup(&pg, &["group"]).await;
 }
 
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn concurrent_window_expiry_never_conflicts() {
+    let _serial = SERIAL.lock().await;
     let pg = wide_pool().await;
-    cleanup(&pg).await;
+    cleanup(&pg, &["expiry"]).await;
     let ada = person(&pg, "expiry").await;
     let key = group_key::approval("a-1");
     let meta = NotifyMeta {
@@ -466,7 +484,7 @@ async fn concurrent_window_expiry_never_conflicts() {
         adopt_legacy: true,
         ..keyed(&key)
     };
-    // Four bursts of 10 concurrent writers, 1.5 s apart: the window lapses
+    // Four bursts of 10 concurrent writers, 2.5 s apart: the window lapses
     // between bursts, so in each burst the first writer to take the person's
     // row lock expires the open row while nine others race it to the upsert.
     let mut tasks = Vec::new();
@@ -476,7 +494,7 @@ async fn concurrent_window_expiry_never_conflicts() {
             let ada = ada.clone();
             let meta = meta.clone();
             tasks.push(tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(burst * 1_500 + i)).await;
+                tokio::time::sleep(Duration::from_millis(burst * 2_500 + i)).await;
                 add_notification_with(
                     &deps,
                     &ada,
@@ -507,7 +525,7 @@ async fn concurrent_window_expiry_never_conflicts() {
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(open, 1, "one open row holds the key");
     assert_eq!(rows, 4, "the window split the group once per burst");
-    cleanup(&pg).await;
+    cleanup(&pg, &["expiry"]).await;
 }
 
 // ── I-24: entity clears; I-18: the ack ──────────────────────────────────────
@@ -515,8 +533,9 @@ async fn concurrent_window_expiry_never_conflicts() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn entity_clears_and_the_ack() {
+    let _serial = SERIAL.lock().await;
     let pg = pg().await;
-    cleanup(&pg).await;
+    cleanup(&pg, &["ent-ada", "ent-bob"]).await;
     let ada = person(&pg, "ent-ada").await;
     let bob = person(&pg, "ent-bob").await;
     let cap = Captured::default();
@@ -603,7 +622,7 @@ async fn entity_clears_and_the_ack() {
     println!(
         "entity: clear_entity 1 (bob only), resolve_entity {n} across 2 people; ack 1 / foreign 0"
     );
-    cleanup(&pg).await;
+    cleanup(&pg, &["ent-ada", "ent-bob"]).await;
 }
 
 // ── C32: the write path's cost, before and after ────────────────────────────
@@ -615,6 +634,7 @@ fn pct(sorted: &[f64], p: f64) -> f64 {
 #[tokio::test]
 #[ignore = "needs the C32 scratch database (C32_DATABASE_URL)"]
 async fn write_path_timing() {
+    let _serial = SERIAL.lock().await;
     let Ok(url) = std::env::var("C32_DATABASE_URL") else {
         println!("write_path_timing: C32_DATABASE_URL unset — skipped");
         return;
