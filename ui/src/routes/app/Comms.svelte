@@ -53,6 +53,7 @@
   import AgentDmPane from './comms/AgentDmPane.svelte'
   import ProfileDrawer from './comms/ProfileDrawer.svelte'
   import StarButton from './comms/StarButton.svelte'
+  import ChannelNotifyMenu from '@/components/chat/ChannelNotifyMenu.svelte'
   import NewMessagePane from './comms/NewMessagePane.svelte'
   import { groupDmCount, groupDmLabel, isGroupDm } from '@/lib/comms-dm'
   import { channelStarKey } from '@/lib/comms-stars'
@@ -420,6 +421,9 @@
           <!-- The star leads the header: star, avatar, name, then status.
                Starred conversations move to the Starred section of the rail. -->
           <StarButton starKey={channelStarKey(selected.id)} class="-ml-2" />
+          <!-- How much of this conversation the person hears, and a timed
+               mute (hidden on an api without channel levels). -->
+          <ChannelNotifyMenu channelId={selected.id} {detail} />
           {#if groupDm}
             <!-- A group DM: the rail's count badge, then who's in it. -->
             <span
