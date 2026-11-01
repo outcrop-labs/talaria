@@ -18,7 +18,10 @@ use talaria_boards::{board_allows_agent, board_info, board_role};
 use talaria_gateway::usage::task_usage;
 use talaria_judge::list_judge_reviews;
 use talaria_labels::ensure_labels;
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, Coalesce, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
+    add_notification_with, entity, group_key,
+};
 use talaria_realtime::{BoardEvent, RealtimeDeps, publish_board};
 use talaria_retrieval::sources::{
     ActivityField, CommentSrc, comment_doc, index_activity, purge_activity_by_field,
@@ -319,12 +322,79 @@ pub async fn get_task_full(pg: &PgPool, id: &str) -> Result<Option<TaskFull>, sq
 // ── Notifications: who hears about a ticket ──────────────────────────────────
 
 /// The notification payload a ticket fan-out files (kind, title, body,
-/// href).
+/// href), and what it is about.
 struct TaskNotification {
     kind: String,
     title: String,
     body: Option<String>,
     href: Option<String>,
+    /// The ticket (the row's entity, so the center groups by it).
+    task_id: String,
+    /// A status move, carrying the new column's words: the row coalesces into
+    /// the person's open status row for this ticket (`group_key::task_status`,
+    /// a window of `status_window_secs`), quietly — the first move alerts, a
+    /// later one in the window updates the count and the body ("Moved 4 times
+    /// — now in review") without ringing again. Past the window: a fresh row.
+    status_burst: Option<String>,
+}
+
+/// How long a ticket's status moves keep coalescing into one row: ten
+/// minutes, or `TALARIA_NOTIFY_STATUS_WINDOW_SECS` (a live check shortens it).
+pub fn status_window_secs() -> u32 {
+    std::env::var("TALARIA_NOTIFY_STATUS_WINDOW_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(600)
+}
+
+/// The body a status row carries: the ticket's own line for the first move,
+/// then the burst ("Moved 4 times — now in review"). Pure.
+fn status_body(first: Option<&str>, moves: i64, now: &str) -> Option<String> {
+    if moves <= 1 {
+        first.map(str::to_string)
+    } else {
+        Some(format!("Moved {moves} times — now {now}"))
+    }
+}
+
+/// Who a ticket row says caused it (I-11): a person by their users.id when the
+/// actor string names one, the judge as the system, otherwise an agent by its
+/// model id.
+fn task_actor(actor: &str, self_id: Option<&str>) -> NotifyActor {
+    match self_id {
+        Some(id) => NotifyActor {
+            kind: ActorKind::User,
+            id: id.to_string(),
+            label: actor.to_string(),
+        },
+        None if actor.starts_with("judge:") => NotifyActor {
+            kind: ActorKind::System,
+            id: actor.to_string(),
+            label: "Judge".to_string(),
+        },
+        None => NotifyActor {
+            kind: ActorKind::Agent,
+            id: actor.to_string(),
+            label: actor.to_string(),
+        },
+    }
+}
+
+/// A person's actor string (email, else name — what the ticket and room rows
+/// store) as their users.id, or None for an agent or the judge.
+async fn actor_user_id(pg: &PgPool, actor: &str) -> Option<String> {
+    if actor.contains('@') {
+        sqlx::query_as::<_, (String,)>("select id::text from users where lower(email) = $1 limit 1")
+            .bind(actor.to_lowercase())
+            .fetch_optional(pg)
+            .await
+            .ok()
+            .flatten()
+            .map(|(id,)| id)
+    } else {
+        None
+    }
 }
 
 async fn notify_task_users(
@@ -339,17 +409,9 @@ async fn notify_task_users(
     // Self-exclusion by actor EMAIL: the actor id is an email for humans, a
     // model id for agents and `judge:<model>` for the platform, and only the
     // email names a row in users.
-    let self_id: Option<String> = if actor.contains('@') {
-        sqlx::query_as::<_, (String,)>("select id::text from users where lower(email) = $1 limit 1")
-            .bind(actor.to_lowercase())
-            .fetch_optional(&notify.pg)
-            .await
-            .ok()
-            .flatten()
-            .map(|(id,)| id)
-    } else {
-        None
-    };
+    let self_id = actor_user_id(&notify.pg, actor).await;
+    let who = task_actor(actor, self_id.as_deref());
+    let window = status_window_secs();
     let mut seen: HashSet<String> = HashSet::new();
     for user_id in user_ids {
         if !seen.insert(user_id.clone()) {
@@ -358,23 +420,57 @@ async fn notify_task_users(
         if Some(user_id.as_str()) == self_id.as_deref() {
             continue;
         }
+        let mut meta = NotifyMeta {
+            entity: Some(NotifyEntity::new(entity::TASK, n.task_id.as_str())),
+            actor: Some(who.clone()),
+            ..Default::default()
+        };
+        let mut body = n.body.clone();
+        if let Some(now) = &n.status_burst {
+            let key = group_key::task_status(&n.task_id);
+            // How many moves the open row already holds inside the window —
+            // the body's count. The row's own `count` is the writer's and
+            // exact; this read only words the line.
+            let held: i64 = sqlx::query_scalar(
+                "select count::bigint from notifications \
+                 where user_id = $1::uuid and group_key = $2 \
+                   and read_at is null and archived_at is null \
+                   and coalesce(updated_at, created_at) >= now() - $3::int * interval '1 second'",
+            )
+            .bind(user_id)
+            .bind(&key)
+            .bind(window as i32)
+            .fetch_optional(&notify.pg)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+            body = status_body(n.body.as_deref(), held + 1, now);
+            meta.group_key = Some(key);
+            meta.group_window_secs = Some(window);
+            meta.coalesce = Coalesce::Quiet;
+        }
         let input = NotificationInput {
             kind: &n.kind,
             title: &n.title,
-            body: n.body.as_deref(),
+            body: body.as_deref(),
             href: n.href.as_deref(),
         };
-        if let Err(e) = add_notification(notify, user_id, &input).await {
+        if let Err(e) = add_notification_with(notify, user_id, &input, &meta).await {
             tracing::error!("tasks: notification for {user_id} failed: {e}");
         }
     }
 }
 
+/// Who hears about a ticket's moves: its watchers, its assigned humans and
+/// its creator (SE-9) — each re-checked against the board at THIS moment, so
+/// someone removed from the board since stops hearing about it.
 async fn ticket_audience(
     pg: &PgPool,
     task_id: &str,
     board_id: &str,
     assignees: &[String],
+    created_by: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
     let mut audience: Vec<String> = resolve_watchers(pg, task_id, Some(board_id))
         .await?
@@ -386,7 +482,288 @@ async fn ticket_audience(
             audience.push(user_id);
         }
     }
+    if let Some(creator) = author_user_id(pg, created_by).await?
+        && board_role(pg, &creator, board_id).await?.is_some()
+    {
+        audience.push(creator);
+    }
     Ok(audience)
+}
+
+/// What an update owes people once its write has committed: the status move
+/// (watchers, assigned humans and the creator), the newly assigned, the
+/// workchain hand-off, and a decided review.
+struct UpdateNotices {
+    cur: Task,
+    next_status: String,
+    assignees: Vec<String>,
+    assignees_patched: bool,
+    archived_now: bool,
+    review_keys: Vec<String>,
+    actor: String,
+}
+
+/// Spawn everything `update_task` tells people, in one detached task — see
+/// the call site for why it must leave before the next await.
+fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
+    let deps = deps.clone();
+    tokio::spawn(async move {
+        let UpdateNotices {
+            cur,
+            next_status,
+            assignees,
+            assignees_patched,
+            archived_now,
+            review_keys,
+            actor,
+        } = n;
+        let id = cur.id.clone();
+        let href = format!("/boards/{}/{}", cur.board_id, id);
+        let newly: Vec<String> = if assignees_patched && assignees != cur.assignees {
+            human_assignee_ids(&assignees)
+                .into_iter()
+                .filter(|uid| !human_assignee_ids(&cur.assignees).contains(uid))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let moved = next_status != cur.status;
+        if moved {
+            // THE WORKCHAIN ENGINE. A status write is the one trigger the
+            // workchain handoff engine has (TALA-30): a step's ticket landing
+            // in a terminal column advances or pauses its chain. The chain
+            // re-derives from the DB inside the call, so a retried write
+            // re-derives the same answer and files nothing new, and a
+            // notification failure never costs the ticket write it rode in
+            // on. Human sign-off is the only trigger by construction: agents
+            // cannot land a terminal column (agent_safe_patch), so the chain
+            // advances only when a person moves the column. The successors it
+            // made ready are offered to work dispatch.
+            let chain = deps.clone();
+            let board_id = cur.board_id.clone();
+            let task_id = id.clone();
+            let status = next_status.clone();
+            tokio::spawn(async move {
+                match talaria_workchains::advance_workchains(
+                    &chain.pg,
+                    &chain.notify,
+                    &board_id,
+                    &task_id,
+                    &status,
+                )
+                .await
+                {
+                    Ok(ready) => dispatch_ready_steps(&chain, ready),
+                    Err(e) => tracing::error!("[workchains] advance on status write failed: {e}"),
+                }
+            });
+            // Watchers, assigned humans and the creator hear about status
+            // moves (never the actor), and `ticket_audience` re-reads board
+            // membership at this moment — the write-time checks are not
+            // enough, access changes after a watch is stored.
+            match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
+                Ok(mut audience) => {
+                    // ONE ACTION, ONE ROW. A person this same patch assigns is
+                    // told by the `task-assigned` row below; the promotion's
+                    // status move was a second row for the same click. They
+                    // leave this audience — every other watcher still hears
+                    // the move.
+                    audience.retain(|uid| !newly.contains(uid));
+                    let now = next_status.replacen('_', " ", 1);
+                    notify_task_users(
+                        &deps.notify,
+                        &audience,
+                        &actor,
+                        &TaskNotification {
+                            kind: "task-status".into(),
+                            title: format!(
+                                "{}: {now}",
+                                cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
+                            ),
+                            body: Some(cur.title.clone()),
+                            href: Some(href.clone()),
+                            task_id: id.clone(),
+                            status_burst: Some(now),
+                        },
+                    )
+                    .await;
+                }
+                Err(e) => tracing::error!("tasks: status audience read failed: {e}"),
+            }
+        }
+        // NEWLY added humans get an inbox nudge.
+        if !newly.is_empty() {
+            notify_task_users(
+                &deps.notify,
+                &newly,
+                &actor,
+                &TaskNotification {
+                    kind: "task-assigned".into(),
+                    title: format!("Assigned: {}", cur.title),
+                    body: cur.ticket_ref.clone(),
+                    href: Some(href.clone()),
+                    task_id: id.clone(),
+                    status_burst: None,
+                },
+            )
+            .await;
+        }
+        // Left review — moved out, or archived: the sign-off is decided, and
+        // every recipient's approval row for it reads (SE-10).
+        let was_review = review_keys.contains(&cur.status);
+        if was_review && ((moved && !review_keys.contains(&next_status)) || archived_now) {
+            resolve_review_approval(&deps.notify, &id);
+        }
+    });
+}
+
+/// The people among `ids` a body @mentions (the mention producers' token
+/// rules, `talaria_notify::mention_tokens`). One read, whatever the count.
+async fn mentioned_among(pg: &PgPool, ids: &[String], content: &str) -> HashSet<String> {
+    let tokens = talaria_notify::mention_tokens(content);
+    if tokens.is_empty() || ids.is_empty() {
+        return HashSet::new();
+    }
+    let rows: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("select id::text, name, email from users where id = any($1::uuid[])")
+            .bind(ids)
+            .fetch_all(pg)
+            .await
+            .unwrap_or_default();
+    rows.into_iter()
+        .filter(|(_, name, email)| {
+            talaria_notify::answers_to_tokens(name.as_deref(), email.as_deref(), &tokens)
+        })
+        .map(|(id, _, _)| id)
+        .collect()
+}
+
+/// What a comment row calls its author: a person's name, else the author
+/// string the room stored (an email, or an agent's label).
+async fn author_label(pg: &PgPool, author: &str, author_id: Option<&str>) -> String {
+    let Some(id) = author_id else {
+        return author.to_string();
+    };
+    sqlx::query_scalar::<_, Option<String>>("select name from users where id = $1::uuid")
+        .bind(id)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or_else(|| author.to_string())
+}
+
+/// A ticket left review (its sign-off is decided, either way): every
+/// recipient's `approval_pending` row for it reads at once, and each of their
+/// devices hears the read (SE-10). Detached; a failure is logged.
+fn resolve_review_approval(notify: &NotifyDeps, task_id: &str) {
+    let notify = notify.clone();
+    let entity = NotifyEntity::new(entity::APPROVAL, format!("ticket_review:{task_id}"));
+    tokio::spawn(async move {
+        if let Err(e) = talaria_notify::resolve_entity(&notify, &entity).await {
+            tracing::error!("tasks: resolving the review approval failed: {e}");
+        }
+    });
+}
+
+/// A comment landed on a ticket: tell the people taking part (SE-9) — its
+/// assigned humans, its creator, its watchers and everyone who commented
+/// before — minus the author, and minus anyone the comment @mentions (their
+/// `mention` row is the louder one). ONE open `task-comment` row per ticket
+/// per person (`group_key::task_comments`), re-alerting with the newest
+/// comment. Every recipient's board access is re-checked now (C24): someone
+/// removed from the board since gets nothing.
+pub async fn notify_comment_participants(
+    notify: &NotifyDeps,
+    meta: &talaria_ticket_chat::TicketMeta,
+    author: &str,
+    content: &str,
+) {
+    let pg = &notify.pg;
+    let Ok(Some(task)) = get_task(pg, &meta.task_id).await else {
+        return;
+    };
+    let author_id = author_user_id(pg, author).await.ok().flatten();
+    // Prior commenters: the room's human authors, by the author string the
+    // room stores (`coalesce(email, name, 'user')`).
+    let commenters: Vec<(String,)> = sqlx::query_as(
+        "select distinct u.id::text from channels c \
+         join channel_messages m on m.channel_id = c.id \
+         join users u on coalesce(u.email, u.name, 'user') = m.author \
+         where c.task_id = $1::uuid and m.author_type = 'user'",
+    )
+    .bind(&meta.task_id)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    let mut people: Vec<String> = match ticket_audience(
+        pg,
+        &meta.task_id,
+        &meta.board_id,
+        &task.assignees,
+        &task.created_by,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!("tasks: comment audience read failed: {e}");
+            return;
+        }
+    };
+    people.extend(commenters.into_iter().map(|(id,)| id));
+    // Whoever the comment @mentions is told by the mention producer; their
+    // mention row is the louder one, so they are left out here — asked with
+    // the mention producers' own token rules.
+    let mentioned = mentioned_among(pg, &people, content).await;
+    let mut seen: HashSet<String> = HashSet::new();
+    let title = format!(
+        "{} commented on {}",
+        author_label(pg, author, author_id.as_deref()).await,
+        meta.head
+            .ticket_ref
+            .clone()
+            .unwrap_or_else(|| task.title.clone())
+    );
+    let body = if content.chars().count() > 200 {
+        format!("{}…", content.chars().take(200).collect::<String>())
+    } else {
+        content.to_string()
+    };
+    let href = format!("/boards/{}/{}", meta.board_id, meta.task_id);
+    let input = NotificationInput {
+        kind: "task-comment",
+        title: &title,
+        body: Some(&body),
+        href: Some(&href),
+    };
+    let row_meta = NotifyMeta {
+        group_key: Some(group_key::task_comments(&meta.task_id)),
+        coalesce: Coalesce::Realert,
+        entity: Some(NotifyEntity::new(entity::TASK, meta.task_id.as_str())),
+        actor: Some(task_actor(author, author_id.as_deref())),
+        ..Default::default()
+    };
+    for user in people {
+        if !seen.insert(user.clone())
+            || Some(user.as_str()) == author_id.as_deref()
+            || mentioned.contains(&user)
+        {
+            continue;
+        }
+        match board_role(pg, &user, &meta.board_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::error!("tasks: comment access check failed: {e}");
+                continue;
+            }
+        }
+        if let Err(e) = add_notification_with(notify, &user, &input, &row_meta).await {
+            tracing::error!("tasks: task-comment row for {user} failed: {e}");
+        }
+    }
 }
 
 // ── Sub-task structure ───────────────────────────────────────────────────────
@@ -593,6 +970,8 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
                     title: format!("Assigned: {title_for_note}"),
                     body: ticket_ref,
                     href: Some(format!("/boards/{board_id}/{id_for_href}")),
+                    task_id: id_for_href.clone(),
+                    status_burst: None,
                 },
             )
             .await;
@@ -1170,6 +1549,26 @@ pub async fn update_task(
     .execute(pg)
     .await?;
 
+    // ── THE NOTIFY WORK GOES OUT NOW (C30) ──────────────────────────────────
+    // The write above has committed. Everything a person is told about it is
+    // spawned HERE, before this function's next await: a caller that hangs up
+    // after the commit (a direct-api agent with a short timeout) drops the
+    // future at its next await, and every notification that was still behind
+    // the activity-log writes went with it. Detached tasks are not the
+    // caller's to cancel.
+    spawn_update_notices(
+        deps,
+        UpdateNotices {
+            cur: cur.clone(),
+            next_status: next_status.clone(),
+            assignees: assignees.clone(),
+            assignees_patched: patch.assignees.is_some(),
+            archived_now: patch.archived == Some(true) && cur.archived_at.is_none(),
+            review_keys: meta.review_keys.clone(),
+            actor: who.id.clone(),
+        },
+    );
+
     if patch.archived.is_some() && patch.archived != Some(cur.archived_at.is_some()) {
         log_activity(
             pg,
@@ -1214,81 +1613,8 @@ pub async fn update_task(
             to: next_status.clone(),
             closed: meta.terminal(&next_status),
         });
-        // Watchers + assigned humans hear about status moves (never the
-        // actor), and `ticket_audience` re-reads board membership for both
-        // halves at this moment — see its doc for why the write-time checks
-        // are not enough. The audience read is awaited; the notification
-        // writes are detached.
-        let mut audience = ticket_audience(pg, id, &cur.board_id, &assignees).await?;
-        // ONE ACTION, ONE ROW. A person this same patch assigns is told by
-        // the `task-assigned` row below; the promotion's status move was a
-        // second row for the same click ("NP-2: assigned" and "Assigned: …").
-        // They leave this audience — every other watcher still hears the
-        // move.
-        if patch.assignees.is_some() {
-            let newly: Vec<String> = human_assignee_ids(&assignees)
-                .into_iter()
-                .filter(|uid| !human_assignee_ids(&cur.assignees).contains(uid))
-                .collect();
-            audience.retain(|uid| !newly.contains(uid));
-        }
-        {
-            let notify = deps.notify.clone();
-            let actor = who.id.clone();
-            let title = format!(
-                "{}: {}",
-                cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
-                next_status.replacen('_', " ", 1)
-            );
-            let body = cur.title.clone();
-            let href = format!("/boards/{}/{}", cur.board_id, id);
-            tokio::spawn(async move {
-                notify_task_users(
-                    &notify,
-                    &audience,
-                    &actor,
-                    &TaskNotification {
-                        kind: "task-status".into(),
-                        title,
-                        body: Some(body),
-                        href: Some(href),
-                    },
-                )
-                .await;
-            });
-        }
-        // ── THE WORKCHAIN ENGINE ─────────────────────────────────────────
-        // A status write is the one trigger the workchain handoff engine
-        // has (TALA-30): a step's ticket landing in a terminal column
-        // advances or pauses its chain. Detached like every other fan-out
-        // — the chain re-derives from the DB inside the call, so a retried
-        // write re-derives the same answer and files nothing new, and a
-        // notification failure never costs the ticket write it rode in on.
-        // Human sign-off is the only trigger by construction: agents
-        // cannot land a terminal column (agent_safe_patch above), so the
-        // chain advances only when a person moves the column. The
-        // successors it made ready are offered to work dispatch — the
-        // agent half of the hand-off (dispatch asks the chain order again).
-        {
-            let deps = deps.clone();
-            let board_id = cur.board_id.clone();
-            let task_id = id.to_string();
-            let status = next_status.clone();
-            tokio::spawn(async move {
-                match talaria_workchains::advance_workchains(
-                    &deps.pg,
-                    &deps.notify,
-                    &board_id,
-                    &task_id,
-                    &status,
-                )
-                .await
-                {
-                    Ok(ready) => dispatch_ready_steps(&deps, ready),
-                    Err(e) => tracing::error!("[workchains] advance on status write failed: {e}"),
-                }
-            });
-        }
+        // The watchers' notice and the workchain hand-off went out with the
+        // commit (`spawn_update_notices`).
     }
     // ── ONE push-side call ─────────────────────────────────────────────────
     // Two things mean "this is now someone's work": the ticket ENTERED a
@@ -1324,32 +1650,8 @@ pub async fn update_task(
             format!("assigned to {}", assignees.join(", "))
         };
         log_activity(pg, id, &who.id, "assigned", &what).await?;
-        // NEWLY added humans get an inbox nudge.
-        let added: Vec<String> = human_assignee_ids(&assignees)
-            .into_iter()
-            .filter(|uid| !human_assignee_ids(&cur.assignees).contains(uid))
-            .collect();
-        {
-            let notify = deps.notify.clone();
-            let actor = who.id.clone();
-            let title = format!("Assigned: {}", cur.title);
-            let body = cur.ticket_ref.clone();
-            let href = format!("/boards/{}/{}", cur.board_id, id);
-            tokio::spawn(async move {
-                notify_task_users(
-                    &notify,
-                    &added,
-                    &actor,
-                    &TaskNotification {
-                        kind: "task-assigned".into(),
-                        title,
-                        body,
-                        href: Some(href),
-                    },
-                )
-                .await;
-            });
-        }
+        // NEWLY added humans got their inbox nudge with the commit
+        // (`spawn_update_notices`).
     }
     if patch.priority.is_some() && patch.priority != Some(cur.priority.clone()) {
         log_activity(
@@ -1705,6 +2007,20 @@ pub async fn room_comment_fanout(
     );
     if content.trim().is_empty() {
         return;
+    }
+    // The people taking part hear about it — whichever door the comment came
+    // through. Detached, like the brain leg below.
+    {
+        let notify = NotifyDeps {
+            pg: pg.clone(),
+            realtime: realtime.clone(),
+        };
+        let meta = meta.clone();
+        let author = author.to_string();
+        let content = content.to_string();
+        tokio::spawn(async move {
+            notify_comment_participants(&notify, &meta, &author, &content).await;
+        });
     }
     let doc = comment_doc(&CommentSrc {
         id: message_id,
@@ -2308,9 +2624,20 @@ pub async fn complete_quality_review(
             }
         });
     }
+    // A rejection moved it out of review: the sign-off is decided.
+    if next_status != current.status && !meta.review_keys.iter().any(|k| k == next_status) {
+        resolve_review_approval(&deps.notify, task_id);
+    }
     // Same audience question as the status move in update_task, same one
     // answer.
-    let audience = ticket_audience(pg, task_id, &current.board_id, &current.assignees).await?;
+    let audience = ticket_audience(
+        pg,
+        task_id,
+        &current.board_id,
+        &current.assignees,
+        &current.created_by,
+    )
+    .await?;
     {
         let notify = deps.notify.clone();
         let actor = reviewer.to_string();
@@ -2324,6 +2651,8 @@ pub async fn complete_quality_review(
         );
         let body = current.title.clone();
         let href = format!("/boards/{}/{}", current.board_id, task_id);
+        let id = task_id.to_string();
+        let now = next_status.replacen('_', " ", 1);
         tokio::spawn(async move {
             notify_task_users(
                 &notify,
@@ -2334,6 +2663,8 @@ pub async fn complete_quality_review(
                     title,
                     body: Some(body),
                     href: Some(href),
+                    task_id: id,
+                    status_burst: Some(now),
                 },
             )
             .await;

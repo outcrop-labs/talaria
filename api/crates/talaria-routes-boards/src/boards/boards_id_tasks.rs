@@ -16,7 +16,7 @@ use talaria_body::{
     optional_string_array_member, optional_uuid_member, parse, string_member,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_mentions::{Mentionee, notify_mentions};
+use talaria_mentions::{MentionOpts, MentionSender, Mentionee, notify_mentions_with};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -287,6 +287,7 @@ pub async fn post(
         let content = raw_description.clone().unwrap_or_default();
         let where_ = task.ticket_ref.clone().unwrap_or_else(|| "a ticket".into());
         let task_id = task.id.clone();
+        let actor_model = actor.clone();
         tokio::spawn(async move {
             let Ok(members) = list_members(&pg, &board_id).await else {
                 return;
@@ -300,14 +301,25 @@ pub async fn post(
                 })
                 .collect();
             let href = format!("/boards/{board_id}/{task_id}");
-            let _ = notify_mentions(
+            let opts = MentionOpts {
+                entity: Some(talaria_notify::NotifyEntity::new(
+                    talaria_notify::entity::TASK,
+                    task_id.as_str(),
+                )),
+                ..Default::default()
+            };
+            notify_mentions_with(
                 &notify,
                 &members,
-                &sender_id,
-                &sender_label,
+                &MentionSender {
+                    user_id: &sender_id,
+                    label: &sender_label,
+                    agent_model: is_agent.then_some(actor_model.as_str()),
+                },
                 &content,
                 &where_,
                 &href,
+                &opts,
             )
             .await;
         });

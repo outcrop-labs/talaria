@@ -80,7 +80,10 @@ use std::collections::HashMap;
 use serde_json::Value;
 use sqlx::PgPool;
 use talaria_agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
+    add_notification_with, entity, group_key, resolve_entity,
+};
 use talaria_realtime::RealtimeDeps;
 use talaria_runs_define::{Authority, RunRow, RunState};
 use talaria_runs_run::{DefinitionForFn, NowFn, clamp_text};
@@ -1433,16 +1436,47 @@ struct Told {
     fact: usize,
 }
 
+/// How every row about one approval files — the first contact here, and the
+/// SLA's nag, escalation and stall report (talaria-digest): ONE open row per
+/// approval per person (`group_key::approval`), so a nag re-alerts the row
+/// the person already has instead of adding a second one; about the approval
+/// (`entity::APPROVAL`, its stable key), so a decision reads every
+/// recipient's row at once (`resolve_approval`, SE-10). Pure.
+pub fn approval_meta(key: &str) -> NotifyMeta {
+    NotifyMeta {
+        group_key: Some(group_key::approval(key)),
+        entity: Some(NotifyEntity::new(entity::APPROVAL, key)),
+        actor: Some(NotifyActor {
+            kind: ActorKind::System,
+            id: "approvals".into(),
+            label: "Approvals".into(),
+        }),
+        ..Default::default()
+    }
+}
+
+/// An approval was decided (or withdrawn): every recipient's row about it
+/// reads now, and each of their devices hears the read (`readIds`). The
+/// decision routes call it; the announce sweep is the floor for the ones that
+/// do not (a key it announced that the census no longer lists). Failures are
+/// logged.
+pub async fn resolve_approval(notify: &NotifyDeps, key: &str) {
+    if let Err(e) = resolve_entity(notify, &NotifyEntity::new(entity::APPROVAL, key)).await {
+        tracing::error!("{LOG} could not read the rows for decided {key}: {e}");
+    }
+}
+
 async fn announce(
     deps: &ApprovalDeps,
     approval: &PendingApproval,
     target: &AnnounceTarget,
 ) -> Told {
     let mut told = Told::default();
+    let meta = approval_meta(&approval.key);
     for user_id in dedup(target.to.clone()) {
         // A per-person failure is logged and skipped, never the whole
         // announcement's: one bad row must not silence the other recipients.
-        let written = add_notification(
+        let written = add_notification_with(
             &deps.notify,
             &user_id,
             &NotificationInput {
@@ -1454,10 +1488,11 @@ async fn announce(
                 )),
                 href: Some(&approval.href),
             },
+            &meta,
         )
         .await;
         match written {
-            Ok(()) => told.content += 1,
+            Ok(_) => told.content += 1,
             Err(e) => {
                 tracing::error!(
                     "{LOG} could not announce {} to {user_id}: {e}",
@@ -1474,7 +1509,7 @@ async fn announce(
         if target.to.contains(&user_id) {
             continue;
         }
-        let written = add_notification(
+        let written = add_notification_with(
             &deps.notify,
             &user_id,
             &NotificationInput {
@@ -1486,10 +1521,11 @@ async fn announce(
                 // act on is on a screen they can already find.
                 href: None,
             },
+            &meta,
         )
         .await;
         match written {
-            Ok(()) => told.fact += 1,
+            Ok(_) => told.fact += 1,
             Err(e) => {
                 tracing::error!(
                     "{LOG} could not tell {user_id} that {} exists: {e}",
@@ -1690,6 +1726,14 @@ pub async fn sweep_unannounced(
                 return result;
             }
         }
+        // THE FLOOR UNDER SE-10. A key this module announced that the
+        // complete census no longer lists was decided (or withdrawn) — by a
+        // route that resolved it at once, or by one that does not know to.
+        // Either way its rows read now, for every recipient; a second resolve
+        // of an already-read approval reads nothing.
+        for key in already.keys().filter(|k| !live.contains(k)) {
+            resolve_approval(&deps.notify, key).await;
+        }
         if let Err(e) = prune_announced(pg, &live, &now).await {
             tracing::error!("{LOG} could not prune the announce marks: {e}");
         }
@@ -1702,6 +1746,24 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use talaria_runs_define::RunDecision;
+
+    // One row per approval per person, about the approval: the first contact
+    // and every SLA stage share the key, so a nag re-alerts the same row.
+    #[test]
+    fn every_row_about_an_approval_shares_its_key() {
+        let m = approval_meta("board_access:b-1:dex");
+        assert_eq!(
+            m.group_key.as_deref(),
+            Some("approval:board_access:b-1:dex")
+        );
+        assert_eq!(
+            m.entity,
+            Some(NotifyEntity::new("approval", "board_access:b-1:dex"))
+        );
+        assert_eq!(m.coalesce, talaria_notify::Coalesce::Realert);
+        assert!(!m.quiet && !m.adopt_legacy && m.group_window_secs.is_none());
+        assert_eq!(m.actor.unwrap().kind, ActorKind::System);
+    }
 
     fn approval(kind: ApprovalKind, authority: Authority) -> PendingApproval {
         PendingApproval {

@@ -18,7 +18,9 @@ use talaria_body::{
     array_msg, array_too_big_msg, enum_member, object_msg, optional_uuid_array_member,
     optional_uuid_member, string_member, uuid_member, zod_type_name,
 };
-use talaria_channel_replies::{notify_dm_message, notify_user_mentions, trigger_agent_replies};
+use talaria_channel_replies::{
+    ChannelPost, MentionSender, notify_channel_post, trigger_agent_replies,
+};
 use talaria_channels::{
     ChannelIntent, agent_may_access_channel, channel_role, get_channel_message,
     insert_channel_message, inserted_wire, list_channel_messages, list_thread_messages,
@@ -301,78 +303,95 @@ pub async fn post(
         thread_root_id = Some(root.thread_root_id.unwrap_or(root.id));
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
-    let msg = match insert_channel_message(
-        &notify,
-        &id,
-        "agent",
-        &name,
-        &body.content,
-        "complete",
-        &json!([]),
-        thread_root_id.as_deref(),
-    )
-    .await
-    {
-        Ok(m) => m,
-        Err(e) => return Ok(internal("[channels] agent post insert failed", e)),
-    };
-    let nm = channel_name(&state.pg, &id)
-        .await
-        .unwrap_or_else(|| "channel".into());
-    // `msg.content`, NOT `body.content`: the insert runs an agent's post
-    // through the agent-writes door (guard_agent_write), which in strict
-    // mode returns the REDACTED body — the row in `channel_messages` is
-    // clean, and `body.content` is the raw one.
-    //
-    // The index is the half that matters. Retrieval is read back INTO model
-    // contexts, so an unredacted copy there is not merely a second place the
-    // credential is stored: it is the credential re-entering a model's
-    // context by the one route guardrails exists to close, arriving as
-    // ambient "activity" long after the turn that leaked it. The
-    // notification is the same text landing in a human's inbox, unredacted,
-    // beside a message that is not.
-    //
-    // In a task room the post is a COMMENT — the fan-out carries
-    // `msg.content` (the redacted body) into the board-scoped comment point
-    // and the board's edges, never a channelId-payload channel doc.
-    if let Some(meta) = talaria_ticket_chat::ticket_for_room(&state.pg, &id).await {
-        let pg = state.pg.clone();
-        let realtime = notify.realtime.clone();
-        let mid = msg.id.clone();
-        let author = describe_agent(&name).label;
+    // THE POST AND WHAT IT OWES PEOPLE RUN WHERE THE CALLER CANNOT CANCEL
+    // THEM (C30, C34): a direct-api agent with a short timeout hangs up after
+    // the insert commits, and its handler future is dropped at the next await
+    // — taking the mention fan-out still queued behind it. A spawned task is
+    // not the caller's to drop: the handler waits on it, and if it is gone
+    // the task finishes anyway.
+    let pg = state.pg.clone();
+    let landed = tokio::spawn(async move {
+        let msg = insert_channel_message(
+            &notify,
+            &id,
+            "agent",
+            &name,
+            &body.content,
+            "complete",
+            &json!([]),
+            thread_root_id.as_deref(),
+        )
+        .await?;
+        let nm = channel_name(&pg, &id)
+            .await
+            .unwrap_or_else(|| "channel".into());
+        // `msg.content`, NOT `body.content`: the insert runs an agent's post
+        // through the agent-writes door (guard_agent_write), which in strict
+        // mode returns the REDACTED body — the row in `channel_messages` is
+        // clean, and `body.content` is the raw one.
+        //
+        // The index is the half that matters. Retrieval is read back INTO
+        // model contexts, so an unredacted copy there is not merely a second
+        // place the credential is stored: it is the credential re-entering a
+        // model's context by the one route guardrails exists to close,
+        // arriving as ambient "activity" long after the turn that leaked it.
+        // The notification is the same text landing in a human's inbox,
+        // unredacted, beside a message that is not.
+        //
+        // In a task room the post is a COMMENT — the fan-out carries
+        // `msg.content` (the redacted body) into the board-scoped comment
+        // point and the board's edges, never a channelId-payload channel doc.
+        if let Some(meta) = talaria_ticket_chat::ticket_for_room(&pg, &id).await {
+            let pg = pg.clone();
+            let realtime = notify.realtime.clone();
+            let mid = msg.id.clone();
+            let author = describe_agent(&name).label;
+            let content = msg.content.clone();
+            tokio::spawn(async move {
+                talaria_tasks::room_comment_fanout(&pg, &realtime, &meta, &mid, &author, &content)
+                    .await;
+            });
+        } else {
+            index_channel_activity(
+                pg.clone(),
+                &id,
+                &msg.id,
+                &format!("#{nm} · {name}"),
+                &msg.content,
+            );
+        }
+        // An agent's post notifies exactly like a human's would — its
+        // @mentions, the thread it replies in, the channel's `all` level. An
+        // empty sender id is how the mention engine knows the sender is not
+        // a person — that is what puts the agent-originated cap on these
+        // rows.
+        let post_deps = notify.clone();
         let content = msg.content.clone();
         tokio::spawn(async move {
-            talaria_tasks::room_comment_fanout(&pg, &realtime, &meta, &mid, &author, &content)
-                .await;
+            let label = describe_agent(&name).label;
+            notify_channel_post(
+                &post_deps,
+                &ChannelPost {
+                    channel_id: &id,
+                    channel_name: &nm,
+                    sender: MentionSender {
+                        user_id: "",
+                        label: &label,
+                        agent_model: Some(&name),
+                    },
+                    content: &content,
+                    thread_root_id: thread_root_id.as_deref(),
+                },
+            )
+            .await;
         });
-    } else {
-        index_channel_activity(
-            state.pg.clone(),
-            &id,
-            &msg.id,
-            &format!("#{nm} · {name}"),
-            &msg.content,
-        );
-    }
-    // An agent @mentioning a human notifies exactly like a human would.
-    // An empty sender id is how the mention engine knows the sender is not
-    // a person — that is what puts the agent-originated cap on these rows.
-    let mention_deps = notify.clone();
-    let mention_name = name.clone();
-    let mention_content = msg.content.clone();
-    let mention_channel = nm.clone();
-    let channel_id = id.clone();
-    tokio::spawn(async move {
-        notify_user_mentions(
-            &mention_deps,
-            &channel_id,
-            &mention_channel,
-            "",
-            &describe_agent(&mention_name).label,
-            &mention_content,
-        )
-        .await;
+        Ok::<_, sqlx::Error>(msg)
     });
+    let msg = match landed.await {
+        Ok(Ok(m)) => m,
+        Ok(Err(e)) => return Ok(internal("[channels] agent post insert failed", e)),
+        Err(e) => return Ok(internal("[channels] agent post failed", e)),
+    };
     Ok(
         // The insert's own RETURNING shape — no guard/editedAt keys (absent, not
         // null; decoration hasn't run).
@@ -443,137 +462,126 @@ async fn post_as_user(
     // takes the vec.
     let trigger_attachments = attachments.len();
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
-    let message = match insert_channel_message(
-        &notify,
-        id,
-        "user",
-        &author,
-        &body.content,
-        "complete",
-        &Value::Array(attachments),
-        thread_root_id.as_deref(),
-    )
-    .await
-    {
-        Ok(m) => m,
-        Err(e) => return Ok(internal("[channels] post insert failed", e)),
-    };
-
-    // Agent replies + mention notifications run detached; the POST returns
-    // at once.
-    let channel_name = channel_name(&state.pg, id)
-        .await
-        .unwrap_or_else(|| "channel".into());
-    // A task-room message is a COMMENT, not ambient channel chatter: it
-    // indexes board-scoped with the ticket's href (a channel doc's
-    // channelId-only payload would escape the board filter and point at a
-    // rail the room never lists in), and the board is owed the comment
-    // edges — activity line, badge event. Rail channels keep the channel
-    // doc.
-    if !body.content.trim().is_empty() {
-        let room = talaria_ticket_chat::ticket_for_room(&state.pg, id).await;
-        match room {
-            Some(meta) => {
-                let pg = state.pg.clone();
-                let realtime = notify.realtime.clone();
-                let mid = message.id.clone();
-                let room_author = author.clone();
-                let room_content = body.content.clone();
-                tokio::spawn(async move {
-                    talaria_tasks::room_comment_fanout(
-                        &pg,
-                        &realtime,
-                        &meta,
-                        &mid,
-                        &room_author,
-                        &room_content,
-                    )
-                    .await;
-                });
-            }
-            None => {
-                // Index into the ambient activity brain (retrieval on
-                // demand later).
-                index_channel_activity(
-                    state.pg.clone(),
-                    id,
-                    &message.id,
-                    &format!("#{channel_name} · {author}"),
-                    &body.content,
-                );
+    let sb = state.secretbox().await.unwrap_or_default();
+    // THE POST AND WHAT IT OWES PEOPLE RUN WHERE THE CALLER CANNOT CANCEL
+    // THEM (C30, C34). A handler future is dropped when its caller hangs up,
+    // at whatever await it had reached; the notify work used to sit behind
+    // three post-commit reads (the channel's name, its room, its kind), so a
+    // caller that hung up after the insert committed silenced the DM and
+    // every @mention. A spawned task is not the caller's to drop: the handler
+    // waits on it, and if it is gone the task finishes anyway.
+    let state = state.clone();
+    let id = id.to_string();
+    let landed = tokio::spawn(async move {
+        let message = insert_channel_message(
+            &notify,
+            &id,
+            "user",
+            &author,
+            &body.content,
+            "complete",
+            &Value::Array(attachments),
+            thread_root_id.as_deref(),
+        )
+        .await?;
+        let channel_name = channel_name(&state.pg, &id)
+            .await
+            .unwrap_or_else(|| "channel".into());
+        let sender_label = user.name.clone().unwrap_or_else(|| author.clone());
+        // Who is told, and how loudly: the DM row, @mentions, the thread's
+        // people, the channel's `all` level — one detached fan-out, each
+        // person's level and mute obeyed (talaria-channel-replies).
+        if !body.content.trim().is_empty() || thread_root_id.is_some() {
+            let post_deps = notify.clone();
+            let channel_id = id.clone();
+            let name = channel_name.clone();
+            let sender_id = user.id.clone();
+            let label = sender_label.clone();
+            let content = body.content.clone();
+            let root = thread_root_id.clone();
+            tokio::spawn(async move {
+                notify_channel_post(
+                    &post_deps,
+                    &ChannelPost {
+                        channel_id: &channel_id,
+                        channel_name: &name,
+                        sender: MentionSender::of(&sender_id, &label),
+                        content: &content,
+                        thread_root_id: root.as_deref(),
+                    },
+                )
+                .await;
+            });
+        }
+        // A task-room message is a COMMENT, not ambient channel chatter: it
+        // indexes board-scoped with the ticket's href (a channel doc's
+        // channelId-only payload would escape the board filter and point at
+        // a rail the room never lists in), and the board is owed the comment
+        // edges — activity line, badge event, the people taking part. Rail
+        // channels keep the channel doc.
+        if !body.content.trim().is_empty() {
+            let room = talaria_ticket_chat::ticket_for_room(&state.pg, &id).await;
+            match room {
+                Some(meta) => {
+                    let pg = state.pg.clone();
+                    let realtime = notify.realtime.clone();
+                    let mid = message.id.clone();
+                    let room_author = author.clone();
+                    let room_content = body.content.clone();
+                    tokio::spawn(async move {
+                        talaria_tasks::room_comment_fanout(
+                            &pg,
+                            &realtime,
+                            &meta,
+                            &mid,
+                            &room_author,
+                            &room_content,
+                        )
+                        .await;
+                    });
+                }
+                None => {
+                    // Index into the ambient activity brain (retrieval on
+                    // demand later).
+                    index_channel_activity(
+                        state.pg.clone(),
+                        &id,
+                        &message.id,
+                        &format!("#{channel_name} · {author}"),
+                        &body.content,
+                    );
+                }
             }
         }
-    }
-    let sb = state.secretbox().await.unwrap_or_default();
-    let trigger_state = state.clone();
-    let trigger_deps = notify.clone();
-    let trigger_content = body.content.clone();
-    let trigger_seq = message.seq;
-    let trigger_root = thread_root_id.clone();
-    let trigger_name = channel_name.clone();
-    let trigger_id = id.to_string();
-    let trigger_sender = talaria_sender_identity::SenderIdentity {
-        id: user.id.clone(),
-        name: user.name.clone(),
-        email: user.email.clone(),
-    };
-    tokio::spawn(async move {
-        trigger_agent_replies(
-            &trigger_state,
-            &trigger_deps,
-            &sb,
-            &trigger_id,
-            &trigger_name,
-            &trigger_content,
-            trigger_attachments,
-            trigger_seq,
-            trigger_root.as_deref(),
-            Some(trigger_sender),
-        )
-        .await;
-    });
-    // A DM message notifies the peer outright (deduped while unread);
-    // channel/relay messages notify only on @mention.
-    let kind: Option<(String,)> =
-        match sqlx::query_as("select kind from channels where id = $1::uuid")
-            .bind(id)
-            .fetch_optional(&state.pg)
-            .await
-        {
-            Ok(r) => r,
-            // A failure here 500s the route after the insert and the
-            // detached triggers have already fired — the write stands.
-            Err(e) => return Ok(internal("[channels] kind read failed", e)),
+        let trigger_deps = notify.clone();
+        let trigger_seq = message.seq;
+        let trigger_sender = talaria_sender_identity::SenderIdentity {
+            id: user.id.clone(),
+            name: user.name.clone(),
+            email: user.email.clone(),
         };
-    let sender_label = user.name.clone().unwrap_or_else(|| author.clone());
-    if kind.as_ref().map(|(k,)| k.as_str()) == Some("dm") {
-        let dm_deps = notify.clone();
-        let dm_id = id.to_string();
-        let dm_content = body.content.clone();
-        let dm_sender = user.id.clone();
-        let dm_label = sender_label.clone();
         tokio::spawn(async move {
-            notify_dm_message(&dm_deps, &dm_id, &dm_sender, &dm_label, &dm_content).await;
-        });
-    } else {
-        let mention_deps = notify;
-        let mention_id = id.to_string();
-        let mention_content = body.content.clone();
-        let mention_sender = user.id.clone();
-        let mention_label = sender_label;
-        let mention_channel = channel_name.clone();
-        tokio::spawn(async move {
-            notify_user_mentions(
-                &mention_deps,
-                &mention_id,
-                &mention_channel,
-                &mention_sender,
-                &mention_label,
-                &mention_content,
+            trigger_agent_replies(
+                &state,
+                &trigger_deps,
+                &sb,
+                &id,
+                &channel_name,
+                &body.content,
+                trigger_attachments,
+                trigger_seq,
+                thread_root_id.as_deref(),
+                Some(trigger_sender),
             )
             .await;
         });
-    }
+        Ok::<_, sqlx::Error>(message)
+    });
+    let message = match landed.await {
+        Ok(Ok(m)) => m,
+        Ok(Err(e)) => return Ok(internal("[channels] post insert failed", e)),
+        Err(e) => return Ok(internal("[channels] post failed", e)),
+    };
     Ok(Json(json!({ "message": inserted_wire(&message) })).into_response())
 }
 

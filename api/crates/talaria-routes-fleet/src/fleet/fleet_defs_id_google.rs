@@ -26,7 +26,9 @@ use talaria_api_facades::google::oauth::{
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, parse};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyMeta, add_notification_with,
+};
 use talaria_session::{
     actor_of, random_token, require_agent_manager, require_agent_reader, state_cookie_for,
 };
@@ -170,7 +172,7 @@ pub async fn put(
             "{by} pointed the agent {display_name} ({model}) at your Google account. It reads your mail, calendar and Drive through the account you connected, and its outbound drafts wait for your approval. If that is not what you want, ask an admin to change the agent's Google principal, or disconnect Google in Settings → Connected accounts."
         );
         let deps = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
-        if let Err(e) = add_notification(
+        if let Err(e) = add_notification_with(
             &deps,
             uid,
             &NotificationInput {
@@ -178,6 +180,15 @@ pub async fn put(
                 title: &title,
                 body: Some(&body),
                 href: Some("/settings/connections"),
+            },
+            // From the person who pointed the agent at their account.
+            &NotifyMeta {
+                actor: Some(NotifyActor {
+                    kind: ActorKind::User,
+                    id: user.id.clone(),
+                    label: by.clone(),
+                }),
+                ..Default::default()
             },
         )
         .await

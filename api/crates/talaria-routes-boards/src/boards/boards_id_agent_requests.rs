@@ -29,12 +29,14 @@ use serde_json::json;
 use talaria_agent_auth::now_ms as wall_ms;
 use talaria_agent_auth::{AgentSubject, agent_caller, epoch_ms_to_iso, refuse_legacy};
 use talaria_api_facades::runs::define::run_definition;
-use talaria_approvals::{ApprovalDeps, announce_approval};
+use talaria_approvals::{ApprovalDeps, announce_approval, resolve_approval};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_boards::{add_board_agent_row, board_info, board_role, can_edit};
 use talaria_body::{as_object, enum_member, optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyMeta, add_notification_with,
+};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::{acting_user, require_user, unauthorized};
 use talaria_state::AppState;
@@ -467,6 +469,16 @@ pub async fn put(
     if let Err(e) = tx.commit().await {
         return Ok(internal("[boards] agent request decide commit failed", e));
     }
+    // DECIDED: every editor's announcement of this request reads now, on
+    // each of their devices (SE-10) — spawned before the next await, so a
+    // caller that hangs up cannot take it with them.
+    {
+        let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+        let key = announce_key(&id, &agent_model);
+        tokio::spawn(async move {
+            resolve_approval(&notify, &key).await;
+        });
+    }
     let label = board_info(&state.pg, &id).await.ok().map(|i| i.label);
     log_audit(
         &state.pg,
@@ -508,7 +520,7 @@ pub async fn put(
                 ),
             )
         };
-        if let Err(e) = add_notification(
+        if let Err(e) = add_notification_with(
             &notify,
             requested_by,
             &NotificationInput {
@@ -518,6 +530,14 @@ pub async fn put(
                 // No href: the recipient cannot open this board — the
                 // notification is the outcome, not a door.
                 href: None,
+            },
+            &NotifyMeta {
+                actor: Some(NotifyActor {
+                    kind: ActorKind::User,
+                    id: user.id.clone(),
+                    label: user.label.clone(),
+                }),
+                ..Default::default()
             },
         )
         .await

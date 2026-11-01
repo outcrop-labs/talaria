@@ -18,7 +18,10 @@ use serde_json::json;
 use talaria_api_facades::kb::perms::{EditorGrant, list_editors, set_editors};
 use talaria_body::{email_member, parse, uuid_member};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::{NotificationInput, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyEntity, NotifyMeta, add_notification_with,
+    entity,
+};
 use talaria_research::{
     add_research_member, list_research_members, list_research_teams, remove_research_member,
     research_artifact_for, research_role,
@@ -193,7 +196,7 @@ pub async fn post(
     // The notification is fire-and-forget — a failure here is logged and
     // the share still happened.
     let notify = talaria_notify::NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
-    if let Err(e) = add_notification(
+    if let Err(e) = add_notification_with(
         &notify,
         &invited_id,
         &NotificationInput {
@@ -207,6 +210,15 @@ pub async fn post(
             ),
             body: Some(question.map(|(q,)| q).as_deref().unwrap_or("")),
             href: Some(&format!("/research/{id}")),
+        },
+        &NotifyMeta {
+            entity: Some(NotifyEntity::new(entity::RESEARCH_RUN, id.as_str())),
+            actor: Some(NotifyActor {
+                kind: ActorKind::User,
+                id: user.id.clone(),
+                label: user.name.clone().or(user.email.clone()).unwrap_or_default(),
+            }),
+            ..Default::default()
         },
     )
     .await

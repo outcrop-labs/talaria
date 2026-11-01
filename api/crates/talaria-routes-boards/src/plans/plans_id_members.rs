@@ -19,7 +19,10 @@ use talaria_conversations::{
     shared_conversation_role,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
+    add_notification_with, entity,
+};
 use talaria_params::uuid_gate;
 use talaria_plan_doc::plan_doc_for;
 use talaria_session::require_user;
@@ -178,7 +181,12 @@ pub async fn post(
         .clone()
         .or(user.email)
         .unwrap_or_else(|| "Someone".into());
-    let _ = add_notification(
+    let actor = NotifyActor {
+        kind: ActorKind::User,
+        id: user.id.clone(),
+        label: who.clone(),
+    };
+    let _ = add_notification_with(
         &notify,
         &invited_id,
         &NotificationInput {
@@ -189,6 +197,11 @@ pub async fn post(
                 .as_deref()
                 .or(Some("Untitled plan")),
             href: Some(&format!("/plan/{id}")),
+        },
+        &NotifyMeta {
+            entity: Some(NotifyEntity::new(entity::PLAN, id.as_str())),
+            actor: Some(actor),
+            ..Default::default()
         },
     )
     .await;
