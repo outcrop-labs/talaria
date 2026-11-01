@@ -955,10 +955,11 @@ fn number_of(v: Option<&Value>) -> i64 {
 }
 
 async fn undo_decision(
-    pg: &PgPool,
+    state: &AppState,
     user: &SessionUser,
     decision_id: &str,
 ) -> Result<Value, sqlx::Error> {
+    let pg = &state.pg;
     // `outcome` is nullable on disk — every completed row today carries one,
     // but a future writer that completes without deciding must cost this
     // person an empty restore, not the whole undo read.
@@ -1006,6 +1007,12 @@ async fn undo_decision(
         )
         .await?;
         restored = !reopened.is_empty();
+        // The row is unread again: the person's bells go back up (I-16 —
+        // the counts, since nothing was read).
+        if restored {
+            let deps = NotifyDeps::publishing(pg.clone(), state.redis().await.ok());
+            talaria_notify::publish_unread(&deps, &user.id).await;
+        }
     } else if source_type == "channel" {
         let before = number_of(outcome.get("beforeCursor")).max(0);
         let after = number_of(outcome.get("afterCursor")).max(0);
@@ -1698,6 +1705,16 @@ async fn execute_action_arms(
             "beforeReadAt": null,
             "afterReadAt": talaria_agent_auth::epoch_ms_to_iso(after),
         });
+        // READ-SYNC (I-16): the Home Inbox's read drops the person's bells
+        // in every tab and closes the banners for this row.
+        let deps = NotifyDeps::publishing(pg.clone(), state.redis().await.ok());
+        talaria_notify::publish_read(
+            &deps,
+            &user.id,
+            std::slice::from_ref(&item.source_id),
+            false,
+        )
+        .await;
     } else if item.source_type == "channel" && action_id == "mark_read" {
         let cursors: Option<(i32, i32)> = sqlx::query_as(
             "select member.last_read_seq, c.msg_seq \
@@ -2067,7 +2084,7 @@ pub async fn run_focus_action(
         return Ok(cancel_decision(pg, user, cancel).await?);
     }
     if let Some(undo) = input.undo_decision_id.as_deref() {
-        return Ok(undo_decision(pg, user, undo).await?);
+        return Ok(undo_decision(state, user, undo).await?);
     }
     let (Some(key), Some(action_id)) = (input.key.as_deref(), input.action_id.as_deref()) else {
         return Ok(
