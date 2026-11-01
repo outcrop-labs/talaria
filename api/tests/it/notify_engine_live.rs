@@ -824,6 +824,68 @@ async fn engine(pg: &PgPool) {
     for id in &four {
         assert!(row(&pg, id).await.emailed.is_some());
     }
+    // A conversation already mailed and still unread is armed again by its
+    // next message — a refresh in place, or a Realert coalesce — at the
+    // person's frequency; the next batch carries its newest content. A mail
+    // already pending stands.
+    let refreshed = talaria_api::notify::refresh_notification(
+        &deps(&pg),
+        &four[0],
+        &bob,
+        &NotificationInput {
+            kind: "dm",
+            title: "dm 0, a newer message",
+            body: Some("the newest line"),
+            href: Some("/boards/b/t"),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(refreshed);
+    let r = row(&pg, &four[0]).await;
+    assert_eq!((r.emailed, r.attempts), (None, 0), "re-armed: {r:?}");
+    assert!(
+        (r.email_due.unwrap() - r.now - 15 * 60_000).abs() < 60_000,
+        "at the frequency: {r:?}"
+    );
+    let grouped = NotifyMeta {
+        group_key: Some(group_key::dm("engine-mail-regroup")),
+        coalesce: Coalesce::Realert,
+        ..Default::default()
+    };
+    let g1 = file(&pg, &bob, "dm", "grouped one", &grouped).await;
+    due_now(&pg, std::slice::from_ref(&g1)).await;
+    talaria_api::notify::run_missed_mail(&md).await.unwrap();
+    let after_first = mail.mails_to(&bob);
+    assert_eq!(
+        after_first.len(),
+        2,
+        "the grouped row and the refreshed one"
+    );
+    assert!(after_first[1].ids.contains(&g1) && after_first[1].ids.contains(&four[0]));
+    assert!(after_first[1].text.contains("dm 0, a newer message"));
+    let g2 = file(&pg, &bob, "dm", "grouped two", &grouped).await;
+    assert_eq!(g1, g2);
+    let r = row(&pg, &g1).await;
+    assert_eq!(r.emailed, None, "a Realert re-arms a mailed row: {r:?}");
+    let pending = r.email_due;
+    let g3 = file(&pg, &bob, "dm", "grouped three", &grouped).await;
+    assert_eq!(
+        row(&pg, &g3).await.email_due,
+        pending,
+        "a pending mail stands"
+    );
+    due_now(&pg, std::slice::from_ref(&g1)).await;
+    talaria_api::notify::run_missed_mail(&md).await.unwrap();
+    let mails = mail.mails_to(&bob);
+    assert_eq!(mails.len(), 3);
+    assert_eq!(mails[2].ids, [g1.clone()]);
+    assert!(mails[2].text.contains("grouped three"));
+    sqlx::query("update notifications set read_at = now() where id = any($1::uuid[])")
+        .bind([g1.clone(), four[0].clone()])
+        .execute(&pg)
+        .await
+        .unwrap();
     // One read before due → three.
     let mut more = Vec::new();
     for i in 0..4 {
@@ -838,8 +900,8 @@ async fn engine(pg: &PgPool) {
     due_now(&pg, &more).await;
     talaria_api::notify::run_missed_mail(&md).await.unwrap();
     let mails = mail.mails_to(&bob);
-    assert_eq!(mails.len(), 2);
-    assert_eq!(mails[1].ids.len(), 3, "a row read first is never mailed");
+    assert_eq!(mails.len(), 4);
+    assert_eq!(mails[3].ids.len(), 3, "a row read first is never mailed");
     assert_eq!(row(&pg, &more[0]).await.emailed, None);
     // All read → no mail.
     let mut read_all = Vec::new();
@@ -853,7 +915,7 @@ async fn engine(pg: &PgPool) {
         .unwrap();
     due_now(&pg, &read_all).await;
     talaria_api::notify::run_missed_mail(&md).await.unwrap();
-    assert_eq!(mail.mails_to(&bob).len(), 2, "every row read → no mail");
+    assert_eq!(mail.mails_to(&bob).len(), 4, "every row read → no mail");
     // A transport failure: attempts 1, 2, then given up.
     mail.answer(GatedSendResult {
         ok: false,
@@ -877,7 +939,7 @@ async fn engine(pg: &PgPool) {
             assert_eq!(pass.gave_up, 1);
         }
     }
-    assert_eq!(mail.mails_to(&bob).len(), 5);
+    assert_eq!(mail.mails_to(&bob).len(), 7);
     // The switch refused mid-pass (blocked) → discarded, nothing retried.
     mail.answer(GatedSendResult {
         ok: false,
@@ -949,6 +1011,18 @@ async fn engine(pg: &PgPool) {
     .fetch_all(&pg)
     .await
     .unwrap();
+    // An unread group row born 181 days ago that a Quiet coalesce updated
+    // yesterday: its age is its last activity, so it stays.
+    let quiet_group: String = sqlx::query_scalar(
+        "insert into notifications (user_id, kind, title, created_at, updated_at, group_key, count) \
+         values ($1::uuid, 'channel-message', 'unread group, active yesterday', \
+                 now() - interval '181 days', now() - interval '1 day', 'engine-live:quiet-group', 40) \
+         returning id::text",
+    )
+    .bind(&bob)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
     for id in &aged {
         sqlx::query(
             "insert into inbox_focus_state (user_id, source_type, source_id, snoozed_until) \
@@ -970,6 +1044,13 @@ async fn engine(pg: &PgPool) {
     .await
     .unwrap();
     assert_eq!(left, ["read 30 d", "unread 100 d"]);
+    let kept_group: i64 =
+        sqlx::query_scalar("select count(*) from notifications where id = $1::uuid")
+            .bind(&quiet_group)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert_eq!(kept_group, 1, "an unread row's age is its last activity");
     let focus: Vec<String> = sqlx::query_scalar(
         "select source_id from inbox_focus_state where user_id = $1::uuid and source_type = 'notification' \
          and source_id = any($2) order by source_id",
