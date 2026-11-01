@@ -865,8 +865,8 @@ async fn an_approval_is_one_row_per_person_read_by_the_decision_and_realerted_by
     // test's backlog may take a few passes to clear before this one is
     // reached.
     let config = talaria_digest::digest_config(&state.pg).await;
-    let later = now
-        + ((config.nag_after_minutes + config.escalate_after_minutes) / 2.0 * 60_000.0) as i64;
+    let later =
+        now + ((config.nag_after_minutes + config.escalate_after_minutes) / 2.0 * 60_000.0) as i64;
     let mut nagged = Vec::new();
     for _ in 0..20 {
         talaria_digest::run_approval_escalation(&deps, later)
