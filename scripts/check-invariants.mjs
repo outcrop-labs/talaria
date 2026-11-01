@@ -2959,7 +2959,7 @@ const UNSET_SEAM_CENSUS = [
       })
     }
     // TS half: no second hand-kept class list.
-    const CLASS_LIST_ALLOWED = ['ui/src/lib/notify-classes.ts'] // W2-C retires it, and this line
+    const CLASS_LIST_ALLOWED = [] // empty since W2-C retired notify-classes.ts's list; keep it empty
     const lists = []
     const counts = new Map()
     for (const [path, src] of sources) {
