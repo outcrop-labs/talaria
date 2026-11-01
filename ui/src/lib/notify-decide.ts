@@ -15,8 +15,10 @@
 //      (shown, focused, touched in the        read: the person is reading
 //      last 60 s) at the row's own page       the thing it is about (EB-13).
 //                                             A hidden tab never qualifies (C8)
-//   5. THIS tab is focused and visible     → the in-app toast, here; it tells
-//                                           the others it has it (`claimed`)
+//   5. THIS tab is focused and visible,    → the in-app toast, here; it tells
+//      and the person is looking at it        the others it has it (`claimed`)
+//      (touched in the last 60 s) or no
+//      other device wins presence (rule 7)
 //   6. ANOTHER fresh tab of this browser   → nothing here: that tab toasts
 //      is focused+visible
 //   7. CROSS-DEVICE: the presence winner   → nothing: the person is on that
@@ -159,7 +161,11 @@ export function decide(i: DecideInput): Decision {
   if (i.alert === 'feed') return 'none'
   if (i.dnd?.active && !i.breaksThrough) return 'none'
   if (i.atRowPath && selfLooking(i.self, i.now)) return 'seen'
-  if (i.self.visible && i.self.focused) return 'toast'
+  // A focused tab nobody has touched for a minute, while the person is on
+  // another device, is not where they are: rule 7 keeps it quiet, so that
+  // device alerts alone (the wave-2 integration run: an idle browser tab
+  // toasted the DM the active desktop bannered).
+  if (i.self.visible && i.self.focused && (selfLooking(i.self, i.now) || winnerIsHere(i))) return 'toast'
   if (i.others.some((t) => isLookedAt(t, i.now))) return 'none'
   if (!winnerIsHere(i)) return 'none'
   if (i.bannersOn === false) return i.self.visible && touchedLastOfVisible(i) ? 'toast' : 'none'

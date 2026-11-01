@@ -170,6 +170,21 @@ describe('decide — wave 2 rules, in order', () => {
     expect(decide({ ...base, self: looking, winner: 'c-phone' })).toBe('toast')
   })
 
+  it('5. …but a focused tab nobody touched for a minute, while the person is on another device, stays quiet', () => {
+    // The integration run: the person is active on Talaria Desktop (the
+    // winner), this browser tab is still focused and visible but idle — one
+    // copy, the desktop's banner, not that plus a toast here.
+    const idle = { ...looking, lastInputAt: NOW - 61_000 }
+    const desk = 'desk-0b9e2c1d-5f4a-4e3b-8c2d-1a0f9e8d7c6b'
+    expect(decide({ ...base, self: idle, isLeader: true, winner: desk })).toBe('none')
+    expect(decide({ ...base, self: { ...idle, lastInputAt: 0 }, isLeader: true, bannersOn: false, winner: desk })).toBe('none')
+    // The same tab when the winner is here, or there is no presence: it toasts.
+    expect(decide({ ...base, self: idle, winner: 'c-me' })).toBe('toast')
+    expect(decide({ ...base, self: idle, winner: desk, sameDevice: [desk] })).toBe('toast')
+    expect(decide({ ...base, self: idle, winner: null })).toBe('toast')
+    expect(decide({ ...base, self: idle })).toBe('toast')
+  })
+
   it('6. another tab here looking: nothing, before any presence rule', () => {
     const other = tab({ tabId: 'x', visible: true, focused: true, clientId: 'c-x' })
     expect(decide({ ...base, self: hiddenSelf, others: [other], isLeader: true, winner: 'c-x' })).toBe('none')
