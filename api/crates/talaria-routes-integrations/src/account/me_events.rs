@@ -36,7 +36,7 @@ use talaria_agent_auth::now_ms as wall_ms;
 use talaria_notify::presence;
 use talaria_realtime_watch::{
     RealtimeDeps, SESSION_REVOKED_TOPIC, SessionState, UserEvent, UserFrame, UserStream,
-    seq_now_fn, session_check_fn, resumable_event_stream,
+    resumable_event_stream, seq_now_fn, session_check_fn,
 };
 use talaria_session::{get_session_user, require_user, session_hash_of};
 use talaria_state::AppState;
