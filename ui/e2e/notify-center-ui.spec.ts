@@ -203,6 +203,15 @@ test.describe('the bell', () => {
     await expect(group).toContainText('TAL-112 · 3 updates')
     await expect(group.locator('[data-notification-row]')).toHaveCount(3)
 
+    // Every ungrouped row's text starts at one x: a row with no actor shows
+    // its category's glyph where the avatar would be.
+    const lefts = await page
+      .locator('[data-bell-list] > [data-notification-row] [data-row-meta]')
+      .evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().left)))
+    expect(lefts.length).toBeGreaterThan(3)
+    expect(new Set(lefts).size).toBe(1)
+    await expect(page.locator('[data-bell-list] [data-row-glyph="needs_you"]').first()).toBeVisible()
+
     // Without the inbox API there is no Done, and nothing else breaks.
     const v2 = (p0.features ?? []).includes('inbox-v2')
     if (!v2) {
@@ -224,6 +233,32 @@ test.describe('the bell', () => {
     await page.goto('/notifications?view=all')
     await expect(page.locator('[data-center-list] [data-notification-row]')).toHaveCount(9)
     if (!v2) await expect(page.getByRole('button', { name: 'Done', exact: true })).toHaveCount(0)
+    await ctx.close()
+  })
+})
+
+test.describe('narrow windows', () => {
+  test('the bell stays on screen and the matrix keeps its labels readable at 390 px', async ({ browser }) => {
+    const other = await person('other')
+    const me = await person('narrow')
+    await seed(me, bellRows(other))
+    const ctx = await contextFor(browser, me)
+    const page = await ctx.newPage()
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/home')
+    await openBell(page)
+    const panel = await page.locator('[data-bell-panel]').boundingBox()
+    expect(panel, 'the bell panel').not.toBeNull()
+    expect(panel!.x).toBeGreaterThanOrEqual(0)
+    expect(panel!.x + panel!.width).toBeLessThanOrEqual(390)
+    await page.keyboard.press('Escape')
+
+    await page.goto('/settings/notifications')
+    const label = page.locator('[data-matrix-row="dm"] > div').first()
+    await expect(label).toBeVisible()
+    // The label spans the row; the four channels sit under it with their names.
+    expect((await label.boundingBox())!.width).toBeGreaterThan(240)
+    await expect(page.locator('[data-matrix-row="dm"] [data-matrix-cell="push"]')).toContainText('Push')
     await ctx.close()
   })
 })
@@ -385,6 +420,8 @@ test.describe('pause and working hours', () => {
     const box = page.locator('[data-notify-schedule]')
     await box.getByRole('switch').first().click()
     await expect(box.locator('[data-schedule-days]')).toBeVisible()
+    // The save is confirmed in the Do Not Disturb panel itself.
+    await expect(page.locator('[data-notify-dnd] [data-dnd-status]')).toContainText('Saved')
     // Every day, and hours that exclude now (the person has no zone: UTC).
     for (const d of ['Sat', 'Sun']) await box.locator('[data-schedule-days]').getByRole('button', { name: d }).click()
     const hh = (n: number) => String(((new Date().getUTCHours() + n) % 24 + 24) % 24).padStart(2, '0')
@@ -526,6 +563,9 @@ test.describe('the status panel', () => {
       { timeout: 20_000 },
     )
     if (winner === 'desk-nc-e2e-0001') await expect(page.locator('[data-live="target"]')).toContainText('Talaria Desktop')
+    // How push is routed is said only as this instance does it.
+    const gated = ((await getPayload(page)).features ?? []).includes('presence-gated-push')
+    await expect(page.locator('[data-live-explain]')).toHaveAttribute('data-live-explain', gated ? 'gated' : 'immediate')
     await ctx.close()
   })
 
@@ -711,6 +751,99 @@ test.describe('the inbox', () => {
     await page.keyboard.press('Enter')
     await expect(page).toHaveURL(/\/settings\/profile$/)
     expect(await page.evaluate(() => (window as unknown as { __nc?: number }).__nc)).toBe(1)
+    await ctx.close()
+  })
+
+  test('undo: Done in the bell and on the page comes back exactly, unread again', async ({ browser }) => {
+    const other = await person('other')
+    const me = await person('undo')
+    const ids = await seed(me, bellRows(other))
+    const ctx = await contextFor(browser, me)
+    const page = await ctx.newPage()
+    await page.goto('/home')
+    await needsInbox(page)
+    const state = async (id: string) => {
+      const [r] = await sql<Array<{ archived: boolean; read: boolean }>>`select archived_at is not null as archived, read_at is not null as read from notifications where id = ${id}::uuid`
+      return `${r?.archived}/${r?.read}`
+    }
+    // The bell: Done, then Undo — back in For you, unread, and badged.
+    await openBell(page)
+    await page.getByRole('button', { name: 'For you' }).click()
+    await page.locator(`[data-notification-row="${ids[0]}"]`).hover()
+    await page.locator(`[data-notification-row="${ids[0]}"] button[title="Done"]`).click()
+    await expect(page.locator(`[data-notification-row="${ids[0]}"]`)).toHaveCount(0)
+    await expect.poll(() => state(ids[0]!)).toBe('true/true')
+    await page.locator('[data-bell-undo-button]').click()
+    await expect.poll(() => state(ids[0]!)).toBe('false/false')
+    await expect(page.locator(`[data-bell-list] [data-notification-row="${ids[0]}"]`)).toHaveCount(1)
+    await expect(page.locator('[data-notify-badge]')).toHaveAttribute('data-notify-badge', '5')
+    await page.keyboard.press('Escape')
+
+    // The page: Shift+E (every row shown), then z — all back, each as it was.
+    await sql`update notifications set read_at = now() where id = ${ids[2]!}::uuid`
+    await page.goto('/notifications?view=all')
+    const list = page.locator('[data-center-list] [data-notification-row]')
+    await expect(list).toHaveCount(9)
+    await page.keyboard.press('Shift+E')
+    await expect(list).toHaveCount(0)
+    await expect(page.locator('[data-center-undo]')).toContainText('9 notifications marked done')
+    await expect.poll(async () => (await sql`select count(*)::int as n from notifications where user_id = ${me.id}::uuid and archived_at is not null`)[0]?.n).toBe(9)
+    await page.keyboard.press('z')
+    await expect(list).toHaveCount(9)
+    await expect.poll(() => state(ids[2]!)).toBe('false/true')
+    await expect.poll(() => state(ids[3]!)).toBe('false/false')
+    await expect(page.locator('[data-center-undo]')).toHaveCount(0)
+    await ctx.close()
+  })
+
+  test('the keyboard survives Caps Lock and a click on a select box', async ({ browser }) => {
+    const me = await person('capslock')
+    const rows: Seed[] = Array.from({ length: 6 }, (_, i) => ({ kind: 'mention', title: `Caps row ${i + 1}`, href: '/settings/profile' }))
+    const ids = await seed(me, rows)
+    const ctx = await contextFor(browser, me)
+    const page = await ctx.newPage()
+    await page.goto('/notifications')
+    await needsInbox(page)
+    const list = page.locator('[data-center-list] [data-notification-row]')
+    await expect(list).toHaveCount(6)
+    // Caps Lock: the browser sends 'E' with no Shift — the focused row only.
+    await page.keyboard.press('J')
+    await expect(page.locator(`[data-notification-row="${ids[1]}"]`)).toHaveAttribute('data-focused', 'true')
+    await page.keyboard.press('E')
+    await expect(page.locator(`[data-notification-row="${ids[1]}"]`)).toHaveCount(0)
+    await expect(list).toHaveCount(5)
+    // A click on a row's select box leaves the focus in a checkbox, and the
+    // keyboard still works: e marks the selection done.
+    await page.locator(`[data-notification-row="${ids[4]}"] input[type="checkbox"]`).click()
+    await expect(page.locator('[data-center-selection]')).toHaveAttribute('data-center-selection', '1')
+    await page.keyboard.press('e')
+    await expect(page.locator(`[data-notification-row="${ids[4]}"]`)).toHaveCount(0)
+    await expect(list).toHaveCount(4)
+    await ctx.close()
+  })
+
+  test('Shift+E over more rows than one write takes marks every one done', async ({ browser }) => {
+    test.setTimeout(600_000)
+    const me = await person('bulk')
+    const t0 = Date.now()
+    const rows: Seed[] = Array.from({ length: 230 }, (_, i) => ({ kind: 'mention', title: `Bulk ${String(i + 1).padStart(3, '0')}`, href: '/home/inbox' }))
+    await seed(me, rows, t0)
+    const ctx = await contextFor(browser, me)
+    const page = await ctx.newPage()
+    await page.goto('/notifications')
+    await needsInbox(page)
+    const list = page.locator('[data-center-list] [data-notification-row]')
+    for (let i = 0; i < 40 && (await list.count()) < 230; i++) {
+      await list.last().scrollIntoViewIfNeeded()
+      await page.locator('[data-center-more]').click({ timeout: 1_000 }).catch(() => {})
+      await page.waitForTimeout(500)
+    }
+    await expect(list).toHaveCount(230)
+    await page.keyboard.press('Shift+E')
+    await expect
+      .poll(async () => (await sql`select count(*)::int as n from notifications where user_id = ${me.id}::uuid and archived_at is not null`)[0]?.n, { timeout: 60_000 })
+      .toBe(230)
+    await expect(page.locator('[data-center-undo]')).toContainText('230 notifications marked done')
     await ctx.close()
   })
 })
