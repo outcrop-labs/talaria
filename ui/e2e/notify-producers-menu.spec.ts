@@ -73,6 +73,24 @@ test('the level and a timed mute persist across a reload and match the server ro
   expect((await notifyOf(api, id)).level).toBe('all')
 })
 
+test('a change made elsewhere shows on the next refetch, over the page\'s own last write', async ({ page, request }) => {
+  const api = new Api(request)
+  const id = await newChannel(api)
+  await page.goto(`/comms/channel/${id}`)
+  await choose(page, 'Nothing')
+  await expect(trigger(page)).toHaveAttribute('data-level', 'none')
+  // Another device sets it back to every message. Once the detail is stale
+  // (5 s) a refocus refetches it, and the header follows the server — the
+  // page's own last write does not stand in for it any longer.
+  await api.put(`/api/channels/${id}/notify`, { level: 'all' })
+  await page.waitForTimeout(6_000)
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+  })
+  await expect(trigger(page)).toHaveAttribute('data-level', 'all')
+})
+
 test('a person taken off the channel gets the refusal shown, and no row is created', async ({ page, request }) => {
   const dbUrl = process.env.E2E_DATABASE_URL
   test.skip(!dbUrl, 'needs E2E_DATABASE_URL to take the person off the channel behind the page')
@@ -89,7 +107,7 @@ test('a person taken off the channel gets the refusal shown, and no row is creat
     await choose(page, 'Nothing')
     const dialog = page.getByRole('dialog')
     await expect(dialog).toContainText('Notifications not changed')
-    await expect(dialog).toContainText('forbidden')
+    await expect(dialog).toContainText("You're no longer in this conversation")
     // The refusal made nothing: the route never inserts a membership row.
     const rows = await sql<Array<{ n: number }>>`select count(*)::int as n from channel_members where channel_id = ${id}::uuid`
     expect(rows[0]?.n).toBe(0)

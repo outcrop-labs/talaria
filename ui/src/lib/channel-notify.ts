@@ -12,7 +12,7 @@
 //
 // Framework-free so the rules are pinned by channel-notify.test.ts.
 
-import { putJson } from './fetch-json'
+import { HttpError, errorMessage, putJson } from './fetch-json'
 import { FOREVER } from './notify-wire'
 
 export type ChannelLevel = 'all' | 'mentions' | 'none'
@@ -115,4 +115,25 @@ export async function putChannelNotify(channelId: string, patch: ChannelNotifyPa
     patch,
   )
   return { level: r.level, mutedUntil: r.mutedUntil }
+}
+
+/** The channel detail with a write's answer folded into its `notify`, for the
+ *  query cache: both header parts (the control and the "Muted until …" line)
+ *  read it, so they change together the moment the server answers. Anything
+ *  that is not a detail with a `notify` is left as it is. */
+export function withNotify(detail: unknown, r: Pick<ChannelNotify, 'level' | 'mutedUntil'>): unknown {
+  if (!detail || typeof detail !== 'object') return detail
+  const n = (detail as { notify?: unknown }).notify
+  if (!n || typeof n !== 'object') return detail
+  return { ...(detail as object), notify: { ...(n as object), level: r.level, mutedUntil: r.mutedUntil } }
+}
+
+/** The dialog's line for a refused write. A 403 means the person is no longer
+ *  in the conversation (taken off it since the page loaded); a 409 carries the
+ *  server's own sentence (a roster that is a board's or a team's). */
+export function refusalMessage(e: unknown): string {
+  if (e instanceof HttpError && e.status === 403) {
+    return "You're no longer in this conversation, so its notifications can't be changed."
+  }
+  return errorMessage(e)
 }

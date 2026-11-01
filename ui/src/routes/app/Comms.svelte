@@ -422,7 +422,8 @@
                Starred conversations move to the Starred section of the rail. -->
           <StarButton starKey={channelStarKey(selected.id)} class="-ml-2" />
           <!-- How much of this conversation the person hears, and a timed
-               mute (hidden on an api without channel levels). -->
+               mute (hidden on an api without channel levels); its "Muted
+               until …" line follows the name and the topic. -->
           <ChannelNotifyMenu channelId={selected.id} {detail} />
           {#if groupDm}
             <!-- A group DM: the rail's count badge, then who's in it. -->
@@ -463,6 +464,7 @@
             </span>
           {/if}
           {#if selected.topic}<span class="truncate text-xs text-muted">{selected.topic}</span>{/if}
+          <ChannelNotifyMenu channelId={selected.id} {detail} part="status" />
           <span class="ml-auto"></span>
           <!-- Pill-shaped placeholders while membership loads — the header
                holds its shape instead of the pickers popping in. -->

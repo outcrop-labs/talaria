@@ -10,7 +10,10 @@ import {
   mutedLabel,
   putChannelNotify,
   readChannelNotify,
+  refusalMessage,
+  withNotify,
 } from './channel-notify'
+import { HttpError } from './fetch-json'
 import { FOREVER } from './notify-wire'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -89,4 +92,27 @@ test('a refusal rejects with the server sentence (403 non-member, 409 team grant
     new Response(JSON.stringify({ error: 'forbidden' }), { status: 403, headers: { 'content-type': 'application/json' } }),
   )
   await assert.rejects(putChannelNotify('c-1', { level: 'none' }), /forbidden/)
+})
+
+test('a write folds into the cached detail, and only into one that has notify', () => {
+  const detail = { role: 'member', members: [], notify: { level: 'mentions', mutedUntil: null, settable: true } }
+  const next = withNotify(detail, { level: 'none', mutedUntil: '2026-11-01T23:00:00.000Z' }) as typeof detail
+  assert.deepEqual(next.notify, { level: 'none', mutedUntil: '2026-11-01T23:00:00.000Z', settable: true })
+  assert.equal(next.role, 'member')
+  assert.equal(detail.notify.level, 'mentions', 'the cached object is not mutated')
+  assert.equal(withNotify(undefined, { level: 'all', mutedUntil: null }), undefined)
+  const old = { role: 'member' }
+  assert.equal(withNotify(old, { level: 'all', mutedUntil: null }), old)
+})
+
+test('a refused write says why in words', () => {
+  assert.equal(
+    refusalMessage(new HttpError(403, 'forbidden')),
+    "You're no longer in this conversation, so its notifications can't be changed.",
+  )
+  assert.equal(
+    refusalMessage(new HttpError(409, "this room's notifications follow its board")),
+    "this room's notifications follow its board",
+  )
+  assert.equal(refusalMessage(new Error('Failed to fetch')), 'Could not reach the server.')
 })
