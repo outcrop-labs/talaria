@@ -92,13 +92,14 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels.rs`](../../api/crat
 Source: [`api/crates/talaria-routes-comms/src/comms/channels_id.rs`](../../api/crates/talaria-routes-comms/src/comms/channels_id.rs)
 
 > /api/channels/{id}.
-> GET → channel detail (role + members + agents + teams + agentInitiative).
+> GET → channel detail (role + members + agents + teams + agentInitiative +
+> the caller's own notify level and mute).
 > PUT → rename / set topic / set agentInitiative (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
-> purges the channel's activity points so nothing orphans in the index).
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{role, members, agents, teams, agentInitiative}` | 200, 403 | — |
+| GET | `session` | — | `{role, members, agents, teams, agentInitiative, notify}` | 200, 403 | — |
 | PUT | `session` | [body](#put-apichannelsid-body) | `{ok}` | 200, 400, 403 | — |
 | DELETE | `session` | — | `{ok}` | 200, 403 | — |
 
