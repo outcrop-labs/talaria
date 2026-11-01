@@ -400,6 +400,45 @@ async fn a_stream_opens_with_connected_then_frames_each_payload_as_sse_data() {
     assert_eq!(headers.get("x-accel-buffering").unwrap(), "no");
 }
 
+// I-19: a notification frame that carries its seq gets it as the SSE `id:`
+// (an EventSource then resumes with `Last-Event-ID`); every other frame —
+// a seq-less notification from an older writer included — has none.
+#[tokio::test]
+async fn a_notification_with_a_seq_is_framed_with_its_id() {
+    let hub = Hub::new();
+    let deps = hub.deps();
+    let response = user_event_stream(&deps, "user-id").await;
+    for seq in [Some(7), None] {
+        publish_user(
+            &deps,
+            "user-id",
+            &UserEvent::Notification {
+                notification_id: "n-7".into(),
+                seq,
+            },
+        );
+    }
+    publish_user(
+        &deps,
+        "user-id",
+        &UserEvent::Resync {
+            seq: 7,
+            complete: true,
+        },
+    );
+    hub.close_topic("user:user-id");
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::str::from_utf8(&bytes).unwrap(),
+        ": connected\nretry: 3000\n\n\
+         id: 7\ndata: {\"type\":\"notification\",\"notificationId\":\"n-7\",\"seq\":7}\n\n\
+         data: {\"type\":\"notification\",\"notificationId\":\"n-7\"}\n\n\
+         data: {\"type\":\"resync\",\"seq\":7,\"complete\":true}\n\n"
+    );
+}
+
 #[tokio::test]
 async fn a_quiet_subscriber_still_gets_the_connected_preamble() {
     // The swallow-failures posture: a subscriber that never connects or never
