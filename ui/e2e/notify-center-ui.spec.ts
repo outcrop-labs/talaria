@@ -639,17 +639,24 @@ test.describe('the inbox', () => {
       await expect(page.locator(`[data-notification-row="${id}"]`)).toHaveCount(0)
     }
     await expect(page.locator('[data-notify-badge]')).toHaveAttribute('data-notify-badge', '3')
-    const archived = await sql<Array<{ id: string }>>`select id::text from notifications where user_id = ${me.id}::uuid and archived_at is not null and read_at is not null order by id`
-    expect(archived.map((r) => r.id).sort()).toEqual([ids[0]!, ids[1]!].sort())
+    // The bell drops a row before its write commits: poll the table, don't read it once.
+    const archivedIds = async () =>
+      (await sql<Array<{ id: string }>>`select id::text from notifications where user_id = ${me.id}::uuid and archived_at is not null and read_at is not null order by id`)
+        .map((r) => r.id)
+        .sort()
+    await expect.poll(archivedIds).toEqual([ids[0]!, ids[1]!].sort())
 
     await page.goto('/notifications?view=done')
     await expect(page.locator('[data-center-list] [data-notification-row]')).toHaveCount(2)
     await page.locator(`[data-notification-row="${ids[0]}"]`).hover()
     await page.locator(`[data-notification-row="${ids[0]}"] button[title="Move to inbox"]`).click()
     await expect(page.locator('[data-center-list] [data-notification-row]')).toHaveCount(1)
-    const [back] = await sql<Array<{ archived_at: Date | null; read_at: Date | null }>>`select archived_at, read_at from notifications where id = ${ids[0]!}::uuid`
-    expect(back?.archived_at).toBeNull()
-    expect(back?.read_at).not.toBeNull()
+    // The list moves the row out before the PUT commits (seen on Firefox under load): poll.
+    const backState = async () => {
+      const [r] = await sql<Array<{ archived: boolean; read: boolean }>>`select archived_at is not null as archived, read_at is not null as read from notifications where id = ${ids[0]!}::uuid`
+      return `${r?.archived}/${r?.read}`
+    }
+    await expect.poll(backState).toBe('false/true')
 
     // Mark unread → +1.
     await page.goto('/notifications')
