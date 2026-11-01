@@ -272,31 +272,67 @@ and scroll after a relaunch (only the URL is kept on disk).
   the instance's data directory and the restored page is still signed in.
 - *Notifications.* A suspended page posts nothing, so the shell does its job: `watch.rs`
   reads `/api/notifications` with that instance's own cookies (taken from its webview's
-  store, sent only to its origin, redirects not followed), made live by `/api/me/events`
-  with the page's 30 s poll floor. The first read is taken while the page is still open: if
-  it fails for anything but a 401/403 (a proxy or certificate only the webview knows, the
-  instance down), the page is kept. It runs only when the page said it would post (ui's
-  `browserNotifyEnabled`), and keeps the page's own arrival rule (interface I-3): a row is
-  posted when it is unread, newer than the high-water mark less two minutes, and unseen —
-  or seen at an earlier `createdAt`, which is a re-alert under the same tag. **It starts
-  from the page's record**, `localStorage['talaria.notify.arrivals.v1']`, which the suspend
-  report hands over (`arrivals`): whatever the page missed — a dead stream, a sleep — is
-  posted on the watcher's first read instead of being swallowed into a new baseline (D2).
-  A page with no record (an older UI) gets the old baseline. More than three at once are
-  one "N new in <instance>" banner. A failed stream — a 502 while the instance restarts, a
-  deploy, Cloudflare dropping an idle connection — is reopened with backoff (1 s doubling to
-  30 s, reset after a minute up), every reopen reads the rows again, and the 30 s poll floor
-  keeps reading through the outage; a 401/403 from the instance itself (its JSON) ends the
-  watcher, while a Cloudflare challenge (`cf-mitigated`, an HTML 403) counts as an outage —
-  the shell's requests also name themselves (`User-Agent: Talaria-Desktop`), which a bot
-  filter wants. Each read sets the
-  instance's share of the badge from the server's `unread`. A click on a watcher's banner
-  marks the row read (`PUT /api/notifications` with the instance's cookies) and restores
-  the instance at its path. **The restore hands back** what the watcher posted: it is
-  merged into the page's record by a document-start script before the page's own scripts
-  read it, so the restored page never posts it again.
+  store, kept in memory, sent only to its origin, redirects not followed), made live by
+  `/api/me/events` with the page's 30 s poll floor. The first read is taken while the page
+  is still open: if it fails for anything but a 401/403 (a proxy or certificate only the
+  webview knows, the instance down), the page is kept. It runs only when the page said it
+  would post (ui's `browserNotifyEnabled`), and keeps the page's own arrival rule
+  (docs/notifications/contract.md, I-20): a row with a `seq` is posted when it is unread,
+  past the seq the watcher has read through, and unseen — or seen at an earlier
+  `createdAt`, which is a re-alert under the same tag; a row with no seq (filed before the
+  contract) keeps wave 1's rule, newer than the high-water mark less two minutes. With
+  `since` in the instance's `features`, the watcher reads `GET /api/notifications?since=<seq>`
+  page by page and moves its seq only on a page whose `more` is false, and its stream asks
+  `/api/me/events?since=<seq>` so the server replays what a cut lost (I-19): a reconnect
+  after an outage is exact, never "the newest 50". **It starts from the page's record**,
+  `localStorage['talaria.notify.arrivals.v1']`, which the suspend report hands over
+  (`arrivals`, with the record's `v` and `seq`): whatever the page missed — a dead stream,
+  a sleep — is posted on the watcher's first read instead of being swallowed into a new
+  baseline (D2). A page with no record (an older UI) gets the old baseline. More than three
+  at once are one "N new in <instance>" banner tagged `talaria-summary`, the page's own
+  summary tag (I-21): its click restores the instance and hands the restored page
+  `talaria:notification-open {id: 'talaria-summary'}` once its listener is up, which opens
+  the bell. **What it posts** (I-15): never a row whose `alert` is `feed`; while the
+  person's Do Not Disturb is active (`dnd.active`), only a row of a class that breaks
+  through it (`classes[].breaksThrough`, and `dnd.allowNeedsYou`); nothing for an instance
+  muted in the launcher. Every row it posts is acked (`POST /api/notifications/ack`, I-18),
+  so the instance's deferred push for it is cancelled. **Read-sync** (I-16): a
+  `notifications` frame that names `readIds` (or `all`) closes this instance's banners for
+  those rows — keyed by its label, so another instance's read never closes them — and
+  `resync` closes every banner whose row a fresh read finds read. **Presence** (I-17):
+  every 30 s the watcher heartbeats `PUT /api/me/presence` as `desk-<instance id>`, kind
+  `desktop`, `active` while the OS saw input in the last two minutes (`desktop_os_idle`,
+  below), else `idle`, so the instance's push waits while the person is at this desktop
+  and does not while they are away; an instance that predates the presence store gets no
+  heartbeat (it would read any PUT as "online", all night). A failed stream — a 502 while
+  the instance restarts, a deploy, Cloudflare dropping an idle connection — is reopened
+  with backoff (1 s doubling to 30 s, reset after a minute up), every reopen reads the rows
+  again, and the 30 s poll floor and the heartbeat keep running through the outage; a
+  401/403 from the instance itself (its JSON) ends the watcher, while a Cloudflare
+  challenge (`cf-mitigated`, an HTML 403) counts as an outage — the shell's requests also
+  name themselves (`User-Agent: Talaria-Desktop`), which a bot filter wants. Each read,
+  and each `notifications` frame, sets the instance's share of the badge: For you
+  (`unreadForYou`), or `unread` from an instance that predates it. A click on a watcher's
+  banner marks the row read (`PUT /api/notifications` with the instance's cookies) and
+  restores the instance at its path. **The restore hands back** what the watcher judged
+  and the seq it read through: both are merged into the page's record (`v: 2`) by a
+  document-start script before the page's own scripts read it, so the restored page never
+  surfaces them again and reads on from where the watcher stopped. An instance that serves
+  no `features` gets wave 1's watcher exactly.
 - *The switcher, the titlebar mode, the launcher's state:* all read again when a page loads;
   a hidden page did nothing else for the shell.
+
+**Instances nobody opened (D8).** At launch, every registered instance with a cookie jar
+(it has been opened, so it may be signed in) that the window will not show is loaded
+hidden — the first a second after launch, the rest five seconds apart, five at most
+(O-17) — and asked as soon as its page has loaded, not after the timeout: its page
+answers, the shell reads its cookies into memory (nothing is stored at rest) and starts its
+watcher, and the webview closes like any suspended one. So a signed-in instance alerts
+whether or not the person opens it this session, as Slack and Teams do for every signed-in
+workspace. A page still booting when asked is asked again on the next tick (six times at
+most); one that fails to load is dropped quietly, with no card on the launcher; with
+suspending Off, the page stays loaded, hidden, and posts its own. The cost is a page load
+per instance at launch, then a watcher each.
 
 **What it frees, and what it does not.** Measured 2026-10-29 on the headless rig (WebKitGTK
 2.52, llvmpipe): 25 opened mock instances with the launcher showing are 26 web processes,
@@ -545,11 +581,34 @@ the rate limits, the status record and the click route. One backend per OS:
 - **Windows** (`notify/windows.rs`) is attribution only, for now: toasts carry AUMID
   `app.talaria.desktop` — the Start-menu shortcut's when it carries that id (the NSIS and
   MSI shortcuts do), else a `HKCU\Software\Classes\AppUserModelId` entry the shell writes,
-  else PowerShell's as before — and the process takes the same id.
+  else PowerShell's as before — and the process takes the same id. The OS idle time comes
+  from `GetLastInputInfo`; a read elsewhere closes no toast yet.
+
+**Read-sync and presence, from the shell** (I-16, I-22). Two commands every instance page
+may call, keyed by the caller's label:
+
+- `desktop_notify_close(tags)` closes that instance's banners for these tags (at most 100
+  a call; ui calls it with the `readIds` of a read elsewhere). Linux: `CloseNotification`
+  for the id the server issued for each (instance, tag). macOS:
+  `removeDeliveredNotificationsWithIdentifiers(["<label>/<tag>"])` (and pending ones), so
+  the banner leaves Notification Center's list too. Another instance's tags never reach
+  them: the label is the IPC caller's, never a value from the page. The watcher closes its
+  own banners the same way, from its stream.
+- `desktop_os_idle()` answers the milliseconds since the person last touched the machine,
+  or null where the OS cannot say. Linux: mutter's `org.gnome.Mutter.IdleMonitor`
+  `GetIdletime` on GNOME, else `org.freedesktop.ScreenSaver.GetSessionIdleTime` — KDE's
+  kscreenlocker answers it on X11 in milliseconds (KIdleTime's), though the interface's XML
+  calls the value seconds, and refuses it on Plasma's Wayland — else null. macOS:
+  CoreGraphics' `CGEventSourceSecondsSinceLastEventType` for the whole login session.
+  Windows: `GetLastInputInfo`. The flatpak may talk to both Linux services.
 
 **The click** reaches the page as a cancelable `talaria:notification-open` event with
 `{href, id}` (interface I-1), dispatched by `eval` into the webview that posted the banner
-(the IPC caller's label, never a value from the page). A page that handles it routes in
+(the IPC caller's label, never a value from the page). A banner whose instance the click
+restores from suspension is born at its row's path; the watcher's summary, which names no
+row, is born at the instance's last page and hands it `{href: null, id:
+'talaria-summary'}` through a document-start script that offers the event until the page's
+listener takes it (20 s at most, once per restore) — the page opens the bell. A page that handles it routes in
 place, with no reload; a page with no listener — a Talaria older than it — gets
 `location.assign`, as before. Only a same-origin path is ever opened, by the instance's
 own rule (`openable_href` in talaria-notify): a leading `/`, no `//`, no backslash or
@@ -561,16 +620,23 @@ status from the OS (`desktop_notification_status`): "On — shown by GNOME Shell
 1.2)", "Not allowed yet", "Blocked in System Settings", or "Notification service
 unavailable: …" with the D-Bus error; that instance's own last error; Allow (macOS) or
 Open System Settings; **Send test notification**, which posts through the real path and
-reports what happened; and **Keep running in the background**. The launcher shows the same ask on macOS, a notice
-when Linux has no notification service, the no-tray notice, and Quit.
+reports what happened; **Keep running in the background**; and, for an instance muted in
+the launcher, that it is muted and that its count still counts toward the badge. The
+launcher shows the same ask on macOS, a notice when Linux has no notification service, the
+no-tray notice, Quit, and on each instance's row its unread count and a bell that mutes
+it: a muted instance posts no banner, from its page or its watcher, and its share of the
+badge still counts (registry `muted`, never read by another instance).
 
 **Closing the window** (`src-tauri/src/background.rs`, `tray.rs`) keeps Talaria running so
 notifications arrive, with `closeToBackground` on (the default):
 
-- macOS: the window hides; the dock and a menu-bar item (Open Talaria, Quit) stay; the
-  dock icon reopens it.
-- Linux with a tray: the window hides; the tray icon has Open Talaria and Quit Talaria, and
-  the unread sum as the label beside it (appindicator has no tooltip — tray-icon's
+- macOS: the window hides; the dock and a menu-bar item stay; the dock icon reopens it.
+  The menu-bar item is a template image (the wing mark in black, which the menu bar tints)
+  and a left click shows its menu, as every menu-bar item does.
+- Linux with a tray: the window hides; the tray icon's menu has a row per instance with its
+  own unread count ("Acme — 3"; a click opens that instance; a read anywhere drops it),
+  Open Talaria and Quit Talaria, and the unread sum as the label beside it (appindicator
+  has no tooltip — tray-icon's
   `set_tooltip` does nothing on Linux — and the label shows where the host draws Ayatana
   labels, as the GNOME AppIndicator extension does). A tray needs the appindicator library —
   probed with `dlopen` BEFORE any tray call, because libappindicator-sys panics without it —
@@ -581,11 +647,19 @@ notifications arrive, with `closeToBackground` on (the default):
 - Linux without one (stock GNOME): the window **minimizes** instead — it stays in the dash
   and Alt+Tab — and a one-time notice says how to quit. A hidden window with no icon anywhere
   would be a process nobody can see or quit.
-- On Linux the dash's (or a dock's) **Quit is not a way out**: the shell exports no
-  `app.quit` action, so GNOME's `shell_app_request_quit` falls back to deleting each window —
-  the same close request as ×, which minimizes or hides to the tray like × does. The notice
-  says so. Exporting a GApplication `quit` action is the follow-up; it needs the GTK app id
-  on, which changes the Wayland `app_id` the desktop files are matched by.
+- On Linux the dash's (or a dock's) **Quit quits**. The GTK application is registered as
+  `app.talaria.desktop` (`enableGTKAppId` in tauri.conf.json) and exports an `app.quit`
+  action (lib.rs `install_quit_action`): GNOME's `shell_app_request_quit` activates it —
+  every page remembered, then exit 0 — where before it found none and fell back to deleting
+  each window, the same close request as ×. The GApplication's bus name
+  (`app.talaria.desktop`) and the shell's single-instance name
+  (`app.talaria.desktop.Shell`) are two names on two connections, and a second launch still
+  hands over on the latter before GTK starts. With the app id on, the window's Wayland
+  `app_id` is `app.talaria.desktop`, and so is its X11 `WM_CLASS` (the program name is set
+  to it), so a dock matches it to `app.talaria.desktop.desktop` (flatpak, AppImage, pacman)
+  directly and to the deb/rpm `Talaria.desktop` by its `StartupWMClass` (the bundler's
+  desktop template is `packaging/linux/Talaria.desktop.hbs`, the default one with that
+  line). No file is renamed, so a pin keeps its desktop-file id (O-16).
 - Windows: Close quits, as before (no single-instance guard yet, so a hidden window would
   let a Start-menu relaunch open a second process on the same WebView2 profile).
 
@@ -594,17 +668,25 @@ shell, so it works on any instance version, and the page on screen gets the keyb
 whenever the window comes back — the switcher's Quit Talaria, the launcher's Quit, the
 tray's Quit. With the setting off, Close quits everywhere.
 
-**The badge** is the sum of every instance's unread count: each page reports its own
-(`desktop_set_badge`, from the bell's query, debounced to the count it settles on; a
-signed-out page reports 0), a suspended instance's watcher
-reports its share from each read, and removing an instance drops its share. macOS: the dock
-badge, cleared at 0. Linux: the LauncherEntry above. Windows: none yet.
+**The badge** is the sum of every instance's For you count — what needs the person and
+what is addressed to them (`unreadForYou`; EB-11, O-10); Following lands in the bell's All
+tab without badging the dock, and an instance that predates For you counts every unread
+row: each page reports its own (`desktop_set_badge`, from the bell's query, debounced to
+the count it settles on; a signed-out page reports 0), a suspended instance's watcher
+reports its share from each read and each read-sync frame, and removing an instance drops
+its share. macOS: the dock badge, cleared at 0. Linux: the LauncherEntry above. Windows:
+none yet.
 
-**Packages.** With the tray, Tauri's bundler makes the deb depend on
-`libayatana-appindicator3-1`, the rpm require its library, and the AppImage carry it; the
-pacman package lists it as optional. The flatpak may talk to
-`org.kde.StatusNotifierWatcher` and `com.canonical.Unity`, but the GNOME runtime carries
-no appindicator library, so in the flatpak Close minimizes.
+**Packages.** The tray library is a recommendation, never a requirement: the shell opens
+it with `dlopen` and runs without it (Close then minimizes). With tauri's `tray-icon`
+feature the bundler makes the deb depend on `libayatana-appindicator3-1` and the rpm
+require `libayatana-appindicator3.so.1()(64bit)`, and no config removes them, so
+tauri.linux.conf.json lists the library under `recommends` for both and desktop-package.yml
+takes it back out of Depends and Requires (`packaging/linux/recommend-tray.sh`: the deb's
+control file edited in place, the rpm rebuilt from its own payload and header with the same
+files), then checks both. The AppImage carries the library; the pacman package lists it as
+optional. The flatpak may talk to `org.kde.StatusNotifierWatcher` and `com.canonical.Unity`,
+but the GNOME runtime carries no appindicator library, so in the flatpak Close minimizes.
 
 **Verified how.** Linux on the headless rig (private mutter, private session bus, a
 recording notification server, real input through mutter's RemoteDesktop, real
@@ -621,11 +703,12 @@ desktop.
 
 Rename/reorder instances, health badges, deep links, OAuth via external browser, Developer
 ID signing and notarization (the macOS app is ad-hoc signed; Authenticode on Windows), and
-launch at login. For notifications: instances not opened this session still post nothing
-(D8 — a stored cookie copy would be plaintext or an ad-hoc-signed keychain item that
-re-prompts on every update; the next round loads signed-in instances hidden at launch
-instead); Windows' tray, close-to-background, single instance, body click and late clicks;
-the Flatpak portal Notification API; and the watcher's `?since=` cursor.
+launch at login. For notifications: Windows' tray, close-to-background, single instance, body click, late
+clicks, closing a toast on a read elsewhere and the taskbar overlay badge (cut from wave 2's
+desktop round, Linux and macOS first); the Flatpak portal Notification API and a bundled
+appindicator library in the flatpak; and a stored cookie copy for instances, which stays
+out on purpose (it would be plaintext, or an ad-hoc-signed keychain item that re-prompts on
+every update — unopened instances are loaded hidden at launch instead).
 
 macOS and Windows build and ship, but the session-isolation invariant above does not hold
 there yet: `data_directory` is a no-op on those platforms (macOS wants
