@@ -253,6 +253,19 @@ export function flattenPages(pages: ReadonlyArray<{ notifications: CenterRow[] }
   return out
 }
 
+/** The most ids one `PUT /api/notifications` takes (the api refuses more
+ *  with a 400). A bulk write — Shift+E over a long scrolled list — is sent in
+ *  slices of this size. */
+export const IDS_PER_WRITE = 200
+
+/** `xs` in slices of at most `n`, in order; none for an empty list (an empty
+ *  `ids` would mean "every row" to the api, so it is never sent). */
+export function chunked<T>(xs: readonly T[], n: number = IDS_PER_WRITE): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n))
+  return out
+}
+
 /** What read ↔ unread does to some rows: read the unread ones when any is
  *  unread, else make them all unread again (notify-keys `readToggle`). */
 export function readToggleIds(rows: ReadonlyArray<Pick<CenterRow, 'id' | 'readAt'>>): { read: string[]; unread: string[] } {
@@ -346,7 +359,14 @@ export function useInboxActions() {
   }
   const write = async (body: InboxWrite, failure: string): Promise<boolean> => {
     try {
-      await putJson<{ ok: true }>('/api/notifications', body)
+      // More ids than one PUT takes go in slices; a failed slice stops the
+      // rest, and the refetch below shows what did land.
+      const ids = body.ids
+      if (ids && ids.length > IDS_PER_WRITE) {
+        for (const part of chunked(ids)) await putJson<{ ok: true }>('/api/notifications', { ...body, ids: part })
+      } else {
+        await putJson<{ ok: true }>('/api/notifications', body)
+      }
       return true
     } catch (e) {
       toastError(failure, e)
@@ -512,5 +532,5 @@ export const ALERT_TARGET_LABEL: Record<AlertTarget, string> = {
   'this-browser': 'this browser',
   desktop: 'Talaria Desktop',
   'other-browser': 'another browser or tab',
-  none: 'every registered browser, as push (no device is active)',
+  none: 'nowhere right now (no device is active)',
 }

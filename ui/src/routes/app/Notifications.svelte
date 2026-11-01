@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CheckCheck, Keyboard } from '@lucide/svelte'
+  import { CheckCheck, Keyboard, Undo2 } from '@lucide/svelte'
   import { searchParams } from 'sv-router'
   import { untrack } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
@@ -145,13 +145,45 @@
       },
     )
 
+  // UNDO. Done is one key (and Shift+E is every row shown), so each Done or
+  // Move to inbox can be taken back for a few seconds — the bar under the
+  // header, or `z`. An undo of Done puts the rows back exactly: in the inbox,
+  // and unread again where they were unread (Done also reads, O-11).
+  const UNDO_MS = 10_000
+  let undo = $state<{ ids: string[]; unread: string[]; restored: boolean } | null>(null)
+  let undoTimer: ReturnType<typeof setTimeout> | undefined
+  const offerUndo = (next: { ids: string[]; unread: string[]; restored: boolean } | null) => {
+    clearTimeout(undoTimer)
+    undo = next
+    if (next) undoTimer = setTimeout(() => (undo = null), UNDO_MS)
+  }
+  $effect(() => () => clearTimeout(undoTimer))
+
   const done = (targets: string[]) => {
     if (!targets.length || !v2) return
+    const restored = view === 'done'
+    const wasUnread = rowsOf(targets).filter((r) => !r.readAt).map((r) => r.id)
     for (const id of targets) hidden.add(id)
     selection = new Set([...selection].filter((id) => !targets.includes(id)))
-    const write = view === 'done' ? actions.restore(targets) : actions.done(targets)
-    void write.then(() => {
+    offerUndo({ ids: targets, unread: wasUnread, restored })
+    const write = restored ? actions.restore(targets) : actions.done(targets)
+    void write.then((ok) => {
       for (const id of targets) hidden.delete(id)
+      // A write that failed has nothing to undo (its toast says why).
+      if (!ok && undo?.ids === targets) offerUndo(null)
+    })
+  }
+
+  const runUndo = () => {
+    const u = undo
+    if (!u) return
+    offerUndo(null)
+    if (u.restored) {
+      void actions.done(u.ids)
+      return
+    }
+    void actions.restore(u.ids).then((ok) => {
+      if (ok && u.unread.length) void actions.unread(u.unread)
     })
   }
 
@@ -172,6 +204,10 @@
     }
     // A modal dialog that is open owns the keyboard.
     if (document.querySelector('[aria-modal="true"]')) return
+    // So does anything outside this page that has the focus — the bell's or
+    // the account menu's panel, the dock: `e` typed there is not a Done here.
+    const t = e.target as Node | null
+    if (t && t !== document.body && t !== document.documentElement && pageEl && !pageEl.contains(t)) return
     const a = keyAction({
       key: e.key,
       shiftKey: e.shiftKey,
@@ -208,6 +244,9 @@
       case 'help':
         helpOpen = true
         break
+      case 'undo':
+        runUndo()
+        break
       case 'escape':
         selection = new Set()
         break
@@ -215,6 +254,7 @@
   }
 
   // ── Infinite scroll ────────────────────────────────────────────────────────
+  let pageEl = $state<HTMLDivElement | null>(null)
   let sentinel = $state<HTMLDivElement | null>(null)
   $effect(() => {
     if (!sentinel || !hasMore) return
@@ -242,6 +282,7 @@
 <svelte:window onkeydown={onKey} />
 
 <PageSurface>
+  <div bind:this={pageEl}>
   <div class="mb-4 flex flex-wrap items-center gap-3">
     <Tabs items={tabs} value={view} onChange={(v) => go(v, filters)} />
     {#if forYouUnread}
@@ -279,6 +320,23 @@
     </div>
   {/if}
 
+  {#if undo}
+    <div
+      class="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-line bg-raised px-3 py-1.5 text-sm"
+      role="status"
+      data-center-undo={undo.restored ? 'restored' : 'done'}
+    >
+      <span class="font-sans text-xs text-fg">
+        {undo.ids.length === 1 ? '1 notification' : `${undo.ids.length} notifications`}
+        {undo.restored ? 'moved back to the inbox.' : 'marked done.'}
+      </span>
+      <Button size="xs" variant="outline" onclick={runUndo} data-center-undo-button>
+        <Undo2 size={13} strokeWidth={1.5} />Undo
+      </Button>
+      <span class="font-mono text-[10px] text-ink-dim">z</span>
+    </div>
+  {/if}
+
   <Panel class="p-0" data-center-view={view}>
     {#if pending}
       <div class="p-4"><SkeletonRows rows={8} /></div>
@@ -311,15 +369,18 @@
           onSelect={(r) => (selection = toggleSelected(selection, r.id))}
         />
       </div>
+      <!-- A failed page leaves hasNextPage true, so its error shows above
+           the button rather than instead of it. -->
+      {#if v2 && list.isFetchNextPageError && !list.isFetchingNextPage}
+        <div class="border-t border-line p-2">
+          <QueryError variant="inline" error={list.error} title="Could not load more" onRetry={() => void list.fetchNextPage()} />
+        </div>
+      {/if}
       {#if hasMore}
         <div bind:this={sentinel} class="flex justify-center border-t border-line p-2">
           <Button size="sm" variant="ghost" disabled={list.isFetchingNextPage} onclick={() => void list.fetchNextPage()} data-center-more>
             {list.isFetchingNextPage ? 'Loading' : 'Load more'}
           </Button>
-        </div>
-      {:else if v2 && list.isFetchNextPageError}
-        <div class="border-t border-line p-2">
-          <QueryError variant="inline" error={list.error} title="Could not load more" onRetry={() => void list.fetchNextPage()} />
         </div>
       {/if}
     {/if}
@@ -327,6 +388,7 @@
   {#if !v2 && base.data}
     <p class="mt-2 font-sans text-xs text-muted">Showing your newest {base.data.notifications.length} notifications.</p>
   {/if}
+  </div>
 </PageSurface>
 
 <Modal open={helpOpen} onClose={() => (helpOpen = false)} title="Keyboard shortcuts">

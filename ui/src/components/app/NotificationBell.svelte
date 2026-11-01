@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bell, BellOff, BellRing, CheckCheck } from '@lucide/svelte'
+  import { Bell, BellOff, BellRing, CheckCheck, Undo2 } from '@lucide/svelte'
   import { SvelteSet } from 'svelte/reactivity'
   import NotificationList from '@/components/notify/NotificationList.svelte'
   import PauseMenu from '@/components/notify/PauseMenu.svelte'
@@ -185,10 +185,44 @@
 
   // The write awaits its refetch, so once it settles the list itself says
   // where the row is, and the local hide can go (a failure brings it back).
+  // The last Done can be taken back for a few seconds, exactly: back in the
+  // inbox, and unread again if it was (Done also reads, O-11).
+  let undone = $state<{ id: string; unread: boolean } | null>(null)
+  let undoTimer: ReturnType<typeof setTimeout> | undefined
+  const offerUndo = (next: { id: string; unread: boolean } | null) => {
+    clearTimeout(undoTimer)
+    undone = next
+    if (next) undoTimer = setTimeout(() => (undone = null), 8_000)
+  }
+  $effect(() => () => clearTimeout(undoTimer))
+  $effect(() => {
+    if (!popoverOpen) offerUndo(null)
+  })
   const done = (n: CenterRow) => {
     hidden.add(n.id)
-    void actions.done([n.id]).then(() => hidden.delete(n.id))
+    offerUndo({ id: n.id, unread: !n.readAt })
+    void actions.done([n.id]).then((ok) => {
+      hidden.delete(n.id)
+      if (!ok && undone?.id === n.id) offerUndo(null)
+    })
   }
+  const undoDone = () => {
+    const u = undone
+    if (!u) return
+    offerUndo(null)
+    void actions.restore([u.id]).then((ok) => {
+      if (ok && u.unread) void actions.unread([u.id])
+    })
+  }
+
+  // The panel never runs off the left edge: at most the room between the
+  // window's left edge (less a margin) and the bell's right edge, which the
+  // popover aligns to. Measured when it opens.
+  let triggerEl = $state<HTMLButtonElement | null>(null)
+  const panelWidth = $derived.by(() => {
+    if (!popoverOpen || !triggerEl) return 400
+    return Math.max(240, Math.min(400, Math.floor(triggerEl.getBoundingClientRect().right) - 8))
+  })
 
   const toggleRead = (n: CenterRow) => {
     const { read, unread } = readToggleIds([n])
@@ -197,9 +231,10 @@
   }
 </script>
 
-<Popover align="right" offset={8} class="w-[400px] max-w-[calc(100vw-16px)]" bind:open={popoverOpen}>
+<Popover align="right" offset={8} bind:open={popoverOpen}>
   {#snippet trigger(open)}
     <button
+      bind:this={triggerEl}
       type="button"
       aria-expanded={open}
       aria-label="Notifications"
@@ -222,6 +257,8 @@
     </button>
   {/snippet}
   {#snippet content(close)}
+    <!-- The panel's own border and padding (10px) come off the measured room. -->
+    <div style="width: {panelWidth - 10}px" data-bell-panel>
     {#if !shell && (perm === 'default' || perm === 'denied' || perm === 'insecure' || (perm === 'granted' && prefOff))}
       <div class="border-b border-line px-3 py-2" data-notify-row={perm}>
         {#if perm === 'insecure'}
@@ -330,6 +367,15 @@
       </div>
     {/if}
 
+    {#if undone}
+      <div class="flex items-center gap-2 border-t border-line px-3 py-1.5 font-sans text-xs text-muted" role="status" data-bell-undo>
+        <span class="min-w-0 flex-1 truncate">Marked done.</span>
+        <button type="button" class="flex shrink-0 items-center gap-1 text-accent transition-colors hover:text-fg" onclick={undoDone} data-bell-undo-button>
+          <Undo2 size={12} strokeWidth={1.5} />Undo
+        </button>
+      </div>
+    {/if}
+
     <div class="flex items-center border-t border-line px-2 py-1.5">
       <a
         href={p('/notifications')}
@@ -346,6 +392,7 @@
       >
         Settings
       </a>
+    </div>
     </div>
   {/snippet}
 </Popover>

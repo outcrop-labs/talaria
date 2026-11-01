@@ -3,7 +3,9 @@ import {
   alertTarget,
   badgeCount,
   centerQuery,
+  chunked,
   countLabel,
+  IDS_PER_WRITE,
   filtersFrom,
   flattenPages,
   groupRows,
@@ -232,5 +234,18 @@ describe('alertTarget', () => {
     // Without the runtime's own id, a web winner is not claimed as this tab.
     expect(alertTarget(snap('tab-aaaaaaaa', null, [['tab-aaaaaaaa', 'web']]), null).target).toBe('other-browser')
     expect(alertTarget(snap(null, null, []), null).target).toBe('none')
+  })
+})
+
+describe('bulk writes', () => {
+  it('slice ids to what one PUT takes, in order, and never send an empty slice', () => {
+    expect(IDS_PER_WRITE).toBe(200)
+    const ids = Array.from({ length: 450 }, (_, i) => `id-${i}`)
+    const parts = chunked(ids)
+    expect(parts.map((p) => p.length)).toEqual([200, 200, 50])
+    expect(parts.flat()).toEqual(ids)
+    expect(chunked(ids.slice(0, 200))).toHaveLength(1)
+    // An empty ids list means "every row" to the api: it is never a slice.
+    expect(chunked([])).toEqual([])
   })
 })

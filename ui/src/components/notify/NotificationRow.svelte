@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bot, Check, Mail, MailOpen, Undo2 } from '@lucide/svelte'
+  import { AtSign, Bell, Bot, Check, CircleAlert, Eye, Mail, MailOpen, Server, Undo2 } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
@@ -59,6 +59,19 @@
   const count = $derived(countLabel(row))
   const actor = $derived(row.actor ?? null)
   const meta = $derived([reason, count, relativeTime(row.createdAt)].filter(Boolean).join(' · '))
+  // A row with no person or agent behind it shows what kind of thing it is,
+  // so every title starts at the same place (Linear/GitHub style).
+  const CategoryIcon = $derived(
+    row.category === 'needs_you'
+      ? CircleAlert
+      : row.category === 'direct'
+        ? AtSign
+        : row.category === 'following'
+          ? Eye
+          : row.category === 'workspace'
+            ? Server
+            : Bell,
+  )
 </script>
 
 <div
@@ -67,7 +80,9 @@
   data-focused={focused ? 'true' : undefined}
   data-selected={selected ? 'true' : undefined}
   class={cn(
-    'group/nrow relative flex items-start gap-2.5 border-b border-line px-3 py-2 transition-colors duration-[120ms] last:border-b-0',
+    'group/nrow relative flex items-start gap-2.5 border-b border-line px-3 transition-colors duration-[120ms] last:border-b-0',
+    // The page's rows breathe a little more than the bell's.
+    compact ? 'py-2' : 'py-2.5',
     focused && 'bg-raised',
     selected && 'bg-accent-soft',
   )}
@@ -83,19 +98,19 @@
   {:else}
     <span class="mt-[9px] h-1.5 w-1.5 shrink-0"></span>
   {/if}
-  {#if !compact || actor}
-    {#if actor?.kind === 'agent'}
-      <span
-        class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border border-line-strong bg-raised text-muted"
-        title={actor.name ?? 'Agent'}
-      >
-        <Bot size={13} strokeWidth={1.5} />
-      </span>
-    {:else if actor?.kind === 'user'}
-      <Avatar src={picture} name={actor.name} class="mt-0.5 h-6 w-6" />
-    {:else if !compact}
-      <span class="mt-0.5 h-6 w-6 shrink-0"></span>
-    {/if}
+  {#if actor?.kind === 'agent'}
+    <span
+      class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border border-line-strong bg-raised text-muted"
+      title={actor.name ?? 'Agent'}
+    >
+      <Bot size={13} strokeWidth={1.5} />
+    </span>
+  {:else if actor?.kind === 'user'}
+    <Avatar src={picture} name={actor.name} class="mt-0.5 h-6 w-6" />
+  {:else}
+    <span class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-ink-dim" aria-hidden="true" data-row-glyph={row.category ?? 'none'}>
+      <CategoryIcon size={13} strokeWidth={1.5} />
+    </span>
   {/if}
   <button
     type="button"
@@ -112,7 +127,10 @@
   <div
     class={cn(
       'flex shrink-0 items-center gap-0.5 transition-opacity',
-      focused || selected ? 'opacity-100' : 'opacity-0 focus-within:opacity-100 group-hover/nrow:opacity-100',
+      // No hover on a touch screen: the actions stay visible there.
+      focused || selected
+        ? 'opacity-100'
+        : 'opacity-0 focus-within:opacity-100 group-hover/nrow:opacity-100 [@media(hover:none)]:opacity-100',
     )}
   >
     {#if canArchive && archived && onRestore}
