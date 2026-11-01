@@ -3,8 +3,9 @@
 // commit — the closed-tab push and the queued mail. The row is the record;
 // everything here is best-effort on top of it.
 //
-// Phase 0 is wave 1's behaviour, moved here: push whenever the class's route
-// keeps an in-app copy (route != `email`, read through prefs v2), mail
+// Phase 0 is wave 1's behaviour, moved here: push whenever the class's Push
+// channel is on (read through prefs v2 — every state wave 1 could store has
+// it on exactly when the route keeps an in-app copy, route != `email`), mail
 // through the in-memory outbox when the route says so and the instance switch
 // is on. W2-E owns this file and turns the decisions into the matrix, DND and
 // presence (docs/notifications/delivery.md).
@@ -55,11 +56,15 @@ pub fn decide(blob: &Value, class: &str, meta: &NotifyMeta) -> Decision {
         } else {
             Alert::Banner
         },
-        // Closed tabs ride the same row: whenever the route keeps an in-app
-        // copy (in_app or both — email-only is the one route where the person
-        // asked this platform to leave their screens alone), the push plane
-        // fans it to every subscribed browser.
-        push: route != "email" && !meta.quiet && !meta.skip_push,
+        // Closed tabs ride the same row: whenever the class's Push channel is
+        // on, the push plane fans it to every subscribed browser. For every
+        // blob wave 1 could write that is exactly "the route keeps an in-app
+        // copy" (in_app or both; email-only is the one route where the person
+        // asked this platform to leave their screens alone) — `channels_of`
+        // derives push from the route — so wave 1's behaviour is unchanged;
+        // and a Push switch turned off in the v2 matrix is obeyed from the
+        // contract on, whichever stream's UI writes it first.
+        push: channels.push && !meta.quiet && !meta.skip_push,
         mail: matches!(route, "email" | "both") && !meta.quiet,
     }
 }
@@ -193,11 +198,26 @@ mod tests {
             ..Default::default()
         };
         assert!(!decide(&json!({}), "mention", &skip).push);
-        // Desktop off in the matrix: still pushed in phase 0 (the route keeps
-        // an in-app copy), but the row is a feed row.
+        // Desktop off in the matrix: still pushed (Push is its own channel),
+        // but the row is a feed row.
         let blob = json!({ "channels": { "mention": { "desktop": false } } });
         let d = decide(&blob, "mention", &m);
         assert_eq!(d.alert, Alert::Feed);
         assert!(d.push);
+        // Push off in the matrix: not pushed, though the route (email and a
+        // screen) still reads `both` and the row still banners.
+        let blob = json!({ "channels": { "mention": { "push": false } } });
+        let d = decide(&blob, "mention", &m);
+        assert_eq!(
+            (d.route, d.alert, d.push, d.mail),
+            ("both", Alert::Banner, false, true)
+        );
+        // Every legacy route wave 1 could store: push iff the route is not
+        // email-only — wave 1's rule, through the channels.
+        for (route, push) in [("in_app", true), ("both", true), ("email", false)] {
+            let d = decide(&json!({ "dm": route }), "dm", &m);
+            assert_eq!(d.push, push, "{route}");
+            assert_eq!(d.route, route);
+        }
     }
 }
