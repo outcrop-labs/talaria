@@ -8,9 +8,11 @@
 //   DATABASE_URL=postgres://… cargo test --test it notifications_reads:: -- --ignored
 
 use crate::support::pg;
+use futures_util::FutureExt;
 use serde_json::Value;
 use sqlx::postgres::PgPool;
 use std::collections::HashSet;
+use std::panic::AssertUnwindSafe;
 use talaria_api::notify::{
     Category, InboxQuery, InboxView, NotificationInput, NotifyDeps, NotifyEntity, NotifyMeta,
     Selector, add_notification_with, archive_notifications, clear_entity, entity,
@@ -930,4 +932,108 @@ async fn a_read_cancels_the_deferred_push_and_a_reopen_rearms_the_mail_from_now(
         .unwrap();
     assert_eq!(deliveries(&pg, &off).await.mail_due_s, None);
     drop_person(&pg, &user).await;
+}
+
+/// A reopen reads the zone a write reads (the wave-2 integration run): a
+/// person with no zone of their own, in a workspace whose brief runs on Tokyo
+/// time, gets a reopened daily mail re-armed for 09:00 Tokyo — W2-E's write
+/// arms it there — not for 09:00 UTC. The instance's `brief_config` is set
+/// aside and put back, pass or fail.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_reopen_with_no_zone_rearms_the_daily_mail_on_the_workspace_clock() {
+    let pg = pg().await;
+    let saved: Option<Value> =
+        sqlx::query_scalar("select value from app_settings where key = 'brief_config'")
+            .fetch_optional(&pg)
+            .await
+            .unwrap();
+    let set_brief = |value: Option<Value>| {
+        let pg = pg.clone();
+        async move {
+            sqlx::query("delete from app_settings where key = 'brief_config'")
+                .execute(&pg)
+                .await
+                .unwrap();
+            if let Some(v) = value {
+                sqlx::query("insert into app_settings (key, value) values ('brief_config', $1)")
+                    .bind(v)
+                    .execute(&pg)
+                    .await
+                    .unwrap();
+            }
+        }
+    };
+    set_brief(Some(serde_json::json!({ "timeZone": "Asia/Tokyo" }))).await;
+    let outcome = AssertUnwindSafe(async {
+        let user = inbox_person(&pg, "n3-zone").await;
+        sqlx::query(
+            "update users set notify_prefs = '{\"email\":{\"frequency\":\"1d\"}}'::jsonb, \
+                    timezone = null where id = $1::uuid",
+        )
+        .bind(&user)
+        .execute(&pg)
+        .await
+        .unwrap();
+        let daily = with_deliveries(&pg, &user, "dm", "/n3/zone", mail_in(-5 * 60)).await;
+        sqlx::query("update notifications set read_at = now() where id = $1::uuid")
+            .bind(&daily)
+            .execute(&pg)
+            .await
+            .unwrap();
+        mark_notifications_unread(&pg, &user, &Selector::Ids(vec![daily.clone()]))
+            .await
+            .unwrap();
+        let override_on = std::env::var("TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS")
+            .is_ok_and(|v| !v.trim().is_empty());
+        if !override_on {
+            let (tokyo, utc, ahead): (String, String, i64) = sqlx::query_as(
+                "select to_char(email_due_at at time zone 'Asia/Tokyo', 'HH24:MI'), \
+                        to_char(email_due_at at time zone 'UTC', 'HH24:MI'), \
+                        round(extract(epoch from email_due_at - now()))::bigint \
+                   from notifications where id = $1::uuid",
+            )
+            .bind(&daily)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+            assert_eq!(
+                tokyo, "09:00",
+                "the workspace's clock, not UTC's ({utc} UTC)"
+            );
+            assert!((0..=24 * 3_600).contains(&ahead), "{ahead}");
+        }
+        // A zone of their own still wins.
+        sqlx::query("update users set timezone = 'America/New_York' where id = $1::uuid")
+            .bind(&user)
+            .execute(&pg)
+            .await
+            .unwrap();
+        sqlx::query("update notifications set read_at = now() where id = $1::uuid")
+            .bind(&daily)
+            .execute(&pg)
+            .await
+            .unwrap();
+        mark_notifications_unread(&pg, &user, &Selector::Ids(vec![daily.clone()]))
+            .await
+            .unwrap();
+        if !override_on {
+            let (local,): (String,) = sqlx::query_as(
+                "select to_char(email_due_at at time zone 'America/New_York', 'HH24:MI') \
+                   from notifications where id = $1::uuid",
+            )
+            .bind(&daily)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+            assert_eq!(local, "09:00");
+        }
+        drop_person(&pg, &user).await;
+    })
+    .catch_unwind()
+    .await;
+    set_brief(saved).await;
+    if let Err(p) = outcome {
+        std::panic::resume_unwind(p);
+    }
 }

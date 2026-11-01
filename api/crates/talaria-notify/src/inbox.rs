@@ -600,6 +600,8 @@ pub async fn reopen_notifications(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
+    // Read outside the transaction, as the write reads it (W2-E's `outside`).
+    let workspace = workspace_zone(pg).await;
     let mut tx = pg.begin().await?;
     let person: Option<(Option<Value>, Option<String>)> = sqlx::query_as(
         "select notify_prefs, timezone from users where id = $1::uuid for no key update",
@@ -637,16 +639,13 @@ pub async fn reopen_notifications(
     .bind(read_at)
     .fetch_all(&mut *tx)
     .await?;
-    // The person's prefs and zone as the write reads them (a missing or
-    // blank zone is UTC).
+    // The person's prefs and zone as the write reads them: their own zone,
+    // else the workspace's.
     let (blob, zone) = match person {
         Some((blob, zone)) => (blob.unwrap_or(Value::Null), zone),
         None => (Value::Null, None),
     };
-    let zone = zone
-        .map(|z| z.trim().to_string())
-        .filter(|z| !z.is_empty())
-        .unwrap_or_else(|| "UTC".into());
+    let zone = person_zone(zone.as_deref(), &workspace);
     let now = now_ms();
     let (pending, due): (Vec<String>, Vec<Option<i64>>) = rows
         .iter()
@@ -677,11 +676,11 @@ pub async fn reopen_notifications(
 /// arms it (`deliver::email_due` in W2-E, #641 — the two must agree, and this
 /// copy goes once that one is on the base): the class's own delay (Needs you:
 /// 15 minutes), else the person's frequency — 15 minutes, an hour, or the
-/// next 09:00 on their own clock — and none for `off`. `override_secs` is the
-/// engine's test knob, every delay n seconds. DND is not read here: the
-/// batcher re-reads the person's pause at send time and holds the row to its
-/// end, or drops it for a pause with none, exactly as a write's due time
-/// would end.
+/// next 09:00 on their clock (`person_zone`) — and none for `off`.
+/// `override_secs` is the engine's test knob, every delay n seconds. DND is
+/// not read here: the batcher re-reads the person's pause at send time and
+/// holds the row to its end, or drops it for a pause with none, exactly as a
+/// write's due time would end.
 fn reopened_mail_due(
     blob: &Value,
     zone: &str,
@@ -708,6 +707,39 @@ fn reopened_mail_due(
         "1d" => next_nine_local(zone, now_ms),
         _ => now_ms + 60 * 60_000,
     })
+}
+
+/// The zone a person's daily mail reads in: their own, else the workspace's —
+/// the brief's and the digest's rule (`talaria_daily_brief_config::zone_for`),
+/// which W2-E's write follows (`prefs::person_zone`, #641). A copy of that
+/// pair, like `reopened_mail_due`, and it goes with it: without it a person
+/// with no zone of their own had a reopened daily mail re-armed for 09:00 UTC
+/// while every write armed it for 09:00 on the workspace's clock.
+fn person_zone(stored: Option<&str>, workspace: &str) -> String {
+    stored
+        .map(str::trim)
+        .filter(|z| !z.is_empty())
+        .map_or_else(|| workspace.to_string(), str::to_string)
+}
+
+/// The workspace's zone as the brief resolves it (`brief_config(pg).time_zone`
+/// in `talaria-daily-brief-config`, which W2-E's `prefs::workspace_zone`
+/// reads): the stored `timeZone`, else `TZ`, else UTC.
+async fn workspace_zone(pg: &PgPool) -> String {
+    let brief =
+        talaria_settings::get_setting(pg, "brief_config", Value::Object(Default::default())).await;
+    workspace_zone_of(&brief, std::env::var("TZ").ok().as_deref())
+}
+
+fn workspace_zone_of(brief: &Value, tz_env: Option<&str>) -> String {
+    brief
+        .get("timeZone")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|z| !z.is_empty())
+        .or(tz_env.filter(|z| !z.is_empty()))
+        .unwrap_or("UTC")
+        .to_string()
 }
 
 /// The engine's test-only mail delay (`TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS`,
@@ -1153,6 +1185,38 @@ mod tests {
         assert_eq!(
             next_nine_local("Asia/Kolkata", at("2026-01-01T12:00:00.000Z")),
             at("2026-01-02T03:30:00.000Z")
+        );
+    }
+
+    // The engine's `a_person_with_no_zone_reads_the_workspace_clock` (#641):
+    // a reopen reads the same zone a write does.
+    #[test]
+    fn a_reopen_with_no_zone_of_ones_own_reads_the_workspace_clock() {
+        let tokyo = json!({ "timeZone": "Asia/Tokyo" });
+        assert_eq!(
+            workspace_zone_of(&tokyo, Some("Europe/Paris")),
+            "Asia/Tokyo"
+        );
+        assert_eq!(
+            workspace_zone_of(&json!({ "timeZone": " " }), Some("Europe/Paris")),
+            "Europe/Paris"
+        );
+        assert_eq!(workspace_zone_of(&json!({}), Some("")), "UTC");
+        assert_eq!(workspace_zone_of(&json!({}), None), "UTC");
+        assert_eq!(person_zone(None, "Asia/Tokyo"), "Asia/Tokyo");
+        assert_eq!(person_zone(Some("  "), "Asia/Tokyo"), "Asia/Tokyo");
+        assert_eq!(
+            person_zone(Some(" America/New_York "), "Asia/Tokyo"),
+            "America/New_York"
+        );
+        // So a daily mail reopened at noon UTC by a person with no zone, in a
+        // Tokyo workspace, is due at 09:00 Tokyo (00:00Z tomorrow) — not at
+        // 09:00 UTC (21 h ahead).
+        let daily = json!({ "email": { "frequency": "1d" } });
+        let zone = person_zone(None, &workspace_zone_of(&tokyo, None));
+        assert_eq!(
+            reopened_mail_due(&daily, &zone, "dm", NOON_UTC, None),
+            Some(at("2026-01-02T00:00:00.000Z"))
         );
     }
 }
