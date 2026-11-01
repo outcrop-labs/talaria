@@ -47,10 +47,18 @@ email  = Email && emailEnabled && !quiet && frequency != off
   file a notification while holding that person's `users` row itself: the write locks it
   until commit (contract note N7).
 - **A coalesce** (`Realert`) is a new version of the row. It takes this write's push
-  decision (a pending deferral is replaced, or cancelled when this write does not push),
-  forgets the old version's ack, and arms a mail only when the row has none pending and
-  none sent. A `Quiet` coalesce changes none of the delivery columns. `refresh_notification`
-  behaves like a `Realert` coalesce and never mails again.
+  decision (a pending deferral is replaced, or cancelled when this write does not push) and
+  forgets the old version's ack. Its mail:
+  - a mail already pending stands, so a burst is one mail, and the batch carries the row's
+    newest content;
+  - a row already **mailed** is armed again with this write's due time (`emailed_at` and
+    `email_attempts` reset), so a conversation the person is away from is mailed again at
+    their frequency while it stays unread, as Slack's and Teams' missed-activity mail is,
+    instead of once and then never;
+  - a row the batcher gave up on stays given up.
+
+  A `Quiet` coalesce changes none of the delivery columns. `refresh_notification` (a DM's
+  newer message on its unread row) behaves like a `Realert` coalesce, mail included.
 
 ### Defaults
 
@@ -75,10 +83,17 @@ moves anyone's digest.
   timeout means there is no winner, and the push goes now.** Delivery fails open.
 - The thresholds: looking means input in the last 60 s, active means input in the last
   120 s, an entry is stale at 75 s, and the deferral is 60 s (`presence::PUSH_DEFER_MS`).
-- The winner cache (`presence:win:<user>`) is a compare-and-set in one Lua script. The value
-  is `<at>|<pair>`, and a beat whose entries were read earlier than the cached answer never
-  overwrites it (contract note N2). A beat publishes the `presence` frame only when it moved
-  the pair.
+- **The winner cache** (`presence:win:<user>`, contract note N2). A beat is one Lua script:
+  it writes the client's entry, refreshes the hash's TTL, takes the next value of one
+  never-expiring counter (`presence:seq`) and reads the hash back, all in one step. The
+  cache holds `<seq>#<pair>`, and a second script compares and sets it: a pair computed from
+  an earlier read never overwrites one from a later read. The counter orders the reads
+  themselves, across threads and processes. A beat's wall time could not: two beats a
+  millisecond apart can read the hash in the other order, which left the cache holding the
+  pair of the read that missed the other beat's entry, with no `presence` frame for it. A
+  beat publishes the frame only when it moved the pair. Stale entries are deleted only if
+  they still hold the value that was read as stale, so a fresh beat landing in between keeps
+  its entry.
 - **The ack (I-18).** The client that toasted a row to someone looking, or posted an OS
   banner for it, calls `POST /api/notifications/ack`, which sets `surfaced_at`.
 - **The deferred-push job** (`notify-deferred-push`, leased, every 5 s) claims rows whose
@@ -153,7 +168,12 @@ so that a queue accepted by the previous binary still drains (PLAN3 §13 retires
     2 × 15 s. 429, 5xx and connect failures are still retried twice.
   - A row that timed out, or has failed three times running, is skipped for 2^failures
     minutes (60 at most) after its last attempt.
-  - Ten failures with no delivery for seven days prune the row.
+  - Ten failures in a row, with `last_seen_at` more than seven days old, prune the row.
+    `last_seen_at` moves on every 2xx and also whenever the browser files the subscription
+    again (every page boot does), so this prunes a device that has neither received a push
+    nor opened Talaria for a week. A browser that keeps opening Talaria keeps its failing
+    row, which is then tried at most once an hour (the backoff cap). There is no "last 2xx"
+    column (the DDL is frozen).
   - A 2xx resets the count.
   - The person's other devices never wait on a hung one: they are posted four at a time.
 - **The per-device test** (`send_test`, `POST /api/notifications/test`) is one direct
@@ -170,7 +190,10 @@ Two daily jobs, both leased:
 
 - **`notify-retention`** deletes rows read more than 90 days ago and rows unread for more
   than 180 days (O-15), in batches of 10,000, together with the `inbox_focus_state` rows
-  that pointed at them (keyed by the row id as text, with no foreign key).
+  that pointed at them (keyed by the row id as text, with no foreign key). An unread row's
+  age is its last activity (`updated_at`, else `created_at`): a group row that `Quiet`
+  coalesces keep current keeps its `created_at`, and a channel's activity row filed six
+  months ago and updated yesterday is not stale.
 - **`push-prune`** (C26):
   - **The marker.** `talaria-session` writes a liveness marker,
     `sesshash:<hex sha256 of the session id>`, beside every session with the same TTL. It
@@ -182,8 +205,8 @@ Two daily jobs, both leased:
     that lacks it (a session minted before the marker existed), so a deploy never mistakes a
     live session for a dead one.
   - **Database-only rules.** Rows with no `session_hash` (from before wave 1) go after 30
-    days with no delivery. Rows that have failed ten times with no delivery for a week also
-    go.
+    days with no delivery and no re-file (`last_seen_at`). Rows that have failed ten times
+    in a row with `last_seen_at` a week old also go (the same rule as the push edge's).
   - **No Redis handle, no session pass.** It never guesses.
 
 ## Jobs and test-only settings
