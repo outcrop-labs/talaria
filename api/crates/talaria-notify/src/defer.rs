@@ -88,15 +88,13 @@ pub async fn run_deferred_push(pg: &PgPool) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let switches = crate::mail::delivery_switches(pg).await;
+    let workspace_zone = crate::prefs::workspace_zone(pg).await;
     let now = talaria_agent_auth::now_ms();
     let mut pushed = 0usize;
     let mut dropped: Vec<String> = Vec::new();
     for (id, user_id, kind, title, body, href, count, created_ms, blob, zone) in rows {
         let blob = blob.unwrap_or(serde_json::Value::Null);
-        let zone = zone
-            .map(|z| z.trim().to_string())
-            .filter(|z| !z.is_empty())
-            .unwrap_or_else(|| "UTC".into());
+        let zone = crate::prefs::person_zone(zone.as_deref(), &workspace_zone);
         let class = notify_class_of(&kind);
         let breaks = class_def(class).is_some_and(|d| d.breaks_through) && allow_needs_you(&blob);
         let held = dnd_state(&blob, &zone, now).active && !breaks;

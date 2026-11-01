@@ -4,14 +4,14 @@
 // break-through, quiet Following), the presence-deferred push and its ack,
 // the push headers by category, the missed-activity batcher (with a fake mail
 // edge), retention, the push prune of ended sessions, the per-device test and
-// the VAPID key cache.
+// the VAPID key cache, and the workspace zone a no-zone person reads.
 //
 // ONE test, steps in order: the push plane and the presence handle are
 // process-wide OnceLocks, so they are installed once, in this test's runtime,
 // and nothing else in the module may race them. The instance's own
-// `push_vapid` and `notify_delivery` rows are set aside and restored, pass or
-// fail, and the people are throwaway `.invalid` rows. Stop the stack's own
-// api while it runs (its batcher would claim these rows too).
+// `push_vapid`, `notify_delivery` and `brief_config` rows are set aside and
+// restored, pass or fail, and the people are throwaway `.invalid` rows. Stop
+// the stack's own api while it runs (its batcher would claim these rows too).
 //
 //   DATABASE_URL=… REDIS_URL=… cargo test -p talaria-api --test it \
 //     notify_engine_live:: -- --ignored --nocapture
@@ -361,10 +361,10 @@ async fn exec(pg: &PgPool, sql: &str, id: &str) {
         .unwrap();
 }
 
-/// Run `body` with the instance's `push_vapid` and `notify_delivery` rows set
-/// aside, then put them back — pass or fail.
+/// Run `body` with the instance's `push_vapid`, `notify_delivery` and
+/// `brief_config` rows set aside, then put them back — pass or fail.
 async fn with_instance_rows_set_aside<F: std::future::Future<Output = ()>>(pg: &PgPool, body: F) {
-    let keys = [VAPID_KEY, "notify_delivery"];
+    let keys = [VAPID_KEY, "notify_delivery", "brief_config"];
     let mut saved: Vec<(String, Value)> = Vec::new();
     for k in keys {
         if let Some(v) =
@@ -1240,4 +1240,44 @@ async fn engine(pg: &PgPool) {
     );
     assert_eq!(talaria_api::push::vapid_unseals(), u1 + 1);
     println!("PASS vapid cache");
+
+    // ── 11. A person with no zone reads the workspace's clock ──────────────
+    // Working hours that bracket Tokyo's hour (UTC+9 all year) and exclude
+    // UTC's: in a Tokyo workspace, a no-zone person is inside them.
+    let cy = person(&pg, "cy").await;
+    let tokyo = (chrono::Utc::now() + chrono::Duration::hours(9))
+        .format("%H")
+        .to_string()
+        .parse::<u32>()
+        .unwrap();
+    let schedule = json!({ "dnd": { "schedule": {
+        "enabled": true, "days": [0,1,2,3,4,5,6],
+        "start": format!("{:02}:00", (tokyo + 23) % 24),
+        "end": format!("{:02}:00", (tokyo + 2) % 24),
+    } } });
+    set_prefs(&pg, &cy, schedule).await;
+    sqlx::query(
+        "insert into app_settings (key, value) values ('brief_config', '{\"timeZone\": \"Asia/Tokyo\"}')",
+    )
+    .execute(&pg)
+    .await
+    .unwrap();
+    // The workspace zone is held for 10 s.
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    let (_, zone) = talaria_api::notify::prefs_and_zone(&pg, &cy).await;
+    assert_eq!(zone, "Asia/Tokyo", "no profile zone → the workspace's");
+    let id = file(&pg, &cy, "dm", "inside Tokyo's working hours", &m).await;
+    assert_eq!(row(&pg, &id).await.alert.as_deref(), Some("banner"));
+    // A zone of their own wins: in UTC the same hours are outside.
+    exec(
+        &pg,
+        "update users set timezone = 'UTC' where id = $1::uuid",
+        &cy,
+    )
+    .await;
+    let (_, zone) = talaria_api::notify::prefs_and_zone(&pg, &cy).await;
+    assert_eq!(zone, "UTC");
+    let id = file(&pg, &cy, "dm", "outside UTC's working hours", &m).await;
+    assert_eq!(row(&pg, &id).await.alert.as_deref(), Some("feed"));
+    println!("PASS workspace zone");
 }

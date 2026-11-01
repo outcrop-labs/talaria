@@ -16,23 +16,30 @@ use crate::meta::{Coalesce, Filed, NotifyMeta};
 use crate::prefs::DeliverySwitches;
 
 /// What the write reads BEFORE its transaction, so nothing slow runs while the
-/// person's users row is locked: the instance switches (10 s cache) and
-/// whether one of their clients is in use (one bounded Redis read, failing
-/// open).
+/// person's users row is locked: the instance switches and the workspace's
+/// zone (10 s caches each) and whether one of their clients is in use (one
+/// bounded Redis read, failing open).
 struct Outside {
     switches: DeliverySwitches,
+    workspace_zone: String,
     present: bool,
 }
 
 async fn outside(deps: &NotifyDeps, user_id: &str) -> Outside {
     let switches = crate::mail::delivery_switches(&deps.pg).await;
+    let workspace_zone = crate::prefs::workspace_zone(&deps.pg).await;
     let present = crate::presence::active_winner(user_id, wall_ms())
         .await
         .present();
-    Outside { switches, present }
+    Outside {
+        switches,
+        workspace_zone,
+        present,
+    }
 }
 
-/// The decision, from what the transaction's users-row read returned.
+/// The decision, from what the transaction's users-row read returned. A
+/// person with no zone of their own reads the workspace's clock.
 fn decision_for(
     blob: &Value,
     zone: Option<String>,
@@ -40,10 +47,7 @@ fn decision_for(
     meta: &NotifyMeta,
     o: &Outside,
 ) -> Decision {
-    let zone = zone
-        .map(|z| z.trim().to_string())
-        .filter(|z| !z.is_empty())
-        .unwrap_or_else(|| "UTC".into());
+    let zone = crate::prefs::person_zone(zone.as_deref(), &o.workspace_zone);
     deliver::decide(
         blob,
         class,

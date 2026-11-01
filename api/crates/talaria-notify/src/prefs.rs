@@ -355,28 +355,62 @@ pub(crate) async fn prefs_blob(pg: &PgPool, user_id: &str) -> Option<Value> {
     }
 }
 
-/// The stored blob and the person's time zone (`users.timezone`, else UTC),
-/// from one row. Never fails: a failed read is the defaults.
+/// The stored blob and the person's time zone (`person_zone`: their own,
+/// else the workspace's), from one row. Never fails: a failed read is the
+/// defaults, in the workspace's zone.
 pub async fn prefs_and_zone(pg: &PgPool, user_id: &str) -> (Value, String) {
-    match sqlx::query_as::<_, (Option<Value>, Option<String>)>(
+    let (blob, stored) = match sqlx::query_as::<_, (Option<Value>, Option<String>)>(
         "select notify_prefs, timezone from users where id = $1::uuid",
     )
     .bind(user_id)
     .fetch_optional(pg)
     .await
     {
-        Ok(Some((blob, tz))) => (
-            blob.unwrap_or(Value::Null),
-            tz.map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| "UTC".into()),
-        ),
-        Ok(None) => (Value::Null, "UTC".into()),
+        Ok(Some((blob, tz))) => (blob.unwrap_or(Value::Null), tz),
+        Ok(None) => (Value::Null, None),
         Err(e) => {
             tracing::error!("[notifications] could not read notify_prefs: {e}");
-            (Value::Null, "UTC".into())
+            (Value::Null, None)
         }
+    };
+    let zone = person_zone(stored.as_deref(), &workspace_zone(pg).await);
+    (blob, zone)
+}
+
+// ── The zone a person's clock reads in ───────────────────────────────────────
+//
+// A profile with no zone of its own follows the workspace's: that is what
+// Profile → Time zone's "Workspace default" says, and what the daily brief
+// opens in for that person. DND, working hours and the daily mail's 09:00
+// read the same clock as the brief, so one person's "9:00" is one instant.
+// The workspace's zone is the brief's (`brief_config.timeZone`, else the `TZ`
+// env, else UTC); the digest resolves the same way over its own
+// `digest_config.timeZone`, which falls back to the same `TZ` → UTC.
+
+/// How long `workspace_zone` serves the zone it read: every filing asks.
+const WORKSPACE_ZONE_TTL_MS: i64 = 10_000;
+static WORKSPACE_ZONE: std::sync::LazyLock<std::sync::Mutex<Option<(i64, String)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// The workspace's zone, as the brief reads it
+/// (`talaria_daily_brief_config::brief_config`), held for 10 s.
+pub async fn workspace_zone(pg: &PgPool) -> String {
+    let now = wall_ms();
+    if let Some((at, zone)) = &*WORKSPACE_ZONE.lock().unwrap_or_else(|p| p.into_inner())
+        && now - at < WORKSPACE_ZONE_TTL_MS
+    {
+        return zone.clone();
     }
+    let zone = talaria_daily_brief_config::brief_config(pg).await.time_zone;
+    *WORKSPACE_ZONE.lock().unwrap_or_else(|p| p.into_inner()) = Some((now, zone.clone()));
+    zone
+}
+
+/// The zone a person's DND, working hours and daily mail read in: their own
+/// (`users.timezone`), else the workspace's. A blank stored value is unset.
+/// The brief's and the digest's own rule (`zone_for`), not a copy of it.
+pub fn person_zone(stored: Option<&str>, workspace: &str) -> String {
+    talaria_daily_brief_config::zone_for(stored, workspace)
 }
 
 /// Everything the Settings panel shows, from one row: the resolved table and
@@ -1428,6 +1462,36 @@ mod tests {
         // And at 08:30Z that Monday London is inside (09:30 BST); New York is not.
         assert!(!dnd_state(&blob, "Europe/London", at("2026-03-30T08:30:00.000Z")).active);
         assert!(dnd_state(&blob, "America/New_York", at("2026-03-30T08:30:00.000Z")).active);
+    }
+
+    #[test]
+    fn a_person_with_no_zone_reads_the_workspace_clock() {
+        // Their own zone wins; none, or a blank one, is the workspace's — as
+        // the brief and the digest resolve it — never a bare UTC.
+        assert_eq!(
+            person_zone(Some("Europe/London"), "Asia/Tokyo"),
+            "Europe/London"
+        );
+        assert_eq!(
+            person_zone(Some(" Europe/London "), "Asia/Tokyo"),
+            "Europe/London"
+        );
+        assert_eq!(person_zone(None, "Asia/Tokyo"), "Asia/Tokyo");
+        assert_eq!(person_zone(Some("   "), "Asia/Tokyo"), "Asia/Tokyo");
+        // Working hours 09:00–17:00 every day in a Tokyo workspace. At 01:00Z
+        // (10:00 in Tokyo) a no-zone person is inside them; read as UTC, as
+        // the engine did, they were outside and every alert went quiet.
+        let blob = sched(&[0, 1, 2, 3, 4, 5, 6], "09:00", "17:00");
+        let t = at("2026-11-02T01:00:00.000Z");
+        let zone = person_zone(None, "Asia/Tokyo");
+        assert!(!dnd_state(&blob, &zone, t).active);
+        assert_eq!(dnd_wire(&blob, &zone, t)["timeZone"], json!("Asia/Tokyo"));
+        assert!(dnd_state(&blob, "UTC", t).active);
+        // And the daily mail's 09:00 is Tokyo's: 00:00Z the next day.
+        assert_eq!(
+            next_local_time(&zone, t, 9 * 60),
+            at("2026-11-03T00:00:00.000Z")
+        );
     }
 
     #[test]

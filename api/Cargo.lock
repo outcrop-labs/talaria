@@ -6224,6 +6224,7 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-body",
+ "talaria-daily-brief-config",
  "talaria-email",
  "talaria-fleet-layout",
  "talaria-instance",

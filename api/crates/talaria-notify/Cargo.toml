@@ -18,6 +18,7 @@ redis = { workspace = true }
 
 talaria-agent-auth = { workspace = true }
 talaria-body = { workspace = true }
+talaria-daily-brief-config = { workspace = true }
 talaria-email = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-instance = { workspace = true }

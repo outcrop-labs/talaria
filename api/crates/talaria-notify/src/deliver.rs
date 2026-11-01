@@ -82,7 +82,8 @@ impl Decision {
 /// What the write knows beyond the person's blob.
 #[derive(Clone, Copy, Debug)]
 pub struct Context<'a> {
-    /// The person's time zone (`users.timezone`, else UTC).
+    /// The person's time zone (`prefs::person_zone`: their own, else the
+    /// workspace's).
     pub zone: &'a str,
     pub now_ms: i64,
     pub switches: DeliverySwitches,
