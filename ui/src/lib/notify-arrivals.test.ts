@@ -6,6 +6,7 @@ import {
   SEEN_MAX,
   coalesce,
   computeArrivals,
+  frameNeedsRead,
   present,
   readSince,
   summaryTitle,
@@ -342,5 +343,26 @@ describe('PersistedArrivals — v2', () => {
     const rec = JSON.parse(store.value ?? '{}').u1
     expect(Object.keys(rec).sort()).toEqual(['at', 'hw', 'seen', 'seq', 'v'])
     expect(typeof rec.hw).toBe('string')
+  })
+})
+
+describe('frameNeedsRead — a replay of rows already read asks for nothing', () => {
+  it('reads a notification past the cursor, skips one at or below it', () => {
+    expect(frameNeedsRead({ type: 'notification', seq: 11 }, 10)).toBe(true)
+    expect(frameNeedsRead({ type: 'notification', seq: 10 }, 10)).toBe(false)
+    expect(frameNeedsRead({ type: 'notification', seq: 3 }, 10)).toBe(false)
+  })
+  it('reads when it cannot tell: no seq (an older api), no cursor yet', () => {
+    expect(frameNeedsRead({ type: 'notification' }, 10)).toBe(true)
+    expect(frameNeedsRead({ type: 'notification', seq: 3 }, null)).toBe(true)
+  })
+  it('a complete resync at or below the cursor is done; an incomplete one always reads', () => {
+    expect(frameNeedsRead({ type: 'resync', seq: 10, complete: true }, 10)).toBe(false)
+    expect(frameNeedsRead({ type: 'resync', seq: 12, complete: true }, 10)).toBe(true)
+    expect(frameNeedsRead({ type: 'resync', seq: 9, complete: false }, 10)).toBe(true)
+  })
+  it('other frames never read', () => {
+    expect(frameNeedsRead({ type: 'notifications' }, 10)).toBe(false)
+    expect(frameNeedsRead({ type: 'presence' }, null)).toBe(false)
   })
 })

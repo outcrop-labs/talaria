@@ -191,6 +191,21 @@ export async function readSince<T extends ArrivalRow>(
   return { rows, through: cursor > from ? cursor : null, complete: false }
 }
 
+/** Does this stream frame call for a `?since` read? A `notification` frame
+ *  whose seq the cursor already covers, and a complete `resync` at or below
+ *  it, do not: a replay (I-19) sends one frame per row past the STREAM's
+ *  cursor, one at a time, and the first read has usually covered them all.
+ *  Anything without a seq, or a tab without a cursor yet, reads. */
+export function frameNeedsRead(
+  ev: { type: string; seq?: number; complete?: boolean },
+  cursor: number | null,
+): boolean {
+  if (ev.type !== 'notification' && ev.type !== 'resync') return false
+  if (cursor === null || !isSeq(ev.seq)) return true
+  if (ev.seq > cursor) return true
+  return ev.type === 'resync' && !ev.complete
+}
+
 /** One run at a time; a call while one runs asks for exactly one more after
  *  it. Every `notification` frame, `resync`, open and poll asks for a
  *  `?since` read — a burst of 60 frames is two reads, not sixty. */

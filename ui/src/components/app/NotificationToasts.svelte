@@ -18,7 +18,7 @@
   import { lastInputAt, lookingNow, lookingWithInput, onInput } from '@/lib/looking'
   import { saveNotifyPrompt, useNotifications, type Notification, type NotificationsPayload } from '@/lib/notifications'
   import { canvasDot, startAmbient, type Ambient } from '@/lib/notify-ambient'
-  import { PersistedArrivals, coalesce, present, readSince, summaryTitle, type Arrival, type SincePage } from '@/lib/notify-arrivals'
+  import { PersistedArrivals, coalesce, frameNeedsRead, present, readSince, summaryTitle, type Arrival, type SincePage } from '@/lib/notify-arrivals'
   import { idbBanneredStore, markBannered, wasBannered } from '@/lib/notify-bannered'
   import { CLAIM_WINDOW_MS, atPath, decide, selfLooking, visitReadIds, winnerIsHere, type DecideInput } from '@/lib/notify-decide'
   import { blockedSteps, detectBrowser, type BlockedSteps } from '@/lib/notify-help'
@@ -216,7 +216,10 @@
   $effect(() =>
     onUserEvent((ev) => {
       if (ev.type === 'notification' || ev.type === 'resync') {
-        if (has('since')) void catchUp()
+        if (!has('since')) return
+        // A replay sends one frame per row past the stream's cursor: a frame
+        // this tab has already read through asks for nothing.
+        if (frameNeedsRead(ev, tracker?.cursor() ?? null)) void catchUp()
       } else if (ev.type === 'notifications') {
         if (typeof ev.unreadForYou === 'number') ambient?.set(ev.unreadForYou)
         void readSync(ev)

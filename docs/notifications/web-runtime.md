@@ -83,8 +83,10 @@ The record keeps its key and wave 1's `hw`/`seen`/`at`, and gains `v: 2` and
 - With `since` in `features`, the tracker reads `GET /api/notifications?since=
   <cursor>` on every `notification` frame, every `resync`, every stream
   (re)open and every poll whose snapshot `seq` is past the cursor. The reads
-  are coalesced: a burst of 60 frames is two reads. Pages of 200 are followed
-  until `more` is false (at most 10 per catch-up; the next catch-up reads on).
+  are coalesced: a burst of 60 frames is two reads, and a `notification`
+  frame whose seq the cursor already covers (a replay sends one per row past
+  the stream's cursor) asks for none. Pages of 200 are followed until `more`
+  is false (at most 10 per catch-up; the next catch-up reads on).
 - A row with a seq, under a record with a cursor, is an arrival iff it is
   unread, its seq is past the cursor, and it is unseen or its `createdAt`
   moved later (a re-alert). There is no margin. A Quiet coalesce takes a new
