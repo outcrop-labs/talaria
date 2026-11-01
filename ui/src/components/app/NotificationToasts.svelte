@@ -214,7 +214,7 @@
         void readSync(ev)
       } else if (ev.type === 'presence') {
         notePresence(ev)
-        setPresence({ looking: ev.looking, active: ev.active, clients: ev.clients, self: me })
+        untrack(() => setPresence({ looking: ev.looking, active: ev.active, clients: ev.clients, self: me }))
       }
     }),
   )
@@ -261,7 +261,7 @@
     void getJson<PresenceSnapshot>('/api/me/presence')
       .then((p) => {
         notePresence({ looking: p.looking, active: p.active, clients: p.clients?.length ?? 0 })
-        setPresence({ looking: p.looking, active: p.active, clients: p.clients?.length ?? 0, self: me })
+        untrack(() => setPresence({ looking: p.looking, active: p.active, clients: p.clients?.length ?? 0, self: me }))
       })
       .catch(() => {})
   })

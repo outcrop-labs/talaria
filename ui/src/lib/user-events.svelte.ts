@@ -20,6 +20,7 @@
 // way. The stream opens with `?since=<the arrival record's cursor>` (I-19),
 // read at every reconnect, so a reopened stream replays what it missed.
 import { openStream, type StreamState } from '@/lib/sse'
+import { untrack } from 'svelte'
 import { useQueryClient } from '@tanstack/svelte-query'
 import { lastInputAt, trackInput } from '@/lib/looking'
 import { startHub, type Hub, type HubRole } from '@/lib/notify-hub'
@@ -103,11 +104,16 @@ function dispatch(data: string): void {
     return
   }
   if (!parsed || typeof parsed.type !== 'string') return
-  noteStreamEvent()
+  status(() => noteStreamEvent())
   for (const fn of listeners) fn(parsed)
 }
 
 const statusOf = (s: StreamState): 'connecting' | 'open' | 'reconnecting' | 'closed' => (s === 'paused' ? 'closed' : s)
+
+/** The status panel's setters read the state they write: called inside a
+ *  component's $effect (the runtime starts from one) they would make that
+ *  effect depend on the status and loop. Every call goes through here. */
+const status = (fn: () => void) => untrack(fn)
 
 function start(): void {
   if (runtime || typeof window === 'undefined' || typeof document === 'undefined') return
@@ -133,11 +139,13 @@ function start(): void {
     hub.onOpen((info) => {
       for (const fn of openListeners) fn(info)
     }),
-    hub.onRole((r: HubRole) => setHubRole(r)),
-    hub.onState((s) => setStreamState(statusOf(s))),
+    hub.onRole((r: HubRole) => status(() => setHubRole(r))),
+    hub.onState((s) => status(() => setStreamState(statusOf(s)))),
   ]
-  setHubRole(hub.role())
-  setStreamState(statusOf(hub.state()))
+  status(() => {
+    setHubRole(hub.role())
+    setStreamState(statusOf(hub.state()))
+  })
   runtime = {
     leader,
     hub,
@@ -146,8 +154,10 @@ function start(): void {
       hub.close()
       leader.close()
       releaseInput()
-      setStreamState('closed')
-      setHubRole('unknown')
+      status(() => {
+        setStreamState('closed')
+        setHubRole('unknown')
+      })
     },
   }
   for (const fn of runtimeListeners) fn({ leader, hub })

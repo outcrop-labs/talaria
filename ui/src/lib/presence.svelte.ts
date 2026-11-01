@@ -15,6 +15,7 @@
 // person has open, and a hidden tab must not vanish from it.
 //
 // Sent at once, on every state change (at most one per 5 s), and every 30 s.
+import { untrack } from 'svelte'
 import { putJson } from '@/lib/fetch-json'
 import { inDesktopShell, shellOsIdleMs } from '@/lib/desktop-shell'
 import { lastInputAt, onInput, trackInput } from '@/lib/looking'
@@ -54,7 +55,7 @@ const defaultSend = async (body: PresenceBody) => {
   if (res && ('looking' in res || 'active' in res)) {
     notePresence({ looking: res.looking ?? null, active: res.active ?? null })
     const v = presenceView()
-    setPresence({ looking: v.looking, active: v.active, clients: v.clients, self: body.clientId })
+    untrack(() => setPresence({ looking: v.looking, active: v.active, clients: v.clients, self: body.clientId }))
   }
   return res
 }
@@ -74,7 +75,9 @@ export function startPresenceHeartbeat(opts: PresenceOptions = {}): () => void {
   const shell = inDesktopShell()
   const kind = opts.kind ?? (shell ? 'desktop' : 'web')
   const id = opts.clientId ?? clientId()
-  setPresence({ self: id })
+  // Untracked: the setter reads the status it writes, and this runs inside
+  // AppLayout's $effect.
+  untrack(() => setPresence({ self: id }))
   const releaseInput = opts.win ? () => {} : trackInput()
   const hb: Heartbeat = startHeartbeat({
     clientId: id,
