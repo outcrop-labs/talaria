@@ -19,8 +19,8 @@ use talaria_gateway::usage::task_usage;
 use talaria_judge::list_judge_reviews;
 use talaria_labels::ensure_labels;
 use talaria_notify::{
-    ActorKind, Coalesce, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
-    add_notification_with, entity, group_key,
+    ActorKind, Coalesce, Filed, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity,
+    NotifyMeta, add_notification_with, entity, group_key,
 };
 use talaria_realtime::{BoardEvent, RealtimeDeps, publish_board};
 use talaria_retrieval::sources::{
@@ -358,6 +358,48 @@ fn status_body(first: Option<&str>, moves: i64, now: &str) -> Option<String> {
     }
 }
 
+/// The body a status row should carry once its write landed, when it differs
+/// from the one written: `None` when the written body already names the row's
+/// own count. Pure.
+fn status_reword(
+    first: Option<&str>,
+    count: i32,
+    now: &str,
+    wrote: Option<&str>,
+) -> Option<Option<String>> {
+    let want = status_body(first, i64::from(count), now);
+    (want.as_deref() != wrote).then_some(want)
+}
+
+/// A status row's body names the row's OWN count. The count read before the
+/// write is a guess: each move's fan-out runs detached, so moves close together
+/// can word the body from the same count (the wave-2 integration run: `count`
+/// 4, "Moved 3 times"; `count` 5 still worded as the first move). When the
+/// write's count says otherwise, the body is reworded — but only while the row
+/// still holds this write's seq, so a later write keeps the last word with its
+/// own count, in whatever order the fan-outs land.
+async fn reword_status_row(
+    pg: &PgPool,
+    filed: &Filed,
+    first: Option<&str>,
+    now: &str,
+    wrote: Option<&str>,
+) {
+    let Some(want) = status_reword(first, filed.count, now, wrote) else {
+        return;
+    };
+    if let Err(e) =
+        sqlx::query("update notifications set body = $3 where id = $1::uuid and seq = $2")
+            .bind(&filed.id)
+            .bind(filed.seq)
+            .bind(want.as_deref())
+            .execute(pg)
+            .await
+    {
+        tracing::error!("tasks: rewording status row {} failed: {e}", filed.id);
+    }
+}
+
 /// Who a ticket row says caused it (I-11): a person by their users.id when the
 /// actor string names one, the judge as the system, otherwise an agent by its
 /// model id.
@@ -456,8 +498,14 @@ async fn notify_task_users(
             body: body.as_deref(),
             href: n.href.as_deref(),
         };
-        if let Err(e) = add_notification_with(notify, user_id, &input, &meta).await {
-            tracing::error!("tasks: notification for {user_id} failed: {e}");
+        match add_notification_with(notify, user_id, &input, &meta).await {
+            Ok(filed) => {
+                if let Some(now) = &n.status_burst {
+                    reword_status_row(&notify.pg, &filed, n.body.as_deref(), now, body.as_deref())
+                        .await;
+                }
+            }
+            Err(e) => tracing::error!("tasks: notification for {user_id} failed: {e}"),
         }
     }
 }
@@ -2865,6 +2913,41 @@ pub async fn list_activity(pg: &PgPool, task_id: &str) -> Result<Vec<TaskActivit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_status_row_is_reworded_to_its_own_count() {
+        // The guess matched the row: nothing to do.
+        assert_eq!(
+            status_reword(
+                Some("Burst"),
+                3,
+                "in progress",
+                Some("Moved 3 times — now in progress")
+            ),
+            None
+        );
+        // Two fan-outs read the same count: the row says 4, the body 3.
+        assert_eq!(
+            status_reword(
+                Some("Burst"),
+                4,
+                "in progress",
+                Some("Moved 3 times — now in progress")
+            ),
+            Some(Some("Moved 4 times — now in progress".into()))
+        );
+        // A coalesce worded as the first move (it read no open row).
+        assert_eq!(
+            status_reword(Some("Burst"), 5, "inbox", Some("Burst")),
+            Some(Some("Moved 5 times — now inbox".into()))
+        );
+        // A fresh row worded as a burst (the open row it read had just expired).
+        assert_eq!(
+            status_reword(Some("Burst"), 1, "inbox", Some("Moved 2 times — now inbox")),
+            Some(Some("Burst".into()))
+        );
+        assert_eq!(status_reword(None, 1, "inbox", None), None);
+    }
     #[test]
     fn ticket_address_accepts_a_uuid_and_the_board_ref() {
         assert!(matches!(

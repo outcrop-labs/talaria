@@ -943,3 +943,83 @@ async fn an_approval_is_one_row_per_person_read_by_the_decision_and_realerted_by
         "leaving review reads it"
     );
 }
+
+/// The integration run (wave 2): a status row's "Moved N times" was worded
+/// from a count read before the write, outside the person's row lock, while
+/// each move's notify work runs detached — so moves close together could word
+/// the body from the same count (the row said `count` 4, its body "Moved 3
+/// times"). Concurrent moves make the race likely; whatever order they land
+/// in, the body must name the row's own count.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn concurrent_status_moves_word_the_body_from_the_rows_own_count() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c) = mint(&state, "Bob", "member").await;
+    let board = id_of(
+        &ok(
+            &state,
+            "POST",
+            "/api/boards",
+            &ada_c,
+            json!({ "name": "np burst race" }),
+        )
+        .await,
+        "board",
+    );
+    ok(
+        &state,
+        "POST",
+        &format!("/api/boards/{board}/members"),
+        &ada_c,
+        json!({ "email": bob_e, "role": "editor" }),
+    )
+    .await;
+    for round in 0..3 {
+        let task = id_of(
+            &ok(
+                &state,
+                "POST",
+                &format!("/api/boards/{board}/tasks"),
+                &bob_c,
+                json!({ "title": format!("Race {round}") }),
+            )
+            .await,
+            "task",
+        );
+        let href = format!("/boards/{board}/{task}");
+        let path = format!("/api/tasks/{task}");
+        let moves = [
+            "assigned",
+            "in_progress",
+            "inbox",
+            "assigned",
+            "in_progress",
+            "inbox",
+        ]
+        .map(|s| ok(&state, "PUT", &path, &ada_c, json!({ "status": s })));
+        futures_util::future::join_all(moves).await;
+        // Let every detached fan-out land: the count stops moving.
+        let mut last = -1;
+        assert!(eventually!({
+            let now = rows(&state, &bob, "task-status", &href)
+                .await
+                .first()
+                .map_or(0, |r| r.count);
+            let settled = now > 0 && now == last;
+            last = now;
+            settled
+        }));
+        let r = rows(&state, &bob, "task-status", &href).await;
+        assert_eq!(r.len(), 1, "round {round}: one row for the burst");
+        if r[0].count > 1 {
+            assert!(
+                r[0].body
+                    .starts_with(&format!("Moved {} times — now ", r[0].count)),
+                "round {round}: count {} but the body says {:?}",
+                r[0].count,
+                r[0].body
+            );
+        }
+    }
+}
