@@ -7,18 +7,20 @@
 // The wire is docs/notifications/live-and-inbox.md.
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
-use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::{epoch_ms_to_iso, now_ms};
 use talaria_realtime::{UserEvent, publish_user};
 
 use crate::NotifyDeps;
 use crate::classes::{
-    Category, FALLBACK_CLASS, category_of, for_you_kinds, kind_reason, kinds_of, kinds_of_category,
-    known_kinds, notify_class_of,
+    Category, FALLBACK_CLASS, category_of, class_def, for_you_kinds, kind_reason, kinds_of,
+    kinds_of_category, known_kinds, notify_class_of,
 };
 use crate::meta::{NotifyEntity, entity};
+use crate::prefs::email_frequency;
 
 /// The inbox's own feature flags (I-23): `?since` reads, the views / filters /
 /// keyset pages, the stream's replay by seq, and Done (archive).
@@ -496,6 +498,13 @@ pub async fn unread_count_of_kind(
 /// Answers the ids it read — the caller publishes the read-sync event
 /// (`publish_read`) with them, and only when there are any. Reading never
 /// takes a seq: only alerting writes do (I-10).
+///
+/// A READ CANCELS THE DEFERRED PUSH (N3). Every read in this file clears
+/// `push_due_at` unless the push already went (`pushed_at`), so the deferred
+/// push's index holds only rows that can still push, and a reopen
+/// (`reopen_notifications`) has no old due time to bring back. A read leaves
+/// the mail's due time: the batcher never mails a read row, and the due time
+/// is how a reopen knows a mail was pending.
 pub async fn mark_notifications_read(
     pg: &PgPool,
     user_id: &str,
@@ -505,7 +514,8 @@ pub async fn mark_notifications_read(
     let rows: Vec<(String,)> = match (ids, href) {
         (Some(list), _) if !list.is_empty() => {
             sqlx::query_as(
-                "update notifications set read_at = now() \
+                "update notifications set read_at = now(), \
+                        push_due_at = case when pushed_at is null then null else push_due_at end \
                  where user_id = $1::uuid and id = any($2::uuid[]) and read_at is null \
                  returning id::text",
             )
@@ -517,7 +527,8 @@ pub async fn mark_notifications_read(
         (_, Some(href)) if !href.is_empty() => return mark_read_by_href(pg, user_id, href).await,
         _ => {
             sqlx::query_as(
-                "update notifications set read_at = now() \
+                "update notifications set read_at = now(), \
+                        push_due_at = case when pushed_at is null then null else push_due_at end \
                  where user_id = $1::uuid and read_at is null returning id::text",
             )
             .bind(user_id)
@@ -537,7 +548,8 @@ pub async fn mark_read_by_href(
     href: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
-        "update notifications set read_at = now() \
+        "update notifications set read_at = now(), \
+                push_due_at = case when pushed_at is null then null else push_due_at end \
          where user_id = $1::uuid and href = $2 and read_at is null returning id::text",
     )
     .bind(user_id)
@@ -564,6 +576,21 @@ pub async fn mark_read_by_href(
 /// row that holds the key. The person's users row is locked first, as every
 /// writer locks it, so no keyed row can be filed between the check and the
 /// update. Every path that sets `read_at = null` goes through here.
+///
+/// ITS DELIVERIES (N3). A reopen is not a new message, and the person making
+/// it is at a screen. So:
+/// - the deferred push stays cancelled: `push_due_at` goes, unless the push
+///   already went. The read paths in this file cancel it already; this also
+///   covers a row read by a path outside it, or before the read cleared it —
+///   without it, a row read inside its 60 s deferral and reopened was pushed
+///   at its old due time;
+/// - a PENDING mail (armed, not yet sent) is re-armed from now, as a write
+///   filed now would arm it (`reopened_mail_due`): the old due time is often
+///   already past, and the batcher would have mailed the person within a
+///   minute of the reopen;
+/// - a row already mailed stays mailed (no new activity to mail about), a row
+///   the batcher gave up on stays given up, and a row that never had a mail
+///   gets none.
 pub async fn reopen_notifications(
     pg: &PgPool,
     user_id: &str,
@@ -574,11 +601,13 @@ pub async fn reopen_notifications(
         return Ok(Vec::new());
     }
     let mut tx = pg.begin().await?;
-    sqlx::query("select 1 from users where id = $1::uuid for no key update")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-    let rows: Vec<(String,)> = sqlx::query_as(
+    let person: Option<(Option<Value>, Option<String>)> = sqlx::query_as(
+        "select notify_prefs, timezone from users where id = $1::uuid for no key update",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let rows: Vec<(String, String, bool)> = sqlx::query_as(
         "with target as ( \
            select n.id, n.group_key, \
                   row_number() over (partition by n.group_key \
@@ -592,6 +621,7 @@ pub async fn reopen_notifications(
          ) \
          update notifications n \
             set read_at = null, \
+                push_due_at = case when n.pushed_at is null then null else n.push_due_at end, \
                 group_key = case \
                   when t.group_key is null or t.rn > 1 then null \
                   when exists (select 1 from notifications o \
@@ -600,15 +630,135 @@ pub async fn reopen_notifications(
                   else t.group_key end \
            from target t \
           where n.id = t.id \
-         returning n.id::text",
+         returning n.id::text, n.kind, (n.email_due_at is not null and n.emailed_at is null)",
     )
     .bind(user_id)
     .bind(ids)
     .bind(read_at)
     .fetch_all(&mut *tx)
     .await?;
+    // The person's prefs and zone as the write reads them (a missing or
+    // blank zone is UTC).
+    let (blob, zone) = match person {
+        Some((blob, zone)) => (blob.unwrap_or(Value::Null), zone),
+        None => (Value::Null, None),
+    };
+    let zone = zone
+        .map(|z| z.trim().to_string())
+        .filter(|z| !z.is_empty())
+        .unwrap_or_else(|| "UTC".into());
+    let now = now_ms();
+    let (pending, due): (Vec<String>, Vec<Option<i64>>) = rows
+        .iter()
+        .filter(|(_, _, pending)| *pending)
+        .map(|(id, kind, _)| {
+            let due = reopened_mail_due(&blob, &zone, kind, now, mail_delay_override_secs());
+            (id.clone(), due)
+        })
+        .unzip();
+    if !pending.is_empty() {
+        sqlx::query(
+            "update notifications n set email_due_at = to_timestamp(d.due / 1000.0) \
+               from unnest($1::uuid[], $2::bigint[]) as d(id, due) \
+              where n.id = d.id and n.emailed_at is null",
+        )
+        .bind(&pending)
+        .bind(&due)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
+    Ok(rows.into_iter().map(|(id, _, _)| id).collect())
+}
+
+// ── A reopened row's mail ────────────────────────────────────────────────────
+
+/// When a reopened row's pending mail is due: as a write filed at `now_ms`
+/// arms it (`deliver::email_due` in W2-E, #641 — the two must agree, and this
+/// copy goes once that one is on the base): the class's own delay (Needs you:
+/// 15 minutes), else the person's frequency — 15 minutes, an hour, or the
+/// next 09:00 on their own clock — and none for `off`. `override_secs` is the
+/// engine's test knob, every delay n seconds. DND is not read here: the
+/// batcher re-reads the person's pause at send time and holds the row to its
+/// end, or drops it for a pause with none, exactly as a write's due time
+/// would end.
+fn reopened_mail_due(
+    blob: &Value,
+    zone: &str,
+    kind: &str,
+    now_ms: i64,
+    override_secs: Option<u64>,
+) -> Option<i64> {
+    let frequency = email_frequency(blob);
+    if frequency == "off" {
+        return None;
+    }
+    if let Some(secs) = override_secs {
+        return Some(now_ms + secs as i64 * 1000);
+    }
+    let delay_min = class_def(notify_class_of(kind))
+        .or_else(|| class_def(FALLBACK_CLASS))
+        .map(|d| d.email_delay_min)
+        .unwrap_or(0);
+    if delay_min > 0 {
+        return Some(now_ms + i64::from(delay_min) * 60_000);
+    }
+    Some(match frequency {
+        "15m" => now_ms + 15 * 60_000,
+        "1d" => next_nine_local(zone, now_ms),
+        _ => now_ms + 60 * 60_000,
+    })
+}
+
+/// The engine's test-only mail delay (`TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS`,
+/// `mail::test_email_delay_secs` in W2-E), read once.
+fn mail_delay_override_secs() -> Option<u64> {
+    static V: LazyLock<Option<u64>> = LazyLock::new(|| {
+        std::env::var("TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+    });
+    *V
+}
+
+/// The first instant after `from_ms` whose wall clock in `zone` reads 09:00:
+/// today's from before 09:00, tomorrow's from 09:00 on. Read on the zone's
+/// own clock, DST included; a bad zone is UTC. W2-E's
+/// `prefs::next_local_time(zone, from_ms, 9 * 60)`, step for step.
+fn next_nine_local(zone: &str, from_ms: i64) -> i64 {
+    const MIN: i64 = 60_000;
+    const TARGET: i64 = 9 * 60;
+    // The zone `local_moment` will actually read in, resolved once (it warns
+    // on every call with a bad one).
+    let zone = talaria_tz::local_moment(zone, from_ms).zone;
+    let local = |t: i64| {
+        let m = talaria_tz::local_moment(&zone, t);
+        i64::from(m.hour * 60 + m.minute)
+    };
+    let base = from_ms - from_ms.rem_euclid(MIN);
+    let now = local(base);
+    let ahead = if now < TARGET {
+        TARGET - now
+    } else {
+        1440 - now + TARGET
+    };
+    let mut t = base + ahead * MIN;
+    // A DST change between now and then moves the wall clock by up to an
+    // hour: correct by what the clock actually reads there, twice at most.
+    for _ in 0..2 {
+        let mut off = TARGET - local(t);
+        if off > 720 {
+            off -= 1440;
+        } else if off < -720 {
+            off += 1440;
+        }
+        if off == 0 {
+            break;
+        }
+        t += off * MIN;
+    }
+    if t <= from_ms { t + 1440 * MIN } else { t }
 }
 
 /// Which of the person's own rows a write acts on (`PUT /api/notifications`):
@@ -671,7 +821,8 @@ pub async fn archive_notifications(
     // `read_at = now()` after the update is exactly "it was unread": a row
     // read earlier keeps its earlier stamp.
     let sql = format!(
-        "update notifications set archived_at = now(), read_at = coalesce(read_at, now()) \
+        "update notifications set archived_at = now(), read_at = coalesce(read_at, now()), \
+                push_due_at = case when pushed_at is null then null else push_due_at end \
          where user_id = $1::uuid and archived_at is null and {SELECTED} \
          returning id::text, read_at = now()"
     );
@@ -852,7 +1003,8 @@ pub async fn resolve_entity(
     entity: &NotifyEntity,
 ) -> Result<usize, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "update notifications set read_at = now() \
+        "update notifications set read_at = now(), \
+                push_due_at = case when pushed_at is null then null else push_due_at end \
          where entity_type = $1 and entity_id = $2 and read_at is null \
          returning user_id::text, id::text",
     )
@@ -880,7 +1032,8 @@ pub async fn clear_entity(
     entity: &NotifyEntity,
 ) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
-        "update notifications set read_at = now() \
+        "update notifications set read_at = now(), \
+                push_due_at = case when pushed_at is null then null else push_due_at end \
          where user_id = $1::uuid and entity_type = $2 and entity_id = $3 and read_at is null \
          returning id::text",
     )
@@ -918,5 +1071,88 @@ mod tests {
         let v = serde_json::to_value(read_event(0, 0, &exact, false)).unwrap();
         assert_eq!(v["readIds"].as_array().unwrap().len(), READ_IDS_MAX);
         assert!(v.get("resync").is_none());
+    }
+
+    const NOON_UTC: i64 = 1_767_268_800_000; // 2026-01-01T12:00:00Z, a Thursday
+
+    fn at(iso: &str) -> i64 {
+        talaria_agent_auth::iso_to_epoch_ms(iso).unwrap()
+    }
+
+    // The engine's own cases for a fresh write's mail (`deliver.rs`,
+    // `the_mail_delay_follows_the_frequency` on #641): a reopen must agree.
+    #[test]
+    fn a_reopened_rows_mail_is_due_as_a_write_filed_now_would_arm_it() {
+        let f = |freq: &str| json!({ "email": { "frequency": freq } });
+        let due = |blob: &Value, zone: &str, kind: &str| {
+            reopened_mail_due(blob, zone, kind, NOON_UTC, None)
+        };
+        assert_eq!(due(&f("15m"), "UTC", "dm"), Some(NOON_UTC + 15 * 60_000));
+        assert_eq!(due(&f("1h"), "UTC", "dm"), Some(NOON_UTC + 60 * 60_000));
+        assert_eq!(due(&json!({}), "UTC", "dm"), Some(NOON_UTC + 60 * 60_000));
+        // 1d: the next 09:00 on the person's clock — tomorrow, from noon UTC…
+        assert_eq!(due(&f("1d"), "UTC", "dm"), Some(NOON_UTC + 21 * 3_600_000));
+        // …today at 09:00 (14:00Z) from 07:00 in New York.
+        assert_eq!(
+            due(&f("1d"), "America/New_York", "dm"),
+            Some(NOON_UTC + 2 * 3_600_000)
+        );
+        assert_eq!(
+            due(&f("1d"), "Not/A_Zone", "dm"),
+            Some(NOON_UTC + 21 * 3_600_000)
+        );
+        assert_eq!(due(&f("off"), "UTC", "dm"), None);
+        // A Needs-you class waits its own 15 minutes, whatever the frequency…
+        assert_eq!(
+            due(&f("1d"), "UTC", "approval_pending"),
+            Some(NOON_UTC + 15 * 60_000)
+        );
+        // …but `off` is off.
+        assert_eq!(due(&f("off"), "UTC", "approval_pending"), None);
+        // A kind the table does not name is the fallback class's: the
+        // person's frequency.
+        assert_eq!(
+            due(&f("15m"), "UTC", "no-such-kind"),
+            Some(NOON_UTC + 15 * 60_000)
+        );
+        // The engine's test knob makes every delay n seconds; `off` stays off.
+        assert_eq!(
+            reopened_mail_due(&f("1d"), "UTC", "approval_pending", NOON_UTC, Some(5)),
+            Some(NOON_UTC + 5_000)
+        );
+        assert_eq!(
+            reopened_mail_due(&f("off"), "UTC", "dm", NOON_UTC, Some(5)),
+            None
+        );
+    }
+
+    #[test]
+    fn nine_oclock_is_read_on_the_zones_own_clock() {
+        // From 09:00 exactly it is tomorrow's; from a minute before, today's.
+        assert_eq!(
+            next_nine_local("UTC", at("2026-01-01T09:00:00.000Z")),
+            at("2026-01-02T09:00:00.000Z")
+        );
+        assert_eq!(
+            next_nine_local("UTC", at("2026-01-01T08:59:30.000Z")),
+            at("2026-01-01T09:00:00.000Z")
+        );
+        // New York springs forward on 2026-03-08 at 02:00: from 01:00 EST,
+        // 09:00 EDT is 13:00Z.
+        assert_eq!(
+            next_nine_local("America/New_York", at("2026-03-08T06:00:00.000Z")),
+            at("2026-03-08T13:00:00.000Z")
+        );
+        // …and falls back on 2026-11-01 at 02:00: from 01:00 EDT, 09:00 EST is
+        // 14:00Z.
+        assert_eq!(
+            next_nine_local("America/New_York", at("2026-11-01T05:00:00.000Z")),
+            at("2026-11-01T14:00:00.000Z")
+        );
+        // A half-hour zone: 17:30 in Kolkata → tomorrow 09:00 IST, 03:30Z.
+        assert_eq!(
+            next_nine_local("Asia/Kolkata", at("2026-01-01T12:00:00.000Z")),
+            at("2026-01-02T03:30:00.000Z")
+        );
     }
 }

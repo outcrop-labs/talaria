@@ -1683,8 +1683,12 @@ async fn execute_action_arms(
     let outcome: Value;
 
     if item.source_type == "notification" && action_id == "mark_read" {
+        // A read cancels the row's pending deferred push, as every read in
+        // `talaria_notify::inbox` does (N3); the undo below reopens through
+        // `reopen_notifications`, which never brings it back.
         let after: Option<i64> = sqlx::query_scalar(
-            "update notifications set read_at = now() \
+            "update notifications set read_at = now(), \
+                    push_due_at = case when pushed_at is null then null else push_due_at end \
              where id = $1::uuid and user_id = $2::uuid and read_at is null \
              returning (trunc(extract(epoch from read_at) * 1000))::bigint",
         )

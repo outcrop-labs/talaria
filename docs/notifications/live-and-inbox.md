@@ -183,6 +183,27 @@ refetches on it.
 Because Done marks read, every reader that counts or lists unread rows (the bell, the Home
 Inbox, the daily brief, the rail badges) drops a Done row with no change of its own.
 
+### Reads, reopens and the deliveries
+
+A row can carry a deferred push and a pending mail (docs/notifications/delivery.md). Reading
+and reopening treat them this way:
+
+- **A read cancels the deferred push.** Every read in `inbox.rs` (ids, href, all, Done, the
+  entity clears) and the Home Inbox's mark-read clear `push_due_at`, unless the push already
+  went. A read leaves the mail's due time alone: the batcher never mails a read row, and the
+  due time is how a reopen knows a mail was pending.
+- **A reopen never brings the push back.** `reopen_notifications` clears `push_due_at` too,
+  which also covers a row read by a path outside these files. Before this, a row read inside
+  its 60 s deferral and marked unread was pushed at its old due time.
+- **A reopen re-arms a pending mail from now.** The new due time is the one a write filed
+  now would get: the class's own delay (15 minutes for Needs you), or else the person's
+  frequency (15 minutes, an hour, or the next 09:00 on their clock). With `off`, no mail is
+  armed. Before this, a reopened row was mailed at its old due time, which was often already
+  past, so the mail went within a minute of the reopen. The batcher still checks DND when it
+  sends.
+- **A row already mailed stays mailed,** because a reopen is not new activity. A row the
+  batcher gave up on stays given up, and a row that never had a mail gets none.
+
 ### The Home Inbox
 
 The Home Inbox's mark-read of a notification publishes the read-sync event with that row's
@@ -203,4 +224,5 @@ feature, never on a version number.
   write racing the replay arriving exactly once over 20 runs, the 100-row cap, and the
   route's replay (query and `Last-Event-ID`), logout and a deleted key.
 - `api/tests/it/notifications_reads.rs` covers the views, paging, filters against a SQL
-  oracle, Done and back, mark unread and the entity selector.
+  oracle, Done and back, mark unread, the entity selector, and what a read and a reopen do to
+  the deferred push and the pending mail.

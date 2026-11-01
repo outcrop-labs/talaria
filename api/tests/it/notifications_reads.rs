@@ -15,7 +15,7 @@ use talaria_api::notify::{
     Category, InboxQuery, InboxView, NotificationInput, NotifyDeps, NotifyEntity, NotifyMeta,
     Selector, add_notification_with, archive_notifications, clear_entity, entity,
     kinds_of_category, list_page, mark_notifications_read, mark_notifications_unread,
-    unarchive_notifications, unread_count, unread_counts,
+    resolve_entity, unarchive_notifications, unread_count, unread_counts,
 };
 /// One throwaway user; the cascade takes the notification rows with it.
 async fn cleanup(pg: &PgPool) {
@@ -543,4 +543,398 @@ async fn the_entity_selector_reaches_only_the_callers_rows() {
     assert!(!reopened.contains(&a3));
     drop_person(&pg, &a).await;
     drop_person(&pg, &b).await;
+}
+
+// ── N3: what a read and a reopen do to a row's deliveries ───────────────────
+
+/// One unread row with its delivery columns set as W2-E's write leaves them:
+/// a deferred push due in `push_s` seconds, a mail due in `mail_s` seconds
+/// (negative: already due), `mailed` (sent 4 minutes ago) and the batcher's
+/// `attempts`. None leaves the column null.
+async fn with_deliveries(
+    pg: &PgPool,
+    user: &str,
+    kind: &str,
+    href: &str,
+    push_s: Option<i64>,
+    mail_s: Option<i64>,
+    mailed: bool,
+    attempts: i32,
+) -> String {
+    sqlx::query_scalar(
+        "insert into notifications \
+           (user_id, kind, title, body, href, push_due_at, email_due_at, emailed_at, email_attempts) \
+         values ($1::uuid, $2, 't', 'b', $3, now() + make_interval(secs => $4::bigint), \
+                 now() + make_interval(secs => $5::bigint), \
+                 case when $6::boolean then now() - interval '4 minutes' end, $7) \
+         returning id::text",
+    )
+    .bind(user)
+    .bind(kind)
+    .bind(href)
+    .bind(push_s)
+    .bind(mail_s)
+    .bind(mailed)
+    .bind(attempts)
+    .fetch_one(pg)
+    .await
+    .unwrap()
+}
+
+/// A row's delivery columns, in seconds from now: (read, push due, pushed,
+/// mail due, mailed, attempts).
+#[derive(Debug, PartialEq)]
+struct Deliveries {
+    read: bool,
+    push_due_s: Option<i64>,
+    pushed: bool,
+    mail_due_s: Option<i64>,
+    mailed: bool,
+    attempts: i32,
+}
+
+async fn deliveries(pg: &PgPool, id: &str) -> Deliveries {
+    let (read, push_due_s, pushed, mail_due_s, mailed, attempts): (
+        bool,
+        Option<i64>,
+        bool,
+        Option<i64>,
+        bool,
+        i32,
+    ) = sqlx::query_as(
+        "select read_at is not null, \
+                round(extract(epoch from push_due_at - now()))::bigint, pushed_at is not null, \
+                round(extract(epoch from email_due_at - now()))::bigint, emailed_at is not null, \
+                email_attempts \
+           from notifications where id = $1::uuid",
+    )
+    .bind(id)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    Deliveries {
+        read,
+        push_due_s,
+        pushed,
+        mail_due_s,
+        mailed,
+        attempts,
+    }
+}
+
+/// `want` seconds from now, give or take the test's own runtime — or the
+/// engine's test delay when the process runs with it.
+fn about(got: Option<i64>, want: i64) -> bool {
+    let want = std::env::var("TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(want);
+    got.is_some_and(|s| (want - 60..=want + 1).contains(&s))
+}
+
+/// N3 (the engine review): a row read inside its 60 s push deferral and then
+/// marked unread was still pushed at its old due time, and a reopened row was
+/// mailed at its old due time — within the minute when that time had passed.
+/// A read now cancels the deferred push on every read path here, a reopen
+/// never brings it back (whatever read the row), and a pending mail is
+/// re-armed from the reopen at the person's frequency; a row already mailed,
+/// or given up on, stays as it was.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_read_cancels_the_deferred_push_and_a_reopen_rearms_the_mail_from_now() {
+    let pg = pg().await;
+    let user = inbox_person(&pg, "n3").await;
+    sqlx::query(
+        "update users set notify_prefs = '{\"email\":{\"frequency\":\"15m\"}}'::jsonb, \
+                timezone = 'America/New_York' where id = $1::uuid",
+    )
+    .bind(&user)
+    .execute(&pg)
+    .await
+    .unwrap();
+    let deps = NotifyDeps::publishing(pg.clone(), None);
+    const MIN: i64 = 60;
+
+    // Every read path in the inbox cancels a pending deferred push.
+    let by_ids = with_deliveries(
+        &pg,
+        &user,
+        "dm",
+        "/n3/ids",
+        Some(60),
+        Some(15 * MIN),
+        false,
+        0,
+    )
+    .await;
+    let by_href = with_deliveries(&pg, &user, "dm", "/n3/href", Some(60), None, false, 0).await;
+    let by_done = with_deliveries(&pg, &user, "dm", "/n3/done", Some(60), None, false, 0).await;
+    let about_task = NotifyEntity::new(entity::TASK, "n3-task");
+    let by_entity = with_deliveries(
+        &pg,
+        &user,
+        "mention",
+        "/n3/entity",
+        Some(60),
+        None,
+        false,
+        0,
+    )
+    .await;
+    let by_resolve = with_deliveries(
+        &pg,
+        &user,
+        "mention",
+        "/n3/resolve",
+        Some(60),
+        None,
+        false,
+        0,
+    )
+    .await;
+    sqlx::query("update notifications set entity_type = $2, entity_id = $3 where id = $1::uuid")
+        .bind(&by_entity)
+        .bind(about_task.kind)
+        .bind(&about_task.id)
+        .execute(&pg)
+        .await
+        .unwrap();
+    let about_mcp = NotifyEntity::new(entity::MCP_SERVER, "n3-mcp");
+    sqlx::query("update notifications set entity_type = $2, entity_id = $3 where id = $1::uuid")
+        .bind(&by_resolve)
+        .bind(about_mcp.kind)
+        .bind(&about_mcp.id)
+        .execute(&pg)
+        .await
+        .unwrap();
+    // A push that already went keeps its due time (the record of when).
+    let pushed = with_deliveries(&pg, &user, "dm", "/n3/pushed", Some(-10), None, false, 0).await;
+    sqlx::query("update notifications set pushed_at = now() where id = $1::uuid")
+        .bind(&pushed)
+        .execute(&pg)
+        .await
+        .unwrap();
+    mark_notifications_read(&pg, &user, Some(&[by_ids.clone(), pushed.clone()]), None)
+        .await
+        .unwrap();
+    mark_notifications_read(&pg, &user, None, Some("/n3/href"))
+        .await
+        .unwrap();
+    archive_notifications(&pg, &user, &Selector::Ids(vec![by_done.clone()]))
+        .await
+        .unwrap();
+    clear_entity(&deps, &user, &about_task).await.unwrap();
+    resolve_entity(&deps, &about_mcp).await.unwrap();
+    for (path, id) in [
+        ("ids", &by_ids),
+        ("href", &by_href),
+        ("done", &by_done),
+        ("entity", &by_entity),
+        ("resolve", &by_resolve),
+    ] {
+        let d = deliveries(&pg, id).await;
+        assert!(
+            d.read && d.push_due_s.is_none() && !d.pushed,
+            "{path}: {d:?}"
+        );
+    }
+    let d = deliveries(&pg, &pushed).await;
+    assert!(
+        d.read && d.pushed && d.push_due_s.is_some(),
+        "pushed: {d:?}"
+    );
+    // The read leaves the mail's due time: it is how a reopen knows one was
+    // pending (the batcher skips read rows).
+    assert!(about(deliveries(&pg, &by_ids).await.mail_due_s, 15 * MIN));
+
+    // Rows read by a path outside this file (the Home Inbox's mark-read, a
+    // thread sweep, the email-only route) keep their push_due_at; and rows in
+    // each mail state.
+    let other_read =
+        with_deliveries(&pg, &user, "mention", "/n3/other", Some(40), None, false, 0).await;
+    let mail_past =
+        with_deliveries(&pg, &user, "dm", "/n3/past", None, Some(-5 * MIN), false, 0).await;
+    let mail_ahead =
+        with_deliveries(&pg, &user, "dm", "/n3/ahead", None, Some(2 * MIN), false, 0).await;
+    let needs_you = with_deliveries(
+        &pg,
+        &user,
+        "approval_pending",
+        "/n3/approval",
+        None,
+        Some(-5 * MIN),
+        false,
+        0,
+    )
+    .await;
+    let mailed = with_deliveries(
+        &pg,
+        &user,
+        "dm",
+        "/n3/mailed",
+        None,
+        Some(-5 * MIN),
+        true,
+        0,
+    )
+    .await;
+    let gave_up = with_deliveries(&pg, &user, "dm", "/n3/gaveup", None, None, false, 3).await;
+    let no_mail = with_deliveries(&pg, &user, "dm", "/n3/none", None, None, false, 0).await;
+    let rest = [
+        &other_read,
+        &mail_past,
+        &mail_ahead,
+        &needs_you,
+        &mailed,
+        &gave_up,
+        &no_mail,
+    ];
+    sqlx::query("update notifications set read_at = now() where id = any($1::uuid[])")
+        .bind(rest.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        .execute(&pg)
+        .await
+        .unwrap();
+    let before_mailed = deliveries(&pg, &mailed).await;
+
+    let mut all: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
+    all.extend([
+        by_ids.clone(),
+        by_href.clone(),
+        by_entity.clone(),
+        by_resolve.clone(),
+        pushed.clone(),
+    ]);
+    let reopened = mark_notifications_unread(&pg, &user, &Selector::Ids(all.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.iter().collect::<HashSet<_>>(),
+        all.iter().collect::<HashSet<_>>()
+    );
+    for id in &all {
+        let d = deliveries(&pg, id).await;
+        assert!(!d.read, "{id} reopened: {d:?}");
+        if *id == pushed {
+            assert!(
+                d.pushed && d.push_due_s.is_some(),
+                "pushed stays pushed: {d:?}"
+            );
+        } else {
+            assert!(
+                d.push_due_s.is_none() && !d.pushed,
+                "no push comes back: {d:?}"
+            );
+        }
+    }
+    // A pending mail is due from the reopen at the person's frequency (15m),
+    // whether its old due time had passed or was still ahead.
+    for (what, id) in [
+        ("past", &mail_past),
+        ("ahead", &mail_ahead),
+        ("ids", &by_ids),
+    ] {
+        let d = deliveries(&pg, id).await;
+        assert!(
+            about(d.mail_due_s, 15 * MIN) && !d.mailed && d.attempts == 0,
+            "{what}: {d:?}"
+        );
+    }
+    // Needs you waits its own 15 minutes (the frequency is 1d below too).
+    assert!(about(
+        deliveries(&pg, &needs_you).await.mail_due_s,
+        15 * MIN
+    ));
+    // Mailed stays mailed, with its due time; given up stays given up; a row
+    // that never had a mail gets none.
+    assert_eq!(
+        deliveries(&pg, &mailed).await,
+        Deliveries {
+            read: false,
+            ..before_mailed
+        }
+    );
+    let d = deliveries(&pg, &gave_up).await;
+    assert!(
+        d.mail_due_s.is_none() && !d.mailed && d.attempts == 3,
+        "{d:?}"
+    );
+    let d = deliveries(&pg, &no_mail).await;
+    assert!(d.mail_due_s.is_none() && !d.mailed, "{d:?}");
+
+    // 1d: the next 09:00 on the person's own clock; off: no mail.
+    sqlx::query("update users set notify_prefs = '{\"email\":{\"frequency\":\"1d\"}}'::jsonb where id = $1::uuid")
+        .bind(&user)
+        .execute(&pg)
+        .await
+        .unwrap();
+    let daily = with_deliveries(
+        &pg,
+        &user,
+        "dm",
+        "/n3/daily",
+        None,
+        Some(-5 * MIN),
+        false,
+        0,
+    )
+    .await;
+    let daily_needs = with_deliveries(
+        &pg,
+        &user,
+        "approval_pending",
+        "/n3/daily-approval",
+        None,
+        Some(-5 * MIN),
+        false,
+        0,
+    )
+    .await;
+    sqlx::query("update notifications set read_at = now() where id = any($1::uuid[])")
+        .bind(vec![daily.clone(), daily_needs.clone()])
+        .execute(&pg)
+        .await
+        .unwrap();
+    mark_notifications_unread(
+        &pg,
+        &user,
+        &Selector::Ids(vec![daily.clone(), daily_needs.clone()]),
+    )
+    .await
+    .unwrap();
+    let override_on =
+        std::env::var("TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS").is_ok_and(|v| !v.trim().is_empty());
+    if !override_on {
+        let (local, ahead): (String, i64) = sqlx::query_as(
+            "select to_char(email_due_at at time zone 'America/New_York', 'HH24:MI'), \
+                    round(extract(epoch from email_due_at - now()))::bigint \
+               from notifications where id = $1::uuid",
+        )
+        .bind(&daily)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(local, "09:00");
+        assert!((0..=24 * 60 * MIN).contains(&ahead), "{ahead}");
+    }
+    assert!(about(
+        deliveries(&pg, &daily_needs).await.mail_due_s,
+        15 * MIN
+    ));
+    sqlx::query("update users set notify_prefs = '{\"email\":{\"frequency\":\"off\"}}'::jsonb where id = $1::uuid")
+        .bind(&user)
+        .execute(&pg)
+        .await
+        .unwrap();
+    let off = with_deliveries(&pg, &user, "dm", "/n3/off", None, Some(-5 * MIN), false, 0).await;
+    sqlx::query("update notifications set read_at = now() where id = $1::uuid")
+        .bind(&off)
+        .execute(&pg)
+        .await
+        .unwrap();
+    mark_notifications_unread(&pg, &user, &Selector::Ids(vec![off.clone()]))
+        .await
+        .unwrap();
+    assert_eq!(deliveries(&pg, &off).await.mail_due_s, None);
+    drop_person(&pg, &user).await;
 }
