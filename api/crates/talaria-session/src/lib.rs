@@ -81,18 +81,39 @@ fn key(sid: &str) -> String {
     format!("sess:{sid}")
 }
 
-/// Create a session in Redis; returns the opaque id for the cookie.
+/// The session's LIVENESS MARKER: `sesshash:<session_hash(sid)>`, written
+/// beside `sess:<sid>` with the same TTL and deleted with it. A row that must
+/// die with its session stores only the hash (a push subscription's
+/// `session_hash`), and the hash alone cannot find `sess:<sid>` — so the
+/// marker is how a sweep asks "is this session still alive" without the
+/// bearer id (C26: talaria-notify's push prune reads it, and backfills it for
+/// any live session that lacks one).
+pub fn session_marker(sid: &str) -> String {
+    format!("sesshash:{}", session_hash(sid))
+}
+
+/// Create a session in Redis; returns the opaque id for the cookie. The
+/// session and its liveness marker are written in one MULTI.
 pub async fn create_session(
     state: &AppState,
     user: &SessionUser,
 ) -> Result<String, redis::RedisError> {
     let sid = random_token();
     let mut conn = state.redis().await?;
-    redis::cmd("SET")
+    redis::pipe()
+        .atomic()
+        .cmd("SET")
         .arg(key(&sid))
         .arg(serde_json::to_string(user).expect("SessionUser serializes"))
         .arg("EX")
         .arg(SESSION_TTL_SECONDS)
+        .ignore()
+        .cmd("SET")
+        .arg(session_marker(&sid))
+        .arg("1")
+        .arg("EX")
+        .arg(SESSION_TTL_SECONDS)
+        .ignore()
         .query_async::<()>(&mut conn)
         .await?;
     Ok(sid)
@@ -146,6 +167,25 @@ pub async fn update_session_user(
         .arg("KEEPTTL")
         .query_async::<()>(&mut conn)
         .await?;
+    // The marker follows the session's remaining life (it may predate the
+    // marker, or have lost it): best-effort, the session write is what
+    // matters to this caller.
+    let ttl: i64 = redis::cmd("PTTL")
+        .arg(key(&sid))
+        .query_async(&mut conn)
+        .await
+        .unwrap_or(-2);
+    if ttl > 0
+        && let Err(e) = redis::cmd("SET")
+            .arg(session_marker(&sid))
+            .arg("1")
+            .arg("PX")
+            .arg(ttl)
+            .query_async::<()>(&mut conn)
+            .await
+    {
+        tracing::warn!("[session] could not refresh the session marker: {e}");
+    }
     Ok(Some(
         serde_json::from_value(next).map_err(|_| invalid("session json"))?,
     ))
@@ -205,7 +245,8 @@ pub async fn update_sessions_for_user(
     }
 }
 
-/// Delete the session behind the request's cookie (logout).
+/// Delete the session behind the request's cookie (logout), and its
+/// liveness marker with it.
 pub async fn destroy_session(
     state: &AppState,
     headers: &HeaderMap,
@@ -214,6 +255,7 @@ pub async fn destroy_session(
         let mut conn = state.redis().await?;
         redis::cmd("DEL")
             .arg(key(&sid))
+            .arg(session_marker(&sid))
             .query_async::<()>(&mut conn)
             .await?;
     }
@@ -640,6 +682,21 @@ pub fn json_with_cookies(body: impl IntoResponse, cookies: &[String]) -> Respons
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The marker is the contract with talaria-notify's push prune
+    // (retention::session_marker_for_sid): the prefix, then the same hex
+    // SHA-256 a push subscription stores as its session_hash.
+    #[test]
+    fn the_liveness_marker_is_keyed_by_the_session_hash() {
+        assert_eq!(
+            session_marker("abc"),
+            "sesshash:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            session_marker("abc"),
+            format!("sesshash:{}", session_hash("abc"))
+        );
+    }
 
     /// A state with a test root and a pool that never connects: the guard
     /// answers from the header alone, before any query.
