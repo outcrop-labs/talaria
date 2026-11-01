@@ -197,10 +197,11 @@ and reopening treat them this way:
   its 60 s deferral and marked unread was pushed at its old due time.
 - **A reopen re-arms a pending mail from now.** The new due time is the one a write filed
   now would get: the class's own delay (15 minutes for Needs you), or else the person's
-  frequency (15 minutes, an hour, or the next 09:00 on their clock). With `off`, no mail is
-  armed. Before this, a reopened row was mailed at its old due time, which was often already
-  past, so the mail went within a minute of the reopen. The batcher still checks DND when it
-  sends.
+  frequency (15 minutes, an hour, or the next 09:00 on their clock). Their clock is their
+  profile's zone, else the workspace's (the brief's `timeZone`, else `TZ`, else UTC), as the
+  engine's write reads it. With `off`, no mail is armed. Before this, a reopened row was
+  mailed at its old due time, which was often already past, so the mail went within a minute
+  of the reopen. The batcher still checks DND when it sends.
 - **A row already mailed stays mailed,** because a reopen is not new activity. A row the
   batcher gave up on stays given up, and a row that never had a mail gets none.
 
@@ -225,4 +226,5 @@ feature, never on a version number.
   route's replay (query and `Last-Event-ID`), logout and a deleted key.
 - `api/tests/it/notifications_reads.rs` covers the views, paging, filters against a SQL
   oracle, Done and back, mark unread, the entity selector, and what a read and a reopen do to
-  the deferred push and the pending mail.
+  the deferred push and the pending mail, including a person with no zone of their own in a
+  workspace on another clock.
