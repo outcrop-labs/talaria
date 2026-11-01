@@ -72,7 +72,9 @@ name=$(q '%{NAME}')
 arch=$(q '%{ARCH}')
 top="$work/rpm"
 mkdir -p "$top/root" "$top"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-(cd "$top/root" && rpm2cpio "$rpm" | cpio -idm --quiet)
+# Ubuntu's rpm2cpio streams the whole of tauri's gzip payload and then exits
+# 1; an extraction that came up short fails the file comparison below.
+(cd "$top/root" && { rpm2cpio "$rpm" || echo "rpm2cpio exited $? (the file comparison below checks the extraction)" >&2; } | cpio -idm --quiet)
 python3 - "$rpm" "$lib_rpm" "$top/root" "$top/SPECS/$name.spec" <<'PY'
 import subprocess, sys
 rpm, lib, root, spec = sys.argv[1:5]
@@ -153,15 +155,21 @@ rpm -qp --recommends "$built" | grep -qF "$lib_rpm" || { echo "::error::the rpm 
 # crate and rpmbuild differ), so it is not compared.
 python3 - "$rpm" "$built" <<'PY2'
 import subprocess, sys
+# `--dump` reads the file list through rpm's own iterator: a tag query of
+# FILESIZES answers "(none)" on Ubuntu's rpm for a package that carries
+# LONGFILESIZES, as tauri's rpm crate writes them.
 def files(rpm):
-    out = subprocess.run(['rpm', '-qp', '--qf', '[%{FILENAMES}\t%{FILEMODES}\t%{FILESIZES}\t%{FILEDIGESTS}\n]', rpm],
-                         check=True, capture_output=True, text=True).stdout
+    out = subprocess.run(['rpm', '-qp', '--dump', rpm], check=True, capture_output=True, text=True).stdout
     rows = {}
     for line in out.splitlines():
-        name, mode, size, digest = line.split('\t')
-        mode = int(mode)
+        # path size mtime digest mode owner group isconfig isdoc rdev symlink
+        parts = line.split(' ')
+        if len(parts) < 11:
+            continue
+        name = ' '.join(parts[:-10])
+        size, digest, mode = parts[-10], parts[-8], int(parts[-7], 8)
         regular = mode & 0o170000 == 0o100000
-        rows[name] = (mode, int(size) if regular else None, digest if regular else None)
+        rows[name] = (oct(mode), int(size) if regular else None, digest if regular else None)
     return rows
 old, new = files(sys.argv[1]), files(sys.argv[2])
 diffs = [n for n in sorted(set(old) | set(new)) if old.get(n) != new.get(n)]
