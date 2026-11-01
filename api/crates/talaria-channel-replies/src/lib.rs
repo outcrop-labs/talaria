@@ -153,6 +153,32 @@ pub async fn notify_channel_post(deps: &NotifyDeps, post: &ChannelPost<'_>) {
         })
         .collect();
     if kind == "dm" {
+        if post.sender.user_id.is_empty() {
+            // An agent seated in a DM answers the person who asked, who is
+            // in the conversation: as in wave 1 its reply rings only the
+            // people it @mentions, never a DM row for every member.
+            let hearing: Vec<Mentionee> = members
+                .into_iter()
+                .filter(|m| {
+                    listener(&listeners, &m.user_id).map(|l| l.level) != Some(ChannelLevel::Nothing)
+                })
+                .collect();
+            let opts = MentionOpts {
+                entity: Some(NotifyEntity::new(entity::CHANNEL, post.channel_id)),
+                quiet: muted_ids(&listeners),
+            };
+            notify_mentions_with(
+                deps,
+                &hearing,
+                &post.sender,
+                post.content,
+                "a direct message",
+                &channel_href(post.channel_id),
+                &opts,
+            )
+            .await;
+            return;
+        }
         dm_rows(deps, post, &listeners, &members).await;
         return;
     }
@@ -279,8 +305,9 @@ pub async fn notify_channel_post(deps: &NotifyDeps, post: &ChannelPost<'_>) {
 /// is fair, so they take their turns in the order they first asked.
 /// Entries are dropped once no fan-out holds them.
 fn channel_turn(channel_id: &str) -> Arc<tokio::sync::Mutex<()>> {
-    static TURNS: LazyLock<std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>> =
-        LazyLock::new(Default::default);
+    static TURNS: LazyLock<
+        std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    > = LazyLock::new(Default::default);
     let mut turns = TURNS.lock().unwrap_or_else(|p| p.into_inner());
     turns.retain(|_, w| w.strong_count() > 0);
     if let Some(turn) = turns.get(channel_id).and_then(std::sync::Weak::upgrade) {
