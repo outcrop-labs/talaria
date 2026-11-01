@@ -95,13 +95,13 @@ writer inserted one notification and read that person's newest 50 in a loop. Thr
 | 9 `push_subscriptions` ADD COLUMN | AccessExclusive on `push_subscriptions` | 2 / 2 / 2 ms | 33 / 8 / 3 ms |
 | **The block** | | **0.85 / 2.79 / 2.56 s** (wall with process overhead: 1.7 / 4.0 / 3.8 s) | **0.19 / 0.78 / 0.87 s** |
 
-The `ADD COLUMN`s were metadata-only: `users`, `channel_members` and `push_subscriptions`
-kept their exact on-disk size, and the `notifications` heap grew only by the rows the
-writer inserted during the run. The ones whose server time reached ~200 ms were waiting
-for the writer's open transaction to commit, not rewriting anything. Each new partial
-index is 8 KB on this volume (no row has a seq, a key, an entity or a due time yet). The
-host was under IO pressure throughout (`/proc/pressure/io` some avg10 18–32 % during the
-runs), and run 2 overlapped a checkpoint: its 8.7 s worst writer latency came 11 s after
+The `ADD COLUMN`s were metadata-only: applied on their own, statements 1, 2, 8 and 9 left
+the `relfilenode` and on-disk size of `users`, `notifications`, `channel_members` and
+`push_subscriptions` exactly as they were. The ones whose server time reached ~200 ms were
+waiting for the writer's open transaction to commit, not rewriting anything. Each new
+partial index is 8 KB on this volume (no row has a seq, a key, an entity or a due time
+yet). The host was under IO pressure (`/proc/pressure/io` some avg10 peaked at 33, 38 and
+29 % during the three runs), and run 2 overlapped a checkpoint: its 8.7 s worst writer latency came 11 s after
 the block had finished, outside every statement's window. The thresholds (block ≤ 10 s,
 writer stall ≤ 5 s) held on every run, so neither named fallback (dropping statement 3,
 then folding 6 and 7) was applied.
