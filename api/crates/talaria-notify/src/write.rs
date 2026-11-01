@@ -95,20 +95,32 @@ pub async fn add_notification(
 /// only touches a row that is STILL open: a row read between the conflict
 /// check and the update answers no row, and the write is retried as a fresh
 /// insert (the read row has left the index).
+///
+/// THE CLOCK IS READ UNDER THE LOCK. `now()` is the transaction's START, and
+/// a writer that queued behind the person's users-row lock started before the
+/// commit it waited for — so `created_at = now()` could move a re-alerted row
+/// EARLIER than the write before it, and every client's re-alert rule (a
+/// known id whose createdAt moved later) would miss it (measured: 16 of 49
+/// steps under 50 concurrent writers). `clock_timestamp()` is read after the
+/// lock is held, and a Realert never stamps less than 1 ms past what the row
+/// already says, so createdAt rises with seq.
 const UPSERT: &str = "insert into notifications \
-       (user_id, kind, title, body, href, seq, group_key, count, updated_at, alert, \
-        actor_kind, actor_id, actor_label, entity_type, entity_id, pushed_at) \
-     values ($1::uuid, $2, $3, $4, $5, $6, $7, 1, now(), $8, $9, $10, $11, $12, $13, \
-             case when $14::boolean then now() end) \
+       (user_id, kind, title, body, href, seq, group_key, count, created_at, updated_at, \
+        alert, actor_kind, actor_id, actor_label, entity_type, entity_id, pushed_at) \
+     values ($1::uuid, $2, $3, $4, $5, $6, $7, 1, clock_timestamp(), clock_timestamp(), \
+             $8, $9, $10, $11, $12, $13, case when $14::boolean then now() end) \
      on conflict (user_id, group_key) \
        where group_key is not null and read_at is null and archived_at is null \
      do update set title = excluded.title, body = excluded.body, href = excluded.href, \
-       seq = excluded.seq, count = notifications.count + 1, updated_at = now(), \
+       seq = excluded.seq, count = notifications.count + 1, updated_at = clock_timestamp(), \
        alert = excluded.alert, actor_kind = excluded.actor_kind, \
        actor_id = excluded.actor_id, actor_label = excluded.actor_label, \
        entity_type = coalesce(excluded.entity_type, notifications.entity_type), \
        entity_id = coalesce(excluded.entity_id, notifications.entity_id), \
-       created_at = case when $15::boolean then now() else notifications.created_at end, \
+       created_at = case when $15::boolean \
+                         then greatest(clock_timestamp(), \
+                                       notifications.created_at + interval '1 millisecond') \
+                         else notifications.created_at end, \
        pushed_at = case when $14::boolean and $15::boolean then now() \
                         else notifications.pushed_at end \
      where notifications.read_at is null and notifications.archived_at is null \
@@ -269,8 +281,9 @@ fn announce(deps: &NotifyDeps, user_id: &str, notification_id: &str, seq: i64) {
 }
 
 /// A newer message in a thread that ALREADY has an unread row: that row is
-/// brought up to date IN PLACE — same id, the new title and body, and
-/// `created_at = now()` — and then announced exactly as a new row would be:
+/// brought up to date IN PLACE — same id, the new title and body, and a
+/// `created_at` read under the person's row lock and strictly later than the
+/// row's (the UPSERT's rule) — and then announced exactly as a new row would be:
 /// published, the brief nudged, pushed with `renotify` so the OS re-shows it
 /// under the same tag. Every consumer reads "a known id whose createdAt
 /// moved later" as a re-alert (the tab's arrival record, the shell's
@@ -307,8 +320,9 @@ pub async fn refresh_notification(
     let blob = blob.unwrap_or(Value::Null);
     let decision: Decision = deliver::decide(&blob, class, &NotifyMeta::default());
     let updated: Option<(String, i64)> = sqlx::query_as(
-        "update notifications set title = $3, body = $4, href = $5, created_at = now(), \
-                seq = $6, updated_at = now(), count = count + 1, \
+        "update notifications set title = $3, body = $4, href = $5, \
+                created_at = greatest(clock_timestamp(), created_at + interval '1 millisecond'), \
+                seq = $6, updated_at = clock_timestamp(), count = count + 1, \
                 pushed_at = case when $7::boolean then now() else pushed_at end \
          where id = $1::uuid and user_id = $2::uuid and read_at is null \
          returning id::text, (trunc(extract(epoch from created_at) * 1000))::bigint",
