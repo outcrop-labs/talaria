@@ -392,13 +392,20 @@ fn channel_href(channel_id: &str) -> String {
 }
 
 /// 200 UTF-16 units, '…' added only past the bound — the DM body contract.
+/// A post with no text is an attachment (or a ref chip) on its own: the row
+/// says so rather than ringing with an empty line.
 fn clip_body(content: &str) -> String {
-    if talaria_body::utf16_len(content) > 200 {
+    if content.trim().is_empty() {
+        ATTACHMENT_ONLY.to_string()
+    } else if talaria_body::utf16_len(content) > 200 {
         format!("{}…", talaria_body::truncate_utf16(content, 200))
     } else {
         content.to_string()
     }
 }
+
+/// The body of a row about a post that carried no text.
+const ATTACHMENT_ONLY: &str = "Sent an attachment";
 
 fn post_actor(sender: &MentionSender<'_>) -> NotifyActor {
     if sender.user_id.is_empty() {
@@ -1352,5 +1359,40 @@ async fn stream_reply(
             tracing::warn!("[channels] agent reply stream failed: {e}");
             let _ = update_channel_message(deps, channel_id, message_id, &content, "error").await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // One open row per DM per person, re-alerting, adopting a pre-contract
+    // row, about the channel, from the sender; quiet only while muted.
+    #[test]
+    fn a_dm_row_files_into_its_conversation_group() {
+        let actor = NotifyActor {
+            kind: ActorKind::User,
+            id: "u-1".into(),
+            label: "Ada".into(),
+        };
+        let m = dm_meta("c-1", false, actor.clone());
+        assert_eq!(m.group_key.as_deref(), Some("dm:c-1"));
+        assert_eq!(m.coalesce, Coalesce::Realert);
+        assert!(m.adopt_legacy && !m.quiet && m.group_window_secs.is_none());
+        assert_eq!(m.entity, Some(NotifyEntity::new("channel", "c-1")));
+        assert_eq!(m.actor, Some(actor.clone()));
+        assert!(dm_meta("c-1", true, actor).quiet);
+    }
+
+    #[test]
+    fn a_post_body_is_clipped_and_an_empty_one_names_the_attachment() {
+        assert_eq!(clip_body("hello"), "hello");
+        assert_eq!(clip_body(""), "Sent an attachment");
+        assert_eq!(clip_body("  \n"), "Sent an attachment");
+        let long = "x".repeat(250);
+        let clipped = clip_body(&long);
+        assert_eq!(clipped.chars().count(), 201);
+        assert!(clipped.ends_with('…'));
+        assert_eq!(clip_body(&"y".repeat(200)), "y".repeat(200));
     }
 }

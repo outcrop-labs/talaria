@@ -490,8 +490,11 @@ async fn post_as_user(
         let sender_label = user.name.clone().unwrap_or_else(|| author.clone());
         // Who is told, and how loudly: the DM row, @mentions, the thread's
         // people, the channel's `all` level — one detached fan-out, each
-        // person's level and mute obeyed (talaria-channel-replies).
-        if !body.content.trim().is_empty() || thread_root_id.is_some() {
+        // person's level and mute obeyed (talaria-channel-replies). EVERY
+        // post, an attachment-only one included: a file sent in a DM rings
+        // the other side exactly as a line of text does (wave 1 did; the
+        // fan-out words an empty body as the attachment it is).
+        {
             let post_deps = notify.clone();
             let channel_id = id.clone();
             let name = channel_name.clone();

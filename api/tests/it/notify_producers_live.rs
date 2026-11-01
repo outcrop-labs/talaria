@@ -324,6 +324,46 @@ async fn a_pre_contract_dm_row_is_adopted_not_doubled() {
     assert_eq!(r[0].group_key.as_deref(), Some(format!("dm:{dm}").as_str()));
 }
 
+/// A post with no text — a file on its own — rings the other side of a DM
+/// exactly as a line would (wave 1 filed a DM row for it), and the row says
+/// what it was.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn an_attachment_only_dm_rings_like_a_line_of_text() {
+    let state = live_app_state().await;
+    let (ada, _, _) = mint(&state, "Ada", "member").await;
+    let (bob, _, bob_c) = mint(&state, "Bob", "member").await;
+    let dm = id_of(
+        &ok(&state, "POST", "/api/dms", &bob_c, json!({ "userId": ada })).await,
+        "channel",
+    );
+    let href = format!("/comms/channel/{dm}");
+    let (upload,): (String,) = sqlx::query_as(
+        "insert into uploads (filename, mime, size, path, uploaded_by) \
+         values ('np.txt', 'text/plain', 3, '/nonexistent/np.txt', $1::uuid) returning id::text",
+    )
+    .bind(&bob)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    ok(
+        &state,
+        "POST",
+        &format!("/api/channels/{dm}/messages"),
+        &bob_c,
+        json!({ "content": "", "attachmentIds": [upload] }),
+    )
+    .await;
+    assert!(
+        eventually!(!rows(&state, &ada, "dm", &href).await.is_empty()),
+        "an attachment-only DM filed no row"
+    );
+    let r = rows(&state, &ada, "dm", &href).await;
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].body, "Sent an attachment");
+    assert!(!r[0].read);
+}
+
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (ui/.env)"]
 async fn channel_levels_file_what_they_say() {
