@@ -7,7 +7,10 @@
 //   Enter / o  open                e          Done (the selection, else the row)
 //   u          read ↔ unread       Shift+E    Done the selection, else every visible row
 //   x          select / unselect   ?          this help
-//   Esc        clear the selection, close the help
+//   z          undo the last Done  Esc        clear the selection, close the help
+//
+// Letters are read case-blind and the Shift variant from `shiftKey`, so Caps
+// Lock neither kills the keyboard nor turns `e` into "Done everything shown".
 
 export type KeyAction =
   | 'next'
@@ -18,6 +21,7 @@ export type KeyAction =
   | 'toggleRead'
   | 'select'
   | 'help'
+  | 'undo'
   | 'escape'
 
 export interface KeyInput {
@@ -36,7 +40,10 @@ export interface KeyInput {
 export function keyAction(e: KeyInput): KeyAction | null {
   if (e.editable) return null
   if (e.ctrlKey || e.metaKey || e.altKey) return null
-  switch (e.key) {
+  // Caps Lock sends 'E' with no Shift: a letter is the same key either way,
+  // and only a real Shift makes `e` the bulk Done.
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+  switch (key) {
     case 'j':
     case 'ArrowDown':
       return 'next'
@@ -48,12 +55,12 @@ export function keyAction(e: KeyInput): KeyAction | null {
       return 'open'
     case 'e':
       return e.shiftKey ? 'doneAll' : 'done'
-    case 'E':
-      return 'doneAll'
     case 'u':
-      return 'toggleRead'
+      return e.shiftKey ? null : 'toggleRead'
     case 'x':
-      return 'select'
+      return e.shiftKey ? null : 'select'
+    case 'z':
+      return e.shiftKey ? null : 'undo'
     case '?':
       return 'help'
     case 'Escape':
@@ -72,6 +79,7 @@ export const KEY_HELP: ReadonlyArray<{ keys: string[]; what: string }> = [
   { keys: ['u'], what: 'Mark read or unread' },
   { keys: ['x'], what: 'Select or unselect' },
   { keys: ['Shift', 'E'], what: 'Done: the selected ones, else everything shown' },
+  { keys: ['z'], what: 'Undo the last Done or Move to inbox' },
   { keys: ['?'], what: 'Show these shortcuts' },
   { keys: ['Esc'], what: 'Clear the selection' },
 ]
@@ -128,5 +136,9 @@ export function readToggle(rows: ReadonlyArray<{ readAt: string | null }>): 'rea
 export function isEditableTarget(t: EventTarget | null): boolean {
   if (!t || typeof (t as HTMLElement).closest !== 'function') return false
   const el = t as HTMLElement
-  return !!el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')
+  // A checkbox, radio or button input takes no text: after a click on a
+  // row's select box the keyboard must still work.
+  return !!el.closest(
+    'input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="reset"]), textarea, select, [contenteditable=""], [contenteditable="true"]',
+  )
 }

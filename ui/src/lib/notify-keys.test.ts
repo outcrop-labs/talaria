@@ -13,7 +13,24 @@ describe('keyAction', () => {
     expect(keyAction({ key: 'u' })).toBe('toggleRead')
     expect(keyAction({ key: 'x' })).toBe('select')
     expect(keyAction({ key: 'Escape' })).toBe('escape')
-    expect(keyAction({ key: 'z' })).toBeNull()
+    expect(keyAction({ key: 'z' })).toBe('undo')
+    expect(keyAction({ key: 'q' })).toBeNull()
+  })
+
+  it('Caps Lock: an upper-case letter with no Shift is the same key, never the bulk Done', () => {
+    // Caps Lock on: the browser sends key 'E' with shiftKey false.
+    expect(keyAction({ key: 'E' })).toBe('done')
+    expect(keyAction({ key: 'J' })).toBe('next')
+    expect(keyAction({ key: 'K' })).toBe('prev')
+    expect(keyAction({ key: 'U' })).toBe('toggleRead')
+    expect(keyAction({ key: 'X' })).toBe('select')
+    expect(keyAction({ key: 'Z' })).toBe('undo')
+    expect(keyAction({ key: 'O' })).toBe('open')
+    // Caps Lock plus Shift sends 'e' with shiftKey: still the bulk Done.
+    expect(keyAction({ key: 'e', shiftKey: true })).toBe('doneAll')
+    // A Shift chord that means nothing here is the browser's.
+    expect(keyAction({ key: 'U', shiftKey: true })).toBeNull()
+    expect(keyAction({ key: 'Z', shiftKey: true })).toBeNull()
   })
 
   it('reads Shift+E however the browser spells it, and ? with its Shift', () => {
@@ -31,7 +48,8 @@ describe('keyAction', () => {
   })
 
   it('documents every action it can produce', () => {
-    expect(KEY_HELP.length).toBeGreaterThanOrEqual(9)
+    expect(KEY_HELP.length).toBeGreaterThanOrEqual(10)
+    expect(KEY_HELP.some((h) => h.keys.includes('z'))).toBe(true)
   })
 })
 
