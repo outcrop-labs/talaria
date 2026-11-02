@@ -43,6 +43,54 @@ The desktop shell's own half (its OS backends, tray and badge) is
   worker, with no window to focus, opens `/`. Only a row id is ever marked read: the
   summary's `talaria-summary` and the confirmation banner's empty id are not rows.
 
+## What a person sees and sets
+
+The center itself (the bell, the page, the settings, the status panel) is
+[`notifications/center.md`](./notifications/center.md); this is the short version.
+
+- **The bell** has two tabs. **For you** is what needs you or was addressed to you
+  (approvals, escalations, blocked agents, your turn, mentions, assignments, shares, direct
+  messages, conversations you are part of). **All** adds what you follow (ticket moves,
+  finished research, channel activity) and the workspace's health for admins. The badge
+  counts unread For you only. Rows about one thing (a ticket, a channel) sit under one
+  header ("TAL-112 · 3 updates"), a row that stands for several events says so ("3
+  messages", "Moved 4 times"), and each row says why it reached you ("Mentioned you").
+  Clicking a row opens it in place and marks it read. Each row can be marked Done, which
+  also marks it read, or read and unread; a Done can be undone for a few seconds, and comes
+  back unread if it was. Done clears the notification, not the thing it is about: a direct
+  message marked done still shows in Home's inbox until you read the conversation. The
+  header pauses notifications and marks all read; View all opens the full page.
+- **`/notifications`** is the same inbox on a page: For you, All and Done; unread only, by
+  category, and by what happened; as many rows as you scroll; and the keyboard (`j`/`k`
+  move, `Enter` opens, `e` Done, `u` read or unread, `x` selects, `Shift+E` Done everything
+  shown or selected, `z` undoes the last Done, `?` lists them).
+- **Settings → Notifications** is a matrix: one row per kind of notification, grouped as
+  Needs you, Direct, Following and Workspace, and one column per channel. **In-app** is
+  always on: every notification is kept in your inbox. **Desktop** is a banner on this
+  computer from a Talaria tab or the desktop app. **Push** is a banner from your browser
+  with every Talaria tab closed. **Email** is a missed-activity email, sent as often as you
+  choose (every 15 minutes, hourly, daily or never); a conversation that stays unread is
+  mailed again at that frequency. It is disabled, with the reason, while the instance's
+  email switch is off. The daily digest keeps its own switch.
+- **Each channel and direct message** has its own setting in its header: All messages,
+  Mentions only or Nothing, and a mute for 1, 8 or 24 hours or until you turn it back on.
+  A channel starts at Mentions only and a direct message at All messages. A channel you set
+  to All messages alerts like a direct message: a banner, a push and the missed-activity
+  email, by default (its row in the matrix is Channel activity, where each can be turned
+  off). Its later messages add to the same notification without alerting again until you
+  read it. Nothing silences @mentions too, and a muted channel's notifications arrive
+  quietly.
+- **Do Not Disturb.** Pause from the account menu or the bell for 30 minutes, an hour, two
+  hours, until 9:00 tomorrow in your time zone, until you resume, or until a time you pick;
+  and set working hours, outside which notifications arrive quietly. Working hours are read
+  in your profile's time zone, or the workspace's when your profile has none. Needs you
+  comes through either way unless you turn that off. The bell shows "Paused until …" with
+  Resume.
+- **The status panel** (Settings → Notifications) says, live, whether this browser can
+  show alerts and why not, which browsers are registered for push and what the push service
+  last said to each, a test per device, which of your devices alerts go to right now, the
+  desktop app's own notification service when you are in it, and the pause in force.
+
 ## Asking for permission
 
 The browser's prompt is a one-shot: dismissed a few times, Chrome embargoes the origin, and
@@ -59,10 +107,10 @@ a Block is near-permanent. Talaria never prompts on load.
   life, whatever a refetch or a failed write says.
 - **The bell's row** stays: "Turn on desktop alerts", "Desktop alerts are blocked in
   \<Browser\>" (with the steps), or, on a plain-http dev stack, why it cannot work.
-- **Settings → Notifications → Desktop alerts** shows the same state live, with the one
-  control that state allows, whether this browser is registered for alerts with every
-  Talaria tab closed, and, on Linux and Windows, that closing the browser's last window
-  quits it (and stops them).
+- **Settings → Notifications → Status and troubleshooting → This browser** shows the same
+  state live, with the one control that state allows, whether this browser is registered for
+  alerts with every Talaria tab closed (and whether the server has it on file), and, on
+  Linux and Windows, that closing the browser's last window quits it (and stops them).
 - **Turn on** calls `Notification.requestPermission()` synchronously inside the click. On a
   grant it files the push subscription and shows a local "Desktop alerts are on" banner
   through the same registration a push uses.
@@ -166,9 +214,11 @@ worker's per-row banners.
   resolves to the path `//evil.example`, which a router or `navigate()` reads as another
   host.
 - **DMs.** One unread `dm` row per conversation. A new message refreshes it in place (same
-  id, the newest body, `created_at = now()`), publishes it, and pushes with `renotify`; it
-  sends no new mail. Reading the channel to its newest message clears the row (and any
-  mention pointing there). An open conversation reads only while the person is looking at
+  id, the newest body, `created_at = now()`), publishes it, and pushes with `renotify`.
+  While the row stays unread, the conversation is mailed again at the person's
+  missed-activity frequency: a mail already pending covers a burst, and once one has gone
+  the next message arms the next ([delivery.md](./notifications/delivery.md)). Reading the
+  channel to its newest message clears the row (and any mention pointing there). An open conversation reads only while the person is looking at
   it, shown and focused (`ui/src/lib/looking.ts`, the rule the toast decision uses too): a
   background tab, a minimized window or an instance behind the desktop shell's launcher
   leaves new messages unread, so their DM or mention still alerts, and the read lands the
@@ -213,10 +263,23 @@ measured cost, and the wire changes are in [the contract](./notifications/contra
 
 ## Troubleshooting
 
+Start at **Settings → Notifications → Status and troubleshooting**: it checks each of the
+things below live and says which one is in the way.
+
+- **Nothing arrives anywhere.** The Pause section says whether you paused, or are outside
+  your working hours; the bell shows "Paused until …" too.
+- **One device gets nothing.** Your devices lists every browser registered for push. Send
+  test pushes through the same path a notification takes and shows what the push service
+  answered (5 tests per 10 minutes). A device missing from the list is not registered: open
+  Talaria in it and turn desktop alerts on. Remove retires one you no longer use.
+- **Alerts go to the wrong device.** Live connection says which of your devices alerts go
+  to now: the one you are looking at, else one you used in the last two minutes; with
+  neither, every registered browser gets the push.
 - **The bell says alerts are blocked.** Follow its steps: the browser's switch for this site
   *and* the OS's switch for the browser. The page notices the change with no reload.
-- **Alerts work in a tab but not when the browser is closed.** Settings → Desktop alerts says
-  whether this browser is registered. Chrome and Edge receive push only while the browser
+- **Alerts work in a tab but not when the browser is closed.** The status panel's This
+  browser section says whether this browser is subscribed and whether the server has it on
+  file. Chrome and Edge receive push only while the browser
   process runs: on Windows and Linux, closing the last window quits it (unless "continue
   running background apps" is on); on macOS, closing the windows leaves it running.
 - **Nothing pops, but the bell counts.** Do Not Disturb and Focus modes drop banners

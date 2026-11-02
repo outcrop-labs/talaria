@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import PauseMenu from '@/components/notify/PauseMenu.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -7,19 +8,22 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
-  import BrowserNotifications from './BrowserNotifications.svelte'
+  import NotifyMatrix from './NotifyMatrix.svelte'
+  import NotifySchedule from './NotifySchedule.svelte'
+  import NotifyStatusPanel from './NotifyStatusPanel.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { cn } from '@/lib/cn'
   import {
-    NOTIFY_CLASSES,
     NOTIFY_ROUTES,
     saveNotifySettings,
     useNotifications,
     type DigestPref,
-    type NotifyClass,
     type NotifyPrefs,
     type NotifyRoute,
   } from '@/lib/notifications'
+  import { featureSet, useNotifyPatch } from '@/lib/notify-center'
+  import { EMAIL_FREQUENCY_OPTIONS } from '@/lib/notify-matrix'
+  import type { EmailFrequency } from '@/lib/notify-wire'
 
   const DIGEST_OPTIONS: Array<{ id: DigestPref; label: string }> = [
     { id: 'on', label: 'On' },
@@ -35,48 +39,59 @@
     { id: 'off', label: 'Off' },
   ]
 
-  // Where each class of event reaches you, and whether the daily digest comes at
-  // all. Autosaves on change (UI-CONVENTIONS: pickers apply immediately) and
-  // shows the server's effective answer, so a rejected save can never look like
-  // it landed — and neither can a control that governs nothing.
+  // Settings → Notifications: what reaches you where (the category × channel
+  // matrix, its rows the server's class registry), how often missed activity
+  // is mailed, the daily digest, Do Not Disturb (pause and working hours), and
+  // the status panel that says why something did or did not arrive. Every
+  // control autosaves on change (UI-CONVENTIONS: pickers apply immediately)
+  // and shows the server's effective answer, so a rejected save can never look
+  // like it landed — and neither can a control that governs nothing.
 
   const qc = useQueryClient()
   const query = useNotifications()
+  const patch = useNotifyPatch()
   const data = $derived(query.data)
   const isPending = $derived(query.isPending)
-  // Optimistic overlay: the segmented control must move under the cursor, but
-  // the truth stays whatever the server last returned.
-  let pending = $state<Partial<NotifyPrefs>>({})
   let pendingDigest = $state<DigestPref | null>(null)
   let pendingDelivery = $state<boolean | null>(null)
+  let pendingFrequency = $state<EmailFrequency | null>(null)
+  let pendingRoutes = $state<Partial<NotifyPrefs>>({})
   let error = $state<string | null>(null)
   const savedFlash = useSavedFlash()
-  const prefs = $derived(data ? { ...data.prefs, ...pending } : null)
   const digest: DigestPref | null = $derived(data ? (pendingDigest ?? data.digest) : null)
   const emailOn: boolean | null = $derived(data ? (pendingDelivery ?? data.delivery.emailEnabled) : null)
+  const frequency = $derived(pendingFrequency ?? data?.emailFrequency ?? null)
+  // The matrix needs the registry. An api older than the contract serves only
+  // the legacy routes, and those still get their wave-1 control below.
+  const classes = $derived(data?.classes)
+  // What the delivery engine enforces (W2-E's flags): until it does, the
+  // frequency and DND are stored and shown, and the page says so.
+  const features = $derived(featureSet(data))
+  const legacy = $derived(data && !classes ? { ...data.prefs, ...pendingRoutes } : null)
 
-  const set = async (id: NotifyClass, route: NotifyRoute) => {
+  const saved = () => {
     error = null
-    pending = { ...pending, [id]: route }
-    const r = await saveNotifySettings({ prefs: { [id]: route } })
-    if ('error' in r) {
-      // Roll the control back to the server's value — a setting that silently
-      // failed is worse than one that visibly refused.
-      const next = { ...pending }
-      delete next[id]
-      pending = next
-      error = r.error
-      return
-    }
-    await qc.invalidateQueries({ queryKey: ['notifications'] })
-    pending = {}
     savedFlash.flash()
   }
+  const failed = (m: string) => {
+    error = m
+  }
+  // Do Not Disturb is its own panel, further down the page: its saves and
+  // refusals are said there, where the person clicked, not in the panel above.
+  let dndError = $state<string | null>(null)
+  const dndFlash = useSavedFlash()
+  const dndSaved = () => {
+    dndError = null
+    dndFlash.flash()
+  }
+  const dndFailed = (m: string) => {
+    dndError = m
+  }
 
-  // The digest switch. Same contract as the class pickers: optimistic, rolled
-  // back on refusal, and the server's effective answer is what stays on screen
-  // — routing every class to in-app also turns the digest off by derivation, so
-  // this control has to re-read rather than assume the value it just sent.
+  // The digest switch: optimistic, rolled back on refusal, and the server's
+  // effective answer is what stays on screen — turning email off for every
+  // original class also turns the digest off by derivation (C27), so this
+  // control re-reads rather than assumes the value it just sent.
   const setDigest = async (next: DigestPref) => {
     error = null
     pendingDigest = next
@@ -88,7 +103,32 @@
     }
     await qc.invalidateQueries({ queryKey: ['notifications'] })
     pendingDigest = null
-    savedFlash.flash()
+    saved()
+  }
+
+  const setFrequency = async (next: EmailFrequency) => {
+    error = null
+    pendingFrequency = next
+    const r = await patch({ emailFrequency: next })
+    pendingFrequency = null
+    if ('error' in r) error = r.error
+    else saved()
+  }
+
+  // The legacy route control, for an api with no registry.
+  const setRoute = async (id: string, route: NotifyRoute) => {
+    error = null
+    pendingRoutes = { ...pendingRoutes, [id]: route }
+    const r = await saveNotifySettings({ prefs: { [id]: route } })
+    const next = { ...pendingRoutes }
+    delete next[id]
+    pendingRoutes = next
+    if ('error' in r) {
+      error = r.error
+      return
+    }
+    await qc.invalidateQueries({ queryKey: ['notifications'] })
+    saved()
   }
 
   // THE MASTER SWITCH. Admin-only, and until this control existed it was
@@ -125,19 +165,21 @@
     }
     await qc.invalidateQueries({ queryKey: ['notifications'] })
     pendingDelivery = null
-    savedFlash.flash()
+    saved()
   }
+
+  const humanize = (id: string) => id.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
 </script>
 
 <Panel as="section">
   <SectionHeader
     class="mb-4"
     title="Notifications"
-    info="Email goes out when a person is the only one who can unblock something. Outcomes stay in the app, where you'll see them next time you look."
+    info="Every notification is kept in your inbox. Choose where else each kind reaches you: a desktop banner, a push to your browsers with Talaria closed, or email."
   />
   {#if isPending}
     <SkeletonRows rows={6} />
-  {:else if !data || !prefs || !digest || emailOn === null}
+  {:else if !data || !digest || emailOn === null}
     <!-- "Everything is in-app only" is a claim about YOUR settings, and a
          failed read never made it. Same for "Daily digest — On", and same
          again for "email is off for this instance" — which would be a claim
@@ -152,8 +194,8 @@
     <!-- The instance switch. An admin always sees it — it is the control,
          and the state it is in is half of what the rest of this page means.
          A MEMBER sees it only when it is OFF, because that is the case where
-         the page below would otherwise lie to them: every row can say
-         "Email" and not one of them sends anything. When it is on, a member
+         the page below would otherwise lie to them: every Email box can be
+         ticked and not one of them sends anything. When it is on, a member
          needs no explanation and gets no clutter. -->
     {#if data.canSetDelivery || !emailOn}
       <div
@@ -161,6 +203,7 @@
           'mb-4 rounded-md border p-4',
           emailOn ? 'border-line bg-raised' : 'border-warning/40 bg-warning/5',
         )}
+        data-email-switch={emailOn ? 'on' : 'off'}
       >
         <div class="flex items-start gap-4">
           <div class="min-w-0 flex-1">
@@ -194,24 +237,41 @@
         </div>
       </div>
     {/if}
-    <ul class="divide-y divide-line-subtle">
-      {#each NOTIFY_CLASSES as c (c.id)}
-        <li class="flex items-center gap-4 py-3">
+
+    {#if classes}
+      <NotifyMatrix {classes} channels={data.channels} emailEnabled={emailOn} onSaved={saved} onError={failed} />
+    {:else if legacy}
+      <ul class="divide-y divide-line-subtle">
+        {#each Object.keys(legacy) as id (id)}
+          <li class="flex items-center gap-4 py-3">
+            <div class="min-w-0 flex-1 text-sm text-fg">{humanize(id)}</div>
+            <Segmented options={NOTIFY_ROUTES} value={legacy[id] ?? 'in_app'} onChange={(r) => void setRoute(id, r)} />
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    <ul class="mt-4 divide-y divide-line-subtle border-t border-line-subtle">
+      {#if frequency}
+        <li class="flex flex-col items-start gap-2 py-3 sm:flex-row sm:items-center sm:gap-4" data-email-frequency={frequency}>
           <div class="min-w-0 flex-1">
-            <div class="text-sm text-fg">{c.label}</div>
-            <div class="font-sans text-xs text-muted">{c.blurb}</div>
+            <div class="text-sm text-fg">Missed-activity email</div>
+            <div class="font-sans text-xs text-muted">
+              How often to mail what you have not seen in the app, in one email.
+              {#if features.has('email-batch')}
+                Needs you waits 15 minutes whatever you pick, and Following is never mailed.
+              {:else}
+                Saved now; this instance starts batching by it with its next delivery update.
+              {/if}
+            </div>
           </div>
-          <Segmented
-            options={NOTIFY_ROUTES.map((r) => ({ id: r.id, label: r.label }))}
-            value={prefs[c.id]}
-            onChange={(r) => void set(c.id, r)}
-          />
+          <Segmented options={EMAIL_FREQUENCY_OPTIONS} value={frequency} onChange={(v) => void setFrequency(v)} />
         </li>
-      {/each}
+      {/if}
       <!-- The digest is not a class — it is one mail that summarises the
            queues — so it gets its own row and its own On/Off, below the
-           routing table it does not belong to. -->
-      <li class="flex items-center gap-4 py-3">
+           matrix it does not belong to. -->
+      <li class="flex flex-col items-start gap-2 py-3 sm:flex-row sm:items-center sm:gap-4">
         <div class="min-w-0 flex-1">
           <div class="text-sm text-fg">Daily digest</div>
           <div class="font-sans text-xs text-muted">
@@ -223,14 +283,39 @@
       </li>
     </ul>
   {/if}
-  <!-- The one destination the server can't see or route: the person's own
-       browser. Client-only, so it renders regardless of the server settings
-       above. -->
-  <BrowserNotifications />
-  <p class="mt-3 text-xs text-muted">
-    Every notification is kept in your inbox either way. “Email” means it arrives already read, so you aren’t chased
-    twice for the same thing.
-    {#if savedFlash.saved && !error}<span class="ml-2 text-success">Saved</span>{/if}
-    {#if error}<span class="ml-2 text-danger">{error}</span>{/if}
+  <p class="mt-3 text-xs text-muted" aria-live="polite">
+    {#if savedFlash.saved && !error}<span class="text-success">Saved</span>{/if}
+    {#if error}<span class="text-danger" role="alert">{error}</span>{/if}
   </p>
 </Panel>
+
+{#if data?.dnd}
+  <Panel as="section" data-notify-dnd>
+    <SectionHeader
+      class="mb-4"
+      title="Do not disturb"
+      info="Paused or outside your working hours, notifications still land in your inbox and on the bell, quietly: no banner, no push, no email."
+    />
+    {#if !features.has('dnd-enforced')}
+      <p class="-mt-2 mb-4 max-w-xl font-sans text-xs text-muted">
+        This instance saves and shows your pause and working hours, and its next delivery update enforces them for push
+        and email. Until then some alerts may still arrive.
+      </p>
+    {/if}
+    <div class="grid gap-6 md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
+      <div>
+        <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Pause</div>
+        <div class="-mx-3">
+          <PauseMenu dnd={data.dnd} onDone={dndSaved} />
+        </div>
+      </div>
+      <NotifySchedule dnd={data.dnd} onSaved={dndSaved} onError={dndFailed} />
+    </div>
+    <p class="mt-3 text-xs text-muted" aria-live="polite" data-dnd-status>
+      {#if dndFlash.saved && !dndError}<span class="text-success">Saved</span>{/if}
+      {#if dndError}<span class="text-danger" role="alert">{dndError}</span>{/if}
+    </p>
+  </Panel>
+{/if}
+
+<NotifyStatusPanel />
