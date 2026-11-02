@@ -209,6 +209,36 @@ pub async fn rotate_secrets(
         }
     }
 
+    // push_vapid holds the instance's Web Push identity as { public,
+    // private } (talaria-push `vapid_keys`), the private half sealed. Only
+    // `private` moves; the public half is what every browser subscribed
+    // with, and it does not change (WP-17). The push plane reads the box per
+    // delivery and its key cache is keyed by this sealed string, so the next
+    // push unseals the re-sealed key under the new version.
+    let stored: Option<(Value,)> =
+        sqlx::query_as("select value from app_settings where key = 'push_vapid' for update")
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(|e| e.to_string())?;
+    if let Some((mut value,)) = stored
+        && let Some(v) = value.get_mut("private")
+        && let Some(cipher) = v.as_str().filter(|s| !s.is_empty())
+    {
+        let plain = sb.open(cipher).map_err(|e| e.to_string())?;
+        let resealed = sb
+            .seal_with(&fresh, next_version, &plain)
+            .map_err(|e| e.to_string())?;
+        *v = Value::String(resealed);
+        reencrypted += 1;
+        sqlx::query(
+            "update app_settings set value = $1, updated_at = now() where key = 'push_vapid'",
+        )
+        .bind(&value)
+        .execute(tx.as_mut())
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
     // If the root secret is changing, re-wrap every RETAINED key version under
     // the new KEK so old versions stay unwrappable (old ciphertext keeps working).
     if let Some(material) = new_root_material {

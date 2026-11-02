@@ -4,9 +4,17 @@
 // the client to alert on, and a `presence` event goes out on `user:<id>` only
 // when that answer changes.
 //
-// Phase 0 stores and announces; nothing gates on it yet. W2-E gates the push
-// on it (docs/notifications/delivery.md); the thresholds are consts it may
-// tune.
+// The delivery engine gates the web push on it (docs/notifications/delivery.md):
+// a write while one of the person's clients is looking or active defers the
+// push 60 s, and the client that surfaced the row acks it (defer.rs). The
+// write path reaches the store through a handle installed at boot
+// (`install_presence_redis`, beside the push plane in talaria-jobs) — the
+// contract's `NotifyDeps` carries no Redis connection — and with no handle,
+// or Redis failing, there is no winner: the push goes now (fail open toward
+// delivery).
+
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use redis::AsyncCommands;
 use serde_json::{Value, json};
@@ -14,8 +22,20 @@ use talaria_realtime::{UserEvent, publish_user};
 
 use crate::NotifyDeps;
 
-/// The presence plane's own feature flags (I-23). W2-E adds its own here.
-pub const FEATURES: &[&str] = &[];
+/// The presence plane's own feature flags (I-23): the web push waits while
+/// one of the person's clients is in use.
+pub const FEATURES: &[&str] = &["presence-gated-push"];
+
+/// `looking`: visible, focused, and input in the last 60 s (the client
+/// computes it; the number is the contract's, served here for the record).
+pub const LOOKING_INPUT_MS: i64 = 60_000;
+/// `active`: input in the last 120 s (the desktop: OS input).
+pub const ACTIVE_INPUT_MS: i64 = 120_000;
+/// How long a push waits while a client is looking or active (O-13).
+pub const PUSH_DEFER_MS: i64 = 60_000;
+/// The longest the write path waits for the presence store before it treats
+/// the person as away and pushes now.
+pub const WINNER_READ_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// The hash's TTL: a person whose every client went silent has no presence.
 pub const PRESENCE_TTL_SECS: i64 = 120;
@@ -149,6 +169,120 @@ pub fn winner(entries: &[Entry], now_ms: i64) -> Presence {
     Presence { looking, active }
 }
 
+static REDIS: OnceLock<redis::aio::ConnectionManager> = OnceLock::new();
+
+/// Install the presence store's connection at boot (talaria-jobs, beside the
+/// push plane). The manager reconnects on its own; installing twice keeps the
+/// first.
+pub fn install_presence_redis(conn: redis::aio::ConnectionManager) {
+    let _ = REDIS.set(conn);
+}
+
+/// The boot-installed connection, for the engine's own jobs (the push prune
+/// reads session markers through it). None before boot, and in tests that
+/// never install one.
+pub fn presence_redis() -> Option<redis::aio::ConnectionManager> {
+    REDIS.get().cloned()
+}
+
+/// The person's winner pair right now, for the write path's push decision:
+/// one HGETALL, read-only, bounded by `WINNER_READ_TIMEOUT`. No handle, a
+/// Redis error or a timeout answer "nobody there" — the push goes now, never
+/// silently withheld.
+pub async fn active_winner(user_id: &str, now_ms: i64) -> Presence {
+    let Some(mut conn) = presence_redis() else {
+        return Presence::default();
+    };
+    let read = async {
+        let raw: Vec<(String, String)> = conn.hgetall(dev_key(user_id)).await?;
+        Ok::<_, redis::RedisError>(raw)
+    };
+    match tokio::time::timeout(WINNER_READ_TIMEOUT, read).await {
+        Ok(Ok(raw)) => {
+            let entries: Vec<Entry> = raw
+                .iter()
+                .filter_map(|(id, v)| parse_entry(id, v))
+                .collect();
+            winner(&entries, now_ms)
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("[presence] the winner read failed ({e}); pushing now");
+            Presence::default()
+        }
+        Err(_) => {
+            tracing::warn!("[presence] the winner read timed out; pushing now");
+            Presence::default()
+        }
+    }
+}
+
+impl Presence {
+    /// A client is looking or active: the person is at a screen.
+    pub fn present(&self) -> bool {
+        self.looking.is_some() || self.active.is_some()
+    }
+}
+
+/// The store's read sequence: one counter for every person, never expiring,
+/// taken in the same atomic step as the hash read it orders (`BEAT`).
+const SEQ_KEY: &str = "presence:seq";
+
+/// One beat, atomically (contract note N2): write the client's entry,
+/// refresh the hash's TTL, take the next value of the read sequence, and read
+/// the hash back. The INCR and the HGETALL run in one script, so the sequence
+/// orders the READS themselves — across threads and api processes, whatever
+/// their clocks say. A beat's own wall time could not: two beats a
+/// millisecond apart can read the hash in the other order (the later-stamped
+/// beat reading first, before the earlier-stamped one's entry landed).
+const BEAT: &str = r#"
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+local seq = redis.call('INCR', KEYS[2])
+return {seq, redis.call('HGETALL', KEYS[1])}
+"#;
+
+/// The winner cache's compare-and-set (contract note N2). The cache holds
+/// `<seq>#<pair>`, `seq` being the read the pair was computed from: an answer
+/// from an EARLIER read never overwrites one from a later read, so two racing
+/// beats can no longer leave cached the pair of the read that missed the
+/// other's entry — nor skip the `presence` frame that entry should have
+/// caused. A beat publishes only when it moved the pair. A value of any other
+/// shape (phase 0's bare pair) is overwritten. Answers 1 when the caller
+/// should publish.
+const WIN_CAS: &str = r#"
+local cur = redis.call('GET', KEYS[1])
+local seq = tonumber(ARGV[2])
+if cur then
+  local sep = string.find(cur, '#', 1, true)
+  if sep then
+    local cur_seq = tonumber(string.sub(cur, 1, sep - 1))
+    if cur_seq and cur_seq > seq then
+      redis.call('EXPIRE', KEYS[1], ARGV[3])
+      return 0
+    end
+    if string.sub(cur, sep + 1) == ARGV[1] then
+      redis.call('SET', KEYS[1], ARGV[2] .. '#' .. ARGV[1], 'EX', ARGV[3])
+      return 0
+    end
+  end
+end
+redis.call('SET', KEYS[1], ARGV[2] .. '#' .. ARGV[1], 'EX', ARGV[3])
+return 1
+"#;
+
+/// Delete stale entries, each only if it still holds the value that was read
+/// as stale: a client whose fresh beat landed between that read and this
+/// delete keeps its entry (a plain HDEL by field would drop it).
+const PRUNE: &str = r#"
+local n = 0
+for i = 1, #ARGV, 2 do
+  if redis.call('HGET', KEYS[1], ARGV[i]) == ARGV[i + 1] then
+    n = n + redis.call('HDEL', KEYS[1], ARGV[i])
+  end
+end
+return n
+"#;
+
 fn dev_key(user_id: &str) -> String {
     format!("presence:dev:{user_id}")
 }
@@ -173,6 +307,40 @@ fn parse_entry(client_id: &str, raw: &str) -> Option<Entry> {
     })
 }
 
+/// A hash read split into the live entries, newest first, and the stale or
+/// unreadable ones as (field, value read) — what `prune` deletes if they are
+/// still exactly that. Pure.
+fn split_entries(raw: Vec<(String, String)>, now_ms: i64) -> (Vec<Entry>, Vec<(String, String)>) {
+    let mut live = Vec::new();
+    let mut dead = Vec::new();
+    for (id, v) in raw {
+        match parse_entry(&id, &v) {
+            Some(e) if now_ms - e.at_ms <= ENTRY_STALE_MS => live.push(e),
+            _ => dead.push((id, v)),
+        }
+    }
+    live.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then(a.client_id.cmp(&b.client_id)));
+    (live, dead)
+}
+
+/// Delete the stale entries a read found, each only if it is unchanged since.
+async fn prune(
+    conn: &mut redis::aio::ConnectionManager,
+    user_id: &str,
+    dead: &[(String, String)],
+) -> redis::RedisResult<()> {
+    if dead.is_empty() {
+        return Ok(());
+    }
+    let script = redis::Script::new(PRUNE);
+    let mut call = script.key(dev_key(user_id));
+    for (field, value) in dead {
+        call.arg(field).arg(value);
+    }
+    let _: i64 = call.invoke_async(conn).await?;
+    Ok(())
+}
+
 /// The person's live entries; stale and unreadable ones are deleted on the way.
 async fn read_entries(
     conn: &mut redis::aio::ConnectionManager,
@@ -180,18 +348,8 @@ async fn read_entries(
     now_ms: i64,
 ) -> redis::RedisResult<Vec<Entry>> {
     let raw: Vec<(String, String)> = conn.hgetall(dev_key(user_id)).await?;
-    let mut live = Vec::new();
-    let mut dead = Vec::new();
-    for (id, v) in raw {
-        match parse_entry(&id, &v) {
-            Some(e) if now_ms - e.at_ms <= ENTRY_STALE_MS => live.push(e),
-            _ => dead.push(id),
-        }
-    }
-    if !dead.is_empty() {
-        let _: i64 = conn.hdel(dev_key(user_id), dead).await?;
-    }
-    live.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then(a.client_id.cmp(&b.client_id)));
+    let (live, dead) = split_entries(raw, now_ms);
+    prune(conn, user_id, &dead).await?;
     Ok(live)
 }
 
@@ -204,19 +362,29 @@ pub async fn record(
     h: &Heartbeat,
     now_ms: i64,
 ) -> redis::RedisResult<Presence> {
-    let key = dev_key(user_id);
-    let _: i64 = conn.hset(&key, &h.client_id, entry_json(h, now_ms)).await?;
-    let _: bool = conn.expire(&key, PRESENCE_TTL_SECS).await?;
-    let entries = read_entries(conn, user_id, now_ms).await?;
+    // The write and the read it is judged by, in one step (N2).
+    let (seq, raw): (i64, Vec<(String, String)>) = redis::Script::new(BEAT)
+        .key(dev_key(user_id))
+        .key(SEQ_KEY)
+        .arg(&h.client_id)
+        .arg(entry_json(h, now_ms))
+        .arg(PRESENCE_TTL_SECS)
+        .invoke_async(conn)
+        .await?;
+    let (entries, dead) = split_entries(raw, now_ms);
+    prune(conn, user_id, &dead).await?;
     let win = winner(&entries, now_ms);
     let pair = json!([win.looking, win.active]).to_string();
-    let prev: Option<String> = conn.get(win_key(user_id)).await?;
     // The cache's own TTL is refreshed every beat, so a winner that holds for
     // an hour is announced once, not every two minutes.
-    let _: () = conn
-        .set_ex(win_key(user_id), &pair, PRESENCE_TTL_SECS as u64)
+    let moved: i64 = redis::Script::new(WIN_CAS)
+        .key(win_key(user_id))
+        .arg(&pair)
+        .arg(seq)
+        .arg(PRESENCE_TTL_SECS)
+        .invoke_async(conn)
         .await?;
-    if prev.as_deref() != Some(pair.as_str()) {
+    if moved == 1 {
         publish_user(
             &deps.realtime,
             user_id,
@@ -301,6 +469,44 @@ mod tests {
         )];
         assert_eq!(winner(&stale, now), Presence::default());
         assert_eq!(winner(&[], now), Presence::default());
+    }
+
+    // A read splits into the live entries, newest first, and the stale or
+    // unreadable ones WITH the value read, which is what the conditional
+    // prune compares before it deletes (a fresh beat in between survives).
+    #[test]
+    fn a_read_keeps_what_is_live_and_names_the_rest_by_value() {
+        let now = 1_000_000;
+        let beat = |s: &str, at: i64| format!(r#"{{"k":"web","s":"{s}","at":{at},"i":null}}"#);
+        let stale = beat("looking", now - ENTRY_STALE_MS - 1);
+        let raw = vec![
+            ("tab-aaaaaaaa".to_string(), beat("active", now - 2_000)),
+            ("tab-bbbbbbbb".to_string(), stale.clone()),
+            ("tab-cccccccc".to_string(), beat("looking", now - 1_000)),
+            ("tab-dddddddd".to_string(), "not json".to_string()),
+        ];
+        let (live, dead) = split_entries(raw, now);
+        assert_eq!(
+            live.iter()
+                .map(|e| e.client_id.as_str())
+                .collect::<Vec<_>>(),
+            ["tab-cccccccc", "tab-aaaaaaaa"]
+        );
+        assert_eq!(
+            dead,
+            [
+                ("tab-bbbbbbbb".to_string(), stale),
+                ("tab-dddddddd".to_string(), "not json".to_string())
+            ]
+        );
+        // The cache's separator can never occur in a pair: client ids are
+        // letters, digits, '-' and '_'.
+        assert!(
+            !json!([Some("tab-aaaaaaaa"), None::<String>])
+                .to_string()
+                .contains('#')
+        );
+        assert!(BEAT.contains("INCR") && WIN_CAS.contains("'#'"));
     }
 
     #[test]

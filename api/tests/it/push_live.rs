@@ -432,7 +432,8 @@ async fn throttles_oversize_and_hangs_settle_per_device() {
             "https://push.test/toolarge".into(),
             vec![Ok(PushAnswer::status(413)), Ok(PushAnswer::status(201))],
         );
-        // A timeout every time: three attempts, then counted.
+        // A timeout every time: two attempts (a timeout is retried once),
+        // then counted.
         script.insert(
             "https://push.test/hang".into(),
             vec![Err(PushFailure::Timeout("operation timed out".into()))],
@@ -460,7 +461,7 @@ async fn throttles_oversize_and_hangs_settle_per_device() {
         assert_eq!(large.len(), 2);
         assert!(large[1].2 < large[0].2, "the resend is the minimal payload");
         assert!(large[0].2 <= 4096, "even the first body fits the ceiling");
-        assert_eq!(of("/hang").len(), 3);
+        assert_eq!(of("/hang").len(), 2);
         // The ok device did not wait behind the hang: it went first.
         assert!(of("/ok")[0].1.duration_since(t0) < Duration::from_millis(250));
         let hang = row_state(&pg, "https://push.test/hang").await.unwrap();
@@ -481,6 +482,151 @@ async fn throttles_oversize_and_hangs_settle_per_device() {
                 .1,
             Some(201)
         );
+        cleanup(&pg).await;
+    };
+    with_vapid_row_set_aside(&pg, body).await;
+}
+
+/// A hung endpoint (accepts, never answers) costs at most two timed-out
+/// tries, then sits out 2^failures minutes while the person's other device
+/// keeps receiving; when its window closes it is tried again, and a 2xx
+/// resets it. Three failures of any kind open the same window; ten with no
+/// delivery for a week prune the row.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_hung_endpoint_sits_out_its_backoff_and_a_2xx_resets_it() {
+    let _row = KEYPAIR_ROW.lock().await;
+    let pg = pg().await;
+    let body = async {
+        cleanup(&pg).await;
+        let user = person(&pg, "backoff").await;
+        let sb = test_box();
+        for e in ["hang", "ok", "flaky", "dying"] {
+            subscription(&pg, &user, &format!("https://push.test/{e}"), false).await;
+        }
+        let mut script = Script::new();
+        script.insert(
+            "https://push.test/hang".into(),
+            vec![Err(PushFailure::Timeout("operation timed out".into()))],
+        );
+        for e in ["ok", "flaky", "dying"] {
+            script.insert(
+                format!("https://push.test/{e}"),
+                vec![Ok(PushAnswer::status(201))],
+            );
+        }
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let post = scripted(script, captured.clone());
+        let count = |e: &str| {
+            captured
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(ep, _, _)| ep.ends_with(e))
+                .count()
+        };
+        deliver_push_with(&pg, &sb, &post, &user, &note("b1"), &quick(), "mailto:x@y").await;
+        assert_eq!(count("/hang"), 2, "a timeout is tried twice at most");
+        let hang = row_state(&pg, "https://push.test/hang").await.unwrap();
+        assert_eq!((hang.0, hang.1), (1, None));
+        // The next three deliveries skip it; the ok device gets each one.
+        for i in 2..=4 {
+            let t0 = Instant::now();
+            deliver_push_with(
+                &pg,
+                &sb,
+                &post,
+                &user,
+                &note(&format!("b{i}")),
+                &quick(),
+                "mailto:x@y",
+            )
+            .await;
+            assert!(t0.elapsed() < Duration::from_secs(2));
+        }
+        assert_eq!(
+            count("/hang"),
+            2,
+            "inside its window the hung row is skipped"
+        );
+        assert_eq!(count("/ok"), 4);
+        // Its window (2^1 minutes) closes; it answers now, and is reset.
+        sqlx::query(
+            "update push_subscriptions set last_attempt_at = now() - interval '3 minutes' \
+             where endpoint = 'https://push.test/hang'",
+        )
+        .execute(&pg)
+        .await
+        .unwrap();
+        let mut healed = Script::new();
+        for e in ["hang", "ok", "flaky", "dying"] {
+            healed.insert(
+                format!("https://push.test/{e}"),
+                vec![Ok(PushAnswer::status(201))],
+            );
+        }
+        let post2 = scripted(healed, captured.clone());
+        deliver_push_with(&pg, &sb, &post2, &user, &note("b5"), &quick(), "mailto:x@y").await;
+        assert_eq!(count("/hang"), 3);
+        let hang = row_state(&pg, "https://push.test/hang").await.unwrap();
+        assert_eq!((hang.0, hang.1), (0, Some(201)), "a 2xx resets the count");
+        // Three failures of any kind: skipped for 2^3 minutes.
+        sqlx::query(
+            "update push_subscriptions set failures = 3, last_status = 500, \
+               last_error = '500', last_attempt_at = now() - interval '7 minutes' \
+             where endpoint = 'https://push.test/flaky'",
+        )
+        .execute(&pg)
+        .await
+        .unwrap();
+        let f0 = count("/flaky");
+        deliver_push_with(&pg, &sb, &post2, &user, &note("b6"), &quick(), "mailto:x@y").await;
+        assert_eq!(
+            count("/flaky"),
+            f0,
+            "seven minutes into an eight-minute window: skipped"
+        );
+        sqlx::query(
+            "update push_subscriptions set last_attempt_at = now() - interval '9 minutes' \
+             where endpoint = 'https://push.test/flaky'",
+        )
+        .execute(&pg)
+        .await
+        .unwrap();
+        deliver_push_with(&pg, &sb, &post2, &user, &note("b7"), &quick(), "mailto:x@y").await;
+        assert_eq!(
+            count("/flaky"),
+            f0 + 1,
+            "past its window: tried, and reset by the 2xx"
+        );
+        assert_eq!(
+            row_state(&pg, "https://push.test/flaky").await.unwrap().0,
+            0
+        );
+        // Ten failures with no delivery for a week: pruned.
+        sqlx::query(
+            "update push_subscriptions set failures = 9, last_status = 500, last_error = '500', \
+               last_attempt_at = now() - interval '2 hours', last_seen_at = now() - interval '8 days' \
+             where endpoint = 'https://push.test/dying'",
+        )
+        .execute(&pg)
+        .await
+        .unwrap();
+        let mut dying = Script::new();
+        for e in ["hang", "ok", "flaky"] {
+            dying.insert(
+                format!("https://push.test/{e}"),
+                vec![Ok(PushAnswer::status(201))],
+            );
+        }
+        dying.insert(
+            "https://push.test/dying".into(),
+            vec![Ok(PushAnswer::status(500))],
+        );
+        let post3 = scripted(dying, captured.clone());
+        deliver_push_with(&pg, &sb, &post3, &user, &note("b8"), &quick(), "mailto:x@y").await;
+        assert!(!endpoint_exists(&pg, "https://push.test/dying").await);
+        assert!(endpoint_exists(&pg, "https://push.test/ok").await);
         cleanup(&pg).await;
     };
     with_vapid_row_set_aside(&pg, body).await;
@@ -545,7 +691,10 @@ async fn race_body(pg: &PgPool) {
 
     // The seal is not theater: a box with a DIFFERENT key cannot read the
     // row back, so the DER never leaves the instance secret's reach.
+    // (The unsealed keypair is cached by its sealed string — forget it, or
+    // this read would be answered without opening the row at all.)
     let wrong = SecretBox::from_parts([7u8; 32], HashMap::from([(1u32, [11u8; 32])]), Some(1));
+    talaria_api::push::forget_vapid_cache();
     assert!(vapid_keys(&pg, &wrong).await.is_err());
 
     // And a later read returns the SAME keypair — born once, read forever.

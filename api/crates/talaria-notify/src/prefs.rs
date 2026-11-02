@@ -355,28 +355,62 @@ pub(crate) async fn prefs_blob(pg: &PgPool, user_id: &str) -> Option<Value> {
     }
 }
 
-/// The stored blob and the person's time zone (`users.timezone`, else UTC),
-/// from one row. Never fails: a failed read is the defaults.
+/// The stored blob and the person's time zone (`person_zone`: their own,
+/// else the workspace's), from one row. Never fails: a failed read is the
+/// defaults, in the workspace's zone.
 pub async fn prefs_and_zone(pg: &PgPool, user_id: &str) -> (Value, String) {
-    match sqlx::query_as::<_, (Option<Value>, Option<String>)>(
+    let (blob, stored) = match sqlx::query_as::<_, (Option<Value>, Option<String>)>(
         "select notify_prefs, timezone from users where id = $1::uuid",
     )
     .bind(user_id)
     .fetch_optional(pg)
     .await
     {
-        Ok(Some((blob, tz))) => (
-            blob.unwrap_or(Value::Null),
-            tz.map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| "UTC".into()),
-        ),
-        Ok(None) => (Value::Null, "UTC".into()),
+        Ok(Some((blob, tz))) => (blob.unwrap_or(Value::Null), tz),
+        Ok(None) => (Value::Null, None),
         Err(e) => {
             tracing::error!("[notifications] could not read notify_prefs: {e}");
-            (Value::Null, "UTC".into())
+            (Value::Null, None)
         }
+    };
+    let zone = person_zone(stored.as_deref(), &workspace_zone(pg).await);
+    (blob, zone)
+}
+
+// ── The zone a person's clock reads in ───────────────────────────────────────
+//
+// A profile with no zone of its own follows the workspace's: that is what
+// Profile → Time zone's "Workspace default" says, and what the daily brief
+// opens in for that person. DND, working hours and the daily mail's 09:00
+// read the same clock as the brief, so one person's "9:00" is one instant.
+// The workspace's zone is the brief's (`brief_config.timeZone`, else the `TZ`
+// env, else UTC); the digest resolves the same way over its own
+// `digest_config.timeZone`, which falls back to the same `TZ` → UTC.
+
+/// How long `workspace_zone` serves the zone it read: every filing asks.
+const WORKSPACE_ZONE_TTL_MS: i64 = 10_000;
+static WORKSPACE_ZONE: std::sync::LazyLock<std::sync::Mutex<Option<(i64, String)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// The workspace's zone, as the brief reads it
+/// (`talaria_daily_brief_config::brief_config`), held for 10 s.
+pub async fn workspace_zone(pg: &PgPool) -> String {
+    let now = wall_ms();
+    if let Some((at, zone)) = &*WORKSPACE_ZONE.lock().unwrap_or_else(|p| p.into_inner())
+        && now - at < WORKSPACE_ZONE_TTL_MS
+    {
+        return zone.clone();
     }
+    let zone = talaria_daily_brief_config::brief_config(pg).await.time_zone;
+    *WORKSPACE_ZONE.lock().unwrap_or_else(|p| p.into_inner()) = Some((now, zone.clone()));
+    zone
+}
+
+/// The zone a person's DND, working hours and daily mail read in: their own
+/// (`users.timezone`), else the workspace's. A blank stored value is unset.
+/// The brief's and the digest's own rule (`zone_for`), not a copy of it.
+pub fn person_zone(stored: Option<&str>, workspace: &str) -> String {
+    talaria_daily_brief_config::zone_for(stored, workspace)
 }
 
 /// Everything the Settings panel shows, from one row: the resolved table and
@@ -626,6 +660,52 @@ pub fn dnd_wire(blob: &Value, time_zone: &str, now_ms: i64) -> Value {
     })
 }
 
+/// Whether Needs-you classes break through DND (`dnd.allowNeedsYou`), default
+/// true: a decision somebody is blocked on reaches a person who paused.
+pub fn allow_needs_you(blob: &Value) -> bool {
+    blob.get(DND_KEY)
+        .and_then(|d| d.get("allowNeedsYou"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// The first instant at or after `from_ms` whose wall clock in `zone` reads
+/// `minute_of_day` (minutes past local midnight), strictly later than
+/// `from_ms`: "tomorrow at 9:00" from 9:00 or later, "today at 9:00" from
+/// before it. Read on the zone's own clock, DST included; a bad zone is UTC.
+pub fn next_local_time(zone: &str, from_ms: i64, minute_of_day: u32) -> i64 {
+    const MIN: i64 = 60_000;
+    let zone = resolve_zone(zone, from_ms);
+    let local = |t: i64| {
+        let m = talaria_tz::local_moment(&zone, t);
+        i64::from(m.hour * 60 + m.minute)
+    };
+    let target = i64::from(minute_of_day % 1440);
+    let base = from_ms - from_ms.rem_euclid(MIN);
+    let now = local(base);
+    let ahead = if now < target {
+        target - now
+    } else {
+        1440 - now + target
+    };
+    let mut t = base + ahead * MIN;
+    // A DST change between now and then moves the wall clock by up to an
+    // hour: correct by what the clock actually reads there, twice at most.
+    for _ in 0..2 {
+        let mut off = target - local(t);
+        if off > 720 {
+            off -= 1440;
+        } else if off < -720 {
+            off += 1440;
+        }
+        if off == 0 {
+            break;
+        }
+        t += off * MIN;
+    }
+    if t <= from_ms { t + 1440 * MIN } else { t }
+}
+
 // ── Missed-activity mail frequency ───────────────────────────────────────────
 
 /// What `emailFrequency` may be. Stored and served here; W2-E's batcher reads
@@ -793,6 +873,61 @@ pub async fn set_notify_prompt(
     Ok(prompt_wire(&blob))
 }
 
+/// The instance's delivery switches (`app_settings.notify_delivery`): mail is
+/// off unless the row says exactly `emailEnabled: true` (a hand-edited row must
+/// not turn mail on); push is on unless it says exactly `pushEnabled: false`
+/// (wave 1 always pushed, and a row with no push key must keep doing so).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeliverySwitches {
+    pub email: bool,
+    pub push: bool,
+}
+
+impl Default for DeliverySwitches {
+    /// What a row that cannot be read means: no mail, push as wave 1.
+    fn default() -> Self {
+        Self {
+            email: false,
+            push: true,
+        }
+    }
+}
+
+/// The switches a stored row holds. Pure.
+pub fn switches_of(stored: &Value) -> DeliverySwitches {
+    DeliverySwitches {
+        email: stored.get("emailEnabled") == Some(&Value::Bool(true)),
+        push: stored.get("pushEnabled") != Some(&Value::Bool(false)),
+    }
+}
+
+/// Both switches, read fresh. A failed read is the default (no mail).
+pub async fn get_notify_switches(pg: &PgPool) -> DeliverySwitches {
+    switches_of(&get_setting(pg, DELIVERY_KEY, serde_json::json!({})).await)
+}
+
+/// Turn web push on or off for the whole instance — the admin's push kill
+/// switch, merged beside `emailEnabled` (C28). No route writes it yet; the
+/// status panel's admin toggle is a later stream's.
+pub async fn set_notify_push(pg: &PgPool, push_enabled: bool) -> Result<(), sqlx::Error> {
+    let stored = talaria_settings::try_get_setting(pg, DELIVERY_KEY)
+        .await?
+        .unwrap_or_else(|| serde_json::json!({}));
+    set_setting(
+        pg,
+        DELIVERY_KEY,
+        &merge_delivery_push(&stored, push_enabled),
+    )
+    .await
+}
+
+/// The delivery row after a push flip, from the row before it. Pure.
+pub fn merge_delivery_push(stored: &Value, push_enabled: bool) -> Value {
+    let mut m = stored.as_object().cloned().unwrap_or_default();
+    m.insert("pushEnabled".into(), Value::Bool(push_enabled));
+    Value::Object(m)
+}
+
 /// Is this instance sending notification mail? Off unless the settings row
 /// says exactly true — a hand-edited row must not be able to turn mail on.
 /// get_setting already falls back on a failed read, so this never errors.
@@ -947,7 +1082,40 @@ mod tests {
                 email: true
             }
         );
-        let c = channels_of(&json!({}), "work_complete");
+        // Following is quiet by default (EB-05): the feed and nothing else,
+        // and the legacy table still reads `in_app` (no email).
+        let quiet = Channels {
+            in_app: true,
+            desktop: false,
+            push: false,
+            email: false,
+        };
+        assert_eq!(channels_of(&json!({}), "work_complete"), quiet);
+        assert_eq!(channels_of(&json!({}), "workchain_paused"), quiet);
+        // …but a channel set to All, which only the person can set, alerts
+        // like a direct message: banner, push and mail.
+        assert_eq!(
+            channels_of(&json!({}), "channel_activity"),
+            channels_of(&json!({}), "dm")
+        );
+        assert_eq!(
+            channels_of(&json!({}), "channel_activity"),
+            Channels {
+                in_app: true,
+                desktop: true,
+                push: true,
+                email: true
+            }
+        );
+        // A person who turned it off keeps it off.
+        let c = channels_of(
+            &json!({ "channels": { "channel_activity": { "desktop": false, "push": false } } }),
+            "channel_activity",
+        );
+        assert!(!c.desktop && !c.push && c.email);
+        assert_eq!(resolve_prefs(&json!({}))["work_complete"], json!("in_app"));
+        // A stored legacy route keeps what it meant in wave 1.
+        let c = channels_of(&json!({ "work_complete": "in_app" }), "work_complete");
         assert_eq!(
             c,
             Channels {
@@ -957,17 +1125,7 @@ mod tests {
                 email: false
             }
         );
-        // The new class has no legacy key: its registry defaults.
-        let c = channels_of(&json!({}), "channel_activity");
-        assert_eq!(
-            c,
-            Channels {
-                in_app: true,
-                desktop: true,
-                push: false,
-                email: false
-            }
-        );
+        assert!(channels_of(&json!({ "work_complete": "both" }), "work_complete").email);
     }
 
     #[test]
@@ -1148,6 +1306,73 @@ mod tests {
             merge_delivery(&json!("junk"), false),
             json!({ "emailEnabled": false })
         );
+        assert_eq!(
+            merge_delivery_push(&json!({ "emailEnabled": true }), false),
+            json!({ "emailEnabled": true, "pushEnabled": false })
+        );
+        // Mail is off unless exactly true; push is on unless exactly false.
+        assert_eq!(
+            switches_of(&json!({})),
+            DeliverySwitches {
+                email: false,
+                push: true
+            }
+        );
+        assert_eq!(
+            switches_of(&json!({ "emailEnabled": "true", "pushEnabled": 0 })),
+            DeliverySwitches {
+                email: false,
+                push: true
+            }
+        );
+        assert_eq!(
+            switches_of(&json!({ "emailEnabled": true, "pushEnabled": false })),
+            DeliverySwitches {
+                email: true,
+                push: false
+            }
+        );
+        assert!(allow_needs_you(&json!({})));
+        assert!(!allow_needs_you(
+            &json!({ "dnd": { "allowNeedsYou": false } })
+        ));
+    }
+
+    #[test]
+    fn the_next_local_time_reads_the_zones_own_clock() {
+        // 2026-01-01T12:00:00Z.
+        let noon = at("2026-01-01T12:00:00.000Z");
+        assert_eq!(
+            next_local_time("UTC", noon, 9 * 60),
+            at("2026-01-02T09:00:00.000Z")
+        );
+        // 07:00 in New York (EST, -5): today at 09:00 local = 14:00Z.
+        assert_eq!(
+            next_local_time("America/New_York", noon, 9 * 60),
+            at("2026-01-01T14:00:00.000Z")
+        );
+        // Exactly 09:00 is tomorrow, not now.
+        let nine = at("2026-01-01T09:00:00.000Z");
+        assert_eq!(
+            next_local_time("UTC", nine, 9 * 60),
+            at("2026-01-02T09:00:00.000Z")
+        );
+        // Across the spring-forward night in New York (2026-03-08): from
+        // 20:00 local on the 7th (EST) to 09:00 local on the 8th (EDT, -4).
+        assert_eq!(
+            next_local_time("America/New_York", at("2026-03-08T01:00:00.000Z"), 9 * 60),
+            at("2026-03-08T13:00:00.000Z")
+        );
+        // And the autumn one in London (2026-10-25): 09:00 GMT = 09:00Z.
+        assert_eq!(
+            next_local_time("Europe/London", at("2026-10-24T20:00:00.000Z"), 9 * 60),
+            at("2026-10-25T09:00:00.000Z")
+        );
+        // A bad zone is UTC.
+        assert_eq!(
+            next_local_time("Not/AZone", noon, 9 * 60),
+            at("2026-01-02T09:00:00.000Z")
+        );
     }
 
     // ── DND ─────────────────────────────────────────────────────────────────
@@ -1257,6 +1482,36 @@ mod tests {
         // And at 08:30Z that Monday London is inside (09:30 BST); New York is not.
         assert!(!dnd_state(&blob, "Europe/London", at("2026-03-30T08:30:00.000Z")).active);
         assert!(dnd_state(&blob, "America/New_York", at("2026-03-30T08:30:00.000Z")).active);
+    }
+
+    #[test]
+    fn a_person_with_no_zone_reads_the_workspace_clock() {
+        // Their own zone wins; none, or a blank one, is the workspace's — as
+        // the brief and the digest resolve it — never a bare UTC.
+        assert_eq!(
+            person_zone(Some("Europe/London"), "Asia/Tokyo"),
+            "Europe/London"
+        );
+        assert_eq!(
+            person_zone(Some(" Europe/London "), "Asia/Tokyo"),
+            "Europe/London"
+        );
+        assert_eq!(person_zone(None, "Asia/Tokyo"), "Asia/Tokyo");
+        assert_eq!(person_zone(Some("   "), "Asia/Tokyo"), "Asia/Tokyo");
+        // Working hours 09:00–17:00 every day in a Tokyo workspace. At 01:00Z
+        // (10:00 in Tokyo) a no-zone person is inside them; read as UTC, as
+        // the engine did, they were outside and every alert went quiet.
+        let blob = sched(&[0, 1, 2, 3, 4, 5, 6], "09:00", "17:00");
+        let t = at("2026-11-02T01:00:00.000Z");
+        let zone = person_zone(None, "Asia/Tokyo");
+        assert!(!dnd_state(&blob, &zone, t).active);
+        assert_eq!(dnd_wire(&blob, &zone, t)["timeZone"], json!("Asia/Tokyo"));
+        assert!(dnd_state(&blob, "UTC", t).active);
+        // And the daily mail's 09:00 is Tokyo's: 00:00Z the next day.
+        assert_eq!(
+            next_local_time(&zone, t, 9 * 60),
+            at("2026-11-03T00:00:00.000Z")
+        );
     }
 
     #[test]

@@ -50,6 +50,18 @@ use talaria_state::AppState;
 
 const LOG: &str = "[jobs]";
 
+/// The process's CURRENT secretbox, read per use: a key rotation installs a
+/// new box (`AppState::install_secretbox`), and the push plane and the mail
+/// batcher must see it — a clone taken at boot could not open what the
+/// rotation re-sealed.
+fn live_secretbox(state: &AppState) -> talaria_push::SecretBoxSource {
+    let state = state.clone();
+    Arc::new(move || {
+        let state = state.clone();
+        Box::pin(async move { state.secretbox().await })
+    })
+}
+
 /// The run kinds the boot census carries, spelled as strings because that is
 /// what the registry keys on. Arming with fewer means the sweep strands rows
 /// of the missing kinds (see the header).
@@ -745,6 +757,16 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_digest::register_digest_job(real_digest_deps(state, rt.clone()));
     talaria_digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
     talaria_notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
+    // The delivery engine's jobs (docs/notifications/delivery.md): the
+    // presence-deferred push, the missed-activity mail batcher, and the two
+    // daily retention passes (rows; push subscriptions of ended sessions).
+    talaria_notify::defer::register_deferred_push_job(state.pg.clone());
+    talaria_notify::register_missed_mail_job(talaria_notify::real_missed_mail_deps(
+        state.pg.clone(),
+        live_secretbox(state),
+        rt.clone(),
+    ));
+    talaria_notify::retention::register_retention_jobs(state.pg.clone());
     talaria_work_dispatch::register_redispatch_job(state.pg.clone(), run.clone());
     // The cron-output pull: a thread schedule's report the plugin's
     // fire-and-forget push lost, read back from the agent's own session
@@ -923,7 +945,12 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     // reach closed tabs. Here in try_arm rather than register_all on
     // purpose — the completeness test drives register_all with a dead lazy
     // pool, and the plane's OnceLock must hold the real one or nothing.
-    talaria_push::install_push_plane(state.pg.clone(), sb.clone());
+    talaria_push::install_push_plane_with(state.pg.clone(), live_secretbox(state));
+    // The presence store's handle, beside the plane it gates: the single
+    // writer reads the winner through it before deciding to defer a push
+    // (the contract's NotifyDeps carries no Redis connection). Absent, the
+    // writer pushes now — fail open toward delivery.
+    talaria_notify::presence::install_presence_redis(conn.clone());
     // Seal org MCP headers still stored in plaintext — once per boot, after
     // the old slot of a self-update has drained (it reads only plaintext),
     // behind the response path; idempotent and race-safe across instances
@@ -1016,6 +1043,33 @@ mod tests {
             names.contains(&JobName::McpCallsPrune),
             "mcp-calls-prune fell out of the job table — mcp_tool_calls would grow without limit"
         );
+        // The delivery engine: without these a deferred push never fires, a
+        // missed-activity mail is never sent, and rows and dead sessions'
+        // subscriptions are never pruned — all in silence.
+        for (job, why) in [
+            (
+                JobName::NotifyDeferredPush,
+                "a push deferred while someone was at a screen would never fire",
+            ),
+            (
+                JobName::NotifyMissedMail,
+                "no missed-activity mail would ever be sent",
+            ),
+            (
+                JobName::NotifyRetention,
+                "notification rows would grow without limit",
+            ),
+            (
+                JobName::PushPrune,
+                "an ended session's browser would keep getting pushes",
+            ),
+        ] {
+            assert!(
+                names.contains(&job),
+                "{} fell out of the job table — {why}",
+                job.as_str()
+            );
+        }
         // The retired hold, pinned from the other side: update-check IS in
         // the table now (the update engine's restart topology landed with
         // it), and it stays out of REQUIRED_JOBS — a no-op job on dormant
