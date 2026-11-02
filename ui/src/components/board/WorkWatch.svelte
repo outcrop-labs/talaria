@@ -2,8 +2,8 @@
   import { openStream } from '@/lib/sse'
   import { useQueryClient } from '@tanstack/svelte-query'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import { getStream } from '@/lib/fetch-json'
-  import { useWorkSession } from '@/lib/work-session.svelte'
+  import { getJson, getStream } from '@/lib/fetch-json'
+  import { useWorkSession, type WorkSessionHistoryRow } from '@/lib/work-session.svelte'
   import { frameLabel, isHarnessFrame, toolDetail, type WatchFrame } from '@/lib/work-watch'
 
   // The agent pane: Hermes replies and its own tool calls. Harness
@@ -40,26 +40,66 @@
   let watchError = $state<string | null>(null)
 
   // ── Run state: phases and the end. ────────────────────────────────────────
+  const TERMINAL = ['done', 'error', 'cancelled']
+  const end = () => {
+    if (ended) return
+    ended = true
+    // The last turn's transcript is captured as the run ends, so the
+    // artifacts behind the Turns tab are stale exactly now. Refresh them
+    // rather than leave the finished record a turn short.
+    void qc.invalidateQueries({ queryKey: ['artifacts-for', 'task', taskId] })
+    onEnded?.()
+  }
+  /** Ask the run's record where it is — the stream carries transitions, not
+   *  state, so a run that finished while it was closed (a hidden tab's pause,
+   *  a deploy's 502) would otherwise read "working" forever (C31). */
+  const readRun = async () => {
+    void qc.invalidateQueries({ queryKey: ['work-session', taskId] })
+    void qc.invalidateQueries({ queryKey: ['task', taskId] })
+    try {
+      // Through the cache: one request, and the work log shows what it says.
+      const { sessions } = await qc.fetchQuery({
+        queryKey: ['work-sessions-history', taskId],
+        queryFn: () => getJson<{ sessions: WorkSessionHistoryRow[] }>(`/api/tasks/${taskId}/work-sessions`),
+        staleTime: 0,
+      })
+      const row = sessions.find((s) => s.runId === runId)
+      if (!row) return
+      if (row.phase !== undefined) phase = row.phase
+      if (TERMINAL.includes(row.state)) end()
+    } catch {
+      /* the stream reopens anyway; its next transition says the rest */
+    }
+  }
   $effect(() => {
-    return openStream(`/api/runs/${runId}/events`, (data) => {
-      let ev: { state?: string; phase?: string }
-      try {
-        ev = JSON.parse(data) as { state?: string; phase?: string }
-      } catch {
-        return
-      }
-      if (ev.phase !== undefined) phase = ev.phase
-      void qc.invalidateQueries({ queryKey: ['work-session', taskId] })
-      void qc.invalidateQueries({ queryKey: ['task', taskId] })
-      if (ev.state && ['done', 'error', 'cancelled'].includes(ev.state)) {
-        ended = true
-        // The last turn's transcript is captured as the run ends, so the
-        // artifacts behind the Turns tab are stale exactly now. Refresh them
-        // rather than leave the finished record a turn short.
-        void qc.invalidateQueries({ queryKey: ['artifacts-for', 'task', taskId] })
-        onEnded?.()
-      }
-    })
+    return openStream(
+      `/api/runs/${runId}/events`,
+      (data) => {
+        let ev: { state?: string; phase?: string }
+        try {
+          ev = JSON.parse(data) as { state?: string; phase?: string }
+        } catch {
+          return
+        }
+        if (ev.phase !== undefined) phase = ev.phase
+        void qc.invalidateQueries({ queryKey: ['work-session', taskId] })
+        void qc.invalidateQueries({ queryKey: ['task', taskId] })
+        if (ev.state && TERMINAL.includes(ev.state)) end()
+      },
+      {
+        // A deploy's 502 reopens it; a tab hidden for 30 s closes it (BT-3),
+        // and showing the tab again reads the run BEFORE reopening, so a
+        // terminal state reached meanwhile shows.
+        reconnect: true,
+        pauseWhenHidden: true,
+        onResume: readRun,
+        // Once live again, read once more: a transition between the resume's
+        // read and the subscription is not left unseen.
+        onOpen: ({ first, resumed }) => {
+          if (!first || resumed) void readRun()
+        },
+      },
+    )
   })
 
   // ── The work terminal: replay + live frames of the agent's stream. ───────

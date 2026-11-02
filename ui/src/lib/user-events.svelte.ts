@@ -1,4 +1,4 @@
-// The person's firehose: ONE EventSource per tab, shared.
+// The person's firehose: ONE EventSource per BROWSER, shared.
 //
 // `/api/me/events` carries the id-shaped UserEvents (api/src/realtime.rs):
 // run transitions, notification and brief landings, and — since the rails
@@ -11,8 +11,22 @@
 // on the server. A firehose with one reader per subscriber is a connection
 // farm; this is the same shape as the toast store: module-level singleton,
 // callers subscribe, the last unsubscribe closes the socket.
-import { openStream } from '@/lib/sse'
-import { useQueryClient } from '@tanstack/svelte-query'
+//
+// AND SINCE WAVE 2, ONE PER BROWSER, NOT PER TAB: this module runs the tab's
+// notification runtime — the leader lock and tab registry (notify-leader.ts)
+// and the hub (notify-hub.ts). The leader tab opens the only stream and
+// rebroadcasts its frames; every other tab hears them on the channel. A
+// subscriber here cannot tell which it is: frames and opens arrive the same
+// way. The stream opens with `?since=<the arrival record's cursor>` (I-19),
+// read at every reconnect, so a reopened stream replays what it missed.
+import { openStream, untilSessionAnswers, type StreamState } from '@/lib/sse'
+import { untrack } from 'svelte'
+import { useQueryClient, type QueryClient } from '@tanstack/svelte-query'
+import { lastInputAt, trackInput } from '@/lib/looking'
+import { startHub, type Hub, type HubRole } from '@/lib/notify-hub'
+import { browserLeaderEdges, startNotifyLeader, type NotifyLeader } from '@/lib/notify-leader'
+import { clientId, remintClientId } from '@/lib/notify-presence'
+import { noteStreamEvent, setHubRole, setStreamState } from '@/lib/notify-status.svelte'
 import type { PresenceEvent, ResyncEvent, SessionEvent } from './notify-wire'
 
 /** The wire's id-shaped events — camelCase, tagged `type`, nothing else. The
@@ -45,45 +59,200 @@ export type UserEvent =
 type Listener = (event: UserEvent) => void
 type OpenListener = (info: { first: boolean }) => void
 
-let close: (() => void) | null = null
+interface Runtime {
+  leader: NotifyLeader
+  hub: Hub
+  stop: () => void
+}
+
+let runtime: Runtime | null = null
 let refs = 0
 const listeners = new Set<Listener>()
 const openListeners = new Set<OpenListener>()
+const runtimeListeners = new Set<(r: { leader: NotifyLeader; hub: Hub } | null) => void>()
+let sinceFn: (() => number | null) | null = null
+let pageHooked = false
+/** A `session: ended` is being confirmed: the runtime stays down meanwhile
+ *  (see confirmSessionEnded). */
+let confirming = false
+
+/** What the door's probe hands on when it finds the person signed out: the
+ *  same frame the api sends when it ends the stream with the session. */
+const SESSION_ENDED = JSON.stringify({ type: 'session', state: 'ended' })
+
+/** Where the stream's replay starts: the arrival tracker registers its
+ *  cursor here (NotificationToasts). Returns the unregister. */
+export function setStreamSince(fn: () => number | null): () => void {
+  sinceFn = fn
+  return () => {
+    if (sinceFn === fn) sinceFn = null
+  }
+}
+
+function streamUrl(): string {
+  let since: number | null = null
+  try {
+    since = sinceFn?.() ?? null
+  } catch {
+    since = null
+  }
+  return typeof since === 'number' && Number.isFinite(since) && since >= 0
+    ? `/api/me/events?since=${Math.floor(since)}`
+    : '/api/me/events'
+}
+
+function dispatch(data: string): void {
+  // A frame we cannot parse is a frame we ignore — every consumer's own
+  // poll floor is what makes that safe rather than silent.
+  let parsed: UserEvent
+  try {
+    parsed = JSON.parse(data) as UserEvent
+  } catch {
+    return
+  }
+  if (!parsed || typeof parsed.type !== 'string') return
+  status(() => noteStreamEvent())
+  for (const fn of listeners) fn(parsed)
+}
+
+const statusOf = (s: StreamState): 'connecting' | 'open' | 'reconnecting' | 'closed' => (s === 'paused' ? 'closed' : s)
+
+/** The status panel's setters read the state they write: called inside a
+ *  component's $effect (the runtime starts from one) they would make that
+ *  effect depend on the status and loop. Every call goes through here. */
+const status = (fn: () => void) => untrack(fn)
+
+function start(): void {
+  if (runtime || confirming || typeof window === 'undefined' || typeof document === 'undefined') return
+  hookPage()
+  const releaseInput = trackInput()
+  const leader = startNotifyLeader({
+    ...browserLeaderEdges(),
+    self: () => ({ visible: document.visibilityState === 'visible', focused: safeFocus(), clientId: clientId() }),
+    lastInputAt,
+    hub: true,
+    // A duplicated tab shares its original's client id until one re-mints.
+    onClientIdClash: () => void remintClientId(),
+  })
+  // The connection itself goes through the shared door, which RECONNECTS it:
+  // a deploy or an api restart is a 502/524 at the edge, and the firehose
+  // comes back on a backoff instead of staying dead until a reload. Every
+  // (re)open tells the open-listeners, which refetch whatever the stream may
+  // have missed while it was down.
+  // A stream whose door gave up because the person is signed out (its
+  // probe after five failures: the api's `session: ended` was lost, or an
+  // older api sends none) hands on that frame itself, through the hub, so
+  // every tab takes it to the session gate.
+  const hub = startHub({
+    leader,
+    open: (onFrame, cb) =>
+      openStream(streamUrl, onFrame, {
+        reconnect: true,
+        onOpen: cb.onOpen,
+        onState: cb.onState,
+        onSignedOut: () => onFrame(SESSION_ENDED),
+      }),
+  })
+  const offs = [
+    hub.onFrame(dispatch),
+    hub.onOpen((info) => {
+      for (const fn of openListeners) fn(info)
+    }),
+    hub.onRole((r: HubRole) => status(() => setHubRole(r))),
+    hub.onState((s) => status(() => setStreamState(statusOf(s)))),
+  ]
+  status(() => {
+    setHubRole(hub.role())
+    setStreamState(statusOf(hub.state()))
+  })
+  runtime = {
+    leader,
+    hub,
+    stop: () => {
+      for (const off of offs) off()
+      hub.close()
+      leader.close()
+      releaseInput()
+      status(() => {
+        setStreamState('closed')
+        setHubRole('unknown')
+      })
+    },
+  }
+  for (const fn of runtimeListeners) fn({ leader, hub })
+}
+
+function stop(): void {
+  if (!runtime) return
+  const r = runtime
+  runtime = null
+  r.stop()
+  for (const fn of runtimeListeners) fn(null)
+}
+
+function safeFocus(): boolean {
+  try {
+    return document.hasFocus()
+  } catch {
+    return false
+  }
+}
+
+/** Leaving the page: release the lock and say goodbye, so the next tab leads
+ *  now. A page restored from the back/forward cache comes back with the
+ *  runtime closed and starts a new one (a new tab id, a new place in the
+ *  lock's queue). A frozen page that resumes refetches as after a reopen. */
+function hookPage(): void {
+  if (pageHooked) return
+  pageHooked = true
+  window.addEventListener('pagehide', () => stop())
+  window.addEventListener('pageshow', (e: PageTransitionEvent) => {
+    if (e.persisted && refs > 0) start()
+  })
+  document.addEventListener('resume', () => runtime?.hub.resumed())
+}
 
 function connect(): void {
-  if (close) return
-  // The singleton subscriber registry stays here — this is the one stream with
-  // N consumers — but the connection itself goes through the shared door,
-  // which RECONNECTS it: a deploy or an api restart is a 502/524 at the edge,
-  // and the firehose comes back on a backoff instead of staying dead until a
-  // reload. Every (re)open tells the open-listeners, which refetch whatever
-  // the stream may have missed while it was down (it carries no replay).
-  close = openStream(
-    '/api/me/events',
-    (data) => {
-      // A frame we cannot parse is a frame we ignore — every consumer's own
-      // poll floor is what makes that safe rather than silent.
-      let parsed: UserEvent
-      try {
-        parsed = JSON.parse(data) as UserEvent
-      } catch {
-        return
-      }
-      if (!parsed || typeof parsed.type !== 'string') return
-      for (const fn of listeners) fn(parsed)
-    },
-    {
-      reconnect: true,
-      onOpen: (info) => {
-        for (const fn of openListeners) fn(info)
-      },
-    },
-  )
+  start()
 }
 
 function disconnect(): void {
-  close?.()
-  close = null
+  stop()
+}
+
+/** Hold the tab's notification runtime (the leader lock, the hub) for as long
+ *  as the caller lives, even with no event subscriber; returns the release.
+ *  NotificationToasts holds it: it decides with the leader. */
+export function acquireNotifyRuntime(): () => void {
+  refs++
+  connect()
+  let done = false
+  return () => {
+    if (done) return
+    done = true
+    refs--
+    if (refs <= 0) {
+      refs = 0
+      disconnect()
+    }
+  }
+}
+
+/** The tab's leader (null while the runtime is down). */
+export function notifyLeader(): NotifyLeader | null {
+  return runtime?.leader ?? null
+}
+
+/** The hub's role in this tab (diagnostics; the status panel reads
+ *  notify-status). */
+export function hubRole(): HubRole | null {
+  return runtime?.hub.role() ?? null
+}
+
+/** Hear the runtime start (with its leader) and stop (null). */
+export function onNotifyRuntime(fn: (r: { leader: NotifyLeader; hub: Hub } | null) => void): () => void {
+  runtimeListeners.add(fn)
+  return () => runtimeListeners.delete(fn)
 }
 
 /** Subscribe to the firehose. Returns the unsubscribe; the LAST unsubscribe
@@ -92,12 +261,10 @@ function disconnect(): void {
  *  union of its consumers' lives. */
 export function onUserEvent(fn: Listener): () => void {
   listeners.add(fn)
-  refs++
-  connect()
+  const release = acquireNotifyRuntime()
   return () => {
     listeners.delete(fn)
-    refs--
-    if (refs <= 0) disconnect()
+    release()
   }
 }
 
@@ -117,6 +284,37 @@ export function onUserStreamOpen(fn: OpenListener): () => void {
  *  not open a second EventSource (a second Redis subscriber) of its own. */
 export function useUserEvents(fn: Listener): void {
   $effect(() => onUserEvent((event) => fn(event)))
+}
+
+/** THE SESSION ENDED (`session: ended`, I-19: a sign-out elsewhere, the
+ *  expiry; or the door's probe). The stream is closed in this tab at once —
+ *  reopening it would only collect 401s — and the session is asked for
+ *  until the read ANSWERS: the session gate (AppLayout) shows the sign-in
+ *  screen on its `{user: null}`, and a failed read is a backend blip, never a
+ *  logout, so it is asked again on the door's backoff rather than given up
+ *  on (one failed refetch used to leave the signed-in page up for good). If
+ *  the answer is "still signed in", the runtime starts again. */
+async function confirmSessionEnded(qc: QueryClient): Promise<void> {
+  if (confirming) return
+  confirming = true
+  // After this frame's delivery has finished: the leader hands it to the
+  // other tabs after its own listeners, and closing first would drop that.
+  await Promise.resolve()
+  stop()
+  let signedIn: boolean | null = null
+  try {
+    signedIn = await untilSessionAnswers(
+      async () => {
+        await qc.invalidateQueries({ queryKey: ['session'], refetchType: 'all' })
+        if (qc.getQueryState(['session'])?.status !== 'success') return null
+        return !!qc.getQueryData<{ user?: unknown }>(['session'])?.user
+      },
+      { alive: () => refs > 0 },
+    )
+  } finally {
+    confirming = false
+  }
+  if (signedIn && refs > 0) start()
 }
 
 /** Every query key the map below drives — refetched on each reopen. */
@@ -176,6 +374,13 @@ export function useUserEventInvalidation(): void {
           break
         case 'brief':
           void qc.invalidateQueries({ queryKey: ['daily-brief'] })
+          break
+        case 'session':
+          // The api ended the stream because the session behind it ended (a
+          // sign-out elsewhere, the expiry; I-19), or the door found it so:
+          // close the stream and ask until the session read answers, so the
+          // session gate signs this tab out (confirmSessionEnded).
+          if (event.state === 'ended') void confirmSessionEnded(qc)
           break
       }
     }),

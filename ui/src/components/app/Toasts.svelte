@@ -42,6 +42,7 @@
       in:fly={{ x: 16, duration: 220 }}
       out:fade={QUICK}
       role="status"
+      data-toast-key={t.key}
       class="pointer-events-auto relative rounded-[10px] border border-line bg-panel p-3 pr-9 shadow-[var(--theme-shadow-2)]"
     >
       <!-- The whole card is the click target: a toast's one job is "go

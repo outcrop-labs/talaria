@@ -140,3 +140,93 @@ describe('startNotifyLeader', () => {
     t.close()
   })
 })
+
+describe('startNotifyLeader — wave 2', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('carries another protocol\'s messages without reading them, and refuses to send its own types', async () => {
+    const b = browser()
+    const self = () => ({ visible: false, focused: false })
+    const t1 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self, tabId: 't1' })
+    const t2 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self, tabId: 't2' })
+    const got: unknown[] = []
+    t2.onMessage((m) => got.push(m))
+    await flush()
+    t1.send({ type: 'hub:frame', from: 't1', data: 'x' })
+    t1.send({ type: 'bye', tabId: 't1' }) // not an extension: dropped
+    await flush()
+    expect(got).toEqual([{ type: 'hub:frame', from: 't1', data: 'x' }])
+    expect(t2.others().map((t) => t.tabId)).toEqual(['t1'])
+    t1.close()
+    t2.close()
+  })
+
+  it('announces whether it leads, hosts a hub, and its presence client — and re-announces on taking the lock', async () => {
+    const b = browser()
+    const t1 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: true, focused: true, clientId: 'c1' }), tabId: 't1', hub: true })
+    const t2 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: false, focused: false, clientId: 'c2' }), tabId: 't2', hub: true })
+    await flush()
+    expect(t2.others()[0]).toMatchObject({ tabId: 't1', clientId: 'c1', leader: true, hub: true })
+    t1.close()
+    await flush()
+    expect(t2.isLeader()).toBe(true)
+    t2.close()
+  })
+
+  it('a duplicated tab (the same presence client in two tabs): exactly one re-mints, the greater tab id', async () => {
+    const b = browser()
+    const ids: Record<string, string> = { t1: 'c-same', t2: 'c-same' }
+    const clashed: string[] = []
+    const mk = (tabId: string) =>
+      startNotifyLeader({
+        locks: b.locks,
+        channel: b.channel(),
+        self: () => ({ visible: true, focused: false, clientId: ids[tabId] }),
+        tabId,
+        onClientIdClash: () => {
+          clashed.push(tabId)
+          ids[tabId] = `c-new-${tabId}`
+        },
+      })
+    const t1 = mk('t1')
+    const t2 = mk('t2')
+    await flush()
+    expect(clashed).toEqual(['t2'])
+    // The re-minted twin announced its new id at once.
+    expect(t1.others()[0]).toMatchObject({ tabId: 't2', clientId: 'c-new-t2' })
+    // Distinct ids: no further clash on the next heartbeats.
+    vi.advanceTimersByTime(30_000)
+    await flush()
+    expect(clashed).toEqual(['t2'])
+    t1.close()
+    t2.close()
+  })
+
+  it('different presence clients never clash', async () => {
+    const b = browser()
+    const clash = vi.fn()
+    const t1 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: true, focused: true, clientId: 'c1' }), tabId: 't1', onClientIdClash: clash })
+    const t2 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: false, focused: false, clientId: 'c2' }), tabId: 't2', onClientIdClash: clash })
+    const t3 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: false, focused: false }), tabId: 't3', onClientIdClash: clash })
+    await flush()
+    vi.advanceTimersByTime(20_000)
+    await flush()
+    expect(clash).not.toHaveBeenCalled()
+    t1.close()
+    t2.close()
+    t3.close()
+  })
+
+  it('reads the shared input clock when given one', async () => {
+    const b = browser()
+    const t1 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: true, focused: true }), tabId: 't1', lastInputAt: () => 1234 })
+    const t2 = startNotifyLeader({ locks: b.locks, channel: b.channel(), self: () => ({ visible: false, focused: false }), tabId: 't2' })
+    await flush()
+    expect(t1.lastInputAt()).toBe(1234)
+    expect(t2.others()[0]?.lastInputAt).toBe(1234)
+    t1.close()
+    t2.close()
+  })
+})
+

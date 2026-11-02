@@ -242,6 +242,16 @@ export async function showOsNotification(
   if (typeof Notification === 'undefined') return false
   try {
     const note = new Notification(n.title, opts)
+    const tag = opts.tag ?? n.id
+    // Kept so a read elsewhere can close it (notify-readsync.ts): a page's
+    // own Notification is not in any registration's getNotifications().
+    if (tag) {
+      pageNotes.get(tag)?.close()
+      pageNotes.set(tag, note)
+    }
+    note.onclose = () => {
+      if (pageNotes.get(tag) === note) pageNotes.delete(tag)
+    }
     note.onclick = () => {
       window.focus()
       note.close()
@@ -251,6 +261,22 @@ export async function showOsNotification(
   } catch {
     return false
   }
+}
+
+/** The banners THIS page posted through `new Notification` (no worker
+ *  registration: an engine with no service worker push, or one that refused
+ *  the registration), by tag. */
+const pageNotes = new Map<string, Notification>()
+
+/** Those banners, for read-sync to close: `{tag, close}`. */
+export function pageBanners(): Array<{ tag: string; close: () => void }> {
+  return [...pageNotes.entries()].map(([tag, note]) => ({
+    tag,
+    close: () => {
+      note.close()
+      pageNotes.delete(tag)
+    },
+  }))
 }
 
 /** The tag of the local banner that confirms alerts are on. */

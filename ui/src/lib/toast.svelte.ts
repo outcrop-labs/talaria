@@ -18,6 +18,10 @@ export interface ToastSpec {
   /** What a click does INSTEAD of opening `href` — a notification toast's
    *  click routes and marks its row read (lib/notify-open.ts). */
   onOpen?: () => void
+  /** What the toast is ABOUT — a notification row's id (or the catch-up
+   *  summary's tag): a read anywhere dismisses it (I-16, notify-readsync.ts),
+   *  and a second toast for the same key replaces the first. */
+  key?: string
 }
 
 export interface ToastItem {
@@ -27,6 +31,7 @@ export interface ToastItem {
   href?: string
   tone: ToastTone
   onOpen?: () => void
+  key?: string
 }
 
 // Long enough to read two lines; short enough that a stack of these never
@@ -57,7 +62,10 @@ export function pushToast(spec: ToastSpec): void {
     href: spec.href,
     tone: spec.tone ?? 'info',
     onOpen: spec.onOpen,
+    ...(spec.key ? { key: spec.key } : {}),
   }
+  // A re-alert of the same row replaces its toast instead of stacking.
+  if (spec.key) dismissToastsByKey([spec.key])
   store.items.push(item)
   while (store.items.length > MAX_STACK && store.items[0]) dismissToast(store.items[0].id)
   timers.set(item.id, setTimeout(() => dismissToast(item.id), TOAST_TTL_MS))
@@ -72,6 +80,28 @@ export function dismissToast(id: number): void {
     clearTimeout(timer)
     timers.delete(id)
   }
+}
+
+/** Dismiss every toast about these keys (rows read elsewhere). Answers how
+ *  many went. */
+export function dismissToastsByKey(keys: Iterable<string>): number {
+  const set = new Set(keys)
+  if (set.size === 0) return 0
+  const ids = store.items.filter((t) => t.key !== undefined && set.has(t.key)).map((t) => t.id)
+  for (const id of ids) dismissToast(id)
+  return ids.length
+}
+
+/** Dismiss every keyed toast — every notification toast (a mark-all). */
+export function dismissKeyedToasts(): number {
+  const ids = store.items.filter((t) => t.key !== undefined).map((t) => t.id)
+  for (const id of ids) dismissToast(id)
+  return ids.length
+}
+
+/** The keys of the toasts on screen (read-sync's resync pass). */
+export function toastKeys(): string[] {
+  return store.items.flatMap((t) => (t.key === undefined ? [] : [t.key]))
 }
 
 /** Read API for the host component. */

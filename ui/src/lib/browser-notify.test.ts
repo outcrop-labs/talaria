@@ -3,6 +3,7 @@ import {
   NOTIFY_BADGE,
   NOTIFY_ICON,
   bannerOptions,
+  pageBanners,
   shellHref,
   showOsNotification,
   browserNotifyEnabled,
@@ -225,5 +226,45 @@ describe('shell banners — the summary carries a path the shell will hand back'
   it('posts a row with its own href, untouched', async () => {
     await showOsNotification({ id: 'r1', title: 'DM', href: '/comms/channel/c1', kind: 'dm' }, () => {})
     expect(invoke).toHaveBeenCalledWith('desktop_notify', expect.objectContaining({ tag: 'r1', href: '/comms/channel/c1' }))
+  })
+})
+
+// A banner posted with `new Notification` (no worker registration) is in no
+// registration's getNotifications(): the page keeps it by tag, so a read
+// elsewhere can still close it (notify-readsync.ts, I-16).
+describe('pageBanners — the no-worker fallback is closable', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('keeps each page Notification by tag, replaces a re-post, and closes on request', async () => {
+    const made: Array<{ title: string; tag?: string; closed: boolean; onclose: (() => void) | null }> = []
+    class FakeNotification {
+      static permission = 'granted'
+      onclick: (() => void) | null = null
+      onclose: (() => void) | null = null
+      rec: (typeof made)[number]
+      constructor(title: string, opts: NotificationOptions) {
+        this.rec = { title, tag: opts.tag, closed: false, onclose: null }
+        made.push(this.rec)
+      }
+      close() {
+        this.rec.closed = true
+        this.onclose?.()
+      }
+    }
+    vi.stubGlobal('window', { isSecureContext: true, localStorage: localStorageStub, focus: () => {} })
+    vi.stubGlobal('navigator', {})
+    vi.stubGlobal('Notification', FakeNotification)
+    await showOsNotification({ id: 'row-a', title: 'A' }, () => {})
+    await showOsNotification({ id: 'row-b', title: 'B' }, () => {})
+    await showOsNotification({ id: 'row-a', title: 'A again', renotify: true }, () => {})
+    expect(made.map((m) => [m.tag, m.closed])).toEqual([
+      ['row-a', true], // replaced by its re-post
+      ['row-b', false],
+      ['row-a', false],
+    ])
+    expect(pageBanners().map((b) => b.tag).sort()).toEqual(['row-a', 'row-b'])
+    pageBanners().find((b) => b.tag === 'row-b')?.close()
+    expect(made[1]?.closed).toBe(true)
+    expect(pageBanners().map((b) => b.tag)).toEqual(['row-a'])
   })
 })
