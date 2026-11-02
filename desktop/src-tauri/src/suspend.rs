@@ -252,7 +252,17 @@ pub struct Report {
     /// page has no hook.
     #[serde(default)]
     pub page: Option<PageState>,
+    /// The page's arrival record (interface I-3), the entry it read last:
+    /// the watcher starts from it instead of a fresh baseline, so what the
+    /// page missed is posted. Read leniently (`watch::handoff`): a record
+    /// this build cannot read is no record, never a failed report.
+    #[serde(default)]
+    pub arrivals: Option<serde_json::Value>,
 }
+
+/// The localStorage key of the page's arrival record (I-3). ui writes it;
+/// the shell reads it at suspend and merges into it at restore.
+pub const ARRIVALS_KEY: &str = "talaria.notify.arrivals.v1";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -429,6 +439,22 @@ pub fn report_js(nonce: u64) -> String {
         if (k !== null && k !== '{RESTORE_FLAG}') session.push([k, String(sessionStorage.getItem(k))]);
       }}
     }} catch (e) {{ session = []; }}
+    let arrivals = null;
+    try {{
+      const all = JSON.parse(localStorage.getItem('{ARRIVALS_KEY}') || 'null');
+      if (all && typeof all === 'object') {{
+        for (const [user, rec] of Object.entries(all)) {{
+          if (!rec || typeof rec !== 'object') continue;
+          const at = Number(rec.at) || 0;
+          if (arrivals && at <= arrivals.at) continue;
+          const seen = {{}};
+          if (rec.seen && typeof rec.seen === 'object') {{
+            for (const [id, when] of Object.entries(rec.seen)) if (typeof when === 'string') seen[id] = when;
+          }}
+          arrivals = {{ user, hw: typeof rec.hw === 'string' ? rec.hw : null, seen, at }};
+        }}
+      }}
+    }} catch (e) {{ arrivals = null; }}
     let page = null;
     try {{
       const hook = window.__TALARIA_DESKTOP__;
@@ -441,7 +467,7 @@ pub fn report_js(nonce: u64) -> String {
       page = {{ version: 1, holdsInput: true, notify: false }};
     }}
     window.__TAURI_INTERNALS__.invoke('desktop_suspend_report', {{
-      report: {{ nonce, url: String(location.href), scroll, session, page }},
+      report: {{ nonce, url: String(location.href), scroll, session, page, arrivals }},
     }}).catch(() => {{}});
   }} catch (e) {{}}
 }})();"#
@@ -507,6 +533,46 @@ pub fn restore_js(
   }};
   if (document.readyState === 'loading') addEventListener('DOMContentLoaded', step, {{ once: true }});
   else step();
+}})();"#
+    ))
+}
+
+/// Hand the watcher's banners back to the restored page (I-3): every row it
+/// posted is merged into the page's arrival record, at document start,
+/// before the page's own scripts read it, so the page never posts them a
+/// second time. Idempotent, and it never moves the record backwards: an id
+/// keeps the later of its two times, the high-water mark only rises, and the
+/// record stays bounded at the page's 300 newest. `None` when there is
+/// nothing to merge.
+pub fn arrivals_js(user: &str, posted: &[(String, String)]) -> Option<String> {
+    if user.is_empty() || posted.is_empty() {
+        return None;
+    }
+    let user = serde_json::to_string(user).ok()?;
+    let posted = serde_json::to_string(posted).ok()?;
+    let max = crate::watch::MAX_SEEN;
+    Some(format!(
+        r#"(() => {{
+  try {{
+    const key = '{ARRIVALS_KEY}';
+    const user = {user};
+    const posted = {posted};
+    const all = JSON.parse(localStorage.getItem(key) || '{{}}') || {{}};
+    const rec = all[user] && typeof all[user] === 'object' ? all[user] : {{ hw: null, seen: {{}}, at: 0 }};
+    if (!rec.seen || typeof rec.seen !== 'object') rec.seen = {{}};
+    const ms = (s) => {{ const t = Date.parse(s); return Number.isFinite(t) ? t : -Infinity; }};
+    for (const [id, at] of posted) {{
+      if (!(id in rec.seen) || ms(at) > ms(rec.seen[id])) rec.seen[id] = at;
+      if (!rec.hw || ms(at) > ms(rec.hw)) rec.hw = at;
+    }}
+    const ids = Object.keys(rec.seen);
+    if (ids.length > {max}) {{
+      ids.sort((a, b) => ms(rec.seen[b]) - ms(rec.seen[a]));
+      for (const id of ids.slice({max})) delete rec.seen[id];
+    }}
+    all[user] = rec;
+    localStorage.setItem(key, JSON.stringify(all));
+  }} catch (e) {{}}
 }})();"#
     ))
 }
@@ -886,6 +952,25 @@ mod tests {
         assert!(clean_session(&many).is_empty());
         let big = vec![("k".to_string(), "x".repeat(MAX_SESSION_BYTES))];
         assert!(clean_session(&big).is_empty());
+    }
+
+    #[test]
+    fn the_report_reads_the_arrival_record_and_the_restore_merges_into_it() {
+        let js = report_js(1);
+        assert!(js.contains("localStorage.getItem('talaria.notify.arrivals.v1')"));
+        assert!(js.contains("page, arrivals }"));
+        assert_eq!(arrivals_js("u1", &[]), None);
+        assert_eq!(arrivals_js("", &[("n1".into(), "t".into())]), None);
+        let js = arrivals_js("u\"1", &[("n1".into(), "2026-10-31T10:00:00.000Z".into())]).unwrap();
+        assert!(js.contains(r#"const user = "u\"1";"#), "{js}");
+        assert!(js.contains(r#"const posted = [["n1","2026-10-31T10:00:00.000Z"]];"#));
+        assert!(js.contains("const key = 'talaria.notify.arrivals.v1';"));
+        assert!(js.contains("ids.slice(300)"));
+        let r: Report = serde_json::from_str(
+            r#"{"nonce":3,"url":"https://a.example/x","arrivals":{"user":"u1","hw":null,"seen":{"n1":"2026-10-31T10:00:00.000Z"},"at":5}}"#,
+        )
+        .unwrap();
+        assert!(r.arrivals.is_some());
     }
 
     #[test]

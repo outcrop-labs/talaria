@@ -36,6 +36,7 @@ arch = $arch
 license = MIT
 depend = webkit2gtk-4.1
 depend = gtk3
+optdepend = libayatana-appindicator: the tray icon (Close keeps Talaria in the tray; without it Close minimizes)
 EOF
 
 tar --zstd -cf "$out" -C "$tree" .PKGINFO usr
