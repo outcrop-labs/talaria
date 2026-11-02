@@ -1,6 +1,7 @@
-// Conversations and channels as notification audiences: member ids, the
-// fan events, where a thread's rows point, the read sweep, and the agent
-// reply writer.
+// Conversations and channels as notification audiences: member ids and
+// their notify levels, the fan events, where a thread's rows point, the read
+// sweep, and the agent reply writer. The producers' story — group keys,
+// levels, participants — is docs/notifications/producers.md.
 
 use sqlx::PgPool;
 use talaria_realtime::{UserEvent, publish_user};
@@ -8,10 +9,175 @@ use talaria_realtime::{UserEvent, publish_user};
 use crate::NotifyDeps;
 use crate::brief::mark_brief_stale;
 use crate::inbox::mark_read_by_href;
-use crate::write::{NotificationInput, add_notification};
+use crate::meta::{ActorKind, Coalesce, NotifyActor, NotifyEntity, NotifyMeta, entity, group_key};
+use crate::write::{NotificationInput, add_notification_with};
 
-/// The thread producers' own feature flags (I-23). W2-P adds its own here.
-pub const FEATURES: &[&str] = &[];
+/// The producers' feature flags (I-23): rows coalesce by group key with a
+/// count (`coalesce`), channel levels and timed mutes are obeyed
+/// (`channel-levels`; `channel-levels-store` is the contract's storage), and
+/// conversations you take part in notify you (`participants`: ticket
+/// comments, thread replies).
+pub const FEATURES: &[&str] = &["coalesce", "channel-levels", "participants"];
+
+// ── Channel levels (O-14) ────────────────────────────────────────────────────
+
+/// How much of one channel a person hears (`channel_members.notify_level`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelLevel {
+    /// Every message: a DM row per message, a `channel-message` row in a
+    /// channel (one per channel, counting).
+    All,
+    /// @mentions, and threads they take part in.
+    Mentions,
+    /// Nothing at all, @mentions included.
+    Nothing,
+}
+
+impl ChannelLevel {
+    /// The stored and wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChannelLevel::All => "all",
+            ChannelLevel::Mentions => "mentions",
+            ChannelLevel::Nothing => "none",
+        }
+    }
+
+    /// The stored level, else the channel kind's default: a DM notifies on
+    /// every message, a channel on @mentions (O-14). An unknown stored value
+    /// (the route never writes one) reads as the default, never as silence.
+    pub fn of(stored: Option<&str>, channel_kind: &str) -> Self {
+        match stored {
+            Some("all") => ChannelLevel::All,
+            Some("mentions") => ChannelLevel::Mentions,
+            Some("none") => ChannelLevel::Nothing,
+            _ if channel_kind == "dm" => ChannelLevel::All,
+            _ => ChannelLevel::Mentions,
+        }
+    }
+}
+
+/// One member of a channel as its producers see them: their level, and
+/// whether a timed mute is running (a muted row lands quietly — counted,
+/// never toasted, bannered, pushed or mailed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelListener {
+    pub user_id: String,
+    pub level: ChannelLevel,
+    pub muted: bool,
+}
+
+/// A channel's kind and every member row's level and mute, in ONE read — the
+/// producers of a post ask this once, whatever the member count. A person who
+/// reaches the channel through a team (`channel_teams`) has no member row, so
+/// no level of their own, and is not listed: that gap is an owner decision
+/// (docs/notifications/producers.md, S10). `None` kind: no such channel.
+pub async fn channel_listeners(
+    pg: &PgPool,
+    channel_id: &str,
+) -> Result<(Option<String>, Vec<ChannelListener>), sqlx::Error> {
+    let rows: Vec<(String, Option<String>, Option<String>, bool)> = sqlx::query_as(
+        "select c.kind, cm.user_id::text, cm.notify_level, \
+                coalesce(cm.muted_until > now(), false) \
+         from channels c left join channel_members cm on cm.channel_id = c.id \
+         where c.id = $1::uuid",
+    )
+    .bind(channel_id)
+    .fetch_all(pg)
+    .await?;
+    let kind = rows.first().map(|r| r.0.clone());
+    let listeners = rows
+        .into_iter()
+        .filter_map(|(kind, user, level, muted)| {
+            user.map(|user_id| ChannelListener {
+                user_id,
+                level: ChannelLevel::of(level.as_deref(), &kind),
+                muted,
+            })
+        })
+        .collect();
+    Ok((kind, listeners))
+}
+
+// ── Who a message addresses (@mentions) ─────────────────────────────────────
+// The token rules every mention producer asks (talaria-mentions files the
+// rows); here because the ticket's comment participants must leave out the
+// people a comment @mentions, and that producer cannot depend on
+// talaria-mentions.
+
+/// Tokens a person answers to: email localpart, dashed full name, first name.
+pub fn user_mention_tokens(name: Option<&str>, email: Option<&str>) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    if let Some(email) = email
+        && let Some(local) = email.split('@').next()
+    {
+        let local = local.to_lowercase();
+        if !local.is_empty() && !tokens.contains(&local) {
+            tokens.push(local);
+        }
+    }
+    if let Some(n) = name.map(str::trim).filter(|n| !n.is_empty()) {
+        let n = n.to_lowercase();
+        let dashed = n.split_whitespace().collect::<Vec<_>>().join("-");
+        if !dashed.is_empty() && !tokens.contains(&dashed) {
+            tokens.push(dashed);
+        }
+        if let Some(first) = n.split_whitespace().next()
+            && !tokens.contains(&first.to_string())
+        {
+            tokens.push(first.to_string());
+        }
+    }
+    tokens
+}
+
+/// The @tokens present in a body (lowercased, without the leading @): the
+/// first char after @ must be alphanumeric, then alphanumerics and dashes.
+pub fn mention_tokens(content: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'@' && i + 1 < bytes.len() {
+            let rest = &content[i + 1..];
+            let mut chars = rest.char_indices();
+            let valid_first = chars.next().is_some_and(|(_, c)| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c.is_ascii_uppercase()
+            });
+            if valid_first {
+                let mut end = rest.len();
+                for (idx, c) in rest.char_indices() {
+                    let ok = c.is_ascii_lowercase()
+                        || c.is_ascii_uppercase()
+                        || c.is_ascii_digit()
+                        || c == '-';
+                    if !ok {
+                        end = idx;
+                        break;
+                    }
+                }
+                let token = rest[..end].to_lowercase();
+                if !token.is_empty() && !out.contains(&token) {
+                    out.push(token);
+                }
+                // Resume scanning after the token — a '-' run inside one
+                // token cannot start another.
+                i += 1 + end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Does a person with this name and email answer to any of these @tokens?
+pub fn answers_to_tokens(name: Option<&str>, email: Option<&str>, tokens: &[String]) -> bool {
+    !tokens.is_empty()
+        && user_mention_tokens(name, email)
+            .iter()
+            .any(|t| tokens.contains(t))
+}
 
 /// The members of a channel — who a message in it might be about.
 ///
@@ -254,14 +420,17 @@ pub async fn clear_thread_notifications(
         .map(|ids| ids.len() as u64)
 }
 
-/// An agent reply that landed while its readers were away: file ONE
-/// agent-reply notification per audience member whose read cursor does not
-/// cover the reply's seq. The cursor is the "still looking" gate — someone
-/// watching the thread has auto-advanced past the reply and gets nothing —
-/// and the dedupe is the pile-up gate: while one row per thread sits unread,
-/// further replies fold into it (the DM shape, `notify_dm_message`). The
-/// bell, toasts, mail, and the brief all ride this single writer, so this is
-/// the whole fan-out: no surface-specific code anywhere.
+/// An agent reply that landed while its readers were away: ONE agent-reply
+/// row per audience member per thread (`group_key::thread`), for every member
+/// whose read cursor does not cover the reply's seq. The cursor is the "still
+/// looking" gate — someone watching the thread has auto-advanced past the
+/// reply and gets nothing. A reply landing while that person's row sits
+/// unread COALESCES into it (the DM shape): the newest reply's body, `count +
+/// 1`, and a re-alert. Wave 1 skipped it instead, and a second reply never
+/// rang. A row filed before the contract (no key) is adopted into the group,
+/// so it keeps its id. A read row has left the group, so the next reply files
+/// a fresh one. The bell, toasts, mail, and the brief all ride this single
+/// writer, so this is the whole fan-out: no surface-specific code anywhere.
 ///
 /// Reads the reply AS SAVED — the caller runs this after the confab guard,
 /// so strict mode's scrub has already reached the `messages` row and the
@@ -316,41 +485,84 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
         content.clone()
     };
     let title = format!("{label} replied");
+    let input = NotificationInput {
+        kind: "agent-reply",
+        title: &title,
+        body: Some(&body),
+        href: Some(&href),
+    };
+    let meta = agent_reply_meta(conversation_id, &agent_model, &label);
     for (member, cursor) in audience {
         if reply_seq <= cursor {
             continue; // they have read past this reply — still looking
         }
-        let pending: Option<i32> = sqlx::query_scalar(
-            "select 1 from notifications \
-             where user_id = $1::uuid and kind = 'agent-reply' and href = $2 \
-               and read_at is null limit 1",
-        )
-        .bind(&member)
-        .bind(&href)
-        .fetch_optional(&deps.pg)
-        .await
-        .ok()
-        .flatten();
-        if pending.is_some() {
-            continue; // one unread pointer per thread; this reply folds in
+        if let Err(e) = add_notification_with(deps, &member, &input, &meta).await {
+            tracing::error!("[notifications] agent-reply row for {member} failed: {e}");
         }
-        let _ = add_notification(
-            deps,
-            &member,
-            &NotificationInput {
-                kind: "agent-reply",
-                title: &title,
-                body: Some(&body),
-                href: Some(&href),
-            },
-        )
-        .await;
+    }
+}
+
+/// How an agent reply files: one open row per thread, re-alerting, adopting a
+/// pre-contract row, about the conversation, from the agent. Pure, so the
+/// shape is pinned by a test.
+fn agent_reply_meta(conversation_id: &str, agent_model: &str, label: &str) -> NotifyMeta {
+    NotifyMeta {
+        group_key: Some(group_key::thread(conversation_id)),
+        coalesce: Coalesce::Realert,
+        adopt_legacy: true,
+        entity: Some(NotifyEntity::new(entity::CONVERSATION, conversation_id)),
+        actor: Some(NotifyActor {
+            kind: ActorKind::Agent,
+            id: agent_model.to_string(),
+            label: label.to_string(),
+        }),
+        ..Default::default()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn levels_default_by_kind_and_read_what_is_stored() {
+        // O-14: a DM hears everything, a channel its @mentions.
+        assert_eq!(ChannelLevel::of(None, "dm"), ChannelLevel::All);
+        assert_eq!(ChannelLevel::of(None, "channel"), ChannelLevel::Mentions);
+        assert_eq!(ChannelLevel::of(None, "group"), ChannelLevel::Mentions);
+        // A stored level wins over the kind, both ways.
+        assert_eq!(ChannelLevel::of(Some("none"), "dm"), ChannelLevel::Nothing);
+        assert_eq!(ChannelLevel::of(Some("all"), "channel"), ChannelLevel::All);
+        assert_eq!(
+            ChannelLevel::of(Some("mentions"), "dm"),
+            ChannelLevel::Mentions
+        );
+        // Garbage is the default, never silence.
+        assert_eq!(ChannelLevel::of(Some("loud"), "dm"), ChannelLevel::All);
+        for l in [
+            ChannelLevel::All,
+            ChannelLevel::Mentions,
+            ChannelLevel::Nothing,
+        ] {
+            assert_eq!(ChannelLevel::of(Some(l.as_str()), "channel"), l);
+        }
+        assert_eq!(ChannelLevel::Nothing.as_str(), "none");
+    }
+
+    #[test]
+    fn an_agent_reply_files_into_its_thread_group() {
+        let m = agent_reply_meta("c-1", "margaret-marketing", "Margaret");
+        assert_eq!(m.group_key.as_deref(), Some("thread:c-1"));
+        assert_eq!(m.coalesce, Coalesce::Realert);
+        assert!(m.adopt_legacy && !m.quiet && m.group_window_secs.is_none());
+        assert_eq!(m.entity, Some(NotifyEntity::new("conversation", "c-1")));
+        let a = m.actor.unwrap();
+        assert_eq!(
+            (a.kind, a.id.as_str(), a.label.as_str()),
+            (ActorKind::Agent, "margaret-marketing", "Margaret")
+        );
+        assert_eq!(FEATURES, ["coalesce", "channel-levels", "participants"]);
+    }
 
     #[test]
     fn thread_notification_hrefs_are_pinned() {

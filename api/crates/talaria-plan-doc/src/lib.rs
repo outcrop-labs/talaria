@@ -22,8 +22,8 @@ use talaria_harness::run::{HarnessError, RunContext, RunLedger, run_harness};
 use talaria_harness::transport::LedgerSource;
 use talaria_harness_defs::defs::plan_doc::{PlanDocInput, plan_doc_harness, plan_doc_regression};
 use talaria_kb::perms::{EditorGrant, can_read, list_editors, set_editors};
-use talaria_mentions::{Mentionee, notify_mentions};
-use talaria_notify::NotifyDeps;
+use talaria_mentions::{MentionOpts, MentionSender, Mentionee, notify_mentions_with};
+use talaria_notify::{NotifyDeps, NotifyEntity, entity};
 use talaria_state::AppState;
 use talaria_templates::{ResolveContext, resolve_template, template_prompt};
 use talaria_users::list_users;
@@ -74,14 +74,15 @@ pub async fn notify_plan_mentions(
                 .await
                 .unwrap_or_default();
             let item = guarded(&doc);
+            // `list_users` answers (id, email, name). The map below once
+            // destructured it as (id, name, email), so every Mentionee carried
+            // its email as its name and its name as its email, and `@ada`
+            // matched nobody whose email was not literally "ada".
             let users = list_users(pg).await.unwrap_or_default();
-            let mut team_map: std::collections::HashMap<String, Vec<String>> =
-                std::collections::HashMap::new();
-            for (id, _, _) in &users {
-                if let Ok(ids) = talaria_teams::team_ids_for_user(pg, id).await {
-                    team_map.insert(id.clone(), ids);
-                }
-            }
+            // EVERY person's teams in ONE read (SE-8): the per-user
+            // `team_ids_for_user` made a plan message cost a query per user
+            // in the workspace.
+            let team_map = team_ids_by_user(pg).await;
             let empty = Vec::new();
             users
                 .into_iter()
@@ -94,7 +95,7 @@ pub async fn notify_plan_mentions(
                         team_map.get(id).unwrap_or(&empty),
                     )
                 })
-                .map(|(user_id, name, email)| Mentionee {
+                .map(|(user_id, email, name)| Mentionee {
                     user_id,
                     name,
                     email,
@@ -112,16 +113,35 @@ pub async fn notify_plan_mentions(
             })
             .collect(),
     };
-    notify_mentions(
+    notify_mentions_with(
         notify,
         &eligible,
-        sender_id,
-        sender_label,
+        &MentionSender::of(sender_id, sender_label),
         content,
         &format!("a plan ({})", plan_title.unwrap_or("Untitled")),
         &format!("/plan/{conversation_id}"),
+        &MentionOpts {
+            entity: Some(NotifyEntity::new(entity::PLAN, conversation_id)),
+            ..Default::default()
+        },
     )
     .await;
+}
+
+/// Every person's team ids, from one read of `team_members` — what
+/// `talaria_teams::team_ids_for_user` answers for one person, for all of them
+/// at once. A failed read is no teams (the doc's other grants still apply).
+async fn team_ids_by_user(pg: &sqlx::PgPool) -> std::collections::HashMap<String, Vec<String>> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("select user_id::text, team_id::text from team_members")
+            .fetch_all(pg)
+            .await
+            .unwrap_or_default();
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for (user, team) in rows {
+        map.entry(user).or_default().push(team);
+    }
+    map
 }
 
 /// The plan's linked doc artifact, if one exists yet.

@@ -575,7 +575,13 @@ pub async fn advance_workchains(
                         body: None,
                         href: Some(&href),
                     };
-                    if let Err(e) = talaria_notify::add_notification(notify, user_id, &input).await
+                    if let Err(e) = talaria_notify::add_notification_with(
+                        notify,
+                        user_id,
+                        &input,
+                        &workchain_meta(&t.id),
+                    )
+                    .await
                     {
                         tracing::error!("[workchains] turn notification for {user_id} failed: {e}");
                     }
@@ -632,13 +638,37 @@ pub async fn advance_workchains(
                 body: None,
                 href: Some(&format!("/boards/{}/{}", t.board_id, t.id)),
             };
-            if let Err(e) = talaria_notify::add_notification(notify, &creator_id, &input).await {
+            if let Err(e) = talaria_notify::add_notification_with(
+                notify,
+                &creator_id,
+                &input,
+                &workchain_meta(&t.id),
+            )
+            .await
+            {
                 tracing::error!("[workchains] paused notification for {creator} failed: {e}");
             }
         }
         Terminal::Live => {}
     }
     Ok(ready_ids)
+}
+
+/// A workchain row is about the step's ticket and comes from the chain engine
+/// (I-11). Pure.
+fn workchain_meta(task_id: &str) -> talaria_notify::NotifyMeta {
+    talaria_notify::NotifyMeta {
+        entity: Some(talaria_notify::NotifyEntity::new(
+            talaria_notify::entity::TASK,
+            task_id,
+        )),
+        actor: Some(talaria_notify::NotifyActor {
+            kind: talaria_notify::ActorKind::System,
+            id: "workchains".into(),
+            label: "Workchains".into(),
+        }),
+        ..Default::default()
+    }
 }
 
 // ── The ordering guarantee work dispatch asks ────────────────────────────────

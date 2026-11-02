@@ -1,5 +1,6 @@
 // /api/channels/{id}.
-// GET → channel detail (role + members + agents + teams + agentInitiative).
+// GET → channel detail (role + members + agents + teams + agentInitiative +
+// the caller's own notify level and mute).
 // PUT → rename / set topic / set agentInitiative (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
 // purges the channel's activity points so nothing orphans in the index).
 
@@ -9,6 +10,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_api_facades::retrieval::qdrant;
 use talaria_api_facades::retrieval::sources::{ActivityField, purge_activity_by_field};
 use talaria_body::{optional_string_member, present_nullable_max_string_member};
@@ -18,7 +20,7 @@ use talaria_channels::{
     update_channel,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::NotifyDeps;
+use talaria_notify::{ChannelLevel, NotifyDeps};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -80,14 +82,52 @@ pub async fn get(
             .ok()
             .flatten()
             .unwrap_or(false);
+    let notify = match caller_notify(&state.pg, &id, &user.id).await {
+        Ok(n) => n,
+        Err(e) => return Ok(internal("[channels] notify level read failed", e)),
+    };
     Ok(Json(json!({
         "role": role,
         "members": members,
         "agents": agents,
         "teams": teams,
         "agentInitiative": agent_initiative,
+        "notify": notify,
     }))
     .into_response())
+}
+
+/// The caller's own notify level and mute for this channel, as `PUT
+/// …/notify` sets them: `{level, mutedUntil, settable}`. `level` is what
+/// applies — a NULL stored level is the kind's default (a DM `all`, a
+/// channel `mentions`, O-14). `mutedUntil` is null once a mute has run out.
+/// `settable` is false when the caller has no member row of their own to
+/// hold a level (a task room's roster is its board's; a team grant is the
+/// team's) — the PUT answers 409 there, and a client hides the control.
+async fn caller_notify(
+    pg: &sqlx::PgPool,
+    channel_id: &str,
+    user_id: &str,
+) -> Result<serde_json::Value, sqlx::Error> {
+    let row: Option<(String, bool, Option<String>, Option<i64>)> = sqlx::query_as(
+        "select c.kind, cm.user_id is not null, cm.notify_level, \
+                case when cm.muted_until > now() \
+                     then (trunc(extract(epoch from cm.muted_until) * 1000))::bigint end \
+         from channels c \
+         left join channel_members cm on cm.channel_id = c.id and cm.user_id = $2::uuid \
+         where c.id = $1::uuid",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    let (kind, settable, level, muted_ms) =
+        row.unwrap_or_else(|| ("channel".into(), false, None, None));
+    Ok(json!({
+        "level": ChannelLevel::of(level.as_deref(), &kind).as_str(),
+        "mutedUntil": muted_ms.map(epoch_ms_to_iso),
+        "settable": settable,
+    }))
 }
 
 pub async fn put(

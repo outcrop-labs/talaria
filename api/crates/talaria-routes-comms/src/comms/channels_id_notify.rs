@@ -6,7 +6,8 @@
 // `all`, a channel on `mentions`). A member only; it UPDATEs the caller's own
 // row and never inserts one, so it can never join anyone to a private
 // channel (C24). A room whose roster is its board's or its team's has no row
-// to set: 409. W2-P's producers read the level (docs/notifications/producers.md).
+// to set: 409. The producers read the level (talaria_notify::channel_listeners,
+// docs/notifications/producers.md); `GET /api/channels/{id}` serves it back.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -109,7 +110,11 @@ pub async fn put(
             if task_room {
                 "this room's notifications follow its board"
             } else {
-                "this channel's notifications follow its team"
+                // S10: a team grant has no row of the person's own to hold a
+                // level. Giving team members levels needs a per-person
+                // table — an owner decision (docs/notifications/producers.md).
+                "you're in this channel through a team, and per-person notification \
+                 settings for team members aren't available yet"
             },
         ));
     };

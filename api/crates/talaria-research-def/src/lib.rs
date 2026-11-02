@@ -96,7 +96,9 @@ use talaria_harness_defs::defs::research::{
 use talaria_kb::perms::{EditorGrant, set_editors};
 use talaria_model_access::gateway_models;
 use talaria_model_roles::resolve_role_model;
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    NotificationInput, NotifyDeps, NotifyEntity, NotifyMeta, add_notification_with, entity,
+};
 use talaria_retrieval::index::IndexDoc;
 use talaria_retrieval::sources::{index_activity, index_personal};
 use talaria_retrieval::{embed, qdrant};
@@ -1498,7 +1500,7 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
             let st = st_notify.clone();
             Box::pin(async move {
                 let deps = NotifyDeps::publishing(st.pg.clone(), st.redis().await.ok());
-                add_notification(
+                add_notification_with(
                     &deps,
                     &args.owner_user_id,
                     &NotificationInput {
@@ -1523,8 +1525,17 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                         // are caught by AppLayout's legacy redirect.
                         href: Some(&format!("/research/{}", args.run_id)),
                     },
+                    // About the run, so the center groups its rows by it.
+                    &NotifyMeta {
+                        entity: Some(NotifyEntity::new(
+                            entity::RESEARCH_RUN,
+                            args.run_id.as_str(),
+                        )),
+                        ..Default::default()
+                    },
                 )
                 .await
+                .map(|_| ())
                 .map_err(|e| e.to_string())
             })
         }),

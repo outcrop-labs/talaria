@@ -56,7 +56,10 @@ use talaria_boards::{board_info, create_board, join_everyone_to_board, set_board
 use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_gaps::{agent_text_authority, remember_ticket_refusal};
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
+    add_notification_with, entity,
+};
 use talaria_ratelimit::{brake, rate_limit};
 use talaria_settings::{get_setting, set_setting};
 use talaria_state::AppState;
@@ -354,8 +357,20 @@ pub async fn post(
     // the announcement lying about its own reason.
     let placed = matches!(authority, Authority::Admin { on_board: Some(_) });
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+    // From the agent, about the ticket it was on when it has one (I-11).
+    let meta = NotifyMeta {
+        entity: task
+            .as_ref()
+            .map(|t| NotifyEntity::new(entity::TASK, t.id.as_str())),
+        actor: Some(NotifyActor {
+            kind: ActorKind::Agent,
+            id: agent.clone(),
+            label: label.clone(),
+        }),
+        ..Default::default()
+    };
     for user_id in &who.content {
-        if let Err(e) = add_notification(
+        if let Err(e) = add_notification_with(
             &notify,
             user_id,
             &NotificationInput {
@@ -364,6 +379,7 @@ pub async fn post(
                 body: Some(context.as_deref().unwrap_or("")),
                 href: Some(&href),
             },
+            &meta,
         )
         .await
         {
@@ -381,7 +397,7 @@ pub async fn post(
         "No Helpdesk ticket could be filed for it."
     };
     for user_id in &who.fact {
-        if let Err(e) = add_notification(
+        if let Err(e) = add_notification_with(
             &notify,
             user_id,
             &NotificationInput {
@@ -398,6 +414,7 @@ pub async fn post(
                 // cannot click through to is a headline, not a notice.
                 href: Some("/observability/alerts"),
             },
+            &meta,
         )
         .await
         {

@@ -22,7 +22,9 @@ use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_agent_writes::{WriteAuthor, guard_agent_fields};
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyMeta, add_notification_with,
+};
 
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
@@ -472,6 +474,15 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
         None => (Vec::new(), Vec::new()),
     };
     let placed = matches!(authority, Authority::Admin { on_board: Some(_) });
+    // From the agent that hit it (I-11); a gap has no entity kind of its own.
+    let meta = NotifyMeta {
+        actor: Some(NotifyActor {
+            kind: ActorKind::Agent,
+            id: agent_model.to_string(),
+            label: agent_model.to_string(),
+        }),
+        ..Default::default()
+    };
     let ratify = "\n\nRatify it in the Studio's Suggested queue, or dismiss it there.";
     for user_id in &content {
         let body = format!(
@@ -481,7 +492,7 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
                 _ => String::new(),
             }
         );
-        if let Err(e) = add_notification(
+        if let Err(e) = add_notification_with(
             deps,
             user_id,
             &NotificationInput {
@@ -493,6 +504,7 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
                 body: Some(&body),
                 href: Some("/studio"),
             },
+            &meta,
         )
         .await
         {
@@ -508,7 +520,7 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
                 "It was raised against a ticket the agent was refused, so it is not an org-wide report and what the agent wrote is not repeated here."
             }
         );
-        if let Err(e) = add_notification(
+        if let Err(e) = add_notification_with(
             deps,
             user_id,
             &NotificationInput {
@@ -517,6 +529,7 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
                 body: Some(&body),
                 href: Some("/studio"),
             },
+            &meta,
         )
         .await
         {

@@ -20,7 +20,10 @@ use sqlx::PgPool;
 
 use crate::{effective_doc_perms, get_doc};
 use talaria_kb_perms::can_read;
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
+    add_notification_with, entity,
+};
 
 /// One comment — field order is the wire order: the struct follows ROW_COLS,
 /// which fixes the JSON key order.
@@ -199,6 +202,10 @@ pub async fn add_comment(
         author_user_id: input.author_user_id.to_string(),
         author: input.author.to_string(),
         content: input.content.to_string(),
+        doc_id: match input.target {
+            CommentTarget::Doc(id) => Some(id.to_string()),
+            CommentTarget::Artifact(_) => None,
+        },
     };
     tokio::spawn(async move {
         let _ = fanout.run().await;
@@ -220,6 +227,9 @@ struct CommentFanout {
     author_user_id: String,
     author: String,
     content: String,
+    /// The doc the comment is on (a KB doc's rows are about it; an artifact
+    /// has no entity kind of its own).
+    doc_id: Option<String>,
 }
 
 impl CommentFanout {
@@ -246,8 +256,20 @@ impl CommentFanout {
         targets.dedup();
         // slice(0,140) by chars, not bytes — a UTF-8 boundary must never cut.
         let body: String = self.content.chars().take(140).collect();
+        let meta = NotifyMeta {
+            entity: self
+                .doc_id
+                .as_deref()
+                .map(|d| NotifyEntity::new(entity::KB_DOC, d)),
+            actor: Some(NotifyActor {
+                kind: ActorKind::User,
+                id: self.author_user_id.clone(),
+                label: self.author.clone(),
+            }),
+            ..Default::default()
+        };
         for user_id in &targets {
-            let _ = add_notification(
+            let _ = add_notification_with(
                 &self.notify,
                 user_id,
                 &NotificationInput {
@@ -259,6 +281,7 @@ impl CommentFanout {
                     body: Some(&body),
                     href: Some(&self.href),
                 },
+                &meta,
             )
             .await;
         }
