@@ -619,8 +619,6 @@ async function needsInbox(page: Page) {
   test.skip(!f.includes('inbox-v2'), 'this api serves no inbox-v2 (W2-H): no Done, no paging, no server filters')
 }
 
-const badgeOf = async (page: Page) => Number(await page.locator('[data-notify-badge]').getAttribute('data-notify-badge'))
-
 test.describe('the inbox', () => {
   test('Done leaves the views and the badge and lands in Done; Move to inbox restores it read; mark unread counts again', async ({ browser }) => {
     const other = await person('other')
@@ -658,12 +656,15 @@ test.describe('the inbox', () => {
     }
     await expect.poll(backState).toBe('false/true')
 
-    // Mark unread → +1.
+    // Mark unread → +1. A full load leaves the bell at 0 until its first read
+    // answers, and `goto` returns before that: wait for the count Done and Move
+    // to inbox left (5 − 2, the restored row read), never a one-shot read — on
+    // CI's built ui that read landed first and said 0 (expected 1, got 4).
     await page.goto('/notifications')
-    const before = await badgeOf(page)
+    await expect(page.locator('[data-notify-badge]')).toHaveAttribute('data-notify-badge', '3')
     await page.locator(`[data-notification-row="${ids[0]}"]`).hover()
     await page.locator(`[data-notification-row="${ids[0]}"] button[title="Mark unread"]`).click()
-    await expect(page.locator('[data-notify-badge]')).toHaveAttribute('data-notify-badge', String(before + 1))
+    await expect(page.locator('[data-notify-badge]')).toHaveAttribute('data-notify-badge', '4')
     await ctx.close()
   })
 
