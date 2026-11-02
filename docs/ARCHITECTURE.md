@@ -157,10 +157,12 @@ are a 13-entry catalog resolved user-override → org default → shipped defaul
 ## Realtime
 
 Redis pub/sub → SSE. No websockets anywhere (`realtime.ts` in TS, `api/src/realtime.rs` in
-the Rust api — the same bus and the same rule on both sides). One dedicated Redis
-subscriber per connected client, dropped the moment the client leaves; four topics:
-`board:<id>`, `channel:<id>`, `run:<id>`, and `user:<id>` — the per-person firehose that
-makes runs multi-device.
+the Rust api — the same bus and the same rule on both sides). Every stream in an api process
+reads from ONE Redis subscriber connection, the hub in `talaria-realtime`: a topic is
+subscribed while any stream wants it and unsubscribed the moment the last one leaves, each
+topic fans out in-process, and a stream that falls 256 messages behind ends (its client
+reconnects). Four topics: `board:<id>`, `channel:<id>`, `run:<id>`, and `user:<id>` — the
+per-person firehose that makes runs multi-device.
 
 Built to survive the edge in front of every real instance (Cloudflare cuts a connection
 idle for about 100 s, and turns a deploy into a 502 or 524): each stream opens with
@@ -168,9 +170,15 @@ idle for about 100 s, and turns a deploy into a 502 or 524): each stream opens w
 and `X-Accel-Buffering: no` (the app's proxy passes both through). The client door
 (`ui/src/lib/sse.ts`) reopens a CLOSED stream with backoff — 1 s, 2 s, 4 s … 30 s — and at
 once when the network or the tab comes back, and every reopen refetches what the stream
-drives, because the stream itself carries no replay. Notifications add a persisted arrival
-record so nothing missed during a gap is silently absorbed:
-[`NOTIFICATIONS.md`](./NOTIFICATIONS.md).
+drives. The person's own stream also resumes: a notification frame carries its seq as the
+SSE `id:`, and a reopen with `?since=` or `Last-Event-ID` replays every row it missed from
+Postgres before going live, each row exactly once; after the hub's own Redis connection
+drops and comes back, every user stream is told to resync. That stream ends, with a
+`session` frame, when its session does: at logout (`session:revoked`), before any frame
+to a session that is gone, and on a 20 s re-read. On SIGTERM every stream ends at once and
+the hub closes. The wire and the inbox routes behind it:
+[`notifications/live-and-inbox.md`](./notifications/live-and-inbox.md); the arrival record
+that keeps a gap from being silently absorbed: [`NOTIFICATIONS.md`](./NOTIFICATIONS.md).
 
 **The load-bearing rule: an event says *what changed*, never *what it says*** — the client
 re-fetches through the ordinary ACL'd route, so realtime can never widen a read. Payloads

@@ -114,16 +114,24 @@ Source: [`api/crates/talaria-routes-comms/src/activity/notifications.rs`](../../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery, prompt, unreadForYou, seq, classes, channels, dnd, emailFrequency, features, next}` | 200 | — |
-| PUT | `session` | [body](#put-apinotifications-body) | `{ok}` | 200, 400 | — |
+| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery, prompt, unreadForYou, seq, classes, channels, dnd, emailFrequency, features, next, more}` | 200, 400 | — |
+| PUT | `session` | [body](#put-apinotifications-body) | `{ok, read, archived, unread, unarchived}` | 200, 400 | — |
 | PATCH | `session` | [body](#patch-apinotifications-body) | `{prefs, digest, delivery, canSetDelivery, prompt, channels, dnd, emailFrequency}` | 200, 400, 403 | audit |
+
+**GET** — Optional query: `view=foryou|all|done`, `unread=1`, `category=`, `class=`, `kind=` (comma lists), `limit=1..100`, `before=<next>`; or `since=<seq>` (rows with a higher seq, in seq order, ≤ 200, with `more`). None is wave 1's newest 50. See docs/notifications/live-and-inbox.md.
+
+**PUT** — A selector (`ids`, `href` or `entity`, in that precedence; none is every row) and at most one action (`archive`, `unarchive`, `unread`; none marks read). Publishes the read-sync event.
 
 ### PUT `/api/notifications` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `ids` | `uuid[]?(200)` |  |
-| `href` | `string?(512)` |  |
+| `ids` | `uuid[]?(200)` | These rows. Absent or empty, with no other selector: every row of yours (wave 1's mark-all). |
+| `href` | `string?(512)` | Every row of yours that points at this place. |
+| `entity` | `entity` | {type, id}: every row of yours about that thing (never anyone else's). |
+| `archive` | `literal(true)` | Optional. Done: archive, and mark read. |
+| `unarchive` | `literal(true)` | Optional. Back from Done (stays read); needs a selector. |
+| `unread` | `literal(true)` | Optional. Unread again (not Done rows); needs a selector. |
 
 ### PATCH `/api/notifications` body
 

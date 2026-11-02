@@ -92,6 +92,7 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_logout.rs`](..
 > first, every push subscription this session filed: a browser that signed
 > out must stop receiving the signed-out person's notifications. Rows filed
 > by the person's OTHER sessions (another browser, another device) stay.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -229,6 +230,8 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_events.rs`](../.
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200 | SSE |
+
+**GET** — `?since=<seq>` or `Last-Event-ID` replays missed notification frames (each with `id: <seq>`), then `resync`; past 100 rows only `resync` with `complete: false`. Ends with `{"type":"session","state":"ended"}` when the session does. See docs/notifications/live-and-inbox.md.
 
 ## `/api/me/mcp`
 
