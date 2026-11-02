@@ -5,6 +5,7 @@
   import { fade, fly, QUICK } from '@/lib/motion'
   import { MIN_LOADED_MS, SHELL_ASK_KEY, createShellAsk, type ShellAskView } from '@/lib/notify-prompt'
   import { readText, writeText } from '@/lib/persist'
+  import { intoToastLead } from '@/lib/toast.svelte'
 
   // The desktop shell's notification ask, INSIDE an instance — the card, not
   // the decision (notify-prompt.ts `createShellAsk`).
@@ -82,23 +83,11 @@
       settle()
     }
   })
-
-  // Into the toast stack's lead slot (Toasts.svelte); on its own at the
-  // corner if that host is not mounted.
-  function intoStack(node: HTMLElement) {
-    const slot = document.querySelector<HTMLElement>('[data-toast-lead]')
-    if (slot) slot.prepend(node)
-    else {
-      node.classList.add('fixed', 'bottom-4', 'right-4', 'z-[70]', 'w-[min(92vw,340px)]')
-      document.body.appendChild(node)
-    }
-    return { destroy: () => node.remove() }
-  }
 </script>
 
 {#if view.kind !== 'hidden'}
   <div
-    use:intoStack
+    use:intoToastLead
     in:fly={{ y: 8, duration: 220 }}
     out:fade={QUICK}
     class="pointer-events-auto"
