@@ -16,6 +16,8 @@ getrandom = { workspace = true }
 futures-util = { workspace = true }
 hmac = { workspace = true }
 p256 = { workspace = true }
+talaria-auth-config = { workspace = true }
+talaria-instance = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

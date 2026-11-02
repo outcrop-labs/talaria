@@ -377,7 +377,7 @@ async fn a_stream_opens_with_connected_then_frames_each_payload_as_sse_data() {
         .expect("frames are bounded");
     assert_eq!(
         std::str::from_utf8(&bytes).unwrap(),
-        ": connected\n\ndata: {\"type\":\"notification\",\"notificationId\":\"n-1\"}\n\n"
+        ": connected\nretry: 3000\n\ndata: {\"type\":\"notification\",\"notificationId\":\"n-1\"}\n\n"
     );
     let headers = {
         // rebuilt only to assert the header the stream sets
@@ -394,6 +394,8 @@ async fn a_stream_opens_with_connected_then_frames_each_payload_as_sse_data() {
         headers.get(axum::http::header::CACHE_CONTROL).unwrap(),
         "no-cache, no-transform"
     );
+    // The edge's flush switch (Cloudflare and the nginx family honor it).
+    assert_eq!(headers.get("x-accel-buffering").unwrap(), "no");
 }
 
 #[tokio::test]
@@ -409,7 +411,10 @@ async fn a_quiet_subscriber_still_gets_the_connected_preamble() {
     let bytes = axum::body::to_bytes(response.into_body(), 1024)
         .await
         .expect("one frame");
-    assert_eq!(std::str::from_utf8(&bytes).unwrap(), ": connected\n\n");
+    assert_eq!(
+        std::str::from_utf8(&bytes).unwrap(),
+        ": connected\nretry: 3000\n\n"
+    );
 }
 
 // ── The gate ─────────────────────────────────────────────────────────────────

@@ -162,13 +162,16 @@ pub async fn unread_count_of_kind(
 /// knows its own href, not the ids of whatever rows point at it, and marking
 /// by href clears exactly those rows without touching anything else. ids win
 /// over href when both arrive; an empty href folds into all, like empty ids.
+///
+/// Answers how many rows it read — the caller publishes the read-sync event
+/// (`publish_unread`) only when that is more than zero.
 pub async fn mark_notifications_read(
     pg: &PgPool,
     user_id: &str,
     ids: Option<&[String]>,
     href: Option<&str>,
-) -> Result<(), sqlx::Error> {
-    match (ids, href) {
+) -> Result<u64, sqlx::Error> {
+    let res = match (ids, href) {
         (Some(list), _) if !list.is_empty() => {
             sqlx::query(
                 "update notifications set read_at = now() \
@@ -177,7 +180,7 @@ pub async fn mark_notifications_read(
             .bind(user_id)
             .bind(list)
             .execute(pg)
-            .await?;
+            .await?
         }
         (_, Some(href)) if !href.is_empty() => {
             sqlx::query(
@@ -187,7 +190,7 @@ pub async fn mark_notifications_read(
             .bind(user_id)
             .bind(href)
             .execute(pg)
-            .await?;
+            .await?
         }
         _ => {
             sqlx::query(
@@ -196,10 +199,42 @@ pub async fn mark_notifications_read(
             )
             .bind(user_id)
             .execute(pg)
-            .await?;
+            .await?
         }
+    };
+    Ok(res.rows_affected())
+}
+
+/// Tell the person's open pages their unread count moved because something
+/// was READ — `{"type":"notifications","unread":N}` on `user:<id>`. A
+/// second tab's bell drops the moment the first one clears a row, instead of
+/// on its next poll. A failed count is logged and nothing is published: the
+/// poll is the floor.
+pub async fn publish_unread(deps: &NotifyDeps, user_id: &str) {
+    match unread_count(&deps.pg, user_id).await {
+        Ok(n) => publish_user(
+            &deps.realtime,
+            user_id,
+            &UserEvent::Notifications {
+                unread: i64::from(n),
+            },
+        ),
+        Err(e) => tracing::error!("[notifications] unread count for read-sync failed: {e}"),
     }
-    Ok(())
+}
+
+/// Reading a channel or DM to its end clears the bell rows that point at it —
+/// its DM row and any @mention in it — the shape `clear_thread_notifications`
+/// gives agent threads. The caller decides "to its end" (the cursor covers
+/// the newest message); this clears by the channel's href and answers how
+/// many rows it read.
+pub async fn clear_channel_notifications(
+    pg: &PgPool,
+    user_id: &str,
+    channel_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let href = format!("/comms/channel/{channel_id}");
+    mark_notifications_read(pg, user_id, None, Some(&href)).await
 }
 
 // ── The write: one notification, filed ───────────────────────────────────────
@@ -247,6 +282,83 @@ pub fn notify_class_of(kind: &str) -> &'static str {
             .map(|(id, _)| *id)
             .unwrap_or("work_complete")
     })
+}
+
+/// The longest href a row keeps — the shell's `openable_href` bound.
+const HREF_BYTES: usize = 2048;
+
+/// The ONE href shape a notification may carry: a same-origin path. A leading
+/// `/` and not `//` (protocol-relative, another host), no backslash (`/\`
+/// is another host to some engines), no control characters, no `.` or `..`
+/// path segment (in any `%2e` spelling), at most 2,048 bytes. The same rule
+/// the page (`ui/src/lib/notify-open.ts`) and the service worker (`sw.ts`)
+/// apply before they open, so a row the server keeps is a row every client
+/// will open. Trimmed; `None` for anything else.
+///
+/// Why the dot segments: a URL parser resolves `/..//evil.example` (or
+/// `/./`, `/a/../`, `/%2e%2e/`) to the path `//evil.example` on this origin,
+/// and a client that hands that PATH back to a parser — a router, a service
+/// worker's `navigate()` — gets the protocol-relative URL of another host.
+/// No producer builds an href with a dot segment; refusing them keeps the
+/// raw string and the resolved path the same thing.
+pub fn openable_href(raw: &str) -> Option<&str> {
+    let href = raw.trim();
+    if href.is_empty()
+        || href.len() > HREF_BYTES
+        || !href.starts_with('/')
+        || href.starts_with("//")
+    {
+        return None;
+    }
+    if href.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'\\') {
+        return None;
+    }
+    if has_dot_segment(href) {
+        return None;
+    }
+    Some(href)
+}
+
+/// Does the PATH part (before any `?` or `#`) hold a segment a URL parser
+/// would resolve away? The WHATWG URL standard's single-dot (`.`, `%2e`) and
+/// double-dot (`..`, `.%2e`, `%2e.`, `%2e%2e`) segments, ASCII
+/// case-insensitive. A query or fragment is never path-resolved, so a
+/// `?next=/../x` stays allowed.
+fn has_dot_segment(href: &str) -> bool {
+    let path = href.split(['?', '#']).next().unwrap_or("");
+    path.split('/').any(|seg| {
+        let s = seg.to_ascii_lowercase().replace("%2e", ".");
+        s == "." || s == ".."
+    })
+}
+
+/// Kinds whose writer already handed over an href the rule refused — logged
+/// once per kind and process, so a producer bug is visible without flooding.
+static HREF_REFUSALS: LazyLock<Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// What a row stores for a writer's href: the validated path, or `''` — a
+/// row with no link still lands and still clears on click. Every click path
+/// (the bell, a toast, the service worker, the shell) opens only a path, so
+/// an absolute or protocol-relative href could only ever have been a way off
+/// the instance.
+fn stored_href(kind: &str, href: Option<&str>) -> String {
+    let raw = href.unwrap_or("");
+    if raw.trim().is_empty() {
+        return String::new();
+    }
+    match openable_href(raw) {
+        Some(h) => h.to_string(),
+        None => {
+            let mut seen = HREF_REFUSALS.lock().unwrap_or_else(|p| p.into_inner());
+            if seen.insert(kind.to_string()) {
+                tracing::warn!(
+                    "[notifications] a {kind:?} writer passed an href that is not a same-origin path; stored without a link (logged once per kind)"
+                );
+            }
+            String::new()
+        }
+    }
 }
 
 /// What a writer files: the kind routes through the class table; title, body
@@ -392,15 +504,17 @@ pub async fn add_notification(
     // saving a settings query per mention.
     let will_mail = wants_mail && delivery_gate(&deps.pg).await;
 
-    let (notification_id,): (String,) = sqlx::query_as(
+    let href = stored_href(n.kind, n.href);
+    let (notification_id, created_ms): (String, i64) = sqlx::query_as(
         "insert into notifications (user_id, kind, title, body, href, read_at) \
-         values ($1::uuid, $2, $3, $4, $5, null) returning id::text",
+         values ($1::uuid, $2, $3, $4, $5, null) \
+         returning id::text, (trunc(extract(epoch from created_at) * 1000))::bigint",
     )
     .bind(user_id)
     .bind(n.kind)
     .bind(n.title)
     .bind(n.body.unwrap_or(""))
-    .bind(n.href.unwrap_or(""))
+    .bind(&href)
     .fetch_one(&deps.pg)
     .await?;
 
@@ -436,7 +550,10 @@ pub async fn add_notification(
                 id: notification_id.clone(),
                 title: n.title.to_string(),
                 body: n.body.unwrap_or("").to_string(),
-                href: n.href.unwrap_or("").to_string(),
+                href: href.clone(),
+                kind: n.kind.to_string(),
+                renotify: false,
+                created_at: epoch_ms_to_iso(created_ms),
             },
         );
     }
@@ -454,6 +571,81 @@ pub async fn add_notification(
         );
     }
     Ok(())
+}
+
+/// A newer message in a thread that ALREADY has an unread row: that row is
+/// brought up to date IN PLACE — same id, the new title and body, and
+/// `created_at = now()` — and then announced exactly as a new row would be:
+/// published, the brief nudged, pushed with `renotify` so the OS re-shows it
+/// under the same tag. Every consumer reads "a known id whose createdAt
+/// moved later" as a re-alert (the tab's arrival record, the shell's
+/// watcher).
+///
+/// SAME ID ON PURPOSE. Inbox focus keys its snoozes by the row id, so a
+/// delete-and-reinsert would lose them; and one row per conversation is what
+/// keeps the bell a list of places, not a transcript.
+///
+/// NO MAIL. The first row's mail stands; a burst of DMs is one email, not
+/// one per line. Answers false when the row is gone or was read meanwhile —
+/// the caller files a fresh row then, the ordinary way.
+pub async fn refresh_notification(
+    deps: &NotifyDeps,
+    notification_id: &str,
+    user_id: &str,
+    n: &NotificationInput<'_>,
+) -> Result<bool, sqlx::Error> {
+    let href = stored_href(n.kind, n.href);
+    let updated: Option<(String, i64)> = sqlx::query_as(
+        "update notifications set title = $3, body = $4, href = $5, created_at = now() \
+         where id = $1::uuid and user_id = $2::uuid and read_at is null \
+         returning id::text, (trunc(extract(epoch from created_at) * 1000))::bigint",
+    )
+    .bind(notification_id)
+    .bind(user_id)
+    .bind(n.title)
+    .bind(n.body.unwrap_or(""))
+    .bind(&href)
+    .fetch_optional(&deps.pg)
+    .await?;
+    let Some((id, created_ms)) = updated else {
+        return Ok(false);
+    };
+    publish_user(
+        &deps.realtime,
+        user_id,
+        &UserEvent::Notification {
+            notification_id: id.clone(),
+        },
+    );
+    let nudge = deps.clone();
+    let nudged = user_id.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = mark_brief_stale(&nudge, &[nudged]).await {
+            tracing::error!("[notifications] brief nudge failed: {e}");
+        }
+    });
+    let class = notify_class_of(n.kind);
+    let blob = prefs_blob(&deps.pg, user_id).await.unwrap_or(Value::Null);
+    let route = resolve_prefs(&blob)
+        .get(class)
+        .and_then(|v| v.as_str())
+        .unwrap_or("in_app")
+        .to_string();
+    if route != "email" {
+        talaria_push::push_notification(
+            user_id,
+            talaria_push::PushNote {
+                id,
+                title: n.title.to_string(),
+                body: n.body.unwrap_or("").to_string(),
+                href,
+                kind: n.kind.to_string(),
+                renotify: true,
+                created_at: epoch_ms_to_iso(created_ms),
+            },
+        );
+    }
+    Ok(true)
 }
 
 async fn prefs_blob(pg: &PgPool, user_id: &str) -> Option<Value> {
@@ -520,6 +712,131 @@ pub async fn set_notify_settings(
         resolve_prefs(&blob),
         if digest_enabled(&blob) { "on" } else { "off" },
     ))
+}
+
+// ── The soft ask's memory ────────────────────────────────────────────────────
+//
+// The in-app card that invites a person to turn desktop alerts on remembers
+// its "Not now" ON THE ACCOUNT, not in one browser: a person who said no on
+// their laptop is not asked again the same week on their desktop. It lives
+// under the reserved `prompt` key of `users.notify_prefs` — beside the class
+// routes and `digest`, read by none of them (`resolve_prefs` and
+// `digest_enabled` read class keys only) — and only this writer touches it.
+//
+// The rule: the 1st "Not now" waits 7 days, the 2nd 30, and after the 3rd the
+// card never shows again (the bell's own row stays). A grant ends it for
+// good. Browsers embargo an origin whose native prompt is dismissed about
+// three times, so a soft ask that kept coming back would spend that budget
+// for us.
+
+const PROMPT_KEY: &str = "prompt";
+/// Dismissals after which the card is retired.
+pub const PROMPT_MAX_DISMISSALS: i64 = 3;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// What the person answered the card (or the browser's own prompt) with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptAction {
+    /// "Not now": count one, and wait before asking again.
+    Dismissed,
+    /// The browser granted: never ask again.
+    Granted,
+}
+
+/// The stored record after `action`, from the record before it (any shape —
+/// a hand-edited value degrades to "never asked"). Pure, so the spacing is
+/// pinned by a test.
+pub fn next_prompt(prev: &Value, action: PromptAction, now_ms: i64) -> Value {
+    let count = prev
+        .get("count")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
+    let granted = prev
+        .get("granted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let dismissed_at = prev.get("dismissedAt").cloned().unwrap_or(Value::Null);
+    match action {
+        PromptAction::Granted => serde_json::json!({
+            "count": count,
+            "dismissedAt": dismissed_at,
+            "nextAskAt": Value::Null,
+            "granted": true,
+        }),
+        PromptAction::Dismissed => {
+            let count = (count + 1).min(PROMPT_MAX_DISMISSALS);
+            let next = match count {
+                1 => Value::String(epoch_ms_to_iso(now_ms + 7 * DAY_MS)),
+                2 => Value::String(epoch_ms_to_iso(now_ms + 30 * DAY_MS)),
+                _ => Value::Null,
+            };
+            serde_json::json!({
+                "count": count,
+                "dismissedAt": epoch_ms_to_iso(now_ms),
+                "nextAskAt": next,
+                "granted": granted,
+            })
+        }
+    }
+}
+
+/// The wire shape `GET /api/notifications` serves as `prompt`:
+/// `{dismissedAt, count, nextAskAt, granted}`, from whatever the blob holds.
+/// `nextAskAt` null with `count` under the cap means "may ask now".
+pub fn prompt_wire(blob: &Value) -> Value {
+    let p = blob.get(PROMPT_KEY).unwrap_or(&Value::Null);
+    let text = |k: &str| {
+        p.get(k)
+            .and_then(Value::as_str)
+            .map(|s| Value::String(s.to_string()))
+            .unwrap_or(Value::Null)
+    };
+    serde_json::json!({
+        "dismissedAt": text("dismissedAt"),
+        "count": p.get("count").and_then(Value::as_i64).unwrap_or(0).clamp(0, PROMPT_MAX_DISMISSALS),
+        "nextAskAt": text("nextAskAt"),
+        "granted": p.get("granted").and_then(Value::as_bool).unwrap_or(false),
+    })
+}
+
+/// The Settings read plus the soft ask's memory, from ONE row read: the
+/// resolved table, the effective digest answer, and `prompt_wire`.
+pub async fn get_notify_settings_and_prompt(
+    pg: &PgPool,
+    user_id: &str,
+) -> (Value, &'static str, Value) {
+    let blob = prefs_blob(pg, user_id).await.unwrap_or(Value::Null);
+    (
+        resolve_prefs(&blob),
+        if digest_enabled(&blob) { "on" } else { "off" },
+        prompt_wire(&blob),
+    )
+}
+
+/// Record a soft-ask answer and return the new wire record. Read, compute,
+/// merge: a person answers one card at a time, so the read-modify-write has
+/// no race worth a lock. Err (no row) is the deleted-user corner.
+pub async fn set_notify_prompt(
+    pg: &PgPool,
+    user_id: &str,
+    action: PromptAction,
+) -> Result<Value, sqlx::Error> {
+    let blob = prefs_blob(pg, user_id).await.unwrap_or(Value::Null);
+    let prev = blob.get(PROMPT_KEY).cloned().unwrap_or(Value::Null);
+    let next = next_prompt(&prev, action, wall_ms());
+    let row: Option<(Value,)> = sqlx::query_as(
+        "update users set notify_prefs = coalesce(notify_prefs, '{}'::jsonb) || jsonb_build_object('prompt', $2::jsonb) \
+         where id = $1::uuid returning notify_prefs",
+    )
+    .bind(user_id)
+    .bind(&next)
+    .fetch_optional(pg)
+    .await?;
+    let Some((blob,)) = row else {
+        return Err(sqlx::Error::RowNotFound);
+    };
+    Ok(prompt_wire(&blob))
 }
 
 /// Is this instance sending notification mail? Off unless the settings row
@@ -1830,6 +2147,121 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // The shell's own cases (desktop/src-tauri/src/notify.rs), so a row the
+    // server keeps is a row the shell will open — and nothing else.
+    #[test]
+    fn openable_href_keeps_paths_and_refuses_everything_else() {
+        assert_eq!(openable_href("/comms?c=1"), Some("/comms?c=1"));
+        assert_eq!(openable_href("  /inbox  "), Some("/inbox"));
+        assert_eq!(openable_href("/"), Some("/"));
+        assert_eq!(openable_href("https://evil.example"), None);
+        assert_eq!(openable_href("//evil.example"), None);
+        assert_eq!(openable_href("/\\evil.example"), None);
+        assert_eq!(openable_href("javascript:alert(1)"), None);
+        assert_eq!(openable_href("/foo\nbar"), None);
+        assert_eq!(openable_href("/foo\\bar"), None);
+        assert_eq!(openable_href("/a\u{7f}"), None);
+        assert_eq!(openable_href(""), None);
+        assert_eq!(openable_href("   "), None);
+        let long = format!("/{}", "a".repeat(2047));
+        assert_eq!(openable_href(&long), Some(long.as_str()));
+        let too_long = format!("/{}", "a".repeat(2048));
+        assert_eq!(openable_href(&too_long), None);
+    }
+
+    // A dot segment resolves `/..//evil.example` to the PATH `//evil.example`,
+    // which a second parse (a router, a worker's navigate) reads as another
+    // host. Refused in every spelling; dots that are not a whole segment, and
+    // dots in a query or fragment, are ordinary characters. The same table
+    // is in ui/src/lib/notify-open.test.ts and ui/src/sw.test.ts.
+    #[test]
+    fn openable_href_refuses_dot_segments_in_every_spelling() {
+        for bad in [
+            "/..//evil.example",
+            "/.//evil.example",
+            "/a/..//evil.example",
+            "/%2e%2e//evil.example",
+            "/%2E%2e//evil.example",
+            "/.%2e//evil.example",
+            "/%2e.//evil.example",
+            "/%2e//evil.example",
+            "/a/b/../../..//evil.example",
+            "/boards/..",
+            "/boards/.",
+            "/./boards",
+        ] {
+            assert_eq!(openable_href(bad), None, "{bad}");
+            assert_eq!(stored_href("mention", Some(bad)), "", "{bad}");
+        }
+        for good in [
+            "/.../x",
+            "/..a//x",
+            "/a.b/c",
+            "/x?next=/..//evil.example",
+            "/x#/..//evil.example",
+            "/%2e%2ea/x",
+        ] {
+            assert_eq!(openable_href(good), Some(good), "{good}");
+        }
+    }
+
+    #[test]
+    fn a_refused_href_is_stored_empty_and_a_path_is_kept() {
+        assert_eq!(stored_href("mention", Some("https://evil.example")), "");
+        assert_eq!(stored_href("mention", Some("//evil.example")), "");
+        assert_eq!(stored_href("mention", None), "");
+        assert_eq!(stored_href("mention", Some("")), "");
+        assert_eq!(stored_href("mention", Some(" /boards/b/t ")), "/boards/b/t");
+    }
+
+    // The soft ask's spacing: 7 days, then 30, then never; a grant ends it.
+    #[test]
+    fn the_prompt_waits_seven_then_thirty_days_then_retires() {
+        let t0 = 1_700_000_000_000i64;
+        let one = next_prompt(&Value::Null, PromptAction::Dismissed, t0);
+        assert_eq!(one["count"], json!(1));
+        assert_eq!(one["nextAskAt"], json!(epoch_ms_to_iso(t0 + 7 * DAY_MS)));
+        assert_eq!(one["dismissedAt"], json!(epoch_ms_to_iso(t0)));
+        let two = next_prompt(&one, PromptAction::Dismissed, t0 + 8 * DAY_MS);
+        assert_eq!(two["count"], json!(2));
+        assert_eq!(two["nextAskAt"], json!(epoch_ms_to_iso(t0 + 38 * DAY_MS)));
+        let three = next_prompt(&two, PromptAction::Dismissed, t0 + 40 * DAY_MS);
+        assert_eq!(three["count"], json!(3));
+        assert_eq!(three["nextAskAt"], Value::Null);
+        // Past the cap it stays retired.
+        let four = next_prompt(&three, PromptAction::Dismissed, t0 + 41 * DAY_MS);
+        assert_eq!(four["count"], json!(3));
+        assert_eq!(four["nextAskAt"], Value::Null);
+        // A grant stops it for good, keeping the history.
+        let granted = next_prompt(&one, PromptAction::Granted, t0 + DAY_MS);
+        assert_eq!(granted["granted"], json!(true));
+        assert_eq!(granted["count"], json!(1));
+        assert_eq!(granted["nextAskAt"], Value::Null);
+    }
+
+    #[test]
+    fn the_prompt_wire_degrades_to_never_asked() {
+        assert_eq!(
+            prompt_wire(&Value::Null),
+            json!({ "dismissedAt": null, "count": 0, "nextAskAt": null, "granted": false })
+        );
+        assert_eq!(
+            prompt_wire(&json!({ "prompt": "junk" })),
+            json!({ "dismissedAt": null, "count": 0, "nextAskAt": null, "granted": false })
+        );
+        assert_eq!(
+            prompt_wire(&json!({ "prompt": { "count": 9, "nextAskAt": 5 } })),
+            json!({ "dismissedAt": null, "count": 3, "nextAskAt": null, "granted": false })
+        );
+        // The reserved key changes neither routes nor the digest answer.
+        let blob = json!({ "prompt": { "count": 1 }, "mention": "in_app" });
+        assert_eq!(resolve_prefs(&blob)["mention"], json!("in_app"));
+        assert_eq!(
+            digest_enabled(&blob),
+            digest_enabled(&json!({ "mention": "in_app" }))
+        );
+    }
 
     #[test]
     fn thread_notification_hrefs_are_pinned() {

@@ -203,6 +203,34 @@ export async function tableCount(ctx: Ctx, pgc: string): Promise<number | null> 
   }
 }
 
+/** The seed's dump of main, as `docker exec <main-pg> …` arguments. Shared by
+ *  `talaria worktree` and `box seed`, so the two copies of main can never
+ *  disagree about what leaves it.
+ *
+ *  PUSH STATE STAYS ON MAIN. `push_subscriptions` are the owner's real
+ *  browsers, and the seed keeps `TALARIA_SECRET_KEY` so sealed rows open — a
+ *  copied row plus a copied VAPID key let a dev stack sign as main and push
+ *  to those browsers from any notification filed in a test. The table's
+ *  schema comes across; its rows do not. */
+export const SEED_DUMP_ARGS = [
+  'pg_dump',
+  '-U',
+  'talaria',
+  '-d',
+  'talaria',
+  '--clean',
+  '--if-exists',
+  '--exclude-table-data=push_subscriptions',
+]
+
+/** Run on the copy right after the restore: the instance's VAPID keypair is
+ *  main's identity to every push service, and a dev stack mints its own on
+ *  first use. Guarded so a main database with no app_settings seeds
+ *  cleanly. */
+export const SCRUB_SEEDED_PUSH_STATE =
+  "do $$ begin if to_regclass('public.app_settings') is not null then " +
+  "delete from app_settings where key = 'push_vapid'; end if; end $$;"
+
 /** Clears the gateway ports a seed copied from main (see the seed step). */
 export const CLEAR_SEEDED_GATEWAY_PORTS =
   "do $$ begin if to_regclass('public.agent_defs') is not null then " +
@@ -327,7 +355,7 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
     // "seeded" too. Now the first failed statement fails the pipe, and the
     // command dies here.
     await ctx.pipe(
-      ['docker', ['exec', mainPgc, 'pg_dump', '-U', 'talaria', '-d', 'talaria', '--clean', '--if-exists']],
+      ['docker', ['exec', mainPgc, ...SEED_DUMP_ARGS]],
       ['docker', ['exec', '-i', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-q', '-v', 'ON_ERROR_STOP=1']],
       { quietDst: true },
     )
@@ -358,6 +386,17 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
       ownTables === null
         ? `seeded (a point-in-time copy of main: ${mainTables} tables; this worktree's count could not be read)`
         : `seeded (a point-in-time copy of main: ${mainTables} tables)`,
+    )
+  }
+  // Main's VAPID key does not stay either (SEED_DUMP_ARGS says why). A scrub
+  // that fails is fatal: a copy that can sign as main is the one outcome this
+  // step exists to prevent, so the half-made stack is torn down instead.
+  try {
+    await ctx.exec('docker', ['exec', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-qc', SCRUB_SEEDED_PUSH_STATE])
+  } catch (e) {
+    ctx.log.die(
+      `could not drop main's push key from the seeded copy (${e instanceof Error ? e.message : String(e)}). ` +
+        `Tear the half-made stack down with: ${teardown}`,
     )
   }
   // The copied agent rows carry MAIN's gateway ports. This stack renders its

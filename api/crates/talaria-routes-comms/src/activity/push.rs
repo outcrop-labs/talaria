@@ -23,6 +23,7 @@ use talaria_error::{house_error, internal, object_or_400};
 use talaria_push::vapid_keys;
 use talaria_session::require_user;
 use talaria_session::secretbox_or_500;
+use talaria_session::session_hash_of;
 use talaria_state::AppState;
 
 /// The wire cap on an endpoint URL: push-service endpoints run a few hundred
@@ -133,17 +134,27 @@ pub async fn subscribe(
         Ok(s) => s,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // The row remembers WHICH SESSION filed it (a hash — the id is a
+    // credential), so signing out retires this browser's row and no other.
+    // A re-file of the same keys keeps its failure count (every boot re-files,
+    // and a row the service keeps refusing must still reach its prune); new
+    // keys are a new subscription and start clean.
     if let Err(e) = sqlx::query(
-        "insert into push_subscriptions (user_id, endpoint, p256dh, auth) \
-         values ($1::uuid, $2, $3, $4) \
+        "insert into push_subscriptions (user_id, endpoint, p256dh, auth, session_hash) \
+         values ($1::uuid, $2, $3, $4, $5) \
          on conflict (endpoint) do update \
          set user_id = excluded.user_id, p256dh = excluded.p256dh, \
-             auth = excluded.auth, last_seen_at = now()",
+             auth = excluded.auth, last_seen_at = now(), \
+             session_hash = excluded.session_hash, \
+             failures = case when push_subscriptions.p256dh = excluded.p256dh \
+                              and push_subscriptions.auth = excluded.auth \
+                             then push_subscriptions.failures else 0 end",
     )
     .bind(&user.id)
     .bind(&sub.endpoint)
     .bind(&sub.p256dh)
     .bind(&sub.auth)
+    .bind(session_hash_of(&headers))
     .execute(&state.pg)
     .await
     {

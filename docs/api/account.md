@@ -87,7 +87,10 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_google_callbac
 
 Source: [`api/crates/talaria-routes-integrations/src/account/auth_logout.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_logout.rs)
 
-> POST /api/auth/logout. Delete the Redis session and clear the cookie.
+> POST /api/auth/logout. Delete the Redis session and clear the cookie — and,
+> first, every push subscription this session filed: a browser that signed
+> out must stop receiving the signed-out person's notifications. Rows filed
+> by the person's OTHER sessions (another browser, another device) stay.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |

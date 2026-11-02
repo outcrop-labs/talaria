@@ -113,7 +113,12 @@ const HOP_BY_HOP = new Set(['host', 'connection', 'content-length', 'transfer-en
 // REQUEST direction needs no list: everything but hop-by-hop crosses, so the
 // agent's `mcp-session-id`, `mcp-protocol-version` and a resumed stream's
 // `last-event-id` reach the gateway, which relays them upstream.
-const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id', 'pragma', 'referrer-policy', 'content-disposition', 'content-security-policy', 'x-content-type-options', 'mcp-session-id', 'mcp-protocol-version']
+// `x-accel-buffering` is the event streams': the api says `no` on every SSE
+// response, and the edge in front of every real instance (Cloudflare, and
+// any nginx-family proxy) holds chunks in a buffer without it — a stream of
+// one id a minute is then a stream that never arrives. It crossed nowhere
+// before this list named it.
+const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id', 'pragma', 'referrer-policy', 'content-disposition', 'content-security-policy', 'x-content-type-options', 'mcp-session-id', 'mcp-protocol-version', 'x-accel-buffering']
 
 // The upstream hop carries a deadline to FIRST RESPONSE on READS, never on
 // writes and never to body end. Reads (the polls surfaces live on — the

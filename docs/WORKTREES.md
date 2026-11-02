@@ -72,7 +72,12 @@ data so you still have realistic agents/boards/tickets to work against.
    container, running or stopped, still names it.
 3. Seeds the new DB with `pg_dump` of your main DB (a snapshot — later changes on
    main don't propagate), then clears the copied agents' gateway ports so this
-   stack's first render assigns its own rather than publishing onto main's. It
+   stack's first render assigns its own rather than publishing onto main's.
+   **Push state stays on main:** the dump copies no `push_subscriptions` rows (they
+   are main's real browsers), and the copied VAPID key (`app_settings.push_vapid`)
+   is deleted from the copy, so a worktree can never sign as main and push a test
+   notification to a real person's browser; it mints its own key on first use.
+   `talaria box seed` does the same. It
    counts main's tables first and says what the copy carried: `seeded (… N
    tables)`, or, when main's database has no tables at all, that there was nothing
    to copy and the worktree starts empty and migrates on its first `talaria dev`.

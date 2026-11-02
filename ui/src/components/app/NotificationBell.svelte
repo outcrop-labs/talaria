@@ -1,9 +1,22 @@
 <script lang="ts">
-  import { Bell } from '@lucide/svelte'
+  import { Bell, BellOff, BellRing } from '@lucide/svelte'
   import Popover from '@/components/ui/Popover.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
+  import {
+    browserNotifyPrefOff,
+    ensurePushSubscription,
+    permissionState,
+    setBrowserNotifyPref,
+    turnOnDesktopAlerts,
+    watchPermission,
+    type PermissionState,
+  } from '@/lib/browser-notify'
+  import { inDesktopShell } from '@/lib/desktop-shell'
   import { relativeTime } from '@/lib/fleet'
-  import { useMarkNotificationsRead, useNotifications } from '@/lib/notifications'
+  import { saveNotifyPrompt, useMarkNotificationsRead, useNotifications } from '@/lib/notifications'
+  import { blockedSteps, detectBrowser, insecureExplanation } from '@/lib/notify-help'
+  import { turnOnResult } from '@/lib/notify-prompt'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import { navigateHref } from '@/router'
 
   // The dock's bell: the notification inbox as a dropdown beside the account
@@ -26,6 +39,55 @@
   )
   const rows = $derived(query.data?.notifications ?? [])
 
+  // THE DESKTOP-ALERTS ROW, at the top of the popover: the one place that
+  // always says what this browser will do and how to change it — the soft
+  // ask's card retires after three "Not now"s, this row never does. Never in
+  // the desktop shell: the shell asks for itself (Settings → Desktop).
+  const qc = useQueryClient()
+  const shell = inDesktopShell()
+  const browser = typeof navigator !== 'undefined' ? detectBrowser(navigator.userAgent, { brave: 'brave' in navigator }) : null
+  let perm = $state<PermissionState>(permissionState())
+  let prefOff = $state(browserNotifyPrefOff())
+  let stepsOpen = $state(false)
+  let turnOnNote = $state<string | null>(null)
+  $effect(() =>
+    watchPermission((p) => {
+      perm = p
+      prefOff = browserNotifyPrefOff()
+    }),
+  )
+  const steps = $derived(browser ? blockedSteps(browser) : null)
+
+  function turnOn() {
+    turnOnNote = null
+    if (perm === 'granted') {
+      // Granted already, switched off here: the switch is ours.
+      setBrowserNotifyPref(true)
+      prefOff = false
+      void ensurePushSubscription()
+      return
+    }
+    // Asked synchronously, inside this click (browser-notify.ts, rule 1).
+    void turnOnDesktopAlerts().then(async (after) => {
+      perm = after
+      prefOff = browserNotifyPrefOff()
+      const r = turnOnResult(after)
+      if (r.kind === 'on') {
+        await saveNotifyPrompt('granted')
+        void qc.invalidateQueries({ queryKey: ['notifications'] })
+      } else if (r.kind === 'closed' || r.kind === 'unavailable') turnOnNote = r.message
+      else stepsOpen = true
+    })
+  }
+
+  // A summary toast or banner ("5 new — …") opens the bell itself.
+  let popoverOpen = $state(false)
+  $effect(() => {
+    const show = () => (popoverOpen = true)
+    window.addEventListener('talaria:open-notifications', show)
+    return () => window.removeEventListener('talaria:open-notifications', show)
+  })
+
   // A row click clears its row and goes where it points, in that order — the
   // navigation must not wait on the PUT, and a notification with no href
   // (board-access outcomes) still deserves its click-to-clear.
@@ -36,7 +98,7 @@
   }
 </script>
 
-<Popover align="right" offset={8} class="w-80">
+<Popover align="right" offset={8} class="w-80" bind:open={popoverOpen}>
   {#snippet trigger(open)}
     <button
       type="button"
@@ -56,6 +118,42 @@
     </button>
   {/snippet}
   {#snippet content(close)}
+    {#if !shell && (perm === 'default' || perm === 'denied' || perm === 'insecure' || (perm === 'granted' && prefOff))}
+      <div class="border-b border-line px-3 py-2" data-notify-row={perm}>
+        {#if perm === 'insecure'}
+          <div class="flex items-start gap-2 font-sans text-xs text-muted">
+            <BellOff size={14} strokeWidth={1.5} class="mt-0.5 shrink-0" />
+            <span>{insecureExplanation(location.origin)}</span>
+          </div>
+        {:else if perm === 'denied'}
+          <button
+            type="button"
+            aria-expanded={stepsOpen}
+            onclick={() => (stepsOpen = !stepsOpen)}
+            class="flex w-full items-start gap-2 text-left font-sans text-sm text-fg"
+          >
+            <BellOff size={14} strokeWidth={1.5} class="mt-1 shrink-0 text-muted" />
+            <span>Desktop alerts are blocked in {browser?.name ?? 'this browser'}</span>
+          </button>
+          {#if stepsOpen && steps}
+            <ul class="mt-1.5 list-disc space-y-1 pl-8 font-sans text-xs text-muted">
+              {#each [...steps.browser, ...steps.os] as step (step)}<li>{step}</li>{/each}
+            </ul>
+            <div class="mt-1.5 pl-6 font-sans text-xs text-muted">{steps.closing}</div>
+          {/if}
+        {:else}
+          <button
+            type="button"
+            onclick={turnOn}
+            class="flex w-full items-start gap-2 rounded-md text-left font-sans text-sm text-accent transition-colors duration-[120ms] hover:text-fg"
+          >
+            <BellRing size={14} strokeWidth={1.5} class="mt-1 shrink-0" />
+            <span>Turn on desktop alerts</span>
+          </button>
+          {#if turnOnNote}<div class="mt-1 pl-6 font-sans text-xs text-muted">{turnOnNote}</div>{/if}
+        {/if}
+      </div>
+    {/if}
     <div class="flex items-baseline justify-between px-3 pb-1.5 pt-2.5">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Notifications</span>
       {#if unread}

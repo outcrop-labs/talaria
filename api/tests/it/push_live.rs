@@ -1,21 +1,33 @@
 // Live-DB proof of the push plane's row tending and keypair custody
 // (cargo test -- --ignored). The cryptography is pinned to RFC vectors in
 // the unit tests; what only Postgres can confirm is the LOOP — which rows
-// a delivery keeps, touches, or prunes, and that the instance's VAPID
-// keypair is born exactly once even when several first deliveries race.
-// House rule: #[ignore]d, never CI.
+// a delivery keeps, touches, counts, or prunes, and that the instance's
+// VAPID keypair is born exactly once even when several first deliveries
+// race. House rule: #[ignore]d, never CI.
+//
+// SAFE ON A SHARED DEV DATABASE: the instance's own `push_vapid` row is
+// SNAPSHOTTED before a test touches it and RESTORED after, pass or fail.
+// The suite used to delete it, which rotated the instance key under every
+// subscription on whatever database it ran against.
 //
 //   DATABASE_URL=postgres://… cargo test --test it push_live:: -- --ignored
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::support::pg;
 use base64::Engine as _;
+use futures_util::FutureExt as _;
 use p256::elliptic_curve::Generate;
 use p256::elliptic_curve::sec1::ToSec1Point;
 use sqlx::postgres::PgPool;
-use talaria_api::push::{PostPushFn, PushNote, PushPost, VAPID_KEY, deliver_push, vapid_keys};
+use talaria_api::notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_api::push::{
+    PostPushFn, PushAnswer, PushFailure, PushNote, PushPolicy, PushPost, PushResult, VAPID_KEY,
+    deliver_push_with, vapid_keys,
+};
 use talaria_api::secretbox::SecretBox;
 
 const B64U: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -26,19 +38,86 @@ const B64U: base64::engine::GeneralPurpose = base64::engine::general_purpose::UR
 /// the other's insert and its re-read is a spurious "the vapid keypair row
 /// vanished", a flake about scheduling, not about the plane.
 static KEYPAIR_ROW: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-/// The suite's throwaway person and its keypair row: the user cascade takes
-/// push_subscriptions with it, and the instance keypair row is deleted so
-/// every test births its own.
+/// The suite's throwaway people: the user cascade takes push_subscriptions
+/// with it.
 async fn cleanup(pg: &PgPool) {
     sqlx::query("delete from users where email like 'push-live-%@test.invalid'")
         .execute(pg)
         .await
         .unwrap();
+}
+
+/// Run `body` with the instance keypair row cleared, then put the original
+/// back — pass OR fail (a panic is caught, the row restored, the panic
+/// resumed). The row is the instance's identity to every push service; a
+/// test that left it gone or replaced stranded every real subscription.
+async fn with_vapid_row_set_aside<F>(pg: &PgPool, body: F)
+where
+    F: std::future::Future<Output = ()>,
+{
+    let saved: Option<serde_json::Value> =
+        sqlx::query_scalar("select value from app_settings where key = $1")
+            .bind(VAPID_KEY)
+            .fetch_optional(pg)
+            .await
+            .unwrap();
     sqlx::query("delete from app_settings where key = $1")
         .bind(VAPID_KEY)
         .execute(pg)
         .await
         .unwrap();
+    let outcome = AssertUnwindSafe(body).catch_unwind().await;
+    sqlx::query("delete from app_settings where key = $1")
+        .bind(VAPID_KEY)
+        .execute(pg)
+        .await
+        .unwrap();
+    if let Some(value) = saved {
+        sqlx::query("insert into app_settings (key, value) values ($1, $2)")
+            .bind(VAPID_KEY)
+            .bind(value)
+            .execute(pg)
+            .await
+            .unwrap();
+    }
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// Short spacing so the retry paths run in milliseconds; the subject is the
+/// one an https public URL produces.
+fn quick() -> PushPolicy {
+    PushPolicy {
+        backoff: [Duration::from_millis(20), Duration::from_millis(40)],
+        retry_after_cap: Duration::from_secs(60),
+    }
+}
+
+fn note(id: &str) -> PushNote {
+    PushNote {
+        id: id.into(),
+        title: "Priya says".into(),
+        body: "while you were away".into(),
+        href: "/comms/agent/claude-test/c1".into(),
+        kind: "agent-reply".into(),
+        renotify: false,
+        created_at: "2026-10-31T12:00:00.000Z".into(),
+    }
+}
+
+async fn row_state(
+    pg: &PgPool,
+    endpoint: &str,
+) -> Option<(i32, Option<i32>, Option<String>, bool)> {
+    sqlx::query_as(
+        "select failures, last_status, last_error, last_attempt_at is not null \
+         from push_subscriptions where endpoint = $1",
+    )
+    .bind(endpoint)
+    .fetch_optional(pg)
+    .await
+    .unwrap()
 }
 
 async fn person(pg: &PgPool, suffix: &str) -> String {
@@ -116,7 +195,37 @@ fn fake_post(captured: Arc<Mutex<Vec<PushPost>>>) -> PostPushFn {
         };
         Box::pin(async move {
             captured.lock().unwrap().push(post);
-            Ok(code)
+            Ok(PushAnswer::status(code))
+        })
+    })
+}
+
+/// A scripted edge: each endpoint answers from its own queue, one answer per
+/// POST (the last answer repeats), and every POST is captured with its time.
+type Script = HashMap<String, Vec<PushResult>>;
+fn scripted(script: Script, captured: Arc<Mutex<Vec<(String, Instant, usize)>>>) -> PostPushFn {
+    let script = Arc::new(Mutex::new(script));
+    Arc::new(move |post: PushPost| {
+        let script = script.clone();
+        let captured = captured.clone();
+        Box::pin(async move {
+            let answer = {
+                let mut s = script.lock().unwrap();
+                let q = s.get_mut(&post.endpoint).expect("a scripted endpoint");
+                if q.len() > 1 {
+                    q.remove(0)
+                } else {
+                    q[0].clone()
+                }
+            };
+            captured
+                .lock()
+                .unwrap()
+                .push((post.endpoint.clone(), Instant::now(), post.body.len()));
+            if post.endpoint.ends_with("/hang") {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            answer
         })
     })
 }
@@ -126,6 +235,11 @@ fn fake_post(captured: Arc<Mutex<Vec<PushPost>>>) -> PostPushFn {
 async fn delivery_touches_prunes_and_keeps_by_the_services_answer() {
     let _row = KEYPAIR_ROW.lock().await;
     let pg = pg().await;
+    with_vapid_row_set_aside(&pg, delivery_body(&pg)).await;
+}
+
+async fn delivery_body(pg: &PgPool) {
+    let pg = pg.clone();
     cleanup(&pg).await;
     let user = person(&pg, "delivery").await;
     let sb = test_box();
@@ -146,21 +260,19 @@ async fn delivery_touches_prunes_and_keeps_by_the_services_answer() {
 
     let captured: Arc<Mutex<Vec<PushPost>>> = Arc::new(Mutex::new(Vec::new()));
     let post = fake_post(captured.clone());
-    deliver_push(
+    deliver_push_with(
         &pg,
         &sb,
         &post,
         &user,
-        &PushNote {
-            id: "note-1".into(),
-            title: "Priya says".into(),
-            body: "while you were away".into(),
-            href: "/comms/agent/claude-test/c1".into(),
-        },
+        &note("note-1"),
+        &quick(),
+        "https://talaria.example.test",
     )
     .await;
 
-    // Every LEGAL row was posted exactly once; the garbage row never was.
+    // Every LEGAL row was posted; the garbage row never was. The 500 (d) is
+    // retried twice — three POSTs — and every other answer is final.
     let posts = captured.lock().unwrap();
     let mut posted: Vec<&str> = posts.iter().map(|p| p.endpoint.as_str()).collect();
     posted.sort_unstable();
@@ -170,6 +282,8 @@ async fn delivery_touches_prunes_and_keeps_by_the_services_answer() {
             "https://push.test/a",
             "https://push.test/b",
             "https://push.test/c",
+            "https://push.test/d",
+            "https://push.test/d",
             "https://push.test/d"
         ]
     );
@@ -184,7 +298,16 @@ async fn delivery_touches_prunes_and_keeps_by_the_services_answer() {
         assert_eq!(p.body[21], 0x04); // uncompressed point
         assert!(p.authorization.starts_with("vapid t="));
         assert!(p.authorization.contains(", k="));
+        // The subject handed in is the JWT's `sub`.
+        let jwt = p.authorization["vapid t=".len()..]
+            .split(',')
+            .next()
+            .unwrap();
+        let claims = B64U.decode(jwt.split('.').nth(1).unwrap()).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&claims).unwrap();
+        assert_eq!(claims["sub"], "https://talaria.example.test");
     }
+    drop(posts);
 
     // Row tending: a and b SURVIVE (touched), c is GONE (the service forgot
     // it), d SURVIVES (a 500 is the service's bad minute, not the row's
@@ -207,8 +330,159 @@ async fn delivery_touches_prunes_and_keeps_by_the_services_answer() {
         seen_a < 300.0,
         "the 2xx touch should be seconds old, was {seen_a}"
     );
+    // Every attempt is on the row: the 2xx reset and recorded, the 500
+    // counted once (one delivery, however many POSTs it took).
+    let a = row_state(&pg, "https://push.test/a").await.unwrap();
+    assert_eq!((a.0, a.1, a.3), (0, Some(200), true));
+    let d = row_state(&pg, "https://push.test/d").await.unwrap();
+    assert_eq!((d.0, d.1, d.3), (1, Some(500), true));
+    assert!(d.2.unwrap().starts_with("500"));
 
     cleanup(&pg).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn refusals_prune_at_three_and_the_instances_own_fault_is_not_counted() {
+    let _row = KEYPAIR_ROW.lock().await;
+    let pg = pg().await;
+    let body = async {
+        cleanup(&pg).await;
+        let user = person(&pg, "refusals").await;
+        let sb = test_box();
+        subscription(&pg, &user, "https://push.test/refused", false).await;
+        subscription(&pg, &user, "https://push.test/jwt", false).await;
+        subscription(&pg, &user, "https://push.test/gone", false).await;
+        let mut script = Script::new();
+        script.insert(
+            "https://push.test/refused".into(),
+            vec![Ok(PushAnswer::status(403))],
+        );
+        script.insert(
+            "https://push.test/jwt".into(),
+            vec![Ok(PushAnswer {
+                status: 403,
+                retry_after: None,
+                body: "{\"reason\":\"BadJwtToken\"}".into(),
+            })],
+        );
+        script.insert(
+            "https://push.test/gone".into(),
+            vec![Ok(PushAnswer::status(404))],
+        );
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let post = scripted(script, captured.clone());
+        for i in 1..=3 {
+            deliver_push_with(
+                &pg,
+                &sb,
+                &post,
+                &user,
+                &note(&format!("n{i}")),
+                &quick(),
+                "mailto:x@y",
+            )
+            .await;
+            // 404 prunes at once, on the first delivery.
+            assert!(!endpoint_exists(&pg, "https://push.test/gone").await);
+            let jwt = row_state(&pg, "https://push.test/jwt").await.unwrap();
+            assert_eq!(jwt.0, 0, "an instance JWT fault is never the device's");
+            assert_eq!(jwt.1, Some(403));
+            if i < 3 {
+                let r = row_state(&pg, "https://push.test/refused").await.unwrap();
+                assert_eq!(r.0, i, "a refusal counts once per delivery");
+            }
+        }
+        // The third consecutive refusal prunes.
+        assert!(!endpoint_exists(&pg, "https://push.test/refused").await);
+        assert!(endpoint_exists(&pg, "https://push.test/jwt").await);
+        cleanup(&pg).await;
+    };
+    with_vapid_row_set_aside(&pg, body).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn throttles_oversize_and_hangs_settle_per_device() {
+    let _row = KEYPAIR_ROW.lock().await;
+    let pg = pg().await;
+    let body = async {
+        cleanup(&pg).await;
+        let user = person(&pg, "settle").await;
+        let sb = test_box();
+        for e in ["throttled", "toolarge", "hang", "ok"] {
+            subscription(&pg, &user, &format!("https://push.test/{e}"), false).await;
+        }
+        let mut script = Script::new();
+        // 429 with Retry-After 0, then accepted: retried once, delivered.
+        script.insert(
+            "https://push.test/throttled".into(),
+            vec![
+                Ok(PushAnswer {
+                    status: 429,
+                    retry_after: Some(0),
+                    body: String::new(),
+                }),
+                Ok(PushAnswer::status(201)),
+            ],
+        );
+        // 413, then accepted: exactly one minimal resend.
+        script.insert(
+            "https://push.test/toolarge".into(),
+            vec![Ok(PushAnswer::status(413)), Ok(PushAnswer::status(201))],
+        );
+        // A timeout every time: three attempts, then counted.
+        script.insert(
+            "https://push.test/hang".into(),
+            vec![Err(PushFailure::Timeout("operation timed out".into()))],
+        );
+        script.insert(
+            "https://push.test/ok".into(),
+            vec![Ok(PushAnswer::status(201))],
+        );
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let post = scripted(script, captured.clone());
+        let t0 = Instant::now();
+        let mut big = note("big");
+        big.title = "Ü".repeat(2500);
+        deliver_push_with(&pg, &sb, &post, &user, &big, &quick(), "mailto:x@y").await;
+        let posts = captured.lock().unwrap().clone();
+        let of = |e: &str| {
+            posts
+                .iter()
+                .filter(|(ep, _, _)| ep.ends_with(e))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(of("/throttled").len(), 2);
+        let large = of("/toolarge");
+        assert_eq!(large.len(), 2);
+        assert!(large[1].2 < large[0].2, "the resend is the minimal payload");
+        assert!(large[0].2 <= 4096, "even the first body fits the ceiling");
+        assert_eq!(of("/hang").len(), 3);
+        // The ok device did not wait behind the hang: it went first.
+        assert!(of("/ok")[0].1.duration_since(t0) < Duration::from_millis(250));
+        let hang = row_state(&pg, "https://push.test/hang").await.unwrap();
+        assert_eq!(hang.0, 1);
+        assert_eq!(hang.1, None);
+        assert!(hang.2.unwrap().starts_with("timeout"));
+        assert_eq!(
+            row_state(&pg, "https://push.test/throttled")
+                .await
+                .unwrap()
+                .1,
+            Some(201)
+        );
+        assert_eq!(
+            row_state(&pg, "https://push.test/toolarge")
+                .await
+                .unwrap()
+                .1,
+            Some(201)
+        );
+        cleanup(&pg).await;
+    };
+    with_vapid_row_set_aside(&pg, body).await;
 }
 
 #[tokio::test]
@@ -216,7 +490,11 @@ async fn delivery_touches_prunes_and_keeps_by_the_services_answer() {
 async fn the_vapid_keypair_is_born_once_even_under_a_race() {
     let _row = KEYPAIR_ROW.lock().await;
     let pg = pg().await;
-    cleanup(&pg).await;
+    with_vapid_row_set_aside(&pg, race_body(&pg)).await;
+}
+
+async fn race_body(pg: &PgPool) {
+    let pg = pg.clone();
     let sb = test_box();
 
     // Four concurrent first calls — the boot overlap, two tabs, a deploy's
@@ -274,4 +552,62 @@ async fn the_vapid_keypair_is_born_once_even_under_a_race() {
     assert_eq!(again.public, first.public);
 
     cleanup(&pg).await;
+}
+
+/// The single writer keeps only a same-origin path (talaria-notify
+/// `openable_href`): a producer handed an absolute or protocol-relative href,
+/// or a path with a dot segment that resolves to one, files the row with
+/// `''`, so no click path — the bell, a toast, the worker, the shell — can be
+/// walked off the instance by a notification.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn the_single_writer_stores_only_a_same_origin_href() {
+    // The suite's lock: the other tests' cleanup deletes every push-live user.
+    let _row = KEYPAIR_ROW.lock().await;
+    let pg = pg().await;
+    sqlx::query("delete from users where email like 'push-live-href%@test.invalid'")
+        .execute(&pg)
+        .await
+        .unwrap();
+    let user = person(&pg, "href").await;
+    let deps = NotifyDeps::publishing(pg.clone(), None);
+    for (href, want) in [
+        ("https://evil.example", ""),
+        ("//evil.example", ""),
+        ("/\\evil.example", ""),
+        // Dot segments: `/..//evil.example` resolves to the PATH
+        // `//evil.example`, another host once a client parses it again.
+        ("/..//evil.example", ""),
+        ("/.//evil.example", ""),
+        ("/a/..//evil.example", ""),
+        ("/%2e%2e//evil.example", ""),
+        ("/boards/b/t", "/boards/b/t"),
+    ] {
+        add_notification(
+            &deps,
+            &user,
+            &NotificationInput {
+                kind: "mention",
+                title: "href probe",
+                body: Some(href),
+                href: Some(href),
+            },
+        )
+        .await
+        .unwrap();
+        let stored: String = sqlx::query_scalar(
+            "select href from notifications where user_id = $1::uuid and body = $2 \
+             order by created_at desc limit 1",
+        )
+        .bind(&user)
+        .bind(href)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(stored, want, "{href} stored as {stored:?}");
+    }
+    sqlx::query("delete from users where email like 'push-live-href%@test.invalid'")
+        .execute(&pg)
+        .await
+        .unwrap();
 }

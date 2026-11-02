@@ -51,8 +51,21 @@ pub struct RealtimeDeps {
 /// The subscribe edge nobody feeds: a receiver that never yields. The streams
 /// stay honest — `: connected`, pings, no events — instead of erroring a route
 /// over a connection problem the client will retry anyway.
+///
+/// THE SENDER IS KEPT until the receiver drops. A receiver whose sender is
+/// already gone answers `None` at once, which ENDS the stream — the "quiet"
+/// stream used to close the moment it opened, and the browser reconnected
+/// every `retry:` interval forever. A parked task holding the sender until
+/// the client hangs up is what makes quiet mean open.
 fn quiet_subscribe() -> SubscribeFn {
-    Arc::new(|_| async { mpsc::channel::<String>(1).1 }.boxed())
+    Arc::new(|_| {
+        async {
+            let (tx, rx) = mpsc::channel::<String>(1);
+            tokio::spawn(async move { tx.closed().await });
+            rx
+        }
+        .boxed()
+    })
 }
 
 impl RealtimeDeps {
@@ -151,16 +164,28 @@ fn redis_subscribe(client: redis::Client) -> SubscribeFn {
                 // connection, and the loop below is that connection's whole
                 // remaining life.
                 let mut messages = pubsub.on_message();
-                while let Some(msg) = messages.next().await {
-                    let Ok(payload) = msg.get_payload::<String>() else {
-                        continue;
-                    };
-                    // A send error is the receiver gone — the client hung up —
-                    // and the only correct move is to drop the subscriber with
-                    // this task. Nothing downstream disconnects a stream
-                    // nobody was handed.
-                    if tx.send(payload).await.is_err() {
-                        break;
+                loop {
+                    // THE CLIENT LEAVING ENDS THE SUBSCRIBER, not the next
+                    // publish. Parked on `messages.next()` alone, a forwarder
+                    // learned its client was gone only when a send failed —
+                    // so a quiet topic (a finished run, an idle board) held
+                    // its Redis connection and this task until something
+                    // published there again, which for `run:<id>` is never.
+                    // A client that reconnects with backoff opens a fresh
+                    // stream each time, which turned the leak into a farm.
+                    // `tx.closed()` fires the moment the receiver drops.
+                    tokio::select! {
+                        _ = tx.closed() => break,
+                        msg = messages.next() => {
+                            let Some(msg) = msg else { break };
+                            let Ok(payload) = msg.get_payload::<String>() else {
+                                continue;
+                            };
+                            // A send error is the receiver gone too.
+                            if tx.send(payload).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                 }
             });
@@ -353,6 +378,14 @@ pub enum UserEvent {
         user_id: String,
         typing: bool,
     },
+    /// Your notifications were READ somewhere — a bell click in another tab,
+    /// a channel read to its end, a mark-all. `unread` is the count after it,
+    /// a number and nothing else, so a second tab's bell drops the moment the
+    /// first one clears it instead of on its next poll. Consumers that do not
+    /// know it ignore it (the shell's watcher, older pages).
+    Notifications {
+        unread: i64,
+    },
 }
 
 /// Publish a run transition to `run:<id>`.
@@ -382,47 +415,107 @@ pub async fn user_event_stream(deps: &RealtimeDeps, user_id: &str) -> Response {
 
 // ── SSE framing ──────────────────────────────────────────────────────────────
 
-/// The topic stream's frames: the `: connected` preamble, then one `data:`
-/// frame per pub/sub message. Payloads are one line by construction —
-/// `serde_json::to_string` never emits a literal newline, and axum asserts on
-/// one rather than corrupting the stream.
+/// How long a browser waits before its own reconnect after a stream ends
+/// (the `retry:` field). Matches the EventSource default most engines use,
+/// stated so an intermediary or an engine with another default agrees.
+const RETRY_MS: u64 = 3_000;
+
+/// The idle gap after which a `: ping` comment goes out. Cloudflare — the
+/// edge every real instance sits behind — cuts a connection that has carried
+/// nothing for about 100 s, and so do several corporate proxies at 60 s;
+/// 20 s keeps every one of them seeing traffic well inside its window.
+const PING_EVERY_MS: u64 = 20_000;
+
+/// The topic stream's frames: the `: connected` preamble (carrying the
+/// `retry:` field), then one `data:` frame per pub/sub message. Payloads are
+/// one line by construction — `serde_json::to_string` never emits a literal
+/// newline, and axum asserts on one rather than corrupting the stream.
 fn topic_frames(
     rx: mpsc::Receiver<String>,
 ) -> impl futures_util::Stream<Item = Result<Event, Infallible>> {
-    once(async { Ok::<Event, Infallible>(Event::default().comment("connected")) }).chain(unfold(
-        rx,
-        |mut rx| async move {
-            // `recv` ending (every sender dropped) is the stream ending — the
-            // subscriber is gone and the response finishes, which is how the
-            // client learns to reconnect with a fresh one.
-            rx.recv()
-                .await
-                .map(|payload| (Ok::<Event, Infallible>(Event::default().data(payload)), rx))
-        },
-    ))
+    once(async {
+        Ok::<Event, Infallible>(
+            Event::default()
+                .comment("connected")
+                .retry(Duration::from_millis(RETRY_MS)),
+        )
+    })
+    .chain(unfold(rx, |mut rx| async move {
+        // `recv` ending (every sender dropped) is the stream ending — the
+        // subscriber is gone and the response finishes, which is how the
+        // client learns to reconnect with a fresh one.
+        rx.recv()
+            .await
+            .map(|payload| (Ok::<Event, Infallible>(Event::default().data(payload)), rx))
+    }))
 }
 
 /// The SSE response the event routes build: `text/event-stream` (set by `Sse`
-/// itself), `Cache-Control: no-cache, no-transform`, and
-/// a 25s `: ping` keep-alive. axum pings only when the stream has been IDLE
-/// for the interval — any data frame resets the timer, doing the same job a
-/// ping does for an intermediary; no `Connection: keep-alive` header is set,
-/// because HTTP/1.1 defaults to keep-alive and hyper owns that header; and a
-/// stream whose subscriber dies ENDS (the
-/// forwarder's sender drops, the receiver closes) rather than pinging into the
-/// void until the client gives up — an EventSource reconnects on stream end
-/// and gets a fresh subscriber, recovery from the server's own initiative.
+/// itself), `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`,
+/// a `retry:` at open, and a 20 s `: ping` keep-alive.
+///
+/// THE HEADERS ARE FOR WHAT SITS BETWEEN. `no-transform` stops a proxy from
+/// compressing (and so buffering) the stream; `X-Accel-Buffering: no` is the
+/// nginx-family switch Cloudflare and most reverse proxies honor for "flush
+/// every chunk". Without them a frame can sit in an edge buffer until enough
+/// bytes pile up behind it, which for a stream of one id per minute is never.
+///
+/// axum pings only when the stream has been IDLE for the interval — any data
+/// frame resets the timer, doing the same job a ping does for an
+/// intermediary; no `Connection: keep-alive` header is set, because HTTP/1.1
+/// defaults to keep-alive and hyper owns that header; and a stream whose
+/// subscriber dies ENDS (the forwarder's sender drops, the receiver closes)
+/// rather than pinging into the void until the client gives up — an
+/// EventSource reconnects on stream end and gets a fresh subscriber, recovery
+/// from the server's own initiative.
+///
+/// AND IT ENDS ON SHUTDOWN (`end_streams`): a graceful shutdown waits for
+/// every response to finish, and an event stream never does on its own — so
+/// a SIGTERM left the process serving open streams, and ticking its
+/// scheduler, until the container's stop timeout killed it.
 fn sse_response(rx: mpsc::Receiver<String>) -> Response {
-    let mut res = Sse::new(topic_frames(rx))
+    sse_response_until(rx, streams_ending())
+}
+
+/// Flipped once, by the binary's shutdown signal.
+static STREAMS_END: std::sync::LazyLock<tokio::sync::watch::Sender<bool>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(false).0);
+
+/// End every open event stream, and every one opened after: the process is
+/// shutting down. Each client sees a clean end and reconnects after the
+/// `retry:` it was given — to the instance that replaces this one. Called by
+/// the binary when the shutdown signal lands, before the graceful drain
+/// waits on in-flight responses.
+pub fn end_streams() {
+    STREAMS_END.send_replace(true);
+}
+
+/// Resolves once `end_streams` has run (at once, if it already has).
+fn streams_ending() -> impl std::future::Future<Output = ()> + Send + 'static {
+    let mut rx = STREAMS_END.subscribe();
+    async move {
+        let _ = rx.wait_for(|ended| *ended).await;
+    }
+}
+
+fn sse_response_until(
+    rx: mpsc::Receiver<String>,
+    until: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Response {
+    let mut res = Sse::new(topic_frames(rx).take_until(until))
         .keep_alive(
             KeepAlive::new()
-                .interval(Duration::from_millis(25_000))
+                .interval(Duration::from_millis(PING_EVERY_MS))
                 .text("ping"),
         )
         .into_response();
     res.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-cache, no-transform"),
+    );
+    res.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-accel-buffering"),
+        axum::http::HeaderValue::from_static("no"),
     );
     res
 }
@@ -640,5 +733,91 @@ pub async fn may_watch_run(
             );
             Ok(RunWatchVerdict::UnknownSubject)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn body_of(res: Response) -> String {
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .expect("the stream ends once its sender is gone");
+        String::from_utf8(bytes.to_vec()).expect("sse is utf-8")
+    }
+
+    // What every intermediary between the api and the browser reads: the
+    // event-stream type, no caching or transforms, and no buffering. The
+    // edge in front of every real instance (Cloudflare) honors the last two.
+    #[tokio::test]
+    async fn the_stream_carries_the_headers_proxies_honor() {
+        let (tx, rx) = mpsc::channel::<String>(1);
+        drop(tx);
+        let res = sse_response(rx);
+        let h = res.headers();
+        assert_eq!(h["content-type"], "text/event-stream");
+        assert_eq!(h["cache-control"], "no-cache, no-transform");
+        assert_eq!(h["x-accel-buffering"], "no");
+    }
+
+    // The preamble names the reconnect delay, then every message is one
+    // `data:` frame, and the stream ENDS when its subscriber does.
+    #[tokio::test]
+    async fn the_preamble_states_retry_then_frames_follow() {
+        let (tx, rx) = mpsc::channel::<String>(4);
+        tx.send("{\"type\":\"notification\",\"notificationId\":\"n1\"}".into())
+            .await
+            .unwrap();
+        drop(tx);
+        let body = body_of(sse_response(rx)).await;
+        assert!(
+            body.starts_with(": connected\nretry: 3000\n\n"),
+            "preamble was {body:?}"
+        );
+        assert!(body.contains("data: {\"type\":\"notification\",\"notificationId\":\"n1\"}\n\n"));
+    }
+
+    // A quiet stream stays OPEN: its receiver yields nothing and does not
+    // end, so the browser holds one connection instead of reconnecting on a
+    // loop. Its parked sender goes when the receiver does.
+    #[tokio::test]
+    async fn a_quiet_stream_stays_open_until_its_client_leaves() {
+        let mut rx = quiet_subscribe()("board:x".into()).await;
+        let waited = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(waited.is_err(), "a quiet stream must not end: {waited:?}");
+        drop(rx);
+    }
+
+    // A shutdown ends an open stream — even one whose subscriber is alive
+    // and silent — so the graceful drain is not held open by it.
+    #[tokio::test]
+    async fn a_shutdown_ends_an_open_stream() {
+        let (tx, rx) = mpsc::channel::<String>(1);
+        let (end_tx, mut end_rx) = tokio::sync::watch::channel(false);
+        let until = async move {
+            let _ = end_rx.wait_for(|e| *e).await;
+        };
+        let res = sse_response_until(rx, until);
+        let body = tokio::spawn(body_of(res));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !body.is_finished(),
+            "an open stream must not end on its own"
+        );
+        end_tx.send_replace(true);
+        let body = tokio::time::timeout(Duration::from_secs(2), body)
+            .await
+            .expect("the stream ends on shutdown")
+            .unwrap();
+        assert!(body.starts_with(": connected\nretry: 3000\n\n"), "{body:?}");
+        drop(tx);
+    }
+
+    // The new read-sync event is a number and a tag, nothing else.
+    #[test]
+    fn the_notifications_event_is_id_shaped() {
+        let s = serde_json::to_string(&UserEvent::Notifications { unread: 3 }).unwrap();
+        assert_eq!(s, "{\"type\":\"notifications\",\"unread\":3}");
     }
 }

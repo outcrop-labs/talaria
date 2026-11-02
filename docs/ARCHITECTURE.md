@@ -158,9 +158,19 @@ are a 13-entry catalog resolved user-override → org default → shipped defaul
 
 Redis pub/sub → SSE. No websockets anywhere (`realtime.ts` in TS, `api/src/realtime.rs` in
 the Rust api — the same bus and the same rule on both sides). One dedicated Redis
-subscriber per connected client; 25-second pings; four topics: `board:<id>`,
-`channel:<id>`, `run:<id>`, and `user:<id>` — the per-person firehose that makes runs
-multi-device.
+subscriber per connected client, dropped the moment the client leaves; four topics:
+`board:<id>`, `channel:<id>`, `run:<id>`, and `user:<id>` — the per-person firehose that
+makes runs multi-device.
+
+Built to survive the edge in front of every real instance (Cloudflare cuts a connection
+idle for about 100 s, and turns a deploy into a 502 or 524): each stream opens with
+`retry: 3000`, pings after 20 s idle, and carries `Cache-Control: no-cache, no-transform`
+and `X-Accel-Buffering: no` (the app's proxy passes both through). The client door
+(`ui/src/lib/sse.ts`) reopens a CLOSED stream with backoff — 1 s, 2 s, 4 s … 30 s — and at
+once when the network or the tab comes back, and every reopen refetches what the stream
+drives, because the stream itself carries no replay. Notifications add a persisted arrival
+record so nothing missed during a gap is silently absorbed:
+[`NOTIFICATIONS.md`](./NOTIFICATIONS.md).
 
 **The load-bearing rule: an event says *what changed*, never *what it says*** — the client
 re-fetches through the ordinary ACL'd route, so realtime can never widen a read. Payloads

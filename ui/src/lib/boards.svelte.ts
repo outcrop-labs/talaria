@@ -16,7 +16,7 @@ export function useBoardLive(boardId: MaybeGetter<string | null>) {
   $effect(() => {
     const id = resolve(boardId)
     if (!id) return
-    return openStream(`/api/boards/${id}/events`, () => {
+    const refresh = () => {
       // Refresh the board (cards) live. We deliberately do NOT refetch an open
       // ticket here — that would thrash its editors mid-edit; the detail refetches
       // on the viewer's own actions. Workchain writes ride the SAME generic
@@ -24,6 +24,14 @@ export function useBoardLive(boardId: MaybeGetter<string | null>) {
       // chains invalidate here too — the workchains lens stays live.
       void qc.invalidateQueries({ queryKey: ['board-tasks', id] })
       void qc.invalidateQueries({ queryKey: ['board-workchains', id] })
+    }
+    // Reconnecting (lib/sse.ts): a deploy's 502 no longer leaves the board
+    // silently frozen, and a REopen refetches what the gap may have dropped.
+    return openStream(`/api/boards/${id}/events`, refresh, {
+      reconnect: true,
+      onOpen: ({ first }) => {
+        if (!first) refresh()
+      },
     })
   })
 }

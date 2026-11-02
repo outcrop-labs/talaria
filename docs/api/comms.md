@@ -285,10 +285,13 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_read.rs`](../../
 
 > /api/channels/{id}/read.
 > POST { seq } → advance the caller's read cursor (drives unread badges).
+> A cursor that reaches the channel's newest message also clears the bell
+> rows pointing at the channel — its DM row and any @mention in it — and
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apichannelsidread-body) | `{ok}` | 200, 400, 403 | — |
+| POST | `session` | [body](#post-apichannelsidread-body) | `{ok, cleared}` | 200, 400, 403 | — |
 
 ### POST `/api/channels/{id}/read` body
 

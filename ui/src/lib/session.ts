@@ -132,6 +132,17 @@ export function useProviders() {
 export function useLogout() {
   const qc = useQueryClient()
   return async () => {
+    // THIS BROWSER STOPS RECEIVING FIRST. A signed-out browser kept getting
+    // the signed-out person's pushes. Retired at both ends while the session
+    // still authorizes the unsubscribe, and bounded at 2 s: a sign-out must
+    // never hang on a push service. The server also deletes every row this
+    // session filed, so a browser that could not answer is covered too.
+    // Imported here, not at the top: the SDK kit re-exports this module's
+    // session hooks, and the push plane is no app's business.
+    // Its banners go with it: the next person at this machine must not read
+    // the last one's mentions in the notification centre.
+    const { closeShownNotifications, stopPushSubscription } = await import('@/lib/browser-notify')
+    await Promise.all([stopPushSubscription(2000), closeShownNotifications()])
     // The nav button fires and forgets this, so a refused sign-out surfaces
     // here rather than as an unhandled rejection — and the session is
     // re-checked either way, because the person is still signed in.

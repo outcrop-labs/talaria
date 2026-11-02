@@ -1219,7 +1219,19 @@ pub async fn update_task(
         // halves at this moment — see its doc for why the write-time checks
         // are not enough. The audience read is awaited; the notification
         // writes are detached.
-        let audience = ticket_audience(pg, id, &cur.board_id, &assignees).await?;
+        let mut audience = ticket_audience(pg, id, &cur.board_id, &assignees).await?;
+        // ONE ACTION, ONE ROW. A person this same patch assigns is told by
+        // the `task-assigned` row below; the promotion's status move was a
+        // second row for the same click ("NP-2: assigned" and "Assigned: …").
+        // They leave this audience — every other watcher still hears the
+        // move.
+        if patch.assignees.is_some() {
+            let newly: Vec<String> = human_assignee_ids(&assignees)
+                .into_iter()
+                .filter(|uid| !human_assignee_ids(&cur.assignees).contains(uid))
+                .collect();
+            audience.retain(|uid| !newly.contains(uid));
+        }
         {
             let notify = deps.notify.clone();
             let actor = who.id.clone();

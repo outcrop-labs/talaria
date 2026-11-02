@@ -363,6 +363,11 @@ checkout-driven hosts.
   authentication at all — the network is the boundary.
 - The only published port is the app itself (`TALARIA_HTTP_PORT`). Put TLS in
   front of it for anything beyond a trusted LAN (see the Dokploy section).
+- Desktop alerts (browser notifications, Web Push, the service worker) need
+  HTTPS: browsers withhold them from plain-http origins. An instance behind
+  Cloudflare or any TLS proxy has it; a plain-http dev stack says so in the bell
+  and in Settings rather than offering a switch that cannot work
+  ([`NOTIFICATIONS.md`](./NOTIFICATIONS.md)).
 
 ## State & backups
 

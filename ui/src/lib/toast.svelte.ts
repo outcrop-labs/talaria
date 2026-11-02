@@ -15,6 +15,9 @@ export interface ToastSpec {
   /** Route to open on click. */
   href?: string
   tone?: ToastTone
+  /** What a click does INSTEAD of opening `href` — a notification toast's
+   *  click routes and marks its row read (lib/notify-open.ts). */
+  onOpen?: () => void
 }
 
 export interface ToastItem {
@@ -23,6 +26,7 @@ export interface ToastItem {
   body?: string
   href?: string
   tone: ToastTone
+  onOpen?: () => void
 }
 
 // Long enough to read two lines; short enough that a stack of these never
@@ -46,7 +50,14 @@ export function toastError(title: string, e: unknown): void {
 }
 
 export function pushToast(spec: ToastSpec): void {
-  const item: ToastItem = { id: nextId++, title: spec.title, body: spec.body, href: spec.href, tone: spec.tone ?? 'info' }
+  const item: ToastItem = {
+    id: nextId++,
+    title: spec.title,
+    body: spec.body,
+    href: spec.href,
+    tone: spec.tone ?? 'info',
+    onOpen: spec.onOpen,
+  }
   store.items.push(item)
   while (store.items.length > MAX_STACK && store.items[0]) dismissToast(store.items[0].id)
   timers.set(item.id, setTimeout(() => dismissToast(item.id), TOAST_TTL_MS))

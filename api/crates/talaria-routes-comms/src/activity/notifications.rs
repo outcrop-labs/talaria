@@ -1,7 +1,8 @@
 // /api/notifications. The caller's inbox: GET is the bell's one read (list,
-// unread, prefs, digest, the instance switch, whether THIS user may flip it),
-// PUT marks read — by ids, by href, or all of them — and PATCH changes
-// routing. The mail fan-out behind the prefs
+// unread, prefs, digest, the instance switch, whether THIS user may flip it,
+// and the desktop-alerts soft ask's memory), PUT marks read — by ids, by
+// href, or all of them — and tells the person's other tabs, and PATCH
+// changes routing or records a soft-ask answer. The mail fan-out behind the prefs
 // (the outbox, the drain) is scheduler plane, so it is not here; this file
 // ends at the rows and the switches the SPA reads and writes.
 //
@@ -22,9 +23,9 @@ use talaria_body::{
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{
-    NOTIFY_CLASSES, NotifyDeps, get_notify_delivery, get_notify_settings, list_notifications,
-    mark_brief_stale, mark_notifications_read, set_notify_delivery, set_notify_settings,
-    unread_count,
+    NOTIFY_CLASSES, NotifyDeps, PromptAction, get_notify_delivery, get_notify_settings,
+    get_notify_settings_and_prompt, list_notifications, mark_brief_stale, mark_notifications_read,
+    publish_unread, set_notify_delivery, set_notify_prompt, set_notify_settings, unread_count,
 };
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
@@ -39,6 +40,21 @@ struct PrefsPatch {
     prefs: Option<serde_json::Map<String, Value>>,
     digest: Option<String>,
     delivery: Option<bool>,
+    /// A soft-ask answer: `{dismissed: true}` ("Not now") or
+    /// `{granted: true}` (the browser said yes).
+    prompt: Option<PromptAction>,
+}
+
+/// The `prompt` member: an object carrying exactly one of `dismissed: true`
+/// or `granted: true`.
+fn prompt_member(v: &Value) -> Result<PromptAction, String> {
+    let p = v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?;
+    let flag = |k: &str| p.get(k) == Some(&Value::Bool(true));
+    match (flag("dismissed"), flag("granted")) {
+        (true, false) => Ok(PromptAction::Dismissed),
+        (false, true) => Ok(PromptAction::Granted),
+        _ => Err("prompt must be {dismissed: true} or {granted: true}".into()),
+    }
 }
 
 /// The validated PATCH body, checks in schema order: prefs (the record, then
@@ -87,13 +103,18 @@ fn validate_prefs_patch(obj: &serde_json::Map<String, Value>) -> Result<PrefsPat
             Some(boolean_member(d, "emailEnabled")?)
         }
     };
-    if prefs.is_none() && digest.is_none() && delivery.is_none() {
+    let prompt = match obj.get("prompt") {
+        None => None,
+        Some(v) => Some(prompt_member(v)?),
+    };
+    if prefs.is_none() && digest.is_none() && delivery.is_none() && prompt.is_none() {
         return Err("nothing to update".into());
     }
     Ok(PrefsPatch {
         prefs,
         digest,
         delivery,
+        prompt,
     })
 }
 
@@ -111,9 +132,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         Ok(v) => v,
         Err(e) => return Ok(internal("[notifications] unread count failed", e)),
     };
-    // prefs + digest from one row, so the two can never be read a moment
-    // apart — and the response keeps this key order.
-    let (prefs, digest) = get_notify_settings(&state.pg, &user.id).await;
+    // prefs + digest + the soft ask's memory from one row, so they can never
+    // be read a moment apart — and the response keeps this key order.
+    let (prefs, digest, prompt) = get_notify_settings_and_prompt(&state.pg, &user.id).await;
     let email_enabled = delivery_or_off(&state.pg).await;
     Ok(Json(json!({
         "notifications": notifications,
@@ -122,6 +143,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         "digest": digest,
         "delivery": { "emailEnabled": email_enabled },
         "canSetDelivery": user.role == "admin",
+        "prompt": prompt,
     }))
     .into_response())
 }
@@ -146,17 +168,22 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    if let Err(e) =
-        mark_notifications_read(&state.pg, &user.id, ids.as_deref(), href.as_deref()).await
-    {
-        return Ok(internal("[notifications] mark-read failed", e));
-    }
+    let read =
+        match mark_notifications_read(&state.pg, &user.id, ids.as_deref(), href.as_deref()).await {
+            Ok(n) => n,
+            Err(e) => return Ok(internal("[notifications] mark-read failed", e)),
+        };
     // The brief nudge, fired after the update — the FULL one: clear the
     // sweep throttle AND ring the bell. Awaiting it costs one UPDATE; its
     // failure is logged, never the caller's.
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = mark_brief_stale(&notify, std::slice::from_ref(&user.id)).await {
         tracing::error!("[notifications] brief nudge failed: {e}");
+    }
+    // READ-SYNC: the person's other tabs and devices drop their count now,
+    // not on their next poll. Only when something was actually read.
+    if read > 0 {
+        publish_unread(&notify, &user.id).await;
     }
     Ok(Json(json!({ "ok": true })).into_response())
 }
@@ -205,6 +232,13 @@ pub async fn patch(
         .await;
     }
 
+    // The soft ask's answer rides its own writer: it is the person's own
+    // memory, never admin-gated, and it never touches a route.
+    if let Some(action) = patch.prompt
+        && let Err(e) = set_notify_prompt(&state.pg, &user.id, action).await
+    {
+        return Ok(internal("[notifications] set prompt failed", e));
+    }
     let (prefs, digest) = if patch.prefs.is_some() || patch.digest.is_some() {
         match set_notify_settings(
             &state.pg,
@@ -222,11 +256,13 @@ pub async fn patch(
         get_notify_settings(&state.pg, &user.id).await
     };
     let email_enabled = delivery_or_off(&state.pg).await;
+    let (_, _, prompt) = get_notify_settings_and_prompt(&state.pg, &user.id).await;
     Ok(Json(json!({
         "prefs": prefs,
         "digest": digest,
         "delivery": { "emailEnabled": email_enabled },
         "canSetDelivery": user.role == "admin",
+        "prompt": prompt,
     }))
     .into_response())
 }
@@ -338,6 +374,34 @@ mod tests {
         // The at-least-one check: nothing present (or only stripped
         // unknowns) is 'nothing to update', and it runs LAST — a bad prefs
         // beside an otherwise-empty body answers prefs' message.
+        // prompt: exactly one answer, as a literal true.
+        assert_eq!(
+            patch(json!({ "prompt": { "dismissed": true } }))
+                .unwrap()
+                .prompt,
+            Some(PromptAction::Dismissed)
+        );
+        assert_eq!(
+            patch(json!({ "prompt": { "granted": true } }))
+                .unwrap()
+                .prompt,
+            Some(PromptAction::Granted)
+        );
+        for bad in [
+            json!({}),
+            json!({ "dismissed": false }),
+            json!({ "dismissed": "yes" }),
+            json!({ "dismissed": true, "granted": true }),
+        ] {
+            assert_eq!(
+                patch(json!({ "prompt": bad })).unwrap_err(),
+                "prompt must be {dismissed: true} or {granted: true}"
+            );
+        }
+        assert_eq!(
+            patch(json!({ "prompt": [] })).unwrap_err(),
+            "Invalid input: expected object, received array"
+        );
         assert_eq!(patch(json!({})).unwrap_err(), "nothing to update");
         assert_eq!(
             patch(json!({ "bogus": "x" })).unwrap_err(),
