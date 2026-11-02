@@ -136,6 +136,10 @@ export interface ShellNotificationStatus {
   closeToBackground: boolean
   /** What closing the window does on this desktop now. */
   background: 'tray' | 'menu-bar' | 'minimize' | 'none'
+  /** This instance is muted in the launcher: no banners from it on this
+   *  desktop; its unread count still counts toward the badge. Absent: a
+   *  shell that predates muting. */
+  muted?: boolean
 }
 
 export interface ShellTestResult {
@@ -194,8 +198,9 @@ export const shellSetCloseToBackground = (on: boolean): Promise<DesktopSettings 
   optional<DesktopSettings>('set_close_to_background', { on })
 
 /** Close this instance's OS banners for these tags (I-22) — a read elsewhere
- *  clears them here (I-16). False: a browser, or a shell that predates the
- *  command (W2-D adds `desktop_notify_close`). */
+ *  clears them here (I-16). The shell keys them by this page's own webview,
+ *  so another instance's tags never close these, and takes at most 100 a
+ *  call. False: a browser, or a shell that predates the command. */
 export async function shellCloseNotifications(tags: string[]): Promise<boolean> {
   try {
     return (await optional<unknown>('desktop_notify_close', { tags })) !== null
@@ -205,8 +210,9 @@ export async function shellCloseNotifications(tags: string[]): Promise<boolean> 
 }
 
 /** Milliseconds since the last OS input (I-22) — what a desktop client's
- *  presence `state` is computed from. Null: a browser, or a shell that
- *  predates the command (W2-D adds `desktop_os_idle`). */
+ *  presence `state` is computed from. Null: a browser, a shell that predates
+ *  the command, or an OS that cannot say. One reading answers every page for
+ *  half a second, so asking often costs nothing. */
 export async function shellOsIdleMs(): Promise<number | null> {
   try {
     const ms = await optional<number>('desktop_os_idle')

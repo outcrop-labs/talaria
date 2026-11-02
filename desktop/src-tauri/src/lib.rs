@@ -19,12 +19,18 @@
 // survive a switch) until it has been off screen for the suspend timeout;
 // then, if its page agrees, it is closed, and showing it again recreates it at
 // the exact page it was on (suspend.rs; the shell watches its notifications
-// meanwhile, watch.rs).
+// meanwhile, watch.rs). An instance nobody opens this session is loaded
+// hidden at launch and handed to a watcher the same way, so every signed-in
+// instance alerts (D8).
 //
 // Closing the window keeps the shell running where the desktop can show it
 // (background.rs, tray.rs), so notifications still arrive; Quit is always
 // one step away. On Linux one process serves every launch: a second one
-// hands the window back to the first and exits (notify/linux.rs).
+// hands the window back to the first and exits (notify/linux.rs). The GTK
+// application id is `app.talaria.desktop` (tauri.conf.json `enableGTKAppId`),
+// so the dock matches the window to its desktop file by Wayland app_id, and
+// the desktop's own Quit (GNOME's dash, Alt+Tab) finds an `app.quit` action
+// that really quits (`install_quit_action`).
 //
 // The shell owns all geometry: WebKitGTK mis-places new child webviews until
 // their first set_bounds (tauri#10420) and auto_resize breaks across resize
@@ -51,7 +57,7 @@ mod suspend;
 mod tray;
 mod watch;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::PathBuf,
     sync::{Mutex, atomic::AtomicBool},
@@ -139,6 +145,8 @@ pub struct ShellState {
     /// The shell minimized the window itself and it has not been focused
     /// since: GTK on Wayland reports no minimized state of its own.
     self_minimized: AtomicBool,
+    /// Local ids muted in the launcher (registry `muted`).
+    muted: Mutex<BTreeSet<String>>,
 }
 
 impl ShellState {
@@ -162,6 +170,7 @@ impl ShellState {
         let active = self.active.lock().unwrap().clone();
         let removed = self.removed.lock().unwrap().clone();
         let last_urls = self.last_urls.lock().unwrap().clone();
+        let muted: Vec<String> = self.muted.lock().unwrap().iter().cloned().collect();
         let instances = self.instances.lock().unwrap();
         registry::save(
             &self.registry_path,
@@ -170,6 +179,7 @@ impl ShellState {
                 last_view: active.as_deref(),
                 removed: &removed,
                 last_urls: &last_urls,
+                muted: &muted,
             },
         )
     }
@@ -200,6 +210,8 @@ pub const INSTANCE_PERMISSIONS: &[&str] = &[
     "allow-desktop-set-badge",
     "allow-desktop-quit",
     "allow-set-close-to-background",
+    "allow-desktop-notify-close",
+    "allow-desktop-os-idle",
 ];
 
 /// Grant one instance origin `INSTANCE_PERMISSIONS`, for its own webview.
@@ -272,6 +284,12 @@ pub fn run() {
     if notify::linux::single_instance() {
         std::process::exit(0);
     }
+    // The program name GTK gives X11's WM_CLASS: the app id, as the Wayland
+    // app_id is (`enableGTKAppId`), so a dock on either matches the window to
+    // `app.talaria.desktop.desktop`, or to `Talaria.desktop` by its
+    // `StartupWMClass` (packaging/linux).
+    #[cfg(target_os = "linux")]
+    gtk::glib::set_prgname(Some(notify::linux::APP_ID));
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -288,6 +306,7 @@ pub fn run() {
 
             let mut loaded = registry::load(&registry_path);
             let last_urls = std::mem::take(&mut loaded.last_urls);
+            let muted: BTreeSet<String> = std::mem::take(&mut loaded.muted).into_iter().collect();
             notices.extend(loaded.notice.clone());
             let (loaded_settings, settings_notice) = settings::load(&settings_path);
             notices.extend(settings_notice);
@@ -319,6 +338,7 @@ pub fn run() {
                         last_view: reopen.as_deref(),
                         removed: &swept.pending,
                         last_urls: &last_urls,
+                        muted: &muted.iter().cloned().collect::<Vec<_>>(),
                     },
                 ) {
                     eprintln!("talaria-desktop: {e}");
@@ -359,10 +379,15 @@ pub fn run() {
                 activity: Mutex::new(suspend::Activity::default()),
                 suspended: Mutex::new(HashMap::new()),
                 self_minimized: AtomicBool::new(false),
+                muted: Mutex::new(muted),
             });
             app.manage(tray::Tray::default());
             notify::init(app.handle());
             background::init(app.handle());
+            #[cfg(target_os = "linux")]
+            install_quit_action(app.handle());
+            // D8: the signed-in instances nobody opens this session.
+            commands::schedule_prewarm(app.handle());
             // The suspend clock. Each tick is a few lock reads on the main
             // thread; a page is only asked once it is due.
             let handle = app.handle().clone();
@@ -423,6 +448,9 @@ pub fn run() {
             commands::desktop_set_badge,
             commands::desktop_quit,
             commands::set_close_to_background,
+            commands::desktop_notify_close,
+            commands::desktop_os_idle,
+            commands::set_instance_muted,
         ])
         .build(tauri::generate_context!())
         .expect("talaria desktop shell could not start");
@@ -443,6 +471,90 @@ pub fn run() {
     });
 }
 
+/// The desktop's own Quit (GNOME's dash and Alt+Tab menu, a dock's): GNOME
+/// Shell's `shell_app_request_quit` activates the application's `app.quit`
+/// action when it has one, and only otherwise deletes each window — the
+/// same close request as ×, which keeps Talaria running. With the GTK
+/// application registered under `app.talaria.desktop`, this is that action:
+/// remember every page, then exit 0, as Ctrl+Q does.
+#[cfg(target_os = "linux")]
+fn install_quit_action(app: &tauri::AppHandle) {
+    use gtk::prelude::*;
+    let Some(window) = app.get_window("main") else {
+        return;
+    };
+    let application = match window.gtk_window() {
+        Ok(w) => w.application(),
+        Err(e) => {
+            eprintln!("talaria-desktop: the GTK window: {e}");
+            return;
+        }
+    };
+    let Some(application) = application else {
+        eprintln!("talaria-desktop: no GTK application; the desktop's Quit closes the window");
+        return;
+    };
+    let quit = gtk::gio::SimpleAction::new("quit", None);
+    let handle = app.clone();
+    quit.connect_activate(move |_, _| {
+        eprintln!("talaria-desktop: the desktop asked Talaria to quit (app.quit)");
+        background::quit(&handle);
+    });
+    application.add_action(&quit);
+    // The registered application also answers D-Bus `Activate`
+    // (`gapplication launch app.talaria.desktop`, a dock or launcher that
+    // activates by GApplication). Each one reaches tao's `activate` handler,
+    // which hands tauri a fresh start, and tauri runs its setup again and
+    // panics on the `main` window that already exists. Tao's one start has
+    // happened — setup, which is running this, came from it — so every
+    // handler connected so far is blocked, and an activate shows the window
+    // instead, as a second launch does.
+    let blocked = block_activate_handlers(&application);
+    let handle = app.clone();
+    application.connect_activate(move |_| {
+        eprintln!(
+            "talaria-desktop: the desktop activated Talaria (GApplication); showing the window"
+        );
+        background::present_main(&handle, None);
+    });
+    eprintln!(
+        "talaria-desktop: GTK application {} (prgname {}): app.quit exported; activate shows the window ({blocked} start handler(s) retired)",
+        application
+            .application_id()
+            .map_or("(none)".to_string(), |id| id.to_string()),
+        gtk::glib::prgname().map_or("(none)".to_string(), |p| p.to_string())
+    );
+}
+
+/// Block every handler of the application's `activate` signal connected so
+/// far (tao's start handler); the number blocked.
+#[cfg(target_os = "linux")]
+fn block_activate_handlers(application: &gtk::Application) -> u32 {
+    use gtk::glib::{gobject_ffi, object::ObjectType};
+    // SAFETY: `application` is a live GApplication for the whole call; the
+    // signal id is looked up on GApplication's own type with a NUL-terminated
+    // name; the match is by signal id alone, so the closure, func and data
+    // filters are unused and null.
+    unsafe {
+        let signal = gobject_ffi::g_signal_lookup(
+            c"activate".as_ptr(),
+            gtk::gio::ffi::g_application_get_type(),
+        );
+        if signal == 0 {
+            return 0;
+        }
+        gobject_ffi::g_signal_handlers_block_matched(
+            application.as_ptr().cast(),
+            gobject_ffi::G_SIGNAL_MATCH_ID,
+            signal,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,6 +572,8 @@ mod tests {
             "allow-desktop-notification-status",
             "allow-desktop-set-badge",
             "allow-desktop-quit",
+            "allow-desktop-notify-close",
+            "allow-desktop-os-idle",
         ] {
             assert!(INSTANCE_PERMISSIONS.contains(&needed), "{needed}");
         }

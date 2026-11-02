@@ -14,10 +14,11 @@
 //!   * Linux without one (stock GNOME) — the window MINIMIZES instead. A
 //!     hidden window with no icon anywhere would be a process nobody can see
 //!     or quit; minimized, it stays in the dash and Alt+Tab. A one-time
-//!     notice says how to quit. The dash's (or a dock's) Quit is NOT one of
-//!     the ways: the shell exports no `app.quit` action, so GNOME's
-//!     `shell_app_request_quit` falls back to deleting each window — the same
-//!     close request as × — and that minimizes (or hides to the tray) too.
+//!     notice says how to quit. The dash's (or a dock's) Quit is one of the
+//!     ways: the GTK application is registered as `app.talaria.desktop` and
+//!     exports `app.quit` (lib.rs `install_quit_action`), which GNOME's
+//!     `shell_app_request_quit` activates before it would fall back to
+//!     deleting each window (the same close request as ×).
 //!   * The tray host leaving while the window is closed to it (the GNOME
 //!     AppIndicator extension turned off, updated or crashed) — the window
 //!     comes back, with a notice, since its icon is gone (`tray_host_changed`).
@@ -27,7 +28,8 @@
 //!   * `closeToBackground` off (Settings → Desktop) — Close quits everywhere.
 //!
 //! Quit is always one step away: Ctrl+Q (Cmd+Q on macOS) in every webview,
-//! the switcher's Quit, the launcher's Quit, the tray's Quit.
+//! the switcher's Quit, the launcher's Quit, the tray's Quit, and on Linux
+//! the desktop's own (GNOME's dash and Alt+Tab).
 
 use std::sync::{
     OnceLock,
@@ -222,15 +224,14 @@ fn notice_once(app: &AppHandle, mode: Mode) {
     );
 }
 
-/// What the first close to the tray says. The dock's Quit is named because it
-/// looks like a way out and is not one (see the module doc).
-const TRAY_NOTICE: &str = "Closing the window keeps Talaria running in the tray so notifications arrive. Quit: the tray menu, Ctrl+Q, or the switcher's Quit — the dock's Quit only closes the window, as × does. Change it in Settings → Desktop.";
+/// What the first close to the tray says.
+const TRAY_NOTICE: &str = "Closing the window keeps Talaria running in the tray so notifications arrive. Quit: the tray menu, the dock's Quit, Ctrl+Q, or the switcher's Quit. Change it in Settings → Desktop.";
 
 /// What the first close to a minimized window says (no tray on this desktop).
-const MINIMIZE_NOTICE: &str = "Talaria keeps running so notifications arrive. Quit: Ctrl+Q or the switcher's Quit — the dock's Quit only closes the window, as × does. Change it in Settings → Desktop.";
+const MINIMIZE_NOTICE: &str = "Talaria keeps running so notifications arrive. Quit: the dock's Quit, Ctrl+Q, or the switcher's Quit. Change it in Settings → Desktop.";
 
 /// What the window coming back from a vanished tray says.
-const TRAY_GONE_NOTICE: &str = "The tray icon went away, so Talaria's window is back. Closing it now minimizes it. Quit: Ctrl+Q or the switcher's Quit.";
+const TRAY_GONE_NOTICE: &str = "The tray icon went away, so Talaria's window is back. Closing it now minimizes it. Quit: the dock's Quit, Ctrl+Q, or the switcher's Quit.";
 
 /// One of the shell's own banners, about the window itself (Linux). Each is
 /// a re-alert: a later notice is shown afresh, not folded into an old one.

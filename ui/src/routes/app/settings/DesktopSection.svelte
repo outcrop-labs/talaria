@@ -123,11 +123,11 @@
   const backgroundLine = $derived.by((): string => {
     switch (notify?.background) {
       case 'tray':
-        return 'Closing the window keeps Talaria in the tray. Quit from the tray menu, Ctrl+Q, or the switcher.'
+        return 'Closing the window keeps Talaria in the tray. Quit from the tray menu, the dock, Ctrl+Q, or the switcher.'
       case 'menu-bar':
         return 'Closing the window keeps Talaria in the dock and the menu bar. Quit with Cmd+Q or the menu bar.'
       case 'minimize':
-        return 'Closing the window minimizes Talaria — this desktop shows no tray icons. Quit with Ctrl+Q or the switcher.'
+        return 'Closing the window minimizes Talaria — this desktop shows no tray icons. Quit from the dock, with Ctrl+Q, or the switcher.'
       default:
         return 'On this platform, closing the window still quits Talaria.'
     }
@@ -240,7 +240,10 @@
     <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Notifications</div>
     <p class="mb-3 max-w-xl font-sans text-sm text-muted">
       The desktop app posts banners through your operating system, for every
-      instance you have open. What the OS says right now:
+      instance you are signed in to, open or not. A banner closes by itself
+      when you read its notification anywhere else. The dock badge counts
+      what is for you — what needs you and what is addressed to you. What the
+      OS says right now:
     </p>
     {#if notifyLine}
       <p
@@ -252,6 +255,12 @@
         data-testid="desktop-notify-status"
       >
         {notifyLine.text}
+      </p>
+    {/if}
+    {#if notify.muted}
+      <p class="mb-1 max-w-xl font-sans text-sm text-fg" data-testid="desktop-notify-muted">
+        This instance is muted in the launcher: it posts no banners on this desktop. Its unread
+        count still counts toward the dock badge. Unmute it from the launcher's instance list.
       </p>
     {/if}
     {#if notify.lastError}

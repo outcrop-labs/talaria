@@ -9,9 +9,10 @@
 //!
 //! This module is the part every platform shares: the clamps, the kind →
 //! urgency/category rule, the (instance, tag) → banner map that makes a
-//! re-post replace instead of stack, the per-instance badge shares, the rate
-//! limits, the status record, and the click route. Each platform's backend
-//! posts and reports clicks back by id:
+//! re-post replace instead of stack — and lets a read elsewhere close the
+//! banner (I-16) — the per-instance badge shares, the rate limits, the status
+//! record, the OS idle time (I-22), and the click route. Each platform's
+//! backend posts, closes, and reports clicks back by id:
 //!
 //!   * linux.rs — org.freedesktop.Notifications over ONE session-bus
 //!     connection (zbus), with the desktop-entry hint, urgency, category,
@@ -65,6 +66,16 @@ pub const REQUEST_EVERY: Duration = Duration::from_secs(10);
 pub const ATTENTION_EVERY: Duration = Duration::from_secs(60);
 /// One instance's share of the badge, at most.
 pub const BADGE_MAX: u32 = 99_999;
+
+/// `desktop_notify_close`: the most tags one call may close.
+pub const CLOSE_MAX: usize = 100;
+/// How long one reading of the OS idle time answers every caller: pages and
+/// watchers ask on schedules of their own (a page's heartbeat asks twice in
+/// a few milliseconds), and the answer is the machine's, not theirs.
+pub const IDLE_FRESH: Duration = Duration::from_millis(500);
+
+/// The catch-up summary's tag (I-21): a click on it opens the bell.
+pub const SUMMARY_TAG: &str = crate::watch::SUMMARY_TAG;
 
 /// What the title of the shell's own test banner says.
 pub const TEST_TITLE: &str = "Talaria test notification";
@@ -127,13 +138,62 @@ fn has_dot_segment(href: &str) -> bool {
 /// path.
 pub fn open_js(raw_href: &str, id: &str) -> Option<String> {
     let href = openable_href(raw_href)?;
-    let detail = serde_json::to_string(&serde_json::json!({
+    let detail = open_detail(Some(href), id)?;
+    Some(format!(
+        "(()=>{{const d={detail};const e=new CustomEvent('talaria:notification-open',{{detail:d,cancelable:true}});if(window.dispatchEvent(e))location.assign(d.href)}})()"
+    ))
+}
+
+/// I-1's detail, JSON-encoded: the path (or null) and the id.
+fn open_detail(href: Option<&str>, id: &str) -> Option<String> {
+    serde_json::to_string(&serde_json::json!({
         "href": href,
         "id": clamped_tag(id),
     }))
-    .ok()?;
+    .ok()
+}
+
+/// The summary's click (I-21) on a page that is up: the event, with the
+/// summary's tag as its id, so the page opens the bell. No fallback: the
+/// summary names no page to assign.
+pub fn summary_js() -> String {
+    let detail = open_detail(None, SUMMARY_TAG).unwrap_or_default();
+    format!(
+        "(()=>{{const d={detail};window.dispatchEvent(new CustomEvent('talaria:notification-open',{{detail:d,cancelable:true}}))}})()"
+    )
+}
+
+/// The same click, for a page the click is creating (a suspended instance
+/// restored by it): an init script, so it waits for the page's own listener
+/// — dispatched at document start the event would reach nobody. It retries
+/// every 250 ms until a listener takes it (`preventDefault`, as ui's
+/// `NotificationToasts` does) or 20 s pass, and runs once per creation: the
+/// nonce marks the session (`suspend::OPEN_FLAG`, which no restore carries
+/// over), so a reload, or a later navigation in the same webview, is inert.
+pub fn pending_open_js(href: Option<&str>, id: &str, nonce: u64) -> Option<String> {
+    let href = match href {
+        Some(raw) => Some(openable_href(raw)?),
+        None => None,
+    };
+    let detail = open_detail(href, id)?;
+    let flag = crate::suspend::OPEN_FLAG;
     Some(format!(
-        "(()=>{{const d={detail};const e=new CustomEvent('talaria:notification-open',{{detail:d,cancelable:true}});if(window.dispatchEvent(e))location.assign(d.href)}})()"
+        r#"(() => {{
+  const d = {detail};
+  const nonce = '{nonce}';
+  try {{
+    if (sessionStorage.getItem('{flag}') === nonce) return;
+    sessionStorage.setItem('{flag}', nonce);
+  }} catch (e) {{}}
+  const started = Date.now();
+  const offer = () => {{
+    const e = new CustomEvent('talaria:notification-open', {{ detail: d, cancelable: true }});
+    if (!window.dispatchEvent(e)) return;
+    if (Date.now() - started < 20000) setTimeout(offer, 250);
+  }};
+  if (document.readyState === 'loading') addEventListener('DOMContentLoaded', offer, {{ once: true }});
+  else offer();
+}})();"#
     ))
 }
 
@@ -244,6 +304,10 @@ pub enum Source {
         origin: String,
         cookie: String,
     },
+    /// The watcher's catch-up summary (I-21): the click restores the
+    /// instance and hands its page `talaria:notification-open` with the
+    /// summary's tag as the id, which opens the bell.
+    Summary,
 }
 
 impl std::fmt::Debug for Source {
@@ -252,6 +316,7 @@ impl std::fmt::Debug for Source {
         match self {
             Self::Page => f.write_str("Page"),
             Self::Watcher { row, origin, .. } => write!(f, "Watcher({row} at {origin})"),
+            Self::Summary => f.write_str("Summary"),
         }
     }
 }
@@ -367,6 +432,24 @@ impl Replaces {
     pub fn forget_label(&mut self, label: &str) {
         self.entries.retain(|e| e.label != label);
     }
+
+    /// Take `label`'s banner for `tag` out of the map, to close it. Only the
+    /// caller's own pair: another label's tag is never found.
+    pub fn take(&mut self, label: &str, tag: &str) -> Option<Entry> {
+        let at = self
+            .entries
+            .iter()
+            .position(|e| e.label == label && e.tag == tag)?;
+        Some(self.entries.swap_remove(at))
+    }
+
+    /// Take every banner of `label`, to close them all.
+    pub fn take_label(&mut self, label: &str) -> Vec<Entry> {
+        let (mine, rest): (Vec<Entry>, Vec<Entry>) =
+            self.entries.drain(..).partition(|e| e.label == label);
+        self.entries = rest;
+        mine
+    }
 }
 
 /// A token bucket.
@@ -457,6 +540,11 @@ impl Badges {
         self.total()
     }
 
+    /// Each label's share, for the tray menu.
+    pub fn shares(&self) -> BTreeMap<String, u32> {
+        self.per.clone()
+    }
+
     pub fn remove(&mut self, label: &str) -> u32 {
         self.per.remove(label);
         self.total()
@@ -527,6 +615,9 @@ pub struct Status {
     pub close_to_background: bool,
     /// What closing the window does: `tray`, `menu-bar`, `minimize`, `none`.
     pub background: &'static str,
+    /// The caller is muted in the launcher: it posts no banners, and its
+    /// share of the badge still counts.
+    pub muted: bool,
 }
 
 /// One caller's last post's outcome. Kept per label: instance B's Settings
@@ -549,6 +640,8 @@ pub struct Notifier {
     /// The badge total last handed to the OS, so an unchanged count is not
     /// re-sent on every page refetch.
     applied_badge: Mutex<Option<u32>>,
+    /// The per-instance shares last shown in the tray menu.
+    applied_shares: Mutex<Option<BTreeMap<String, u32>>>,
 }
 
 /// Set up the backend: the process's one bus connection (Linux), the
@@ -728,6 +821,9 @@ fn route(app: &AppHandle, entry: Entry, token: Option<String>) {
             Some(&entry.tag),
             token,
         ),
+        Source::Summary => {
+            crate::commands::reveal_notice(app, &entry.label, None, Some(SUMMARY_TAG), token)
+        }
         Source::Watcher {
             row,
             origin,
@@ -778,6 +874,57 @@ pub fn set_badge(app: &AppHandle, label: &str, count: u32) {
     apply_badge(app, total);
 }
 
+/// Each instance's share of the badge (label → count; zero shares absent).
+pub fn badge_shares(app: &AppHandle) -> BTreeMap<String, u32> {
+    app.try_state::<Notifier>()
+        .map(|n| n.badges.lock().unwrap().shares())
+        .unwrap_or_default()
+}
+
+/// Close `label`'s banners for these tags (I-16, I-22): a read elsewhere,
+/// told by the page (`desktop_notify_close`) or by the watcher's stream.
+/// Only the caller's own pairs: the label is half the key, and it is the
+/// IPC caller's, so instance B's tags never close A's banners. The number
+/// closed.
+pub async fn close(app: &AppHandle, label: &str, tags: &[String]) -> u32 {
+    if tags.is_empty() {
+        return 0;
+    }
+    let entries: Vec<Entry> = {
+        let state = notifier(app);
+        let mut replaces = state.replaces.lock().unwrap();
+        tags.iter()
+            .filter_map(|tag| replaces.take(label, tag))
+            .collect()
+    };
+    os::close(label, tags, &entries).await
+}
+
+/// Close every banner `label` has up (I-16's `all`).
+pub async fn close_label(app: &AppHandle, label: &str) -> u32 {
+    let entries = notifier(app).replaces.lock().unwrap().take_label(label);
+    let tags: Vec<String> = entries.iter().map(|e| e.tag.clone()).collect();
+    os::close(label, &tags, &entries).await
+}
+
+/// Milliseconds since the person last touched this machine, as the OS
+/// reports it (I-22), or None where it cannot say: presence's "active" is
+/// OS input in the last two minutes. One reading serves every caller for
+/// `IDLE_FRESH` (aged by the time since), so no caller, however often it
+/// asks, sends more than two bus calls a second.
+pub async fn os_idle() -> Option<u64> {
+    static LAST: Mutex<Option<(Instant, Option<u64>)>> = Mutex::new(None);
+    let cached = *LAST.lock().unwrap();
+    if let Some((at, value)) = cached
+        && at.elapsed() < IDLE_FRESH
+    {
+        return value.map(|ms| ms.saturating_add(at.elapsed().as_millis() as u64));
+    }
+    let value = os::os_idle().await;
+    *LAST.lock().unwrap() = Some((Instant::now(), value));
+    value
+}
+
 /// An instance is gone: its badge share, its banners' map entries, its rate
 /// limits and its last outcome go with it.
 pub fn forget_label(app: &AppHandle, label: &str) {
@@ -794,8 +941,20 @@ pub fn badge_total(app: &AppHandle) -> u32 {
 }
 
 fn apply_badge(app: &AppHandle, total: u32) {
+    let state = notifier(app);
+    let shares = state.badges.lock().unwrap().shares();
+    let shares_changed = {
+        let mut applied = state.applied_shares.lock().unwrap();
+        let changed = applied.as_ref() != Some(&shares);
+        *applied = Some(shares);
+        changed
+    };
+    if shares_changed {
+        // The tray menu's per-instance counts, and the launcher's list.
+        crate::tray::refresh_menu(app);
+        crate::commands::emit_state(app);
+    }
     {
-        let state = notifier(app);
         let mut applied = state.applied_badge.lock().unwrap();
         if *applied == Some(total) {
             return;
@@ -844,6 +1003,7 @@ fn combine(app: &AppHandle, os: OsStatus, label: &str) -> Status {
         pending,
         close_to_background: crate::background::close_to_background(app),
         background: crate::background::mode(app).as_str(),
+        muted: crate::commands::is_muted(app, label),
     }
 }
 
@@ -979,6 +1139,47 @@ mod tests {
         // A quote or a closing tag in the id cannot leave the string either.
         let js = open_js("/x", "a\"</script>").unwrap();
         assert!(js.contains(r#""id":"a\"</script>""#));
+    }
+
+    #[test]
+    fn the_summary_click_hands_the_page_its_tag_and_waits_for_a_restored_one() {
+        let now = summary_js();
+        assert!(
+            now.contains(r#"const d={"href":null,"id":"talaria-summary"}"#),
+            "{now}"
+        );
+        assert!(
+            !now.contains("location.assign"),
+            "the summary names no page"
+        );
+        let pending = pending_open_js(None, SUMMARY_TAG, 42).unwrap();
+        assert!(pending.contains(r#"const d = {"href":null,"id":"talaria-summary"};"#));
+        assert!(pending.contains("const nonce = '42';"));
+        assert!(pending.contains("sessionStorage.setItem('__talaria_desktop_open', nonce)"));
+        assert!(pending.contains("if (!window.dispatchEvent(e)) return;"));
+        assert!(pending.contains("setTimeout(offer, 250)"));
+        // A row's open carries its path; a path the rule refuses is no open.
+        let row = pending_open_js(Some("/comms/channel/c1"), "n-1", 1).unwrap();
+        assert!(row.contains(r#""href":"/comms/channel/c1","id":"n-1""#));
+        assert!(pending_open_js(Some("//evil.example"), "n-1", 1).is_none());
+    }
+
+    #[test]
+    fn closing_takes_only_the_callers_own_pairs() {
+        let mut map = Replaces::default();
+        map.put("instance-a", "n-1", 7, None, Source::Page);
+        map.put("instance-a", "n-2", 8, None, Source::Page);
+        map.put("instance-b", "n-1", 9, None, Source::Page);
+        // B closing "n-1" is B's banner, never A's.
+        assert_eq!(map.take("instance-b", "n-1").unwrap().server_id, 9);
+        assert!(map.take("instance-b", "n-1").is_none());
+        assert_eq!(map.get("instance-a", "n-1").unwrap().server_id, 7);
+        // An unknown tag closes nothing.
+        assert!(map.take("instance-a", "nope").is_none());
+        let all = map.take_label("instance-a");
+        assert_eq!(all.len(), 2);
+        assert!(map.entries.is_empty());
+        assert!(map.take_label("instance-a").is_empty());
     }
 
     #[test]
@@ -1143,6 +1344,10 @@ mod tests {
         assert_eq!(badges.set("instance-b", 3), 5);
         assert_eq!(badges.set("instance-b", 9), 11);
         assert_eq!(badges.set("instance-a", 0), 9);
+        assert_eq!(
+            badges.shares().into_iter().collect::<Vec<_>>(),
+            vec![("instance-b".to_string(), 9)]
+        );
         assert_eq!(badges.set("instance-c", u32::MAX), 9 + BADGE_MAX);
         assert_eq!(badges.remove("instance-c"), 9);
         assert_eq!(badges.remove("instance-b"), 0);
@@ -1178,12 +1383,14 @@ mod tests {
             pending: false,
             close_to_background: true,
             background: "minimize",
+            muted: true,
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["permission"], "not-determined");
         assert_eq!(json["server"]["spec"], "1.2");
         assert_eq!(json["closeToBackground"], true);
         assert_eq!(json["lastPostedAt"], 1);
+        assert_eq!(json["muted"], true);
         assert!(json.get("capabilities").is_none());
         assert_eq!(
             serde_json::to_value(Permission::Unavailable).unwrap(),

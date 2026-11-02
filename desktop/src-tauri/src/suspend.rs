@@ -18,6 +18,12 @@
 //! is kept until it is shown again. Only a page that says it can go is
 //! closed.
 //!
+//! An instance nobody opened this session is loaded hidden at launch (D8,
+//! O-17: at most five, five seconds apart) and asked at once, so a signed-in
+//! instance's notifications reach the person without a click: its page
+//! answers, the shell reads its cookies and starts its watcher (watch.rs),
+//! and the webview goes, as any suspended one does.
+//!
 //! This module is the pure part: the activity clock, the URL rule and the
 //! scripts. commands.rs wires it to the window.
 
@@ -25,6 +31,10 @@ use std::{
     collections::HashMap,
     time::{Duration, Instant},
 };
+
+/// How many times a page loaded hidden at launch may answer "no hook yet"
+/// (its UI still booting) before it is kept as an older Talaria.
+pub const PREWARM_TRIES: u8 = 6;
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -77,7 +87,18 @@ pub struct Activity {
     /// Pages that said they can go, while the shell gets ready to close them.
     /// Asking one again would start a second close, and a second watcher.
     closing: HashMap<String, Asked>,
+    /// Pages the shell loaded hidden at launch (D8): due as soon as they
+    /// have loaded, whatever the timeout, until they are shown.
+    prewarm: HashMap<String, Prewarm>,
     nonce: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Prewarm {
+    /// The page has finished loading: asking it now gets an answer.
+    loaded: bool,
+    /// Answers with no hook so far.
+    tries: u8,
 }
 
 impl Activity {
@@ -95,8 +116,50 @@ impl Activity {
             self.hidden_at.remove(id);
             self.kept.remove(id);
             self.asked.remove(id);
+            self.prewarm.remove(id);
             self.shown = Some(id.to_string());
         }
+    }
+
+    /// `id` was loaded hidden at launch (D8): off screen from now, and due
+    /// once its page has loaded.
+    pub fn prewarm(&mut self, id: &str, now: Instant) {
+        self.hidden_at.entry(id.to_string()).or_insert(now);
+        self.prewarm.insert(id.to_string(), Prewarm::default());
+    }
+
+    /// The hidden page finished loading. True when it is one loaded hidden
+    /// at launch, so it is asked now.
+    pub fn prewarm_loaded(&mut self, id: &str) -> bool {
+        match self.prewarm.get_mut(id) {
+            Some(p) => {
+                p.loaded = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    // Read by the WebKitGTK load-failed hook, which is Linux-only.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn prewarming(&self, id: &str) -> bool {
+        self.prewarm.contains_key(id)
+    }
+
+    /// A page loaded hidden at launch answered with no hook: its UI may
+    /// still be booting. True while it may be asked again (the answer is
+    /// cleared, so the next tick asks); false once it has had its tries and
+    /// is an older Talaria after all.
+    pub fn prewarm_retry(&mut self, id: &str) -> bool {
+        let Some(p) = self.prewarm.get_mut(id) else {
+            return false;
+        };
+        p.tries += 1;
+        if p.tries >= PREWARM_TRIES {
+            return false;
+        }
+        self.asked.remove(id);
+        true
     }
 
     /// What the window is doing: `away` is minimized or hidden. Returns true
@@ -130,6 +193,7 @@ impl Activity {
         self.kept.remove(id);
         self.asked.remove(id);
         self.closing.remove(id);
+        self.prewarm.remove(id);
         if self.shown.as_deref() == Some(id) {
             self.shown = None;
         }
@@ -144,8 +208,12 @@ impl Activity {
         }
     }
 
-    /// True when `id` has been off screen for at least `timeout`.
+    /// True when `id` has been off screen for at least `timeout`, or is a
+    /// page loaded hidden at launch that has finished loading.
     pub fn is_due(&self, id: &str, now: Instant, timeout: Duration) -> bool {
+        if self.shown.as_deref() != Some(id) && self.prewarm.get(id).is_some_and(|p| p.loaded) {
+            return true;
+        }
         self.inactive_since(id)
             .is_some_and(|since| now.saturating_duration_since(since) >= timeout)
     }
@@ -222,9 +290,11 @@ impl Activity {
     }
 
     /// The page asked to stay: leave it alone until it is shown again. A
-    /// close in flight that ends here is over.
+    /// close in flight that ends here is over, and so is a launch's prewarm:
+    /// the page stays loaded, hidden, and posts its own.
     pub fn keep(&mut self, id: &str, why: Kept) {
         self.closing.remove(id);
+        self.prewarm.remove(id);
         self.kept.insert(id.to_string(), why);
     }
 
@@ -301,11 +371,15 @@ const MAX_SESSION_BYTES: usize = 256 * 1024;
 /// The key the restore script marks a seeded session with.
 const RESTORE_FLAG: &str = "__talaria_desktop_restore";
 
+/// The key a recreated page's pending notification open marks its session
+/// with (notify::pending_open_js): never carried into the next restore.
+pub const OPEN_FLAG: &str = "__talaria_desktop_open";
+
 /// The session entries worth carrying, or none if they are too many.
 pub fn clean_session(entries: &[(String, String)]) -> Vec<(String, String)> {
     let entries: Vec<(String, String)> = entries
         .iter()
-        .filter(|(k, _)| !k.is_empty() && k != RESTORE_FLAG)
+        .filter(|(k, _)| !k.is_empty() && k != RESTORE_FLAG && k != OPEN_FLAG)
         .cloned()
         .collect();
     let bytes: usize = entries.iter().map(|(k, v)| k.len() + v.len()).sum();
@@ -436,7 +510,7 @@ pub fn report_js(nonce: u64) -> String {
     try {{
       for (let i = 0; i < sessionStorage.length; i++) {{
         const k = sessionStorage.key(i);
-        if (k !== null && k !== '{RESTORE_FLAG}') session.push([k, String(sessionStorage.getItem(k))]);
+        if (k !== null && k !== '{RESTORE_FLAG}' && k !== '{OPEN_FLAG}') session.push([k, String(sessionStorage.getItem(k))]);
       }}
     }} catch (e) {{ session = []; }}
     let arrivals = null;
@@ -451,7 +525,8 @@ pub fn report_js(nonce: u64) -> String {
           if (rec.seen && typeof rec.seen === 'object') {{
             for (const [id, when] of Object.entries(rec.seen)) if (typeof when === 'string') seen[id] = when;
           }}
-          arrivals = {{ user, hw: typeof rec.hw === 'string' ? rec.hw : null, seen, at }};
+          const seq = Number.isSafeInteger(rec.seq) && rec.seq >= 0 ? rec.seq : null;
+          arrivals = {{ user, hw: typeof rec.hw === 'string' ? rec.hw : null, seen, at, v: Number(rec.v) || 1, seq }};
         }}
       }}
     }} catch (e) {{ arrivals = null; }}
@@ -537,19 +612,22 @@ pub fn restore_js(
     ))
 }
 
-/// Hand the watcher's banners back to the restored page (I-3): every row it
-/// posted is merged into the page's arrival record, at document start,
-/// before the page's own scripts read it, so the page never posts them a
-/// second time. Idempotent, and it never moves the record backwards: an id
-/// keeps the later of its two times, the high-water mark only rises, and the
-/// record stays bounded at the page's 300 newest. `None` when there is
-/// nothing to merge.
-pub fn arrivals_js(user: &str, posted: &[(String, String)]) -> Option<String> {
-    if user.is_empty() || posted.is_empty() {
+/// Hand what the watcher saw back to the restored page (I-20): every row it
+/// judged is merged into the page's arrival record, and its read-through seq
+/// becomes the record's, at document start, before the page's own scripts
+/// read it, so the page never surfaces them a second time and reads on from
+/// where the watcher stopped. Idempotent, and it never moves the record
+/// backwards: an id keeps the later of its two times, the high-water mark
+/// and the seq only rise, and the record stays bounded at the page's 300
+/// newest. A seq makes the record v2 (`v: 2`). `None` when there is nothing
+/// to merge.
+pub fn arrivals_js(user: &str, posted: &[(String, String)], seq: Option<i64>) -> Option<String> {
+    if user.is_empty() || (posted.is_empty() && seq.is_none()) {
         return None;
     }
     let user = serde_json::to_string(user).ok()?;
     let posted = serde_json::to_string(posted).ok()?;
+    let seq = seq.map_or("null".to_string(), |s| s.to_string());
     let max = crate::watch::MAX_SEEN;
     Some(format!(
         r#"(() => {{
@@ -557,6 +635,7 @@ pub fn arrivals_js(user: &str, posted: &[(String, String)]) -> Option<String> {
     const key = '{ARRIVALS_KEY}';
     const user = {user};
     const posted = {posted};
+    const seq = {seq};
     const all = JSON.parse(localStorage.getItem(key) || '{{}}') || {{}};
     const rec = all[user] && typeof all[user] === 'object' ? all[user] : {{ hw: null, seen: {{}}, at: 0 }};
     if (!rec.seen || typeof rec.seen !== 'object') rec.seen = {{}};
@@ -564,6 +643,10 @@ pub fn arrivals_js(user: &str, posted: &[(String, String)]) -> Option<String> {
     for (const [id, at] of posted) {{
       if (!(id in rec.seen) || ms(at) > ms(rec.seen[id])) rec.seen[id] = at;
       if (!rec.hw || ms(at) > ms(rec.hw)) rec.hw = at;
+    }}
+    if (typeof seq === 'number') {{
+      if (!Number.isSafeInteger(rec.seq) || seq > rec.seq) rec.seq = seq;
+      rec.v = 2;
     }}
     const ids = Object.keys(rec.seen);
     if (ids.length > {max}) {{
@@ -798,6 +881,48 @@ mod tests {
     }
 
     #[test]
+    fn a_page_loaded_hidden_at_launch_is_due_once_loaded_whatever_the_timeout() {
+        let t0 = Instant::now();
+        let mut a = Activity::default();
+        a.show(None, t0);
+        a.prewarm("p", t0);
+        let live = ids(&["p"]);
+        // Still loading: asking now would reach a page with no hook.
+        assert!(
+            a.due(&live, t0 + Duration::from_secs(1), MIN * 10)
+                .is_empty()
+        );
+        assert!(!a.is_due("p", t0, MIN * 10));
+        assert!(a.prewarm_loaded("p"));
+        assert!(!a.prewarm_loaded("other"), "only a launch's prewarm");
+        assert!(a.is_due("p", t0 + Duration::from_secs(2), MIN * 10));
+        assert_eq!(a.due(&live, t0 + Duration::from_secs(2), MIN * 10), live);
+        // Booting still: asked again on the next tick, a few times only.
+        let nonce = a.ask("p", t0 + Duration::from_secs(2));
+        assert!(a.answered("p", nonce));
+        for _ in 1..PREWARM_TRIES {
+            assert!(a.prewarm_retry("p"));
+        }
+        assert!(!a.prewarm_retry("p"), "an older Talaria after all");
+        a.keep("p", Kept::Unsupported);
+        assert!(!a.prewarming("p"));
+        assert!(!a.is_due("p", t0 + Duration::from_secs(60), MIN * 10));
+        // Shown by the person: an ordinary page from then on.
+        let mut b = Activity::default();
+        b.prewarm("q", t0);
+        b.prewarm_loaded("q");
+        b.show(Some("q"), t0 + Duration::from_secs(3));
+        assert!(!b.prewarming("q"));
+        b.show(None, t0 + Duration::from_secs(4));
+        assert!(!b.is_due("q", t0 + Duration::from_secs(5), MIN * 10));
+        // Forgotten (a load failure, a remove): gone.
+        let mut c = Activity::default();
+        c.prewarm("r", t0);
+        c.forget("r");
+        assert!(!c.prewarming("r") && !c.prewarm_retry("r"));
+    }
+
+    #[test]
     fn forgetting_an_instance_clears_it() {
         let t0 = Instant::now();
         let mut a = Activity::default();
@@ -959,13 +1084,26 @@ mod tests {
         let js = report_js(1);
         assert!(js.contains("localStorage.getItem('talaria.notify.arrivals.v1')"));
         assert!(js.contains("page, arrivals }"));
-        assert_eq!(arrivals_js("u1", &[]), None);
-        assert_eq!(arrivals_js("", &[("n1".into(), "t".into())]), None);
-        let js = arrivals_js("u\"1", &[("n1".into(), "2026-10-31T10:00:00.000Z".into())]).unwrap();
+        // The v2 record's seq rides along (I-20); a wave-1 record has none.
+        assert!(js.contains("v: Number(rec.v) || 1, seq }"));
+        assert!(js.contains("&& k !== '__talaria_desktop_open'"));
+        assert_eq!(arrivals_js("u1", &[], None), None);
+        assert_eq!(arrivals_js("", &[("n1".into(), "t".into())], Some(3)), None);
+        // A seq alone is worth merging: the record reads on from it.
+        let seq_only = arrivals_js("u1", &[], Some(61)).unwrap();
+        assert!(seq_only.contains("const seq = 61;"));
+        assert!(seq_only.contains("rec.v = 2;"));
+        let js = arrivals_js(
+            "u\"1",
+            &[("n1".into(), "2026-10-31T10:00:00.000Z".into())],
+            None,
+        )
+        .unwrap();
         assert!(js.contains(r#"const user = "u\"1";"#), "{js}");
         assert!(js.contains(r#"const posted = [["n1","2026-10-31T10:00:00.000Z"]];"#));
         assert!(js.contains("const key = 'talaria.notify.arrivals.v1';"));
         assert!(js.contains("ids.slice(300)"));
+        assert!(js.contains("const seq = null;"));
         let r: Report = serde_json::from_str(
             r#"{"nonce":3,"url":"https://a.example/x","arrivals":{"user":"u1","hw":null,"seen":{"n1":"2026-10-31T10:00:00.000Z"},"at":5}}"#,
         )

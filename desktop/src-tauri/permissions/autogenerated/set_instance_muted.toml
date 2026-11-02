@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-instance-muted"
+description = "Enables the set_instance_muted command without any pre-configured scope."
+commands.allow = ["set_instance_muted"]
+
+[[permission]]
+identifier = "deny-set-instance-muted"
+description = "Denies the set_instance_muted command without any pre-configured scope."
+commands.deny = ["set_instance_muted"]

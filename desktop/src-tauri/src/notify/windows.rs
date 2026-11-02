@@ -229,6 +229,45 @@ pub async fn request() -> OsStatus {
     probe().await
 }
 
+/// Windows toasts are not closed by a read elsewhere yet: notify-rust has no
+/// remove, and the toast history is the cut Windows round (docs/DESKTOP.md).
+pub async fn close(_label: &str, _tags: &[String], _entries: &[super::Entry]) -> u32 {
+    0
+}
+
+/// `LASTINPUTINFO`.
+#[repr(C)]
+struct LastInputInfo {
+    size: u32,
+    time: u32,
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetLastInputInfo(info: *mut LastInputInfo) -> i32;
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetTickCount() -> u32;
+}
+
+/// Milliseconds since the last input in this session: the tick count now
+/// minus the last input's (both wrap at 49.7 days, so the difference wraps).
+pub async fn os_idle() -> Option<u64> {
+    let mut info = LastInputInfo {
+        size: std::mem::size_of::<LastInputInfo>() as u32,
+        time: 0,
+    };
+    // SAFETY: a properly sized LASTINPUTINFO that outlives the call.
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        return None;
+    }
+    // SAFETY: no arguments.
+    let now = unsafe { GetTickCount() };
+    Some(u64::from(now.wrapping_sub(info.time)))
+}
+
 /// No badge on Windows in wave 1 (the taskbar overlay is W2-D).
 pub fn set_badge(_app: &AppHandle, _total: u32) {}
 
@@ -275,6 +314,8 @@ pub fn selftest() -> serde_json::Value {
         "bundleId": AUMID,
         "authorization": "n/a",
         "post": posted,
+        "close": "skipped: Windows toasts are not closed by a read yet",
+        "osIdle": tauri::async_runtime::block_on(os_idle()),
         "background": "none",
     })
 }

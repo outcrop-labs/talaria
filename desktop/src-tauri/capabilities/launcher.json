@@ -25,6 +25,9 @@
     "allow-desktop-notification-test",
     "allow-desktop-set-badge",
     "allow-desktop-quit",
-    "allow-set-close-to-background"
+    "allow-set-close-to-background",
+    "allow-desktop-notify-close",
+    "allow-desktop-os-idle",
+    "allow-set-instance-muted"
   ]
 }

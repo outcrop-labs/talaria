@@ -257,10 +257,12 @@ jobs:
       # with tauri's tray-icon feature the bundler asks pkg-config where the
       # appindicator library lives — it puts it in the AppImage, and makes the
       # deb and rpm depend on it — and aborts the build when it cannot find one.
+      # rpm2cpio and cpio: the step after the build rewrites that dependency
+      # into a recommendation (packaging/linux/recommend-tray.sh).
       - name: Tauri system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev rpm
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev rpm rpm2cpio cpio
 
       # The bundle targets come from tauri.linux.conf.json (tauri merges the
       # platform file automatically); --config adds the version on top. The
@@ -269,6 +271,17 @@ jobs:
       - name: Build bundles
         working-directory: desktop
         run: bun run build -- --config "{\"version\":\"$VERSION\"}"
+
+      # The shell opens the tray library with dlopen and runs without it
+      # (Close minimizes instead of hiding to a tray nobody can see), but the
+      # bundler makes it a hard dependency of the deb and the rpm. The config
+      # lists it under `recommends`; this takes it out of Depends and
+      # Requires, and checks both packages afterwards (the script's header).
+      - name: The tray library is recommended, not required
+        working-directory: desktop
+        run: |
+          set -eu
+          packaging/linux/recommend-tray.sh src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm
 
       # The AppImage gets one more pass, on this same runner: linuxdeploy's gtk
       # plugin bundles the build distro's libwayland-client, which aborts on a
@@ -295,6 +308,15 @@ jobs:
             *webkit2gtk*gtk-3*) ;;
             *) echo "::error::the deb declares no webkit2gtk/gtk dependency — see docs/DESKTOP.md (installers)"; exit 1 ;;
           esac
+          # The window's Wayland app_id (and X11 WM_CLASS) is the GTK
+          # application id, app.talaria.desktop: the deb and rpm desktop file
+          # (Talaria.desktop, never renamed) must name it, or a dock cannot
+          # group the window under its pin.
+          for pkg in deb/*.deb; do
+            dpkg-deb --fsys-tarfile "$pkg" | tar -xO --wildcards '*usr/share/applications/Talaria.desktop' | tee "$RUNNER_TEMP/Talaria.desktop"
+            grep -qx 'StartupWMClass=app.talaria.desktop' "$RUNNER_TEMP/Talaria.desktop" \
+              || { echo "::error::$pkg's Talaria.desktop does not name StartupWMClass=app.talaria.desktop"; exit 1; }
+          done
           mkdir -p "$RUNNER_TEMP/assets"
           cp deb/*.deb rpm/*.rpm appimage/*.AppImage "$RUNNER_TEMP/assets/"
           ls -l "$RUNNER_TEMP/assets"
@@ -529,7 +551,11 @@ jobs:
           assert auth and not auth.startswith("error"), r
           granted = auth in ("authorized", "provisional", "ephemeral")
           assert (r["post"] == "ok") == granted, f"post {r['post']!r} disagrees with authorization {auth!r}"
-          print(f"self-test: un, {r['bundleId']}, {auth}, post: {r['post']}")
+          # Read-sync's removal and presence's idle time (I-16, I-22).
+          close = str(r.get("close", ""))
+          assert close == "ok" or close.startswith("error"), r
+          assert isinstance(r.get("osIdle"), (int, float)) and not isinstance(r.get("osIdle"), bool), r
+          print(f"self-test: un, {r['bundleId']}, {auth}, post: {r['post']}, close: {close}, osIdle: {r['osIdle']} ms")
           PY
           # The same flag on the binary outside its bundle: UN cannot run
           # there, and the status must say which path it took instead.

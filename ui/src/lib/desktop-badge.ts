@@ -4,8 +4,24 @@
 // count the burst SETTLED on: 2 → 3 → 2 inside the window reports nothing new,
 // not 3. A signed-out page reports 0, because the query cache still holds the
 // last signed-in count and the login screen mounts the switcher too.
+//
+// The count is For you (EB-11, O-10): Needs you + Direct, the rows that are
+// the person's to answer. Following lands in the bell's All tab without
+// badging the dock. An instance that predates For you serves only `unread`,
+// and that is the count then.
 
 export const BADGE_DEBOUNCE_MS = 500
+
+/** The badge's count from a notifications payload: For you
+ *  (`unreadForYou`), else every unread row from an instance that predates
+ *  it, else nothing yet (undefined: no read has landed). */
+export function badgeCount(
+  payload: { unread?: number; unreadForYou?: number } | null | undefined,
+): number | undefined {
+  if (!payload) return undefined
+  if (typeof payload.unreadForYou === 'number') return payload.unreadForYou
+  return typeof payload.unread === 'number' ? payload.unread : undefined
+}
 
 export interface BadgeReporter {
   /** The page's state now: its cached unread count (undefined before the

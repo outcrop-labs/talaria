@@ -25,6 +25,12 @@
 //! on an older Notification Center entry goes nowhere — and it would add a
 //! crate. objc2-user-notifications is already in the lock.
 //!
+//! A read elsewhere removes a banner (I-16): its identifier is the same
+//! `"<label>/<tag>"`, so `removeDeliveredNotificationsWithIdentifiers` takes
+//! exactly the caller's own, from Notification Center's list too. The OS
+//! idle time (I-22) is CoreGraphics' seconds since the last input event of
+//! any kind, for the whole login session.
+//!
 //! UN needs a real `.app` with a bundle identifier; outside one,
 //! `currentNotificationCenter` throws. An unbundled dev run (`tauri dev`, a
 //! bare binary) falls back to the legacy center through mac-notification-sys,
@@ -40,7 +46,7 @@ use block2::RcBlock;
 use objc2::{
     AnyThread, define_class, msg_send, rc::Retained, runtime::Bool, runtime::ProtocolObject,
 };
-use objc2_foundation::{NSBundle, NSError, NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification,
     UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
@@ -325,6 +331,58 @@ pub async fn post(post: &Post, _previous: Option<u32>) -> Result<u32, String> {
     Ok(0)
 }
 
+/// Remove these banners — delivered, and any still pending — by their
+/// `"<label>/<tag>"` identifiers. The legacy center (an unbundled dev run)
+/// cannot: it keeps them. macOS answers nothing, so the count is the
+/// banners this run had posted.
+pub async fn close(label: &str, tags: &[String], entries: &[super::Entry]) -> u32 {
+    if tags.is_empty() || !bundled() {
+        return 0;
+    }
+    let ids: Vec<String> = tags.iter().map(|tag| format!("{label}/{tag}")).collect();
+    let removed = tauri::async_runtime::spawn_blocking(move || remove(&ids)).await;
+    match removed {
+        Ok(()) => {
+            eprintln!("talaria-desktop: {label}: removed {} banner(s)", tags.len());
+            u32::try_from(entries.len()).unwrap_or(u32::MAX)
+        }
+        Err(e) => {
+            eprintln!("talaria-desktop: {label}: removing banners: {e}");
+            0
+        }
+    }
+}
+
+/// Remove delivered and pending requests by identifier.
+fn remove(ids: &[String]) {
+    let ids: Vec<Retained<NSString>> = ids.iter().map(|id| NSString::from_str(id)).collect();
+    let ids = NSArray::from_retained_slice(&ids);
+    let center = center();
+    center.removeDeliveredNotificationsWithIdentifiers(&ids);
+    center.removePendingNotificationRequestsWithIdentifiers(&ids);
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    /// `CGEventSourceSecondsSinceLastEventType(CGEventSourceStateID,
+    /// CGEventType)`.
+    fn CGEventSourceSecondsSinceLastEventType(state: i32, event: u32) -> f64;
+}
+
+/// `kCGEventSourceStateCombinedSessionState`: every input source of the
+/// login session.
+const COMBINED_SESSION_STATE: i32 = 0;
+/// `kCGAnyInputEventType` (`~0`).
+const ANY_INPUT_EVENT: u32 = u32::MAX;
+
+/// Milliseconds since the last input of any kind in this login session.
+pub async fn os_idle() -> Option<u64> {
+    // SAFETY: a pure query with two plain values; no pointers.
+    let secs =
+        unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT_EVENT) };
+    (secs.is_finite() && secs >= 0.0).then_some((secs * 1000.0) as u64)
+}
+
 fn legacy_status() -> OsStatus {
     OsStatus {
         backend: LEGACY.into(),
@@ -430,6 +488,8 @@ pub fn selftest() -> serde_json::Value {
             "bundleId": bundle_id(),
             "authorization": "n/a",
             "post": "skipped: the legacy center waits on a run loop this self-test does not run",
+            "close": "skipped: the legacy center cannot remove a banner",
+            "osIdle": tauri::async_runtime::block_on(os_idle()),
             "background": "menu-bar",
         });
     }
@@ -453,11 +513,17 @@ pub fn selftest() -> serde_json::Value {
         Ok(()) => "ok".to_string(),
         Err(e) => format!("error: {e}"),
     };
+    // The removal the read-sync uses, on the self-test's own identifier.
+    // UN's remove answers nothing: a call that returns is "ok".
+    remove(&["main/selftest".to_string()]);
+    let close = "ok";
     serde_json::json!({
         "backend": "un",
         "bundleId": bundle_id(),
         "authorization": authorization,
         "post": posted,
+        "close": close,
+        "osIdle": tauri::async_runtime::block_on(os_idle()),
         "background": "menu-bar",
     })
 }
