@@ -219,6 +219,19 @@ describe('sw push', () => {
     expect(shown).toEqual([])
   })
 
+  it('always shows a per-device test push, even over a focused visible window', async () => {
+    const w = win(`${ORIGIN}/home`, true)
+    w.focused = true
+    w.visibilityState = 'visible'
+    windows = [w]
+    await push({ id: ROW, kind: 'test', title: 'Test notification', href: '', createdAt: '2026-10-31T12:00:00.000Z' })
+    expect(shown).toEqual([{ title: 'Test notification', tag: ROW }])
+    // …and an ordinary row still is not.
+    shown.length = 0
+    await push({ id: ROW, kind: 'dm', title: 'Bob', href: '/comms', createdAt: '2026-10-31T12:00:01.000Z' })
+    expect(shown).toEqual([])
+  })
+
   it('with no window, shows an unseen row once, under its own tag', async () => {
     await push({ id: ROW, title: 'Ada mentioned you', href: '/boards', createdAt: '2026-10-31T12:00:00.000Z' })
     expect(shown).toEqual([{ title: 'Ada mentioned you', tag: ROW }])

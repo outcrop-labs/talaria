@@ -151,7 +151,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | [`RELEASES/pre-alpha.md`](./RELEASES/pre-alpha.md) | The pre-alpha release notes |
 | [`docs/BACKUPS.md`](./docs/BACKUPS.md) | What a snapshot contains, how to take one, and how to restore |
 | [`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md) | How secrets are protected, and the one rule that keeps them recoverable |
-| [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md) | How a notification reaches a person: the row, the live stream, toasts, OS banners, Web Push, the desktop shell, the click — the shared contracts and troubleshooting |
+| [`docs/NOTIFICATIONS.md`](./docs/NOTIFICATIONS.md) | How a notification reaches a person: the row, the live stream, toasts, OS banners, Web Push, the desktop shell, the click — the shared contracts and troubleshooting; the wave-2 contract (I-10 … I-24) and each stream's doc are in [`docs/notifications/`](./docs/notifications/contract.md) |
 | [`docs/ONBOARDING.md`](./docs/ONBOARDING.md) | Domains, sign-up, email, invites |
 | [`docs/PERMISSIONS.md`](./docs/PERMISSIONS.md) | The permission model |
 | [`docs/GOOGLE-WORKSPACE.md`](./docs/GOOGLE-WORKSPACE.md) | Google Workspace export |

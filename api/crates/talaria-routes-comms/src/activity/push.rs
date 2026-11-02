@@ -2,9 +2,11 @@
 // instance's VAPID public key (what pushManager.subscribe wants as
 // applicationServerKey); POST /subscribe files a device browser's
 // subscription (the push service's endpoint plus the two key halves RFC 8291
-// encrypts against); POST /unsubscribe retires one. The server's half —
-// keypair custody, encryption, delivery, pruning — is src/push.rs; this file
-// is only the door.
+// encrypts against, and the User-Agent that names it in the devices list);
+// POST /unsubscribe retires one; GET /devices lists the caller's own device
+// browsers for the status panel and DELETE /devices/{id} retires one of them.
+// The server's half — keypair custody, encryption, delivery, pruning — is
+// talaria-push; this file is only the door.
 //
 // The endpoint is validated to an https URL because the push services'
 // own contract says so (an http "endpoint" is not a push service, it is a
@@ -13,8 +15,8 @@
 // weight the delivery loop would only prune later.
 
 use axum::Json;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -139,13 +141,21 @@ pub async fn subscribe(
     // A re-file of the same keys keeps its failure count (every boot re-files,
     // and a row the service keeps refusing must still reach its prune); new
     // keys are a new subscription and start clean.
+    // The User-Agent names the device in the devices list (≤ 300 chars, no
+    // control characters); a re-file without one keeps the name it had.
+    let user_agent = talaria_push::stored_user_agent(
+        headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok()),
+    );
     if let Err(e) = sqlx::query(
-        "insert into push_subscriptions (user_id, endpoint, p256dh, auth, session_hash) \
-         values ($1::uuid, $2, $3, $4, $5) \
+        "insert into push_subscriptions (user_id, endpoint, p256dh, auth, session_hash, user_agent) \
+         values ($1::uuid, $2, $3, $4, $5, $6) \
          on conflict (endpoint) do update \
          set user_id = excluded.user_id, p256dh = excluded.p256dh, \
              auth = excluded.auth, last_seen_at = now(), \
              session_hash = excluded.session_hash, \
+             user_agent = coalesce(excluded.user_agent, push_subscriptions.user_agent), \
              failures = case when push_subscriptions.p256dh = excluded.p256dh \
                               and push_subscriptions.auth = excluded.auth \
                              then push_subscriptions.failures else 0 end",
@@ -155,6 +165,7 @@ pub async fn subscribe(
     .bind(&sub.p256dh)
     .bind(&sub.auth)
     .bind(session_hash_of(&headers))
+    .bind(user_agent)
     .execute(&state.pg)
     .await
     {
@@ -196,6 +207,44 @@ pub async fn unsubscribe(
         ));
     }
     Ok(Json(json!({ "ok": true })).into_response())
+}
+
+/// GET /api/push/devices — the caller's own device browsers, newest first:
+/// `{devices: [{id, label, createdAt, lastSeenAt, lastAttemptAt, lastStatus,
+/// lastError, failures, thisSession}]}`. `lastError` is plain text of at most
+/// 120 characters — a push service's answer is whatever it chose to send.
+pub async fn devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    let hash = session_hash_of(&headers);
+    match talaria_push::list_devices(&state.pg, &user.id, hash.as_deref()).await {
+        Ok(list) => Ok(Json(json!({
+            "devices": list.iter().map(talaria_push::Device::to_wire).collect::<Vec<_>>(),
+        }))
+        .into_response()),
+        Err(e) => Ok(internal("[push/devices] the devices read failed", e)),
+    }
+}
+
+/// DELETE /api/push/devices/{id} — retire one of the caller's own device
+/// browsers. 404 when no device of theirs has that id: another person's
+/// device and no device at all answer the same.
+pub async fn device_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if !talaria_body::zod_uuid_ok(&id) {
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
+    }
+    match talaria_push::delete_device(&state.pg, &user.id, &id).await {
+        Ok(true) => Ok(Json(json!({ "ok": true })).into_response()),
+        Ok(false) => Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => Ok(internal("[push/devices] the device delete failed", e)),
+    }
 }
 
 #[cfg(test)]

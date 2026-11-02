@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-33 routes.
+34 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -27,6 +27,7 @@
 | [`/api/channels/{id}/messages/{msgId}`](#apichannelsidmessagesmsgid) | PATCH | `session` |
 | [`/api/channels/{id}/messages/{msgId}`](#apichannelsidmessagesmsgid) | DELETE | `session` |
 | [`/api/channels/{id}/messages/{msgId}/reactions`](#apichannelsidmessagesmsgidreactions) | POST | `dual` |
+| [`/api/channels/{id}/notify`](#apichannelsidnotify) | PUT | `session` |
 | [`/api/channels/{id}/plan`](#apichannelsidplan) | GET | `session` |
 | [`/api/channels/{id}/plan`](#apichannelsidplan) | POST | `session` |
 | [`/api/channels/{id}/plan`](#apichannelsidplan) | PATCH | `session` |
@@ -246,6 +247,26 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_messages_msgid_r
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `emoji` | `string(1, 16)` |  |
+
+## `/api/channels/{id}/notify`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_notify.rs`](../../api/crates/talaria-routes-comms/src/comms/channels_id_notify.rs)
+
+> /api/channels/{id}/notify.
+> PUT { level?: "all"|"mentions"|"none"|null, mutedUntil?: ISO|null } → the
+> caller's own notify level for one channel and a timed mute, on their own
+> membership row: { ok, level, mutedUntil }. `level` answers the level that
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `session` | [body](#put-apichannelsidnotify-body) | `{ok, level, mutedUntil}` | 200, 400, 403, 409 | — |
+
+### PUT `/api/channels/{id}/notify` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/channels/{id}/plan`
 

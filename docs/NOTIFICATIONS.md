@@ -196,6 +196,21 @@ is older.
 | **I-8** | A known id with a later `createdAt` is a re-alert: the same tag, `renotify`. |
 | **I-9** | `{type:"notifications","unread":N}` on `user:<id>` after any mark-read; consumers that do not know it ignore it. |
 
+## Wave 2
+
+The second round of the notification work builds on one contract and splits into six
+streams. Each has its own doc; the shared interfaces (I-10 … I-24), the schema and its
+measured cost, and the wire changes are in [the contract](./notifications/contract.md).
+
+- [The contract](./notifications/contract.md): the seq cursor, the row and event wire v2,
+  the class registry, prefs v2, DND, presence, the ack, the devices list.
+- [Delivery engine](./notifications/delivery.md): what is delivered where and when.
+- [The live stream and the inbox API](./notifications/live-and-inbox.md).
+- [Producers](./notifications/producers.md): coalescing, participants, channel levels.
+- [The web runtime](./notifications/web-runtime.md).
+- [The notification center](./notifications/center.md): the bell, the matrix, DND, the
+  status panel.
+
 ## Troubleshooting
 
 - **The bell says alerts are blocked.** Follow its steps: the browser's switch for this site

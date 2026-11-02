@@ -157,8 +157,10 @@ sw.addEventListener('push', (event: PushEvent) => {
       const version = n.createdAt || ''
       if (!isWebKit()) {
         const wins = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true })
-        // The person is looking at Talaria: the page toasts it.
-        if (wins.some((w) => w.focused && w.visibilityState === 'visible')) return
+        // The person is looking at Talaria: the page toasts it — except a
+        // per-device TEST push, which is always shown: its whole point is a
+        // banner on the device in front of you.
+        if (n.kind !== 'test' && wins.some((w) => w.focused && w.visibilityState === 'visible')) return
         // This version is already bannered (the leader tab got there first).
         const seen = await bannered(n.id)
         if (seen && (!version || seen.v >= version)) return

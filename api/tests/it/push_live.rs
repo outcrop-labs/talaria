@@ -103,6 +103,7 @@ fn note(id: &str) -> PushNote {
         kind: "agent-reply".into(),
         renotify: false,
         created_at: "2026-10-31T12:00:00.000Z".into(),
+        ..Default::default()
     }
 }
 

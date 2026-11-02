@@ -303,6 +303,7 @@ async fn a_notification_event_is_id_shaped_too() {
         "user-3",
         &UserEvent::Notification {
             notification_id: "n-1".into(),
+            seq: None,
         },
     );
 
@@ -365,6 +366,7 @@ async fn a_stream_opens_with_connected_then_frames_each_payload_as_sse_data() {
         "user-1",
         &UserEvent::Notification {
             notification_id: "n-1".into(),
+            seq: None,
         },
     );
     // End the subscription so the body can finish; the frames already

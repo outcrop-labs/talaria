@@ -347,6 +347,19 @@ pub fn router(state: AppState) -> Router {
                 .patch(talaria_routes_comms::activity::notifications::patch)
                 .fallback(|| async { method_not_allowed("GET, PUT, PATCH") }),
         )
+        // The notification contract's doors (docs/notifications/contract.md):
+        // a client's ack that it surfaced rows (I-18), and the per-device test
+        // push (a stub that answers 501 until W2-E, rate-limited already).
+        .route(
+            "/api/notifications/ack",
+            post(talaria_routes_comms::activity::notifications_ack::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/notifications/test",
+            post(talaria_routes_comms::activity::notifications_test::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/unreads",
             get(talaria_routes_comms::activity::unreads::get).fallback(|| async { method_not_allowed("GET") }),
@@ -366,6 +379,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/push/unsubscribe",
             post(talaria_routes_comms::activity::push::unsubscribe).fallback(|| async { method_not_allowed("POST") }),
+        )
+        // The caller's own device browsers, for the status panel.
+        .route(
+            "/api/push/devices",
+            get(talaria_routes_comms::activity::push::devices).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/push/devices/{id}",
+            delete(talaria_routes_comms::activity::push::device_delete)
+                .fallback(|| async { method_not_allowed("DELETE") }),
         )
         .route(
             "/api/history",
@@ -435,6 +458,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/channels/{id}/typing",
             post(talaria_routes_comms::comms::channels_id_typing::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        // The caller's notify level and timed mute for one channel — their own
+        // membership row, UPDATE only (C24).
+        .route(
+            "/api/channels/{id}/notify",
+            put(talaria_routes_comms::comms::channels_id_notify::put).fallback(|| async { method_not_allowed("PUT") }),
         )
         .route(
             "/api/channels/{id}/plan",
@@ -910,8 +939,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/me/presence",
-            put(talaria_routes_integrations::account::me_presence::put)
-                .fallback(|| async { method_not_allowed("PUT") }),
+            get(talaria_routes_integrations::account::me_presence::get)
+                .put(talaria_routes_integrations::account::me_presence::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workflows/{id}",

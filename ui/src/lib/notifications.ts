@@ -11,12 +11,18 @@ import { errorMessage, getJson, patchJson, putJson } from '@/lib/fetch-json'
 import { toastError } from '@/lib/toast.svelte'
 import type { DigestPref, NotifyDelivery, NotifyPrefs, NotifySettings, Notification } from './notify-classes'
 import type { PromptMemory } from './notify-prompt'
+import type { NotificationsPayloadV2Fields } from './notify-wire'
 
 export * from './notify-classes'
 
 // ── Queries ──────────────────────────────────────────────────────────────────
 
-export interface NotificationsPayload extends NotifySettings {
+/** The bell's one read. Since the notification contract it also carries the
+ *  v2 fields (`NotificationsPayloadV2Fields`: unreadForYou, seq, classes,
+ *  channels, dnd, emailFrequency, features, next) and each row carries the v2
+ *  row fields (`NotificationRowV2` in notify-wire.ts) — all optional here, and
+ *  read by nothing yet: the wave-2 streams gate on `features`. */
+export interface NotificationsPayload extends NotifySettings, NotificationsPayloadV2Fields {
   notifications: Notification[]
   unread: number
   delivery: NotifyDelivery

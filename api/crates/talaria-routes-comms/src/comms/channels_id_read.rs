@@ -2,8 +2,9 @@
 // POST { seq } → advance the caller's read cursor (drives unread badges).
 // A cursor that reaches the channel's newest message also clears the bell
 // rows pointing at the channel — its DM row and any @mention in it — and
-// tells the person's other tabs (`{type:"notifications"}`), the same end a
-// conversation read gives an agent thread's rows.
+// tells the person's other tabs and devices which rows (`{type:
+// "notifications", readIds}`), the same end a conversation read gives an
+// agent thread's rows.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -13,7 +14,7 @@ use serde_json::json;
 use talaria_body::{NumKind, number_member};
 use talaria_channels::{channel_role, mark_channel_read};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::{NotifyDeps, clear_channel_notifications, publish_unread};
+use talaria_notify::{NotifyDeps, clear_channel_notifications, publish_read};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -49,7 +50,7 @@ pub async fn post(
     // newest complete message, thread replies included, the same messages
     // the unread badge counts. A failed sweep must not fail the read: the
     // cursor advanced, and the rows still clear from the bell.
-    let mut cleared = 0;
+    let mut cleared: Vec<String> = Vec::new();
     let caught_up: Result<bool, sqlx::Error> = sqlx::query_scalar(
         "select coalesce((select last_read_seq from channel_members \
                           where channel_id = $1::uuid and user_id = $2::uuid), 0) \
@@ -68,9 +69,9 @@ pub async fn post(
         Ok(false) => {}
         Err(e) => tracing::error!("[channels] caught-up read on read-cursor failed: {e}"),
     }
-    if cleared > 0 {
+    if !cleared.is_empty() {
         let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
-        publish_unread(&notify, &user.id).await;
+        publish_read(&notify, &user.id, &cleared, false).await;
     }
-    Ok(Json(json!({ "ok": true, "cleared": cleared })).into_response())
+    Ok(Json(json!({ "ok": true, "cleared": cleared.len() })).into_response())
 }

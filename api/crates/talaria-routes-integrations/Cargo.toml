@@ -20,6 +20,7 @@ talaria-error = { workspace = true }
 talaria-git-hosts = { workspace = true }
 talaria-invites = { workspace = true }
 talaria-me = { workspace = true }
+talaria-notify = { workspace = true }
 talaria-org-domains = { workspace = true }
 talaria-params = { workspace = true }
 talaria-password = { workspace = true }

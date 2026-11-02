@@ -27,6 +27,7 @@
 | [`/api/me/events`](#apimeevents) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | PUT | `session` |
+| [`/api/me/presence`](#apimepresence) | GET | `session` |
 | [`/api/me/presence`](#apimepresence) | PUT | `session` |
 | [`/api/me/sent`](#apimesent) | GET | `session` |
 | [`/api/me/threads`](#apimethreads) | GET | `session` |
@@ -254,14 +255,24 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_mcp.rs`](../../a
 
 Source: [`api/crates/talaria-routes-integrations/src/account/me_presence.rs`](../../api/crates/talaria-routes-integrations/src/account/me_presence.rs)
 
-> PUT /api/me/presence. The signed-in person's heartbeat: the client calls it
-> every 30s while a Talaria tab is visible, and it sets
-> `user:presence:{id}` with a 90s TTL. `GET /api/users` reads those keys to
-> mark people online. Answers { ok: true }.
+> /api/me/presence. The signed-in person's heartbeat.
+>
+> PUT with NO BODY (or one without a `clientId`) is wave 1's online ping,
+> exactly: the client calls it every
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `session` | — | `{ok}` | 200 | — |
+| GET | `session` | — | `…` | 200 | — |
+| PUT | `session` | [body](#put-apimepresence-body) | `{ok, looking, active}` | 200, 400 | — |
+
+### PUT `/api/me/presence` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `clientId` | `string(8, 64)` |  |
+| `kind` | `enum(web|desktop)` |  |
+| `state` | `enum(looking|active|idle|hidden)` |  |
 
 ## `/api/me/sent`
 

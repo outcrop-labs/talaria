@@ -4507,6 +4507,72 @@ alter table tasks drop column if exists conversation_id`,
      add column if not exists last_attempt_at timestamptz`,
   `create index if not exists push_subscriptions_session_idx
      on push_subscriptions (session_hash) where session_hash is not null`,
+  // ── The notification contract (2026-10-31) ───────────────────────────────
+  // Wave 2's one DDL block (docs/notifications/contract.md). NO BACKFILL, on
+  // purpose: `seq` stays NULL on every row filed before it (those rows keep
+  // wave 1's arrival rule), the class is derived from `kind` at read time (a
+  // stored class would need a full-table UPDATE and go stale on a remap), and
+  // an open pre-contract row joins a group by adoption at write time. So every
+  // ADD COLUMN below is metadata-only on PG 11+ (constant or NULL defaults),
+  // and the cost is five CREATE INDEX scans, each under a SHARE lock that
+  // holds writers — measured at 1,000,000 rows / 200 users before this
+  // landed: under a second each, the whole block under 4 s, the longest
+  // writer stall under 0.9 s.
+  //
+  // 1 · users.notify_seq — the per-user, COMMIT-ORDERED cursor. Every alerting
+  //     write bumps it in its own transaction (the row lock serializes one
+  //     person's writers), so a snapshot that sees notify_seq = N sees every
+  //     row with seq <= N.
+  `alter table users add column if not exists notify_seq bigint not null default 0`,
+  // 2 · the row, v2: its seq, the coalescing key and count, the alert level
+  //     ('banner' | 'feed'; NULL = a legacy row = banner), who and what it is
+  //     about, Done (archived_at), the client ack (surfaced_at), and the
+  //     due/done pairs the deferred push and the missed-activity mail scan.
+  `alter table notifications
+     add column if not exists seq bigint,
+     add column if not exists group_key text,
+     add column if not exists count int not null default 1,
+     add column if not exists updated_at timestamptz,
+     add column if not exists alert text,
+     add column if not exists actor_kind text,
+     add column if not exists actor_id text,
+     add column if not exists actor_label text,
+     add column if not exists entity_type text,
+     add column if not exists entity_id text,
+     add column if not exists archived_at timestamptz,
+     add column if not exists surfaced_at timestamptz,
+     add column if not exists push_due_at timestamptz,
+     add column if not exists pushed_at timestamptz,
+     add column if not exists email_due_at timestamptz,
+     add column if not exists emailed_at timestamptz,
+     add column if not exists email_attempts int not null default 0`,
+  // 3 · seq is unique per person — and a writer bug that reused one fails loud.
+  `create unique index if not exists notifications_user_seq_idx
+     on notifications (user_id, seq) where seq is not null`,
+  // 4 · the coalescing target: at most one OPEN row per (person, group key).
+  //     A read or archived row leaves the predicate, so the next write files
+  //     a fresh row.
+  `create unique index if not exists notifications_open_group_idx
+     on notifications (user_id, group_key)
+     where group_key is not null and read_at is null and archived_at is null`,
+  // 5 · resolve_entity across recipients (an approval decided, an MCP server
+  //     back up).
+  `create index if not exists notifications_entity_open_idx
+     on notifications (entity_type, entity_id) where entity_id is not null and read_at is null`,
+  // 6, 7 · the two due-work scans.
+  `create index if not exists notifications_push_due_idx
+     on notifications (push_due_at) where push_due_at is not null and pushed_at is null`,
+  `create index if not exists notifications_email_due_idx
+     on notifications (email_due_at) where email_due_at is not null and emailed_at is null`,
+  // 8 · a channel's notify level (NULL = the channel type's default: DMs all,
+  //     channels mentions) and its timed mute.
+  `alter table channel_members
+     add column if not exists notify_level text,
+     add column if not exists muted_until timestamptz`,
+  // 9 · a device's name in the devices list.
+  //
+  // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
+  `alter table push_subscriptions add column if not exists user_agent text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

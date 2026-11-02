@@ -6214,6 +6214,7 @@ dependencies = [
 name = "talaria-notify"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "futures-util",
  "redis",
  "regex",
@@ -6230,6 +6231,7 @@ dependencies = [
  "talaria-scheduler",
  "talaria-secretbox",
  "talaria-settings",
+ "talaria-tz",
  "tokio",
  "tracing",
  "uuid",
@@ -7043,6 +7045,7 @@ dependencies = [
  "talaria-git-hosts",
  "talaria-invites",
  "talaria-me",
+ "talaria-notify",
  "talaria-org-domains",
  "talaria-params",
  "talaria-password",
