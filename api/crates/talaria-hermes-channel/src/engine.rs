@@ -493,7 +493,9 @@ impl<'a> Engine<'a> {
         if let Some(open) = &open {
             let in_hand = open.agent.is_some();
             let gives_way = match open.kind {
-                RolloutKind::Catchup => !in_hand && state.pinned.is_none() && stable_ok,
+                RolloutKind::Catchup => {
+                    !in_hand && !open.drift && state.pinned.is_none() && stable_ok
+                }
                 RolloutKind::Upgrade => {
                     !in_hand && !open.forced && stable.as_deref().is_some_and(|d| d != open.digest)
                 }
@@ -516,20 +518,26 @@ impl<'a> Engine<'a> {
             .filter(|o| o.kind == RolloutKind::Upgrade && o.digest != current)
             .filter(|o| digests.iter().any(|(_, d)| d == &o.digest))
             .map(|o| o.digest.clone());
+        // A container off its image is put on it before anything newer: on
+        // a host upgraded from a release before the channel, that moves the
+        // agents onto the pin this render was checked against first, then
+        // the fleet follows stable.
+        let mut drift = false;
         let mut next = match &state.pinned {
             _ if withdrawn.is_some() => Some((current.clone(), RolloutKind::Rollback)),
             Some(p) if p != &current || digests.iter().any(|(_, d)| d != p) => {
                 Some((p.clone(), RolloutKind::Pin))
             }
             Some(_) => None,
+            None if open.is_none() && self.drifted(&state, &digests).await? => {
+                drift = true;
+                Some((current.clone(), RolloutKind::Catchup))
+            }
             None if stable_ok => Some((stable.clone().expect("stable_ok"), RolloutKind::Upgrade)),
             None if digests
                 .iter()
                 .any(|(a, d)| d != &current && behind(&a.slug)) =>
             {
-                Some((current.clone(), RolloutKind::Catchup))
-            }
-            None if open.is_none() && self.drifted(&state, &digests).await? => {
                 Some((current.clone(), RolloutKind::Catchup))
             }
             None => None,
@@ -577,6 +585,9 @@ impl<'a> Engine<'a> {
                         format!("moving the agents already on it back to {label} first")
                     }
                     RolloutKind::Pin => format!("pinned to {label}: moving the fleet onto it"),
+                    RolloutKind::Catchup if drift => format!(
+                        "an agent's container is not on its image (a Hermes from before the channel, or a roll that did not land): moving it onto {label} first"
+                    ),
                     RolloutKind::Catchup => {
                         format!("moving the agents an earlier rollout left behind onto {label}")
                     }
@@ -595,6 +606,7 @@ impl<'a> Engine<'a> {
                     // A pin is an admin's action, and a rollback is the way
                     // off a release: both run now.
                     forced: matches!(kind, RolloutKind::Pin | RolloutKind::Rollback),
+                    drift,
                     ..Default::default()
                 })
             }
@@ -661,9 +673,19 @@ impl<'a> Engine<'a> {
         .await
         .map_err(|e| e.to_string())?;
         let current = self.current(state);
+        // The agents the last rollout left behind (busy all window) are the
+        // next rollout's to move, not a reason for another catch-up: one
+        // agent busy every night never holds the fleet off stable.
+        let left = state
+            .rollout
+            .as_ref()
+            .filter(|r| !r.open())
+            .map(|r| r.deferred.clone())
+            .unwrap_or_default();
         let mut ids: std::collections::HashMap<String, Option<String>> = Default::default();
         for (agent, d) in digests {
-            if state.catchup_failed.get(&agent.slug) == Some(&current) {
+            if state.catchup_failed.get(&agent.slug) == Some(&current) || left.contains(&agent.slug)
+            {
                 continue;
             }
             let Ok(snap) = self.ops.snapshot(agent).await else {
@@ -1284,6 +1306,39 @@ impl<'a> Engine<'a> {
         .await
     }
 
+    /// The record of the image an agent's container runs, matched by
+    /// docker's image id — the digest itself only on the containerd image
+    /// store; on the classic store it is the config's id, so each candidate
+    /// (the agent's assignment, the rollout's `from`, the fleet's current) is
+    /// resolved and compared. None: an image no record describes.
+    async fn running_record(
+        &self,
+        r: &Rollout,
+        agent: &ChannelAgent,
+        image: &str,
+    ) -> Option<ImageRecord> {
+        let mut candidates = vec![image.to_string()];
+        if let Ok(assigned) = images::assignments(self.pg).await {
+            candidates.extend(assigned.get(&agent.id).cloned());
+        }
+        candidates.extend(r.from.clone());
+        if let Ok(state) = self.load().await {
+            candidates.push(self.current(&state));
+        }
+        candidates.dedup();
+        for d in candidates {
+            let Some(rec) = self.record(&d).await.ok().flatten() else {
+                continue;
+            };
+            if rec.digest == image
+                || self.ops.image_id(&rec.image_ref()).await.ok().as_deref() == Some(image)
+            {
+                return Some(rec);
+            }
+        }
+        None
+    }
+
     /// One agent onto the rollout's image.
     async fn move_agent(
         &self,
@@ -1328,10 +1383,8 @@ impl<'a> Engine<'a> {
             // host upgraded from main runs, an operator's) may predate the
             // fields Talaria reads; its answer is read for what it has.
             let lenient = !self
-                .record(&snap.image)
+                .running_record(r, agent, &snap.image)
                 .await
-                .ok()
-                .flatten()
                 .is_some_and(|rec| rec.contract_checked());
             match self.ops.busy(agent, lenient).await {
                 Ok(Busy::Working(why)) => return Ok(Move::Skipped(why)),

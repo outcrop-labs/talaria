@@ -301,6 +301,11 @@ mod tests {
         include_str!("../tests/fixtures/hermes-v0.22.6-health-detailed.json");
     const HEALTH_V0224: &str =
         include_str!("../tests/fixtures/hermes-v0.22.4-health-detailed.json");
+    /// v0.21.4, the `:latest` main left its agents on (2026-11-03, a stack
+    /// on main's 805e6799): no `api_server`, but `background_queues` with
+    /// `active_api_runs`.
+    const HEALTH_V0214: &str =
+        include_str!("../tests/fixtures/hermes-v0.21.4-health-detailed.json");
     const JOBS_RUNNING: &str = include_str!("../tests/fixtures/hermes-v0.22.6-jobs-running.json");
     const JOBS_RUNNING_V0224: &str =
         include_str!("../tests/fixtures/hermes-v0.22.4-jobs-running.json");
@@ -331,6 +336,25 @@ mod tests {
             ..Default::default()
         };
         assert!(why_busy(call).unwrap().contains("finished a model call"));
+    }
+
+    #[test]
+    fn a_pre_channel_hermes_is_unknown_strictly_and_read_for_what_it_has_leniently() {
+        let mut v = json(HEALTH_V0214);
+        let strict = hermes_busy(&v, false).unwrap_err();
+        assert!(strict.contains("api_server.active_runs"), "{strict}");
+        assert_eq!(hermes_busy(&v, true), Ok(None), "idle as captured");
+        v["readiness"]["checks"]["background_queues"]["active_api_runs"] = serde_json::json!(1);
+        assert_eq!(
+            hermes_busy(&v, true).unwrap().as_deref(),
+            Some("Hermes reports 1 turn in flight"),
+            "its queue count still says a turn is in flight"
+        );
+        v["readiness"]["checks"]["background_queues"]["active_api_runs"] = serde_json::json!(0);
+        v["gateway_busy"] = serde_json::json!(true);
+        assert!(hermes_busy(&v, true).unwrap().is_some());
+        // Lenient is not blind: an answer that is not an object stays unknown.
+        assert!(hermes_busy(&serde_json::json!("ok"), true).is_err());
     }
 
     #[test]

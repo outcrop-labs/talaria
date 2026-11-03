@@ -731,6 +731,12 @@ pub struct Rollout {
     /// Roll now: run it outside the maintenance window and before its
     /// minimum time on stable.
     pub forced: bool,
+    /// A catch-up opened because a container was off its image (the
+    /// `:latest` a release before the channel left, a roll that did not
+    /// land): it never gives way to a newer release, so the fleet is on
+    /// the image the render was checked against before it follows stable.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub drift: bool,
     /// When the canary passed.
     pub canary_ok_at: Option<i64>,
     /// The agent rolling now (set before its roll, in the same write as its

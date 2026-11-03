@@ -392,6 +392,10 @@ struct Fake {
     roll_effect: Mutex<HashMap<String, VecDeque<RollEffect>>>,
     /// The room each preparation was asked to keep.
     rooms: Mutex<Vec<Room>>,
+    /// Docker's classic image store: an image's id is not its digest.
+    classic: AtomicBool,
+    /// Each busy question: (agent, lenient).
+    asked: Mutex<Vec<(String, bool)>>,
     window: AtomicBool,
     stalled: AtomicBool,
     found: Mutex<Option<Found>>,
@@ -467,6 +471,8 @@ impl Fake {
             stopped: Mutex::new(HashSet::new()),
             roll_effect: Mutex::new(HashMap::new()),
             rooms: Mutex::new(Vec::new()),
+            classic: AtomicBool::new(false),
+            asked: Mutex::new(Vec::new()),
             window: AtomicBool::new(true),
             stalled: AtomicBool::new(false),
             found: Mutex::new(None),
@@ -528,6 +534,15 @@ impl Fake {
         s.restart_count += 3;
     }
     /// The container runs `digest` (it was created on it).
+    /// Docker's id for an image: its digest on the containerd store, the
+    /// config's id (here: another string) on the classic one.
+    fn id_of(&self, digest: &str) -> String {
+        if self.classic.load(Ordering::SeqCst) {
+            format!("sha256:c0{}", &digest[9..])
+        } else {
+            digest.to_string()
+        }
+    }
     fn runs(&self, slug: &str, digest: &str) {
         let mut c = self.containers.lock().unwrap();
         c.get_mut(slug).unwrap().image = digest.to_string();
@@ -608,7 +623,11 @@ impl FleetOps for Fake {
         })
     }
     fn snapshot<'a>(&'a self, a: &'a ChannelAgent) -> BoxFuture<'a, Result<Snapshot, String>> {
-        Box::pin(async move { Ok(self.containers.lock().unwrap()[&a.slug].clone()) })
+        Box::pin(async move {
+            let mut s = self.containers.lock().unwrap()[&a.slug].clone();
+            s.image = self.id_of(&s.image);
+            Ok(s)
+        })
     }
     fn image_id<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
@@ -621,7 +640,7 @@ impl FleetOps for Fake {
                     "Error response from daemon: No such image: {image}"
                 ));
             }
-            Ok(digest)
+            Ok(self.id_of(&digest))
         })
     }
     fn roll<'a>(&'a self, a: &'a ChannelAgent, start: bool) -> BoxFuture<'a, Result<(), Fault>> {
@@ -721,9 +740,10 @@ impl FleetOps for Fake {
     fn busy<'a>(
         &'a self,
         a: &'a ChannelAgent,
-        _lenient: bool,
+        lenient: bool,
     ) -> BoxFuture<'a, Result<Busy, String>> {
         Box::pin(async move {
+            self.asked.lock().unwrap().push((a.slug.clone(), lenient));
             let held = self
                 .busy_hold
                 .lock()
@@ -2524,5 +2544,114 @@ async fn an_upgrade_that_gives_way_takes_the_agents_it_moved_back() {
         "then the hotfix waits"
     );
     settled(&w).await;
+    w.done().await;
+}
+
+/// Surface B1, on docker's classic image store (an image's id is not its
+/// digest): an agent on an inspected image is read strictly, one on an image
+/// no record describes leniently.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn the_running_image_is_found_by_its_docker_id_on_either_store() {
+    for classic in [false, true] {
+        let w = World::new(if classic { "idclassic" } else { "idcontainerd" }, 2).await;
+        let t = tuning();
+        w.fake.classic.store(classic, Ordering::SeqCst);
+        // The fleet's image passed the contract check; agent 1 runs one no
+        // record describes (a pre-channel :latest).
+        sqlx::query(
+            "update hermes_images set inspect = inspect || '{\"contract\": {\"problems\": []}}'::jsonb where digest = $1",
+        )
+        .bind(&w.old)
+        .execute(&w.pg)
+        .await
+        .unwrap();
+        w.fake.runs(&w.slug(1), &digest(&w.tag, 9));
+        for _ in 0..4 {
+            w.step(&t).await;
+            w.fake.advance(11 * MIN);
+        }
+        let asked = w.fake.asked.lock().unwrap().clone();
+        let first = |slug: &str| asked.iter().find(|(s, _)| s == slug).map(|(_, l)| *l);
+        assert_eq!(
+            first(&w.slug(0)),
+            Some(false),
+            "classic {classic}: inspected, read strictly: {asked:?}"
+        );
+        assert_eq!(
+            first(&w.slug(1)),
+            Some(true),
+            "classic {classic}: never inspected, read leniently: {asked:?}"
+        );
+        w.done().await;
+    }
+}
+
+/// Surface B1: a host upgraded from a release before the channel — agents on
+/// the `:latest` that release left, no channel state but the first check —
+/// moves them onto the fleet's image first, then follows stable.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_host_upgraded_from_main_moves_onto_the_pin_first_then_follows_stable() {
+    let w = World::new("frommain", 2).await;
+    let t = tuning();
+    let latest = digest(&w.tag, 9);
+    w.fake.runs(&w.slug(0), &latest);
+    w.fake.runs(&w.slug(1), &latest);
+    for _ in 0..12 {
+        w.step(&t).await;
+        w.fake.advance(11 * MIN);
+    }
+    let rolled = w.fake.rolled();
+    assert_eq!(
+        rolled,
+        vec![
+            (w.slug(0), w.old.clone()),
+            (w.slug(1), w.old.clone()),
+            (w.slug(0), w.new.clone()),
+            (w.slug(1), w.new.clone()),
+        ],
+        "the pin first, then stable"
+    );
+    assert_eq!(w.status_of(&w.new).await, Status::Good);
+    settled(&w).await;
+    w.done().await;
+}
+
+/// Surface B1: an agent on the pre-channel `:latest` that is busy every
+/// night is left for the next rollout, and the rest of the fleet still
+/// follows stable.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_agent_busy_every_night_does_not_hold_the_fleet_off_stable() {
+    let w = World::new("busydrift", 2).await;
+    let t = tuning();
+    let latest = digest(&w.tag, 9);
+    w.fake.runs(&w.slug(0), &latest);
+    w.fake
+        .busy
+        .lock()
+        .unwrap()
+        .insert(w.slug(0), "its scheduled job \"sweep\" is running".into());
+    for _ in 0..3 {
+        w.fake.window.store(true, Ordering::SeqCst);
+        for _ in 0..4 {
+            w.step(&t).await;
+            w.fake.advance(11 * MIN);
+        }
+        w.fake.window.store(false, Ordering::SeqCst);
+        for _ in 0..3 {
+            w.step(&t).await;
+            w.fake.advance(16 * MIN);
+        }
+        w.fake.advance(20 * 60 * MIN);
+    }
+    assert_eq!(
+        w.fake.on(&w.slug(1)),
+        w.new,
+        "the rest follows stable: {:?}",
+        w.fake.rolled()
+    );
+    assert_eq!(w.fake.on(&w.slug(0)), latest, "the busy one waits");
     w.done().await;
 }
