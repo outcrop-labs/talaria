@@ -125,11 +125,35 @@ pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
 // caller only waits on it.
 // The compose verbs take the service's lock inside that task, so the lock is
 // held for exactly the verb, whoever is still listening.
+//
+// THE CALLER THAT GIVES UP FIRST IS THE EDGE, NOT THE PROXY. Every real
+// instance sits behind a Cloudflare tunnel, and Cloudflare answers 524 for a
+// request whose origin has sent no response headers for 100 s. The bound was
+// sized for the app proxy's 300 s (210 s), so a verb that took 100–210 s —
+// the slow ones the 202 exists for: a cold pull of a new pin, a slow disk, a
+// health wait — reached the person as "request failed (524)" while it went
+// on and landed. The whole answer is now due inside the edge's 100 s.
+
+/// How long Cloudflare's edge, in front of every real instance, waits for a
+/// response's headers before it answers the browser 524 itself.
+pub const EDGE_CUTOFF: Duration = Duration::from_secs(100);
 
 /// How long a route waits for a fleet operation it spawned before answering
-/// with the state so far. Under the app proxy's 300 s, with room for the read
-/// of the container that answer carries (a patient inspect, 30 s).
-pub const ANSWER_WITHIN: Duration = Duration::from_secs(210);
+/// with the state so far. With [`CLOSING_READ`] after it the answer leaves
+/// within 85 s: inside Cloudflare's [`EDGE_CUTOFF`], with 15 s to spare for
+/// what the route did before it started waiting (its session and def reads)
+/// and for the hops to the edge.
+pub const ANSWER_WITHIN: Duration = Duration::from_secs(75);
+
+/// The bound on the read of the container a past-the-bound answer carries
+/// ([`observe_within`]). A slow daemon makes that read say "unknown" rather
+/// than push the answer past the edge; the roster's poll shows the rest.
+pub const CLOSING_READ: Duration = Duration::from_secs(10);
+
+// The whole answer, and its spare 15 s, inside Cloudflare's cutoff — a bound
+// sized for anything slower does not build.
+const _: () =
+    assert!(ANSWER_WITHIN.as_secs() + CLOSING_READ.as_secs() + 15 <= EDGE_CUTOFF.as_secs());
 
 /// What a bounded wait on a spawned fleet operation came to.
 #[derive(Debug, PartialEq, Eq)]
@@ -576,6 +600,24 @@ async fn observe_container(container: &str) -> Observed {
 /// What a department's managed container is doing right now.
 pub async fn observe(pg: &PgPool, department: &str) -> Observed {
     observe_container(&managed_container(pg, department).await).await
+}
+
+/// [`observe`], bounded whole — the slot read and the inspect: past `within`
+/// it is [`Observed::Unreadable`]. For the read an answer carries after it
+/// has already waited its bound ([`CLOSING_READ`]), where a patient read
+/// would push the answer past the edge.
+pub async fn observe_within(pg: &PgPool, department: &str, within: Duration) -> Observed {
+    bounded_read(observe(pg, department), within).await
+}
+
+/// A read of a container, or [`Observed::Unreadable`] once `within` passes.
+async fn bounded_read(
+    read: impl std::future::Future<Output = Observed>,
+    within: Duration,
+) -> Observed {
+    tokio::time::timeout(within, read)
+        .await
+        .unwrap_or(Observed::Unreadable)
 }
 
 /// Whether a verb's error is [`docker`]'s own deadline sentence, as it
@@ -1866,8 +1908,43 @@ mod tests {
         )
         .await;
         assert!(matches!(lost, Detached::Lost(_)), "{lost:?}");
-        // Under the app proxy's 300 s, with the closing read's 30 s besides.
-        const { assert!(ANSWER_WITHIN.as_secs() + 30 < 300) };
+    }
+
+    /// FLEET-2: the answer a slow verb gets is due inside Cloudflare's 100 s,
+    /// the bound's wait and the read it carries together. Sized for the app
+    /// proxy's 300 s it was 210 s plus a 30 s read, and the person got the
+    /// edge's 524 for a verb that went on and landed.
+    #[tokio::test]
+    async fn a_slow_verb_is_answered_inside_the_edges_cutoff() {
+        assert_eq!(EDGE_CUTOFF, Duration::from_secs(100), "Cloudflare's");
+        let whole = ANSWER_WITHIN + CLOSING_READ;
+        assert!(
+            whole + Duration::from_secs(15) <= EDGE_CUTOFF,
+            "a {}s answer is past the edge's {}s",
+            whole.as_secs(),
+            EDGE_CUTOFF.as_secs()
+        );
+        // The same shape at a scale a test can wait out: a verb that outlasts
+        // its bound, then a read of the container that hangs (a daemon on a
+        // saturated disk). The answer comes at the two bounds, not at either
+        // of theirs.
+        let (bound, read) = (Duration::from_millis(60), Duration::from_millis(40));
+        let began = std::time::Instant::now();
+        let verb = run_detached(tokio::time::sleep(Duration::from_secs(30)), bound).await;
+        assert_eq!(verb, Detached::StillRunning);
+        let hung = async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Observed::Absent
+        };
+        assert_eq!(bounded_read(hung, read).await, Observed::Unreadable);
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "answered after {:?}",
+            began.elapsed()
+        );
+        // A read that answers in time is the read's own.
+        let quick = async { Observed::Absent };
+        assert_eq!(bounded_read(quick, read).await, Observed::Absent);
     }
 
     #[test]
