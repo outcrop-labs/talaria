@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { containersOf, editNotApplied, editStillApplying, ROLL_STILL_STARTING, rollInProgress, rollRowsBySlug, type AgentContainers, type DepartmentShare, type FleetRollRow } from './fleet-defs'
+import { containersOf, editNotApplied, hiresToShow, editStillApplying, ROLL_STILL_STARTING, rollInProgress, rollRowsBySlug, type AgentContainers, type AgentHire, type DepartmentShare, type FleetRollRow } from './fleet-defs'
 
 // Containers are found by department, and a department is one container. Where
 // two agents hold one (a pair from before a department became one agent's), the
@@ -209,5 +209,28 @@ describe('rollRowsBySlug', () => {
   it('is empty with no picture yet', () => {
     expect(rollRowsBySlug(undefined).size).toBe(0)
     expect(rollRowsBySlug(null).size).toBe(0)
+  })
+})
+
+describe('hiresToShow', () => {
+  const hire = (id: string, slug: string, state: AgentHire['state'], createdAt: string, department = slug): AgentHire => ({
+    id, name: slug, slug, department, start: true, state, phase: '', error: state === 'error' ? 'it failed' : null, createdAt,
+  })
+  it('keeps a failed hire until it is answered', () => {
+    const failed = hire('1', 'rcone', 'error', '2026-11-02T23:57:44.000Z')
+    expect(hiresToShow([failed], new Set())).toEqual([failed])
+  })
+  it('drops a failed hire once a newer hire of the same agent exists — its Retry', () => {
+    const failed = hire('1', 'rcone', 'error', '2026-11-02T23:57:44.000Z')
+    const retry = hire('2', 'rcone', 'running', '2026-11-03T00:30:00.000Z')
+    expect(hiresToShow([retry, failed], new Set())).toEqual([retry])
+    // An older hire of the same handle is not an answer to a newer failure.
+    const older = hire('0', 'rcone', 'done', '2026-11-02T20:00:00.000Z')
+    expect(hiresToShow([failed, older], new Set())).toEqual([failed, older])
+  })
+  it('drops a failed hire once its agent has run, and leaves live rows alone', () => {
+    const failed = hire('1', 'rcone', 'error', '2026-11-02T23:57:44.000Z')
+    const other = hire('3', 'fxone', 'running', '2026-11-03T00:31:00.000Z')
+    expect(hiresToShow([failed, other], new Set(['rcone', 'fxone']))).toEqual([other])
   })
 })

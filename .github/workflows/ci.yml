@@ -317,37 +317,29 @@ jobs:
                           '.github/workflows/ci.yml' '.github/actions/**'
           surface desktop 'desktop/*' 'ui/src/lib/dither-engine.ts' '.github/workflows/ci.yml' '.github/actions/**'
           surface mobile  'mobile/*' '.github/workflows/ci.yml' '.github/actions/**'
-          # The MCP end-to-end suite drives the ui, the stubs and the api's MCP
-          # crates together; a change to any of them can break the story. The
-          # list is every crate the story passes through, not only the ones
-          # named mcp: the agent-side server, the fleet renderer (where the
-          # agent's config.yaml is built), the SSRF guard, route mounting, the
-          # /api/me/mcp account routes, the body validators, the agents.manage
-          # check, and the spend boundary. A required check that this filter
-          # skips still reports success (job-level `if`), so a crate missing
-          # here is a story that silently stops being tested.
-          #
-          # The notification specs (ui/e2e/notify-*.spec.ts) are stories too:
-          # the inbox, prefs and push routes (routes-comms), the engine behind
-          # them (notify, with tz for "until tomorrow 9:00" in the person's
-          # zone), push delivery and devices (push), the person's one stream
-          # (realtime and realtime-watch), and a channel's notify level
-          # (channels). Every chapter of every spec also signs in through the
-          # session crate, and the fleet and MCP routes reach their engines
-          # through the facades. Beyond the crates: the api binary itself
-          # (api/src, which boots the realtime hub and the schedulers), the
-          # workspace manifest (a dependency's features, such as the TLS roots
-          # the stubs' throwaway CA relies on, change with no lockfile line),
-          # and the chassis template this job copies in for the hire.
-          surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/talaria-mcp*' 'api/crates/talaria-routes-fleet/*' \
-                          'api/crates/talaria-agent-mcp/*' 'api/crates/talaria-fleet-render/*' 'api/crates/talaria-safe-fetch/*' \
-                          'api/crates/talaria-api-routes/*' 'api/crates/talaria-routes-integrations/*' 'api/crates/talaria-body/*' \
-                          'api/crates/talaria-users/*' 'api/crates/talaria-workspace-secrets/*' \
-                          'api/crates/talaria-routes-comms/*' 'api/crates/talaria-notify/*' 'api/crates/talaria-tz/*' \
-                          'api/crates/talaria-push/*' 'api/crates/talaria-realtime*' 'api/crates/talaria-channels/*' \
-                          'api/crates/talaria-session/*' 'api/crates/talaria-api-facades/*' \
-                          'api/src/*' 'api/Cargo.toml' 'scripts/chassis.template.yml' \
-                          'api/Cargo.lock' '.github/workflows/ci.yml' '.github/actions/**'
+          # The end-to-end suite (ui/e2e/*.spec.ts: the MCP story and the
+          # notification specs) boots the api binary this job builds with
+          # `cargo build --bin talaria-api`, the built ui and the stubs. So its
+          # surface is everything that goes into that binary, not a list of the
+          # crates a spec seems to be about: the root package depends on every
+          # workspace crate, 218 of them directly and the rest through those
+          # (243 of 243 on 2026-11-02, read from the manifests), so a change to
+          # any crate, a shared one such as talaria-db, -state, -auth, -config,
+          # -error, -params or -permissions included, can change what the specs
+          # meet. A hand list of the "relevant" crates missed exactly those, and
+          # a required check this filter skips still reports success (job-level
+          # `if`). `api/crates/*` also covers a crate added later with no edit
+          # here. With it: the binary itself (api/src), the workspace manifest
+          # and lockfile (a dependency's features, such as the TLS roots the
+          # stubs' throwaway CA relies on, can change with no lockfile line), the
+          # build's own config and toolchain pin, and the chassis template this
+          # job copies in for the hire. Not api/tests or the package
+          # Dockerfile: neither goes into the binary. The cost is this job on
+          # every Rust pull request; it runs beside the api job, which takes
+          # longer, so the wait for a green run does not grow.
+          surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/*' 'api/src/*' 'api/Cargo.toml' 'api/Cargo.lock' \
+                          'api/.cargo/*' 'api/rust-toolchain.toml' 'scripts/chassis.template.yml' \
+                          '.github/workflows/ci.yml' '.github/actions/**'
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug

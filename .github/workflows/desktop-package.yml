@@ -28,13 +28,18 @@
 #            .exe while claiming no version they are not. The CLI downloads and
 #            drives both toolchains itself.
 #
-# EVERY ARTIFACT A RUNNER CAN EXERCISE IS EXERCISED. macOS mounts the dmg and
+# EVERY ARTIFACT A RUNNER CAN EXERCISE IS EXERCISED. macOS verifies the dmg and
 # launches the app; windows installs the installer it just built and launches
-# what it installed; both fail the job if the app is not still running twenty
-# seconds later, before anything is attached to a release. The linux AppImage
-# was run on a real Arch host while this file was written (it is the artifact
-# whose first build aborted there — see repack-appimage.sh), and the deb, rpm
-# and pacman packages were installed in clean containers of their own distros.
+# what it installed; linux installs its deb. Each then runs the connect smoke
+# (desktop/packaging/connect-smoke.mjs) on that shipped binary: a fake instance
+# has to be opened, its page requested and its script run, with the shell still
+# up. "Still running twenty seconds later", the check this file started with,
+# is what a frozen app passes, and the Windows shell once froze on every first
+# open. All of it fails the job before anything is attached to a release. The
+# linux AppImage was run on a real Arch host while this file was written (it is
+# the artifact whose first build aborted there — see repack-appimage.sh), and
+# the deb, rpm and pacman packages were installed in clean containers of their
+# own distros.
 # What no runner here can test: Gatekeeper and SmartScreen as a USER meets them
 # (an artifact built on a runner is never quarantined, and nothing is signed),
 # and macOS session isolation, which `data_directory` does not provide
@@ -54,8 +59,12 @@
 # `resolve` computes the next minor — the highest suffix-free X.Y.Z across BOTH
 # the `v*` (app) and `desktop-v*` tags, minor+1, patch 0 — and after every
 # platform job is green, `attach` mints the `desktop-vX.Y.0` tag and a regular
-# (non-prerelease) Release carrying latest.json: the LIVE updater feed, because
-# /releases/latest resolves to it and installed apps update themselves. The
+# (non-prerelease) Release carrying latest.json, and marks it Latest once that
+# file is on it: the LIVE updater feed, because the shell reads
+# /releases/latest/download/latest.json (tauri.conf.json). Installed apps read
+# it when someone checks for updates (Check for updates in the launcher or
+# Settings); nothing installs an update unasked. GitHub's Latest is ONLY ever
+# a desktop-v release: release.yml opens every vX.Y.Z release --latest=false. The
 # `desktop-v*` namespace keeps desktop automation from ever firing release.yml
 # (its tag trigger is `v[0-9]*`). Auto never crosses a major: a manual major —
 # or any stable vX.Y.Z cut — raises the baseline and the +1 resumes from there.
@@ -340,6 +349,35 @@ jobs:
           cp deb/*.deb rpm/*.rpm appimage/*.AppImage "$RUNNER_TEMP/assets/"
           ls -l "$RUNNER_TEMP/assets"
 
+      # The deb this run built, installed with apt, and the connect smoke the
+      # windows job runs (see there) against the binary it installed, under a
+      # private X display and session bus with software rendering, as ci.yml's
+      # desktop job does. This proves the installed binary opens an instance.
+      # It does not prove the deb's Depends resolve on a clean system: the
+      # build's -dev packages (Tauri system deps, above) already satisfy them.
+      # The install also relies on that step's `apt-get update`.
+      # The rpm, pacman and flatpak packages carry the same binary; the
+      # AppImage bundles its own libraries and is not run here (its first
+      # build aborted only on a host whose Wayland stack differed from the
+      # runner's, which this runner cannot be).
+      - name: Install the deb and run the connect smoke on it
+        timeout-minutes: 10
+        env:
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -eu
+          deb=$(ls "$RUNNER_TEMP"/assets/*.deb)
+          sudo apt-get install -y --no-install-recommends xvfb xauth dbus "$deb"
+          # The package's name and its binary's path, read from what was
+          # installed rather than assumed: both are the bundler's to choose.
+          pkg=$(dpkg-deb -f "$deb" Package)
+          exe=$(dpkg -L "$pkg" | grep -m1 '^/usr/bin/' || true)
+          [ -n "$exe" ] && [ -x "$exe" ] \
+            || { echo "::error::the $pkg deb installed no executable under /usr/bin:"; dpkg -L "$pkg"; exit 1; }
+          echo "installed $pkg; its binary is $exe"
+          xvfb-run -a dbus-run-session -- node desktop/packaging/connect-smoke.mjs "$exe" --wait 90 --force
+
       - name: Sign the AppImage for the updater
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -525,6 +563,9 @@ jobs:
       # bundle, so nothing quarantined it; what this proves is that the dmg
       # mounts, the binary starts, and it is still running twenty seconds later.
       - name: Smoke test the app bundle
+        # A backstop for its waits on the app (the self-test, the 20 s run):
+        # minutes when healthy, never the job's 60.
+        timeout-minutes: 10
         run: |
           set -eu
           # The dmg is VERIFIED rather than mounted: hdiutil refuses to attach on
@@ -595,7 +636,22 @@ jobs:
           echo "app still running after 20s (pid $pid)"
           lsappinfo list 2>/dev/null | grep -i -m1 talaria \
             || echo "(not registered with LaunchServices — the process is alive regardless)"
+          # Gone before the connect smoke below starts another one, and bounded:
+          # an app that ignores or defers SIGTERM gets 10 s, then SIGKILL,
+          # never a wait that holds the job to its timeout.
           kill "$pid" || true
+          for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          kill -9 "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+
+      # The same connect smoke the windows job runs on its installed exe (see
+      # there): the bundle's own binary, extracted from the zip above, opens a
+      # fake instance or fails, which "still running after 20 s" cannot tell
+      # apart from a hang. The script bounds itself (90 s, then SIGKILL to the
+      # app's process group); the step timeout is the backstop.
+      - name: Connect smoke on the shipped app
+        timeout-minutes: 5
+        run: node desktop/packaging/connect-smoke.mjs "$RUNNER_TEMP/app/Talaria.app/Contents/MacOS/talaria-desktop" --wait 90 --force
 
       - uses: actions/upload-artifact@v4
         with:
@@ -677,6 +733,9 @@ jobs:
       # setup otherwise. PowerShell drives it because the parts that matter
       # (msiexec, Start-Process, finding the installed exe) are its native work.
       - name: Smoke test the installer
+        # A backstop for Start-Process -Wait on the installer and the
+        # self-test: minutes when healthy, never the job's 60.
+        timeout-minutes: 15
         run: |
           set -eu
           cat >"$RUNNER_TEMP/smoke.ps1" <<'PS'
@@ -695,6 +754,10 @@ jobs:
           $exe = Get-ChildItem -Path $env:LOCALAPPDATA, $env:ProgramFiles -Filter talaria-desktop.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) { throw 'talaria-desktop.exe was not installed where an installer should have put it' }
           Write-Host "installed at $($exe.FullName)"
+          # For the connect smoke after this step. AppendAllText writes UTF-8
+          # with no BOM, which GITHUB_ENV needs (Windows PowerShell's Out-File
+          # -Encoding utf8 writes one).
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "INSTALLED_EXE=$($exe.FullName)`n")
           $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe.FullName))
           if (-not $text.Contains('app.talaria.desktop')) { throw 'the installed exe does not carry app.talaria.desktop' }
           # The notification self-test (notify/windows.rs): toasts must be
@@ -711,9 +774,28 @@ jobs:
           Start-Sleep -Seconds 20
           if ($app.HasExited) { throw "the app exited within 20s (code $($app.ExitCode))" }
           Write-Host "app still running after 20s (pid $($app.Id))"
-          Stop-Process -Id $app.Id -Force
+          # The whole tree, WebView2's msedgewebview2.exe children included, so
+          # the connect smoke below starts a shell with nothing of this one left.
+          taskkill /PID $app.Id /T /F | Out-Null
+          Wait-Process -Id $app.Id -Timeout 30 -ErrorAction SilentlyContinue
           PS
           powershell -NoProfile -ExecutionPolicy Bypass -File "$RUNNER_TEMP/smoke.ps1"
+
+      # "Still running after 20 s" is what a FROZEN app passes: the first open of
+      # an instance froze the Windows shell for good (a webview created inside a
+      # WebView2 IPC callback), and the process stayed up and kept repainting.
+      # The connect smoke (desktop/packaging/connect-smoke.mjs; ci.yml runs it on
+      # every desktop pull request against a debug build) passes only when the
+      # shell actually opens an instance: a fake one on 127.0.0.1 is the last
+      # view in the registry, and its page has to be requested and its script
+      # run within 90 s, with the shell still up. Here it runs against the exe
+      # the installer put on the runner, the build a user gets. --force: this
+      # runner is thrown away, and the launches above may have written the
+      # registry the smoke replaces. The script prints which step happened last
+      # on a failure.
+      - name: Connect smoke on the installed app
+        timeout-minutes: 5
+        run: node desktop/packaging/connect-smoke.mjs "$INSTALLED_EXE" --wait 90 --force
 
       - uses: actions/upload-artifact@v4
         with:
@@ -746,7 +828,11 @@ jobs:
       # broken build. --target mints the lightweight tag in the same call; no
       # git push, and nothing re-triggers (this workflow has no tags trigger
       # and desktop-v* cannot match release.yml's v[0-9]*). NOT --prerelease:
-      # /releases/latest must resolve to this release for the updater feed.
+      # /releases/latest must resolve to this release for the updater feed,
+      # and a prerelease can never be Latest. But not Latest YET either
+      # (--latest=false): GitHub makes a new release Latest by default, and
+      # this one has no latest.json until the Upload step, so the feed would
+      # 404 for every installed app in between. Upload marks it Latest, last.
       # Create-not-clobber: a losing racer fails loudly instead of stacking a
       # second build's assets onto the winner's release.
       - name: Open the desktop release
@@ -761,7 +847,7 @@ jobs:
             echo "$TAG already exists — attaching into it (a re-run or a finished mint)"
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$SHA" --title "$TAG" \
+              --target "$SHA" --title "$TAG" --latest=false \
               --notes "Desktop auto-minor build at ${SHA:0:12}. What changed: CHANGELOG.md."
           fi
 
@@ -773,8 +859,10 @@ jobs:
           merge-multiple: true
           path: assets
 
-      # Suffix-free versions only: /releases/latest is GitHub's moving stable
-      # pointer, so an RC must not publish latest.json. Missing signatures
+      # Suffix-free versions only: the feed is GitHub's Latest release, and an
+      # RC must never reach it. A vX.Y.Z release gets the file too, though
+      # nothing serves it: only a desktop-v mint is ever Latest (the Upload
+      # step). Missing signatures
       # fail the job — shipping a release the installed app cannot update to
       # is worse than a red attach. On a minted desktop-v release the manifest
       # is the point of the channel, so its absence is an error, not a skip.
@@ -820,6 +908,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.release_tag }}
+          MINT: ${{ needs.resolve.outputs.mint }}
         run: |
           set -eu
           ls -l assets
@@ -830,6 +919,25 @@ jobs:
           # THE FEED FLIPS LAST — see the manifest step.
           if [ -f ./latest.json ]; then
             gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" latest.json --clobber
+          fi
+          # ...and only now does a minted desktop-v release become GitHub's
+          # Latest, which is what /releases/latest/download/latest.json
+          # resolves through: the previous desktop release stays the feed until
+          # this one carries its own latest.json. Explicit, never GitHub's
+          # automatic pick, because the feed must be a DESKTOP release: the one
+          # this run minted, which is the newest on the auto-minor path (a
+          # dispatch that finishes an older version's mint moves the feed back
+          # to it). Only on the mint path: this job also attaches into
+          # release.yml's vX.Y.Z releases, and the guard below is what keeps
+          # those off Latest. A vX.Y.Z release (release.yml's, which this file only
+          # attaches into) is never Latest: release.yml creates it
+          # --latest=false, its latest.json is a download nothing reads, and
+          # the desktop line moves on at the next desktop-v mint.
+          # check-invariants.mjs (`release-latest-is-the-desktop-feed`) holds
+          # this flag and release.yml's.
+          if [ "$MINT" = true ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest
+            echo "$TAG is now the Latest release: the updater feed"
           fi
           echo "attached $(ls assets | wc -l) files to $TAG"
   # A published desktop release has to move omapak's pin, or the store keeps

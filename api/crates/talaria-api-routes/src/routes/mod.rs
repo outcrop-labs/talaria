@@ -364,6 +364,10 @@ pub fn router(state: AppState) -> Router {
             "/api/unreads",
             get(talaria_routes_comms::activity::unreads::get).fallback(|| async { method_not_allowed("GET") }),
         )
+        .route(
+            "/api/working",
+            get(talaria_routes_comms::activity::working::get).fallback(|| async { method_not_allowed("GET") }),
+        )
         // The closed-tab plane's door: the VAPID public key a browser needs
         // to subscribe, and the subscribe/unsubscribe pair that files and
         // retires a device browser. Delivery itself is scheduler-plane
@@ -1401,6 +1405,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/fleet/hires",
             get(talaria_routes_fleet::fleet::fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/fleet/hires/{id}/retry",
+            post(talaria_routes_fleet::fleet::fleet_hires_id_retry::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet",

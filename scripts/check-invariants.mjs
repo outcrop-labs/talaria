@@ -60,6 +60,7 @@ import { fileURLToPath } from 'node:url'
 import { scanWebviewThreading, selfTest as desktopThreadingSelfTest } from './desktop-threading.mjs'
 import { checkDropGuard } from './desktop-drop-guard.mjs'
 import { checkReloadKeys } from './desktop-reload-keys.mjs'
+import { checkReleaseLatest, selfTest as releaseLatestSelfTest } from './release-latest.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
@@ -3206,6 +3207,49 @@ const UNSET_SEAM_CENSUS = [
       })
     }
     notes.push(`notification classes: ${classIds.size} in the registry, ${kinds.size} kinds in KIND_CLASS, ${seen} writer literals read`)
+  }
+}
+
+// ── GitHub's Latest release is the desktop updater feed ─────────────────────
+// The shell's updater reads /releases/latest/download/latest.json, and GitHub
+// marks a new non-prerelease release Latest unless told not to. A stable
+// server release (release.yml) made Latest by default has no latest.json for
+// an hour at best, and every installed app's update check 404s. So release.yml
+// opens and edits every vX.Y.Z release --latest=false, and desktop-package.yml
+// mints desktop-vX.Y.0 --latest=false and marks it Latest explicitly, only once
+// its latest.json is uploaded. The reading of the workflows, and its fixture,
+// live in scripts/release-latest.mjs.
+{
+  const dir = join(ROOT, '.github', 'workflows')
+  const workflows = new Map()
+  for (const file of readdirSync(dir)) {
+    if (file.endsWith('.yml') || file.endsWith('.yaml')) workflows.set(file, readFileSync(join(dir, file), 'utf8'))
+  }
+  const confPath = join(ROOT, 'desktop/src-tauri/tauri.conf.json')
+  const conf = existsSync(confPath) ? readFileSync(confPath, 'utf8') : null
+  const wrong = releaseLatestSelfTest()
+  const found = [
+    ...wrong.map((text) => ({ path: 'scripts/release-latest.mjs', line: 0, text: `self-test: ${text}` })),
+    ...checkReleaseLatest(workflows, conf),
+  ]
+  if (found.length) {
+    failures.push({
+      id: 'release-latest-is-the-desktop-feed',
+      what: "a release can take GitHub's Latest flag from the desktop updater feed, or the feed can flip early",
+      fix: [
+        'GitHub\'s Latest release is what /releases/latest/download/latest.json resolves through, and',
+        'that is the only URL the desktop updater reads (tauri.conf.json). release.yml creates and',
+        'edits every vX.Y.Z release with --latest=false. desktop-package.yml creates its desktop-v',
+        'mint with --latest=false and marks it Latest with `gh release edit "$TAG" --latest` after',
+        'the latest.json upload, never before, and only inside `if [ "$MINT" = true ]` with MINT',
+        "bound to needs.resolve.outputs.mint: `attach` also runs for release.yml's vX.Y.Z tags. Any",
+        'other `gh release create` says --prerelease or an explicit --latest=false. RELEASING.md,',
+        '"The desktop installers".',
+      ],
+      found,
+    })
+  } else {
+    notes.push('release Latest flag: release.yml never takes it; desktop-package.yml takes it after latest.json lands, on the mint path only')
   }
 }
 

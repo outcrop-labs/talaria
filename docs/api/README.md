@@ -6,12 +6,12 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-358 routes across 24 groups.
+360 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 18 |
-| [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 15 |
+| [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 16 |
 | [`admin`](./admin.md) | Instance administration (admin session required). | 32 |
 | [`agents`](./agents.md) | Agent CRUD, skills, runs. | 27 |
 | [`apps`](./apps.md) | The app platform surface, the app-server gateway, the host's own app routes, and the SDK kit. | 8 |
@@ -19,7 +19,7 @@
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 34 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 19 |
-| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 27 |
+| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 28 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
 | [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 4 |

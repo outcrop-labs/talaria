@@ -568,6 +568,10 @@ failure it says which step happened last, and prints the instance's data dir and
 `lastOpenedAt` (a frozen open leaves the dir made and the timestamp null) and the shell's
 log. It writes the shell's real data dir, so it refuses to replace an existing registry
 without `--force`: run it on a throwaway runner or under a private `HOME`.
+`desktop-package.yml` runs the same smoke on what it ships, with `--force` on its
+throwaway runners: the exe the Windows installer installed, the binary inside the macOS
+`.app`, and the binary the Linux deb installed (under `xvfb-run`), so a release build that
+freezes on its first open fails the job before anything is attached to a release.
 
 ## Logs
 
@@ -676,10 +680,12 @@ runner that built it (dependency resolution is host-based; a pass on another dis
 re-deploys that distro's libraries).
 
 Until a platform is exercised, "the installer built" and "the installer works" are
-different claims, so the pipeline makes the runners prove what they can: macOS mounts the
+different claims, so the pipeline makes the runners prove what they can: macOS verifies the
 dmg and launches the app, windows installs whichever installer the run produced and
-launches what it installed, and each job fails if the app is not still running twenty
-seconds later. When this pipeline was written, the Linux formats were installed in clean
+launches what it installed, and linux installs its deb. Each then runs the connect smoke
+(see Gates) on that shipped binary, which passes only if the app opens an instance;
+"still running twenty seconds later", the check the pipeline began with, is also what a
+frozen app passes. When this pipeline was written, the Linux formats were installed in clean
 containers of their own distributions (Ubuntu, Fedora, Arch) and the AppImage was run on an
 Arch host, which is a one-off rather than something CI repeats.
 
@@ -711,12 +717,21 @@ themed min/max/close off-screen). The minimum is 760×480, also shrunk to fit.
 ## Updates
 
 A stable GitHub Release carries `latest.json` plus minisign signatures of the AppImage,
-the universal `.app.tar.gz`, and the NSIS installer. The running app checks
-`/releases/latest/download/latest.json` (Settings → Profile, or the launcher), verifies
-the payload against the pubkey in `tauri.conf.json`, replaces itself, and relaunches. The
-check is bounded at 10 s (the plugin's default is no bound); the install is not, because the
-plugin applies one timeout to the check and to the whole download.
-RCs do not publish `latest.json` — `/releases/latest` is GitHub's stable pointer.
+the universal `.app.tar.gz`, and the NSIS installer. When someone checks for updates
+(Settings → Profile, or the launcher), the running app fetches
+`/releases/latest/download/latest.json`, verifies the payload against the pubkey in
+`tauri.conf.json`, replaces itself, and relaunches. The check is bounded at 10 s (the
+plugin's default is no bound); the install is not, because the plugin applies one timeout
+to the check and to the whole download.
+
+`/releases/latest` is whichever release GitHub has marked **Latest**, and that is always a
+`desktop-v` release: `desktop-package.yml` creates its mint with `--latest=false` and marks
+it Latest only after its `latest.json` is uploaded, so the feed never points at a release
+without one. A platform release (`vX.Y.Z`, `release.yml`) is never Latest: it would take the
+flag by default the moment it opened, an hour before its installers are attached, and
+every update check would 404. Its installers are downloads; its `latest.json` is not served.
+RCs do not publish `latest.json` at all. `check-invariants.mjs`
+(`release-latest-is-the-desktop-feed`) holds both workflows to this.
 
 Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
 means installed copies can no longer verify a new payload. OS code signing
