@@ -2,7 +2,7 @@
 // header above it (the views are self-explanatory), Manage keeps one because
 // it is the control plane. Settings and Admin are deliberately absent from
 // every section — they live in the dock's account menu, and the dock lights
-// that chip for them (TopDock's `onSystemHere`), which is what replaced the
+// that chip for them (TabBar's `onSystemHere`), which is what replaced the
 // deleted strip's "System" breadcrumb. Sections carry stable `id`s that
 // consumers branch on — Apps slotting, app-manage slotting; `title` is
 // display-only and optional, and a section without one renders as a bare

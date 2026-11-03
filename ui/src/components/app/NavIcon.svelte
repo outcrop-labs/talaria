@@ -2,13 +2,18 @@
   import type { NavItem } from '@/lib/nav'
 
   // Core items carry lucide components; enabled apps inject string glyphs from
-  // their manifest — both render at the 16px icon slot.
-  let { icon }: { icon: NavItem['icon'] } = $props()
+  // their manifest — both render at the same icon slot, 16px unless told.
+  let { icon, size = 16 }: { icon: NavItem['icon']; size?: number } = $props()
 </script>
 
 {#if typeof icon === 'string'}
-  <span class="grid h-4 w-4 place-items-center text-[13px] leading-none">{icon}</span>
+  <span
+    class="grid place-items-center leading-none"
+    style:width="{size}px"
+    style:height="{size}px"
+    style:font-size="{size - 3}px">{icon}</span
+  >
 {:else}
   {@const Icon = icon}
-  <Icon size={16} strokeWidth={1.5} />
+  <Icon {size} strokeWidth={1.5} />
 {/if}
