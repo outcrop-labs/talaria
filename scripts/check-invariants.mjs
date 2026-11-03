@@ -59,6 +59,7 @@ import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { scanWebviewThreading, selfTest as desktopThreadingSelfTest } from './desktop-threading.mjs'
 import { checkDropGuard } from './desktop-drop-guard.mjs'
+import { checkReloadKeys } from './desktop-reload-keys.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
@@ -2699,6 +2700,27 @@ const UNSET_SEAM_CENSUS = [
     })
   } else {
     notes.push('desktop drop guard: stray drags cancelled, zones and native fields left alone (stub DOM)')
+  }
+
+  // The reload keys every instance webview runs (RELOAD_KEYS in reload.rs):
+  // Ctrl+R and F5 off macOS, Cmd+R on it, Shift to skip the cache, and every
+  // other chord left to the page. Run against a stub window.
+  const keysWrong = await checkReloadKeys(files.get(`${desktopSrc}/reload.rs`) ?? '')
+  if (keysWrong.length) {
+    failures.push({
+      id: 'desktop-reload-keys',
+      what: "the instance webviews' reload keys do not do what they promise",
+      fix: [
+        'RELOAD_KEYS (desktop/src-tauri/src/reload.rs) is how a person reloads an instance page,',
+        'including one whose Talaria UI never loaded: Ctrl+R and F5 on Windows and Linux, Cmd+R on',
+        'macOS, Shift (or Ctrl+F5) skipping the cache, and a refused desktop_reload still reloading.',
+        'It must leave every other chord to the page. scripts/desktop-reload-keys.mjs presses each',
+        'one; if the script now needs more of the window, grow its stub.',
+      ],
+      found: keysWrong.map((text) => ({ path: `${desktopSrc}/reload.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop reload keys: Ctrl+R/F5 (Cmd+R on macOS) reload, other chords left to the page (stub window)')
   }
 }
 

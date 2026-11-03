@@ -30,6 +30,7 @@ fn main() {
             "desktop_notify_close",
             "desktop_os_idle",
             "set_instance_muted",
+            "desktop_reload",
         ]),
     ))
     .expect("failed to run tauri-build");

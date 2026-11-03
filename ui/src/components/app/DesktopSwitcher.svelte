@@ -2,7 +2,6 @@
   import { ChevronDown } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
-  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useInstanceBranding } from '@/lib/instance-branding.svelte'
   import { cn } from '@/lib/cn'
   import {
@@ -10,12 +9,13 @@
     shellActivateInstance,
     shellListInstances,
     shellQuit,
+    shellReload,
     shellSetBadge,
     shellShowWelcome,
     type ShellInstance,
   } from '@/lib/desktop-shell'
   import { badgeCount, createBadgeReporter } from '@/lib/desktop-badge'
-  import { findCurrentInstance, instanceDisplayLabel } from '@/lib/desktop-instance'
+  import { findCurrentInstance, instanceDisplayLabel, switcherMenu } from '@/lib/desktop-instance'
   import type { NotificationsPayload } from '@/lib/notifications'
 
   // The desktop instance switcher — exists ONLY inside the Talaria desktop
@@ -77,20 +77,14 @@
   // A function, so the menu re-reads the live list on every open — switching
   // elsewhere (or adding) shouldn't leave this dropdown stale. Labels fall
   // back to the host so an instance with no company name still has a row.
-  // Closing the window keeps Talaria running so notifications arrive, so the
-  // menu ends with the way out (Ctrl+Q works too: the shell itself handles it
-  // in every page, whatever its Talaria version).
-  const items = (): ContextMenuEntry[] => [
-    ...instances.map((instance): ContextMenuEntry => ({
-      label: instanceDisplayLabel(instance),
-      checked: instance.id === current?.id,
-      onSelect: () => void shellActivateInstance(instance.id),
-    })),
-    ...(instances.length ? ['sep' as const] : []),
-    { label: 'Add or manage instances', onSelect: () => void shellShowWelcome() },
-    'sep',
-    { label: 'Quit Talaria', onSelect: () => void shellQuit() },
-  ]
+  // What it holds and in what order: lib/desktop-instance `switcherMenu`.
+  const items = () =>
+    switcherMenu(instances, current?.id, navigator.userAgent, {
+      activate: (id) => void shellActivateInstance(id),
+      reload: () => void shellReload(),
+      manage: () => void shellShowWelcome(),
+      quit: () => void shellQuit(),
+    })
 </script>
 
 {#if inDesktopShell()}

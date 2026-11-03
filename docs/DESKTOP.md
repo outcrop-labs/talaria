@@ -51,9 +51,50 @@ every zone in the page has seen it — except over a native field (`<input>`, `<
 `<select>`, anything contenteditable), which takes text, a moved selection or a file by the
 engine's own default, with no handler to say so; `scripts/desktop-drop-guard.mjs` runs the
 script against each case in `bun run check`. And the webview refuses to navigate to `file:` at all
-(`allowed_navigation`), for a page where the script did not get the chance. Only `file:` is
-refused: pages and their frames use `about:`, `blob:` and `data:`, `mailto:` and app links
-go to the OS, and a sign-in goes to other https origins and back.
+(`allowed_navigation`), for a page where the script did not get the chance. Pages and their
+frames use `about:`, `blob:` and `data:`, and a sign-in goes to other https origins and back:
+those load. `mailto:`, `tel:` and app links are not page loads, so they go to the OS
+("Links that leave the page" below).
+
+### Links that leave the page
+
+An instance webview is a browser tab with no browser around it. A `target="_blank"` link or
+a `window.open` asks the engine for a new window, and wry drops that request when the shell
+installs no handler, so on every OS the click did nothing. Each instance webview now has a
+new-window handler, and its navigation handler routes OS schemes too. Both are in
+`desktop/src-tauri/src/links.rs`:
+
+| The link | Where it goes |
+|---|---|
+| http(s) on another origin: a Drive file, a GitHub settings page, a source the agent read, a coding-harness sign-in | the **default browser**, where the person is signed in to that site |
+| http(s) on the instance's own origin | a **popup window of the engine's own**, with the instance's session and `window.opener` |
+| `mailto:`, `tel:`, `sms:`, app links (`zoommtg:`, `slack:`, `msteams:`…), as a new window or in place | the **OS handler** for the scheme |
+| `file:`, `javascript:`, `data:`, `blob:`, `about:` as a new window, and the schemes browsers refuse to hand the OS | **nowhere**: refused and logged |
+
+Why each one goes where it does:
+
+- **Same-origin popups stay in the app.** The MCP connect popup (`connectPopup`:
+  `/api/mcp/oauth/start`) needs the instance's session cookie to start. When it finishes, it
+  posts `talaria:mcp-oauth-done` to `window.opener` and closes. The default browser has
+  neither the session nor the opener.
+- **A popup that closes itself.** On Linux, wry answers `window.close()` by destroying only
+  the page, which left an empty window. The shell closes that window too
+  (`links::close_emptied_popups`). On macOS, wry's popup has no handler for
+  `window.close()`, so its window stays until the person closes it. That is not verified on
+  a Mac.
+- **Google's connects are not popups.** They are full-page navigations
+  (`/api/integrations/google/connect`), so they keep loading in the instance webview, as
+  before.
+- **The refused schemes** are:
+  - Chrome's denied external schemes (`shell:`, `vbscript:`, `hcp:`…);
+  - the Windows handlers that web pages have abused (`ms-msdt:`, `search-ms:`,
+    `ms-officecmd:`, `ms-appinstaller:`);
+  - remote file shares (`smb:`, `ftp:`, `nfs:`…), which a link would mount.
+
+The hand-off uses `tauri-plugin-opener`'s free `open_url` (on Linux, `xdg-open` and its
+fallbacks), on a blocking worker, never on the handler's thread. The plugin is **not
+registered**: no instance page gets an opener command, an opener permission, or the plugin's
+init script that intercepts link clicks. Log lines name only the scheme and host of a URL.
 
 Adding an instance: the shell normalizes the URL (bare hosts become `https://`, only http(s),
 credentials/paths stripped — an instance IS its origin), then probes the instance beacon
@@ -117,10 +158,47 @@ did before the probe.
 (`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
 http(s) main-frame load that fails — the instance went away mid-session, a full reload
 while it is down — closes that webview and returns to the launcher with WebKit's reason and
-Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`)
+Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere
 or content it cannot show inline is answered "handled", so the page the person is on stays;
-left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown".
+left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown"
+(the navigation handler now gives a `mailto:` to the OS before WebKit sees it).
 macOS and Windows rely on the probe before a cold open.
+
+### Reloading a page
+
+An instance page has no browser chrome, so the shell provides reload itself. It works on any
+instance, whatever its Talaria version.
+
+| Where | How |
+|---|---|
+| The keys | Ctrl+R or F5 on Windows and Linux, Cmd+R on macOS. Ctrl+Shift+R, Shift+F5 and Ctrl+F5 (Cmd+Shift+R on macOS) also skip the HTTP cache. |
+| The in-UI switcher | **Reload page**, with the shortcut beside it (`DesktopSwitcher.svelte` → `shellReload`). |
+| macOS menu bar | **View → Reload Page** and **Reload Ignoring Cache**. |
+
+How each path works:
+
+- **The keys** are an initialization script the shell injects into every instance webview,
+  beside the escape hatch (`RELOAD_KEYS` in `desktop/src-tauri/src/reload.rs`).
+  - The script calls `desktop_reload`, so it also runs on a page whose Talaria UI never
+    loaded, such as a gateway's 502 page.
+  - Where the shell refuses the command (another origin, which has no grant), the script
+    reloads the page itself.
+  - `scripts/desktop-reload-keys.mjs` presses each key, on each OS, in `bun run check`. It
+    also checks the chords the script must leave to the page.
+- **The switcher** calls `desktop_reload`. A shell that predates the command gets an ordinary
+  `location.reload()`.
+- **The grant.** `desktop_reload` is in `INSTANCE_PERMISSIONS`, so every registered instance
+  origin holds it. A page can reload only itself with it. The launcher's call reloads the
+  instance on screen.
+- **The macOS menu** is the app's own, so it works where no page script ran. A page that
+  already handled Cmd+R keeps the menu from reloading a second time.
+- **On Windows**, WebView2's own F5 and Ctrl+R still reload its error page, where no script
+  runs.
+- **Skipping the cache** uses WebKitGTK's `reload_bypass_cache` and WKWebView's
+  `reloadFromOrigin`. WebView2 has no such reload outside the DevTools protocol, so on
+  Windows it is an ordinary reload.
+- **When a load fails on Linux**, the shell still comes back to the launcher's failure card
+  and its Retry ("Opening an instance" above).
 
 ### The launcher follows the shell
 
