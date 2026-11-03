@@ -39,9 +39,18 @@ Each instance webview gets its own `data_directory`, so cookie jars and localSto
 share a session. Hidden webviews stay loaded, so sessions and SSE survive a switch, until an
 instance has been off screen for the suspend timeout ("Suspending inactive instances" below).
 Instance webviews have no Tauri drag-and-drop handler (`disable_drag_drop_handler`): the
-shell listens to no file-drop events, Tauri's handler takes every drop for them, and on
-Windows it stops HTML5 drag and drop altogether. The page gets drags and drops as a browser
-tab does — boards, the Gantt, a file dropped on a composer.
+shell listens to no file-drop events, Tauri's handler takes every drop for them (a file
+dropped on a composer never reached the page), and on Windows it stops HTML5 drag and drop
+altogether. The page gets drags and drops as a browser tab does — boards, the Gantt, a file
+dropped on a composer. Without the handler, though, each engine's own default for a drop the
+page does not take is a browser tab's: it loads what was dropped, and a file released on a
+message list replaced the instance with the file — no titlebar in the themed mode, and the
+escape keys are refused from a `file://` page. Two things stop that. An initialization
+script (`DROP_GUARD`) answers any drag that no drop zone took with "no drop here", after
+every zone in the page has seen it; and the webview refuses to navigate to `file:` at all
+(`allowed_navigation`), for a page where the script did not get the chance. Only `file:` is
+refused: pages and their frames use `about:`, `blob:` and `data:`, `mailto:` and app links
+go to the OS, and a sign-in goes to other https origins and back.
 
 Adding an instance: the shell normalizes the URL (bare hosts become `https://`, only http(s),
 credentials/paths stripped — an instance IS its origin), then probes the instance beacon
@@ -199,10 +208,21 @@ as a main-thread task of its own, the whole hide → create → show sequence in
 - Reading a webview's cookies waits on WebView2 too: it runs on a blocking thread
   (`read_cookie`).
 
+Two caveats. A queued turn runs from tao's own message loop, not inside a WebView2 handler,
+only as long as no sync command runs a nested message pump of its own inside a WebView2
+callback — none does (a window drag posts its message). And two queued turns are two tokio
+tasks, so they are not strictly first-in, first-out: an activation and a Ctrl+Shift+H a few
+milliseconds apart can land in either order. Nothing depends on that order.
+
 `bun run check` holds the rule on every OS: `scripts/desktop-threading.mjs` builds a call
 graph of the shell and fails when a sync command can reach a webview creation or a cookie
-read, or an async command can reach one from its tokio worker. CI's `desktop-windows-smoke`
-job proves it on Windows itself (Gates, below).
+read, when an async command can reach one from its tokio worker, or when a callback can
+reach one inline. Callbacks are the closures handed to `.on_*(…)` (window, webview,
+page-load, navigation, menu and tray events), `.run(…)`, `.with_webview(…)` and GTK
+`connect_*` signals, plus any function marked `// webview-threading: callback` (the
+notification-click entry points the OS calls). It follows free function calls by name, not
+method calls or macro expansions: a regression guard for this shape of bug, not a proof.
+CI's connect smoke proves the connect path on every OS (Gates, below).
 
 ## WebKit, not Chrome
 
@@ -452,12 +472,14 @@ unchanged — the desktop surface gates per-surface, exactly like `api:check`.
 
 CI runs clippy and the tests on all three platforms for every desktop pull request:
 `desktop` (Linux), `desktop-macos` and `desktop-windows`, because each OS's `cfg` code is
-compiled by no other job. Clippy and tests cannot see a hang, so `desktop-windows-smoke`
-also builds the shell with the launcher embedded and runs the **connect smoke**
-(`desktop/packaging/connect-smoke.mjs`): a fake instance on `127.0.0.1` serves the beacon
-and a page whose script fetches `/opened`, the registry names it as the last view, and the
-smoke launches the shell and passes only if the page is requested and its script runs
-within 30 s with the shell still up — boot, probe, activate, webview, navigation. On a
+compiled by no other job. Clippy and tests cannot see a hang, so each of the three jobs
+then builds the shell with the launcher embedded and runs the **connect smoke**
+(`desktop/packaging/connect-smoke.mjs`; Linux under `xvfb-run` and `dbus-run-session`): a
+fake instance on `127.0.0.1` serves the beacon and a page whose script fetches `/opened`,
+the registry names it as the last view, and the smoke launches the shell and passes only if
+the page is requested and its script runs within 90 s with the shell still up — boot,
+probe, activate, webview, navigation. A pass exits as soon as the page answers; the wait is
+long because release.yml runs these jobs before every publish. On a
 failure it says which step happened last, and prints the instance's data dir and
 `lastOpenedAt` (a frozen open leaves the dir made and the timestamp null) and the shell's
 log. It writes the shell's real data dir, so it refuses to replace an existing registry
@@ -465,9 +487,11 @@ without `--force`: run it on a throwaway runner or under a private `HOME`.
 
 ## Logs
 
-Everything the shell says (`eprintln!` in `desktop/src-tauri`) also goes to a log file, so
-a release build with no console — Windows, a Finder or Start-menu launch, a `.desktop`
-entry — still leaves evidence:
+Everything the shell says once it has started (`eprintln!` in `desktop/src-tauri`), and any
+panic, also goes to a log file, so a release build with no console — Windows, a Finder or
+Start-menu launch, a `.desktop` entry — still leaves evidence. Lines from before setup (a
+second launch on Linux handing over to the first, `--notify-selftest`) go to stderr only.
+The file:
 
 | OS | File |
 |---|---|
@@ -475,7 +499,8 @@ entry — still leaves evidence:
 | macOS | `~/Library/Logs/app.talaria.desktop/talaria-desktop.log` |
 | Linux | `~/.local/share/app.talaria.desktop/logs/talaria-desktop.log` (flatpak: under `~/.var/app/app.talaria.desktop/data/`) |
 
-Each line carries a UTC timestamp; each launch starts with the version and the OS. At
+Each line carries a UTC timestamp; each launch starts with the version and the OS, and a
+panic's message and location are written through a panic hook before the default one runs. At
 about 1 MB the file becomes `talaria-desktop.log.1`, replacing the one before, so the two
 files stay near 2 MB. Ask a person reporting a problem for both; no line carries a cookie
 or a session value. The sink is
