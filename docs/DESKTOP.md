@@ -38,6 +38,10 @@ Each instance webview gets its own `data_directory`, so cookie jars and localSto
 — cookies ignore ports, so without this, two dev instances on `127.0.0.1:530x` would silently
 share a session. Hidden webviews stay loaded, so sessions and SSE survive a switch, until an
 instance has been off screen for the suspend timeout ("Suspending inactive instances" below).
+Instance webviews have no Tauri drag-and-drop handler (`disable_drag_drop_handler`): the
+shell listens to no file-drop events, Tauri's handler takes every drop for them, and on
+Windows it stops HTML5 drag and drop altogether. The page gets drags and drops as a browser
+tab does — boards, the Gantt, a file dropped on a composer.
 
 Adding an instance: the shell normalizes the URL (bare hosts become `https://`, only http(s),
 credentials/paths stripped — an instance IS its origin), then probes the instance beacon
@@ -167,6 +171,39 @@ unstable features are semver-exempt, so upgrades are deliberate.
 [tauri#10420]: https://github.com/tauri-apps/tauri/issues/10420
 [tauri#10131]: https://github.com/tauri-apps/tauri/issues/10131
 
+## Threading
+
+Window and webview operations run on the main thread, in the order the geometry section
+above needs. One more rule decides **where** a webview may be made: **no IPC command may
+create a webview, or wait on WebView2, inline.** A sync `#[tauri::command]` runs inside the
+calling webview's IPC callback, and on Windows that callback is a WebView2 event handler.
+A WebView2 created there waits for a controller that WebView2 cannot deliver while its own
+handler is on the stack, and wry waits for it in a message pump with no timeout
+([Microsoft's reentrancy rule](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/threading-model#reentrancy);
+Tauri says the same on `WebviewBuilder::new`). Through desktop v0.11.0 `activate_instance`
+was such a command: on Windows every first open of an instance — Add → Connect, the reopen
+at launch, a cold or suspended switch — froze the app for good, while the window kept
+repainting. Linux and macOS create synchronously, so nothing there could see it.
+
+So every path that makes an instance webview (`activate`, `prewarm` in `commands.rs`) runs
+as a main-thread task of its own, the whole hide → create → show sequence in one turn:
+
+- `activate_instance` is `async` and hops with `on_main_turn`, which awaits the answer on
+  its tokio worker and never blocks the main thread.
+- Code that may already be on the main thread queues with `queue_main_turn`: a restore from
+  a window event (on Windows a window operation inside a sync command raises those
+  synchronously), a notification click, a tray row. `run_on_main_thread` is not enough
+  there — Tauri runs its closure inline when it is called on the main thread.
+- A second activation of an instance whose webview is still being created changes nothing
+  (`Creating`), so no label is ever created twice.
+- Reading a webview's cookies waits on WebView2 too: it runs on a blocking thread
+  (`read_cookie`).
+
+`bun run check` holds the rule on every OS: `scripts/desktop-threading.mjs` builds a call
+graph of the shell and fails when a sync command can reach a webview creation or a cookie
+read, or an async command can reach one from its tokio worker. CI's `desktop-windows-smoke`
+job proves it on Windows itself (Gates, below).
+
 ## WebKit, not Chrome
 
 The engine is WebKitGTK, so the instance UI runs under WebKit (Safari-family) semantics, not
@@ -195,7 +232,8 @@ each has a rule now:
   the main thread in Tauri v2, which is also the GTK loop every webview paints from.
   `desktop_notify` was sync, and a notification server that took 30 s to answer froze the
   whole app for 30 s; it is async now, the D-Bus post runs on a blocking thread, and the page
-  gets its answer within 2 s.
+  gets its answer within 2 s. On Windows the same thread is WebView2's: no IPC command may
+  create a webview or wait on WebView2 inline ("Threading" above).
 
 The window and every instance webview paint the launcher's ground (`#090a09`) until their
 page does, instead of GTK's grey and WebKit's white.
@@ -411,6 +449,38 @@ the binary directly as above.
 `bun run desktop:check` (root) = `cargo fmt --check` + `cargo clippy -D warnings` +
 `cargo test` + `svelte-check`, the same list CI's `desktop` job runs. `bun run verify` is
 unchanged — the desktop surface gates per-surface, exactly like `api:check`.
+
+CI runs clippy and the tests on all three platforms for every desktop pull request:
+`desktop` (Linux), `desktop-macos` and `desktop-windows`, because each OS's `cfg` code is
+compiled by no other job. Clippy and tests cannot see a hang, so `desktop-windows-smoke`
+also builds the shell with the launcher embedded and runs the **connect smoke**
+(`desktop/packaging/connect-smoke.mjs`): a fake instance on `127.0.0.1` serves the beacon
+and a page whose script fetches `/opened`, the registry names it as the last view, and the
+smoke launches the shell and passes only if the page is requested and its script runs
+within 30 s with the shell still up — boot, probe, activate, webview, navigation. On a
+failure it says which step happened last, and prints the instance's data dir and
+`lastOpenedAt` (a frozen open leaves the dir made and the timestamp null) and the shell's
+log. It writes the shell's real data dir, so it refuses to replace an existing registry
+without `--force`: run it on a throwaway runner or under a private `HOME`.
+
+## Logs
+
+Everything the shell says (`eprintln!` in `desktop/src-tauri`) also goes to a log file, so
+a release build with no console — Windows, a Finder or Start-menu launch, a `.desktop`
+entry — still leaves evidence:
+
+| OS | File |
+|---|---|
+| Windows | `%LOCALAPPDATA%\app.talaria.desktop\logs\talaria-desktop.log` |
+| macOS | `~/Library/Logs/app.talaria.desktop/talaria-desktop.log` |
+| Linux | `~/.local/share/app.talaria.desktop/logs/talaria-desktop.log` (flatpak: under `~/.var/app/app.talaria.desktop/data/`) |
+
+Each line carries a UTC timestamp; each launch starts with the version and the OS. At
+about 1 MB the file becomes `talaria-desktop.log.1`, replacing the one before, so the two
+files stay near 2 MB. Ask a person reporting a problem for both; no line carries a cookie
+or a session value. The sink is
+`desktop/src-tauri/src/logfile.rs`; the crate's own `eprintln!` macro (lib.rs) mirrors
+every call site to it.
 
 ## Installers
 

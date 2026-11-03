@@ -6,8 +6,21 @@
 //! which is also the GTK loop every webview paints from. Anything that can
 //! wait on the network or on another process — the beacon probe, the
 //! updater, the OS notification service — is `async` and off that thread.
-//! Window and webview operations stay sync, on the main thread, because
-//! WebKitGTK geometry depends on their order (docs/DESKTOP.md).
+//! Window and webview operations run on the main thread, because WebKitGTK
+//! geometry depends on their order (docs/DESKTOP.md).
+//!
+//! No IPC command may create a webview, or wait on WebView2, inline. A sync
+//! command runs INSIDE the calling webview's IPC callback, and on Windows that
+//! is a WebView2 event handler: creating a WebView2 there waits for a
+//! controller WebView2 cannot deliver while its handler is on the stack, and
+//! wry waits in a message pump with no timeout — the app froze for good on
+//! the first open of an instance. So every path that can create an instance
+//! webview (`activate`, `prewarm`) runs as a main-thread task of its own:
+//! an async command hops there with `on_main_turn`, and anything else that
+//! might be on the main thread already — a window event a sync command's
+//! window operation raised, a notification click — queues with
+//! `queue_main_turn`. `bun run check` holds the line
+//! (scripts/desktop-threading.mjs).
 
 use std::{
     collections::BTreeMap,
@@ -61,6 +74,73 @@ fn main_window(app: &AppHandle) -> Result<Window, String> {
 
 fn instance_label(id: &str) -> String {
     format!("instance-{id}")
+}
+
+/// Run `f` on the main thread, in an event-loop turn of its own, never inline
+/// in the caller. `run_on_main_thread` runs its closure at once when it is
+/// called on the main thread — and there the caller may be a WebView2 handler
+/// (an IPC callback, or a window event a sync command's window operation
+/// raised synchronously), where creating a webview deadlocks on Windows. Sent
+/// from a tokio worker instead, it is always queued, and the event loop runs
+/// it with no WebView2 handler on the stack.
+pub(crate) fn queue_main_turn(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let handle = app.clone();
+        if let Err(e) = app.run_on_main_thread(move || f(&handle)) {
+            eprintln!("talaria-desktop: the main thread is gone: {e}");
+        }
+    });
+}
+
+/// `queue_main_turn`, answered: an async command's way onto the main thread.
+/// It awaits on its tokio worker and never blocks the main thread on a reply,
+/// so the whole of `f` (hide → create → set_view → show) runs in one turn, in
+/// the order WebKitGTK needs.
+async fn on_main_turn<T: Send + 'static>(
+    app: &AppHandle,
+    f: impl FnOnce(&AppHandle) -> T + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    queue_main_turn(app, move |app| {
+        let _ = tx.send(f(app));
+    });
+    rx.await
+        .map_err(|_| "the main thread dropped the request".to_string())
+}
+
+/// Held while an instance's webview is being created, so a second activation
+/// cannot create the same label again meanwhile. On Windows the creation pumps
+/// messages until WebView2 hands over the controller, and the IPC of every
+/// webview keeps being dispatched inside that pump (tao holds back its own
+/// events and queued tasks until the turn ends, WebView2 does not). Nothing
+/// there may activate — that is the rule above — and this makes a slip a
+/// no-op instead of a second webview under one label. Dropped when the
+/// creation returns, either way.
+struct Creating<'a> {
+    state: &'a ShellState,
+    id: String,
+}
+
+impl<'a> Creating<'a> {
+    /// None: this id's webview is being created already.
+    fn begin(state: &'a ShellState, id: &str) -> Option<Self> {
+        state
+            .creating
+            .lock()
+            .unwrap()
+            .insert(id.to_string())
+            .then(|| Self {
+                state,
+                id: id.to_string(),
+            })
+    }
+}
+
+impl Drop for Creating<'_> {
+    fn drop(&mut self) {
+        self.state.creating.lock().unwrap().remove(&self.id);
+    }
 }
 
 /// Injected into every instance webview: Ctrl/Cmd+Shift+H returns to the
@@ -456,9 +536,17 @@ pub async fn probe_instance(app: AppHandle, id: String) -> Result<(), String> {
 /// (WebviewBuilder cannot create hidden, and WebKitGTK mis-places new
 /// children until a set_bounds, tauri#10420), then hand the whole window to
 /// it. A new webview opens at the instance's last page (suspend.rs).
+///
+/// Async, and the activation is one main-thread turn of its own: called from
+/// the launcher or the in-UI switcher, a sync command would create the
+/// webview inside the caller's IPC callback, which deadlocks on Windows (the
+/// threading note at the top). The launcher's `await` still resolves after
+/// the instance is on screen.
 #[tauri::command]
-pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
-    activate(&app, &id, None, None).map(|_| ())
+pub async fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
+    on_main_turn(&app, move |app| activate(app, &id, None, None))
+        .await?
+        .map(|_| ())
 }
 
 /// What `activate` did to the instance's webview.
@@ -471,6 +559,9 @@ enum Opened {
     /// Created now, at its last page; a `pending` script, if one was given,
     /// carries what the caller had to say once the page is up.
     Created,
+    /// Being created by an activation that is still running (`Creating`):
+    /// that one shows it, and this one changes nothing.
+    Pending,
 }
 
 /// `activate_instance`, plus a notification's `href`: a webview created for
@@ -487,6 +578,17 @@ fn activate(
     let instance = state.find(id)?;
     let window = main_window(app)?;
     let label = instance_label(&instance.id);
+    let live = window.get_webview(&label).is_some();
+    // Before anything changes: a second activation during the creation
+    // leaves the first to finish what it started.
+    let _creating = if live {
+        None
+    } else {
+        match Creating::begin(&state, &instance.id) {
+            Some(creating) => Some(creating),
+            None => return Ok(Opened::Pending),
+        }
+    };
 
     for other in window.webviews() {
         if other.label().starts_with("instance-") && other.label() != label {
@@ -494,7 +596,7 @@ fn activate(
         }
     }
     let mut opened = Opened::Live;
-    if window.get_webview(&label).is_none() {
+    if !live {
         // Restoring: the load starts here, on the first signal. No probe —
         // a suspended instance answered a moment ago, and a page that fails
         // now comes back to the launcher as a load failure (Linux).
@@ -602,8 +704,13 @@ fn create_instance_webview(
         .map_err(|e| format!("stored URL no longer parses: {e}"))?;
     let rect = layout::creation_rect(window);
     let loaded_id = instance.id.clone();
+    // No drag-drop handler: Tauri's takes every drop for its own file-drop
+    // events, which the shell never listens to, and on Windows it stops
+    // HTML5 drag and drop altogether — boards, the Gantt, file drops into a
+    // composer. Without it the page gets drops as a browser tab does.
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
         .data_directory(dir)
+        .disable_drag_drop_handler()
         .background_color(GROUND)
         .initialization_script(ESCAPE_HATCH)
         .on_page_load(move |webview, payload| {
@@ -878,20 +985,45 @@ fn window_away(app: &AppHandle, window: &Window) -> bool {
 }
 
 /// The instance on screen was suspended while the window was away, and the
-/// window is back: recreate it at its page, now.
+/// window is back: recreate it at its page, in the next main-thread turn.
+///
+/// Queued, never inline: this runs from window events, and on Windows a
+/// window operation inside a sync command (maximize, a titlebar change)
+/// raises them synchronously, inside that command's WebView2 callback.
 fn restore_shown(app: &AppHandle, window: &Window) {
-    let state = app.state::<ShellState>();
-    let view = *state.view.lock().unwrap();
-    let Some(id) = state.active.lock().unwrap().clone() else {
+    let Some(id) = suspended_on_screen(app, window) else {
         return;
     };
+    queue_main_turn(app, move |app| {
+        // Looked at again: the person may have moved on, or an earlier
+        // queued restore brought it back already.
+        let Ok(window) = main_window(app) else {
+            return;
+        };
+        if suspended_on_screen(app, &window).as_deref() != Some(id.as_str()) {
+            return;
+        }
+        if let Err(e) = activate(app, &id, None, None) {
+            eprintln!("talaria-desktop: restoring {id}: {e}");
+        }
+    });
+}
+
+/// The active instance, when the window shows it and its webview is gone
+/// because it was suspended.
+fn suspended_on_screen(app: &AppHandle, window: &Window) -> Option<String> {
+    let state = app.state::<ShellState>();
+    let view = *state.view.lock().unwrap();
+    let id = state.active.lock().unwrap().clone()?;
     if view != View::Active || window.get_webview(&instance_label(&id)).is_some() {
-        return;
+        return None;
     }
-    let suspended = state.suspended.lock().unwrap().contains_key(&id);
-    if suspended && let Err(e) = activate(app, &id, None, None) {
-        eprintln!("talaria-desktop: restoring {id}: {e}");
-    }
+    state
+        .suspended
+        .lock()
+        .unwrap()
+        .contains_key(&id)
+        .then_some(id)
 }
 
 /// The window was focused, restored or resized: if it is on screen again and
@@ -1607,16 +1739,18 @@ pub(crate) fn reveal_notice(
     // a suspended instance the click restores, once the restored page is up.
     let summary = id == notify::SUMMARY_TAG && href.is_none();
     // WebKitGTK eval and window ops belong on the main thread; the click
-    // arrives on a bus or delegate thread. This only queues the reveal.
-    let _ = app.clone().run_on_main_thread(move || {
+    // arrives on a bus or delegate thread — or on the main thread itself
+    // (the macOS delegate), where run_on_main_thread would run the activate
+    // inline. This only queues the reveal, as a turn of its own.
+    queue_main_turn(&app, move |app| {
         let mut opened = Opened::Live;
         if let Some(instance) = label.strip_prefix("instance-") {
             let pending = summary
                 .then(|| notify::pending_open_js(None, &id, registry::now_ms() as u64))
                 .flatten();
-            opened = activate(&app, instance, href.as_deref(), pending).unwrap_or(Opened::AtHref);
+            opened = activate(app, instance, href.as_deref(), pending).unwrap_or(Opened::AtHref);
         }
-        crate::background::present_main(&app, token);
+        crate::background::present_main(app, token);
         if opened != Opened::Live {
             return;
         }
@@ -1670,12 +1804,16 @@ pub fn set_instance_muted(app: AppHandle, id: String, muted: bool) -> Result<(),
     Ok(())
 }
 
-/// A tray row: that instance, in front.
+/// A tray row: that instance, in front. Queued like every other open, so no
+/// caller decides whether it may create a webview where it stands.
 pub(crate) fn open_from_tray(app: &AppHandle, id: &str) {
-    if let Err(e) = activate(app, id, None, None) {
-        eprintln!("talaria-desktop: opening instance-{id} from the tray: {e}");
-    }
-    crate::background::present_main(app, None);
+    let id = id.to_string();
+    queue_main_turn(app, move |app| {
+        if let Err(e) = activate(app, &id, None, None) {
+            eprintln!("talaria-desktop: opening instance-{id} from the tray: {e}");
+        }
+        crate::background::present_main(app, None);
+    });
 }
 
 /// Close this instance's OS banners for these tags (I-16, I-22): ui calls it
@@ -1788,6 +1926,9 @@ fn prewarm(app: &AppHandle, id: &str) {
     {
         return;
     }
+    let Some(_creating) = Creating::begin(&state, id) else {
+        return;
+    };
     let target = state
         .last_urls
         .lock()

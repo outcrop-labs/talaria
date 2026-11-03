@@ -46,10 +46,26 @@
 // that silently never appears. The one failure setup still returns is an app
 // data dir that cannot be found or created, where nothing could be saved.
 
+/// Every `eprintln!` in this crate goes to stderr AND to the shell's log file
+/// (logfile.rs) once setup has opened it. A release build on Windows has no
+/// console, and a Finder or Start-menu launch discards stderr, so without
+/// the file a report from a person came with no evidence at all. Defined
+/// before the modules so it shadows std's macro in every one of them, with no
+/// call site changed; `::std::eprintln!` is the plain one.
+macro_rules! eprintln {
+    () => {
+        $crate::logfile::line(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        $crate::logfile::line(format_args!($($arg)*))
+    };
+}
+
 mod background;
 mod beacon;
 mod commands;
 mod layout;
+mod logfile;
 mod notify;
 mod registry;
 mod settings;
@@ -147,6 +163,9 @@ pub struct ShellState {
     self_minimized: AtomicBool,
     /// Local ids muted in the launcher (registry `muted`).
     muted: Mutex<BTreeSet<String>>,
+    /// Local ids whose webview is being created right now
+    /// (commands::Creating).
+    creating: Mutex<BTreeSet<String>>,
 }
 
 impl ShellState {
@@ -294,6 +313,21 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // First, so everything setup says is in the file too. Windows:
+            // %LOCALAPPDATA%\app.talaria.desktop\logs; macOS:
+            // ~/Library/Logs/app.talaria.desktop; Linux:
+            // ~/.local/share/app.talaria.desktop/logs. No dir: stderr only.
+            match app.path().app_log_dir() {
+                Ok(dir) => logfile::open(&dir),
+                Err(e) => eprintln!("talaria-desktop: no log directory ({e}); logging to stderr only"),
+            }
+            eprintln!(
+                "talaria-desktop: {} {} on {} {}",
+                app.package_info().name,
+                app.package_info().version,
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
             // The identifier in tauri.conf.json decides this path on Linux
             // (~/.local/share/app.talaria.desktop) — changing it orphans the
             // registry and every instance's saved session.
@@ -380,6 +414,7 @@ pub fn run() {
                 suspended: Mutex::new(HashMap::new()),
                 self_minimized: AtomicBool::new(false),
                 muted: Mutex::new(muted),
+                creating: Mutex::new(BTreeSet::new()),
             });
             app.manage(tray::Tray::default());
             notify::init(app.handle());

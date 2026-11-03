@@ -29,7 +29,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# `system-proxy`: the probe and the watcher take the Windows (WinINet) and
+# macOS proxy settings, as the webview does. The updater's default features
+# already turn it on for the one reqwest in the build, so naming it compiles
+# nothing new; it says what the shell relies on. PAC/WPAD is still not read.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "system-proxy"] }
 webpki-root-certs = "1.0.9"
 # Already Tauri's runtime: these are the features it builds with, so naming
 # them adds no compile. `time` bounds the notification post, `rt` gives the

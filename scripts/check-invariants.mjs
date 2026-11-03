@@ -57,6 +57,7 @@ import {
 } from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { scanWebviewThreading, selfTest as desktopThreadingSelfTest } from './desktop-threading.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
@@ -2505,6 +2506,63 @@ const UNSET_SEAM_CENSUS = [
       found,
     })
   }
+}
+
+// THE DESKTOP SHELL MAKES WEBVIEWS ONLY IN A MAIN-THREAD TURN OF ITS OWN.
+//
+// A sync `#[tauri::command]` runs inside the calling webview's IPC callback.
+// On Windows that is a WebView2 handler, and a WebView2 created there never
+// finishes: `activate_instance` did exactly that, and every first open of an
+// instance froze Talaria Desktop on Windows for good. Linux and macOS create
+// synchronously, so only a Windows run could see it — this sees it on any OS,
+// before review. The judging (a call graph by name, hops, what counts as a
+// creation) and its fixture live in scripts/desktop-threading.mjs; the rule is
+// stated at the top of desktop/src-tauri/src/commands.rs.
+{
+  const desktopSrc = 'desktop/src-tauri/src'
+  const files = new Map()
+  for (const f of walk(join(ROOT, desktopSrc), [], ['.rs'])) {
+    files.set(relative(ROOT, f).split(sep).join('/'), readFileSync(f, 'utf8'))
+  }
+  const wrong = desktopThreadingSelfTest()
+  const { violations, commands, creators } = scanWebviewThreading(files)
+  if (wrong.length || commands === 0 || creators.length === 0) {
+    failures.push({
+      id: 'desktop-webview-threading-blind',
+      what: 'the desktop webview-threading tripwire can no longer see what it guards',
+      fix: [
+        'scripts/desktop-threading.mjs must flag its own fixture, and must find the shell\'s',
+        `\`#[tauri::command]\`s and at least one webview creation under ${desktopSrc}. If the`,
+        'commands or the creation moved (a new file, a renamed builder), point the scanner at',
+        'them in the same commit — a tripwire that sees nothing passes while guarding nothing.',
+      ],
+      found: [
+        ...wrong.map((text) => ({ path: 'scripts/desktop-threading.mjs', line: 0, text: `self-test: ${text}` })),
+        ...(commands === 0 ? [{ path: desktopSrc, line: 0, text: 'no #[tauri::command] found' }] : []),
+        ...(creators.length === 0 ? [{ path: desktopSrc, line: 0, text: 'no webview creation found' }] : []),
+      ],
+    })
+  }
+  if (violations.length) {
+    failures.push({
+      id: 'desktop-webview-created-inside-ipc',
+      what: 'a desktop shell command can create a webview (or wait on WebView2) where Windows deadlocks',
+      fix: [
+        'A sync command runs inside the caller\'s WebView2 IPC callback: make it `async`, and run the',
+        'creation as one main-thread turn with `on_main_turn(&app, move |app| …).await` (commands.rs).',
+        'An async command must not create from its tokio worker either — the same hop keeps hide →',
+        'create → show in one turn, the order WebKitGTK geometry needs. Code that may already be on',
+        'the main thread (a window event, a notification click) queues with `queue_main_turn`;',
+        '`run_on_main_thread` runs inline there, so it is not a way out. docs/DESKTOP.md, "Threading".',
+      ],
+      found: violations.map((v) => ({
+        path: v.path,
+        line: v.line,
+        text: `${v.kind === 'sync' ? 'sync command' : 'async command, from its tokio worker'}: ${v.chain.join(' → ')}`,
+      })),
+    })
+  }
+  notes.push(`desktop threading: ${commands} shell commands, none reaches webview creation inline`)
 }
 
 // THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.

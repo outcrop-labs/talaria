@@ -568,6 +568,9 @@ pub enum Permission {
     /// macOS: not asked yet.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     NotDetermined,
+    /// Linux and macOS: no notification service to ask. Windows always
+    /// reports Granted (notify/windows.rs).
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     Unavailable,
 }
 
