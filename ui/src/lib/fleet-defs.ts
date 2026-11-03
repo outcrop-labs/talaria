@@ -526,6 +526,29 @@ export async function hireFleetAgent(input: {
   }
 }
 
+/** Run a failed hire again on the same agent (`POST /api/fleet/hires/{id}/retry`):
+ *  the agent its first run created is adopted, rendered, pulled and booted. */
+export async function retryFleetHire(id: string): Promise<{ ok?: boolean; hire?: { id: string; state: string; phase: string }; error?: string }> {
+  try {
+    return await postJson<{ ok?: boolean; hire?: { id: string; state: string; phase: string } }>(`/api/fleet/hires/${encodeURIComponent(id)}/retry`, {})
+  } catch (e) {
+    return { error: errorMessage(e) }
+  }
+}
+
+/** The hires the roster's strip shows. A failed hire's row stays for the
+ *  hires window so its sentence can be read and retried — but not once it is
+ *  answered: a newer hire of the same agent (its Retry, or a fresh hire of the
+ *  handle) is the row to watch, and an agent that runs (Start pressed on it, or
+ *  a boot that landed after the run gave up) has its answer on the tile. */
+export function hiresToShow(hires: AgentHire[], runningDepartments: Set<string>): AgentHire[] {
+  return hires.filter((h) => {
+    if (h.state !== 'error') return true
+    if (runningDepartments.has(h.department)) return false
+    return !hires.some((o) => o.id !== h.id && o.slug === h.slug && o.createdAt > h.createdAt)
+  })
+}
+
 /** Live + recently-landed hires. Polls hard while anything is in flight and
  *  goes quiet the moment nothing is — the query the roster's hiring rows and
  *  the "the new agent has landed" invalidation both hang off. */

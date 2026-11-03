@@ -27,7 +27,7 @@
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { containersOf, rollFleet, rollRowsBySlug, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
+  import { containersOf, hiresToShow, rollFleet, rollRowsBySlug, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
@@ -91,6 +91,14 @@
     }
   })
   const byDept = $derived(new Map((containersQuery.data ?? []).map((c) => [c.department, c])))
+  // The strip's rows: a failed hire's row (with its Retry) goes once it is
+  // answered — a newer hire of the agent, or the agent running (`hiresToShow`).
+  const stripHires = $derived(
+    hiresToShow(
+      hiresQuery.data?.hires ?? [],
+      new Set((containersQuery.data ?? []).filter((c) => c.managed?.state === 'running').map((c) => c.department)),
+    ),
+  )
 
   // ROLLING THE WHOLE FLEET. The picture is admin-only (so is the route):
   // one row per managed agent, polled every five seconds while anything
@@ -392,7 +400,7 @@
          created (the run's own phase sentence), a row per recent failure.
          Nothing renders once the work is done — the tile materializing over
          the strip IS the completion event. -->
-    <HiringStrip hires={hiresQuery.data?.hires ?? []} />
+    <HiringStrip hires={stripHires} />
 
     <!-- TALA-11: an agent DESIGN running in the background (or finished but
          unclaimed) — the same shelf the hires use, one slim status row. It
