@@ -6,7 +6,7 @@
 // disconnect. Messages sent while a reply streams queue into history (202)
 // and the completing turn picks them up.
 
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -22,6 +22,7 @@ use talaria_body::{
     optional_enum_member, optional_max_string_member, optional_uuid_array_member,
     optional_uuid_member, string_member, string_msg, uuid_member, zod_type_name,
 };
+use talaria_chat_persist::edge::{FIRST_BYTE_WITHIN, KEEPALIVE_EVERY, answer_turn};
 use talaria_chat_persist::{
     OpeningTurn, PersistMeta, PlanMeta, TurnMeta, answer_after_orphan, continue_conversation,
     open_streaming_reply, persist_assistant_stream, pinned_turn, send_turn, turn_sent,
@@ -169,6 +170,9 @@ pub async fn post(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    // The edge counts from here: the route's own reads before the turn are
+    // part of the wait for its first byte.
+    let arrived = tokio::time::Instant::now();
     let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
     let obj = object_or_400(&parsed)?;
@@ -824,17 +828,6 @@ pub async fn post(
     }
 
     let sent_at_ms = talaria_agent_auth::now_ms();
-    let upstream = send_turn(
-        &state.pg,
-        pinned,
-        &agent_model,
-        &routed_model,
-        &conv_id,
-        &messages,
-        effort.as_deref(),
-    )
-    .await;
-
     // Tee: one branch relays to the client (fed by the persist loop's forward
     // channel — a client hang-up is a send error it ignores, exactly what a
     // tee does to its other branch), one persists server-side, detached, so
@@ -850,34 +843,60 @@ pub async fn post(
         resumed: false,
         sent_at_ms: Some(sent_at_ms),
     };
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let assistant_id_header = assistant_id.clone();
     let persist_conv_id = conv_id.clone();
-    tokio::spawn(async move {
-        let _writer = writer;
-        persist_assistant_stream(
-            state,
-            upstream.body,
-            assistant_id,
-            persist_conv_id,
-            Some(persist_meta),
-            Some(tx),
-            opening,
-        )
-        .await;
-    });
-    let client_stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
-    });
+    // THE TURN OPENS IN A TASK OF ITS OWN, and the answer does not wait on it
+    // past the edge: an agent slow to its first frame (a long context, a
+    // compaction) holds its headers for minutes, and Cloudflare answers 524
+    // at 100 s. A turn that has not opened within FIRST_BYTE_WITHIN of this
+    // request is answered 200 event-stream at once and kept alive until it
+    // speaks (talaria-chat-persist `edge`); one that opens in time keeps the
+    // agent's own status, as before.
+    let turn = {
+        let pg = state.pg.clone();
+        let agent_model = agent_model.clone();
+        let conv_id = conv_id.clone();
+        async move {
+            send_turn(
+                &pg,
+                pinned,
+                &agent_model,
+                &routed_model,
+                &conv_id,
+                &messages,
+                effort.as_deref(),
+            )
+            .await
+        }
+    };
+    let answer = answer_turn(
+        turn,
+        move |upstream, tx| async move {
+            let _writer = writer;
+            persist_assistant_stream(
+                state,
+                upstream,
+                assistant_id,
+                persist_conv_id,
+                Some(persist_meta),
+                Some(tx),
+                opening,
+            )
+            .await;
+        },
+        FIRST_BYTE_WITHIN.saturating_sub(arrived.elapsed()),
+        KEEPALIVE_EVERY,
+    )
+    .await;
     Ok(Response::builder()
-        .status(StatusCode::from_u16(upstream.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+        .status(StatusCode::from_u16(answer.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
         // cache-control first — it sits above content-type on the wire, and
         // header order is part of the contract.
         .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONTENT_TYPE, upstream.content_type.clone())
+        .header(header::CONTENT_TYPE, answer.content_type().to_string())
         .header("x-conversation-id", conv_id.as_str())
         .header("x-message-id", assistant_id_header.as_str())
-        .body(Body::from_stream(client_stream))
+        .body(Body::from_stream(answer.body))
         .expect("static headers build"))
 }
 

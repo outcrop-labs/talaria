@@ -8,6 +8,7 @@
 
 mod turn_stop;
 pub use turn_stop::{HELD_FOR, SentTurn, TurnAwaited, await_sent_turn, turn_sent};
+pub mod edge;
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
