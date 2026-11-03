@@ -34,7 +34,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// How long a page may take to load before the shell offers a way back.
@@ -481,10 +481,11 @@ pub fn page_reason(status: Option<u16>, network: Option<&str>) -> Option<String>
 /// titlebar the page may grow: macOS's controls, the wing mark), that opens
 /// the launcher. Built from text nodes, styled through CSSOM, in a shadow
 /// root — nothing a page CSP refuses — and evaluated by the shell, so the
-/// page needs no help. On another origin (a sign-in provider the gate sent
-/// it to) the shell refuses the page's call, so it falls back to the
-/// reserved `WAY_BACK` navigation, which the shell's navigation hook turns
-/// into the launcher. Ctrl/Cmd+Shift+H does the same (the escape hatch).
+/// page needs no help. Only a real click counts (`isTrusted`: a page's own
+/// script cannot press it). On another origin (a sign-in provider the gate
+/// sent it to) its call reaches the shell through the way-back grant, which
+/// holds `show_welcome` alone (lib.rs::grant_way_back). Ctrl/Cmd+Shift+H does
+/// the same (the escape hatch).
 pub const PILL_JS: &str = r#"(() => {
   const ID = 'talaria-desktop-back';
   const root = document.documentElement;
@@ -500,9 +501,8 @@ pub const PILL_JS: &str = r#"(() => {
   b.style.cssText = 'font-family:"IBM Plex Sans",ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;font-weight:600;font-size:12px;line-height:1.4;padding:4px 10px;border-radius:6px;border:1px solid #4a4640;background:#141312;color:#e7e2db;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.45);';
   b.addEventListener('click', (e) => {
     e.stopPropagation();
-    const back = () => location.assign('https://talaria-desktop.invalid/back');
-    const ipc = window.__TAURI_INTERNALS__;
-    if (ipc) ipc.invoke('show_welcome', {}).catch(back); else back();
+    if (!e.isTrusted || !window.__TAURI_INTERNALS__) return;
+    window.__TAURI_INTERNALS__.invoke('show_welcome', {}).catch(() => {});
   });
   shadow.append(b);
   root.appendChild(host);
@@ -512,37 +512,29 @@ pub const PILL_JS: &str = r#"(() => {
 pub const PILL_OFF_JS: &str =
     "(() => { const h = document.getElementById('talaria-desktop-back'); if (h) h.remove(); })()";
 
-/// Reserved navigations, for a page that may not call the shell (another
-/// origin): the shell's navigation hook refuses them and does what they
-/// name. `.invalid` never resolves (RFC 2606), so no engine that missed the
-/// hook could load anything there.
-pub const WAY_BACK: &str = "https://talaria-desktop.invalid/back";
-pub const WAY_OUT: &str = "https://talaria-desktop.invalid/quit";
+/// The way back from an instance page (`show_welcome`) is taken only for the
+/// page on screen, and at most once in `WAY_BACK_GAP` per page: a page left
+/// in the background, or one that calls it in a loop, cannot keep throwing
+/// the person to the launcher.
+pub const WAY_BACK_GAP: Duration = Duration::from_secs(1);
 
-/// What a reserved navigation asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reserved {
-    /// The launcher (`show_welcome`).
-    Back,
-    /// Quit (`desktop_quit`).
-    Quit,
+pub fn may_go_back(on_screen: bool, last: Option<Instant>, now: Instant) -> bool {
+    on_screen && last.is_none_or(|last| now.saturating_duration_since(last) >= WAY_BACK_GAP)
 }
 
-/// Is `url` one of the shell's reserved navigations?
-pub fn reserved(url: &str) -> Option<Reserved> {
-    let url = url::Url::parse(url).ok()?;
-    let is = |reserved: &str| {
-        url::Url::parse(reserved)
-            .is_ok_and(|r| r.origin() == url.origin() && r.path() == url.path())
-    };
-    if is(WAY_BACK) {
-        Some(Reserved::Back)
-    } else if is(WAY_OUT) {
-        Some(Reserved::Quit)
-    } else {
-        None
-    }
+/// An instance page's Quit (`desktop_quit`, the instance's own origin only)
+/// is taken only for the page on screen, and not in the first
+/// `QUIT_GRACE` after launch: a page restored at launch cannot quit the app
+/// on every start.
+pub const QUIT_GRACE: Duration = Duration::from_secs(10);
+
+pub fn may_quit(on_screen: bool, since_launch: Duration) -> bool {
+    on_screen && since_launch >= QUIT_GRACE
 }
+
+/// The host the shell's earlier ways back navigated to. Nothing acts on it
+/// now; a navigation there is refused (commands.rs::allowed_navigation).
+pub const RETIRED_HOST: &str = "talaria-desktop.invalid";
 
 /// The card's sentence for a load that stalled.
 pub fn stalled_message(instance: &str) -> String {
@@ -1023,28 +1015,32 @@ mod tests {
         assert!(!loads.open_fresh("b"));
     }
 
+    // B3: who may take the way back, and Quit.
     #[test]
-    fn the_reserved_navigations_are_exact() {
-        assert_eq!(reserved(WAY_BACK), Some(Reserved::Back));
-        assert_eq!(reserved(WAY_OUT), Some(Reserved::Quit));
-        assert_eq!(
-            reserved("https://talaria-desktop.invalid/back?x=1#y"),
-            Some(Reserved::Back)
-        );
-        for not in [
-            "http://talaria-desktop.invalid/back",
-            "https://talaria-desktop.invalid/",
-            "https://talaria-desktop.invalid/backdoor",
-            "https://talaria-desktop.invalid.evil.example/back",
-            "https://evil.example/talaria-desktop.invalid/back",
-            "https://acme.talaria.example/back",
-            "about:blank",
-            "not a url",
-        ] {
-            assert_eq!(reserved(not), None, "{not}");
-        }
-        // The pill's fallback is the reserved way back.
-        assert!(PILL_JS.contains(&format!("location.assign('{WAY_BACK}')")));
+    fn only_the_page_on_screen_goes_back_once_a_second_and_quits_after_launch() {
+        let t0 = Instant::now();
+        // The page on screen, a real press: back.
+        assert!(may_go_back(true, None, t0));
+        // A page off screen (left in the background, loaded at launch): never.
+        assert!(!may_go_back(false, None, t0));
+        assert!(!may_go_back(false, Some(t0), t0 + Duration::from_secs(60)));
+        // A burst from the page on screen: one in each WAY_BACK_GAP.
+        assert!(!may_go_back(
+            true,
+            Some(t0),
+            t0 + Duration::from_millis(100)
+        ));
+        assert!(!may_go_back(
+            true,
+            Some(t0),
+            t0 + Duration::from_millis(999)
+        ));
+        assert!(may_go_back(true, Some(t0), t0 + WAY_BACK_GAP));
+        // Quit: the page on screen, and never in the first seconds of a launch
+        // (a page restored at launch cannot quit every start).
+        assert!(!may_quit(true, Duration::from_secs(2)));
+        assert!(!may_quit(false, Duration::from_secs(600)));
+        assert!(may_quit(true, QUIT_GRACE));
     }
 
     #[test]
@@ -1083,6 +1079,11 @@ mod tests {
         // Bottom left: clear of a themed titlebar the page may grow.
         assert!(PILL_JS.contains("bottom:12px;left:12px"));
         assert!(PILL_JS.contains("invoke('show_welcome'"));
+        // Only a real click: a page's script cannot press it. And no
+        // navigation the shell would act on (B3).
+        assert!(PILL_JS.contains("if (!e.isTrusted || !window.__TAURI_INTERNALS__) return;"));
+        assert!(!PILL_JS.contains(RETIRED_HOST));
+        assert!(!PILL_JS.contains("location"));
         assert!(!PILL_JS.contains("innerHTML"));
         assert!(!PILL_JS.contains("<style"));
         assert!(PILL_JS.contains("attachShadow"));

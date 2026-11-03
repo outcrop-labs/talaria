@@ -158,21 +158,24 @@ impl Drop for Creating<'_> {
 /// be a one-way door — the shell itself provides the floor. Ctrl+Q (Cmd+Q on
 /// macOS, where the app menu also has it) quits the shell from any page, for
 /// the same reason: with Close keeping Talaria in the background, Quit must
-/// never depend on the instance's UI version. On another origin (a sign-in
-/// provider) the shell refuses the page's call, so each key falls back to a
-/// reserved navigation (`loading::WAY_BACK`, `WAY_OUT`) that the navigation
-/// hook turns into the same thing (`take_reserved`).
+/// never depend on the instance's UI version. Only a real key press counts
+/// (`isTrusted`: a page's own script cannot fake one). The shell injects
+/// `__TAURI_INTERNALS__` into the main frame only, so no frame has either.
+/// On another origin (a sign-in provider) Ctrl/Cmd+Shift+H still works
+/// through the way-back grant, which holds `show_welcome` alone
+/// (lib.rs::grant_way_back); Ctrl+Q works only on the instance's own origin,
+/// and the OS's own quit (Alt+F4, the macOS menu) works everywhere.
 const ESCAPE_HATCH: &str = r#"
   if (window.__TAURI_INTERNALS__) {
     const mac = /Mac|iPhone|iPad/.test(navigator.userAgent);
-    const ask = (cmd, url) => window.__TAURI_INTERNALS__.invoke(cmd).catch(() => location.assign(url));
     window.addEventListener('keydown', (e) => {
+      if (!e.isTrusted) return;
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'h') {
         e.preventDefault();
-        ask('show_welcome', 'https://talaria-desktop.invalid/back');
+        window.__TAURI_INTERNALS__.invoke('show_welcome').catch(() => {});
       } else if ((mac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'q') {
         e.preventDefault();
-        ask('desktop_quit', 'https://talaria-desktop.invalid/quit');
+        window.__TAURI_INTERNALS__.invoke('desktop_quit').catch(() => {});
       }
     }, true);
   }
@@ -221,22 +224,17 @@ fn allowed_navigation(label: &str, url: &tauri::Url) -> bool {
         eprintln!("talaria-desktop: {label}: refused a navigation to a local file");
         return false;
     }
-    true
-}
-
-/// A reserved navigation from a page that may not call the shell (the
-/// way-back pill or the escape keys on another origin): refused by the
-/// navigation hook, and done here, a main-thread turn of its own.
-fn take_reserved(app: &AppHandle, what: loading::Reserved) {
-    match what {
-        loading::Reserved::Back => {
-            eprintln!("talaria-desktop: the way back, from a page that may not call the shell");
-            if let Err(e) = show_welcome(app.clone()) {
-                eprintln!("talaria-desktop: back to the launcher: {e}");
-            }
-        }
-        loading::Reserved::Quit => crate::background::quit(app),
+    // The host an earlier build's ways back used: refused, and never acted
+    // on — any page or frame can navigate anywhere, so a navigation is
+    // nobody's request (B3).
+    if url.host_str() == Some(loading::RETIRED_HOST) {
+        eprintln!(
+            "talaria-desktop: {label}: refused a navigation to {}",
+            loading::RETIRED_HOST
+        );
+        return false;
     }
+    true
 }
 
 /// Everything the launcher renders, in one read. The launcher asks for it at
@@ -858,17 +856,10 @@ fn create_instance_webview(
     // DROP_GUARD and allowed_navigation keep a drop the page does not take
     // from navigating it away.
     let nav_label = label.clone();
-    let nav_app = app.clone();
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
         .data_directory(dir)
         .disable_drag_drop_handler()
-        .on_navigation(move |url| match loading::reserved(url.as_str()) {
-            Some(what) => {
-                queue_main_turn(&nav_app, move |app| take_reserved(app, what));
-                false
-            }
-            None => allowed_navigation(&nav_label, url),
-        })
+        .on_navigation(move |url| allowed_navigation(&nav_label, url))
         .background_color(GROUND)
         .initialization_script(ESCAPE_HATCH)
         .initialization_script(DROP_GUARD)
@@ -1452,9 +1443,87 @@ fn instance_not_talaria(app: &AppHandle, id: &str, words: &str, keep: bool) {
 
 /// Back to the launcher: every instance webview hidden (they stay loaded —
 /// sessions and SSE survive), the welcome screen full-window. Reachable from
-/// the in-UI switcher ("manage instances") as well as the shell itself.
+/// the in-UI switcher ("manage instances"), the launcher, and, on an
+/// instance's page on any origin, the way-back pill and Ctrl/Cmd+Shift+H.
+///
+/// An instance page's call is taken only for the page on screen, at most
+/// once a second (`loading::may_go_back`): a page in the background, or one
+/// calling it in a loop, cannot throw the person out of whatever they are
+/// using. A page that went back from another origin (a sign-in provider) is
+/// not the instance's page: the next open of the instance loads it fresh
+/// (`Loads::keep`), so it cannot bounce the person back out.
 #[tauri::command]
-pub fn show_welcome(app: AppHandle) -> Result<(), String> {
+pub fn show_welcome(app: AppHandle, webview: Webview) -> Result<(), String> {
+    if let Some(id) = webview.label().strip_prefix("instance-") {
+        let state = app.state::<ShellState>();
+        let on_screen = *state.view.lock().unwrap() == View::Active
+            && state.active.lock().unwrap().as_deref() == Some(id);
+        if !way_back_now(id, on_screen) {
+            return Ok(());
+        }
+        if let (Ok(instance), Ok(url)) = (state.find(id), webview.url())
+            && loading::elsewhere(&instance.url, url.as_str())
+        {
+            eprintln!(
+                "talaria-desktop: instance-{id}: back from another origin; its next open loads it fresh"
+            );
+            leave_from_elsewhere(&app, id);
+            return Ok(());
+        }
+    }
+    go_welcome(&app)
+}
+
+/// When each instance page last took the way back (`loading::WAY_BACK_GAP`).
+fn way_back_now(id: &str, on_screen: bool) -> bool {
+    type Last = std::sync::Mutex<std::collections::HashMap<String, Instant>>;
+    static LAST: std::sync::OnceLock<Last> = std::sync::OnceLock::new();
+    let mut last = LAST
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+    if loading::may_go_back(on_screen, last.get(id).copied(), now) {
+        last.insert(id.to_string(), now);
+        return true;
+    }
+    // Said once in a while, not once a call: a page calling in a loop must
+    // not fill the log either.
+    static SAID: std::sync::OnceLock<Last> = std::sync::OnceLock::new();
+    let mut said = SAID
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if said
+        .get(id)
+        .is_none_or(|at| now.saturating_duration_since(*at) >= Duration::from_secs(10))
+    {
+        said.insert(id.to_string(), now);
+        eprintln!(
+            "talaria-desktop: instance-{id}: refused its way back ({}; said once in 10 s)",
+            if on_screen {
+                "again within a second"
+            } else {
+                "not on screen"
+            }
+        );
+    }
+    false
+}
+
+/// Back from a page on another origin: the launcher, with the card if one
+/// came with the page, and the page marked so that only Show the page shows
+/// it again.
+fn leave_from_elsewhere(app: &AppHandle, id: &str) {
+    let _ = go_welcome(app);
+    let state = app.state::<ShellState>();
+    let mut loads = state.loads.lock().unwrap();
+    loads.unshow(id);
+    loads.keep(id);
+}
+
+/// `show_welcome`, for the shell itself.
+fn go_welcome(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<ShellState>();
     // Back from a page shown without its UI (the way-back pill, the escape
     // keys): its card, so Retry and Show the page are there again.
@@ -1483,8 +1552,8 @@ pub fn show_welcome(app: AppHandle) -> Result<(), String> {
     if let Err(e) = state.persist() {
         eprintln!("talaria-desktop: {e}");
     }
-    set_view(&app, View::Welcome)?;
-    emit_state(&app);
+    set_view(app, View::Welcome)?;
+    emit_state(app);
     Ok(())
 }
 
@@ -2421,10 +2490,36 @@ pub fn desktop_set_badge(
     Ok(())
 }
 
-/// Quit: from the switcher, the launcher, Ctrl+Q, or the tray.
+/// Quit: from the switcher, the launcher, Ctrl+Q, or the tray. An instance
+/// page reaches it only on its own origin (the switcher grant), and it is
+/// taken only for the page on screen, and not in the first seconds after
+/// launch (`loading::may_quit`): a page in the background, or one restored at
+/// launch, cannot quit the app, let alone on every start.
 #[tauri::command]
-pub fn desktop_quit(app: AppHandle) {
+pub fn desktop_quit(app: AppHandle, webview: Webview) {
+    if let Some(id) = webview.label().strip_prefix("instance-") {
+        let state = app.state::<ShellState>();
+        let on_screen = *state.view.lock().unwrap() == View::Active
+            && state.active.lock().unwrap().as_deref() == Some(id);
+        if !loading::may_quit(on_screen, launched().elapsed()) {
+            eprintln!(
+                "talaria-desktop: instance-{id}: refused its Quit ({})",
+                if on_screen {
+                    "just launched"
+                } else {
+                    "not on screen"
+                }
+            );
+            return;
+        }
+    }
     crate::background::quit(&app);
+}
+
+/// When this shell started (lib.rs::run marks it first thing).
+pub(crate) fn launched() -> Instant {
+    static AT: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *AT.get_or_init(Instant::now)
 }
 
 /// Settings → Desktop's "Keep running in the background".
@@ -2749,23 +2844,32 @@ mod tests {
         }
     }
 
-    /// The shape only: the behaviour (zones, fields, contenteditable, a
-    /// stray drop) is run against a stub DOM by scripts/desktop-drop-guard.mjs
-    /// in `bun run check`, and against WebKitGTK with real drags on the rig.
+    // B3: a page cannot fake the keys, and no navigation is acted on.
     #[test]
-    fn the_escape_keys_fall_back_to_the_reserved_navigations() {
-        // On another origin the shell refuses the page's call: each key then
-        // navigates where the navigation hook takes it (S11).
-        assert!(ESCAPE_HATCH.contains(&format!("ask('show_welcome', '{}')", loading::WAY_BACK)));
-        assert!(ESCAPE_HATCH.contains(&format!("ask('desktop_quit', '{}')", loading::WAY_OUT)));
-        assert!(ESCAPE_HATCH.contains(".catch(() => location.assign(url))"));
-        // And the hook does not let them load: they are not file:, but
-        // `reserved` answers first.
-        for url in [loading::WAY_BACK, loading::WAY_OUT] {
-            assert!(loading::reserved(url).is_some(), "{url}");
+    fn the_escape_keys_take_only_a_real_press_and_navigate_nowhere() {
+        assert!(ESCAPE_HATCH.contains("if (!e.isTrusted) return;"));
+        assert!(ESCAPE_HATCH.contains("invoke('show_welcome')"));
+        assert!(ESCAPE_HATCH.contains("invoke('desktop_quit')"));
+        assert!(!ESCAPE_HATCH.contains("location"));
+        assert!(!ESCAPE_HATCH.contains(loading::RETIRED_HOST));
+        // An earlier build's way back: refused like any other navigation
+        // there, and nothing happens (the hook only answers yes or no).
+        let url = |u: &str| tauri::Url::parse(u).unwrap();
+        for retired in [
+            "https://talaria-desktop.invalid/back",
+            "https://talaria-desktop.invalid/quit",
+            "http://talaria-desktop.invalid/",
+        ] {
+            assert!(
+                !allowed_navigation("instance-x", &url(retired)),
+                "{retired}"
+            );
         }
     }
 
+    /// The shape only: the behaviour (zones, fields, contenteditable, a
+    /// stray drop) is run against a stub DOM by scripts/desktop-drop-guard.mjs
+    /// in `bun run check`, and against WebKitGTK with real drags on the rig.
     #[test]
     fn the_drop_guard_yields_to_drop_zones_and_fields() {
         assert!(DROP_GUARD.contains("e.defaultPrevented || editable(e)"));

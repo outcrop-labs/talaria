@@ -163,10 +163,28 @@ three rules, the same on every OS:
 3. **Pages on other origins are never judged.** A sign-in provider, a Cloudflare Access
    login: not Talaria, and not the shell's to call broken. A document that commits there
    starts no watchdog and is judged when it finishes only if the platform said its load
-   failed on the instance's own origin. The shell refuses such a page's calls, so the way
-   back, `Ctrl/Cmd+Shift+H` and `Ctrl+Q` there fall back to a reserved navigation
-   (`https://talaria-desktop.invalid/back`, `/quit`) that the shell's navigation hook
-   refuses and turns into the launcher, or Quit.
+   failed on the instance's own origin. The shell takes one call from such a page, and
+   only one: the way back (`show_welcome`, granted to the instance's webview for any http(s)
+   origin by `lib.rs::grant_way_back`). So the pill and `Ctrl/Cmd+Shift+H` work on a sign-in
+   provider's page too; `Ctrl+Q` works only on the instance's own origin (the OS's own quit,
+   Alt+F4 or the macOS menu, works everywhere). Going back from another origin marks the
+   page as not the instance's, so the next open loads the instance fresh instead of showing
+   that page again.
+
+**Who may take the way back, and Quit.** A page's script can do anything a page can, so
+the shell decides by who is asking, never by a navigation (an earlier build of this change
+navigated to `talaria-desktop.invalid` for it, which any page or frame could do; that host
+is now refused like `file:`, and nothing acts on it):
+- Tauri gives the IPC to the main frame only, so no frame (a microsite's sandboxed
+  `srcdoc` frame, an ad) can call anything.
+- The pill and the escape keys take only real input (`isTrusted`): a page's own
+  `dispatchEvent` or `.click()` does nothing.
+- `show_welcome` from an instance page is taken only for the page on screen, at most once a
+  second (`loading::may_go_back`): a page in the background, or one calling it in a loop,
+  cannot throw the person out of what they are using.
+- `desktop_quit` from an instance page is taken only on the instance's own origin, for the
+  page on screen, and not in the first 10 s after launch (`loading::may_quit`): no page can
+  quit the app from the background, or on every start.
 
 Off screen, a page that does not come up is closed. One loaded hidden at launch (D8) is
 loaded again 1, 2, 5, 15 and 30 minutes later, so its instance's notifications are not lost

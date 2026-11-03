@@ -251,7 +251,8 @@ pub const INSTANCE_PERMISSIONS: &[&str] = &[
     "allow-desktop-os-idle",
 ];
 
-/// Grant one instance origin `INSTANCE_PERMISSIONS`, for its own webview.
+/// Grant one instance origin `INSTANCE_PERMISSIONS`, for its own webview,
+/// and the way back (`grant_way_back`).
 fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
     let capability = INSTANCE_PERMISSIONS.iter().fold(
         tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
@@ -260,7 +261,31 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
         |capability, permission| capability.permission(*permission),
     );
     app.add_capability(capability)
-        .map_err(|e| format!("granting the instance switcher access: {e}"))
+        .map_err(|e| format!("granting the instance switcher access: {e}"))?;
+    grant_way_back(app, instance)
+}
+
+/// What an instance's webview may call on any origin: the way back alone,
+/// so a page the instance sent the person to (a sign-in provider) still has
+/// the pill and Ctrl/Cmd+Shift+H. Tauri puts its IPC into the main frame
+/// only, so no frame can call it, and `show_welcome` takes it only for the
+/// page on screen, once a second (commands.rs). Never Quit, never anything
+/// else.
+pub const WAY_BACK_PERMISSIONS: &[&str] = &["allow-show-welcome"];
+/// Any http(s) page, with or without a port.
+pub const WAY_BACK_ORIGINS: &[&str] = &["https://*", "https://*:*", "http://*", "http://*:*"];
+
+fn grant_way_back(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
+    let capability = WAY_BACK_ORIGINS.iter().fold(
+        WAY_BACK_PERMISSIONS.iter().fold(
+            tauri::ipc::CapabilityBuilder::new(format!("way-back-{}", instance.id))
+                .webview(format!("instance-{}", instance.id)),
+            |capability, permission| capability.permission(*permission),
+        ),
+        |capability, origin| capability.remote(origin.to_string()),
+    );
+    app.add_capability(capability)
+        .map_err(|e| format!("granting the instance its way back: {e}"))
 }
 
 /// What the shell's own requests call themselves (the crate version is
@@ -310,6 +335,8 @@ fn http_client() -> reqwest::Client {
 }
 
 pub fn run() {
+    // A page's Quit waits out the first seconds of a launch (commands::desktop_quit).
+    commands::launched();
     // A panic is the one thing `eprintln!` never says: the default hook writes
     // it to stderr, which a release build on Windows does not have. Into the
     // log file too, once setup has opened it.
@@ -656,6 +683,37 @@ mod tests {
         ] {
             assert!(INSTANCE_PERMISSIONS.contains(&needed), "{needed}");
         }
+    }
+
+    // B3: what any origin may call in an instance webview: the way back,
+    // nothing more, and every origin's patterns parse as Tauri reads them.
+    #[test]
+    fn any_origin_gets_the_way_back_and_nothing_else() {
+        assert_eq!(WAY_BACK_PERMISSIONS, &["allow-show-welcome"]);
+        assert!(!WAY_BACK_PERMISSIONS.contains(&"allow-desktop-quit"));
+        for origin in WAY_BACK_ORIGINS {
+            assert!(
+                origin.starts_with("http://") || origin.starts_with("https://"),
+                "{origin}"
+            );
+            let pattern: tauri::utils::acl::RemoteUrlPattern = origin.parse().unwrap();
+            assert!(
+                !pattern.test(&"tauri://localhost/".parse().unwrap()),
+                "{origin}"
+            );
+        }
+        let matches = |url: &str| {
+            let url: tauri::Url = url.parse().unwrap();
+            WAY_BACK_ORIGINS.iter().any(|o| {
+                o.parse::<tauri::utils::acl::RemoteUrlPattern>()
+                    .unwrap()
+                    .test(&url)
+            })
+        };
+        assert!(matches("https://accounts.google.com/signin?x=1"));
+        assert!(matches("http://127.0.0.1:47394/provider"));
+        // Not the custom scheme the launcher is served on (macOS, Linux).
+        assert!(!matches("tauri://localhost/index.html"));
     }
 
     #[cfg(target_os = "linux")]
