@@ -56,7 +56,7 @@ const base = realpathSync(mkdtempSync(join(tmpdir(), 'rustc-wrapper-test-')))
 try {
   const tools = join(base, 'tools')
   mkdirSync(tools)
-  for (const t of ['dirname', 'readlink']) symlinkSync(tool(t), join(tools, t))
+  for (const t of ['bash', 'dirname', 'readlink']) symlinkSync(tool(t), join(tools, t))
 
   // A registry crate dir: outside the repo, no mise config anywhere above it.
   const registry = join(base, 'cargo/registry/src/index.crates.io-x/adler2-2.0.1')
@@ -100,7 +100,7 @@ try {
 
   const run = (pathDirs, env = {}) => {
     rmSync(miseCwd, { force: true })
-    const r = spawnSync('/bin/sh', [WRAPPER, rustc, '-vV'], {
+    const r = spawnSync(WRAPPER, [rustc, '-vV'], {
       cwd: registry,
       encoding: 'utf8',
       env: { HOME: base, PATH: [...pathDirs, tools].join(':'), ...env },
@@ -161,6 +161,20 @@ try {
     const r = run([])
     eq(r.status, 0, `exit (stderr: ${r.err})`)
     eq(r.out, `rustc-ran -vV`, 'output')
+  })
+
+  // Cargo names CARGO_BIN_EXE_<bin> after the bin, hyphens and all, and dash
+  // drops a variable whose name is not a shell identifier when it execs. With
+  // the wrapper on /bin/sh, `env!("CARGO_BIN_EXE_talaria-api")` failed every
+  // local compile of api/tests/it while CI, which sets no wrapper, passed.
+  check('a hyphenated CARGO_BIN_EXE_<bin> reaches rustc', () => {
+    const r = spawnSync(WRAPPER, [tool('env')], {
+      cwd: registry,
+      encoding: 'utf8',
+      env: { HOME: base, PATH: tools, 'CARGO_BIN_EXE_talaria-api': '/bin/talaria-api' },
+    })
+    eq(r.status, 0, `exit (stderr: ${r.stderr.trim()})`)
+    eq(r.stdout.split('\n').includes('CARGO_BIN_EXE_talaria-api=/bin/talaria-api'), true, 'CARGO_BIN_EXE_talaria-api in rustc env')
   })
 } finally {
   rmSync(base, { recursive: true, force: true })

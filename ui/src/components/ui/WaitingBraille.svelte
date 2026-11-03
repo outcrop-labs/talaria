@@ -41,8 +41,8 @@
   /**
    * One waiting indicator.
    *
-   * The animation is driven by writing textContent straight onto the cell spans
-   * rather than through component state. A cockpit with a chat turn, three tool
+   * The animation is driven by writing each cell's text node straight from the
+   * clock rather than through component state. A cockpit with a chat turn, three tool
    * rows and a background monitor alive at once would otherwise be five
    * component re-renders per animation frame, for an update whose entire
    * payload is a handful of characters. The frame is also diffed before
@@ -53,6 +53,7 @@
     animation,
     size = 14,
     speed = 1,
+    frameMs = 0,
     forceReduced,
     class: className,
   }: {
@@ -61,6 +62,8 @@
     size?: number
     /** Playback multiplier. 1 is the animation's declared period. */
     speed?: number
+    /** Milliseconds between drawn frames; 0 draws every frame. */
+    frameMs?: number
     /** Force the reduced-motion rendering regardless of the OS setting. */
     forceReduced?: boolean
     class?: string
@@ -81,6 +84,7 @@
     // change; everything below runs off the captured values.
     const a = animation
     const mult = speed
+    const every = frameMs
     const cells = Array.from(host.children) as HTMLElement[]
     let lastKey = ''
 
@@ -94,11 +98,17 @@
         const el = cells[i]
         const cell = next[i]
         if (!el || !cell) continue
-        if (el.textContent !== cell.ch) el.textContent = cell.ch
+        // The text node's data, not textContent: assigning textContent swaps
+        // in a new node, and the dither surfaces' observer (AppLayout)
+        // rescans the whole app on every added node.
+        const text = el.firstChild
+        if (text instanceof Text) {
+          if (text.data !== cell.ch) text.data = cell.ch
+        } else if (el.textContent !== cell.ch) el.textContent = cell.ch
         const opacity = cell.alpha === 1 ? '' : cell.alpha.toFixed(2)
         if (el.style.opacity !== opacity) el.style.opacity = opacity
       }
-    })
+    }, every, { early: true })
   })
 </script>
 

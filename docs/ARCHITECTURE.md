@@ -343,7 +343,12 @@ multiplexer.
   roll this replaced never completed for a running agent. The agent is offline for the
   restart; the persona door (`talaria-gateway` `fleet_chat.rs`) re-reads the manifest per
   attempt and holds a turn up to two minutes across it — 80 s for a turn a person is reading
-  (`/api/chat`), whose headers wait on the hold and must beat Cloudflare's 100 s. An agent an old blue/green roll left in the `agent-<dept>-b` service
+  (`/api/chat`). That route answers with the agent's own status when the turn opens within
+  30 s of the request; past that it answers 200 `text/event-stream` at once and says
+  `: waiting for the agent` every 15 s until the agent speaks, so neither the hold nor an agent
+  slow to its first frame (five minutes of patience, `HEADERS_WINDOW`) meets Cloudflare's
+  100 s (`talaria-chat-persist` `edge`). An error status that comes after that rides the stream
+  as a failure frame. An agent an old blue/green roll left in the `agent-<dept>-b` service
   (`agent_defs.active_slot = 'b'`) moves back to `agent-<dept>` on its next roll: the render
   names the home service, its image is pulled while `-b` still serves (a failed pull puts the
   agent back on `-b`), and only then is `-b` drained and removed. The move holds the
@@ -526,7 +531,10 @@ multiplexer.
   is written paused, checked, then started — and refuses any shape it cannot read (a 6-field
   cron, an unreadable field). A change the agent took and did not answer within 40 s is a 503
   that says it may still land, not a refusal: Hermes's jobs-file write can stall on a slow
-  disk and apply later.
+  disk and apply later. A change of several calls (a guarded create or schedule edit, a run)
+  answers within 75 s as a whole (`CHANGE_WITHIN`, under Cloudflare's 100 s): past that it is
+  the same 503, and the change runs on to its end without the request, a thread's schedule
+  row included.
   Their spend is metered at the relay like every agent call — see **Agent spend** below; a
   fire's calls carry `cron_<job id>` and land as `unattended`, per job.
   A schedule made from a thread reports into it by two roads, both ending in

@@ -689,11 +689,13 @@ pub async fn test_storage(t: &BucketTarget) -> serde_json::Value {
     }
 }
 
-/// YYYYMMDDTHHMMSS.mmmZ — ISO-8601 UTC with the punctuation removed. Takes
-/// the epoch ms so the civil-from-days math is pinnable.
+/// YYYYMMDDTHHMMSSZ — SigV4's `x-amz-date`: ISO-8601 basic format in UTC,
+/// whole seconds. A fraction is refused by strict S3 services (Backblaze B2:
+/// "Timestamp '…T173649.020Z' is invalid, must be in ISO 8601 format
+/// yyyyMMddThhmmssZ"); the built-in bucket let it through. Takes the epoch
+/// ms so the civil-from-days math is pinnable.
 fn amz_of(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
-    let millis = ms.rem_euclid(1000);
     // Civil-from-days (Howard Hinnant's algorithm) — no chrono dependency for
     // one timestamp format.
     let days = secs.div_euclid(86_400);
@@ -709,7 +711,7 @@ fn amz_of(ms: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { y + 1 } else { y };
-    format!("{year:04}{month:02}{d:02}T{h:02}{m:02}{s:02}.{millis:03}Z")
+    format!("{year:04}{month:02}{d:02}T{h:02}{m:02}{s:02}Z")
 }
 
 /// The current time in the signing format.
@@ -926,24 +928,25 @@ mod tests {
     }
 
     #[test]
-    fn amz_dates_match_node_to_isostring_vectors() {
-        // ISO-8601 UTC with the punctuation removed — pinned including the
-        // epoch and a leap day, which is where a hand-rolled civil calendar
-        // goes quietly wrong.
-        assert_eq!(amz_of(0), "19700101T000000.000Z");
-        assert_eq!(amz_of(1_709_164_800_000), "20240229T000000.000Z");
-        assert_eq!(amz_of(1_769_664_000_000), "20260129T052000.000Z");
-        assert_eq!(amz_of(1_809_504_000_000), "20270505T080000.000Z");
+    fn amz_dates_are_sigv4_basic_format_whole_seconds() {
+        // SigV4's yyyyMMddTHHmmssZ — pinned including the epoch and a leap
+        // day, which is where a hand-rolled civil calendar goes quietly wrong.
+        assert_eq!(amz_of(0), "19700101T000000Z");
+        assert_eq!(amz_of(1_709_164_800_000), "20240229T000000Z");
+        assert_eq!(amz_of(1_769_664_000_000), "20260129T052000Z");
+        assert_eq!(amz_of(1_809_504_000_000), "20270505T080000Z");
+        // The milliseconds are dropped, never rounded up into the next second
+        // (the signature's scope and the header must name the same instant).
+        assert_eq!(amz_of(1_793_727_409_020), "20261103T173649Z");
+        assert_eq!(amz_of(1_793_727_409_999), "20261103T173649Z");
         let s = amz_now();
-        // 19700101T000000.000Z — 20 chars: 8 date, T, 6 time, '.', 3 millis, Z.
-        assert_eq!(s.len(), 20);
+        // 19700101T000000Z — 16 chars: 8 date, T, 6 time, Z. No fraction:
+        // Backblaze B2 and AWS refuse one.
+        assert_eq!(s.len(), 16);
         assert_eq!(&s[8..9], "T");
-        assert_eq!(&s[19..], "Z");
-        assert!(
-            s[..19]
-                .chars()
-                .all(|c| c.is_ascii_digit() || c == '.' || c == 'T')
-        );
+        assert_eq!(&s[15..], "Z");
+        assert!(s[..8].chars().all(|c| c.is_ascii_digit()));
+        assert!(s[9..15].chars().all(|c| c.is_ascii_digit()));
     }
 
     #[test]

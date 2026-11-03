@@ -72,7 +72,7 @@ fn main_window(app: &AppHandle) -> Result<Window, String> {
         .ok_or_else(|| "the main window is gone".to_string())
 }
 
-fn instance_label(id: &str) -> String {
+pub(crate) fn instance_label(id: &str) -> String {
     format!("instance-{id}")
 }
 
@@ -213,12 +213,12 @@ const DROP_GUARD: &str = r#"
 
 /// The floor under `DROP_GUARD`, for a page where it did not take (a page that
 /// stops a drag's propagation, an engine error page): an instance webview never
-/// navigates to a local file. Only `file:` is refused. Pages and their frames
-/// use `about:`, `blob:` and `data:`; `mailto:` and app links are handed to
-/// the OS by WebView2 and WKWebView without leaving the page; a sign-in goes
-/// to other https origins and back. An allow-list would break those, and a
-/// dropped link cannot be told from a clicked one by its URL: that is the
-/// guard's job, in the page.
+/// navigates to a local file. Pages and their frames use `about:`, `blob:` and
+/// `data:`, and a sign-in goes to other https origins and back: those load. An
+/// allow-list would break them, and a dropped link cannot be told from a
+/// clicked one by its URL: that is the guard's job, in the page. Any other
+/// scheme is refused, `mailto:` included: an OS link reaches the OS only from
+/// a click in the page (links.rs says why).
 fn allowed_navigation(label: &str, url: &tauri::Url) -> bool {
     if url.scheme() == "file" {
         eprintln!("talaria-desktop: {label}: refused a navigation to a local file");
@@ -234,7 +234,7 @@ fn allowed_navigation(label: &str, url: &tauri::Url) -> bool {
         );
         return false;
     }
-    true
+    crate::links::allow_navigation(label, url)
 }
 
 /// Everything the launcher renders, in one read. The launcher asks for it at
@@ -856,13 +856,25 @@ fn create_instance_webview(
     // DROP_GUARD and allowed_navigation keep a drop the page does not take
     // from navigating it away.
     let nav_label = label.clone();
+    // A link that opens a new window (links.rs): an http(s) page goes to the
+    // default browser, the MCP connect opens in the app, the rest is refused.
+    // wry drops the request without it. OS_LINKS sends a clicked mailto: to
+    // the OS.
+    let popup_label = label.clone();
+    let home: tauri::Url = instance
+        .url
+        .parse()
+        .map_err(|e| format!("stored URL no longer parses: {e}"))?;
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
         .data_directory(dir)
         .disable_drag_drop_handler()
         .on_navigation(move |url| allowed_navigation(&nav_label, url))
+        .on_new_window(move |url, _| crate::links::on_new_window(&popup_label, &home, url))
         .background_color(GROUND)
         .initialization_script(ESCAPE_HATCH)
         .initialization_script(DROP_GUARD)
+        .initialization_script(crate::reload::RELOAD_KEYS)
+        .initialization_script(crate::links::OS_LINKS)
         .on_page_load(move |webview, payload| match payload.event() {
             tauri::webview::PageLoadEvent::Started => {
                 load_started(webview.app_handle(), &loaded_id, payload.url().as_str());
@@ -2835,12 +2847,23 @@ mod tests {
             "https://talaria.example/home",
             "http://127.0.0.1:5302/comms",
             "https://accounts.google.com/o/oauth2/auth",
-            "mailto:someone@example.com",
             "about:blank",
             "blob:https://talaria.example/1b2c",
             "data:text/html,hi",
         ] {
             assert!(allowed_navigation("instance-x", &url(ok)), "{ok}");
+        }
+        // No page load, and no hand-off: an OS link reaches the OS only from
+        // a click in the page (links.rs, OS_LINKS). Refusing opens nothing.
+        for refused in [
+            "mailto:someone@example.com",
+            "vscode://file/x",
+            "jnlp://x/a.jnlp",
+        ] {
+            assert!(
+                !allowed_navigation("instance-x", &url(refused)),
+                "{refused}"
+            );
         }
     }
 

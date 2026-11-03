@@ -34,9 +34,9 @@ use talaria_agent_auth::require_agent;
 use talaria_body::{optional_boolean_member, parse, trimmed_string_member};
 use talaria_chips::live_conversation_id;
 use talaria_conversation_layout::{patch_from, write_layout};
-use talaria_conversations::conversation_owner;
+use talaria_conversations::{conversation_owner, fan_conversation_event};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::{NotifyDeps, fan_conversation_event};
+use talaria_notify::NotifyDeps;
 use talaria_state::AppState;
 
 // doc: Rename, pin, group or put away the conversation this agent is in.

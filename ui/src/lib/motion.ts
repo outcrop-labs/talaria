@@ -8,7 +8,7 @@
 //   <div transition:fade>            import { fade } from '@/lib/motion'
 //   <div in:fly={{ y: 8 }}>          import { fly } from '@/lib/motion'
 import { flip as svFlip, type FlipParams, type AnimationConfig } from 'svelte/animate'
-import { quintOut } from 'svelte/easing'
+import { cubicOut, quintOut } from 'svelte/easing'
 import {
   crossfade as svCrossfade,
   fade as svFade,
@@ -91,6 +91,9 @@ interface ClockEntry {
   every: number
   /** The clock reading at which a periodic subscriber is next due. */
   due: number
+  /** Run on the frame the clock wakes for, up to `CLOCK_LEAD_MS` before the
+   *  boundary, rather than on the first frame past it. */
+  early: boolean
 }
 
 const clockSubs = new Set<ClockEntry>()
@@ -112,9 +115,12 @@ function clockFrame(now: number): void {
   const elapsed = now - clockOrigin
   for (const e of clockSubs) {
     if (e.every <= 0) e.fn(elapsed)
-    else if (elapsed >= e.due) {
-      e.due = (Math.floor(elapsed / e.every) + 1) * e.every
-      e.fn(elapsed)
+    else {
+      const lead = e.early ? CLOCK_LEAD_MS : 0
+      if (elapsed >= e.due - lead) {
+        e.due = (Math.floor((elapsed + lead) / e.every) + 1) * e.every
+        e.fn(elapsed)
+      }
     }
   }
   scheduleClock()
@@ -147,7 +153,9 @@ function scheduleClock(): void {
       requestClockFrame()
       return
     }
-    next = Math.min(next, e.due)
+    // An early subscriber is woken at its boundary and runs on that frame,
+    // whose timestamp can read up to a frame before the boundary.
+    next = Math.min(next, e.due + (e.early ? CLOCK_LEAD_MS : 0))
   }
   const wait = clockOrigin === 0 ? 0 : clockOrigin + next - CLOCK_LEAD_MS - performance.now()
   if (wait <= 0) requestClockFrame()
@@ -165,9 +173,14 @@ function scheduleClock(): void {
  * past each multiple of `everyMs` on the clock (and on the first frame after
  * it subscribes), instead of on every frame. While only periodic subscribers
  * are left, the loop sleeps between their ticks.
+ *
+ * `early` trades that exactness for frames: the subscriber runs on the frame
+ * the clock wakes for, so a tick costs one frame instead of two or three. For
+ * a subscriber that reads its phase from the elapsed time, where drawing up to
+ * a frame before the boundary looks the same.
  */
-export function subscribeToClock(fn: ClockSubscriber, everyMs = 0): () => void {
-  const entry: ClockEntry = { fn, every: everyMs, due: 0 }
+export function subscribeToClock(fn: ClockSubscriber, everyMs = 0, opts: { early?: boolean } = {}): () => void {
+  const entry: ClockEntry = { fn, every: everyMs, due: 0, early: opts.early ?? false }
   clockSubs.add(entry)
   // A new subscriber is due now: wake for the next frame whatever the loop was
   // waiting on.
@@ -240,6 +253,19 @@ export function pop(
     delay,
     easing: quintOut,
     css: (t, u) => `opacity: ${t}; transform: translateY(${u * y}px) scale(${start + t * (1 - start)})`,
+  }
+}
+
+/** Two states of one object trading one spot: a tab's icon and its waiting
+ *  glyph. Pass a shorter duration on `out:`. Reduced motion keeps only the
+ *  fade. */
+export function swap(node: Element, params?: { duration?: number }): TransitionConfig {
+  if (prefersReducedMotion()) return svFade(node, { duration: 120 })
+  const { duration = 180 } = params ?? {}
+  return {
+    duration,
+    easing: cubicOut,
+    css: (t, u) => `opacity: ${t}; filter: blur(${u * 2}px); transform: scale(${0.9 + 0.1 * t})`,
   }
 }
 

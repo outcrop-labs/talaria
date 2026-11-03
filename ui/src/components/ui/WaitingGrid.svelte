@@ -55,6 +55,7 @@
     animation,
     size = 22,
     speed = 1,
+    frameMs = 0,
     forceReduced,
     class: className,
   }: {
@@ -62,6 +63,8 @@
     /** Overall square size in px. Dot diameter and gap derive from it. */
     size?: number
     speed?: number
+    /** Milliseconds between drawn frames; 0 draws every frame. */
+    frameMs?: number
     forceReduced?: boolean
     class?: string
   } = $props()
@@ -83,6 +86,7 @@
     if (reduced || !host) return
     const a = animation
     const mult = speed
+    const every = frameMs
     const cols = a.n
     const dots = Array.from(host.children) as HTMLElement[]
     // Last value per dot, so a frame only writes the dots that actually moved.
@@ -99,7 +103,7 @@
         last[i] = v
         dots[i]!.style.opacity = String(v)
       }
-    })
+    }, every, { early: true })
   })
 </script>
 
