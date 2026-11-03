@@ -1403,6 +1403,11 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_fleet::fleet::fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/fleet/hires/{id}/retry",
+            post(talaria_routes_fleet::fleet::fleet_hires_id_retry::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/fleet",
             get(talaria_routes_fleet::fleet::fleet::get).fallback(|| async { method_not_allowed("GET") }),
         )

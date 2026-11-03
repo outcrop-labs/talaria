@@ -20,6 +20,7 @@ pub mod fleet_endpoints_id;
 pub mod fleet_endpoints_id_available;
 pub mod fleet_federate;
 pub mod fleet_hires;
+pub mod fleet_hires_id_retry;
 pub mod fleet_reconcile;
 pub mod fleet_render;
 pub mod fleet_resources;
