@@ -55,14 +55,16 @@ pub const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Update's own look at the feed, before it downloads. Longer than the
 /// background check's: someone is waiting on the answer.
 const INSTALL_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
-/// The download's bounds. The payload is the whole installer, so there is no
-/// short total; a download that stops arriving for `DOWNLOAD_STALL` is a
-/// failure, and so is one still going after `DOWNLOAD_CAP`. Installing the
-/// bytes once they are here is local and never cut off.
+/// The download's bounds, on the monotonic clock. The payload is the whole
+/// installer — the Linux AppImage is about 83 MB, 43 minutes at 256 kbit/s —
+/// so the bound is progress, not time: a download that has had nothing
+/// arrive for `DOWNLOAD_STALL` has stopped. `DOWNLOAD_BACKSTOP` only ends a
+/// trickle (a byte now and then, forever), and points to the releases page.
+/// Installing the bytes once they are here is local and never cut off.
 pub const DOWNLOAD_STALL: Duration = Duration::from_secs(60);
-pub const DOWNLOAD_CAP: Duration = Duration::from_secs(30 * 60);
-/// How often the download's bounds are looked at.
-const DOWNLOAD_LOOK: Duration = Duration::from_secs(5);
+pub const DOWNLOAD_BACKSTOP: Duration = Duration::from_secs(4 * 60 * 60);
+/// How often the download's bounds and progress are looked at.
+const DOWNLOAD_LOOK: Duration = Duration::from_secs(1);
 
 /// Where a person gets the installers.
 const RELEASES: &str = "github.com/outcrop-labs/talaria/releases";
@@ -194,6 +196,10 @@ pub struct Offer {
     pub how: Option<String>,
     /// An install is running.
     pub busy: bool,
+    /// How much of the download has arrived, in percent, while one runs and
+    /// the server said how big it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u8>,
     /// The last install failed, in a sentence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -208,6 +214,7 @@ pub fn offer(
     now_ms: u64,
     installed: Installed,
     busy: bool,
+    progress: Option<u8>,
     error: Option<&str>,
 ) -> Option<Offer> {
     let version = available?;
@@ -223,6 +230,7 @@ pub fn offer(
         install,
         how,
         busy,
+        progress: progress.filter(|_| busy),
         error: error.map(str::to_string),
     })
 }
@@ -241,10 +249,32 @@ struct Inner {
     /// When the loop checks next (wall-clock ms); 0 is now.
     next_check_ms: u64,
     installing: bool,
+    /// The running download's progress, in percent.
+    progress: Option<u8>,
     error: Option<String>,
     /// What the views were last given, so a tick that changes nothing pushes
     /// nothing.
     pushed: Option<Offer>,
+}
+
+/// What a panic inside `install` says in the chip.
+const INSTALL_PANICKED: &str =
+    "The update stopped unexpectedly, so nothing was installed. Try Update again.";
+
+impl Inner {
+    /// `install` is over, however it ended. True when the views need telling:
+    /// it was still marked running (a panic; every return marks it itself).
+    fn end_install(&mut self, panicked: bool) -> bool {
+        if !self.installing {
+            return false;
+        }
+        self.installing = false;
+        self.progress = None;
+        if panicked {
+            self.error = Some(INSTALL_PANICKED.into());
+        }
+        true
+    }
 }
 
 impl Updates {
@@ -253,14 +283,31 @@ impl Updates {
     }
 }
 
+/// Held for the whole of `install`: dropped on any return or in a panic's
+/// unwind, it ends the install, so the chip never stays on "Updating".
+struct InstallRun<'a>(&'a AppHandle);
+
+impl Drop for InstallRun<'_> {
+    fn drop(&mut self) {
+        let Some(updates) = self.0.try_state::<Updates>() else {
+            return;
+        };
+        let tell = updates.lock().end_install(std::thread::panicking());
+        if tell {
+            push_soon(self.0);
+        }
+    }
+}
+
 /// The offer as it stands now. One lock at a time (lib.rs's discipline).
 pub fn current(app: &AppHandle) -> Option<Offer> {
     let updates = app.try_state::<Updates>()?;
-    let (available, busy, error) = {
+    let (available, busy, progress, error) = {
         let inner = updates.lock();
         (
             inner.available.clone(),
             inner.installing,
+            inner.progress,
             inner.error.clone(),
         )
     };
@@ -277,6 +324,7 @@ pub fn current(app: &AppHandle) -> Option<Offer> {
         now_ms(),
         installed(app),
         busy,
+        progress,
         error.as_deref(),
     )
 }
@@ -286,7 +334,7 @@ pub fn current(app: &AppHandle) -> Option<Offer> {
 /// other `eval`.
 pub fn push(app: &AppHandle) {
     let offer = current(app);
-    {
+    let said = {
         let Some(updates) = app.try_state::<Updates>() else {
             return;
         };
@@ -294,17 +342,26 @@ pub fn push(app: &AppHandle) {
         if inner.pushed == offer {
             return;
         }
+        // The log says when the chip's state changes, not each percent.
+        let kind = |o: &Option<Offer>| {
+            o.as_ref()
+                .map(|o| (o.version.clone(), o.install, o.busy, o.error.is_some()))
+        };
+        let said = kind(&inner.pushed) != kind(&offer);
         inner.pushed = offer.clone();
-    }
-    match &offer {
-        Some(o) => eprintln!(
-            "talaria-desktop: update chip: {} ({}{}{})",
-            o.version,
-            o.install,
-            if o.busy { ", installing" } else { "" },
-            if o.error.is_some() { ", failed" } else { "" }
-        ),
-        None => eprintln!("talaria-desktop: update chip: none"),
+        said
+    };
+    if said {
+        match &offer {
+            Some(o) => eprintln!(
+                "talaria-desktop: update chip: {} ({}{}{})",
+                o.version,
+                o.install,
+                if o.busy { ", installing" } else { "" },
+                if o.error.is_some() { ", failed" } else { "" }
+            ),
+            None => eprintln!("talaria-desktop: update chip: none"),
+        }
     }
     commands::emit_state(app);
     let js = chip_js(offer.as_ref());
@@ -438,12 +495,14 @@ pub fn snooze(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Update: download the signed payload, apply it, relaunch. The updater
-/// verifies the minisign signature against the pubkey in tauri.conf.json
-/// before it touches the install. No short bound here: the download is the
-/// whole installer, and the plugin applies one timeout to check and download.
-/// On Windows the NSIS installer takes over and the plugin exits the app;
-/// it relaunches it when it is done (`installMode: passive`).
+/// Update: look at the feed (bounded at `INSTALL_CHECK_TIMEOUT`), download
+/// the signed payload (bounded by its progress, `download_watched`), apply
+/// it, relaunch. The plugin verifies the minisign signature against the
+/// pubkey in tauri.conf.json inside `download`, before any bytes reach
+/// `install`. On Windows the NSIS installer takes over and the plugin exits
+/// the app; it relaunches it when it is done (`installMode: passive`).
+/// However it ends, even in a panic, the chip stops saying "Updating"
+/// (`InstallRun`).
 pub async fn install(app: &AppHandle) -> Result<(), String> {
     if let Installed::Elsewhere(how) = installed(app) {
         return Err(how.to_string());
@@ -455,8 +514,10 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
             return Err("Talaria is already installing the update.".into());
         }
         inner.installing = true;
+        inner.progress = None;
         inner.error = None;
     }
+    let _run = InstallRun(app);
     push_soon(app);
     let outcome: Result<Option<String>, String> = async {
         let updater = app
@@ -476,7 +537,7 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
         };
         let version = update.version.clone();
         eprintln!("talaria-desktop: downloading update {version}");
-        let bytes = download_watched(&update).await?;
+        let bytes = download_watched(app, &update).await?;
         eprintln!(
             "talaria-desktop: downloaded update {version} ({} bytes); installing",
             bytes.len()
@@ -489,6 +550,7 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
         let updates = app.state::<Updates>();
         let mut inner = updates.lock();
         inner.installing = false;
+        inner.progress = None;
         inner.error = error;
         if let Some(available) = available {
             inner.available = available;
@@ -515,14 +577,32 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
     }
 }
 
-/// The update's download, bounded by `download_stalled`: a download that is
-/// dropped stops, and the chip says so and offers Update again.
-async fn download_watched(update: &tauri_plugin_updater::Update) -> Result<Vec<u8>, String> {
-    let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_ms()));
-    let arrived = last.clone();
+/// The update's download, bounded by `download_stalled` on the monotonic
+/// clock: a download that is dropped stops, and the chip says so and offers
+/// Update again. Its progress goes to every view as it arrives, a percent at
+/// a time.
+async fn download_watched(
+    app: &AppHandle,
+    update: &tauri_plugin_updater::Update,
+) -> Result<Vec<u8>, String> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering::Relaxed},
+    };
     let started = std::time::Instant::now();
+    // Milliseconds after `started` when the last bytes arrived, and how many.
+    let last = Arc::new(AtomicU64::new(0));
+    let received = Arc::new(AtomicU64::new(0));
+    let total = Arc::new(AtomicU64::new(0));
+    let (at, got, of) = (last.clone(), received.clone(), total.clone());
     let download = update.download(
-        move |_, _| arrived.store(now_ms(), std::sync::atomic::Ordering::Relaxed),
+        move |chunk, length| {
+            at.store(started.elapsed().as_millis() as u64, Relaxed);
+            got.fetch_add(chunk as u64, Relaxed);
+            if let Some(length) = length {
+                of.store(length, Relaxed);
+            }
+        },
         || {},
     );
     let mut download = std::pin::pin!(download);
@@ -530,14 +610,35 @@ async fn download_watched(update: &tauri_plugin_updater::Update) -> Result<Vec<u
         match tokio::time::timeout(DOWNLOAD_LOOK, &mut download).await {
             Ok(done) => return done.map_err(install_failure),
             Err(_) => {
-                let idle = now_ms().saturating_sub(last.load(std::sync::atomic::Ordering::Relaxed));
-                if let Some(why) = download_stalled(idle, started.elapsed()) {
+                let now = started.elapsed();
+                let idle = (now.as_millis() as u64).saturating_sub(last.load(Relaxed));
+                if let Some(why) = download_stalled(idle, now) {
                     eprintln!("talaria-desktop: update download: {why}");
                     return Err(why);
+                }
+                let progress = percent(received.load(Relaxed), total.load(Relaxed));
+                let changed = {
+                    let updates = app.state::<Updates>();
+                    let mut inner = updates.lock();
+                    let changed = inner.progress != progress;
+                    inner.progress = progress;
+                    changed
+                };
+                if changed {
+                    push_soon(app);
                 }
             }
         }
     }
+}
+
+/// `received` of `total` bytes, in whole percent; None when the size is not
+/// known. Never 100 before the download has returned.
+pub fn percent(received: u64, total: u64) -> Option<u8> {
+    if total == 0 {
+        return None;
+    }
+    Some(((received.min(total) * 100) / total).min(99) as u8)
 }
 
 /// Is a download that has run for `elapsed`, with nothing arriving for the
@@ -549,10 +650,10 @@ pub fn download_stalled(idle_ms: u64, elapsed: Duration) -> Option<String> {
             DOWNLOAD_STALL.as_secs()
         ));
     }
-    if elapsed >= DOWNLOAD_CAP {
+    if elapsed >= DOWNLOAD_BACKSTOP {
         return Some(format!(
-            "The download took more than {} minutes, so it was stopped and nothing was installed. Try Update again.",
-            DOWNLOAD_CAP.as_secs() / 60
+            "The download has run for more than {} hours, so it was stopped and nothing was installed: download the new version from {RELEASES}.",
+            DOWNLOAD_BACKSTOP.as_secs() / 3600
         ));
     }
     None
@@ -642,30 +743,40 @@ fn sentence(lead: &str, detail: &str) -> String {
 
 /// The chip in an instance page: `offer`, or none. Evaluated by the shell
 /// (`push`, `page_loaded`), so it needs nothing from the page and works on any
-/// Talaria version. It lives in a shadow root on `<html>`, never takes the
-/// focus, and stays small: one row (the version, Later, Update), plus a line
-/// only while an install runs, after one failed, or when "How?" is opened on
-/// a copy the updater cannot replace. It sits `CHIP_LIFT` above the bottom
-/// right corner, clear of a composer's send button, and Later is always on
-/// it. Styles come from a constructed sheet, which a page's CSP does not
-/// govern; if one did not apply, the same styles are set through CSSOM
-/// (`el.style`), which no CSP refuses either. Update and Later call the shell
-/// (`install_update`, `snooze_update`), and the shell pushes what follows to
-/// every view; a call the shell refuses says why in the chip.
+/// Talaria version. It lives in a shadow root on `<html>` and never takes the
+/// focus.
+///
+/// Where: one 28 px row centred in the window's top bar, `CHIP_TOP` from the
+/// top. The themed titlebar every Talaria UI draws (36 px, since the shell's
+/// first release) has the window controls at one end and empty drag space
+/// everywhere else, so nothing a person types into or reads is under the
+/// chip — not a composer however tall it grows, not the toast stack, which is
+/// bottom right — and the window still drags from either side of it. A second
+/// line drops below the bar only while an install's error or the "How?"
+/// sentence is shown. The chip collapses to a small pill ("–"), at any time,
+/// an install included: the pill keeps its progress, and collapsing cancels
+/// nothing. The page's choice is kept for the tab's session.
+///
+/// Styles come from a constructed sheet, which a page's CSP does not govern;
+/// if one did not apply, the same rules are set through CSSOM (`el.style`),
+/// which no CSP refuses either, disabled state included. Update and Later
+/// call the shell (`install_update`, `snooze_update`), and the shell pushes
+/// what follows to every view; a call the shell refuses says why in the chip.
 pub fn chip_js(offer: Option<&Offer>) -> String {
     let data = serde_json::to_string(&offer).unwrap_or_else(|_| "null".into());
     CHIP_JS
         .replace("__OFFER__", &data)
-        .replace("__LIFT__", &CHIP_LIFT.to_string())
+        .replace("__TOP__", &CHIP_TOP.to_string())
 }
 
-/// How far above the window's bottom edge the page chip sits, in CSS px:
-/// above a chat composer's row, so its send button stays reachable.
-pub const CHIP_LIFT: u32 = 76;
+/// How far from the top of the page the chip's row sits, in CSS px: inside
+/// the 36 px themed titlebar, 4 px clear of its edges.
+pub const CHIP_TOP: u32 = 4;
 
 const CHIP_JS: &str = r#"(() => {
   const offer = __OFFER__;
   const ID = 'talaria-desktop-update';
+  const KEY = 'talaria-desktop-update-collapsed';
   let host = document.getElementById(ID);
   if (!offer) { if (host) host.remove(); return; }
   const root = document.documentElement;
@@ -676,21 +787,23 @@ const CHIP_JS: &str = r#"(() => {
     host.attachShadow({ mode: 'open' });
     root.appendChild(host);
   }
-  host.style.cssText = 'all:initial;position:fixed;right:16px;bottom:__LIFT__px;z-index:2147483647;display:block;';
+  host.style.cssText = 'all:initial;position:fixed;top:__TOP__px;left:50%;transform:translateX(-50%);z-index:2147483647;display:block;';
   const shadow = host.shadowRoot;
   // Each rule is also what CSSOM sets when the sheet did not apply.
   const RULES = {
-    chip: 'box-sizing:border-box;max-width:min(340px,calc(100vw - 32px));padding:6px 6px 6px 10px;border:1px solid #302d29;border-radius:6px;background:#141312;color:#e7e2db;font:12px/1.35 "IBM Plex Sans",ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,0.45);text-align:left;',
-    row: 'display:flex;align-items:center;gap:6px;',
+    chip: 'box-sizing:border-box;max-width:calc(100vw - 260px);border:1px solid #302d29;border-radius:6px;background:#141312;color:#e7e2db;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;font-size:12px;line-height:1.35;box-shadow:0 4px 16px rgba(0,0,0,0.45);text-align:left;',
+    row: 'box-sizing:border-box;display:flex;align-items:center;gap:6px;height:26px;padding:0 3px 0 10px;',
     title: 'flex:1 1 auto;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
-    line: 'margin:4px 4px 2px 0;color:#8e877e;user-select:text;-webkit-user-select:text;overflow-wrap:anywhere;',
+    line: 'max-width:420px;padding:0 10px 6px 10px;color:#8e877e;user-select:text;-webkit-user-select:text;overflow-wrap:anywhere;',
     error: 'color:#ee6018;',
-    button: 'flex:0 0 auto;font:600 11px/1.4 inherit;font-family:inherit;padding:2px 8px;border-radius:4px;border:1px solid #4a4640;background:transparent;color:#e7e2db;cursor:pointer;',
+    button: 'flex:0 0 auto;font-family:inherit;font-weight:600;font-size:11px;line-height:1.4;padding:1px 8px;border-radius:4px;border:1px solid #4a4640;background:transparent;color:#e7e2db;cursor:pointer;',
     update: 'background:#c8b46c;border-color:#c8b46c;color:#090a09;',
-    how: 'border-color:transparent;color:#8e877e;',
+    quiet: 'border-color:transparent;color:#8e877e;',
+    pill: 'display:block;font-family:inherit;font-weight:600;font-size:11px;line-height:1.4;padding:4px 10px;border:0;border-radius:6px;background:transparent;color:#c8b46c;cursor:pointer;',
   };
   const CSS = `.chip{${RULES.chip}} .row{${RULES.row}} .title{${RULES.title}} .line{${RULES.line}}
-    .error{${RULES.error}} button{${RULES.button}} button.update{${RULES.update}} button.how{${RULES.how}}
+    .error{${RULES.error}} button{${RULES.button}} button.update{${RULES.update}} button.quiet{${RULES.quiet}}
+    button.pill{${RULES.pill}}
     button:hover:not(:disabled){filter:brightness(1.15);} button:disabled{opacity:0.5;cursor:default;}
     button:focus-visible{outline:2px solid #c8b46c;outline-offset:2px;}`;
   let style = null;
@@ -714,50 +827,73 @@ const CHIP_JS: &str = r#"(() => {
     ? window.__TAURI_INTERNALS__.invoke(cmd, {})
     : Promise.reject(new Error('This page cannot reach Talaria Desktop.'));
   const said = (e) => String(e && e.message || e).replace(/^Error:\s*/, '');
-  let open = !!host.dataset.how;
+  const remembered = () => { try { return sessionStorage.getItem(KEY) === offer.version; } catch (e) { return false; } };
+  const remember = (on) => { try { if (on) sessionStorage.setItem(KEY, offer.version); else sessionStorage.removeItem(KEY); } catch (e) {} };
+  let collapsed = host.dataset.collapsed === offer.version || remembered();
+  let how = host.dataset.how === '1';
   const render = (o) => {
     const box = el('div', 'chip');
     box.setAttribute('role', 'status');
     box.setAttribute('aria-live', 'polite');
     box.dataset.version = o.version;
-    const row = el('div', 'row');
-    const title = el('div', 'title', 'Talaria Desktop ' + o.version + ' is available');
-    title.title = title.textContent;
-    row.append(title);
-    const button = (cls, text, onclick) => {
-      const b = el('button', cls, text);
-      b.type = 'button';
-      b.disabled = !!o.busy;
-      b.addEventListener('click', (e) => { e.stopPropagation(); onclick(); });
-      row.append(b);
-      return b;
-    };
-    if (o.install !== 'updater') {
-      const how = button('how', open ? 'Hide' : 'How?', () => {
-        open = !open;
-        if (open) host.dataset.how = '1'; else delete host.dataset.how;
+    box.dataset.state = collapsed ? 'collapsed' : o.busy ? 'busy' : o.error ? 'error' : 'offer';
+    const pct = o.busy && o.progress != null ? ' ' + o.progress + '%' : '';
+    if (collapsed) {
+      const pill = el('button', 'pill', o.busy ? '↑ Updating' + pct : '↑ ' + o.version);
+      pill.type = 'button';
+      pill.title = 'Talaria Desktop ' + o.version + (o.busy ? ': updating' : ' is available') + '. Show';
+      pill.addEventListener('click', (e) => {
+        e.stopPropagation();
+        collapsed = false; delete host.dataset.collapsed; remember(false);
         render(o);
       });
-      how.disabled = false;
-      how.setAttribute('aria-expanded', String(open));
-    }
-    button('later', 'Later', () => {
-      host.remove();
-      invoke('snooze_update').catch(() => {});
-    });
-    if (o.install === 'updater') {
-      const update = button('update', o.busy ? 'Updating' : 'Update', () => {
-        render(Object.assign({}, o, { busy: true, error: null }));
-        invoke('install_update').catch((err) =>
-          render(Object.assign({}, o, { busy: false, error: said(err) })));
+      box.append(pill);
+    } else {
+      const row = el('div', 'row');
+      const title = el('div', 'title', o.busy
+        ? 'Updating Talaria Desktop ' + o.version + (pct ? ' ·' + pct : '')
+        : 'Talaria Desktop ' + o.version + ' is available');
+      title.title = o.busy ? 'Talaria restarts when it is done.' : title.textContent;
+      row.append(title);
+      const button = (cls, text, onclick) => {
+        const b = el('button', cls, text);
+        b.type = 'button';
+        b.addEventListener('click', (e) => { e.stopPropagation(); onclick(); });
+        row.append(b);
+        return b;
+      };
+      if (!o.busy) {
+        if (o.install !== 'updater') {
+          const h = button('quiet', how ? 'Hide' : 'How?', () => {
+            how = !how;
+            if (how) host.dataset.how = '1'; else delete host.dataset.how;
+            render(o);
+          });
+          h.setAttribute('aria-expanded', String(how));
+        }
+        button('later', 'Later', () => {
+          host.remove();
+          invoke('snooze_update').catch(() => {});
+        });
+        if (o.install === 'updater') {
+          const u = button('update', 'Update', () => {
+            render(Object.assign({}, o, { busy: true, progress: null, error: null }));
+            invoke('install_update').catch((err) =>
+              render(Object.assign({}, o, { busy: false, error: said(err) })));
+          });
+          u.title = 'Downloads it and restarts Talaria';
+        }
+      }
+      const hide = button('quiet hide', '–', () => {
+        collapsed = true; host.dataset.collapsed = o.version; remember(true);
+        render(o);
       });
-      update.title = 'Downloads it and restarts Talaria';
+      hide.title = 'Make this small';
+      hide.setAttribute('aria-label', 'Make this small');
+      box.append(row);
+      const line = o.error || (how && !o.busy ? o.how : null);
+      if (line) box.append(el('div', o.error ? 'line error' : 'line', line));
     }
-    box.append(row);
-    const line = o.error
-      || (o.busy ? 'Updating. Talaria restarts when it is done.' : null)
-      || (open ? o.how : null);
-    if (line) box.append(el('div', o.error ? 'line error' : 'line', line));
     if (style) shadow.replaceChildren(style, box);
     else shadow.replaceChildren(box);
     // The sheet did not take (a page that refuses it, an engine without
@@ -765,10 +901,13 @@ const CHIP_JS: &str = r#"(() => {
     if (getComputedStyle(box).borderTopLeftRadius !== '6px') {
       const set = (e, ...names) => { e.style.cssText = names.map((n) => RULES[n]).join(''); };
       set(box, 'chip');
-      set(row, 'row');
-      set(title, 'title');
-      box.querySelectorAll('button').forEach((b) =>
-        set(b, 'button', ...(b.classList.contains('update') ? ['update'] : b.classList.contains('how') ? ['how'] : [])));
+      box.querySelectorAll('.row').forEach((r) => set(r, 'row'));
+      box.querySelectorAll('.title').forEach((t) => set(t, 'title'));
+      box.querySelectorAll('button').forEach((b) => {
+        const c = b.classList;
+        set(b, ...(c.contains('pill') ? ['pill'] : ['button', ...(c.contains('update') ? ['update'] : c.contains('quiet') ? ['quiet'] : [])]));
+        if (b.disabled) { b.style.opacity = '0.5'; b.style.cursor = 'default'; }
+      });
       box.querySelectorAll('.line').forEach((l) => set(l, 'line', ...(l.classList.contains('error') ? ['error'] : [])));
       host.dataset.styled = 'cssom';
     } else {
@@ -856,10 +995,19 @@ mod tests {
         let snooze = Snooze::new("0.13.0", NOW);
         // Nothing found: no chip.
         assert_eq!(
-            offer(None, None, NOW, Installed::Updater, false, None),
+            offer(None, None, NOW, Installed::Updater, false, None, None),
             None
         );
-        let shown = offer(Some("0.13.0"), None, NOW, Installed::Updater, false, None).unwrap();
+        let shown = offer(
+            Some("0.13.0"),
+            None,
+            NOW,
+            Installed::Updater,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(shown.version, "0.13.0");
         assert_eq!(shown.install, "updater");
         assert_eq!(shown.how, None);
@@ -871,6 +1019,7 @@ mod tests {
                 NOW + 1,
                 Installed::Updater,
                 false,
+                None,
                 None
             ),
             None
@@ -882,6 +1031,7 @@ mod tests {
                 NOW + 1,
                 Installed::Updater,
                 false,
+                None,
                 None
             )
             .is_some()
@@ -893,6 +1043,7 @@ mod tests {
                 NOW + SNOOZE_MS,
                 Installed::Updater,
                 false,
+                None,
                 None
             )
             .is_some()
@@ -905,6 +1056,7 @@ mod tests {
             Installed::Updater,
             true,
             None,
+            None,
         )
         .unwrap();
         assert!(busy.busy);
@@ -914,6 +1066,7 @@ mod tests {
             NOW + 1,
             Installed::Updater,
             false,
+            None,
             Some("The download did not match Talaria's signature, so nothing was installed."),
         )
         .unwrap();
@@ -929,12 +1082,22 @@ mod tests {
             Installed::Elsewhere(MSI),
             false,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(elsewhere.install, "elsewhere");
         assert!(elsewhere.how.unwrap().contains(".msi"));
         let json = serde_json::to_value(
-            offer(Some("0.13.0"), None, NOW, Installed::Updater, false, None).unwrap(),
+            offer(
+                Some("0.13.0"),
+                None,
+                NOW,
+                Installed::Updater,
+                false,
+                None,
+                None,
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -1064,7 +1227,7 @@ mod tests {
         // Bytes arriving: never cut off before the cap, however slow.
         assert_eq!(download_stalled(0, Duration::from_secs(5)), None);
         assert_eq!(
-            download_stalled(stall - 1, DOWNLOAD_CAP - Duration::from_secs(1)),
+            download_stalled(stall - 1, DOWNLOAD_BACKSTOP - Duration::from_secs(1)),
             None
         );
         // Nothing for a minute: stopped.
@@ -1075,16 +1238,88 @@ mod tests {
         );
         assert!(said.ends_with("Try Update again."), "{said}");
         // Still going after the cap: stopped too.
-        let said = download_stalled(0, DOWNLOAD_CAP).unwrap();
-        assert!(said.contains("more than 30 minutes"), "{said}");
-        assert!(DOWNLOAD_STALL < DOWNLOAD_CAP);
+        let said = download_stalled(0, DOWNLOAD_BACKSTOP).unwrap();
+        assert!(said.contains("more than 4 hours"), "{said}");
+        assert!(said.contains(RELEASES), "{said}");
+        assert!(DOWNLOAD_STALL < DOWNLOAD_BACKSTOP);
+        // The AppImage (about 83 MB) at 256 kbit/s takes about 43 minutes:
+        // well inside the backstop, and never "stopped" while bytes arrive.
+        let appimage_at_256k = Duration::from_secs(83_000_000 / 32_000);
+        assert!(appimage_at_256k < DOWNLOAD_BACKSTOP);
+        assert_eq!(download_stalled(1_000, appimage_at_256k), None);
+    }
+
+    #[test]
+    fn progress_is_whole_percent_and_never_done_before_the_download_is() {
+        assert_eq!(percent(0, 0), None);
+        assert_eq!(percent(500, 0), None);
+        assert_eq!(percent(0, 1000), Some(0));
+        assert_eq!(percent(425, 1000), Some(42));
+        assert_eq!(percent(1000, 1000), Some(99));
+        assert_eq!(percent(2000, 1000), Some(99));
+        // 83 MB against u64: no overflow.
+        assert_eq!(percent(41_500_000, 83_000_000), Some(50));
+        // Only an install that runs carries it.
+        let o = offer(
+            Some("0.13.0"),
+            None,
+            NOW,
+            Installed::Updater,
+            false,
+            Some(42),
+            None,
+        )
+        .unwrap();
+        assert_eq!(o.progress, None);
+        let o = offer(
+            Some("0.13.0"),
+            None,
+            NOW,
+            Installed::Updater,
+            true,
+            Some(42),
+            None,
+        )
+        .unwrap();
+        assert_eq!(o.progress, Some(42));
+    }
+
+    #[test]
+    fn an_install_that_panics_does_not_leave_the_chip_on_updating() {
+        let mut inner = Inner {
+            installing: true,
+            progress: Some(30),
+            ..Inner::default()
+        };
+        assert!(inner.end_install(true));
+        assert!(!inner.installing);
+        assert_eq!(inner.progress, None);
+        assert_eq!(inner.error.as_deref(), Some(INSTALL_PANICKED));
+        // An install that ended by returning has marked itself: nothing more.
+        let mut inner = Inner {
+            error: Some(
+                "The download did not match Talaria's signature, so nothing was installed.".into(),
+            ),
+            ..Inner::default()
+        };
+        assert!(!inner.end_install(false));
+        assert!(inner.error.unwrap().contains("signature"));
     }
 
     #[test]
     fn the_page_chip_carries_the_offer_and_nothing_else() {
         let gone = chip_js(None);
         assert!(gone.contains("const offer = null;"));
-        let o = offer(Some("0.13.0"), None, NOW, Installed::Updater, false, None).unwrap();
+        let o = offer(
+            Some("0.13.0"),
+            None,
+            NOW,
+            Installed::Updater,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
         let js = chip_js(Some(&o));
         assert!(
             js.contains(r#"const offer = {"version":"0.13.0","install":"updater","busy":false};"#)
@@ -1096,8 +1331,18 @@ mod tests {
         assert!(js.contains("adoptedStyleSheets"));
         // And when no sheet applies, CSSOM sets the same rules.
         assert!(js.contains("e.style.cssText = names.map"));
-        assert!(js.contains(&format!("bottom:{CHIP_LIFT}px")));
-        assert!(!js.contains("__LIFT__"));
+        assert!(js.contains(&format!("top:{CHIP_TOP}px")));
+        assert!(!js.contains("__TOP__"));
+        // Collapsing keeps the progress and is there while an install runs:
+        // the hide button is outside the `!o.busy` block.
+        assert!(js.contains("'↑ Updating' + pct"));
+        assert!(js.contains("button('quiet hide'"));
+        // The buttons' type is set longhand: `font:600 11px/1.4 inherit` is
+        // not valid CSS and was dropped whole.
+        assert!(!js.contains("font:600"));
+        assert!(js.contains("font-size:11px"));
+        // The CSSOM fallback shows a disabled button as disabled.
+        assert!(js.contains("if (b.disabled) { b.style.opacity = '0.5'"));
         assert!(js.contains("invoke('snooze_update')"));
         assert!(js.contains("invoke('install_update')"));
         // A version that is not a plain one still cannot break out of the

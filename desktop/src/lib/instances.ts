@@ -74,6 +74,8 @@ export interface UpdateOffer {
   how?: string
   /** An install is running. */
   busy: boolean
+  /** How much of the download has arrived, in percent, while it runs. */
+  progress?: number
   /** The last install failed, in a sentence. */
   error?: string
 }

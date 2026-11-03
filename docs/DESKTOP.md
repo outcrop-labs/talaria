@@ -667,13 +667,18 @@ version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and
 - **On the launcher** it is a toast in the corner (`UpdateChip.svelte`), from the snapshot
   (`ShellSnapshot.update`).
 - **Over an instance** the shell evaluates the same chip into the page (`update::chip_js`):
-  a shadow root on `<html>`, one compact row (the version, Later, Update) 76 px above the
-  bottom right corner, clear of a composer's send button, with Later always on it; a second
-  line only while an install runs, after one failed, or when **How?** is opened on a copy
-  the updater cannot replace. It is styled from a constructed stylesheet, which a page's
-  CSP does not govern (on the rig, a page whose `style-src 'self'` refused its own inline
-  styles showed the chip styled), and if a sheet ever did not apply, the same rules are set
-  through CSSOM, which no CSP refuses. Text is set as text, and it never takes the focus. It is the shell's,
+  a shadow root on `<html>`, one 28 px row (the version, Later, Update) centred in the window's
+  top bar, 4 px from the top. The themed titlebar every Talaria UI draws (36 px, since the
+  shell's first release) has the window controls at one end and empty drag space everywhere
+  else, so nothing a person types into or reads is under the chip — no composer, however tall
+  it grows, and not the toast stack, which is bottom right — and the window still drags from
+  either side of it (in the OS-titlebar and no-titlebar modes it sits over the top of the
+  page instead). Its **–** makes it a small pill at any time, an install included: the pill
+  keeps the download's progress, and nothing is cancelled. A second line drops below the bar
+  only while a failed install's sentence or the **How?** sentence is shown. It is styled from
+  a constructed stylesheet, which a page's CSP does not govern, and if a sheet ever does not
+  apply, the same rules are set through CSSOM (`el.style`), which no CSP refuses. Text is
+  set as text, and it never takes the focus. It is the shell's,
   not the instance UI's, because the instance webview fills the window and its UI is on its
   own release cadence: a chip that went through the desktop bridge into ui's toast stack
   would show only on instances already running this release, and nowhere while the page is
@@ -686,11 +691,15 @@ version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and
   (`updateSnooze: {version, untilMs}`): the chip comes down in every view at once, and a
   relaunch keeps it put off. A newer version than the one put off is offered at once. A
   snooze that ends more than a day out (the clock went back, a hand-edited file) has run out.
-- **Update** is `install_update`. The chip says the install is running and, if it fails,
-  why, in a sentence, in every view (a second click while it runs is refused). Its look at
-  the feed is bounded at 20 s, and the download by its progress: nothing arriving for 60 s,
-  or a download still going after 30 minutes, stops it with a sentence and Update offered
-  again; installing the bytes once they are here is local and never cut off. On success
+- **Update** is `install_update`. The chip says the install is running, how much of the
+  download has arrived, and, if it fails, why, in a sentence, in every view (a second click
+  while it runs is refused). Its look at the feed is bounded at 20 s, and the download by its
+  progress, on the monotonic clock: nothing arriving for 60 s stops it with a sentence and
+  Update offered again. There is no short total — the Linux AppImage is about 83 MB, 43
+  minutes at 256 kbit/s — only a 4-hour backstop for a download that trickles forever, whose
+  sentence points to the releases page. Installing the bytes once they are here is local and
+  never cut off, and however `install` ends, a panic included, the chip stops saying
+  "Updating" (`InstallRun`). On success
   Talaria restarts: on Linux and macOS through the app's own exit, so every page is
   remembered and the single-instance name is free first; on Windows the NSIS installer runs
   passively (`installMode`), and relaunches the app when it is done.
