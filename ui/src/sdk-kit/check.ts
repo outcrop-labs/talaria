@@ -11,7 +11,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
-import { SHARED_SERVER_PACKAGES, shimFileName } from '@/app-runtime/specifiers'
+import { SERVER_SPECIFIER_ALIASES, SHARED_SERVER_PACKAGES, shimFileName } from '@/app-runtime/specifiers'
 import { KIT_PATHS, SHARED_TYPE_PACKAGES } from './kit'
 
 export interface CheckStep {
@@ -36,8 +36,9 @@ export function kitTsconfig(kit: string, app: string): Record<string, unknown> {
     paths[pkg] = [join(nm, pkg)]
     paths[`${pkg}/*`] = [join(nm, pkg, '*')]
   }
-  // Whole only: the host shares no subpath of these.
+  // The bare entry, and zod/v4 (the same module); no other subpath.
   for (const pkg of SHARED_SERVER_PACKAGES) paths[pkg] = [join(nm, pkg)]
+  for (const alias of Object.keys(SERVER_SPECIFIER_ALIASES)) paths[alias] = [join(nm, alias)]
   return {
     compilerOptions: {
       target: 'ES2022',
@@ -76,6 +77,8 @@ export function kitVitestConfig(kit: string, app: string, work: string): string 
         { find: '@talaria/sdk/testing', replacement: join(kit, KIT_PATHS.runtime.testing) },
         { find: '@talaria/sdk', replacement: join(kit, KIT_PATHS.runtime.client) },
         ...SHARED_SERVER_PACKAGES.map((pkg) => ({ find: pkg, replacement: join(kit, KIT_PATHS.serverShims, `${shimFileName(pkg)}.js`) })),
+        // An alias is the same runtime file: one zod whichever name a test uses.
+        ...Object.entries(SERVER_SPECIFIER_ALIASES).map(([alias, pkg]) => ({ find: alias, replacement: join(kit, KIT_PATHS.serverShims, `${shimFileName(pkg)}.js`) })),
         { find: 'vitest', replacement: join(kit, 'node_modules', 'vitest', 'dist', 'index.js') },
       ],
     },

@@ -255,6 +255,9 @@ describe('check', () => {
     // host internal must not typecheck here and fail there.
     expect(cfg.compilerOptions.paths.zod).toEqual(['/kit/node_modules/zod'])
     expect(Object.keys(cfg.compilerOptions.paths)).not.toContain('zod/*')
+    // zod/v4 is the same module under zod 4's own name; zod/mini is not shared.
+    expect(cfg.compilerOptions.paths['zod/v4']).toEqual(['/kit/node_modules/zod/v4'])
+    expect(Object.keys(cfg.compilerOptions.paths)).not.toContain('zod/mini')
     expect(Object.keys(cfg.compilerOptions.paths).some((k) => k.startsWith('@/'))).toBe(false)
     expect(Object.keys(cfg.compilerOptions.paths)).not.toContain('*')
     expect(cfg.include).toEqual(['/app/**/*.ts', '/app/**/*.svelte'])
@@ -267,6 +270,8 @@ describe('check', () => {
     // An app's lib/schema.ts imports zod; its tests get the shim a built
     // server links to, so the SDK's z and theirs are one module here too.
     expect(src).toContain(`{ find: /^zod$/, replacement: "/kit/${KIT_PATHS.serverShims}/rt-zod.js" }`)
+    expect(src).toContain(`{ find: /^zod\\/v4$/, replacement: "/kit/${KIT_PATHS.serverShims}/rt-zod.js" }`)
+    expect(src).not.toContain('zod\\/mini')
     expect(src).toContain('"passWithNoTests":true')
   })
 })

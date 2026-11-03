@@ -302,18 +302,25 @@ describe('unsharedImport', () => {
       expect(unsharedImport(ok, 'server'), ok).toBeNull()
     }
     for (const ok of ['svelte', 'svelte/transition', '@talaria/sdk', '@lucide/svelte', '@tanstack/svelte-query']) expect(unsharedImport(ok, 'client'), ok).toBeNull()
-    for (const ok of ['@talaria/sdk/server', 'zod', 'fs', 'fs/promises', 'crypto']) expect(unsharedImport(ok, 'server'), ok).toBeNull()
+    for (const ok of ['@talaria/sdk/server', 'zod', 'zod/v4', 'fs', 'fs/promises', 'crypto']) expect(unsharedImport(ok, 'server'), ok).toBeNull()
   })
 
   it('names a package the host does not share', () => {
     expect(unsharedImport('clsx', 'server')).toBe(
-      '"clsx" is not shared with apps: an app has no node_modules of its own where it is installed, so a server-side module may import only @talaria/sdk/server, zod and node\'s builtins',
+      '"clsx" is not shared with apps: an app has no node_modules of its own where it is installed, so a server-side module may import only @talaria/sdk/server, zod (or zod/v4) and node\'s builtins',
     )
     expect(unsharedImport('lodash', 'client')).toContain('so a surface may import only svelte, @talaria/sdk')
     // The client SDK is not the server's, nor the test entry anyone's.
     expect(unsharedImport('@talaria/sdk', 'server')).toContain('"@talaria/sdk" is not shared')
     expect(unsharedImport('@talaria/sdk/testing', 'server')).toContain('"@talaria/sdk/testing" is not shared')
     expect(unsharedImport('fs', 'client')).toContain('"fs" is not shared')
+  })
+
+  it('refuses zod/mini in both kinds, and zod/v4 in a surface like zod', () => {
+    expect(unsharedImport('zod/mini', 'server')).toContain('"zod/mini" is not shared with apps')
+    expect(unsharedImport('zod/mini', 'client')).toContain('"zod/mini" is not shared with apps')
+    expect(unsharedImport('zod/mini', 'client')).not.toContain('server-side modules only')
+    expect(unsharedImport('zod/v4', 'client')).toContain('"zod/v4" is shared with server-side modules only')
   })
 
   it('says a server-side package is the server side\'s, and how a surface takes its types', () => {
@@ -361,7 +368,7 @@ describe('buildApp (a package the app does not get)', () => {
     const cur = await buildApp('imports-clsx')
     expect(cur.status).toBe('failed')
     expect(cur.error).toContain('"clsx" is not shared with apps')
-    expect(cur.error).toContain("may import only @talaria/sdk/server, zod and node's builtins")
+    expect(cur.error).toContain("may import only @talaria/sdk/server, zod (or zod/v4) and node's builtins")
   }, 180_000)
 
   it('skips a harness file that imports one, with the same sentence, and still builds the app', async () => {
@@ -431,7 +438,24 @@ export const same = {
     writeFileSync(join(shims, 'rt-zod.js'), shimSource('zod'))
     setServerShims(shims)
     app('zod-check')
-    app('zod-subpath', { 'app.ts': null, 'Work.svelte': null, 'talaria.json': JSON.stringify({ name: 'Zod Subpath', version: '0.1.0' }), 'mcp.ts': "import { z } from 'zod/mini'\nexport default { tools: [{ name: 'x', description: String(z), handler: () => 1 }] }\n" })
+    app('zod-v4', {
+      'server.ts': `import { z } from 'zod'
+import { z as z4 } from 'zod/v4'
+import * as ns4 from 'zod/v4'
+import d4 from 'zod/v4'
+import { z as sdkZ } from '@talaria/sdk/server'
+export default { fetch: async () => new Response('ok') }
+const bad = z4.object({ title: z4.string().min(1) }).safeParse({ title: '' })
+export const same = {
+  named: z4 === z && z4 === sdkZ,
+  namespace: ns4.object === sdkZ.object,
+  default: d4 === sdkZ,
+  error: !bad.success && bad.error instanceof sdkZ.ZodError,
+}
+`,
+    })
+    app('zod-mini-server', { 'app.ts': null, 'Work.svelte': null, 'talaria.json': JSON.stringify({ name: 'Zod Mini', version: '0.1.0' }), 'mcp.ts': "import { z } from 'zod/mini'\nexport default { tools: [{ name: 'x', description: String(z), handler: () => 1 }] }\n" })
+    app('zod-subpath', { 'app.ts': null, 'Work.svelte': null, 'talaria.json': JSON.stringify({ name: 'Zod Subpath', version: '0.1.0' }), 'mcp.ts': "import { z } from 'zod/v4/core'\nexport default { tools: [{ name: 'x', description: String(z), handler: () => 1 }] }\n" })
     app('zod-surface', { 'Work.svelte': `<script lang="ts">\n  import { Note } from './lib/schema'\n</script>\n<p>{String(Note)}</p>\n` })
   })
 
@@ -472,10 +496,30 @@ export const same = {
     expect(note.default.parse({ title: 'a' })).toEqual({ title: 'a' })
   }, 60_000)
 
-  it('refuses a subpath of zod, which the host does not share, naming it', async () => {
+  it('builds zod/v4 as the host\'s zod: linked to rt-zod.js, one copy, instanceof ZodError holds', async () => {
+    const cur = await buildApp('zod-v4')
+    expect(cur.error ?? null).toBeNull()
+    expect(cur.status).toBe('ready')
+    const server = readFileSync(join(appBuildKeyDir('zod-v4', cur.key), 'server.js'), 'utf8')
+    expect(server).toContain(pathToFileURL(join(shims, 'rt-zod.js')).href)
+    expect(server).not.toMatch(/from\s*["']zod\/v4["']/)
+    expect(server).not.toContain('$ZodType')
+    setSsrLoader(null)
+    const mod = (await loadAppServer('zod-v4')) as { same?: Record<string, boolean> } | null
+    expect(mod?.same).toEqual({ named: true, namespace: true, default: true, error: true })
+  }, 180_000)
+
+  it('refuses zod/mini, a different API the host does not share, naming it and what is shared', async () => {
+    const cur = await buildApp('zod-mini-server')
+    expect(cur.status).toBe('failed')
+    expect(cur.error).toContain('"zod/mini" is not shared with apps')
+    expect(cur.error).toContain("may import only @talaria/sdk/server, zod (or zod/v4) and node's builtins")
+  }, 180_000)
+
+  it('refuses a deeper subpath of zod, naming it', async () => {
     const cur = await buildApp('zod-subpath')
     expect(cur.status).toBe('failed')
-    expect(cur.error).toContain('"zod/mini" is not shared with apps; the host shares "zod" and its listed subpaths only')
+    expect(cur.error).toContain('"zod/v4/core" is not shared with apps')
   }, 180_000)
 
   it('refuses zod in a surface — a value import from the module that uses it — saying a type comes in by `import type`', async () => {

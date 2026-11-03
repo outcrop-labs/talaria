@@ -70,9 +70,9 @@ a usage error.
   to the schema), typechecks with svelte-check against the kit's declarations and the host's
   compiler options, and runs the app's own `*.test.ts` with vitest, `@talaria/sdk/testing`
   included. The typecheck resolves exactly what an app may import: the SDK's three entries,
-  `svelte`, `@lucide/svelte`, `@tanstack/svelte-query`, and `zod` by its bare entry — the copy
-  `@talaria/sdk/server` re-exports as `z`, shared with server-side code. Nothing else resolves —
-  not `zod/mini`, not a package you happen to have locally — because nothing else resolves on
+  `svelte`, `@lucide/svelte`, `@tanstack/svelte-query`, and `zod` by its bare entry or as `zod/v4`
+  — the copy `@talaria/sdk/server` re-exports as `z`, shared with server-side code. Nothing else
+  resolves — not `zod/mini`, not a package you happen to have locally — because nothing else resolves on
   the host either. The tests get the same `zod` a built server links to.
 - **`build`** runs the host's build recipe and the host's load probe, and reports what Manage →
   Apps would: the build (its key, files and size), the surfaces, the server, each MCP tool kept or
@@ -111,7 +111,9 @@ default, as on a fresh instance. The host build refuses a bare import it does no
 (`"clsx" is not shared with apps: …`), and so does the kit, even where the package would resolve
 from some `node_modules` above the app. A shared one is linked, never bundled: a built
 `server.js` imports `zod` from the runtime file beside the SDK's (`rt-zod.js`), on the host and
-in the kit alike.
+in the kit alike (`zod/v4` is linked to the same file). A kit downloaded from an rc host before
+zod was shared (#649) still refuses `zod` in `build`, and one from before `zod/v4` was allowed
+refuses that; download a fresh kit from the updated host.
 
 ## The sandbox loop
 
