@@ -37,4 +37,6 @@ futures-util = { workspace = true }
 talaria-model-efforts = { workspace = true }
 
 [dev-dependencies]
+redis = { workspace = true }
+reqwest = { workspace = true }
 talaria-config = { workspace = true }

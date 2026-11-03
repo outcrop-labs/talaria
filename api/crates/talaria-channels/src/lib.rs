@@ -217,6 +217,27 @@ macro_rules! rail_room_sql {
     };
 }
 
+/// The name a room shows viewer `$1`: a channel's name, or for a DM the other
+/// person, or the other members by name when the DM is a group or holds an
+/// agent and has no name of its own, or its agents by name when no other
+/// person is in it.
+macro_rules! room_title_sql {
+    () => {
+        "case when c.kind = 'dm' then coalesce( \
+           (select case when count(*) = 1 and not exists (select 1 from channel_agents xa where xa.channel_id = c.id) \
+                     then min(coalesce(nullif(pu.name, ''), pu.email)) \
+                     else coalesce(nullif(c.name, ''), string_agg(coalesce(nullif(pu.name, ''), pu.email), ', ' \
+                       order by coalesce(nullif(pu.name, ''), pu.email))) end \
+              from channel_members p join users pu on pu.id = p.user_id \
+             where p.channel_id = c.id and p.user_id <> $1::uuid), \
+           (select string_agg(coalesce(nullif(ad.display_name, ''), ca.agent_model), ', ' \
+                     order by coalesce(nullif(ad.display_name, ''), ca.agent_model)) \
+              from channel_agents ca left join agent_defs ad on ad.model = ca.agent_model \
+             where ca.channel_id = c.id), c.name) \
+         else c.name end"
+    };
+}
+
 /// A `streaming` channel message is dead once its writer has been silent for
 /// fifteen minutes (`edited_at` is the flush heartbeat; a reply that never
 /// flushed has only `created_at`). Unqualified, so it reads the
@@ -436,7 +457,7 @@ pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sql
 #[derive(Debug)]
 pub struct StreamingChannel {
     pub id: String,
-    pub name: String,
+    pub title: String,
     pub streamed_ms: i64,
 }
 
@@ -449,7 +470,9 @@ pub async fn streaming_channels(
     user_id: &str,
 ) -> Result<Vec<StreamingChannel>, sqlx::Error> {
     let rows: Vec<(String, String, i64)> = sqlx::query_as(concat!(
-        "select c.id::text, c.name, s.streamed_ms \
+        "select c.id::text, ",
+        room_title_sql!(),
+        ", s.streamed_ms \
          from channels c \
          left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
          join lateral ( \
@@ -468,9 +491,9 @@ pub async fn streaming_channels(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, name, streamed_ms)| StreamingChannel {
+        .map(|(id, title, streamed_ms)| StreamingChannel {
             id,
-            name,
+            title,
             streamed_ms,
         })
         .collect())
@@ -1781,14 +1804,9 @@ macro_rules! shared_rooms_sql {
                select coalesce(email, name, 'user') as who from users where id = $1::uuid \
              ) \
              select c.id::text, c.kind, \
-               case when c.kind = 'dm' then coalesce( \
-                 (select case when count(*) = 1 and not exists (select 1 from channel_agents xa where xa.channel_id = c.id) \
-                           then min(coalesce(nullif(pu.name, ''), pu.email)) \
-                           else coalesce(nullif(c.name, ''), string_agg(coalesce(nullif(pu.name, ''), pu.email), ', ' \
-                             order by coalesce(nullif(pu.name, ''), pu.email))) end \
-                    from channel_members p join users pu on pu.id = p.user_id \
-                   where p.channel_id = c.id and p.user_id <> $1::uuid), c.name) \
-               else c.name end, \
+             ",
+            room_title_sql!(),
+            ", \
                (trunc(extract(epoch from coalesce( \
                  (select max(msg.created_at) from channel_messages msg where msg.channel_id = c.id), \
                  c.updated_at)) * 1000))::bigint, \

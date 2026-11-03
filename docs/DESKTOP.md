@@ -51,9 +51,72 @@ every zone in the page has seen it — except over a native field (`<input>`, `<
 `<select>`, anything contenteditable), which takes text, a moved selection or a file by the
 engine's own default, with no handler to say so; `scripts/desktop-drop-guard.mjs` runs the
 script against each case in `bun run check`. And the webview refuses to navigate to `file:` at all
-(`allowed_navigation`), for a page where the script did not get the chance. Only `file:` is
-refused: pages and their frames use `about:`, `blob:` and `data:`, `mailto:` and app links
-go to the OS, and a sign-in goes to other https origins and back.
+(`allowed_navigation`), for a page where the script did not get the chance. Pages and their
+frames use `about:`, `blob:` and `data:`, and a sign-in goes to other https origins and back:
+those load. `mailto:`, `tel:` and app links are not page loads, so they go to the OS
+("Links that leave the page" below).
+
+### Links that leave the page
+
+An instance webview is a browser tab with no browser around it. A `target="_blank"` link or
+a `window.open` asks the engine for a new window, and wry drops that request when the shell
+installs no handler, so on every OS the click did nothing. Each instance webview now has a
+new-window handler and a click script for OS links. Both are in
+`desktop/src-tauri/src/links.rs`:
+
+| The link | Where it goes |
+|---|---|
+| http(s), another origin or the instance's own: a Drive file, a GitHub settings page, a source the agent read, a coding-harness sign-in, a public artifact | the **default browser**, where the person is signed in to that site and has an address bar |
+| the MCP connect (`/api/mcp/oauth/start` on the instance's own origin) | an **in-app popup**, the engine's own window, with the instance's session and `window.opener` |
+| `mailto:`, `tel:` or `sms:`, **clicked by the person** in the instance's own page | the **OS handler** for the scheme |
+| every other scheme; an OS link that arrives as a navigation or a new-window request; `file:`; `javascript:`, `data:`, `blob:` and `about:` as a new window | **nowhere**: refused and logged by scheme |
+
+Why each one goes where it does:
+
+- **An OS link opens only from a click.** The engine's handlers cannot tell a click from a
+  script, or the page from a frame inside it:
+  - WebKitGTK and WKWebView ask about subframe navigations and redirects with no frame or
+    gesture flag;
+  - WebView2's new-window request reaches wry's handler without `IsUserInitiated`;
+  - a microsite artifact is agent-written HTML, run in a sandboxed iframe that may run
+    scripts and open popups.
+
+  So both handlers refuse every OS scheme. The click script `OS_LINKS` runs in the main
+  frame only, as initialization scripts do, so never in an artifact's frame. It catches a
+  trusted, primary-button click on a `mailto:`, `tel:` or `sms:` link that the page did not
+  handle, and asks `desktop_open_link`. That command opens only those three schemes, and
+  only the instance's own origin holds its grant. `scripts/desktop-os-links.mjs` clicks
+  each case in `bun run check`.
+- **The OS schemes are an allowlist of three.** Browsers hand nearly any scheme to the OS,
+  but only after a prompt of their own, and the shell has none. App links have https forms
+  (a Zoom or Teams join link, a Slack message link). Those go to the default browser, which
+  asks before it hands them to the app.
+- **One in-app window: the MCP connect.** It (`connectPopup`) needs the instance's session
+  cookie to start. When it finishes, it posts `talaria:mcp-oauth-done` to `window.opener` and
+  closes. The default browser has neither the session nor the opener.
+  - Its path runs from the instance's `/api/mcp/oauth/start` to the provider the admin
+    registered, then back to the instance's callback.
+  - The popup is the engine's own window: no address bar and none of the shell's handlers.
+    Every other same-origin `_blank`, such as a public artifact or a download, goes to the
+    browser instead.
+  - **Residual:** a page that opens the connect URL can re-navigate the window it opened.
+    The shell cannot see a popup's later navigations, and on Linux the window keeps the
+    start URL as its title.
+- **A popup that closes itself.** On Linux, wry answers `window.close()` by destroying only
+  the page, which left an empty window. The shell closes that window too
+  (`links::close_emptied_popups`). On macOS, wry's popup has no handler for
+  `window.close()`, so its window stays until the person closes it. That is not verified on
+  a Mac.
+- **Google's connects are not popups.** They are full-page navigations
+  (`/api/integrations/google/connect`), so they keep loading in the instance webview, as
+  before.
+- **At most one hand-off a second per webview** (`HAND_OFF_GAP`). A script that opens a stream
+  of windows gets one browser tab, and the rest are logged and dropped.
+
+The hand-off uses `tauri-plugin-opener`'s free `open_url` (on Linux, `xdg-open` and its
+fallbacks), on a blocking worker, never on the handler's thread. The plugin is **not
+registered**: no instance page gets an opener command, an opener permission, or the plugin's
+init script that intercepts link clicks. Log lines name only the scheme and host of a URL.
 
 Adding an instance: the shell normalizes the URL (bare hosts become `https://`, only http(s),
 credentials/paths stripped — an instance IS its origin), then probes the instance beacon
@@ -102,25 +165,164 @@ save.
 
 An instance with no webview yet (the first open of a session, a relaunch) is probed first,
 from the launcher, which shows "Opening X…" with a way to stay. An unreachable instance is
-then a sentence with Retry on the launcher, not a blank window or WebKit's error page — in
-the themed titlebar mode the only chrome is drawn by the page, so that page was a trap.
-The card also offers **Open anyway**, because the check is not the webview: it is the
-shell's own HTTP client, with no cookies and its own proxy lookup and TLS trust (on Linux,
-the proxy comes only from the environment). An instance behind a sign-in gate that refuses
-the beacon without a session, or one reachable only through a proxy set in the desktop's
-settings, fails the check and still loads in the webview. Open anyway opens it without the
-check; on Linux a page that then fails comes back as a load failure (below), and on macOS
-and Windows the person gets what the platform webview shows for a failed load, as every open
-did before the probe.
+then a sentence with Retry on the launcher, not a blank window or the engine's error page —
+in the themed titlebar mode (the default on every OS) the only chrome is drawn by the page,
+so that page was a trap. The card also offers **Open anyway**, because the check is not the
+webview: it is the shell's own HTTP client, with no cookies and its own proxy lookup and TLS
+trust (on Linux, the proxy comes only from the environment). An instance behind a sign-in
+gate that refuses the beacon without a session, or one reachable only through a proxy set in
+the desktop's settings, fails the check and still loads in the webview.
 
-**Linux only:** each instance webview's WebKitGTK `load-failed` signal is watched
-(`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
-http(s) main-frame load that fails — the instance went away mid-session, a full reload
-while it is down — closes that webview and returns to the launcher with WebKit's reason and
-Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`)
-or content it cannot show inline is answered "handled", so the page the person is on stays;
-left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown".
-macOS and Windows rely on the probe before a cold open.
+The probe passing is not the page loading. Cloudflare holds a request to a restarting origin
+for about 100 s and then answers 524, or answers 502 at once, or a WAF answers 403; a
+suspended instance coming back is not probed at all; a page already open reloads into a
+restart. So the shell judges every instance page itself (`src-tauri/src/loading.rs`), by
+three rules, the same on every OS:
+
+1. **A page with the Talaria UI up is never interrupted.** Up is the UI's shell hook
+   (`window.__TALARIA_DESKTOP__`), or the page's titlebar asking the shell for something
+   (`get_desktop_settings`, `list_instances`), which every UI's titlebar does once it has
+   mounted, on the sign-in page too. The second is what keeps an instance on an older
+   Talaria, from before the hook, from being judged broken. It comes late: the titlebar is
+   in a chunk of its own, loaded after the main bundle and after its own import of the
+   Tauri API, so a slow instance can finish its page several seconds before it asks. A
+   page that is Talaria's shell still starting (its `#root` and module script, no UI yet) is
+   looked at again about 8 s and 20 s after it finished before anything is said. A failed download, an
+   aborted navigation or a 5xx that does not replace the page changes nothing.
+2. **A page on the instance's own origin that is not Talaria is the card.** A main-frame
+   page there that finished, and still has no UI 3 s later (and after those looks, if it
+   was starting), puts the person back on the launcher with the card, saying what answered
+   when the platform said. The card takes nothing away:
+   - A page that answered — Cloudflare's 502, 524 or 403 challenge, a sign-in gate, a
+     mis-routed 404, a page with no Talaria in it — is **kept** behind the card, which
+     offers **Retry** and **Back to instances** (both close the page first) and **Show the
+     page**: the page as it is, with the shell's own **← Instances** on it, bottom left
+     (text, styled through the CSSOM in a shadow root, so a strict CSP cannot strip it), as
+     the way back, which brings the card back. A page shown that way is judged no more,
+     unless a later document is one the way back cannot reach (below). Show the page is the
+     only way a kept page is shown as it is: opening the instance any other way — its row,
+     the tray, a notification, another instance's switcher — closes the kept page and loads
+     the instance fresh (Retry without the probe).
+   - A load that got no answer at all (refused, dropped, an engine's network error page),
+     and a page that never answers the shell's script (WebView2's own page for an error
+     with no body, where no script runs; a page too busy to answer, looked at again 5 s and
+     12 s later first), is closed: Retry, Back to instances. Neither offers Show the page:
+     the way back could not land there.
+   - Whichever it was, if the instance's UI comes up while the card is up (a challenge
+     that solves itself, a slow start), the shell opens it; if it comes up on a page shown
+     as it is, the way back comes down.
+   - A kept page is not the instance's page: the instance's remembered page is forgotten,
+     so Retry and the next launch open its root. A network failure, a stall and a page
+     loaded hidden at launch say nothing against the page, and keep it.
+
+   A page that never finishes is the watchdog's: 25 s after a webview is made, or after a
+   document commits, a page still loading without its UI is "<instance> is not
+   answering", with **Retry**, **Keep waiting** (show the page again, with the way back on
+   it at once, and wait 60 s more) and **Back to instances**. The page keeps loading behind that
+   card and is judged when it finishes: Talaria opens it; anything else (Cloudflare's 524
+   after holding the request) is the card for what it is. A file the person opened in the
+   window (an image, a PDF, JSON: not HTML, and nothing failed) is left alone, and Keep
+   waiting on one that has finished waits for nothing.
+3. **Pages on other origins are never judged.** A sign-in provider, a Cloudflare Access
+   login: not Talaria, and not the shell's to call broken. A document that commits there
+   starts no watchdog and is judged when it finishes only if the platform said its load
+   failed on the instance's own origin. The shell takes one call from such a page, and
+   only one: the way back (`show_welcome`, granted to the instance's webview for any http(s)
+   origin by `lib.rs::grant_way_back`). So the pill and `Ctrl/Cmd+Shift+H` work on a sign-in
+   provider's page too; `Ctrl+Q` works only on the instance's own origin (the OS's own quit,
+   Alt+F4 or the macOS menu, works everywhere). Going back from another origin marks the
+   page as not the instance's, so the next open loads the instance fresh instead of showing
+   that page again.
+
+**Who may take the way back, and Quit.** A page's script can do anything a page can, so
+the shell decides by who is asking, never by a navigation (an earlier build of this change
+navigated to `talaria-desktop.invalid` for it, which any page or frame could do; that host
+is now refused like `file:`, and nothing acts on it):
+- On Linux and macOS Tauri gives the IPC to the main frame only, so no frame (a
+  microsite's sandboxed `srcdoc` frame, an ad) can call anything. WebView2 (Windows) gives
+  it to every frame, so there a frame is held by the origin ACL and the gate below, not by
+  frame scope: a sandboxed frame has an opaque origin and is refused before any command
+  runs, a cross-origin frame reaches only the way back, and a same-origin frame is the
+  instance's own content.
+- The pill and the escape keys take only real input (`isTrusted`): a page's own
+  `dispatchEvent` or `.click()` does nothing.
+- `show_welcome` from an instance page is taken only for the page on screen, at most once a
+  second (`loading::may_go_back`): a page in the background, or one calling it in a loop,
+  cannot throw the person out of what they are using.
+- `desktop_quit` from an instance page is taken only on the instance's own origin, for the
+  page on screen, and not in the first 10 s after launch (`loading::may_quit`): no page can
+  quit the app from the background, or on every start.
+
+Off screen, a page that does not come up is closed. One loaded hidden at launch (D8) is
+loaded again 1, 2, 5, 15 and 30 minutes later, so its instance's notifications are not lost
+for the session; a page left behind on the card is closed when the person opens another
+instance.
+
+What the platform says, kept for the card's words only (the rules above decide):
+
+- **Linux:** WebKitGTK's `load-failed` for an http(s) main-frame load that failed
+  (`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency),
+  and the main resource's status when a document commits. The failed load is answered
+  "handled", so WebKit shows no error page of its own and a page that was up stays up; a
+  navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`) or
+  content it cannot show inline says nothing (left to WebKit, a `mailto:` link replaced the
+  whole instance with "The URL can't be shown"; the navigation handler now refuses it, and
+  one the person clicks goes to the OS, links.rs).
+- **Windows:** WebView2's main-frame `NavigationCompleted`, subscribed through
+  `with_webview` and webview2-com (`watch_navigation`, `loading::webview2`), for an http(s)
+  page: its `HttpStatusCode` from 400, or `IsSuccess` false with no HTTP answer at all —
+  the network error page, where no init script runs and Alt+F4 was the only way out. A
+  cancelled navigation (`OPERATION_CANCELED`: replaced, or stopped) and one that became a
+  download (`CONNECTION_ABORTED`) say nothing.
+- **macOS:** nothing: WKWebView tells only its navigation delegate, which is wry's, what a
+  page answered, and WebKit's Navigation Timing has no `responseStatus`. Rule 2 needs none —
+  the card names no status there. A load that fails before it commits never finishes on
+  macOS; the watchdog takes it.
+
+Each engine callback only records; every decision is a main-thread turn of its own.
+
+### Reloading a page
+
+An instance page has no browser chrome, so the shell provides reload itself. It works on any
+instance, whatever its Talaria version.
+
+| Where | How |
+|---|---|
+| The keys | Ctrl+R or F5 on Windows and Linux, Cmd+R on macOS. Ctrl+Shift+R, Shift+F5 and Ctrl+F5 (Cmd+Shift+R on macOS) also skip the HTTP cache. |
+| The in-UI switcher | **Reload page**, with the shortcut beside it (`DesktopSwitcher.svelte` → `shellReload`). |
+| macOS menu bar | **View → Reload Page** and **Reload Ignoring Cache**. |
+
+How each path works:
+
+- **The keys** are an initialization script the shell injects into every instance webview,
+  beside the escape hatch (`RELOAD_KEYS` in `desktop/src-tauri/src/reload.rs`).
+  - The script calls `desktop_reload`, so it also runs on a page whose Talaria UI never
+    loaded, such as a gateway's 502 page.
+  - Where the shell refuses the command (another origin, which has no grant), the script
+    reloads the page itself.
+  - `scripts/desktop-reload-keys.mjs` presses each key, on each OS, in `bun run check`. It
+    also checks the chords the script must leave to the page.
+  - The keys work in the page's main frame only, as initialization scripts run. With the
+    focus inside an iframe (the artifact preview, the Google file pane), Ctrl/Cmd+R does
+    nothing on Linux and macOS.
+  - The script takes the keys in the capture phase, so a page's own Ctrl/Cmd+R binding never
+    runs. Nothing in `ui/` binds one.
+  - A popup (macOS hands the connect popup the opener's scripts and IPC) reloads itself
+    rather than the instance page behind it.
+- **The switcher** calls `desktop_reload`. A shell that predates the command gets an ordinary
+  `location.reload()`.
+- **The grant.** `desktop_reload` is in `INSTANCE_PERMISSIONS`, so every registered instance
+  origin holds it. A page can reload only itself with it. The launcher's call reloads the
+  instance on screen.
+- **The macOS menu** is the app's own, so it works where no page script ran. A page that
+  already handled Cmd+R keeps the menu from reloading a second time.
+- **On Windows**, WebView2's own F5 and Ctrl+R still reload its error page, where no script
+  runs.
+- **Skipping the cache** uses WebKitGTK's `reload_bypass_cache` and WKWebView's
+  `reloadFromOrigin`. WebView2 has no such reload outside the DevTools protocol, so on
+  Windows it is an ordinary reload.
+- **When a load fails on Linux**, the shell still comes back to the launcher's failure card
+  and its Retry ("Opening an instance" above).
 
 ### The launcher follows the shell
 
@@ -223,7 +425,8 @@ read, when an async command can reach one from its tokio worker, or when a callb
 reach one inline. Callbacks are the closures handed to `.on_*(…)` (window, webview,
 page-load, navigation, menu and tray events), `.run(…)`, `.with_webview(…)` and GTK
 `connect_*` signals, plus any function marked `// webview-threading: callback` (the
-notification-click entry points the OS calls). It follows free function calls by name, not
+notification-click entry points the OS calls, and WebView2's `NavigationCompleted`
+handler). It follows free function calls by name, not
 method calls or macro expansions: a regression guard for this shape of bug, not a proof.
 CI's connect smoke proves the connect path on every OS (Gates, below).
 
@@ -626,7 +829,11 @@ manager draws the window's own title.
 The window ships `decorations: false`. Three titlebar modes live in
 `~/.local/share/app.talaria.desktop/settings.json` (themed / os / none). **Themed is the
 default on every OS**: custom min/max/close drawn in the webview (traffic-light side follows
-the OS — left on macOS, right elsewhere) and a bar you can drag. OS turns native decorations
+the OS — left on macOS, right elsewhere) and a bar you can drag. Inside an instance that bar
+is the tab bar: it holds the controls, a press on its empty space drags the window and a
+double-click maximizes it, while a press on a link, button or field does what it does in a
+browser. Screens with no tab bar (sign-in, the wait for the session) draw a 36px band of
+their own instead. OS turns native decorations
 on. None hides both. Settings → Profile (inside the desktop app) and the launcher welcome
 screen both set it. Turning the OS titlebar on keeps the window's outer size (the content
 loses the titlebar's height), and the shell re-places the visible webview straight away

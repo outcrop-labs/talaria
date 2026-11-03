@@ -618,7 +618,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedule.rs
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apiconversationsidschedule-body) | `{ok, jobId}` | 200, 400, 403, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apiconversationsidschedule-body) | `{ok, jobId}` | 200, 400, 403, 404, 503 | audit |
 
 **POST** — Put this conversation's agent on a timer: a cron job on the agent itself whose every run posts its answer back into this thread.
 

@@ -30,9 +30,10 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import type { NavItem } from '@/lib/nav'
-  import NavIcon from './NavIcon.svelte'
+  import TabFace from './TabFace.svelte'
   import RailTooltip from './RailTooltip.svelte'
   import DesktopSwitcher from './DesktopSwitcher.svelte'
+  import DesktopWindowControls from './DesktopWindowControls.svelte'
   import SidebarAssistant from './SidebarAssistant.svelte'
   import BoardsSearch from './BoardsSearch.svelte'
   import NotificationBell from './NotificationBell.svelte'
@@ -43,6 +44,12 @@
   import { useAppGrants, useDeniedViews } from '@/lib/session'
   import { manageArea, MANAGE_HOME } from '@/lib/manage-area'
   import { edgeFade, revealCurrent } from '@/lib/tab-strip'
+  import { readout, tabWorking } from '@/lib/tab-working'
+  import { tabMarkOnScreen } from '@/lib/tab-mark-on-screen'
+  import { useWorking } from '@/lib/working.svelte'
+  import { swap } from '@/lib/motion'
+  import { windowDrag } from '@/lib/desktop-titlebar'
+  import { tabLift } from '@/lib/tab-motion'
   import { cn } from '@/lib/cn'
   import { p, route } from '@/router'
 
@@ -51,6 +58,7 @@
   const denied = useDeniedViews()
   const appGrants = useAppGrants()
   const badges = useNavBadges(() => route.pathname)
+  const working = useWorking()
 
   const appsQuery = useEnabledApps()
   const appsList = listQuery(appsQuery, { title: 'App links unavailable', variant: 'inline' })
@@ -66,10 +74,11 @@
   )
   const activeCandidates = $derived([...row, ...(manageSection ? [manageSection] : [])])
   const activePath = $derived(navActiveItem(route.pathname, activeCandidates)?.to ?? null)
+  const workingElsewhere = $derived(readout(row.flatMap((s) => s.items), working.current, route.pathname))
 </script>
 
 {#snippet face(item: NavItem, size: number)}
-  <NavIcon icon={item.icon} {size} />
+  <TabFace icon={item.icon} {size} site={tabWorking(item.to, working.current)?.site ?? null} tab />
 {/snippet}
 
 {#snippet badgeMark(badge: number | null, className: string)}
@@ -87,11 +96,12 @@
 
 <!-- h-14 is shell chrome, not a stage header, so it does not join the h-12
      stage-header line (UI-CONVENTIONS). -->
-<nav aria-label="Primary" class="@container relative z-40 flex h-14 shrink-0 items-stretch gap-2 bg-sidebar px-2">
+<nav aria-label="Primary" class="@container relative z-40 flex h-14 shrink-0 items-stretch gap-2 bg-sidebar px-2" use:windowDrag>
   <!-- A border on the nav would paint over the open tab. -->
   <div class="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-line" aria-hidden="true"></div>
 
   <div class="flex shrink-0 items-center gap-2">
+    <DesktopWindowControls at="left" />
     <div class="flex h-9 shrink-0 items-center gap-2.5 pl-1" aria-label="Talaria">
       <WingMark size={28} />
       <span
@@ -102,7 +112,7 @@
     <DesktopSwitcher collapsed />
   </div>
 
-  <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade use:revealCurrent>
+  <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade use:revealCurrent use:tabLift={route.pathname}>
     {#each row as section, si (section.id)}
       {#if si > 0}<div class="mb-3 h-5 w-px shrink-0 bg-line"></div>{/if}
       {#each section.items as item (item.to)}
@@ -110,6 +120,7 @@
         {#if item.to === activePath}
           <a
             href={item.to}
+            aria-label={item.label}
             aria-current="page"
             class="ears-bottom flex h-11 min-w-0 max-w-[15rem] shrink-0 items-center gap-2 rounded-t-[10px] border border-b-0 border-line bg-surface pl-3 pr-4 text-fg focus-visible:outline-offset-[-2px]"
           >
@@ -122,7 +133,7 @@
             <a
               href={item.to}
               aria-label={item.label}
-              class="relative mb-1.5 grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
+              class="tab-tile relative mb-1.5 grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted dither-fill hover:text-fg"
             >
               {@render face(item, 16)}
               {#if badge !== undefined && (badge === null || badge > 0)}{@render badgeMark(badge, 'absolute right-0 top-0')}{/if}
@@ -138,6 +149,23 @@
   </div>
 
   <div class="flex shrink-0 items-center gap-2">
+    {#if workingElsewhere}
+      {@const w = workingElsewhere}
+      <a
+        href={w.lead.href}
+        title={w.title}
+        aria-label="{w.elsewhere} working. {w.title.replaceAll('\n', '. ')}"
+        class="flex h-7 max-w-[18rem] shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
+        in:swap={{ duration: 200 }}
+        out:swap={{ duration: 120 }}
+      >
+        <TabFace icon={w.tab.icon} size={12} site={w.site} still={tabMarkOnScreen(w.site)} />
+        <span class="font-mono text-[10px] uppercase leading-3 tracking-[0.08em]"
+          >{w.elsewhere}<span class="hidden pl-1 @2xl:inline">working</span></span
+        >
+        <span class="hidden min-w-0 truncate font-sans text-[12px] leading-4 text-fg @5xl:block">{w.lead.label}</span>
+      </a>
+    {/if}
     {#if appsBroken}
       <RailTooltip label="App links unavailable; retry">
         <button
@@ -173,5 +201,6 @@
     {/if}
     <NotificationBell />
     <UserMenu {user} {onLogout} active={onSettingsOrAdmin} hasManage={manage.items.length > 0} />
+    <DesktopWindowControls at="right" />
   </div>
 </nav>

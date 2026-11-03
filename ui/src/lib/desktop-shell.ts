@@ -42,6 +42,23 @@ export async function shellShowWelcome(): Promise<void> {
   await ipc().then((invoke) => invoke('show_welcome'))
 }
 
+/** Reload this page through the shell, as its Ctrl+R / F5 / Cmd+R key script
+ *  does (desktop/src-tauri/src/reload.rs). `hard` skips the HTTP cache where
+ *  the engine can. A shell that predates the command, or any refusal, gets an
+ *  ordinary reload instead: a person who asked to reload is never left with
+ *  nothing. */
+export async function shellReload(hard = false): Promise<void> {
+  if (inDesktopShell()) {
+    try {
+      await ipc().then((invoke) => invoke('desktop_reload', { hard }))
+      return
+    } catch {
+      // Below.
+    }
+  }
+  window.location.reload()
+}
+
 export type TitlebarMode = 'themed' | 'os' | 'none'
 
 export interface DesktopSettings {

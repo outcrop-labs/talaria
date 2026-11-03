@@ -258,7 +258,8 @@
 {/snippet}
 
 <div class="flex h-screen flex-col">
-  <DesktopTitlebar />
+  <!-- The tab bar carries the window controls once it mounts. -->
+  {#if !user}<DesktopTitlebar />{/if}
   <div class="min-h-0 flex-1 overflow-hidden">
 {#if session.isError && !user}
   <!-- The session read FAILED (not "signed out" — that is a 200 with a null user).
@@ -309,7 +310,7 @@
              so the live DOM appeared in one jump when the animation ended. See
              the note in styles.css. Content entrance is animated by Materialize
              and listStagger instead, which fire when the data actually lands. -->
-        <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div data-tab-page class="min-h-0 min-w-0 flex-1 overflow-hidden">
           {#if !routeDenied}
             {@render children()}
           {/if}

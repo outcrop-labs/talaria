@@ -46,10 +46,11 @@ use sqlx::PgPool;
 
 use talaria_agent_crons::JobListener;
 use talaria_body::truncate_utf16;
+use talaria_conversations::fan_conversation_event;
 use talaria_gateway::guard::{
     GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
-use talaria_notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
+use talaria_notify::{NotifyDeps, notify_agent_reply};
 
 pub use pull::{pull_pass, register_cron_pull_job};
 pub use silence::is_silence;

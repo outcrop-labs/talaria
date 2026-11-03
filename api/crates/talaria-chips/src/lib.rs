@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use talaria_body::clip_chars;
-use talaria_notify::{NotifyDeps, fan_channel_event, fan_conversation_event};
+use talaria_conversations::fan_conversation_event;
+use talaria_notify::{NotifyDeps, fan_channel_event};
 use talaria_realtime::{ChannelEvent, RealtimeDeps, publish_channel};
 
 mod google_file;

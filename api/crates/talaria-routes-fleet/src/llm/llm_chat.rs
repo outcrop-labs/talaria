@@ -234,6 +234,18 @@ fn app_gateway_answer(mut out: Response, drops: Option<&str>) -> Response {
 /// (the agent never came back, or the fleet is unrendered) says so in
 /// `x-talaria-canned`, so the host fails the run instead of reading the
 /// sentence as the agent's answer.
+///
+/// NOT BOUND BY THE EDGE. This answer can take longer than Cloudflare's
+/// 100 s to send its headers (`EDGE_CUTOFF`). It holds for a restarting
+/// agent for the run's `x-talaria-hold-ms`, or `HOLD_WINDOW`'s two minutes,
+/// unattended, and then waits up to `HEADERS_WINDOW` for the agent to open
+/// the turn. `/api/chat` opens its answer early for exactly this, and this
+/// route does not need to, because no browser waits on it. Only the app
+/// host holds an app's key (app_keys.rs: app code never sees it), and the
+/// host calls this route over the instance's internal api URL
+/// (`rustApiUrl()`, ui/src/server/harness/transport.ts), never through the
+/// edge. A browser that waits on an app's own route is waiting on the
+/// app's whole run, and keeping that inside the edge is the app's job.
 async fn app_agent_turn(
     state: &AppState,
     id: &KeyIdentity,

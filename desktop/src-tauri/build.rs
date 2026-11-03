@@ -12,6 +12,8 @@ fn main() {
             "probe_instance",
             "activate_instance",
             "show_welcome",
+            "close_instance_page",
+            "show_instance_page",
             "remove_instance",
             "get_desktop_settings",
             "set_titlebar_mode",
@@ -30,6 +32,8 @@ fn main() {
             "desktop_notify_close",
             "desktop_os_idle",
             "set_instance_muted",
+            "desktop_reload",
+            "desktop_open_link",
         ]),
     ))
     .expect("failed to run tauri-build");
