@@ -5,6 +5,8 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { useChannels } from '@/lib/channels.svelte'
+  import { useNotifications } from '@/lib/notifications'
+  import { badgeCount } from '@/lib/notify-center'
   import { useHome, type HomeTab } from './home'
 
   // THE HOME TAB STRIP, in one place because it belongs on BOTH sides of Home.
@@ -21,6 +23,15 @@
   let { value }: { value: HomeTab } = $props()
 
   const home = useHome()
+  // The Inbox tab's count IS the bell's: the same query (one fetch, shared by
+  // key) through the same function, so the two numbers on one screen cannot
+  // disagree. It used to be `/api/home`'s `unread`, every unread row — which
+  // was the bell's count until the bell learned For you (O-10): Following
+  // (a ticket moved, research finished, a channel set to All) lands in the
+  // bell's All tab without badging, and the tab beside it said 4 while the
+  // bell said 3 (ui-3). The dock's own Inbox icon is a third question, the
+  // decision queue (nav-badges.svelte.ts), and stays its own number.
+  const notifications = useNotifications()
   // Feeds the Comms badge count. Defaulted, a failed read renders "no unread" —
   // the one thing a badge exists to deny. Suppressing the badge is only half the
   // fix: a missing badge is indistinguishable from a genuine zero, and the lie
@@ -38,7 +49,7 @@
   const setTab = (t: HomeTab) => void navigate('/home/:tab', { params: { tab: t } })
 
   const tabs = $derived.by((): { id: HomeTab; label: string; badge?: number }[] => [
-    { id: 'inbox', label: 'Inbox', badge: home.data?.unread || undefined },
+    { id: 'inbox', label: 'Inbox', badge: badgeCount(notifications.data) || undefined },
     { id: 'boards', label: 'Boards', badge: home.data?.queues.triage.count || undefined },
     { id: 'comms', label: 'Comms', badge: unreadComms || undefined },
     // One tab for every session — the work harness holds plans and research

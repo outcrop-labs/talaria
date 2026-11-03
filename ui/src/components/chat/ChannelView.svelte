@@ -46,6 +46,7 @@
     onLiveMessage,
     zeroTitle,
     zeroHint,
+    zeroIcon,
     composerPlaceholder,
     onOpenProfile,
   }: {
@@ -61,6 +62,9 @@
      *  and what an empty discussion should say depends on the ticket. */
     zeroTitle?: string
     zeroHint?: string
+    /** The zero state's mark. `#` is a channel's; a direct message is not one
+     *  (comms-dm.ts dmZeroState). */
+    zeroIcon?: string
     /** Comms' profile drawer: an author's name/avatar opens it. Optional — a
      *  ticket's embedded room has no drawer, and its rows stay plain text. */
     onOpenProfile?: (subject: ProfileSubject) => void
@@ -288,7 +292,7 @@
       {#if zero}
         <EmptyState
           class="h-full"
-          icon="#"
+          icon={zeroIcon ?? '#'}
           title={zeroTitle ?? `Welcome to #${channelName}`}
           hint={zeroHint ??
             (channelAgents.length
