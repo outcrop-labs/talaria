@@ -6,10 +6,11 @@ description: Cut a release — tag an RC on rc or a stable release on main, and 
 # Cut a release
 
 RELEASING.md is the contract — this is the working procedure distilled from it. The two facts
-that shape everything: **git tags are the version authority** (releasing never edits a file —
-no version-bump commit, no changelog commit, nothing to merge afterwards), and **a release is
-cut from a branch that has already been deployed**: `rc` for a candidate, `main` for a stable.
-The branch model behind that: [`docs/BRANCHES.md`(../../../docs/BRANCHES.md).
+that shape everything: **git tags are the version authority** (no file carries the version —
+no version-bump commit; the one file a release changes is CHANGELOG.md, through the roll's
+pull request below), and **a release is cut from a branch that has already been deployed**:
+`rc` for a candidate, `main` for a stable.
+The branch model behind that: [`docs/BRANCHES.md`](../../../docs/BRANCHES.md).
 
 ## The branches
 
@@ -22,18 +23,31 @@ The branch model behind that: [`docs/BRANCHES.md`(../../../docs/BRANCHES.md).
 ## Cut an RC
 
 ```bash
-git switch rc && git pull                # the tip you mean to cut
-bun scripts/changelog-roll.mjs 0.2.0-rc.1   # fold changelog/*.md into the section, commit it
+# 1. the roll, as a pull request against rc — like every other change
+git fetch origin && git switch -c release/roll-0.2.0-rc.1 origin/rc
+bun scripts/changelog-roll.mjs 0.2.0-rc.1      # folds changelog/*.md into a section, deletes them
+git add CHANGELOG.md changelog/
+git commit -m "changelog: roll 0.2.0-rc.1 — the entries since the last release"
+git push -u origin release/roll-0.2.0-rc.1
+gh pr create --base rc --title "changelog: roll 0.2.0-rc.1"
+# 2. merge it as a merge commit once CI is green; watch rc-deploy deploy that merge
+# 3. tag the merge
+git switch rc && git pull
+grep -n '^## 0.2.0-rc.1' CHANGELOG.md            # the section is in the tree you tag
 git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 ```
 
-Tag the tip whose staging deploy you watched (Actions → rc-deploy); that deploy is what an RC
-is supposed to carry. Nothing needs advancing first — `rc` is where the work is.
-
-Roll the changelog BEFORE tagging, on `rc`, and push the roll commit — the tagged tree must
-carry the section (the release's notes link points at CHANGELOG.md as of the tag). The roll
+Roll the changelog BEFORE tagging — the tagged tree must carry the section (the release's
+notes link points at CHANGELOG.md as of the tag). **Never push the roll commit to rc
+yourself:** `scripts/flow-guard.mjs` refuses an rc tip that is not a merge (the pre-push
+hook locally, `flow.yml` in CI), so the roll lands the way everything does — a pull request
+against rc. Hold other merges to rc between the roll's merge and the tag: a PR that lands in
+between ships in the tag with its entry still in `changelog/`, outside the section. The roll
 refuses to run on an empty `changelog/`; if it does, that is a prompt to read the entries,
 not a step to force.
+
+Tag the tip whose staging deploy you watched (Actions → rc-deploy); that deploy is what an RC
+is supposed to carry. Nothing else needs advancing first — `rc` is where the work is.
 
 The tag push runs the release workflow: full CI against the tag, images land on GHCR as
 `0.2.0-rc.1` + (moving) `rc`, and a GitHub **prerelease** opens with a stub body pointing
@@ -55,6 +69,10 @@ Two steps, in this order: the promotion, then the tag.
 git switch main && git pull
 git tag v0.2.0 && git push origin v0.2.0
 ```
+
+A stable's notes come from the same roll. If entries landed on rc after the last RC's roll,
+roll them the same way — a pull request against rc — before step 1. A roll can never go to
+main directly: main takes rc's content and nothing else (flow-guard).
 
 Publishes `0.2.0` + (moving) `latest` and a regular GitHub Release. `latest` moves on
 nothing else — only a suffix-free `vX.Y.Z` tag. A stable desktop release also attaches
@@ -83,4 +101,4 @@ is what a release's app-image build is pinned to, and what `rc-deploy.yml` pins 
 
 Production instances run from a separately operated infrastructure deployment — this repo
 ends at the published images. The changelog is already maintained by PRs (one entry file
-each); releasing adds exactly one step: the roll above.
+each); releasing adds exactly one step: the roll above, which is a pull request like any other.
