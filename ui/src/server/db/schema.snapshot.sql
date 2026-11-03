@@ -2335,14 +2335,14 @@ ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.channel_messages(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.channel_thread_reads
-    ADD CONSTRAINT channel_thread_reads_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.channel_messages(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.channel_thread_reads
-    ADD CONSTRAINT channel_thread_reads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channel_teams
     ADD CONSTRAINT channel_teams_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channel_teams
     ADD CONSTRAINT channel_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.channel_thread_reads
+    ADD CONSTRAINT channel_thread_reads_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.channel_messages(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.channel_thread_reads
+    ADD CONSTRAINT channel_thread_reads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.channels
