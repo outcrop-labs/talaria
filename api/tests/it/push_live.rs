@@ -761,3 +761,178 @@ async fn the_single_writer_stores_only_a_same_origin_href() {
         .await
         .unwrap();
 }
+
+/// One device browser's subscribe body with legal key halves.
+fn subscribe_body(endpoint: &str) -> serde_json::Value {
+    let secret = p256::SecretKey::generate();
+    let point = secret.public_key().to_sec1_point(false);
+    serde_json::json!({
+        "endpoint": endpoint,
+        "keys": { "p256dh": B64U.encode(point.as_bytes()), "auth": B64U.encode([3u8; 16]) },
+    })
+}
+
+async fn endpoints_of(pg: &PgPool, user: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "select endpoint from push_subscriptions where user_id = $1::uuid order by endpoint",
+    )
+    .bind(user)
+    .fetch_all(pg)
+    .await
+    .unwrap()
+}
+
+/// security-1 and security-3 at the door, through the REAL router: an
+/// endpoint inside the server's network is refused before any row files —
+/// one 400 for every rule, so the door is no oracle either — and a person
+/// is held to twenty device browsers, the one seen longest ago retired
+/// first, another person's untouched. The public endpoints are address
+/// LITERALS so the test needs no DNS; nothing is ever posted to them.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (DATABASE_URL, REDIS_URL)"]
+async fn the_subscribe_door_refuses_inside_endpoints_and_keeps_twenty_devices() {
+    let _row = KEYPAIR_ROW.lock().await;
+    let state = crate::support::live_app_state().await;
+    let pg = state.pg.clone();
+    cleanup(&pg).await;
+    let (user, cookie) = crate::support::minted_member_with_email(
+        &state,
+        "push-live",
+        "push-live-door@test.invalid",
+    )
+    .await;
+    let (other, other_cookie) = crate::support::minted_member_with_email(
+        &state,
+        "push-live",
+        "push-live-door-other@test.invalid",
+    )
+    .await;
+    let subscribe = |cookie: String, endpoint: String| {
+        let state = state.clone();
+        async move {
+            crate::support::call_json(
+                &state,
+                "POST",
+                "/api/push/subscribe",
+                Some(&cookie),
+                Some(subscribe_body(&endpoint)),
+            )
+            .await
+        }
+    };
+
+    for inside in [
+        // Not 127.0.0.1 itself: the engine suite in this binary admits that
+        // one address (TALARIA_FETCH_ALLOW_HOSTS) for its capture server.
+        "https://127.0.0.53:5432/x",
+        "https://localhost:5274/x",
+        "https://[::1]/x",
+        "https://169.254.169.254/latest/meta-data/",
+        "https://10.255.255.1/x",
+        "https://192.168.254.254/x",
+        "https://100.64.0.1/x",
+        "https://db.internal/x",
+        "https://push.invalid/x",
+    ] {
+        let (status, body) = subscribe(cookie.clone(), inside.into()).await;
+        assert_eq!(status.as_u16(), 400, "{inside} -> {body}");
+        assert_eq!(
+            body["error"], "Push endpoint refused: not a reachable public address",
+            "{inside}"
+        );
+    }
+    assert!(
+        endpoints_of(&pg, &user).await.is_empty(),
+        "no inside row filed"
+    );
+
+    // The other person's two devices, filed first, are not this person's to
+    // retire.
+    for i in 1..=2 {
+        let (status, _) = subscribe(
+            other_cookie.clone(),
+            format!("https://1.1.1.1/push-live-other-{i:02}"),
+        )
+        .await;
+        assert_eq!(status.as_u16(), 200);
+    }
+    let cap = |i: usize| format!("https://1.1.1.1/push-live-cap-{i:02}");
+    for i in 1..=25 {
+        let (status, body) = subscribe(cookie.clone(), cap(i)).await;
+        assert_eq!(status.as_u16(), 200, "{i} -> {body}");
+    }
+    // Twenty kept: the five filed first are gone.
+    assert_eq!(
+        endpoints_of(&pg, &user).await,
+        (6..=25).map(cap).collect::<Vec<_>>()
+    );
+    // Seen-longest-ago, not filed-first: re-filing 06 (a browser opening
+    // Talaria again) makes 07 the one the next device retires.
+    assert_eq!(subscribe(cookie.clone(), cap(6)).await.0.as_u16(), 200);
+    assert_eq!(subscribe(cookie.clone(), cap(26)).await.0.as_u16(), 200);
+    let kept = endpoints_of(&pg, &user).await;
+    assert_eq!(kept.len(), 20);
+    assert!(kept.contains(&cap(6)) && kept.contains(&cap(26)));
+    assert!(!kept.contains(&cap(7)));
+    assert_eq!(endpoints_of(&pg, &other).await.len(), 2);
+
+    cleanup(&pg).await;
+}
+
+/// security-3 at delivery: a person filed past the cap before it existed
+/// still gets one notification as at most twenty POSTs — to the twenty seen
+/// most recently.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_delivery_posts_to_at_most_twenty_devices() {
+    let _row = KEYPAIR_ROW.lock().await;
+    let pg = pg().await;
+    with_vapid_row_set_aside(&pg, fan_body(&pg)).await;
+}
+
+async fn fan_body(pg: &PgPool) {
+    let pg = pg.clone();
+    cleanup(&pg).await;
+    let user = person(&pg, "fan").await;
+    for i in 0..25 {
+        let secret = p256::SecretKey::generate();
+        let point = secret.public_key().to_sec1_point(false);
+        sqlx::query(
+            "insert into push_subscriptions (user_id, endpoint, p256dh, auth, last_seen_at) \
+             values ($1::uuid, $2, $3, $4, now() - make_interval(mins => $5))",
+        )
+        .bind(&user)
+        .bind(format!("https://push.test/fan-{i:02}"))
+        .bind(B64U.encode(point.as_bytes()))
+        .bind(B64U.encode([3u8; 16]))
+        .bind(i)
+        .execute(&pg)
+        .await
+        .unwrap();
+    }
+    let captured: Arc<Mutex<Vec<PushPost>>> = Arc::new(Mutex::new(Vec::new()));
+    deliver_push_with(
+        &pg,
+        &test_box(),
+        &fake_post(captured.clone()),
+        &user,
+        &note("note-fan"),
+        &quick(),
+        "https://talaria.example.test",
+    )
+    .await;
+    let mut posted: Vec<String> = captured
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|p| p.endpoint.clone())
+        .collect();
+    posted.sort_unstable();
+    assert_eq!(
+        posted,
+        (0..20)
+            .map(|i| format!("https://push.test/fan-{i:02}"))
+            .collect::<Vec<_>>()
+    );
+    cleanup(&pg).await;
+}

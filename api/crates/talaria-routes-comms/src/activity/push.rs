@@ -10,9 +10,17 @@
 //
 // The endpoint is validated to an https URL because the push services'
 // own contract says so (an http "endpoint" is not a push service, it is a
-// request to mail ciphertext to a wire anyone can read). The two key halves
-// are length-checked at the door too — a row that can never decrypt is dead
-// weight the delivery loop would only prune later.
+// request to mail ciphertext to a wire anyone can read) — and then to a
+// PUBLIC one, by talaria-push's endpoint policy (the talaria-safe-fetch
+// rules): the endpoint is where this server will POST, so a session that
+// could file https://127.0.0.1:5432/ or the 169.254.169.254 metadata service
+// could make the server dial inside its own network and, through the test
+// push and the devices list, read the answer back. Every refusal answers
+// the same 400, whatever rule fired. The two key halves are length-checked
+// at the door too — a row that can never decrypt is dead weight the
+// delivery loop would only prune later. A person keeps at most
+// talaria_push::DEVICES_PER_PERSON device browsers; filing one more retires
+// the one seen longest ago.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -34,6 +42,11 @@ const ENDPOINT_MAX: usize = 2048;
 /// Key-half wire caps — the browser sends ~87 chars (p256dh) and ~22 (auth);
 /// 512 admits every legal padding/spelling with room to spare.
 const KEY_MAX: usize = 512;
+/// The one answer for an endpoint the policy refuses — an address inside
+/// the server's network, an internal-only name, or a name that did not
+/// resolve. One sentence for all of them, so the door
+/// is no oracle for which rule an inside address tripped.
+const ENDPOINT_REFUSED: &str = "Push endpoint refused: not a reachable public address";
 
 /// GET /api/push/key — the instance's VAPID public key, base64url of the
 /// 65-byte uncompressed point: the exact string the client decodes into
@@ -123,7 +136,9 @@ fn decode_key_half(s: &str) -> Result<Vec<u8>, String> {
 /// on the endpoint: a browser that re-subscribes (service worker refresh,
 /// push service rotation, a second login) overwrites its own row, and a row
 /// whose endpoint moved to another account is CLAIMED — one endpoint is one
-/// browser, whoever is signed into it now.
+/// browser, whoever is signed into it now. The endpoint must pass the push
+/// endpoint policy (https, a public address) before anything files, and the
+/// person is held to `DEVICES_PER_PERSON` (talaria_push::file_subscription).
 pub async fn subscribe(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -136,37 +151,35 @@ pub async fn subscribe(
         Ok(s) => s,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    match talaria_push::check_endpoint(&sub.endpoint).await {
+        talaria_push::EndpointVerdict::Public => {}
+        talaria_push::EndpointVerdict::Refused(why)
+        | talaria_push::EndpointVerdict::Unresolved(why) => {
+            tracing::warn!("[push/subscribe] refused a subscription endpoint: {why}");
+            return Ok(house_error(StatusCode::BAD_REQUEST, ENDPOINT_REFUSED));
+        }
+    }
     // The row remembers WHICH SESSION filed it (a hash — the id is a
     // credential), so signing out retires this browser's row and no other.
-    // A re-file of the same keys keeps its failure count (every boot re-files,
-    // and a row the service keeps refusing must still reach its prune); new
-    // keys are a new subscription and start clean.
     // The User-Agent names the device in the devices list (≤ 300 chars, no
-    // control characters); a re-file without one keeps the name it had.
+    // control characters).
     let user_agent = talaria_push::stored_user_agent(
         headers
             .get(header::USER_AGENT)
             .and_then(|v| v.to_str().ok()),
     );
-    if let Err(e) = sqlx::query(
-        "insert into push_subscriptions (user_id, endpoint, p256dh, auth, session_hash, user_agent) \
-         values ($1::uuid, $2, $3, $4, $5, $6) \
-         on conflict (endpoint) do update \
-         set user_id = excluded.user_id, p256dh = excluded.p256dh, \
-             auth = excluded.auth, last_seen_at = now(), \
-             session_hash = excluded.session_hash, \
-             user_agent = coalesce(excluded.user_agent, push_subscriptions.user_agent), \
-             failures = case when push_subscriptions.p256dh = excluded.p256dh \
-                              and push_subscriptions.auth = excluded.auth \
-                             then push_subscriptions.failures else 0 end",
+    let session_hash = session_hash_of(&headers);
+    if let Err(e) = talaria_push::file_subscription(
+        &state.pg,
+        &talaria_push::FiledSubscription {
+            user_id: &user.id,
+            endpoint: &sub.endpoint,
+            p256dh: &sub.p256dh,
+            auth: &sub.auth,
+            session_hash: session_hash.as_deref(),
+            user_agent: user_agent.as_deref(),
+        },
     )
-    .bind(&user.id)
-    .bind(&sub.endpoint)
-    .bind(&sub.p256dh)
-    .bind(&sub.auth)
-    .bind(session_hash_of(&headers))
-    .bind(user_agent)
-    .execute(&state.pg)
     .await
     {
         return Ok(internal(

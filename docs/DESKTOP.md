@@ -638,7 +638,12 @@ the launcher, that it is muted and that its count still counts toward the badge.
 launcher shows the same ask on macOS, a notice when Linux has no notification service, the
 no-tray notice, Quit, and on each instance's row its unread count and a bell that mutes
 it: a muted instance posts no banner, from its page or its watcher, and its share of the
-badge still counts (registry `muted`, never read by another instance).
+badge still counts (registry `muted`, never read by another instance). An instance asks
+too, because a person who resumes straight into one never sees the launcher (every 0.11
+upgrader): while the shell reports `not-determined` (macOS alone does), the page shows a
+card once it has been open 10 s and touched, whose Allow runs the macOS prompt inside that
+click (`ui/src/components/app/DesktopNotifyPermission.svelte`, `createShellAsk` in
+`ui/src/lib/notify-prompt.ts`); Not now is remembered for that instance.
 
 **Closing the window** (`src-tauri/src/background.rs`, `tray.rs`) keeps Talaria running so
 notifications arrive, with `closeToBackground` on (the default):

@@ -23,7 +23,11 @@
 // Inside the desktop shell the webview's Notification API reads denied and
 // there is no site-settings UI. The shell posts through the OS instead
 // (`desktop_notify`); the same pref still decides whether to fire. A quit
-// desktop app is not listening — that is not Web Push.
+// desktop app is not listening — that is not Web Push. Whether the OS lets
+// the shell post is the shell's answer (`shellNotificationStatus`), and on
+// macOS it must be asked for: from the launcher, Settings → Desktop, or the
+// in-instance card (DesktopNotifyPermission.svelte) — until then every post
+// is refused, and `showOsNotification` answers false.
 import { inDesktopShell, shellShowNotification } from '@/lib/desktop-shell'
 import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
 import { readText, writeText } from '@/lib/persist'
@@ -41,7 +45,8 @@ export const NOTIFY_BADGE = '/icons/notify-badge-96.png'
 export type PermissionState = 'unsupported' | 'insecure' | 'default' | 'granted' | 'denied'
 
 /** Inside the shell the OS grant is the shell's, not the webview's. A denied
- *  `Notification.permission` must not keep the toggle off. */
+ *  `Notification.permission` must not keep the toggle off. The OS grant
+ *  itself is asked for by the shell's own surfaces (the header above). */
 export function effectiveNotifyPermission(input: {
   inShell: boolean
   browser: PermissionState
