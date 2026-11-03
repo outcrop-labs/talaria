@@ -62,9 +62,9 @@
     size?: number
     /** Playback multiplier. 1 is the animation's declared period. */
     speed?: number
-    /** Force the reduced-motion rendering regardless of the OS setting. */
     /** Milliseconds between drawn frames; 0 draws every frame. */
     frameMs?: number
+    /** Force the reduced-motion rendering regardless of the OS setting. */
     forceReduced?: boolean
     class?: string
   } = $props()
