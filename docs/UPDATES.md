@@ -211,47 +211,101 @@ The agents' Hermes image updates itself, separately from Talaria's own image and
 **on by default** (Talaria's own updates above stay off until adopted): every instance
 follows `nousresearch/hermes-agent:stable` and keeps its agents on Hermes' stable
 releases, with no Talaria release, pull request or repository change per Hermes
-release. `talaria-hermes-channel` drives it; the records live in Postgres
+release — a release is held for an admin only when it changes a Hermes internal
+Talaria relies on. `talaria-hermes-channel` drives it; the records live in Postgres
 (`hermes_images`, `hermes_agent_images`, and the `hermes_channel` settings row). The
-whole mechanism is in [ARCHITECTURE.md, "The fleet"](./ARCHITECTURE.md#the-fleet); in short:
+whole mechanism is in [ARCHITECTURE.md, "The fleet"](./ARCHITECTURE.md#the-fleet).
+
+**Before you upgrade an instance to a release with the channel**, two choices are
+yours:
+
+- **To keep every agent where it is**, set `HERMES_IMAGE=<image>` in `fleet/.env`:
+  every agent runs that image, as it always did, and the channel says it is off and
+  why. (Or Pin a version on the panel afterwards.)
+- **Set the workspace's time zone** (Settings, the daily brief's time zone). The
+  maintenance window is 02:00–05:00 in it; with none set it falls back to the api's
+  `TZ`, then to the zone most admins chose on their profiles, then to UTC — 18:00 in
+  California. The panel says which zone it uses, in red when none is set.
+
+Otherwise, on the first check after the upgrade the fleet moves from the compiled pin
+to `stable` after the release has been there 48 hours, in a maintenance window,
+through the canary.
+
+What a release goes through:
 
 - **Check**, every ~6 h with ±30 min of jitter (the first within 10 min of boot):
   one anonymous manifest HEAD for `stable`'s digest, and for a new digest a tag list
   and a HEAD per recent `vX.Y.Z` tag to name it. On Docker Hub none of these counts
   against the anonymous pull limit, which counts manifest GETs.
-- **Prepare**: the new digest is pulled in the background through the agents' own
-  shared pull, waiting while any other download runs, then read with networking off
-  for its `_config_version`, the env names its Hermes strips, and its s6 drain tools.
-- **A minimum time on stable**: a release waits until it has been on `stable` for
-  **48 hours** since this instance first saw it (`TALARIA_HERMES_MIN_STABLE_HOURS` in
-  the api's environment), so a release the community finds broken is usually replaced
-  before any instance runs it. This is the defence against a bad or compromised tag
-  that needs no Talaria release: together with each instance's own canary and bans, a
-  bad `stable` meets a 48-hour delay, a soaked canary and a one-agent-first rollout on
-  every instance. There is no remote kill switch.
-- **Canary, then one agent at a time, each watched**, in the maintenance window
-  (02:00–05:00 in the workspace time zone — the daily brief's `timeZone`, else `TZ`,
-  else UTC — and configurable on the panel) or on **Roll now**, which also skips the
-  48 hours. The canary soaks for 5 minutes; the first agent is watched 10 minutes and
+- **48 hours on stable, before anything is downloaded**, counted from the first check
+  that saw the digest as `stable` and started again whenever `stable` moves. A waiting
+  release that `stable` stops naming is never rolled out: it gives way to whatever
+  `stable` names now (or, if `stable` went back to the fleet's own image, to nothing).
+  This is the defence against a bad or compromised tag that needs no Talaria release.
+  There is no remote kill switch.
+- **Prepare**: pulled in the background through the agents' own shared pull, waiting
+  while any other download runs, and **never past the disk's room** — the docker root
+  (where Postgres's volume lives too) must have room for the image, sized as the one
+  the fleet runs now plus a quarter, and still keep a tenth of its filesystem free; a
+  host without it holds the release and tells the admins. A failed pull is retried
+  15 minutes later, then twice as long each time, to six hours. Then the image is read
+  with networking off for its `_config_version`, the env names its Hermes strips and
+  its s6 drain tools, and **its contract with Talaria is checked**: on Talaria's rendered
+  config, what Hermes runs with its own migration skipped (Talaria stamps the image's
+  version, so Hermes never migrates it) must equal what it runs once it has migrated it,
+  on every key Talaria writes; and Hermes must still keep a sealed `CONFIG_*` credential
+  out of the commands an agent runs. Every rollout's image is checked to be on the host before it moves an
+  agent; one that left (an operator's prune) is pulled again.
+- **Canary, then one agent at a time, each watched**, in the maintenance window or on
+  **Roll now** (which also skips the 48 hours). The canary also answers the
+  `/health/detailed` and `/api/jobs` fields Talaria reads to tell whether an agent is
+  working. The canary soaks for 5 minutes; the first agent is watched 10 minutes and
   each later one 3 before the next moves; the whole rollout soaks 15 minutes before the
-  release is called good (`TALARIA_HERMES_CANARY_SOAK_SECS`,
-  `TALARIA_HERMES_FIRST_AGENT_SOAK_SECS`, `TALARIA_HERMES_AGENT_SOAK_SECS`,
-  `TALARIA_HERMES_ROLLOUT_SOAK_SECS`). An agent that is working or about to (a turn, a
-  long tool call, a cron run or one due within 15 minutes, a work session or workbench
-  job, a conversation in the last 10 minutes) is passed over and tried again a minute
-  later; one busy all window is left for a later window rather than hold the release.
+  release is called good. A release that changed a contract is **held**, not banned:
+  the panel lists what changed, and **Accept and roll out** sends it on.
+- **An agent that is working or about to is passed over** and asked again a minute
+  later: a reply being written or a conversation in the last 10 minutes; a turn in
+  flight in its Hermes API server or a delegated task (`/health/detailed`); a
+  messaging-platform turn (the gateway's own snapshot); a scheduled job running (its
+  claim, which Hermes refreshes every minute while the run lives, long tool calls
+  included) or due within 3 minutes — except a job that runs every few minutes, whose
+  missed fire Hermes runs late after the restart; a work session or workbench job; a
+  model call in the last 5 minutes. An agent whose Hermes does not answer those
+  questions is not restarted. One busy all window is left for a later window rather
+  than hold the release; one left behind three windows in a row is said to the admins.
+- **What a person set, stays**: an agent someone stopped is assigned the new image
+  and starts on it when they start it — never started by the channel. One that is
+  down without being stopped (crash-looping) is recreated.
 - **A failure is confirmed before anything is banned**: a failure the host caused
-  (docker timing out, the disk saturated) is retried later and never bans. A failure the
-  image caused puts that agent back at once and is tried once more; the second time,
-  the release is marked bad, every agent it reached moves back, and every admin is
-  notified (`hermes_update_failed`). **Allow again** on the panel lifts a ban.
-- **Stuck states alert** (`hermes_channel_stuck`): checks failing for 3 days, a rollout
-  open for 7, or a channel state row that cannot be read (the channel then moves
-  nothing — delete the `hermes_channel` row of `app_settings` to start it over).
+  (docker timing out or refusing, the api unable to reach a container docker calls
+  healthy, the disk saturated) is retried after 15 minutes, then twice as long each
+  time to six hours, and the third in a row tells the admins once. A failure the image
+  caused puts that agent back at once and is tried once more; the same thing failing
+  again marks the release bad and rolls every agent on it back, and every admin is
+  notified (`hermes_update_failed`). Failures of different things never add up (a
+  strike clears once the thing passes), and a saturated disk excuses at most two. A
+  version already known good here (a rollback's, a catch-up's, a pin to one) is never
+  banned. **Allow again** on the panel lifts a ban.
+- **Roll back** moves every agent on the version being left back now, mid-turn
+  included, one at a time; agents on other versions are left alone.
+- **Stuck states alert** (`hermes_channel_stuck`), once a day each: checks failing for
+  3 days, a rollout open for 7, the host failing three times in a row, or a channel
+  state row this release cannot read (written by a later one, or damaged). Such a row
+  pauses only the updates — hiring, starting and editing agents never read it — and
+  **Reset** on the panel sets it aside (kept as it was, under
+  `hermes_channel:archived:<ms>`) and starts afresh with every agent on its image.
 
 The panel is **Manage → Agent image** (admins): the version each agent runs, the
-channel, the last check, the rollout, and Check now, Roll now, Roll back and Pin.
-`GET/POST /api/fleet/hermes` is the same surface.
+channel, the last check, the rollout, and Check now, Roll now, Roll back, Pin, Allow
+again, Accept and Reset. `GET/POST /api/fleet/hermes` is the same surface. An action
+is carried out by the channel's next step, within a minute.
+
+**The knobs.** `TALARIA_HERMES_MIN_STABLE_HOURS` (default 48) and
+`TALARIA_HERMES_STABLE_REF` (default `nousresearch/hermes-agent:stable`; a mirror) pass
+through `docker/compose.yml` to the api — set them in `docker/.env`. The soak lengths
+(`TALARIA_HERMES_CANARY_SOAK_SECS`, `TALARIA_HERMES_FIRST_AGENT_SOAK_SECS`,
+`TALARIA_HERMES_AGENT_SOAK_SECS`, `TALARIA_HERMES_ROLLOUT_SOAK_SECS`) are for tests and
+are not passed through.
 
 **Opting out, or holding a version.** Any one of these stops the channel moving agents:
 
@@ -267,8 +321,17 @@ channel, the last check, the rollout, and Check now, Roll now, Roll back and Pin
 is recorded (the panel shows it) and retried at the next check. A fresh install, and a
 host upgraded from a release before the channel, renders the compiled pin first (the
 last entry of `HERMES_IMAGE_DEFAULTS`), so the pin is still the floor and still worth
-pre-pulling before an upgrade: `docker pull <the pin>`. Such a host moves to `stable`
-in its next maintenance window, through the canary.
+pre-pulling before an upgrade: `docker pull <the pin>`.
+
+**Rolling Talaria back to a release before the channel** leaves agents on the newer
+Hermes until each is next rendered and applied: the older release ignores the channel's
+tables and row, renders its own pin and stamps that pin's config version. Hermes never
+migrates a config while it runs (it reads `config.yaml` again on change, and migrates
+only at a boot on a new image), so a container still on the newer image reads the
+older stamp as it is — safe for any release the channel rolled out, because the
+contract check proved that release's migration from the compiled schema leaves every
+key Talaria writes unchanged. The next apply recreates the agent on the older pin. A
+later upgrade picks the channel up from its row.
 
 ## The local proof — the devbox E2E
 

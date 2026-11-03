@@ -516,9 +516,10 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hermes.rs`](../../api/
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `action` | `enum(check|roll|rollback|pin|unpin|allow|window)?` |  |
+| `action` | `enum(check|roll|rollback|pin|unpin|allow|accept|reset|window)?` |  |
 | `digest` | `string?(80)` |  |
 | `version` | `string?(16)` |  |
+| `digest` | `string?(80)` |  |
 | `digest` | `string?(80)` |  |
 | `start` | `string?(5)` |  |
 | `end` | `string?(5)` |  |
