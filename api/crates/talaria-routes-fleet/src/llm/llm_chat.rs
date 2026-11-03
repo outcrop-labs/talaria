@@ -470,11 +470,11 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     // there is one. Another key's header is ignored — an operator's rows are
     // the operator's.
     let unmetered = get_setting_hot(&state.pg, "gateway_unmetered_keys", json!([])).await;
-    let listed_unmetered = unmetered
-        .as_array()
-        .map(|a| a.iter().any(|v| v.as_str() == Some(id.key_name.as_str())))
-        .unwrap_or(false);
-    let meter = meter_plan(is_agent_key, app_call.is_some(), listed_unmetered);
+    let meter = meter_plan(
+        is_agent_key,
+        app_call.is_some(),
+        listed_unmetered(&unmetered, &id.key_name),
+    );
     let affinity = session_header.filter(|_| honors_affinity(is_agent_key, &id.key_name));
 
     // ANNOTATION — is the caller an agent's own tool loop? Guard caveats are
@@ -748,6 +748,24 @@ impl Meter {
 /// and its rows are the operator's.
 fn honors_affinity(is_agent_key: bool, key_name: &str) -> bool {
     is_agent_key || key_name == WORKBENCH_KEY
+}
+
+/// Whether an operator listed `key_name` in `gateway_unmetered_keys`.
+///
+/// Talaria's own persona key never counts, whatever the list says. The
+/// previous release's render put it back on the list on every render,
+/// because a chat flow ledgered each persona turn there. Nothing does that
+/// now, and agents still run on that key when a render could not mint their
+/// own. The migration that took it off the list runs once. A rollback, a
+/// render on the old release and a second upgrade leave it on the list with
+/// the migration already applied, and every call on the key would then be
+/// booked nowhere. The stored entry is ignored here instead. An operator's
+/// own entries, the workbench key's included, still count.
+fn listed_unmetered(list: &Value, key_name: &str) -> bool {
+    key_name != PERSONA_KEY
+        && list
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(key_name)))
 }
 
 /// The metering decision. An agent's call is booked under the agent as
@@ -1243,6 +1261,30 @@ mod tests {
         assert!(Meter::Skip.skip());
         assert!(!Meter::Book(UNATTENDED_SOURCE).skip());
         assert_eq!(Meter::Book(UNATTENDED_SOURCE).source(), "unattended");
+    }
+
+    /// The list the release sweep found after a rollback to the previous
+    /// release, a render there, and a second upgrade: the previous render's
+    /// entry for the persona key behind the operator's own.
+    #[test]
+    fn talarias_own_persona_key_is_metered_whatever_the_list_says() {
+        let after_rollback = json!(["ops-shared-key", "fleet-gateway"]);
+        assert!(!listed_unmetered(&after_rollback, PERSONA_KEY));
+        assert_eq!(
+            meter_plan(false, false, listed_unmetered(&after_rollback, PERSONA_KEY)),
+            Meter::Book(RELAY_SOURCE)
+        );
+        // An operator's own entries still count, the workbench key's too.
+        assert!(listed_unmetered(&after_rollback, "ops-shared-key"));
+        assert!(listed_unmetered(&json!([WORKBENCH_KEY]), WORKBENCH_KEY));
+        assert!(listed_unmetered(&json!(["agent:xeng"]), "agent:xeng"));
+        // Unlisted, or a list that is not one: metered.
+        assert!(!listed_unmetered(&after_rollback, "my-key"));
+        assert!(!listed_unmetered(&json!([]), "ops-shared-key"));
+        assert!(!listed_unmetered(
+            &json!({"ops-shared-key": true}),
+            "ops-shared-key"
+        ));
     }
 
     #[test]

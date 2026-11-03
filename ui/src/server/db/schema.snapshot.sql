@@ -31,6 +31,52 @@ CREATE FUNCTION public.talaria_bump_coding_rev() RETURNS trigger
        return null;
      end;
    $$;
+CREATE FUNCTION public.talaria_github_host_to_setting() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+     begin
+       if pg_trigger_depth() > 1 then
+         return null;
+       end if;
+       if tg_op = 'DELETE' then
+         if old.id = 'github' then
+           update app_settings set value = '{}'::jsonb, updated_at = now()
+            where key = 'github_config' and value <> '{}'::jsonb;
+         end if;
+         return null;
+       end if;
+       if new.id = 'github' and new.kind = 'github' and jsonb_typeof(new.auth) = 'object' then
+         insert into app_settings (key, value, updated_at)
+         values ('github_config',
+                 new.auth || jsonb_build_object('repoCreationOrgs', to_jsonb(new.repo_creation_orgs)),
+                 now())
+         on conflict (key) do update set value = excluded.value, updated_at = now()
+          where app_settings.value is distinct from excluded.value;
+       end if;
+       return null;
+     end;
+   $$;
+CREATE FUNCTION public.talaria_github_setting_to_host() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+     begin
+       if pg_trigger_depth() > 1 or jsonb_typeof(new.value) <> 'object' then
+         return null;
+       end if;
+       insert into git_hosts (id, kind, name, base_url, auth, repo_creation_orgs)
+       values ('github', 'github', 'GitHub', 'https://github.com',
+               new.value - 'repoCreationOrgs',
+               case when jsonb_typeof(new.value -> 'repoCreationOrgs') = 'array'
+                    then array(select jsonb_array_elements_text(new.value -> 'repoCreationOrgs'))
+                    else '{}'::text[] end)
+       on conflict (id) do update
+          set auth = excluded.auth, repo_creation_orgs = excluded.repo_creation_orgs, updated_at = now()
+        where git_hosts.kind = 'github'
+          and (git_hosts.auth, git_hosts.repo_creation_orgs)
+              is distinct from (excluded.auth, excluded.repo_creation_orgs);
+       return null;
+     end;
+   $$;
 SET default_tablespace = '';
 SET default_table_access_method = heap;
 CREATE TABLE public.agent_coding_account_blocks (
@@ -1605,7 +1651,7 @@ CREATE TABLE public.workbench_jobs (
     queued_at timestamp with time zone,
     queued_reason text,
     pr_number bigint,
-    host_id text NOT NULL
+    host_id text DEFAULT 'github'::text NOT NULL
 );
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
@@ -1626,7 +1672,7 @@ CREATE TABLE public.workbench_repo_flow (
     base_branch text,
     testing_branch text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    host_id text NOT NULL
+    host_id text DEFAULT 'github'::text NOT NULL
 );
 CREATE TABLE public.workbench_repo_requests (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1647,7 +1693,7 @@ CREATE TABLE public.workbench_repo_requests (
     decision_note text,
     protected boolean,
     protection_note text,
-    host_id text NOT NULL
+    host_id text DEFAULT 'github'::text NOT NULL
 );
 CREATE TABLE public.workbench_repos (
     agent_id uuid NOT NULL,
@@ -1656,7 +1702,7 @@ CREATE TABLE public.workbench_repos (
     base_branch text,
     push_mode text DEFAULT 'branches_only'::text NOT NULL,
     branch_prefix text,
-    host_id text NOT NULL
+    host_id text DEFAULT 'github'::text NOT NULL
 );
 CREATE TABLE public.workspace_secret_entries (
     secret_id uuid NOT NULL,
@@ -2161,6 +2207,8 @@ CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, 
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
 CREATE TRIGGER agent_coding_accounts_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_accounts FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
 CREATE TRIGGER agent_coding_blocks_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_account_blocks FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
+CREATE TRIGGER app_settings_github_mirror AFTER INSERT OR UPDATE ON public.app_settings FOR EACH ROW WHEN ((new.key = 'github_config'::text)) EXECUTE FUNCTION public.talaria_github_setting_to_host();
+CREATE TRIGGER git_hosts_github_mirror AFTER INSERT OR DELETE OR UPDATE ON public.git_hosts FOR EACH ROW EXECUTE FUNCTION public.talaria_github_host_to_setting();
 ALTER TABLE ONLY public.agent_coding_account_blocks
     ADD CONSTRAINT agent_coding_account_blocks_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.agent_coding_accounts(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_coding_accounts

@@ -931,7 +931,8 @@ for (const rule of RULES) {
 {
   const PG = 'ui/src/server/db/pg.ts'
   const GUARD_FROM_INDEX = 304
-  const MARKER = /--\s*deliberate:\s*\S/
+  // A named contract step (the roll-safety guard below) is a deliberate one.
+  const MARKER = /--\s*(deliberate|contract):\s*\S/
   // Ordered [test, name] pairs. Drop-index/view/constraint are deliberately
   // absent: those are routine, reversible cleanup, and the CI schema snapshot
   // (ui/src/server/db/schema.snapshot.sql) already puts them in the PR diff —
@@ -971,7 +972,7 @@ for (const rule of RULES) {
         // a scoped delete is a repair, an unscoped one is a wipe.
         if ((name.includes('no where') && /\bwhere\b/.test(norm)) || !test.test(norm)) continue
         offenders.push({
-          line: lineOf(stripped, statements[index].index ?? 0),
+          line: lineOf(stripped, start + (statements[index].index ?? 0)),
           text: `${name}: ${text.trim().split('\n')[0].slice(0, 80)}`,
         })
         break
@@ -997,6 +998,116 @@ for (const rule of RULES) {
     failures.push({
       id: 'pg-migration-guard-baseline-lost',
       what: `the MIGRATIONS array parses as ${statements.length} statements, below the destructive guard's baseline of ${GUARD_FROM_INDEX}`,
+      fix: ['Statements are append-only — find what removed entries, or fix the parser in scripts/check-invariants.mjs.'],
+      found: [],
+    })
+  }
+}
+
+// ROLL-SAFETY GUARD: the expand-contract rule, enforced (docs/UPDATES.md →
+// "The overlap contract"). The previous release keeps serving on a schema this
+// array migrated: through a roll's drain, after an aborted roll (green goes,
+// its migrations stay), and through the 24 h Roll back window. A statement
+// that takes away something the previous release still reads or writes is an
+// outage on rollback even when no datum is lost, and the destructive guard
+// above cannot see that. The git-hosts block (#611) passed it while it deleted
+// a setting with a WHERE, dropped the defaults the old inserts leaned on, and
+// swapped primary keys under the old ON CONFLICT targets; on rollback the old
+// release saw GitHub as disconnected and its workbench inserts failed NOT NULL
+// (upgrade-2, release sweep 2026-11-02).
+//
+// A contract step belongs to the release AFTER the one whose code stopped
+// reading the thing, and it says which one: an inline
+// `-- contract: <what goes>, unread since <vX.Y.Z or #PR>`. `-- deliberate:`
+// does not pass these. It records that losing data is intended, not that the
+// previous release is done with the thing.
+//
+// The baseline is the first statement after the #611 compensation. Everything
+// before it is frozen by the checksum law, and #611's own steps were
+// compensated by appending, not by editing them. The number is a literal and
+// never auto-updates.
+{
+  const PG = 'ui/src/server/db/pg.ts'
+  const CONTRACT_GUARD_FROM_INDEX = 526
+  const MARKER = /--\s*contract:[^\n]*(#\d+|\bv\d+\.\d+)/i
+  const PATTERNS = [
+    [/\bdrop\s+(table|column)\b/, 'drop table/column: the previous release reads it'],
+    [/\brename\s+(to|column)\b/, 'rename: the previous release queries the old name'],
+    [/\balter\s+column\s+[^;]*\b(type|using)\b/, 'alter column type: the previous release binds the old type'],
+    [/\balter\s+column\s+\S+\s+drop\s+default\b/, 'drop default: the previous release inserts without the column'],
+    [/\balter\s+column\s+\S+\s+set\s+not\s+null\b/, 'set not null: the previous release inserts without the column'],
+    [
+      /\bdrop\s+constraint\s+(if\s+exists\s+)?\S+_(pkey|key)\b/,
+      'drop a primary key or unique constraint: the previous release names it in ON CONFLICT',
+    ],
+    [/\bdelete\s+from\s+app_settings\b/, 'delete an app setting: the previous release reads it by key'],
+  ]
+  // Same normalization as the destructive guard: quoted literals blanked (a
+  // value cannot fire a pattern), -- comments stripped, lowercased. A
+  // dollar-quoted function body is code that runs later, not a step this pass
+  // takes, so it is blanked too.
+  const contractStep = (sql) => {
+    const norm = sql
+      .replace(/\$\$[\s\S]*?\$\$/g, '$$$$')
+      .replace(/'(?:[^'\\]|'')*'/g, "''")
+      .replace(/--[^\n]*/g, '')
+      .toLowerCase()
+    return PATTERNS.find(([test]) => test.test(norm))?.[1] ?? null
+  }
+  const stripped = stripComments(readFileSync(join(ROOT, PG), 'utf8'))
+  const start = stripped.indexOf('const MIGRATIONS: string[] = [')
+  const body = stripped.slice(start, stripped.indexOf('\n]', start))
+  const statements = [...body.matchAll(/`([^`]*)`/g)]
+  // The guard proves itself on the statements it exists for: #611's contract
+  // steps, verbatim, must still be in the array and must still be caught. A
+  // pattern edit that would have let them through fails here.
+  const SHIPPED = [
+    "delete from app_settings where key = 'github_config'",
+    "alter table workbench_repos alter column host_id drop default",
+    "alter table workbench_repo_flow alter column host_id drop default",
+    "alter table workbench_repos drop constraint if exists workbench_repos_pkey",
+    "alter table workbench_repo_flow drop constraint if exists workbench_repo_flow_pkey",
+  ]
+  const missed = SHIPPED.filter((s) => !statements.some(([, sql]) => sql.trim() === s) || !contractStep(s))
+  if (missed.length) {
+    failures.push({
+      id: 'pg-migration-contract-guard-blind',
+      what: "the roll-safety guard no longer catches #611's contract steps (or they left the MIGRATIONS array)",
+      fix: [
+        'These statements broke a rollback to the previous release. The guard must keep',
+        'catching their shapes; fix PATTERNS in scripts/check-invariants.mjs, never the list.',
+      ],
+      found: missed.map((s) => ({ path: PG, line: 0, text: s })),
+    })
+  }
+  if (statements.length >= CONTRACT_GUARD_FROM_INDEX) {
+    const offenders = []
+    statements.forEach(([text, sql], index) => {
+      if (index < CONTRACT_GUARD_FROM_INDEX || MARKER.test(text)) return
+      const step = contractStep(sql)
+      if (step)
+        offenders.push({
+          line: lineOf(stripped, start + (statements[index].index ?? 0)),
+          text: `${step}: ${text.trim().split('\n')[0].slice(0, 80)}`,
+        })
+    })
+    if (offenders.length) {
+      failures.push({
+        id: 'pg-migration-contract-unmarked',
+        what: `a MIGRATIONS statement (index >= ${CONTRACT_GUARD_FROM_INDEX}) takes away something the previous release may still read, and names no release that stopped reading it`,
+        fix: [
+          'Expand now, contract later (docs/UPDATES.md → The overlap contract). Ship the add with',
+          'the code, and the drop in a later release. Mark it there with',
+          '`-- contract: <what goes>, unread since <vX.Y.Z or #PR>` inside the statement.',
+          'A `-- deliberate:` marker does not pass this check.',
+        ],
+        found: offenders.map((o) => ({ path: PG, line: o.line, text: o.text })),
+      })
+    }
+  } else if (statements.length > 0) {
+    failures.push({
+      id: 'pg-migration-contract-baseline-lost',
+      what: `the MIGRATIONS array parses as ${statements.length} statements, below the roll-safety guard's baseline of ${CONTRACT_GUARD_FROM_INDEX}`,
       fix: ['Statements are append-only — find what removed entries, or fix the parser in scripts/check-invariants.mjs.'],
       found: [],
     })

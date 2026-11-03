@@ -4570,9 +4570,106 @@ alter table tasks drop column if exists conversation_id`,
      add column if not exists notify_level text,
      add column if not exists muted_until timestamptz`,
   // 9 · a device's name in the devices list.
+  `alter table push_subscriptions add column if not exists user_agent text`,
+  // ── The git-hosts move, made roll-safe (2026-11-02) ──────────────────────
+  // The 2026-10-27 block above shipped contract steps WITH the code that
+  // stopped reading the old shapes: it deleted `app_settings.github_config`
+  // after moving it into the `github` row, dropped the 'github' default from
+  // every host_id, and re-keyed workbench_repos and workbench_repo_flow. The
+  // previous release serves on this schema during a roll's drain, after an
+  // aborted roll (its migrations stay applied) and after Roll back
+  // (docs/UPDATES.md, the overlap contract), and it reads that setting and
+  // inserts workbench rows without a host. So it saw GitHub as not connected
+  // and every grant, job and repo request it filed failed NOT NULL. These
+  // statements put back what it reads, for one release. The contract (drop
+  // the two mirrors below, delete the setting, drop the defaults) ships in
+  // the release after this one.
+  //
+  // One thing stays broken on the previous release and is documented
+  // instead: its flow edit upserts ON CONFLICT (repo), and a unique index on
+  // the repo alone would refuse the same owner/name on two hosts.
+  //
+  // 1 · The previous release's GitHub config, copied back from the row it
+  //     moved to. The sealed values are the same tokens (each one names the
+  //     DEK version that sealed it, and every version is kept), and the
+  //     repo-creation orgs fold back into the object they came out of. Only a
+  //     configured row is copied: an empty one reads the same as no setting.
+  `insert into app_settings (key, value, updated_at)
+   select 'github_config',
+          auth || jsonb_build_object('repoCreationOrgs', to_jsonb(repo_creation_orgs)),
+          now()
+     from git_hosts
+    where id = 'github' and kind = 'github'
+      and jsonb_typeof(auth) = 'object' and auth <> '{}'::jsonb
+   on conflict (key) do nothing`,
+  // 2 · A workbench row the previous release files names no host. Every repo
+  //     it knew was on GitHub, so the default is the `github` row again. This
+  //     release names the host on every insert, so the default changes
+  //     nothing here.
+  `alter table workbench_repos alter column host_id set default 'github'`,
+  `alter table workbench_repo_flow alter column host_id set default 'github'`,
+  `alter table workbench_jobs alter column host_id set default 'github'`,
+  `alter table workbench_repo_requests alter column host_id set default 'github'`,
+  // 3 · The two copies stay one value while both releases can run. A write
+  //     to the `github` row (this release: connect, rotate, clear) rewrites
+  //     the setting, and removing the row empties it. A write to the setting
+  //     (the previous release's GitHub panel) rewrites the row, or creates it
+  //     when an operator had removed it. pg_trigger_depth() stops the
+  //     ping-pong: a write made by one mirror does not fire the other. Each
+  //     copy is rewritten only when it differs.
+  `create or replace function talaria_github_host_to_setting() returns trigger as $$
+     begin
+       if pg_trigger_depth() > 1 then
+         return null;
+       end if;
+       if tg_op = 'DELETE' then
+         if old.id = 'github' then
+           update app_settings set value = '{}'::jsonb, updated_at = now()
+            where key = 'github_config' and value <> '{}'::jsonb;
+         end if;
+         return null;
+       end if;
+       if new.id = 'github' and new.kind = 'github' and jsonb_typeof(new.auth) = 'object' then
+         insert into app_settings (key, value, updated_at)
+         values ('github_config',
+                 new.auth || jsonb_build_object('repoCreationOrgs', to_jsonb(new.repo_creation_orgs)),
+                 now())
+         on conflict (key) do update set value = excluded.value, updated_at = now()
+          where app_settings.value is distinct from excluded.value;
+       end if;
+       return null;
+     end;
+   $$ language plpgsql`,
+  `create or replace function talaria_github_setting_to_host() returns trigger as $$
+     begin
+       if pg_trigger_depth() > 1 or jsonb_typeof(new.value) <> 'object' then
+         return null;
+       end if;
+       insert into git_hosts (id, kind, name, base_url, auth, repo_creation_orgs)
+       values ('github', 'github', 'GitHub', 'https://github.com',
+               new.value - 'repoCreationOrgs',
+               case when jsonb_typeof(new.value -> 'repoCreationOrgs') = 'array'
+                    then array(select jsonb_array_elements_text(new.value -> 'repoCreationOrgs'))
+                    else '{}'::text[] end)
+       on conflict (id) do update
+          set auth = excluded.auth, repo_creation_orgs = excluded.repo_creation_orgs, updated_at = now()
+        where git_hosts.kind = 'github'
+          and (git_hosts.auth, git_hosts.repo_creation_orgs)
+              is distinct from (excluded.auth, excluded.repo_creation_orgs);
+       return null;
+     end;
+   $$ language plpgsql`,
+  `drop trigger if exists git_hosts_github_mirror on git_hosts`,
+  `create trigger git_hosts_github_mirror
+     after insert or update or delete on git_hosts
+     for each row execute function talaria_github_host_to_setting()`,
+  `drop trigger if exists app_settings_github_mirror on app_settings`,
+  `create trigger app_settings_github_mirror
+     after insert or update on app_settings
+     for each row when (new.key = 'github_config')
+     execute function talaria_github_setting_to_host()`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
-  `alter table push_subscriptions add column if not exists user_agent text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
