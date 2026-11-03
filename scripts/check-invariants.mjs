@@ -59,6 +59,8 @@ import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { scanWebviewThreading, selfTest as desktopThreadingSelfTest } from './desktop-threading.mjs'
 import { checkDropGuard } from './desktop-drop-guard.mjs'
+import { checkReloadKeys } from './desktop-reload-keys.mjs'
+import { checkOsLinks } from './desktop-os-links.mjs'
 import { checkReleaseLatest, selfTest as releaseLatestSelfTest } from './release-latest.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
@@ -2700,6 +2702,48 @@ const UNSET_SEAM_CENSUS = [
     })
   } else {
     notes.push('desktop drop guard: stray drags cancelled, zones and native fields left alone (stub DOM)')
+  }
+
+  // The reload keys every instance webview runs (RELOAD_KEYS in reload.rs):
+  // Ctrl+R and F5 off macOS, Cmd+R on it, Shift to skip the cache, and every
+  // other chord left to the page. Run against a stub window.
+  const keysWrong = await checkReloadKeys(files.get(`${desktopSrc}/reload.rs`) ?? '')
+  if (keysWrong.length) {
+    failures.push({
+      id: 'desktop-reload-keys',
+      what: "the instance webviews' reload keys do not do what they promise",
+      fix: [
+        'RELOAD_KEYS (desktop/src-tauri/src/reload.rs) is how a person reloads an instance page,',
+        'including one whose Talaria UI never loaded: Ctrl+R and F5 on Windows and Linux, Cmd+R on',
+        'macOS, Shift (or Ctrl+F5) skipping the cache, and a refused desktop_reload still reloading.',
+        'It must leave every other chord to the page. scripts/desktop-reload-keys.mjs presses each',
+        'one; if the script now needs more of the window, grow its stub.',
+      ],
+      found: keysWrong.map((text) => ({ path: `${desktopSrc}/reload.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop reload keys: Ctrl+R/F5 (Cmd+R on macOS) reload, other chords left to the page (stub window)')
+  }
+
+  // The OS-link click script (OS_LINKS in links.rs): the one way a link
+  // reaches the OS, so it takes only a trusted click on a mailto:, tel: or
+  // sms: link that the page left alone. Run against a stub window.
+  const osWrong = checkOsLinks(files.get(`${desktopSrc}/links.rs`) ?? '')
+  if (osWrong.length) {
+    failures.push({
+      id: 'desktop-os-links',
+      what: "the instance webviews' OS-link script hands over more, or less, than a person's click",
+      fix: [
+        'OS_LINKS (desktop/src-tauri/src/links.rs) is the only path from a page to the OS: the',
+        'navigation and new-window handlers refuse every OS scheme, because no engine tells them a',
+        'click from a script or the page from an artifact frame. It must take a trusted, primary-',
+        'button click on a mailto:, tel: or sms: link the page did not handle, and nothing else.',
+        'scripts/desktop-os-links.mjs clicks each case; if the script needs more of the DOM, grow it.',
+      ],
+      found: osWrong.map((text) => ({ path: `${desktopSrc}/links.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop OS links: only a trusted click on mailto:/tel:/sms: goes to the OS (stub window)')
   }
 }
 

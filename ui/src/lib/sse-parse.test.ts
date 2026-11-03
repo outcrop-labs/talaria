@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeTool, parseAgentStream, sseFrames, type ChatEvent, type ToolCall } from '@/lib/sse-parse'
+import { failureMessageOf, mergeTool, parseAgentStream, sseFrames, type ChatEvent, type ToolCall } from '@/lib/sse-parse'
 
 // A ReadableStream we can interrogate afterwards: `cancelled` tells us the
 // underlying source was torn down, and `stream.locked` tells us the reader was
@@ -465,5 +465,56 @@ describe('mergeTool', () => {
     const snapshot = structuredClone(before)
     mergeTool(before, { type: 'tool', id: 't1', name: 'search', label: 'x', status: 'completed' })
     expect(before).toEqual(snapshot)
+  })
+})
+
+// A TURN THAT FAILED SAYS WHY, AT ONCE. The chat route answers 200 and keeps
+// the connection alive itself when an agent is slow to open its turn
+// (talaria-chat-persist `edge`), so an error status the agent answers after
+// that arrives as a failure frame, `{"error":{"message":…}}`, instead of an
+// HTTP status. The reader yields it as an `error` event; before, the frame
+// read as nothing and the person saw an empty bubble until the post-turn sync.
+describe('parseAgentStream — failure frames', () => {
+  const frame = (json: unknown) => `data: ${JSON.stringify(json)}\n\n`
+
+  it('a late error status, after the keepalives, is an error event with its sentence', async () => {
+    expect(
+      await drain([
+        ': waiting for the agent\n\n',
+        ': waiting for the agent\n\n',
+        frame({ error: { message: 'the model provider refused the turn' } }),
+      ]),
+    ).toEqual([{ type: 'error', message: 'the model provider refused the turn' }])
+  })
+
+  it("reads every failure shape the gateway reads, with the gateway's sentence", async () => {
+    expect(
+      await drain([
+        frame({ choices: [{ delta: {}, finish_reason: 'error' }] }),
+        frame({ hermes: { failed: true, error: 'context window exceeded' } }),
+        frame({ error: 'busy' }),
+      ]),
+    ).toEqual([
+      { type: 'error', message: 'the agent reported an error' },
+      { type: 'error', message: 'context window exceeded' },
+      // A bare-string error is a failure; its sentence is the gateway's
+      // fallback, as the row lands it (error_message_of reads error.message).
+      { type: 'error', message: 'the agent reported an error' },
+    ])
+  })
+
+  it('a failure frame that also carries words yields the failure first', async () => {
+    expect(await drain([frame({ error: { message: 'cut off' }, choices: [{ delta: { content: 'partial' } }] })])).toEqual([
+      { type: 'error', message: 'cut off' },
+      { type: 'content', text: 'partial' },
+    ])
+  })
+
+  it('a healthy chunk, a cancelled turn and usage are not failures', () => {
+    expect(failureMessageOf({ choices: [{ delta: { content: 'hi' } }] })).toBeNull()
+    expect(failureMessageOf({ choices: [{ delta: {}, finish_reason: 'cancelled' }] })).toBeNull()
+    expect(failureMessageOf({ usage: { prompt_tokens: 3 } })).toBeNull()
+    expect(failureMessageOf({ hermes: { failed: false } })).toBeNull()
+    expect(failureMessageOf(null)).toBeNull()
   })
 })

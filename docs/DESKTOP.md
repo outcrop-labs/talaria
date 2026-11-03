@@ -51,9 +51,72 @@ every zone in the page has seen it — except over a native field (`<input>`, `<
 `<select>`, anything contenteditable), which takes text, a moved selection or a file by the
 engine's own default, with no handler to say so; `scripts/desktop-drop-guard.mjs` runs the
 script against each case in `bun run check`. And the webview refuses to navigate to `file:` at all
-(`allowed_navigation`), for a page where the script did not get the chance. Only `file:` is
-refused: pages and their frames use `about:`, `blob:` and `data:`, `mailto:` and app links
-go to the OS, and a sign-in goes to other https origins and back.
+(`allowed_navigation`), for a page where the script did not get the chance. Pages and their
+frames use `about:`, `blob:` and `data:`, and a sign-in goes to other https origins and back:
+those load. `mailto:`, `tel:` and app links are not page loads, so they go to the OS
+("Links that leave the page" below).
+
+### Links that leave the page
+
+An instance webview is a browser tab with no browser around it. A `target="_blank"` link or
+a `window.open` asks the engine for a new window, and wry drops that request when the shell
+installs no handler, so on every OS the click did nothing. Each instance webview now has a
+new-window handler and a click script for OS links. Both are in
+`desktop/src-tauri/src/links.rs`:
+
+| The link | Where it goes |
+|---|---|
+| http(s), another origin or the instance's own: a Drive file, a GitHub settings page, a source the agent read, a coding-harness sign-in, a public artifact | the **default browser**, where the person is signed in to that site and has an address bar |
+| the MCP connect (`/api/mcp/oauth/start` on the instance's own origin) | an **in-app popup**, the engine's own window, with the instance's session and `window.opener` |
+| `mailto:`, `tel:` or `sms:`, **clicked by the person** in the instance's own page | the **OS handler** for the scheme |
+| every other scheme; an OS link that arrives as a navigation or a new-window request; `file:`; `javascript:`, `data:`, `blob:` and `about:` as a new window | **nowhere**: refused and logged by scheme |
+
+Why each one goes where it does:
+
+- **An OS link opens only from a click.** The engine's handlers cannot tell a click from a
+  script, or the page from a frame inside it:
+  - WebKitGTK and WKWebView ask about subframe navigations and redirects with no frame or
+    gesture flag;
+  - WebView2's new-window request reaches wry's handler without `IsUserInitiated`;
+  - a microsite artifact is agent-written HTML, run in a sandboxed iframe that may run
+    scripts and open popups.
+
+  So both handlers refuse every OS scheme. The click script `OS_LINKS` runs in the main
+  frame only, as initialization scripts do, so never in an artifact's frame. It catches a
+  trusted, primary-button click on a `mailto:`, `tel:` or `sms:` link that the page did not
+  handle, and asks `desktop_open_link`. That command opens only those three schemes, and
+  only the instance's own origin holds its grant. `scripts/desktop-os-links.mjs` clicks
+  each case in `bun run check`.
+- **The OS schemes are an allowlist of three.** Browsers hand nearly any scheme to the OS,
+  but only after a prompt of their own, and the shell has none. App links have https forms
+  (a Zoom or Teams join link, a Slack message link). Those go to the default browser, which
+  asks before it hands them to the app.
+- **One in-app window: the MCP connect.** It (`connectPopup`) needs the instance's session
+  cookie to start. When it finishes, it posts `talaria:mcp-oauth-done` to `window.opener` and
+  closes. The default browser has neither the session nor the opener.
+  - Its path runs from the instance's `/api/mcp/oauth/start` to the provider the admin
+    registered, then back to the instance's callback.
+  - The popup is the engine's own window: no address bar and none of the shell's handlers.
+    Every other same-origin `_blank`, such as a public artifact or a download, goes to the
+    browser instead.
+  - **Residual:** a page that opens the connect URL can re-navigate the window it opened.
+    The shell cannot see a popup's later navigations, and on Linux the window keeps the
+    start URL as its title.
+- **A popup that closes itself.** On Linux, wry answers `window.close()` by destroying only
+  the page, which left an empty window. The shell closes that window too
+  (`links::close_emptied_popups`). On macOS, wry's popup has no handler for
+  `window.close()`, so its window stays until the person closes it. That is not verified on
+  a Mac.
+- **Google's connects are not popups.** They are full-page navigations
+  (`/api/integrations/google/connect`), so they keep loading in the instance webview, as
+  before.
+- **At most one hand-off a second per webview** (`HAND_OFF_GAP`). A script that opens a stream
+  of windows gets one browser tab, and the rest are logged and dropped.
+
+The hand-off uses `tauri-plugin-opener`'s free `open_url` (on Linux, `xdg-open` and its
+fallbacks), on a blocking worker, never on the handler's thread. The plugin is **not
+registered**: no instance page gets an opener command, an opener permission, or the plugin's
+init script that intercepts link clicks. Log lines name only the scheme and host of a URL.
 
 Adding an instance: the shell normalizes the URL (bare hosts become `https://`, only http(s),
 credentials/paths stripped — an instance IS its origin), then probes the instance beacon
@@ -117,10 +180,54 @@ did before the probe.
 (`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
 http(s) main-frame load that fails — the instance went away mid-session, a full reload
 while it is down — closes that webview and returns to the launcher with WebKit's reason and
-Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`)
+Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere
 or content it cannot show inline is answered "handled", so the page the person is on stays;
-left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown".
+left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown"
+(the navigation handler now gives a `mailto:` to the OS before WebKit sees it).
 macOS and Windows rely on the probe before a cold open.
+
+### Reloading a page
+
+An instance page has no browser chrome, so the shell provides reload itself. It works on any
+instance, whatever its Talaria version.
+
+| Where | How |
+|---|---|
+| The keys | Ctrl+R or F5 on Windows and Linux, Cmd+R on macOS. Ctrl+Shift+R, Shift+F5 and Ctrl+F5 (Cmd+Shift+R on macOS) also skip the HTTP cache. |
+| The in-UI switcher | **Reload page**, with the shortcut beside it (`DesktopSwitcher.svelte` → `shellReload`). |
+| macOS menu bar | **View → Reload Page** and **Reload Ignoring Cache**. |
+
+How each path works:
+
+- **The keys** are an initialization script the shell injects into every instance webview,
+  beside the escape hatch (`RELOAD_KEYS` in `desktop/src-tauri/src/reload.rs`).
+  - The script calls `desktop_reload`, so it also runs on a page whose Talaria UI never
+    loaded, such as a gateway's 502 page.
+  - Where the shell refuses the command (another origin, which has no grant), the script
+    reloads the page itself.
+  - `scripts/desktop-reload-keys.mjs` presses each key, on each OS, in `bun run check`. It
+    also checks the chords the script must leave to the page.
+  - The keys work in the page's main frame only, as initialization scripts run. With the
+    focus inside an iframe (the artifact preview, the Google file pane), Ctrl/Cmd+R does
+    nothing on Linux and macOS.
+  - The script takes the keys in the capture phase, so a page's own Ctrl/Cmd+R binding never
+    runs. Nothing in `ui/` binds one.
+  - A popup (macOS hands the connect popup the opener's scripts and IPC) reloads itself
+    rather than the instance page behind it.
+- **The switcher** calls `desktop_reload`. A shell that predates the command gets an ordinary
+  `location.reload()`.
+- **The grant.** `desktop_reload` is in `INSTANCE_PERMISSIONS`, so every registered instance
+  origin holds it. A page can reload only itself with it. The launcher's call reloads the
+  instance on screen.
+- **The macOS menu** is the app's own, so it works where no page script ran. A page that
+  already handled Cmd+R keeps the menu from reloading a second time.
+- **On Windows**, WebView2's own F5 and Ctrl+R still reload its error page, where no script
+  runs.
+- **Skipping the cache** uses WebKitGTK's `reload_bypass_cache` and WKWebView's
+  `reloadFromOrigin`. WebView2 has no such reload outside the DevTools protocol, so on
+  Windows it is an ordinary reload.
+- **When a load fails on Linux**, the shell still comes back to the launcher's failure card
+  and its Retry ("Opening an instance" above).
 
 ### The launcher follows the shell
 
@@ -626,7 +733,11 @@ manager draws the window's own title.
 The window ships `decorations: false`. Three titlebar modes live in
 `~/.local/share/app.talaria.desktop/settings.json` (themed / os / none). **Themed is the
 default on every OS**: custom min/max/close drawn in the webview (traffic-light side follows
-the OS — left on macOS, right elsewhere) and a bar you can drag. OS turns native decorations
+the OS — left on macOS, right elsewhere) and a bar you can drag. Inside an instance that bar
+is the tab bar: it holds the controls, a press on its empty space drags the window and a
+double-click maximizes it, while a press on a link, button or field does what it does in a
+browser. Screens with no tab bar (sign-in, the wait for the session) draw a 36px band of
+their own instead. OS turns native decorations
 on. None hides both. Settings → Profile (inside the desktop app) and the launcher welcome
 screen both set it. Turning the OS titlebar on keeps the window's outer size (the content
 loses the titlebar's height), and the shell re-places the visible webview straight away

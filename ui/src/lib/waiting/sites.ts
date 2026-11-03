@@ -40,6 +40,23 @@ export const WAITING_SITES = {
     note: "Fallback for a <Generating> that carries a label but hasn't claimed a site.",
   },
 
+  /* ── Tab bar ──────────────────────────────────────────────────────────── */
+  'nav/tab-comms': {
+    role: 'background',
+    slot: 'tab',
+    note: 'The Comms tab while an agent replies in a chat or a room. Also the readout when Comms leads it.',
+  },
+  'nav/tab-work': {
+    role: 'background',
+    slot: 'tab',
+    note: 'The Work tab while a session, plan or research thread streams or a research run is in flight.',
+  },
+  'nav/tab-boards': {
+    role: 'background',
+    slot: 'tab',
+    note: 'The Boards tab while an agent runs a work session on a ticket the viewer can see.',
+  },
+
   /* ── Chat ─────────────────────────────────────────────────────────────── */
   'chat/first-token': {
     role: 'submitting',

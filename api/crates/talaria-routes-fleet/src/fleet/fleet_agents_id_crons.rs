@@ -54,28 +54,37 @@ pub async fn post(
     if let Some(gate) = talaria_params::uuid_gate_404(&id) {
         return Ok(gate);
     }
+    let audit = |confirmed: bool| {
+        let actor = actor_of(&user);
+        let mut after = json!({ "name": name, "schedule": schedule });
+        // A create that may still land is audited too, as unconfirmed: the
+        // job can appear after the answer, and the log is where someone
+        // looks for who made it.
+        if !confirmed {
+            after["confirmed"] = json!(false);
+        }
+        let id_for_audit = id.clone();
+        let pg = state.pg.clone();
+        tokio::spawn(async move {
+            log_audit(
+                &pg,
+                AuditEntry {
+                    actor: &actor,
+                    action: "cron.create",
+                    target_type: "agent",
+                    target_id: Some(&id_for_audit),
+                    target_label: None,
+                    before: None,
+                    after: Some(after),
+                },
+            )
+            .await;
+        });
+    };
     Ok(
         match create_cron_job(&state.pg, &id, &name, &schedule, &prompt).await {
             Ok(created) => {
-                let actor = actor_of(&user);
-                let after = json!({ "name": name, "schedule": schedule });
-                let id_for_audit = id.clone();
-                let pg = state.pg.clone();
-                tokio::spawn(async move {
-                    log_audit(
-                        &pg,
-                        AuditEntry {
-                            actor: &actor,
-                            action: "cron.create",
-                            target_type: "agent",
-                            target_id: Some(&id_for_audit),
-                            target_label: None,
-                            before: None,
-                            after: Some(after),
-                        },
-                    )
-                    .await;
-                });
+                audit(true);
                 // wire shape — { ok, id }, id after ok.
                 Json(json!({ "ok": true, "id": created })).into_response()
             }
@@ -84,7 +93,10 @@ pub async fn post(
             // (fleet_agents_id_crons_jobid.rs), whose sentence says to check
             // the list before trying again — a second create would make a
             // second job.
-            Err(e) if may_still_land(&e) => house_error(StatusCode::SERVICE_UNAVAILABLE, &e),
+            Err(e) if may_still_land(&e) => {
+                audit(false);
+                house_error(StatusCode::SERVICE_UNAVAILABLE, &e)
+            }
             Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )

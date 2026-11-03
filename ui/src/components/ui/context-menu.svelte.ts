@@ -38,6 +38,9 @@ export interface ContextMenuItem {
   disabled?: boolean
   /** Marks the current choice in a submenu (renders a leading check). */
   checked?: boolean
+  /** A keyboard shortcut, shown at the row's end (`Ctrl+R`). Display only:
+   *  whatever binds the key does so itself. */
+  hint?: string
   /** Keep the menu open after selecting (multi-toggle pickers). */
   keepOpen?: boolean
   /** Submenu — hover opens a flyout of these entries. `onSelect` is ignored

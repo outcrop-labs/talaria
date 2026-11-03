@@ -1,4 +1,5 @@
 import { ANIMATIONS, AMBIENT, IMMEDIATE, STANDARD, type WaitingAnimation } from './animations'
+import { rasterise } from './braille'
 import { GRID_ANIMATIONS, type GridAnimation } from './grid-animations'
 
 /**
@@ -23,7 +24,7 @@ export type WaitingFamily = 'braille' | 'grid'
  * semantic one — it answers "does this fit", not "does this mean the right
  * thing". Semantics are `WaitingRole` below.
  */
-export type WaitingSlot = 'button' | 'inline' | 'status'
+export type WaitingSlot = 'tab' | 'button' | 'inline' | 'status'
 
 /**
  * What the wait MEANS, mapped to Mercury's state table (spec §9).
@@ -86,18 +87,52 @@ export interface WaitingState {
 }
 
 /**
- * Which slots a state fits, from its width alone.
+ * Which slots a state fits, from its width and whether it may draw in a tab.
  *
  * Buttons hold an icon's worth of room, so three columns is the ceiling and the
  * grid family is out entirely — a 5×5 square is a block, and a block inside a
  * 28px button either overflows it or shrinks until the dots merge. Everything
  * fits `inline` and `status`; the difference between those two is the size the
  * call site renders at, not the set it draws from.
+ *
+ * A `tab` holds one square: a single braille cell that keeps to its top three
+ * rows, or one of `TAB_GRIDS` drawn at the icon's size. The caller decides
+ * which, since that takes more than the width.
  */
-function slotsFor(family: WaitingFamily, cols: number): readonly WaitingSlot[] {
-  if (family === 'grid') return ['inline', 'status']
+function slotsFor(family: WaitingFamily, cols: number, tab: boolean): readonly WaitingSlot[] {
+  if (family === 'grid') return tab ? ['tab', 'inline', 'status'] : ['inline', 'status']
+  if (cols === 1) return tab ? ['tab', 'button', 'inline', 'status'] : ['button', 'inline', 'status']
   return cols <= 3 ? ['button', 'inline', 'status'] : ['inline', 'status']
 }
+
+/**
+ * The grid states a tab may draw.
+ *
+ * A tab mark runs for minutes on every page, so its frames have to be cheap.
+ * These four change the fewest dots per frame. With four identical marks in
+ * the bar, each cost 1.2 to 1.4 points of main thread over an idle bar, and
+ * every other grid state cost 1.6 to 1.9.
+ */
+export const TAB_GRIDS: ReadonlySet<string> = new Set(['arc-gap', 'perimeter-chase', 'shape-morph', 'sweep-hand'])
+
+/**
+ * Whether a braille field ever lights dot 7 or 8 over one loop.
+ *
+ * That row sits at the font's descender, below the em box the tab tile is sized
+ * to: at DPR 2 it drew a device pixel under the tile, two under the readout.
+ */
+export function usesBottomRow(a: WaitingAnimation): boolean {
+  for (let i = 0; i < BOTTOM_ROW_SAMPLES; i++) {
+    for (const cell of rasterise(a.cols, i / BOTTOM_ROW_SAMPLES, a.field, a.cellAlpha)) {
+      if ((cell.ch.codePointAt(0)! - BRAILLE_BLANK) & BOTTOM_ROW_BITS) return true
+    }
+  }
+  return false
+}
+
+const BOTTOM_ROW_SAMPLES = 120
+const BRAILLE_BLANK = 0x2800
+const BOTTOM_ROW_BITS = 0xc0
 
 const fromBraille = (a: WaitingAnimation): WaitingState => ({
   slug: a.id,
@@ -106,7 +141,7 @@ const fromBraille = (a: WaitingAnimation): WaitingState => ({
   blurb: a.blurb,
   period: a.period,
   cols: a.cols,
-  slots: slotsFor('braille', a.cols),
+  slots: slotsFor('braille', a.cols, a.cols === 1 && !usesBottomRow(a)),
 })
 
 const fromGrid = (a: GridAnimation): WaitingState => ({
@@ -116,7 +151,7 @@ const fromGrid = (a: GridAnimation): WaitingState => ({
   blurb: a.blurb,
   period: a.period,
   cols: a.n,
-  slots: slotsFor('grid', a.n),
+  slots: slotsFor('grid', a.n, TAB_GRIDS.has(a.id)),
 })
 
 /**
@@ -136,6 +171,20 @@ export const WAITING_STATES: readonly WaitingState[] = [
 const BY_SLUG = new Map(WAITING_STATES.map((s) => [s.slug, s]))
 
 export const waitingState = (slug: string): WaitingState | undefined => BY_SLUG.get(slug)
+
+/**
+ * Milliseconds between drawn frames, per slot; 0 draws every frame.
+ *
+ * A tab mark is chrome on every page and can run for minutes. Each drawn
+ * frame costs the whole page a frame: style, paint and a commit that re-uploads
+ * every canvas on it, whatever changed. That cost is mostly fixed, so the
+ * cadence sets the bill. Four tab marks over an idle bar cost 1.8 points of
+ * main thread on Knowledge and 2.2 on Work at 8 fps. At 6 fps they cost 1.2
+ * and 1.5. A background loop is 1.8 to 2.4 s, so 6 fps still draws at least ten
+ * frames of each loop. The other slots sit in content that is waited on for
+ * seconds.
+ */
+export const SLOT_FRAME_MS: Record<WaitingSlot, number> = { tab: 167, button: 0, inline: 0, status: 0 }
 
 export const statesForSlot = (slot: WaitingSlot): readonly WaitingState[] =>
   WAITING_STATES.filter((s) => s.slots.includes(slot))

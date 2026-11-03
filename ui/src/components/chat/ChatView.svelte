@@ -49,6 +49,7 @@
     toDisplay,
     toggleReactionLocal,
     turnTime,
+    withAgentError,
     type DisplayMessage,
     type SendIntent,
     type Viewer,
@@ -741,6 +742,9 @@
     const turn = newTurnId()
     abortCtrl = ctrl
     turnId = turn
+    // The stream said the turn failed, and why: shown on the row at once, the
+    // way the server lands it, rather than as an empty bubble until the sync.
+    let failed = false
     try {
       for await (const ev of streamChat(
         { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId, ...focusField(), turnId: turn },
@@ -772,6 +776,10 @@
           // not landed, and re-reading then shows the document as it was.
           if (ev.status === 'completed') onToolDone?.(ev.name)
         }
+        else if (ev.type === 'error') {
+          if (!failed) patchLast((m) => withAgentError(m, ev.message))
+          failed = true
+        }
         else if (ev.type === 'queued') {
           // A reply was already streaming server-side (e.g. a chained turn we
           // hadn't seen) — drop the placeholder; the sync below shows reality.
@@ -784,7 +792,7 @@
       // a silent empty bubble (reads as a frozen chat).
       patchLast((m) => ({
         ...m,
-        status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
+        status: !failed && (m.content || m.reasoning?.trim() || m.tools?.length) ? 'complete' : 'error',
       }))
     } catch (e) {
       if ((e as Error).name === 'AbortError') freezeStopped()
