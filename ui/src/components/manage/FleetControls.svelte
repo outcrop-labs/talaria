@@ -74,6 +74,7 @@
   const startLine = $derived.by(() => {
     if (!startResult) return null
     if (startResult.error) return { tone: 'danger', text: `Could not start agents: ${startResult.error}` }
+    if (startResult.pending) return { tone: 'ok', text: 'Still starting (a first start downloads the agent image) — the roster shows each agent as it comes up.' }
     const started = startResult.started ?? []
     const warn = startResult.warnings?.length ? ` ${startResult.warnings.join(' ')}` : ''
     return {

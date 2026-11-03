@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-27 routes.
+28 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -46,6 +46,7 @@
 | [`/api/fleet/endpoints/{id}/available`](#apifleetendpointsidavailable) | GET | `admin` |
 | [`/api/fleet/federate`](#apifleetfederate) | POST | `admin` |
 | [`/api/fleet/hires`](#apifleethires) | GET | `session` + `perm:agents.manage` |
+| [`/api/fleet/hires/{id}/retry`](#apifleethiresidretry) | POST | `session` + `perm:agents.manage` |
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
 | [`/api/fleet/render`](#apifleetrender) | POST | `admin` |
 | [`/api/fleet/resources`](#apifleetresources) | GET | `admin` |
@@ -508,6 +509,20 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hires.rs`](../../api/c
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `perm:agents.manage` | — | `…` | 200 | — |
 
+## `/api/fleet/hires/{id}/retry`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hires_id_retry.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_hires_id_retry.rs)
+
+> POST /api/fleet/hires/{id}/retry. Run a FAILED hire again, on the same
+> agent — the Retry on the roster's red hire row.
+>
+> WHY THIS EXISTS. A hire that fails after its create stage (the image would
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` + `perm:agents.manage` | — | `{ok, hire}` | 200, 403, 404, 409, 500, 503 | — |
+
 ## `/api/fleet/reconcile`
 
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs)
@@ -515,10 +530,12 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs`](../../a
 > POST /api/fleet/reconcile. Render + start every enabled managed agent
 > that isn't running. One button to bring the fleet to desired state
 > (drift, cold start). Admin.
+>
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `admin` | — | `…` | 200, 500 | audit |
+| POST | `admin` | — | `{pending, started, alreadyRunning}` | 200, 202, 500 | audit |
 
 ## `/api/fleet/render`
 

@@ -48,8 +48,9 @@ use talaria_agent_defs::AgentDefRow;
 use talaria_agent_defs::agent_def_by_id;
 use talaria_api_facades::fleet::create::delete_agent_forever;
 use talaria_api_facades::fleet::docker::{
-    ANSWER_WITHIN, CLOSING_READ, Detached, Observed, fleet_remove, fleet_restart, fleet_stop,
-    fleet_up, is_timeout, observe, observe_within, remove_stopped, run_detached, settle, up_landed,
+    ANSWER_WITHIN, CLOSING_READ, Detached, NOT_STARTED, NOT_STARTED_SENTENCE, Observed,
+    fleet_remove, fleet_restart, fleet_stop, fleet_up, is_timeout, observe, observe_within,
+    remove_stopped, run_detached, settle, up_landed,
 };
 use talaria_api_facades::fleet::reconcile::{RollOutcome, roll_running_agent_outcome};
 use talaria_api_facades::fleet::render::render_fleet;
@@ -271,11 +272,15 @@ async fn run_verb(state: AppState, def: AgentDefRow, action: String) -> Response
             if let Err(e) = render_fleet(&state.pg, &sb).await {
                 return catch(e);
             }
-            if let Err(e) = fleet_up(&state.pg, &def.department).await
-                && let Err(last) =
+            if let Err(e) = fleet_up(&state.pg, &def.department).await {
+                if e.starts_with(NOT_STARTED) {
+                    return house_error(StatusCode::CONFLICT, NOT_STARTED_SENTENCE);
+                }
+                if let Err(last) =
                     up_landed_anyway(&state, &action, &def.display_name, &def.department, &e).await
-            {
-                return failed(&action, &def.display_name, &def.department, &e, &last);
+                {
+                    return failed(&action, &def.display_name, &def.department, &e, &last);
+                }
             }
             // Don't block on health — the roster shows the warm-up phase.
             Json(json!({ "ok": true, "warming": true })).into_response()
@@ -408,12 +413,16 @@ async fn run_verb(state: AppState, def: AgentDefRow, action: String) -> Response
                 return catch(e);
             }
             if def.managed {
-                if let Err(e) = fleet_up(&state.pg, &def.department).await
-                    && let Err(last) =
+                if let Err(e) = fleet_up(&state.pg, &def.department).await {
+                    if e.starts_with(NOT_STARTED) {
+                        return house_error(StatusCode::CONFLICT, NOT_STARTED_SENTENCE);
+                    }
+                    if let Err(last) =
                         up_landed_anyway(&state, &action, &def.display_name, &def.department, &e)
                             .await
-                {
-                    return failed(&action, &def.display_name, &def.department, &e, &last);
+                    {
+                        return failed(&action, &def.display_name, &def.department, &e, &last);
+                    }
                 }
                 return Json(json!({ "ok": true, "warming": true })).into_response();
             }

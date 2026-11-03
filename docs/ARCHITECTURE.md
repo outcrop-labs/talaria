@@ -305,6 +305,16 @@ multiplexer.
   path itself.
 - Each agent presents its own `tak_` key; the renderer rewrites `fleet/.env` from the DB
   every render (0600 in a 0700 dir).
+- **The image pull** (`pull.rs` in `talaria-fleet-docker`) is `compose pull --policy missing`
+  ahead of every `up` and roll: about 1.1 GB to download for a Hermes pin the host lacks (a
+  fresh install's first agent, every host's first start after a pin bump). It runs one per
+  service in the process, on a task of its own, so a start, roll or hire that asks while one is
+  in flight joins it, and a caller that goes away does not cancel it. It reads compose's
+  `--progress json` events, and it is killed only when docker says nothing for 10 minutes
+  (`PULL_SILENCE`) or after 3 hours (`PULL_CEILING`), never for being slow. A hire pulls in a
+  stage of its own (`talaria-runs-agent-hire`): each step waits 15 s on the pull and comes
+  back with what has arrived as the roster's phase ("downloading the agent image — 412 MB so
+  far, 36 of 38 layers ready (4 min)"), so no step nears the run's `max_step_ms`.
 - **Rolls recreate in place** (`talaria-fleet-reconcile`): re-render, pull the agent's image
   if the host lacks it (`compose pull --policy missing`; a failed pull leaves the running
   container alone), then `compose up -d --force-recreate --no-deps agent-<dept>` and wait up
