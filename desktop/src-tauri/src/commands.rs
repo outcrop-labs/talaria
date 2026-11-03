@@ -983,6 +983,8 @@ pub fn set_titlebar_mode(
     // a band of bare window for a frame or two (the Resized pass still runs).
     layout::relayout(&window);
     emit_state(&app);
+    // The page chip's place depends on the mode (update::chip_js).
+    update::repaint(&app);
     Ok(state.settings.lock().unwrap().clone())
 }
 

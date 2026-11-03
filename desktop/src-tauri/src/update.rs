@@ -364,10 +364,28 @@ pub fn push(app: &AppHandle) {
         }
     }
     commands::emit_state(app);
-    let js = chip_js(offer.as_ref());
+    let js = chip_js(offer.as_ref(), titlebar(app));
     for webview in commands::instance_pages(app) {
         let _ = webview.eval(&js);
     }
+}
+
+/// The window's titlebar mode: where the chip goes in a page.
+fn titlebar(app: &AppHandle) -> settings::TitlebarMode {
+    app.try_state::<ShellState>()
+        .map(|s| s.settings.lock().unwrap().titlebar)
+        .unwrap_or_default()
+}
+
+/// The titlebar mode changed: every page's chip again, in its new place,
+/// whether or not the offer changed. Queued, like `push_soon`.
+pub fn repaint(app: &AppHandle) {
+    commands::queue_main_turn(app, |app| {
+        let js = chip_js(current(app).as_ref(), titlebar(app));
+        for webview in commands::instance_pages(app) {
+            let _ = webview.eval(&js);
+        }
+    });
 }
 
 /// `push`, from wherever: a tokio worker or a command. Queued, so it never
@@ -379,7 +397,7 @@ fn push_soon(app: &AppHandle) {
 /// A page finished loading: it has no chip yet, whatever the others show.
 pub fn page_loaded(app: &AppHandle, webview: &tauri::Webview) {
     if let Some(offer) = current(app) {
-        let _ = webview.eval(chip_js(Some(&offer)));
+        let _ = webview.eval(chip_js(Some(&offer), titlebar(app)));
     }
 }
 
@@ -742,41 +760,65 @@ fn sentence(lead: &str, detail: &str) -> String {
 }
 
 /// The chip in an instance page: `offer`, or none. Evaluated by the shell
-/// (`push`, `page_loaded`), so it needs nothing from the page and works on any
-/// Talaria version. It lives in a shadow root on `<html>` and never takes the
-/// focus.
+/// (`push`, `page_loaded`, `repaint`), so it needs nothing from the page and
+/// works on any Talaria version. It lives in a shadow root on `<html>` and
+/// never takes the focus.
 ///
-/// Where: one 28 px row centred in the window's top bar, `CHIP_TOP` from the
-/// top. The themed titlebar every Talaria UI draws (36 px, since the shell's
-/// first release) has the window controls at one end and empty drag space
-/// everywhere else, so nothing a person types into or reads is under the
-/// chip — not a composer however tall it grows, not the toast stack, which is
-/// bottom right — and the window still drags from either side of it. A second
-/// line drops below the bar only while an install's error or the "How?"
-/// sentence is shown. The chip collapses to a small pill ("–"), at any time,
-/// an install included: the pill keeps its progress, and collapsing cancels
-/// nothing. The page's choice is kept for the tab's session.
+/// Where depends on the window's titlebar mode:
+/// - **Themed** (the default on every OS): one 28 px row centred in the top
+///   bar every Talaria UI draws (36 px), `CHIP_TOP` from the top. The bar has
+///   the window controls at one end and empty drag space everywhere else, so
+///   the row covers nothing a person types into or reads, and the window
+///   still drags from either side of it. A second line (an install's
+///   error, the "How?" sentence) drops below the bar, over the page's nav,
+///   only once the person asked for it.
+/// - **OS titlebar, or none:** there is no such bar; the page's first row is
+///   its nav. The chip starts as the small pill, `CHIP_TOP_BARE` from the
+///   top, below a nav row's 56 px, and stays folded unless the person opens
+///   it; opened, it sits over the top of the page's header until folded.
+///
+/// The chip folds to the pill ("–") at any time, an install included: the
+/// pill keeps its progress, and folding cancels nothing. An install that
+/// failed folds it to "↑ Update failed" until the person opens it for the
+/// sentence, so no error line sits over the page by itself. A window too narrow for the row (a small window, a page zoomed in)
+/// starts folded too. The page's choice is kept for the tab's session. A
+/// progress push changes the text in place, so a click or the focus is never
+/// lost to a re-render.
 ///
 /// Styles come from a constructed sheet, which a page's CSP does not govern;
 /// if one did not apply, the same rules are set through CSSOM (`el.style`),
-/// which no CSP refuses either, disabled state included. Update and Later
-/// call the shell (`install_update`, `snooze_update`), and the shell pushes
-/// what follows to every view; a call the shell refuses says why in the chip.
-pub fn chip_js(offer: Option<&Offer>) -> String {
+/// which no CSP refuses either. Update and Later call the shell
+/// (`install_update`, `snooze_update`), and the shell pushes what follows to
+/// every view; a call the shell refuses says why in the chip.
+pub fn chip_js(offer: Option<&Offer>, titlebar: settings::TitlebarMode) -> String {
     let data = serde_json::to_string(&offer).unwrap_or_else(|_| "null".into());
+    let bar = titlebar == settings::TitlebarMode::Themed;
     CHIP_JS
         .replace("__OFFER__", &data)
-        .replace("__TOP__", &CHIP_TOP.to_string())
+        .replace("__BAR__", if bar { "true" } else { "false" })
+        .replace(
+            "__TOP__",
+            &if bar { CHIP_TOP } else { CHIP_TOP_BARE }.to_string(),
+        )
+        .replace("__NARROW__", &CHIP_NARROW.to_string())
 }
 
-/// How far from the top of the page the chip's row sits, in CSS px: inside
-/// the 36 px themed titlebar, 4 px clear of its edges.
+/// How far from the top of the page the chip's row sits, in CSS px, in the
+/// themed mode: inside the 36 px titlebar, 4 px clear of its edges.
 pub const CHIP_TOP: u32 = 4;
+
+/// The same with no themed titlebar: below the page's nav row (56 px).
+pub const CHIP_TOP_BARE: u32 = 62;
+
+/// Below this window width, in CSS px, the chip starts folded: the row and
+/// its buttons need about 300 px between the window controls.
+pub const CHIP_NARROW: u32 = 560;
 
 const CHIP_JS: &str = r#"(() => {
   const offer = __OFFER__;
+  const BAR = __BAR__;
   const ID = 'talaria-desktop-update';
-  const KEY = 'talaria-desktop-update-collapsed';
+  const KEY = 'talaria-desktop-update-fold';
   let host = document.getElementById(ID);
   if (!offer) { if (host) host.remove(); return; }
   const root = document.documentElement;
@@ -791,7 +833,7 @@ const CHIP_JS: &str = r#"(() => {
   const shadow = host.shadowRoot;
   // Each rule is also what CSSOM sets when the sheet did not apply.
   const RULES = {
-    chip: 'box-sizing:border-box;max-width:calc(100vw - 260px);border:1px solid #302d29;border-radius:6px;background:#141312;color:#e7e2db;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;font-size:12px;line-height:1.35;box-shadow:0 4px 16px rgba(0,0,0,0.45);text-align:left;',
+    chip: 'box-sizing:border-box;max-width:calc(100vw - 260px);overflow:hidden;border:1px solid #302d29;border-radius:6px;background:#141312;color:#e7e2db;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;font-size:12px;line-height:1.35;box-shadow:0 4px 16px rgba(0,0,0,0.45);text-align:left;',
     row: 'box-sizing:border-box;display:flex;align-items:center;gap:6px;height:26px;padding:0 3px 0 10px;',
     title: 'flex:1 1 auto;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
     line: 'max-width:420px;padding:0 10px 6px 10px;color:#8e877e;user-select:text;-webkit-user-select:text;overflow-wrap:anywhere;',
@@ -799,12 +841,13 @@ const CHIP_JS: &str = r#"(() => {
     button: 'flex:0 0 auto;font-family:inherit;font-weight:600;font-size:11px;line-height:1.4;padding:1px 8px;border-radius:4px;border:1px solid #4a4640;background:transparent;color:#e7e2db;cursor:pointer;',
     update: 'background:#c8b46c;border-color:#c8b46c;color:#090a09;',
     quiet: 'border-color:transparent;color:#8e877e;',
-    pill: 'display:block;font-family:inherit;font-weight:600;font-size:11px;line-height:1.4;padding:4px 10px;border:0;border-radius:6px;background:transparent;color:#c8b46c;cursor:pointer;',
+    pill: 'display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:inherit;font-weight:600;font-size:11px;line-height:1.4;padding:4px 10px;border:0;border-radius:6px;background:transparent;color:#c8b46c;cursor:pointer;',
+    failed: 'color:#ee6018;',
   };
   const CSS = `.chip{${RULES.chip}} .row{${RULES.row}} .title{${RULES.title}} .line{${RULES.line}}
     .error{${RULES.error}} button{${RULES.button}} button.update{${RULES.update}} button.quiet{${RULES.quiet}}
-    button.pill{${RULES.pill}}
-    button:hover:not(:disabled){filter:brightness(1.15);} button:disabled{opacity:0.5;cursor:default;}
+    button.pill{${RULES.pill}} button.pill.failed{${RULES.failed}}
+    button:hover{filter:brightness(1.15);}
     button:focus-visible{outline:2px solid #c8b46c;outline-offset:2px;}`;
   let style = null;
   try {
@@ -827,32 +870,58 @@ const CHIP_JS: &str = r#"(() => {
     ? window.__TAURI_INTERNALS__.invoke(cmd, {})
     : Promise.reject(new Error('This page cannot reach Talaria Desktop.'));
   const said = (e) => String(e && e.message || e).replace(/^Error:\s*/, '');
-  const remembered = () => { try { return sessionStorage.getItem(KEY) === offer.version; } catch (e) { return false; } };
-  const remember = (on) => { try { if (on) sessionStorage.setItem(KEY, offer.version); else sessionStorage.removeItem(KEY); } catch (e) {} };
-  let collapsed = host.dataset.collapsed === offer.version || remembered();
+  // The person's choice for this version: folded ('small:<v>') or opened
+  // ('open:<v>'), on the host and for the tab's session.
+  const stored = () => { try { return sessionStorage.getItem(KEY); } catch (e) { return null; } };
+  const choose = (what) => {
+    const v = what + ':' + offer.version;
+    host.dataset.fold = v;
+    try { sessionStorage.setItem(KEY, v); } catch (e) {}
+  };
+  const chose = (what) => (host.dataset.fold || stored()) === what + ':' + offer.version;
+  // A failed install the shell pushed, that the person has not opened yet:
+  // the pill says so, and its sentence waits for them (it would sit over the
+  // page's nav).
+  const unseen = () => !!offer.error && host.dataset.seen !== offer.error;
+  const folded = () => chose('small') || unseen() || (!chose('open') && (!BAR || innerWidth < __NARROW__));
+  let collapsed = folded();
   let how = host.dataset.how === '1';
+  const pillText = (o, pct) => o.error ? '↑ Update failed' : o.busy ? '↑ Updating' + pct : '↑ ' + o.version;
+  const titleText = (o, pct) => o.busy
+    ? 'Updating Talaria Desktop ' + o.version + (pct ? ' ·' + pct : '')
+    : 'Talaria Desktop ' + o.version + ' is available';
   const render = (o) => {
+    const pct = o.busy && o.progress != null ? ' ' + o.progress + '%' : '';
+    // Only the progress changed: the text, in place.
+    const sig = JSON.stringify([o.version, o.install, !!o.busy, o.error || null, collapsed, how, BAR]);
+    const live = shadow.querySelector('.chip');
+    if (live && host.dataset.sig === sig) {
+      const t = live.querySelector(collapsed ? '.pill' : '.title');
+      if (t) t.textContent = collapsed ? pillText(o, pct) : titleText(o, pct);
+      return;
+    }
+    host.dataset.sig = sig;
     const box = el('div', 'chip');
     box.setAttribute('role', 'status');
     box.setAttribute('aria-live', 'polite');
     box.dataset.version = o.version;
     box.dataset.state = collapsed ? 'collapsed' : o.busy ? 'busy' : o.error ? 'error' : 'offer';
-    const pct = o.busy && o.progress != null ? ' ' + o.progress + '%' : '';
     if (collapsed) {
-      const pill = el('button', 'pill', o.busy ? '↑ Updating' + pct : '↑ ' + o.version);
+      const pill = el('button', o.error ? 'pill failed' : 'pill', pillText(o, pct));
       pill.type = 'button';
-      pill.title = 'Talaria Desktop ' + o.version + (o.busy ? ': updating' : ' is available') + '. Show';
+      pill.title = o.error
+        ? o.error + ' Show'
+        : 'Talaria Desktop ' + o.version + (o.busy ? ': updating' : ' is available') + '. Show';
       pill.addEventListener('click', (e) => {
         e.stopPropagation();
-        collapsed = false; delete host.dataset.collapsed; remember(false);
+        if (o.error) host.dataset.seen = o.error;
+        collapsed = false; choose('open');
         render(o);
       });
       box.append(pill);
     } else {
       const row = el('div', 'row');
-      const title = el('div', 'title', o.busy
-        ? 'Updating Talaria Desktop ' + o.version + (pct ? ' ·' + pct : '')
-        : 'Talaria Desktop ' + o.version + ' is available');
+      const title = el('div', 'title', titleText(o, pct));
       title.title = o.busy ? 'Talaria restarts when it is done.' : title.textContent;
       row.append(title);
       const button = (cls, text, onclick) => {
@@ -885,7 +954,7 @@ const CHIP_JS: &str = r#"(() => {
         }
       }
       const hide = button('quiet hide', '–', () => {
-        collapsed = true; host.dataset.collapsed = o.version; remember(true);
+        collapsed = true; choose('small');
         render(o);
       });
       hide.title = 'Make this small';
@@ -905,8 +974,7 @@ const CHIP_JS: &str = r#"(() => {
       box.querySelectorAll('.title').forEach((t) => set(t, 'title'));
       box.querySelectorAll('button').forEach((b) => {
         const c = b.classList;
-        set(b, ...(c.contains('pill') ? ['pill'] : ['button', ...(c.contains('update') ? ['update'] : c.contains('quiet') ? ['quiet'] : [])]));
-        if (b.disabled) { b.style.opacity = '0.5'; b.style.cursor = 'default'; }
+        set(b, ...(c.contains('pill') ? ['pill', ...(c.contains('failed') ? ['failed'] : [])] : ['button', ...(c.contains('update') ? ['update'] : c.contains('quiet') ? ['quiet'] : [])]));
       });
       box.querySelectorAll('.line').forEach((l) => set(l, 'line', ...(l.classList.contains('error') ? ['error'] : [])));
       host.dataset.styled = 'cssom';
@@ -914,6 +982,17 @@ const CHIP_JS: &str = r#"(() => {
       host.dataset.styled = style ? 'style' : 'sheet';
     }
   };
+  // A window that narrows (or a page zoomed in) folds a chip nobody chose to
+  // open; one that widens again unfolds it. The latest offer's render.
+  host.__talariaFit = () => {
+    const was = collapsed;
+    collapsed = folded();
+    if (collapsed !== was) render(offer);
+  };
+  if (!host.dataset.fits) {
+    host.dataset.fits = '1';
+    addEventListener('resize', () => { if (host.isConnected && host.__talariaFit) host.__talariaFit(); });
+  }
   render(offer);
 })();"#;
 
@@ -1308,7 +1387,8 @@ mod tests {
 
     #[test]
     fn the_page_chip_carries_the_offer_and_nothing_else() {
-        let gone = chip_js(None);
+        use settings::TitlebarMode::{Os, Themed};
+        let gone = chip_js(None, Themed);
         assert!(gone.contains("const offer = null;"));
         let o = offer(
             Some("0.13.0"),
@@ -1320,7 +1400,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let js = chip_js(Some(&o));
+        let js = chip_js(Some(&o), Themed);
         assert!(
             js.contains(r#"const offer = {"version":"0.13.0","install":"updater","busy":false};"#)
         );
@@ -1331,8 +1411,27 @@ mod tests {
         assert!(js.contains("adoptedStyleSheets"));
         // And when no sheet applies, CSSOM sets the same rules.
         assert!(js.contains("e.style.cssText = names.map"));
+        // In the themed titlebar's middle, open unless the window is narrow.
         assert!(js.contains(&format!("top:{CHIP_TOP}px")));
-        assert!(!js.contains("__TOP__"));
+        assert!(js.contains("const BAR = true;"));
+        assert!(js.contains(&format!("innerWidth < {CHIP_NARROW}")));
+        for hole in ["__TOP__", "__BAR__", "__NARROW__", "__OFFER__"] {
+            assert!(!js.contains(hole), "{hole}");
+        }
+        // With the OS titlebar, or none, the page's nav is the first row:
+        // below it, and folded to the pill until the person opens it.
+        let bare = chip_js(Some(&o), Os);
+        assert!(bare.contains(&format!("top:{CHIP_TOP_BARE}px")));
+        assert!(bare.contains("const BAR = false;"));
+        assert!(bare.contains("(!BAR || innerWidth <"));
+        // A failed install says so in the pill, folded until it is opened.
+        assert!(js.contains("o.error ? '↑ Update failed'"));
+        assert!(js.contains("chose('small') || unseen() ||"));
+        // A progress push changes the text in place, so no click is lost.
+        assert!(js.contains("host.dataset.sig === sig"));
+        assert!(js.contains("t.textContent = collapsed ? pillText(o, pct) : titleText(o, pct)"));
+        // The row never spills over the window controls.
+        assert!(js.contains("max-width:calc(100vw - 260px);overflow:hidden;"));
         // Collapsing keeps the progress and is there while an install runs:
         // the hide button is outside the `!o.busy` block.
         assert!(js.contains("'↑ Updating' + pct"));
@@ -1341,8 +1440,8 @@ mod tests {
         // not valid CSS and was dropped whole.
         assert!(!js.contains("font:600"));
         assert!(js.contains("font-size:11px"));
-        // The CSSOM fallback shows a disabled button as disabled.
-        assert!(js.contains("if (b.disabled) { b.style.opacity = '0.5'"));
+        // No button is ever disabled (busy hides them), so nothing styles one.
+        assert!(!js.contains("disabled"));
         assert!(js.contains("invoke('snooze_update')"));
         assert!(js.contains("invoke('install_update')"));
         // A version that is not a plain one still cannot break out of the
@@ -1351,7 +1450,7 @@ mod tests {
             version: "1.0.0\"});alert(1);({\"a\":\"".into(),
             ..o
         };
-        let js = chip_js(Some(&odd));
+        let js = chip_js(Some(&odd), Themed);
         assert!(js.contains(r#""version":"1.0.0\"});alert(1);({\"a\":\"""#));
     }
 }

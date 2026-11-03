@@ -8,7 +8,7 @@
   // for a day. Where this copy cannot update itself (a Linux package, an .msi
   // install), "How?" says how instead of offering Update. "–" makes it a
   // small pill at any time, an install included: the pill keeps the
-  // progress, and nothing is cancelled.
+  // progress, says when an install failed, and nothing is cancelled.
   const offer = $derived(shell.update)
   let how = $state(false)
   let small = $state(false)
@@ -27,11 +27,13 @@
     {#if small}
       <button
         type="button"
-        class="block rounded-md px-2.5 py-1 text-[11px] font-semibold text-gold"
-        title="Talaria Desktop {offer.version}{offer.busy ? ': updating' : ' is available'}. Show"
+        class="block rounded-md px-2.5 py-1 text-[11px] font-semibold {offer.error ? 'text-danger' : 'text-gold'}"
+        title={offer.error
+          ? `${offer.error} Show`
+          : `Talaria Desktop ${offer.version}${offer.busy ? ': updating' : ' is available'}. Show`}
         onclick={() => (small = false)}
       >
-        {offer.busy ? `↑ Updating${pct}` : `↑ ${offer.version}`}
+        {offer.error ? '↑ Update failed' : offer.busy ? `↑ Updating${pct}` : `↑ ${offer.version}`}
       </button>
     {:else}
       <div class="flex h-[26px] items-center gap-1.5 pl-2.5 pr-[3px]">

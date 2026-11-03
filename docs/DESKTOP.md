@@ -667,18 +667,28 @@ version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and
 - **On the launcher** it is a toast in the corner (`UpdateChip.svelte`), from the snapshot
   (`ShellSnapshot.update`).
 - **Over an instance** the shell evaluates the same chip into the page (`update::chip_js`):
-  a shadow root on `<html>`, one 28 px row (the version, Later, Update) centred in the window's
-  top bar, 4 px from the top. The themed titlebar every Talaria UI draws (36 px, since the
-  shell's first release) has the window controls at one end and empty drag space everywhere
-  else, so nothing a person types into or reads is under the chip — no composer, however tall
-  it grows, and not the toast stack, which is bottom right — and the window still drags from
-  either side of it (in the OS-titlebar and no-titlebar modes it sits over the top of the
-  page instead). Its **–** makes it a small pill at any time, an install included: the pill
-  keeps the download's progress, and nothing is cancelled. A second line drops below the bar
-  only while a failed install's sentence or the **How?** sentence is shown. It is styled from
-  a constructed stylesheet, which a page's CSP does not govern, and if a sheet ever does not
-  apply, the same rules are set through CSSOM (`el.style`), which no CSP refuses. Text is
-  set as text, and it never takes the focus. It is the shell's,
+  a shadow root on `<html>`, where the window's titlebar mode puts it:
+  - **Themed** (the default): one 28 px row (the version, Later, Update) centred in the
+    window's top bar, 4 px from the top. The themed titlebar every Talaria UI draws (36 px,
+    since the shell's first release) has the window controls at one end and empty drag space
+    everywhere else, so the row covers nothing a person types into or reads — no composer,
+    however tall it grows, and not the toast stack, which is bottom right — and the window
+    still drags from either side of it.
+  - **The OS titlebar, or none:** there is no such bar, and the page's first row is its nav,
+    so the chip starts as its small pill, 62 px from the top, below a nav row, where it sits
+    over the middle of the page's header line; opened, its row sits there too until it is
+    folded again. Changing the mode moves the chip at once (`update::repaint`).
+
+  Its **–** makes it a small pill at any time, an install included: the pill keeps the
+  download's progress, and nothing is cancelled; a progress push changes the text in place,
+  so a click or the focus is never lost to a re-render. An install that fails folds it to
+  "↑ Update failed" until the person opens it. A second line (the failed install's sentence,
+  the **How?** sentence) drops below the row only when the person asks for it, and then it
+  is over the page's nav until folded. A window too narrow for the row (a small window, or a
+  page zoomed in: below 560 CSS px) starts folded, and the row never spills over the window
+  controls. It is styled from a constructed stylesheet, which a page's CSP does not govern,
+  and if a sheet ever does not apply, the same rules are set through CSSOM (`el.style`),
+  which no CSP refuses. Text is set as text, and it never takes the focus. It is the shell's,
   not the instance UI's, because the instance webview fills the window and its UI is on its
   own release cadence: a chip that went through the desktop bridge into ui's toast stack
   would show only on instances already running this release, and nowhere while the page is
