@@ -29,6 +29,8 @@ import {
 import { runHarnessOffline } from './testing'
 import { runHarness } from '@/server/harness/run'
 import { defineHarness as platformDefineHarness } from '@/server/harness/define'
+import { resolveHarnessModelWith, type HarnessModelDeps } from '@/server/harness/model'
+import { appHarnessSlot } from '@/server/app-harness-models'
 
 const TRIAGE = z.object({ severity: z.enum(['low', 'medium', 'high']), reason: z.string() })
 type Triage = z.infer<typeof TRIAGE>
@@ -141,9 +143,36 @@ describe("docs/sdk/harnesses.md's bridge example", () => {
     expect(run.requests[0]!.messages.at(-1)?.content).toContain('Checkout is down')
   })
 
-  // The doc's probe (`resolveHarnessModel(triage.model)`) reads the org's model
-  // settings, so it is exercised only as a shape in the exports test below —
-  // here it would need a database. The bridge's null branch is its behavior.
+  // The doc's probe, transcribed. The real `resolveHarnessModel` reads the
+  // org's model settings (a database), so the chain runs here over injected
+  // reads — the same chain, `resolveHarnessModelWith`.
+  //
+  // The probe once passed `triage.model` bare (apps-7). The bound runner stamps
+  // `slot: app:<slug>/<harness id>` on every run (app-harness-runner.ts), so on
+  // a gateway where the admin's assignment for the harness is the only model
+  // that routes — one serving only endpoint-qualified ids, say — the bare probe
+  // answered null and the route fell back every time the run would have
+  // answered.
+  it("probes with the slot the bound runner stamps, so the harness's model setting counts", async () => {
+    const ctx = { app: 'support' }
+    const slot = `app:${ctx.app}/${triage.id}`
+    expect(slot).toBe(appHarnessSlot(ctx.app, triage.id))
+    const assigned = 'spark/qwen3-14b'
+    const onlyTheSlot: HarnessModelDeps = {
+      platformAgentModel: async () => null,
+      appHarnessModel: async (s) => (s === slot ? assigned : null),
+      resolveRoleModel: async () => null,
+      routes: async (m) => m === assigned,
+      gatewayModels: async () => [{ id: assigned, endpoints: ['spark'], qualified: true }],
+      getPreferredModel: async () => null,
+      getUserRole: async () => 'member',
+      memberModelAllowlist: async () => [],
+      modelAllowedFor: () => true,
+      copilotEnvModel: () => null,
+    }
+    expect(await resolveHarnessModelWith({ ...triage.model, slot }, onlyTheSlot)).toEqual({ model: assigned, step: 'slot' })
+    expect(await resolveHarnessModelWith(triage.model, onlyTheSlot)).toBeNull()
+  })
 })
 
 describe("the SDK's defineHarness is the platform's, JSON floor included", () => {

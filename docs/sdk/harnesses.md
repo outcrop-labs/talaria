@@ -300,6 +300,13 @@ when the setting answered.
 You don't declare it. The host sets `model.slot` from your slug and the harness id on every run,
 and overwrites anything your spec put there, so a harness can never borrow another app's setting.
 
+**The free probe is not bound.** `resolveHarnessModel(spec)` resolves the spec you hand it, and
+your harness's `model` spec carries no slot. Probed bare, it never sees this setting: where the
+admin's assignment is the only model that routes, it answers null while `ctx.harness.run` would
+run on that model, and a route that guards on it falls back every time. Probe with the slot the run
+gets, `` `app:${ctx.app}/${def.id}` `` (`ctx.app` is your slug), as the example below does. The
+probe only reads; the run still stamps its own slot, whatever you pass.
+
 ## Running one — `ctx.harness`
 
 This is how an app harness runs in production. Your `server.ts` route, or an `mcp.ts` tool,
@@ -318,7 +325,9 @@ export default defineAppServer({
     const { ticketId, subject, body } = await request.json()
 
     // Free probe — no model call: nothing routable means answer it yourself.
-    if (!(await resolveHarnessModel(triage.model)))
+    // Give it the slot the run gets, or it misses this harness's model setting.
+    const slot = `app:${ctx.app}/${triage.id}`
+    if (!(await resolveHarnessModel({ ...triage.model, slot })))
       return json({ severity: null, reason: '', source: 'fallback' })
 
     const run = await ctx.harness.run(triage, { subject, body }, {
@@ -376,7 +385,7 @@ must scrub what you relay, scrub it there.
 | :--- | :--- |
 | `ctx.harness.run(harness, input, options?)` | The one runner, bound to the caller: resolve, floor, render, call, parse, repair, guard, meter, `harness_runs` row |
 | `ctx.harness.stream(harness, input, options?)` | The same run, streamed through `onDelta` |
-| `resolveHarnessModel(spec)` | The free probe: `{ model, step }` or null. Labels the run without spending a turn |
+| `resolveHarnessModel(spec)` | The free probe: `{ model, step }` or null. Labels the run without spending a turn. Not bound to your app: give it the slot (`app:<slug>/<harness id>`) or it misses the harness's model setting ([above](#its-model-setting)) |
 | `HarnessResult` | What comes back: `value`, `model`, `step`, `answered`, `refused`, `repairs`, `escalate` |
 | `ModelChainStep` | `'pin' \| 'slot' \| 'role' \| 'utility' \| 'env' \| 'preferred' \| 'first-routable'`: which step answered |
 | `ResolvedHarnessModel` | `{ model, step }`: what the probe returns |

@@ -141,7 +141,12 @@ credential, and the host runs the handler. The api never loads app code.
    or from an install that did not record one, is another app's store and database password:
    the install is refused (409, naming both repositories) until it says what to do —
    `keptData: "adopt"` gives the data to the new app, `keptData: "wipe"` deletes it first.
-   Manage → Apps offers both as buttons.
+   Manage → Apps offers both as buttons. **Grants follow the repository, not the data:** the
+   people's and teams' grants and denials on the slug (`/x/<slug>`, `/x/<slug>/manage`) carry
+   over only to a reinstall of the repository the data's record names, even one that wipes its
+   own data. Another repository starts with none, whether it adopts the data or wipes it, and so
+   does any install of a slug whose grants no record vouches for. The install answers how many
+   people and teams lost one (`grantsRemoved`), and the audit row says so too.
 
    **Private repositories.** A repository on one of the instance's registered git hosts
    (Admin → Git hosts, [WORKBENCH.md](./WORKBENCH.md#git-hosts-the-operators-choice)) is
@@ -189,7 +194,10 @@ credential, and the host runs the handler. The api never loads app code.
    its build output, its compose file and its source record. Its **data is kept** — the
    Postgres files, `db.env`, the sealed password and the record of the repository they belong
    to — so reinstalling the same repository under the same slug reattaches it (the install says
-   so; another repository has to choose, see Install). With `wipeData: true` the app's store is
+   so; another repository has to choose, see Install). The people's and teams' grants on the app
+   stay with kept data, for that reinstall; an uninstall that keeps no data (wiped, or the app
+   never stored anything) removes them, since nothing is left to say whose they were. The answer
+   and the audit row carry `grantsRemoved`. With `wipeData: true` the app's store is
    emptied while its database still runs, the database is stopped, and the whole data directory
    is deleted (through a throwaway container when its files belong to the database container's
    user), along with the password. Manage → Apps asks which. Audited, like

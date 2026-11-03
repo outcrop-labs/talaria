@@ -235,7 +235,7 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | `AppHarnessRunner` | type | `ctx.harness`: run(def, input, opts) and stream(def, input, { onDelta }), bound by the host to the caller |
 | `HarnessRunOptions` / `HarnessStreamOptions` | types | What a bound run takes: model (checked), tier, effort, ledger (refId, taskId), signal, and onDelta for a stream |
 | `runHarness` | fn | The free runner, for apps written before `ctx.harness`: no checks, no deps, a warning when it pins an agent |
-| `resolveHarnessModel` | fn | Free probe: which chain would carry this harness, or null |
+| `resolveHarnessModel` | fn | Free probe: which chain would carry this harness, or null. Pass the harness's slot, `app:<slug>/<harness id>`, or it misses the admin's model setting ([harnesses.md](./harnesses.md#its-model-setting)) |
 | `RunContext` | type | The free runner's context: caller, userId, model, step, tier, effort, ledger, signal, and no deps |
 | `RunLedger` | type | Where the run's cost lands |
 | `LoopCall` | type | One dispatched loop call: tool, args, result, error |
