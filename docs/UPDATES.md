@@ -222,13 +222,32 @@ whole mechanism is in [ARCHITECTURE.md, "The fleet"](./ARCHITECTURE.md#the-fleet
 - **Prepare**: the new digest is pulled in the background through the agents' own
   shared pull, waiting while any other download runs, then read with networking off
   for its `_config_version`, the env names its Hermes strips, and its s6 drain tools.
-- **Canary, then one agent at a time**, in the maintenance window (02:00–05:00 in the
-  workspace time zone — the daily brief's `timeZone`, else `TZ`, else UTC — and
-  configurable on the panel) or on **Roll now**. An agent in a turn or a conversation is passed over and tried again a
-  minute later.
-- **Any failure stops it**: that agent goes back to the last known good, the digest is
-  marked bad and never rolled out again, every agent it reached moves back, and every
-  admin is notified (`hermes_update_failed`).
+- **A minimum time on stable**: a release waits until it has been on `stable` for
+  **48 hours** since this instance first saw it (`TALARIA_HERMES_MIN_STABLE_HOURS` in
+  the api's environment), so a release the community finds broken is usually replaced
+  before any instance runs it. This is the defence against a bad or compromised tag
+  that needs no Talaria release: together with each instance's own canary and bans, a
+  bad `stable` meets a 48-hour delay, a soaked canary and a one-agent-first rollout on
+  every instance. There is no remote kill switch.
+- **Canary, then one agent at a time, each watched**, in the maintenance window
+  (02:00–05:00 in the workspace time zone — the daily brief's `timeZone`, else `TZ`,
+  else UTC — and configurable on the panel) or on **Roll now**, which also skips the
+  48 hours. The canary soaks for 5 minutes; the first agent is watched 10 minutes and
+  each later one 3 before the next moves; the whole rollout soaks 15 minutes before the
+  release is called good (`TALARIA_HERMES_CANARY_SOAK_SECS`,
+  `TALARIA_HERMES_FIRST_AGENT_SOAK_SECS`, `TALARIA_HERMES_AGENT_SOAK_SECS`,
+  `TALARIA_HERMES_ROLLOUT_SOAK_SECS`). An agent that is working or about to (a turn, a
+  long tool call, a cron run or one due within 15 minutes, a work session or workbench
+  job, a conversation in the last 10 minutes) is passed over and tried again a minute
+  later; one busy all window is left for a later window rather than hold the release.
+- **A failure is confirmed before anything is banned**: a failure the host caused
+  (docker timing out, the disk saturated) is retried later and never bans. A failure the
+  image caused puts that agent back at once and is tried once more; the second time,
+  the release is marked bad, every agent it reached moves back, and every admin is
+  notified (`hermes_update_failed`). **Allow again** on the panel lifts a ban.
+- **Stuck states alert** (`hermes_channel_stuck`): checks failing for 3 days, a rollout
+  open for 7, or a channel state row that cannot be read (the channel then moves
+  nothing — delete the `hermes_channel` row of `app_settings` to start it over).
 
 The panel is **Manage → Agent image** (admins): the version each agent runs, the
 channel, the last check, the rollout, and Check now, Roll now, Roll back and Pin.
@@ -236,8 +255,9 @@ channel, the last check, the rollout, and Check now, Roll now, Roll back and Pin
 
 **Opting out, or holding a version.** Any one of these stops the channel moving agents:
 
-- **Pin** on the panel (`POST /api/fleet/hermes {"action":"pin","digest":…}`) holds every
-  agent on a version that has run well here, until **Unpin**.
+- **Pin** on the panel (`POST /api/fleet/hermes {"action":"pin","digest":…}` or
+  `{"action":"pin","version":"v0.22.5"}`) holds every agent on any version not marked bad,
+  until **Unpin**; one that never ran here is canaried first.
 - `HERMES_IMAGE=<image>` in `fleet/.env` (or the api's environment) runs every agent on
   that image, as it always did; the channel says it is off and why.
 - A chassis whose `image:` is not a stock `${HERMES_IMAGE:-…}` default is the operator's,

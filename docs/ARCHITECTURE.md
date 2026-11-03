@@ -503,50 +503,97 @@ multiplexer.
   `TALARIA_WORKBENCH_IMAGE` runs that image and is not moved.
 
   **The channel** (`talaria-hermes-channel`, a scheduler step a minute under one Postgres
-  advisory lock, resumable from its records at any point):
+  advisory lock, resumable from its records at any point; the state machine is `engine.rs`,
+  and every docker, registry and notification effect sits behind one trait, `FleetOps`, so
+  the live-DB suite drives the same machine against a scripted fleet):
   1. *Check* every ~6 h, ±30 min of jitter: an anonymous HEAD of `stable`'s manifest
      (`TALARIA_HERMES_STABLE_REF` names a mirror), and for a new digest a tag list and HEADs of
-     the newest `vX.Y.Z` tags to find the one that shares it. Docker Hub counts manifest GETs
-     against its anonymous limit, not HEADs (four HEADs in a row left `ratelimit-remaining` at
-     98 of 100). A new digest is a `candidate` record. A failed check keeps what the last one
-     found, so an unreachable registry never opens or closes anything.
+     the newest `vX.Y.Z` tags to find the one that shares it (Hermes' old calendar tags,
+     `v2026.9.24`, sort last). Docker Hub counts manifest GETs against its anonymous limit, not
+     HEADs (four HEADs in a row left `ratelimit-remaining` at 98 of 100). A new digest is a
+     `candidate` record. A failed check keeps what the last one found, so an unreachable
+     registry never opens or closes anything; checks failing for three days alert the admins.
   2. *Prepare*: the shared pull (`pull.rs`) through the canary's own compose project, waiting
      while any other pull runs in the process; then `docker run --rm --network none` of the
      image's Python reads `DEFAULT_CONFIG["_config_version"]`, the env names its Hermes strips
-     (`_HERMES_PROVIDER_ENV_BLOCKLIST | _ALWAYS_STRIP_KEYS`, which `hermes_stripped_env.txt`
-     snapshots for the pin and which `talaria-agent-secrets` now adds to at runtime, never
-     removes from), its version, and whether `/command/s6-svc` and `s6-svwait` exist. All of it
-     is untrusted and checked: a digest must be `sha256:<64 hex>`, a tag `vX.Y.Z`, a config
-     version a small integer. An image that will not say its config version, or lacks the s6
-     tools, is marked bad.
-  3. *Canary*, in the maintenance window (02:00–05:00 in the workspace zone by default) or on
-     **Roll now**: the chassis service with the candidate image, the first agent's rendered
-     config with the candidate's own `_config_version`, no MCP servers, no platform but the API
-     server, no Talaria credential, no gateway key and a model URL nothing listens on
-     (`talaria-fleet-render`'s `canary.rs`), in its own compose project on the fleet network.
-     Healthy means: docker's health check, `/health` and `/v1/models` answered over the
-     gateway's own dial, no config or migration fault in its log, and the drain's s6 service in
-     place. It spends no tokens and is taken down with its volume either way.
-  4. *Roll* agents one at a time through `roll_running_agent_outcome` — the in-place roll, its
-     health wait and late wait — passing over an agent that is writing a reply, has a live work
-     session, was messaged in the last 10 minutes or called a model in the last 5, and trying
-     it again the next minute. A moved agent is asked the canary's questions through its own
-     manifest entry. A stopped agent is assigned and starts on the new image next time.
-  5. *Roll back* on any failure: the failed agent goes back to the last known good at once
-     (`roll_agent_back_outcome`, which recreates it even if it crashed), the digest is marked
-     `bad` with the reason and never rolled out again, the agents it reached move back, and
-     every admin gets `hermes_update_failed`. Done, the digest is `good` and current; the one
-     before it stays on the host three days, then images this instance pulled itself and no
-     longer runs are removed (never the compiled pin, never an image another stack pulled).
+     (`_HERMES_PROVIDER_ENV_BLOCKLIST | _ALWAYS_STRIP_KEYS`), its version, and whether
+     `/command/s6-svc` and `s6-svwait` exist. All of it is untrusted and checked: a digest must
+     be `sha256:<64 hex>`, a tag `vX.Y.Z`, a config version a small integer. A stripped set
+     counts only once its image is `good`: every render reads the good images' sets from the
+     records (`set_image_stripped`, so every api process agrees), never takes a name Talaria
+     itself relies on (`TALARIA_*`, `LLM_*`, the names it stamps), drops an image's names when
+     it goes bad, and says when a set newly withholds a stored per-agent secret.
+     `hermes_stripped_env.txt` stays the floor for the pin.
+  3. *Wait* until the digest has been on stable for **48 h** since this instance first saw it
+     (`TALARIA_HERMES_MIN_STABLE_HOURS`), so a release the community finds broken is usually
+     replaced before an instance runs it, then for the maintenance window (02:00–05:00 in the
+     workspace zone; editable). **Roll now** skips both.
+  4. *Canary*: the chassis service with the candidate image, the first agent's rendered config
+     with the candidate's own `_config_version`, no MCP servers, no platform but the API server,
+     no Talaria credential, no gateway key and a model URL nothing listens on
+     (`talaria-fleet-render`'s `canary.rs`), in its own compose project on the fleet network
+     (`restart: no`, so a crash is an exit). Healthy means docker's health check, `/health` and
+     `/v1/models` over the gateway's own dial, no config or migration fault in its log, and the
+     drain's s6 service in place — and it stays up and is asked again every 20 s for a **soak**
+     of 5 min (`TALARIA_HERMES_CANARY_SOAK_SECS`), so an image that dies a minute after boot dies
+     here. It spends no tokens and is taken down with its volume either way.
+  5. *Roll* agents one at a time through `roll_running_agent_outcome` (the in-place roll, its
+     health wait and late wait). Before each agent the step re-reads the state row and the
+     image's status. An agent is passed over and tried again the next minute while it is
+     working or about to: Hermes' own `/health/detailed` reports a busy gateway or active runs
+     (a turn, a long tool call, a cron run), one of its `/api/jobs` is running or due within
+     15 min, a reply or channel reply is being written, a work session or workbench job is
+     live, a conversation with it had a message in the last 10 min, or a model call finished
+     in the last 5 (the gateway key's `last_used_at` is no signal: Hermes lists its models
+     through it at every boot). During a rollback, an agent the failed image reached is
+     moved back without waiting: it is leaving something worse, and a crash loop never
+     reads as idle. One busy the whole window (three
+     hours for Roll now) is left on its image for a **catch-up** rollout in a later window
+     instead of holding the release open; a newer release supersedes a waiting catch-up. Each
+     moved agent is **watched** — running, healthy, its docker restart count unchanged since it
+     came up (a crash loop under `restart: unless-stopped` shows only there), no config fault
+     in its log that its old image's log did not already carry — for 10 min after the first
+     and 3 min after each later one before the next moves, every moved agent is asked again
+     before every move, and once the last has moved the rollout **soaks** 15 min
+     (`TALARIA_HERMES_*_SOAK_SECS`) before the image is `good` and current. A stopped agent is
+     assigned and starts on the new image next time. An api restart mid-roll is resumed: the
+     agent the step was moving is re-verified, and recreated if it was left down.
+  6. *Roll back*. A failure the host caused (docker refusing or timing out, the disk
+     saturated — `/proc/pressure/io` avg60 over 40 % — a container docker will not describe) is
+     tried again in 15 min and never counts against the image. A failure the image caused puts
+     the agent back on the last known good at once (`roll_agent_back_outcome`, which recreates
+     it even if it crashed) and is **tried once more to confirm** after 5 min; only the second
+     marks the digest `bad` with the reason, moves every agent it reached back (recreated
+     whatever state the bad image left them in), and tells every admin
+     (`hermes_update_failed`, titled with the version that failed). A bad digest is never
+     rolled out or pinned until an admin presses **Allow again**. Going back to a known-good
+     image (a rollback, a catch-up, a pin to a good version) does not soak. The one before the
+     current image stays on the host three days, then images this instance pulled itself and
+     no longer runs are removed (never the compiled pin, never an image another stack pulled).
+
+  **The state row is read strictly and written under its row lock.** An unreadable
+  `hermes_channel` row (corrupt, or a value a later release wrote) is never read as a default
+  and never written back: the step moves nothing and alerts the admins
+  (`hermes_channel_stuck`), the panel says why, and the render fails rather than guess
+  `current`. Fields a later release adds round-trip untouched. Every write the step makes
+  names its rollout (`Rollout.id`) and is refused once an admin's Roll back or Pin replaced
+  it, so a step mid-roll stops, re-reads, and goes on with the admin's rollout: Roll back
+  pressed mid-roll ends with the fleet on the known good, never with the bad digest current.
+  A rollout open for a week alerts the admins too.
 
   The panel is **Manage → Agent image** (`GET/POST /api/fleet/hermes`): each agent's version,
-  the channel (Automatic: stable, Pinned, or off and why), the last check, the rollout, and
-  Check now, Roll now, Roll back (the image left is marked bad) and Pin (a version that ran well
-  here). **What Hermes wording Talaria matches** stays safe on a newer Hermes, because an
-  unknown wording falls through: `fleet_lost_turns`' `unknown_execution`/`queue_full` codes
-  (an unmatched code is the error Hermes sent), `fleet_approvals`' `already_resolved` (an
-  unmatched status is a delivery failure the card says), and talaria-chat-persist's
-  `is_interruption_notice` (an unknown notice is kept as the stopped turn's text). The drain's
+  the channel (Automatic: stable, Pinned, or off and why), the last check, the rollout, the
+  versions marked bad with their reasons, and the history. **Check now**, **Roll now**, **Roll
+  back** (a version that came from stable is marked bad so stable does not roll it forward;
+  rolling back from a pinned version moves the pin instead), **Pin** (any version not marked
+  bad, or a `vX.Y.Z` tag resolved now — one that never ran here is prepared and canaried
+  first; the agents a cancelled rollout reached come back with the rest) and **Allow again**.
+  **What Hermes wording Talaria matches** stays safe on a newer Hermes, because an unknown
+  wording falls through: `fleet_lost_turns`' `unknown_execution`/`queue_full` codes (an
+  unmatched code is the error Hermes sent), `fleet_approvals`' `already_resolved` (an
+  unmatched status is a delivery failure the card says), talaria-chat-persist's
+  `is_interruption_notice` (an unknown notice is kept as the stopped turn's text), and
+  `/health/detailed`'s busy fields (unknown fields leave the database to judge). The drain's
   s6 paths would break rather than degrade, so the inspection and the canary check them.
 
   The pin is now the floor, not the release train: a fresh install and a host upgraded from a

@@ -509,14 +509,16 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hermes.rs`](../../api/
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{ok, status}` | 200 | — |
+| GET | `admin` | — | `{ok, status}` | 200, 409 | — |
 | POST | `admin` | [body](#post-apifleethermes-body) | `{ok, message, status}` | 200, 400, 409 | audit |
 
 ### POST `/api/fleet/hermes` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `action` | `enum(check|roll|rollback|pin|unpin|window)?` |  |
+| `action` | `enum(check|roll|rollback|pin|unpin|allow|window)?` |  |
+| `digest` | `string?(80)` |  |
+| `version` | `string?(16)` |  |
 | `digest` | `string?(80)` |  |
 | `start` | `string?(5)` |  |
 | `end` | `string?(5)` |  |
