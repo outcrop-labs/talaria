@@ -594,7 +594,14 @@ multiplexer.
      created by an interrupted recreate, or exited after a roll that failed) is recreated
      whatever it is doing. With no rollout open, an agent off its image (down unwillingly, or
      running another image id than its digest's — the `:latest` a pre-channel release left)
-     opens a **catch-up** onto the fleet's image (checked every 5 min). A catch-up agent that
+     opens a **catch-up** onto the fleet's image (checked every 5 min) — before any newer
+     release, and one that never gives way to it (`Rollout.drift`), so a host upgraded from a
+     release before the channel puts its agents on the pin this render was checked against and
+     only then follows stable; agents the last rollout left behind (busy all window) are the
+     next rollout's, not a new catch-up's, so one busy agent never holds the fleet off stable.
+     Whether a running image passed the contract check is found by docker's image id (the
+     digest only on the containerd store; on the classic store the candidate records are
+     resolved and compared). A catch-up agent that
      fails on that image goes back and is remembered (`catchup_failed`, agent → digest), so it
      is not tried again until the image changes or Roll now; the admins hear it once a month. A running agent is passed over and asked
      again the next minute while it is working or about to (`busy.rs`, fields read from the
@@ -625,8 +632,9 @@ multiplexer.
      in the same transaction that makes it current). An api restart mid-roll is resumed: the
      agent in hand is checked if it came up on the image, and recreated if not.
   6. *Failures*. A failure the host caused (docker refusing or timing out, the api unable to
-     reach a container docker calls healthy, a pull that failed, a disk without room, the disk
-     saturated — `/proc/pressure/io` avg60 over 40 %) is tried again after 15 min, then twice
+     reach a container docker calls healthy, a pull that failed — kept by the pull until the
+     next step reads it, so one that fails between steps is counted too — a disk without room,
+     the disk saturated — `/proc/pressure/io` avg60 over 40 %) is tried again after 15 min, then twice
      as long each time to six hours, and the third in a row tells the admins once; an agent
      the step had recreated on the new image goes back meanwhile. A saturated disk excuses at
      most two image failures per rollout; the next is judged. A failure the image caused puts
