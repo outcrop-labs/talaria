@@ -196,3 +196,12 @@ test('a pin overrides inline sites too', () => {
   assert.equal(pickInline(42, { key: 'x', role: 'tool' }, 'heartbeat').slug, 'heartbeat')
   assert.equal(pickInline(42, { key: 'x', role: 'tool' }, 'nope').slug, pickInline(42, { key: 'x', role: 'tool' }).slug)
 })
+
+test('tab sites draw at the slower chrome cadence and every other site draws each frame', async () => {
+  const { waitingFor } = await import('./session.svelte')
+  for (const key of WAITING_SITE_KEYS) {
+    const { frameMs } = waitingFor(key)
+    if (WAITING_SITES[key].slot === 'tab') assert.ok(frameMs >= 100, `${key} draws every ${frameMs}ms`)
+    else assert.equal(frameMs, 0, `${key} is throttled`)
+  }
+})
