@@ -309,7 +309,10 @@ and scroll after a relaunch (only the URL is kept on disk).
   frames, each heartbeat's answer, and one `GET /api/me/presence` before the first post; the
   watcher's own id and its instance's page here (the page's `talaria.notify.client`, from the
   suspended session) count as this desktop. Every row it posts is acked (`POST
-  /api/notifications/ack`, I-18), so the instance's deferred push for it is cancelled. **Read-sync** (I-16): a
+  /api/notifications/ack`, I-18), so the instance's deferred push for it is cancelled; an
+  ack that never reached the instance (a transport error, or a gateway's 502/503/504, as a
+  Cloudflare tunnel answers while the origin restarts) is sent once more 2 s later — a lost
+  one lets that push fire 60 s on, and the ack is idempotent. **Read-sync** (I-16): a
   `notifications` frame that names `readIds` (or `all`) closes this instance's banners for
   those rows — keyed by its label, so another instance's read never closes them — and
   `resync` closes every banner whose row a fresh read finds read. **Presence** (I-17):
@@ -466,9 +469,17 @@ And the version is not free-form across the bundlers: Windows product versioning
 numeric fourth field, so an `.msi` can only be built from a version with no pre-release
 part. The workflow therefore bundles NSIS always and adds the msi only for a stable
 version — a `v0.2.0-rc.1` release ships the `.exe` and no `.msi`, rather than an `.msi`
-that claims to be `0.2.0`. Everything else takes the tag's version verbatim
+that claims to be `0.2.0`. Every file name takes the tag's version verbatim
 (`Talaria_0.2.0-rc.1_amd64.deb`, `Talaria-0.2.0-rc.1-1.x86_64.rpm`, the dmg, the flatpak
-bundle name).
+bundle name), but inside, the Linux packages spell a pre-release so it sorts below its
+release: written as the tag has it, dpkg reads `0.2.0-rc.1` as 0.2.0 with Debian revision
+`rc.1`, and rpm and pacman read the extra `rc` as newer, so all three ranked an RC above
+its release and refused the release over it as a downgrade. The deb and rpm `Version` is
+`0.2.0~rc.1` (`~` sorts before everything, the end included; `recommend-tray.sh`, which
+checks the order with dpkg's and rpm's own compare), and the pacman `pkgver` is
+`0.2.0rc.1` (pacman has no `~`, but a trailing segment that starts with a letter loses to
+the end; `pack-pacman.sh`). rc.1 < rc.2 < rc.10 holds in all three, and so does
+`0.0.0~sha…` < `0.0.0` for a trunk build.
 
 Separately, a local AppImage build does not work on Arch — linuxdeploy's bundled `strip`
 cannot read Arch's `.relr.dyn` sections, and Tauri's gtk plugin looks for gdk-pixbuf at a
@@ -553,10 +564,14 @@ the rate limits, the status record and the click route. One backend per OS:
   or connection is held per banner (notify-rust held one of each until the server retired
   it: 30 open banners cost 30 bus names and 63 threads; now 0 and 0). A post carries
   app name `Talaria`, the icon and `desktop-entry` hint of the desktop file this install
-  actually has — detected, never renamed: `$FLATPAK_ID` or `$APPIMAGE` →
-  `app.talaria.desktop`, else the first `applications/app.talaria.desktop.desktop` then
+  actually has — detected, never renamed: `$FLATPAK_ID` → `app.talaria.desktop`; an
+  AppImage (`$APPIMAGE`, mounted at `$APPDIR`) → the `Talaria.desktop` at its mount's root,
+  with the icon as a path into the mount (`$APPDIR/talaria-desktop.png`, the `Icon=` name
+  the AppImage spec puts at the root, else `.DirIcon`), because nothing installs either and
+  a notification server looks an icon name up only in its own theme;
+  else the first `applications/app.talaria.desktop.desktop` then
   `applications/Talaria.desktop` across `$XDG_DATA_HOME` and `$XDG_DATA_DIRS` (deb/rpm
-  ship `Talaria.desktop`, flatpak/AppImage/pacman `app.talaria.desktop`, and existing pins
+  ship `Talaria.desktop`, flatpak/pacman `app.talaria.desktop`, and existing pins
   keep working) — the instance's label in front of the body, escaped when the server
   advertises `body-markup`, the urgency and category, and the server's own id from the last
   post of the same (instance, tag) as `replaces_id` (never an invented one). A re-alert is
@@ -680,10 +695,16 @@ notifications arrive, with `closeToBackground` on (the default):
   handler is blocked once the app is up and an activate shows the window instead. With the
   app id on, the window's Wayland
   `app_id` is `app.talaria.desktop`, and so is its X11 `WM_CLASS` (the program name is set
-  to it), so a dock matches it to `app.talaria.desktop.desktop` (flatpak, AppImage, pacman)
-  directly and to the deb/rpm `Talaria.desktop` by its `StartupWMClass` (the bundler's
-  desktop template is `packaging/linux/Talaria.desktop.hbs`, the default one with that
-  line). No file is renamed, so a pin keeps its desktop-file id (O-16).
+  to it), so a dock matches it to `app.talaria.desktop.desktop` (flatpak, pacman)
+  directly and to the deb/rpm/AppImage `Talaria.desktop` by its `StartupWMClass` (the
+  bundler's desktop template is `packaging/linux/Talaria.desktop.hbs`, the default one with
+  that line). No file is renamed, so a pin keeps its desktop-file id (O-16). An AppImage
+  integrated under v0.11.0 (Gear Lever, AppImageLauncher: each copies the embedded file
+  once) keeps that era's `StartupWMClass=talaria-desktop`, and the in-app updater replaces
+  only the AppImage, so after the update its window no longer groups under that pin:
+  integrate it again. GLib's application name is `Talaria` (lib.rs `name_the_process`): it
+  is the tray item's StatusNotifierItem `Title`, the entry's name in Plasma's tray, which
+  otherwise falls back to the program name `app.talaria.desktop`.
 - Windows: Close quits, as before (no single-instance guard yet, so a hidden window would
   let a Start-menu relaunch open a second process on the same WebView2 profile).
 
