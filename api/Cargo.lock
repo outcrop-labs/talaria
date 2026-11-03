@@ -6518,6 +6518,7 @@ dependencies = [
  "sqlx",
  "talaria-auth-config",
  "talaria-instance",
+ "talaria-safe-fetch",
  "talaria-secretbox",
  "tokio",
  "tracing",
