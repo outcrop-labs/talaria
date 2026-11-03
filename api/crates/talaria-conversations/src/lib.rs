@@ -1244,13 +1244,18 @@ pub async fn beat_replies(pg: &PgPool, message_ids: &[String]) -> Result<u64, sq
 /// the row still being an orphan, so a row a writer stamped or revived since
 /// it was read is left alone. `$1` is the lease in seconds, `$2` the line
 /// with the separator before it, `$3` the line alone, `$4` the whitespace a
-/// row's prose is trimmed of.
-const CLOSE_ORPHAN: &str = "update messages set status = 'error', \
-        content = case when btrim(content, $4) = '' then $3 \
-                       else rtrim(content, $4) || $2 end, \
-        metadata = coalesce(metadata, '{}'::jsonb) || '{\"orphaned\": true}'::jsonb \
-     where role = 'assistant' and status = 'streaming' \
-       and streamed_at < now() - make_interval(secs => $1)";
+/// row's prose is trimmed of. A macro, not a const, so each query below is
+/// one `'static` literal (sqlx takes no built string).
+macro_rules! close_orphan_sql {
+    () => {
+        "update messages set status = 'error', \
+            content = case when btrim(content, $4) = '' then $3 \
+                           else rtrim(content, $4) || $2 end, \
+            metadata = coalesce(metadata, '{}'::jsonb) || '{\"orphaned\": true}'::jsonb \
+         where role = 'assistant' and status = 'streaming' \
+           and streamed_at < now() - make_interval(secs => $1)"
+    };
+}
 
 const PROSE_WHITESPACE: &str = " \t\r\n";
 
@@ -1260,7 +1265,7 @@ async fn close_orphan(pg: &PgPool, message_id: &str) -> Result<bool, sqlx::Error
     if written_here(message_id) {
         return Ok(false);
     }
-    let done = sqlx::query(&format!("{CLOSE_ORPHAN} and id = $5::uuid"))
+    let done = sqlx::query(concat!(close_orphan_sql!(), " and id = $5::uuid"))
         .bind(WRITER_LEASE.as_secs_f64())
         .bind(format!("\n\n{ORPHANED_LINE}"))
         .bind(ORPHANED_LINE)
@@ -1276,8 +1281,9 @@ async fn close_orphan(pg: &PgPool, message_id: &str) -> Result<bool, sqlx::Error
 /// one writes are never its orphans. Answers the closed rows as
 /// `(message_id, conversation_id)`.
 pub async fn sweep_orphaned_replies(pg: &PgPool) -> Result<Vec<(String, String)>, sqlx::Error> {
-    sqlx::query_as(&format!(
-        "{CLOSE_ORPHAN} and not (id::text = any($5::text[])) \
+    sqlx::query_as(concat!(
+        close_orphan_sql!(),
+        " and not (id::text = any($5::text[])) \
          returning id::text, conversation_id::text"
     ))
     .bind(WRITER_LEASE.as_secs_f64())

@@ -161,6 +161,29 @@ async fn a_reply_stamped_inside_the_lease_is_in_flight() {
 mod lease {
     use super::*;
 
+    /// A reply this process holds, as a send makes one: held while it is
+    /// fresh, then left quiet for `quiet_secs`. Made stale first and held
+    /// after, a sibling test's sweep could take it in between.
+    async fn held_reply(
+        pg: &PgPool,
+        conv: &str,
+        prose: &str,
+        quiet_secs: f64,
+    ) -> (String, ReplyWriter) {
+        let id = reply(pg, conv, 1, prose, 0.0).await;
+        let writer = ReplyWriter::hold(&id);
+        sqlx::query(
+            "update messages set streamed_at = now() - make_interval(secs => $2) \
+             where id = $1::uuid",
+        )
+        .bind(&id)
+        .bind(quiet_secs)
+        .execute(pg)
+        .await
+        .unwrap();
+        (id, writer)
+    }
+
     /// A reply this process holds is in flight however long it has been
     /// quiet (a turn waiting on the agent's headers, a long tool call), and
     /// the sweep never takes it. Once the hold goes, it is an orphan.
@@ -169,9 +192,7 @@ mod lease {
     async fn a_reply_this_process_writes_is_never_its_orphan() {
         let pg = pg().await;
         let conv = thread(&pg, "held").await;
-        let id = reply(&pg, &conv, 1, "thinking", 20.0 * 60.0).await;
-
-        let writer = ReplyWriter::hold(&id);
+        let (id, writer) = held_reply(&pg, &conv, "thinking", 20.0 * 60.0).await;
         assert_eq!(
             active_streaming_assistant(&pg, &conv).await.unwrap(),
             Some(id.clone())
@@ -213,9 +234,8 @@ mod lease {
         let b = thread(&pg, "sweep-b").await;
         let c = thread(&pg, "sweep-c").await;
         let orphan = reply(&pg, &a, 1, "left behind", 600.0).await;
-        let held = reply(&pg, &b, 1, "mine", 600.0).await;
+        let (held, _writer) = held_reply(&pg, &b, "mine", 600.0).await;
         let fresh = reply(&pg, &c, 1, "elsewhere", 5.0).await;
-        let _writer = ReplyWriter::hold(&held);
 
         let closed = sweep_orphaned_replies(&pg).await.unwrap();
         // Closed by this sweep or by a sibling test's a moment earlier.

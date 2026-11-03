@@ -1796,11 +1796,12 @@ struct Watching(String);
 impl Watching {
     fn claim(reply_id: &str) -> Option<Self> {
         let key = reply_id.trim().to_ascii_lowercase();
-        WATCHED
-            .lock()
-            .ok()
-            .filter(|mut watched| watched.insert(key.clone()))
-            .map(|_| Watching(key))
+        let mut watched = WATCHED.lock().ok()?;
+        if watched.insert(key.clone()) {
+            Some(Watching(key))
+        } else {
+            None
+        }
     }
 }
 
