@@ -36,7 +36,8 @@
 //! alerts instead, as the page runtime's cross-device rule has it, so one
 //! device alerts, not two. Every row it does post is acked (`POST
 //! /api/notifications/ack`, I-18), so the server's deferred push for it is
-//! cancelled: the person was told here.
+//! cancelled: the person was told here. An ack that never reached the
+//! instance (a transport error, a gateway's 502/503/504) is sent once more.
 //!
 //! Read-sync (I-16): a `notifications` frame names the rows read elsewhere
 //! (`readIds`, or `all`), and the watcher closes its own banners for them —
@@ -1607,44 +1608,113 @@ fn heartbeat(watch: &Watch, state: &Running) {
 
 /// `POST /api/notifications/ack` (I-18) for rows this watcher just posted:
 /// the person was told here, so the server's deferred push for them is
-/// cancelled. Only to an instance that serves the ack.
-async fn ack(watch: &Watch, state: &Running, ids: &[String]) {
+/// cancelled. Only to an instance that serves the ack. Each request runs on
+/// its own task (`ack_chunk`), so a slow instance or a retry never holds up
+/// the next banner.
+fn ack(watch: &Watch, state: &Running, ids: &[String]) {
     if ids.is_empty() || !watch.server.has("ack") {
         return;
     }
     for chunk in ids.chunks(ACK_CHUNK) {
-        let sent = state
-            .client
-            .post(format!("{}/api/notifications/ack", watch.origin))
-            .timeout(WRITE_TIMEOUT)
-            .header(COOKIE, &watch.cookie)
-            .header(ORIGIN, &watch.origin)
-            .header(CONTENT_TYPE, "application/json")
-            .body(serde_json::json!({ "ids": chunk }).to_string())
-            .send()
-            .await;
-        match sent {
-            Ok(r) if r.status().is_success() => {
-                let acked = r
-                    .json::<serde_json::Value>()
-                    .await
-                    .ok()
-                    .and_then(|v| v.get("acked").and_then(serde_json::Value::as_u64));
-                eprintln!(
-                    "talaria-desktop: {}: acked {} of {} posted",
-                    watch.label,
-                    acked.map_or("?".to_string(), |n| n.to_string()),
-                    chunk.len()
-                );
-            }
-            Ok(r) => eprintln!(
-                "talaria-desktop: {}: the ack answered {}",
-                watch.label,
-                r.status()
-            ),
-            Err(e) => eprintln!("talaria-desktop: {}: the ack: {e}", watch.label),
+        let client = state.client.clone();
+        let (origin, cookie, label) = (
+            watch.origin.clone(),
+            watch.cookie.clone(),
+            watch.label.clone(),
+        );
+        let chunk = chunk.to_vec();
+        tauri::async_runtime::spawn(async move {
+            ack_chunk(&client, &origin, &cookie, &label, &chunk, ACK_RETRY_AFTER).await;
+        });
+    }
+}
+
+/// How one ack request ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AckSent {
+    /// Taken: how many rows the instance acked, when it said.
+    Acked(Option<u64>),
+    /// The instance, or a proxy in front of it, answered this status.
+    Answered(u16),
+    /// No answer at all: refused, reset, or past `WRITE_TIMEOUT`.
+    Lost(String),
+}
+
+impl AckSent {
+    /// Worth the one more try: the request may never have reached the
+    /// instance. A transport error, or a gateway's 502/503/504 (a Cloudflare
+    /// tunnel answers 502 while the origin restarts); never a 4xx, nor any
+    /// other answer the instance itself gave.
+    pub fn retry(&self) -> bool {
+        match self {
+            AckSent::Lost(_) => true,
+            AckSent::Answered(status) => matches!(status, 502..=504),
+            AckSent::Acked(_) => false,
         }
     }
+}
+
+impl std::fmt::Display for AckSent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AckSent::Acked(n) => {
+                write!(f, "acked {}", n.map_or("?".to_string(), |n| n.to_string()))
+            }
+            AckSent::Answered(status) => write!(f, "answered {status}"),
+            AckSent::Lost(e) => write!(f, "failed: {e}"),
+        }
+    }
+}
+
+/// A lost ack is retried this much later, once. The deferred push it cancels
+/// fires 60 s after the row, so a retry lands long before that.
+const ACK_RETRY_AFTER: Duration = Duration::from_secs(2);
+
+/// One ack request.
+async fn send_ack(client: &reqwest::Client, origin: &str, cookie: &str, ids: &[String]) -> AckSent {
+    let sent = client
+        .post(format!("{origin}/api/notifications/ack"))
+        .timeout(WRITE_TIMEOUT)
+        .header(COOKIE, cookie)
+        .header(ORIGIN, origin)
+        .header(CONTENT_TYPE, "application/json")
+        .body(serde_json::json!({ "ids": ids }).to_string())
+        .send()
+        .await;
+    match sent {
+        Ok(r) if r.status().is_success() => AckSent::Acked(
+            r.json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("acked").and_then(serde_json::Value::as_u64)),
+        ),
+        Ok(r) => AckSent::Answered(r.status().as_u16()),
+        Err(e) => AckSent::Lost(e.to_string()),
+    }
+}
+
+/// An ack, and one retry `pause` later when the first never reached the
+/// instance (`AckSent::retry`). A lost ack lets the deferred push fire at
+/// +60 s, and the ack is idempotent, so once more costs nothing. How it ended.
+pub async fn ack_chunk(
+    client: &reqwest::Client,
+    origin: &str,
+    cookie: &str,
+    label: &str,
+    ids: &[String],
+    pause: Duration,
+) -> AckSent {
+    let mut sent = send_ack(client, origin, cookie, ids).await;
+    if sent.retry() {
+        eprintln!("talaria-desktop: {label}: the ack {sent}; trying once more");
+        tokio::time::sleep(pause).await;
+        sent = send_ack(client, origin, cookie, ids).await;
+    }
+    match &sent {
+        AckSent::Acked(_) => eprintln!("talaria-desktop: {label}: {sent} of {} posted", ids.len()),
+        other => eprintln!("talaria-desktop: {label}: the ack {other}"),
+    }
+    sent
 }
 
 /// The summary banner for a burst: "N new in <label>".
@@ -1748,7 +1818,7 @@ async fn post_all(watch: &Watch, state: &mut Running, fresh: Vec<Arrival>) {
         match crate::notify::post(&watch.app, post).await {
             Ok(()) => {
                 state.summary.extend(ids.iter().cloned());
-                ack(watch, state, &ids).await;
+                ack(watch, state, &ids);
             }
             Err(e) => eprintln!("talaria-desktop: {}: {e}", watch.label),
         }
@@ -1782,7 +1852,7 @@ async fn post_all(watch: &Watch, state: &mut Running, fresh: Vec<Arrival>) {
             },
         };
         match crate::notify::post(&watch.app, post).await {
-            Ok(()) => ack(watch, state, std::slice::from_ref(&row.id)).await,
+            Ok(()) => ack(watch, state, std::slice::from_ref(&row.id)),
             Err(e) => eprintln!("talaria-desktop: {}: {e}", watch.label),
         }
     }
@@ -2565,5 +2635,133 @@ mod tests {
     fn a_burst_is_one_summary_under_the_shared_tag() {
         assert_eq!(summary_title(5, "Acme"), "5 new in Acme");
         assert_eq!(SUMMARY_TAG, "talaria-summary");
+    }
+
+    #[test]
+    fn only_an_ack_that_never_arrived_is_retried() {
+        assert!(AckSent::Lost("connection reset".into()).retry());
+        for gateway in [502, 503, 504] {
+            assert!(AckSent::Answered(gateway).retry(), "{gateway}");
+        }
+        for answer in [400, 401, 403, 404, 413, 429, 500] {
+            assert!(!AckSent::Answered(answer).retry(), "{answer}");
+        }
+        assert!(!AckSent::Acked(Some(1)).retry());
+        assert!(!AckSent::Acked(None).retry());
+    }
+
+    /// One HTTP request off the socket: the head, then its content-length.
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        use std::io::Read;
+        let (mut buf, mut chunk) = (Vec::new(), [0u8; 4096]);
+        loop {
+            let n = stream.read(&mut chunk).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let text = String::from_utf8_lossy(&buf);
+            if let Some(end) = text.find("\r\n\r\n") {
+                let len = text[..end]
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                    })
+                    .unwrap_or(0);
+                if buf.len() >= end + 4 + len {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// A fake instance: one connection per step of `script`, in turn. `None`
+    /// reads the request and hangs up without an answer (a transport error);
+    /// otherwise that status and body. Every request it read, in order.
+    fn instance(script: Vec<Option<(u16, &'static str)>>) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for step in script {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                log.lock().unwrap().push(read_request(&mut stream));
+                if let Some((status, body)) = step {
+                    let _ = std::io::Write::write_all(
+                        &mut stream,
+                        format!(
+                            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                }
+            }
+        });
+        (origin, seen)
+    }
+
+    async fn ack_against(script: Vec<Option<(u16, &'static str)>>) -> (AckSent, Vec<String>) {
+        let (origin, seen) = instance(script);
+        // The watcher's own client (what `Running` carries).
+        let client = client();
+        let ids = vec!["n1".to_string()];
+        let sent = ack_chunk(
+            &client,
+            &origin,
+            "talaria_session=s1",
+            "Rig A",
+            &ids,
+            Duration::from_millis(10),
+        )
+        .await;
+        let seen = seen.lock().unwrap().clone();
+        (sent, seen)
+    }
+
+    #[tokio::test]
+    async fn a_lost_ack_is_sent_once_more() {
+        let (sent, seen) = ack_against(vec![None, Some((200, r#"{"acked":1}"#))]).await;
+        assert_eq!(sent, AckSent::Acked(Some(1)));
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        for request in &seen {
+            assert!(
+                request.starts_with("POST /api/notifications/ack "),
+                "{request}"
+            );
+            assert!(request.contains("talaria_session=s1"), "{request}");
+            assert!(request.ends_with(r#"{"ids":["n1"]}"#), "{request}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_gateway_error_is_sent_once_more() {
+        let (sent, seen) = ack_against(vec![Some((502, "")), Some((200, r#"{"acked":1}"#))]).await;
+        assert_eq!(sent, AckSent::Acked(Some(1)));
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_retry_is_the_last_try() {
+        let (sent, seen) = ack_against(vec![None, None, Some((200, r#"{"acked":1}"#))]).await;
+        assert!(matches!(sent, AckSent::Lost(_)), "{sent:?}");
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_answer_from_the_instance_is_not_retried() {
+        let (sent, seen) =
+            ack_against(vec![Some((403, "{}")), Some((200, r#"{"acked":1}"#))]).await;
+        assert_eq!(sent, AckSent::Answered(403));
+        assert_eq!(seen.len(), 1);
+        let (sent, seen) = ack_against(vec![Some((200, r#"{"acked":1}"#))]).await;
+        assert_eq!(sent, AckSent::Acked(Some(1)));
+        assert_eq!(seen.len(), 1);
     }
 }
