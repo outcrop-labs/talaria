@@ -21,11 +21,23 @@ describe('liftPlan', () => {
   })
 })
 
+function fakeAnimation() {
+  let finish = () => {}
+  const finished = new Promise<void>((resolve) => (finish = resolve))
+  return { cancel: vi.fn(), finished, finish }
+}
+
 function fakeTab(href: string) {
+  const anims: ReturnType<typeof fakeAnimation>[] = []
   return {
+    anims,
     getAttribute: (name: string) => (name === 'href' ? href : null),
     hasAttribute: () => false,
-    animate: vi.fn(() => ({ cancel() {}, finished: Promise.resolve() })),
+    animate: vi.fn(() => {
+      const anim = fakeAnimation()
+      anims.push(anim)
+      return anim
+    }),
   }
 }
 
@@ -95,6 +107,40 @@ describe('tabLift', () => {
     open = fakeTab('/boards')
     swapped()
     expect(open.animate).toHaveBeenCalledTimes(1)
+  })
+
+  const liftTo = (href: string) => {
+    clickTile(fakeTab(href))
+    open = fakeTab(href)
+    swapped()
+    return open.anims[0]!
+  }
+
+  it('a route change out of the lifted tab mid-lift, such as Back, stops the lift', () => {
+    const anim = liftTo('/boards')
+    lift.update('/work')
+    expect(anim.cancel).toHaveBeenCalled()
+  })
+
+  it('a redirect inside the lifted tab lets the lift play on', () => {
+    const anim = liftTo('/boards')
+    lift.update('/boards/b1')
+    expect(anim.cancel).not.toHaveBeenCalled()
+  })
+
+  it('a finished lift is let go, so a later route change has nothing to cancel', async () => {
+    const anim = liftTo('/boards')
+    anim.finish()
+    await anim.finished
+    await Promise.resolve()
+    lift.update('/work')
+    expect(anim.cancel).not.toHaveBeenCalled()
+  })
+
+  it('destroy stops a running lift', () => {
+    const anim = liftTo('/boards')
+    lift.destroy()
+    expect(anim.cancel).toHaveBeenCalled()
   })
 
   it('a click is spent by the next tab change, even one that lands elsewhere', () => {

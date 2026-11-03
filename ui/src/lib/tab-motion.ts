@@ -99,37 +99,46 @@ function captureView(page: HTMLElement): ExitView {
   return { clone: document.adoptNode(clone), scrolled }
 }
 
-let running: Animation[] = []
-let leftover: HTMLElement | null = null
-
-function play(tab: HTMLElement, page: HTMLElement | null, exit: ExitView | null) {
-  for (const a of running) a.cancel()
-  leftover?.remove()
-  running = []
-  leftover = null
-
-  const plan = liftPlan(prefersReducedMotion())
-  running.push(tab.animate(plan.tab.frames, plan.tab.options))
-  if (!page) return
-  running.push(page.animate(plan.view.frames, plan.view.options))
-  if (!exit) return
-
-  // Before the page in the DOM, so the arriving view paints over it.
-  page.before(exit.clone)
-  for (const { el, top, left } of exit.scrolled) el.scrollTo(left, top)
-  const out = exit.clone.animate(plan.exit.frames, plan.exit.options)
-  running.push(out)
-  leftover = exit.clone
-  const done = () => {
-    exit.clone.remove()
-    if (leftover === exit.clone) leftover = null
-  }
-  out.finished.then(done, done)
-}
-
 export function tabLift(strip: HTMLElement, _pathname: string) {
   let armed: { from: Element | null; to: string; exit: ExitView | null } | null = null
+  let lift: { to: string; running: Set<Animation>; leftover: HTMLElement | null } | null = null
   const openTab = () => strip.querySelector<HTMLElement>('a[aria-current="page"]')
+
+  const stop = () => {
+    if (!lift) return
+    for (const a of lift.running) a.cancel()
+    lift.leftover?.remove()
+    lift = null
+  }
+
+  const play = (tab: HTMLElement, to: string, exit: ExitView | null) => {
+    stop()
+    const current = { to, running: new Set<Animation>(), leftover: null as HTMLElement | null }
+    lift = current
+    const track = (anim: Animation) => {
+      current.running.add(anim)
+      const drop = () => current.running.delete(anim)
+      anim.finished.then(drop, drop)
+      return anim
+    }
+
+    const plan = liftPlan(prefersReducedMotion())
+    track(tab.animate(plan.tab.frames, plan.tab.options))
+    const page = document.querySelector<HTMLElement>('[data-tab-page]')
+    if (!page) return
+    track(page.animate(plan.view.frames, plan.view.options))
+    if (!exit) return
+
+    // Before the page in the DOM, so the arriving view paints over it.
+    page.before(exit.clone)
+    for (const { el, top, left } of exit.scrolled) el.scrollTo(left, top)
+    current.leftover = exit.clone
+    const done = () => {
+      exit.clone.remove()
+      current.leftover = null
+    }
+    track(exit.clone.animate(plan.exit.frames, plan.exit.options)).finished.then(done, done)
+  }
 
   const onClick = (event: MouseEvent) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
@@ -145,21 +154,26 @@ export function tabLift(strip: HTMLElement, _pathname: string) {
     if (tab === armed.from) return
     const { to, exit } = armed
     armed = null
-    if (tab?.getAttribute('href') === to) play(tab, document.querySelector('[data-tab-page]'), exit)
+    if (tab?.getAttribute('href') === to) play(tab, to, exit)
   }
 
   const mo = new MutationObserver(onSwap)
   mo.observe(strip, { childList: true })
   strip.addEventListener('click', onClick)
   return {
-    // A route change outside the clicked tile spends the click: that tile's
-    // navigation was superseded or refused, so a later visit is not its lift.
+    // A route change outside the clicked tile spends the click, since that
+    // tile's navigation was superseded or refused. A route change outside the
+    // lifted tab, such as Back mid-lift, stops the lift: the outlet is reused,
+    // so the next view would otherwise finish the old view's motion.
     update(pathname: string) {
       if (armed && !isUnder(pathname, armed.to)) armed = null
+      if (lift && !isUnder(pathname, lift.to)) stop()
     },
     destroy() {
       mo.disconnect()
       strip.removeEventListener('click', onClick)
+      armed = null
+      stop()
     },
   }
 }
