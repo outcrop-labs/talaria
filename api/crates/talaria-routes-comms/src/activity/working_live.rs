@@ -15,7 +15,12 @@ use super::*;
 /// their conversations and messages; rooms do not cascade from a person, so
 /// they go by name.
 async fn cleanup(pg: &PgPool, tag: &str) {
-    sqlx::query("delete from channels where name = $1")
+    sqlx::query("delete from channels where name = $1 or dm_key = $1")
+        .bind(format!("working-live-{tag}"))
+        .execute(pg)
+        .await
+        .unwrap();
+    sqlx::query("delete from research_runs where requested_by = $1")
         .bind(format!("working-live-{tag}"))
         .execute(pg)
         .await
@@ -170,4 +175,122 @@ async fn working_live_someone_elses_chat_never_counts() {
     );
     cleanup(&pg, "owner").await;
     cleanup(&pg, "other").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn working_live_a_dm_is_named_after_the_other_person() {
+    let (pg, user) = setup("dm").await;
+    let peer = person(&pg, "dm-peer").await;
+    let (room,): (String,) = sqlx::query_as(
+        "insert into channels (name, kind, dm_key) values ('', 'dm', 'working-live-dm') \
+         returning id::text",
+    )
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into channel_members (channel_id, user_id) \
+         values ($1::uuid, $2::uuid), ($1::uuid, $3::uuid)",
+    )
+    .bind(&room)
+    .bind(&user)
+    .bind(&peer)
+    .execute(&pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into channel_messages (channel_id, seq, author_type, author, status) \
+         values ($1::uuid, 1, 'agent', 'working-live-agent', 'streaming')",
+    )
+    .bind(&room)
+    .execute(&pg)
+    .await
+    .unwrap();
+
+    let comms = read(&pg, &user)
+        .await
+        .unwrap()
+        .comms
+        .expect("the DM is working");
+    assert_eq!(
+        comms.label, "Working Live",
+        "a DM shows the other person, never a blank name"
+    );
+    cleanup(&pg, "dm").await;
+    cleanup(&pg, "dm-peer").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn working_live_an_untitled_chat_is_named_after_its_agent() {
+    let (pg, user) = setup("untitled").await;
+    let conv = create_conversation(&pg, &user, "working-live-agent", "", "chat", None)
+        .await
+        .unwrap();
+    insert_streaming_assistant(&pg, &conv, 1, &json!({}))
+        .await
+        .unwrap();
+
+    let comms = read(&pg, &user)
+        .await
+        .unwrap()
+        .comms
+        .expect("the chat is working");
+    assert_eq!(
+        comms.label, "working-live-agent",
+        "an empty title falls back to the agent"
+    );
+    cleanup(&pg, "untitled").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn working_live_a_runs_streaming_thread_keeps_the_run_the_freshest() {
+    let (pg, user) = setup("research").await;
+    let older = create_conversation(&pg, &user, "working-live-agent", "older work", "work", None)
+        .await
+        .unwrap();
+    let older_reply = insert_streaming_assistant(&pg, &older, 1, &json!({}))
+        .await
+        .unwrap();
+    quiet_reply(&pg, &older_reply, 60.0).await;
+    let thread = create_conversation(
+        &pg,
+        &user,
+        "working-live-agent",
+        "discussion",
+        "research",
+        None,
+    )
+    .await
+    .unwrap();
+    insert_streaming_assistant(&pg, &thread, 1, &json!({}))
+        .await
+        .unwrap();
+    let (run,): (String,) = sqlx::query_as(
+        "insert into research_runs \
+           (owner_user_id, requested_by, agent_model, mode, question, title, status, \
+            conversation_id, updated_at) \
+         values ($1::uuid, $2, 'working-live-agent', 'recon', 'q', 'fresh research', 'running', \
+                 $3::uuid, now() - interval '1 hour') \
+         returning id::text",
+    )
+    .bind(&user)
+    .bind("working-live-research")
+    .bind(&thread)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        read(&pg, &user).await.unwrap().work,
+        Some(Lead {
+            count: 2,
+            label: "fresh research".into(),
+            href: format!("/research/{run}"),
+        }),
+        "the run and its streaming thread are one item, as fresh as the thread"
+    );
+    cleanup(&pg, "research").await;
 }
