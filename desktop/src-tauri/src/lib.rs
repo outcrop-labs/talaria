@@ -271,10 +271,15 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
 
 /// What an instance's webview may call on any origin: the way back alone,
 /// so a page the instance sent the person to (a sign-in provider) still has
-/// the pill and Ctrl/Cmd+Shift+H. Tauri puts its IPC into the main frame
-/// only, so no frame can call it, and `show_welcome` takes it only for the
-/// page on screen, once a second (commands.rs). Never Quit, never anything
-/// else.
+/// the pill and Ctrl/Cmd+Shift+H. Never Quit, never anything else.
+///
+/// Frames: on Linux and macOS Tauri puts its IPC into the main frame only.
+/// WebView2 (Windows) puts it into every frame, so there a frame is held by
+/// the origin ACL and the gate, not by frame scope: a sandboxed microsite
+/// frame has an opaque origin and is refused before any command runs; a
+/// cross-origin frame reaches this grant only, and `show_welcome` takes it
+/// only for the page on screen, once a second (commands.rs); a same-origin
+/// frame is the instance's own content.
 pub const WAY_BACK_PERMISSIONS: &[&str] = &["allow-show-welcome"];
 /// Any http(s) page, with or without a port.
 pub const WAY_BACK_ORIGINS: &[&str] = &["https://*", "https://*:*", "http://*", "http://*:*"];

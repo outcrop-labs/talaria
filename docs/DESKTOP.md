@@ -238,8 +238,12 @@ three rules, the same on every OS:
 the shell decides by who is asking, never by a navigation (an earlier build of this change
 navigated to `talaria-desktop.invalid` for it, which any page or frame could do; that host
 is now refused like `file:`, and nothing acts on it):
-- Tauri gives the IPC to the main frame only, so no frame (a microsite's sandboxed
-  `srcdoc` frame, an ad) can call anything.
+- On Linux and macOS Tauri gives the IPC to the main frame only, so no frame (a
+  microsite's sandboxed `srcdoc` frame, an ad) can call anything. WebView2 (Windows) gives
+  it to every frame, so there a frame is held by the origin ACL and the gate below, not by
+  frame scope: a sandboxed frame has an opaque origin and is refused before any command
+  runs, a cross-origin frame reaches only the way back, and a same-origin frame is the
+  instance's own content.
 - The pill and the escape keys take only real input (`isTrusted`): a page's own
   `dispatchEvent` or `.click()` does nothing.
 - `show_welcome` from an instance page is taken only for the page on screen, at most once a

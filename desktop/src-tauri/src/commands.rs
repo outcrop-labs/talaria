@@ -159,8 +159,10 @@ impl Drop for Creating<'_> {
 /// macOS, where the app menu also has it) quits the shell from any page, for
 /// the same reason: with Close keeping Talaria in the background, Quit must
 /// never depend on the instance's UI version. Only a real key press counts
-/// (`isTrusted`: a page's own script cannot fake one). The shell injects
-/// `__TAURI_INTERNALS__` into the main frame only, so no frame has either.
+/// (`isTrusted`: a page's own script cannot fake one). On Linux and macOS
+/// Tauri injects this and `__TAURI_INTERNALS__` into the main frame only;
+/// WebView2 (Windows) injects into every frame, where the origin grant and
+/// `show_welcome`'s gate hold a frame instead (lib.rs::grant_way_back).
 /// On another origin (a sign-in provider) Ctrl/Cmd+Shift+H still works
 /// through the way-back grant, which holds `show_welcome` alone
 /// (lib.rs::grant_way_back); Ctrl+Q works only on the instance's own origin,
