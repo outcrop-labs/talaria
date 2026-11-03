@@ -39,7 +39,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_api_facades::gateway::fleet_chat::{CONTROL_WINDOW, stop_completion, stop_run};
+use talaria_api_facades::gateway::fleet_chat::{
+    CONTROL_WINDOW, stop_completion, stop_not_placed, stop_run,
+};
 use talaria_body::{optional_uuid_member, parse};
 use talaria_chat_persist::{
     Awaited, HeldStop, TurnAwaited, TurnHandle, await_sent_turn, await_turn_handle, hold_stop,
@@ -59,9 +61,10 @@ use tokio::time::Instant;
 // doc: too, and is held for it past the wait. `hermes` says whether the agent's
 // doc: own run was interrupted, or whether hanging up was the whole stop (a
 // doc: completions turn a drain in another process reads). `held` says the
-// doc: agent had not opened the turn within the wait, or had not taken the stop
-// doc: within it, and the stop is sent again until it does. Nothing is
-// doc: streaming → 409.
+// doc: agent had not opened the turn within the wait, or could not place the
+// doc: stop within it yet, and the stop is sent again until it does. A stop the
+// doc: agent refuses, or that cannot reach it, → 502. Nothing is streaming →
+// doc: 409.
 
 pub async fn post(
     State(state): State<AppState>,
@@ -232,25 +235,32 @@ pub(crate) async fn stop_thread(
                 // turn finished on its own, exactly the stale stop a 409
                 // means.
                 Ok(None) => house_error(StatusCode::CONFLICT, "nothing is streaming"),
-                // NOT TAKEN WITHIN THE WINDOW, AND THE TURN RUNS ON. Hermes
+                // The turn's stream ended meanwhile: whatever the agent said
+                // to the stop, nothing is left to stop.
+                Err(_) if open_completion(&message_id).is_none() => {
+                    house_error(StatusCode::CONFLICT, "nothing is streaming")
+                }
+                // NOT PLACED WITHIN THE WINDOW, AND THE TURN RUNS ON. Hermes
                 // answers `409 not_found` until it has bound the completion
                 // to the turn's admission, which a starved agent store has
                 // taken minutes to do, and the window is all a waiting
                 // person can be given. A 502 here was swallowed by the page
-                // while the agent worked, and spent, to the end. So while
-                // the drain still reads the turn, the stop goes to the
-                // patient sender a held stop gets, and the answer says held.
-                Err(msg) if open_completion(&message_id).is_some() => {
+                // while the agent worked, and spent, to the end. So the stop
+                // goes to the patient sender a held stop gets (one per turn,
+                // however often Stop is pressed), and the answer says held.
+                Err(msg) if stop_not_placed(&msg) => {
                     tracing::info!(
-                        "[conversations] {id}: a person's stop was not taken within {}s ({msg}); it is sent again until the agent takes it",
+                        "[conversations] {id}: a person's stop was not placed within {}s ({msg}); it is sent again until the agent takes it",
                         CONTROL_WINDOW.as_secs()
                     );
                     send_unplaced_stop(agent_model, id, &message_id);
                     held()
                 }
-                // Refused, and the turn's stream has ended meanwhile:
-                // nothing is left to stop.
-                Err(_) => house_error(StatusCode::CONFLICT, "nothing is streaming"),
+                // The agent refused it, or it never reached the agent (no
+                // such agent, a refused bearer, another status): sending it
+                // again changes nothing, and the page says the stop did not
+                // reach the agent.
+                Err(msg) => house_error(StatusCode::BAD_GATEWAY, &msg),
             };
         }
     };

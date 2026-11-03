@@ -1125,13 +1125,32 @@ pub fn send_unplaced_stop(agent_model: &str, conversation_id: &str, message_id: 
     );
 }
 
+/// The turns a patient sender is stopping right now ([`send_stop_patiently`]),
+/// by handle: one sender per turn, however often Stop is pressed while the
+/// first is still being sent.
+static STOPPING: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
 fn send_stop_patiently(
     agent_model: String,
     conversation_id: String,
     handle: TurnHandle,
     how: &'static str,
 ) {
+    let key = match &handle {
+        TurnHandle::Completion { message_id } => {
+            format!("completion:{}", message_id.trim().to_ascii_lowercase())
+        }
+        TurnHandle::Run { run_id } => format!("run:{run_id}"),
+    };
+    let Some(claim) = Claim::take(&STOPPING, key) else {
+        tracing::info!(
+            "[chat_persist] {conversation_id}: a person's stop, {how}: a stop for this turn is already being sent"
+        );
+        return;
+    };
     tokio::spawn(async move {
+        let _claim = claim;
         let done = match &handle {
             TurnHandle::Completion { message_id } => {
                 let message_id = message_id.clone();
@@ -1708,24 +1727,99 @@ fn maybe_resume(
 }
 
 /// Hermes' own notices for a turn it interrupted before the model said
-/// anything, as v0.22.4 writes them: `INTERRUPT_WAITING_FOR_MODEL_PREFIX`
-/// (agent/conversation_loop.py) and the other `interrupt_text`s of
-/// agent/turn_*.py all begin "Operation interrupted", and a turn stopped
-/// before it took its session's lease ends with one of the two sentences of
-/// agent/turn_facade_lease.py.
-const INTERRUPTION_PREFIX: &str = "Operation interrupted";
-const NOT_STARTED_NOTICES: &[&str] = &[
+/// anything, each in the shape v0.22.4 writes it: the opening, and a check of
+/// what sits between it and the closing ")." The shapes are those of
+/// `INTERRUPT_WAITING_FOR_MODEL_PREFIX` + "{:.1f}s elapsed)."
+/// (agent/turn_api_call.py, agent/turn_finalizer.py) and the `interrupt_text`s
+/// of agent/turn_recovery_autorecover.py, turn_api_error.py,
+/// turn_empty_response.py and turn_response_check.py. A Hermes that rewords
+/// one lets it through as the turn's content again, as before this rule;
+/// `stop_landing_live` is the check to run on a Hermes bump.
+const INTERRUPTION_SHAPES: &[(&str, fn(&str) -> bool)] = &[
+    (
+        "Operation interrupted: waiting for model response (",
+        elapsed,
+    ),
+    (
+        "Operation interrupted: waiting for the provider to recover (cycle ",
+        counted,
+    ),
+    ("Operation interrupted: handling API error (", api_error),
+    (
+        "Operation interrupted: retrying API call after error (retry ",
+        counted,
+    ),
+    (
+        "Operation interrupted: retrying empty response from model (retry ",
+        counted,
+    ),
+    ("Operation interrupted during retry (", attempt),
+];
+
+/// The notices that are one fixed sentence: the bare interrupt
+/// (agent/turn_finalizer.py's placeholder) and the two of a turn stopped
+/// before it took its session's lease (agent/turn_facade_lease.py).
+const INTERRUPTION_SENTENCES: &[&str] = &[
+    "Operation interrupted.",
     "Stopped before this turn started. Your message was not processed.",
     "Stopped waiting for another Hermes process on this session. Your message was not processed.",
 ];
 
+/// "12.3s elapsed"
+fn elapsed(between: &str) -> bool {
+    between.strip_suffix("s elapsed").is_some_and(|n| {
+        n.split_once('.').is_some_and(|(whole, tenth)| {
+            !whole.is_empty()
+                && whole.bytes().all(|b| b.is_ascii_digit())
+                && tenth.len() == 1
+                && tenth.bytes().all(|b| b.is_ascii_digit())
+        })
+    })
+}
+
+/// "2/5"
+fn counted(between: &str) -> bool {
+    between.split_once('/').is_some_and(|(n, of)| {
+        [n, of]
+            .iter()
+            .all(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// "RateLimitError: slow down": an exception's type name, then its message.
+fn api_error(between: &str) -> bool {
+    between.split_once(": ").is_some_and(|(kind, _)| {
+        !kind.is_empty()
+            && kind
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+    })
+}
+
+/// "timeout, attempt 2/3"
+fn attempt(between: &str) -> bool {
+    between
+        .rsplit_once(", attempt ")
+        .is_some_and(|(hint, n)| !hint.is_empty() && counted(n))
+}
+
 /// Whether a stopped turn's whole content is Hermes' cancellation notice
 /// rather than anything the agent said. Read only for a turn that ended
 /// stopped: Hermes sends the notice as the turn's content only when no word
-/// had gone out before the interrupt.
+/// had gone out before the interrupt. One line, in one of Hermes' exact
+/// shapes, so a reply of the agent's own that begins with the same words is
+/// never taken for one.
 fn is_interruption_notice(content: &str) -> bool {
     let said = content.trim();
-    said.starts_with(INTERRUPTION_PREFIX) || NOT_STARTED_NOTICES.contains(&said)
+    if said.contains('\n') {
+        return false;
+    }
+    INTERRUPTION_SENTENCES.contains(&said)
+        || INTERRUPTION_SHAPES.iter().any(|(opening, fits)| {
+            said.strip_prefix(opening)
+                .and_then(|rest| rest.strip_suffix(")."))
+                .is_some_and(fits)
+        })
 }
 
 /// THE REPLIES THIS PROCESS WRITES, KEPT ALIVE, AND THE ONES NOBODY WRITES,
@@ -1790,25 +1884,29 @@ pub async fn keep_replies(state: AppState) {
 static WATCHED: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
     std::sync::LazyLock::new(Default::default);
 
-/// One watch's claim on its row in [`WATCHED`], let go when the watch ends.
-struct Watching(String);
+/// One task's claim on a key in a set of in-flight tasks ([`WATCHED`],
+/// [`STOPPING`]), let go when the task ends: the second task for a key does
+/// not start while the first runs.
+struct Claim {
+    set: &'static std::sync::Mutex<HashSet<String>>,
+    key: String,
+}
 
-impl Watching {
-    fn claim(reply_id: &str) -> Option<Self> {
-        let key = reply_id.trim().to_ascii_lowercase();
-        let mut watched = WATCHED.lock().ok()?;
-        if watched.insert(key.clone()) {
-            Some(Watching(key))
+impl Claim {
+    fn take(set: &'static std::sync::Mutex<HashSet<String>>, key: String) -> Option<Self> {
+        let mut held = set.lock().ok()?;
+        if held.insert(key.clone()) {
+            Some(Claim { set, key })
         } else {
             None
         }
     }
 }
 
-impl Drop for Watching {
+impl Drop for Claim {
     fn drop(&mut self) {
-        if let Ok(mut watched) = WATCHED.lock() {
-            watched.remove(&self.0);
+        if let Ok(mut held) = self.set.lock() {
+            held.remove(&self.key);
         }
     }
 }
@@ -1830,7 +1928,7 @@ pub fn answer_after_orphan(
     if written_here(reply_id) {
         return;
     }
-    let Some(watch) = Watching::claim(reply_id) else {
+    let Some(watch) = Claim::take(&WATCHED, reply_id.trim().to_ascii_lowercase()) else {
         return;
     };
     let state = state.clone();
@@ -1866,13 +1964,17 @@ mod stop_landing_live;
 mod tests {
     use super::*;
 
-    /// Hermes' cancellation notices read as nothing said; the agent's own
-    /// words never do, even when they talk about an interruption.
+    /// Hermes' cancellation notices read as nothing said: each shape v0.22.4
+    /// writes, as it writes it. The agent's own words never do, even when
+    /// they begin with the same two words.
     #[test]
     fn only_hermes_cancellation_notices_read_as_nothing_said() {
         for notice in [
             "Operation interrupted: waiting for model response (0.3s elapsed).",
+            "Operation interrupted: waiting for model response (125.0s elapsed).",
+            "Operation interrupted: waiting for the provider to recover (cycle 1/3).",
             "Operation interrupted: handling API error (RateLimitError: slow down).",
+            "Operation interrupted: retrying API call after error (retry 2/5).",
             "Operation interrupted: retrying empty response from model (retry 1/2).",
             "Operation interrupted during retry (timeout, attempt 2/3).",
             "Operation interrupted.",
@@ -1887,9 +1989,29 @@ mod tests {
             "I was interrupted by a phone call, but here it is.",
             "Stopped before this turn started, the server had already rebooted.",
             "Operation complete.",
+            // A real reply that begins with the notice's words.
+            "Operation interrupted handling in Rust is mostly about cancellation tokens.",
+            "Operation interrupted: here is what happened.\n\nThe deploy failed at step 3.",
+            "Operation interrupted: waiting for model response (the provider was slow).",
+            "Operation interrupted: retrying API call after error (retry later).",
+            "Operation interrupted during retry (the second one).",
+            "Operation interrupted — the backup job was killed at 02:00.",
+            "Operation interrupted. Here is the part that finished.",
         ] {
             assert!(!is_interruption_notice(said), "{said}");
         }
+    }
+
+    /// One task per key: a second Stop for a turn whose stop is still being
+    /// sent starts no second sender, and once the first ends the next may.
+    #[test]
+    fn a_turn_is_stopped_by_one_sender_at_a_time() {
+        let key = "completion:5e1ec7ed-0000-4000-8000-0000000000f2".to_string();
+        let first = Claim::take(&STOPPING, key.clone()).expect("the first sender starts");
+        assert!(Claim::take(&STOPPING, key.clone()).is_none());
+        assert!(Claim::take(&STOPPING, "run:run_other".into()).is_some());
+        drop(first);
+        assert!(Claim::take(&STOPPING, key).is_some());
     }
 
     /// A drain's open completion is what a stop reads while the drain reads

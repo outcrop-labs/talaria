@@ -863,7 +863,8 @@
    *  stopped, which the frozen transcript cannot say. `held` is a stop the
    *  agent has not taken yet (it had not opened the turn, or could not place
    *  the stop in time); the server sends it again until it does. A refusal
-   *  never reached the agent, which may finish the reply. A 409 is a turn
+   *  (the agent's own, or a stop that cannot reach it) is not sent again,
+   *  and the agent may finish the reply. A 409 is a turn
    *  that ended on its own. One toast per turn (`key`): a new thread's first
    *  turn is stopped by its name and then again by its thread's id. */
   const reportStop = (turn: string | undefined, sent: Promise<StopResult>) => {
@@ -874,7 +875,8 @@
       },
       (e: unknown) => {
         if (e instanceof HttpError && e.status === 409) return
-        pushToast({ title: 'The stop did not reach the agent', body: `${errorMessage(e).replace(/[.\s]+$/, '')}. It may finish this reply.`, tone: 'danger', key })
+        // toastError's shape, keyed: one toast per turn.
+        pushToast({ title: 'The stop did not reach the agent, which may finish this reply', body: errorMessage(e), tone: 'danger', key })
       },
     )
   }
