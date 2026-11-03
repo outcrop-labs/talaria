@@ -495,55 +495,109 @@ async fn coalesce_quiet_realert_window_read_and_adoption() {
 async fn concurrent_window_expiry_never_conflicts() {
     let _serial = SERIAL.lock().await;
     let pg = wide_pool().await;
+    let side = crate::support::pg().await;
     cleanup(&pg, &["expiry"]).await;
     let ada = person(&pg, "expiry").await;
     let key = group_key::approval("a-1");
+    // THE WINDOW LAPSES BY THE CLOCK, NOT BY A SLEEP. Bursts used to start
+    // 2.5 s apart on a 1 s window, timed from the spawn: a burst whose commits
+    // a stalled disk held past the next burst's start touched the row inside
+    // that burst's window, and the next burst rightly joined it (2 rows of 4
+    // on a host under IO pressure). Now each burst lands before the next
+    // begins, and the person's rows are moved back past a window no slow
+    // writer can outlast, so every burst meets an expired row and only that.
+    const WINDOW: u32 = 600;
     let meta = NotifyMeta {
-        group_window_secs: Some(1),
+        group_window_secs: Some(WINDOW),
         adopt_legacy: true,
         ..keyed(&key)
     };
-    // Four bursts of 10 concurrent writers, 2.5 s apart: the window lapses
-    // between bursts, so in each burst the first writer to take the person's
-    // row lock expires the open row while nine others race it to the upsert.
-    let mut tasks = Vec::new();
-    for burst in 0..4u64 {
-        for i in 0..10u64 {
-            let deps = NotifyDeps::publishing(pg.clone(), None);
-            let ada = ada.clone();
-            let meta = meta.clone();
-            tasks.push(tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(burst * 2_500 + i)).await;
-                add_notification_with(
-                    &deps,
-                    &ada,
-                    &input("approval_pending", "Approve?", "x", "/approvals/a-1"),
-                    &meta,
-                )
-                .await
-            }));
-        }
-    }
     let mut errors = Vec::new();
-    for t in tasks {
-        if let Err(e) = t.await.unwrap() {
-            errors.push(e.to_string());
+    for burst in 1..=4i64 {
+        if burst > 1 {
+            sqlx::query(
+                "update notifications \
+                 set created_at = created_at - $2::int * interval '1 second', \
+                     updated_at = updated_at - $2::int * interval '1 second' \
+                 where user_id = $1::uuid",
+            )
+            .bind(&ada)
+            .bind(WINDOW as i32 + 60)
+            .execute(&pg)
+            .await
+            .unwrap();
         }
+        // Ten writers, all queued behind the person's row lock before the
+        // first one holds it: the first expires the open row and inserts,
+        // and the nine behind it race that insert to the upsert — every run,
+        // not only when the scheduler happens to line them up.
+        let mut gate = side.begin().await.unwrap();
+        sqlx::query("select 1 from users where id = $1::uuid for update")
+            .bind(&ada)
+            .execute(&mut *gate)
+            .await
+            .unwrap();
+        let tasks: Vec<_> = (0..10)
+            .map(|_| {
+                let deps = NotifyDeps::publishing(pg.clone(), None);
+                let ada = ada.clone();
+                let meta = meta.clone();
+                tokio::spawn(async move {
+                    add_notification_with(
+                        &deps,
+                        &ada,
+                        &input("approval_pending", "Approve?", "x", "/approvals/a-1"),
+                        &meta,
+                    )
+                    .await
+                })
+            })
+            .collect();
+        let queued = Instant::now();
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "select count(*) from pg_stat_activity \
+                 where datname = current_database() and wait_event_type = 'Lock' \
+                   and query like 'update users set notify_seq%'",
+            )
+            .fetch_one(&side)
+            .await
+            .unwrap();
+            if waiting >= 10 {
+                break;
+            }
+            assert!(
+                queued.elapsed() < Duration::from_secs(60),
+                "burst {burst}: {waiting} of 10 writers queued on the lock after 60 s"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        gate.commit().await.unwrap();
+        for t in tasks {
+            if let Err(e) = t.await.unwrap() {
+                errors.push(format!("burst {burst}: {e}"));
+            }
+        }
+        let (rows, open, count): (i64, i64, Option<i32>) = sqlx::query_as(
+            "select count(*), count(*) filter (where group_key is not null), \
+                    max(count) filter (where group_key is not null) \
+             from notifications where user_id = $1::uuid",
+        )
+        .bind(&ada)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        println!(
+            "expiry: burst {burst} x 10 writes → {rows} rows, {open} keyed of count {count:?}"
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(open, 1, "burst {burst}: one open row holds the key");
+        assert_eq!(count, Some(10), "burst {burst}: its ten writes are one row");
+        assert_eq!(
+            rows, burst,
+            "burst {burst}: the window split the group once per burst"
+        );
     }
-    let (rows, open): (i64, i64) = sqlx::query_as(
-        "select count(*), count(*) filter (where group_key is not null) from notifications where user_id = $1::uuid",
-    )
-    .bind(&ada)
-    .fetch_one(&pg)
-    .await
-    .unwrap();
-    println!(
-        "expiry: 4 bursts x 10 writes → {rows} rows, {open} still keyed, {} errors",
-        errors.len()
-    );
-    assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(open, 1, "one open row holds the key");
-    assert_eq!(rows, 4, "the window split the group once per burst");
     cleanup(&pg, &["expiry"]).await;
 }
 
