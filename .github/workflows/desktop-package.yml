@@ -349,15 +349,19 @@ jobs:
           cp deb/*.deb rpm/*.rpm appimage/*.AppImage "$RUNNER_TEMP/assets/"
           ls -l "$RUNNER_TEMP/assets"
 
-      # The deb this run built, installed with apt (so its Depends have to
-      # resolve on a stock Ubuntu), and the connect smoke the windows job runs
-      # (see there) against the binary it installed, under a private X display
-      # and session bus with software rendering, as ci.yml's desktop job does.
+      # The deb this run built, installed with apt, and the connect smoke the
+      # windows job runs (see there) against the binary it installed, under a
+      # private X display and session bus with software rendering, as ci.yml's
+      # desktop job does. This proves the installed binary opens an instance.
+      # It does not prove the deb's Depends resolve on a clean system: the
+      # build's -dev packages (Tauri system deps, above) already satisfy them.
+      # The install also relies on that step's `apt-get update`.
       # The rpm, pacman and flatpak packages carry the same binary; the
       # AppImage bundles its own libraries and is not run here (its first
       # build aborted only on a host whose Wayland stack differed from the
       # runner's, which this runner cannot be).
       - name: Install the deb and run the connect smoke on it
+        timeout-minutes: 10
         env:
           WEBKIT_DISABLE_DMABUF_RENDERER: '1'
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -559,6 +563,9 @@ jobs:
       # bundle, so nothing quarantined it; what this proves is that the dmg
       # mounts, the binary starts, and it is still running twenty seconds later.
       - name: Smoke test the app bundle
+        # A backstop for its waits on the app (the self-test, the 20 s run):
+        # minutes when healthy, never the job's 60.
+        timeout-minutes: 10
         run: |
           set -eu
           # The dmg is VERIFIED rather than mounted: hdiutil refuses to attach on
@@ -629,14 +636,21 @@ jobs:
           echo "app still running after 20s (pid $pid)"
           lsappinfo list 2>/dev/null | grep -i -m1 talaria \
             || echo "(not registered with LaunchServices — the process is alive regardless)"
+          # Gone before the connect smoke below starts another one, and bounded:
+          # an app that ignores or defers SIGTERM gets 10 s, then SIGKILL,
+          # never a wait that holds the job to its timeout.
           kill "$pid" || true
+          for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          kill -9 "$pid" 2>/dev/null || true
           wait "$pid" 2>/dev/null || true
 
       # The same connect smoke the windows job runs on its installed exe (see
       # there): the bundle's own binary, extracted from the zip above, opens a
       # fake instance or fails, which "still running after 20 s" cannot tell
-      # apart from a hang.
+      # apart from a hang. The script bounds itself (90 s, then SIGKILL to the
+      # app's process group); the step timeout is the backstop.
       - name: Connect smoke on the shipped app
+        timeout-minutes: 5
         run: node desktop/packaging/connect-smoke.mjs "$RUNNER_TEMP/app/Talaria.app/Contents/MacOS/talaria-desktop" --wait 90 --force
 
       - uses: actions/upload-artifact@v4
@@ -719,6 +733,9 @@ jobs:
       # setup otherwise. PowerShell drives it because the parts that matter
       # (msiexec, Start-Process, finding the installed exe) are its native work.
       - name: Smoke test the installer
+        # A backstop for Start-Process -Wait on the installer and the
+        # self-test: minutes when healthy, never the job's 60.
+        timeout-minutes: 15
         run: |
           set -eu
           cat >"$RUNNER_TEMP/smoke.ps1" <<'PS'
@@ -777,6 +794,7 @@ jobs:
       # registry the smoke replaces. The script prints which step happened last
       # on a failure.
       - name: Connect smoke on the installed app
+        timeout-minutes: 5
         run: node desktop/packaging/connect-smoke.mjs "$INSTALLED_EXE" --wait 90 --force
 
       - uses: actions/upload-artifact@v4
@@ -906,8 +924,12 @@ jobs:
           # Latest, which is what /releases/latest/download/latest.json
           # resolves through: the previous desktop release stays the feed until
           # this one carries its own latest.json. Explicit, never GitHub's
-          # automatic pick, because the feed must be the newest DESKTOP
-          # release. A vX.Y.Z release (release.yml's, which this file only
+          # automatic pick, because the feed must be a DESKTOP release: the one
+          # this run minted, which is the newest on the auto-minor path (a
+          # dispatch that finishes an older version's mint moves the feed back
+          # to it). Only on the mint path: this job also attaches into
+          # release.yml's vX.Y.Z releases, and the guard below is what keeps
+          # those off Latest. A vX.Y.Z release (release.yml's, which this file only
           # attaches into) is never Latest: release.yml creates it
           # --latest=false, its latest.json is a download nothing reads, and
           # the desktop line moves on at the next desktop-v mint.

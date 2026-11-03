@@ -13,7 +13,11 @@
 //     It is created --latest=false too (no latest.json on it yet), and marked
 //     Latest with an explicit `gh release edit --latest` only after its
 //     latest.json is uploaded, so the feed never points at a release without
-//     one and never at anything but the newest desktop release.
+//     one. The flip runs only on the mint path: `attach` also runs for
+//     release.yml's vX.Y.Z tags (workflow_call), and an unguarded flip would
+//     make the server release Latest. So the flip must sit in the `then`
+//     branch of a shell `if` on "$MINT" = true (or under a step `if:` on
+//     needs.resolve.outputs.mint), with MINT bound to that output in the step.
 //   - any other workflow that creates a release states its intent (a
 //     prerelease, which can never be Latest, or an explicit flag) and never
 //     marks one Latest.
@@ -56,6 +60,52 @@ export function latestFlag(cmd) {
 function lineOf(text, needle) {
   const i = text.split('\n').findIndex((l) => !/^\s*#/.test(l) && l.includes(needle))
   return i + 1
+}
+
+const STEP_START = /^\s*-\s+(name|uses):/
+const MINT_TEST = /\[\s*"?\$\{?MINT\}?"?\s*==?\s*"?true"?\s*\]/
+const MINT_BOUND = /^\s*MINT:\s*\$\{\{\s*needs\.resolve\.outputs\.mint\s*\}\}\s*$/
+const STEP_IF_MINT = /^\s*if:\s*(\$\{\{\s*)?needs\.resolve\.outputs\.mint\s*==\s*'true'\s*(\}\})?\s*$/
+
+/**
+ * Why the command at line `n` (1-based) is NOT confined to the mint path, or
+ * null when it is. Confined means: the step binds MINT to resolve's output,
+ * and the command sits in the `then` branch of a shell `if` whose test is
+ * "$MINT" = true (an `&&` with more tests is fine, an `||` is not), or the
+ * step itself has `if: needs.resolve.outputs.mint == 'true'`.
+ */
+export function mintGuard(text, n) {
+  const lines = text.split('\n')
+  let start = n - 1
+  while (start > 0 && !STEP_START.test(lines[start])) start--
+  const step = lines.slice(start, n)
+  if (step.some((l) => STEP_IF_MINT.test(l))) return null
+  if (!step.some((l) => MINT_BOUND.test(l))) {
+    return 'its step does not bind MINT to needs.resolve.outputs.mint, so no `$MINT` test can confine it'
+  }
+  let depth = 0
+  let branch = 'then'
+  for (let i = n - 2; i > start; i--) {
+    const t = lines[i].trim()
+    if (t.startsWith('#') || t === '') continue
+    if (/^run:/.test(t)) break
+    if (/^fi\b/.test(t)) {
+      depth++
+      continue
+    }
+    if (/^if\s/.test(t)) {
+      if (/\bfi\s*;?\s*$/.test(t)) continue // a one-line if … fi above it
+      if (depth > 0) {
+        depth--
+        continue
+      }
+      if (branch !== 'then') return `it runs in the else branch of \`${t}\``
+      if (!MINT_TEST.test(t) || t.includes('||')) return `its \`if\` does not test "$MINT" = true on its own: \`${t}\``
+      return null
+    }
+    if (depth === 0 && /^(else|elif)\b/.test(t)) branch = 'else'
+  }
+  return 'it is not inside an `if [ "$MINT" = true ]`'
 }
 
 /**
@@ -116,6 +166,10 @@ export function checkReleaseLatest(workflows, tauriConf) {
       } else {
         for (const f of flips) {
           if (f.line < feed) at(file, f.line, `marks the release Latest before its latest.json is uploaded (line ${feed}): the feed would 404 in between`)
+          const why = mintGuard(text, f.line)
+          if (why) {
+            at(file, f.line, `the Latest flip can run off the mint path — ${why}. \`attach\` also runs for release.yml's vX.Y.Z tags, which must never be Latest`)
+          }
         }
       }
     }
@@ -140,17 +194,28 @@ export function selfTest() {
     '  fi',
   ].join('\n')
   const desktop = [
-    'run: |',
-    '  gh release create "$TAG" --repo "$R" \\',
-    '    --target "$SHA" --title "$TAG" --latest=false \\',
-    '    --notes "x"',
-    'run: |',
-    '  gh release upload "$TAG" --repo "$R" assets/* --clobber',
-    '  gh release upload "$TAG" --repo "$R" latest.json --clobber',
-    '  if [ "$MINT" = true ]; then',
-    '    gh release edit "$TAG" --repo "$R" --latest',
-    '  fi',
+    '- name: Open the desktop release',
+    '  run: |',
+    '    gh release create "$TAG" --repo "$R" \\',
+    '      --target "$SHA" --title "$TAG" --latest=false \\',
+    '      --notes "x"',
+    '- name: Upload',
+    '  env:',
+    '    TAG: ${{ needs.resolve.outputs.release_tag }}',
+    '    MINT: ${{ needs.resolve.outputs.mint }}',
+    '  run: |',
+    '    gh release upload "$TAG" --repo "$R" assets/* --clobber',
+    '    if [ -f ./latest.json ]; then',
+    '      gh release upload "$TAG" --repo "$R" latest.json --clobber',
+    '    fi',
+    '    # if [ "$MINT" = true ]; then  (a comment is not a guard)',
+    '    if [ "$MINT" = true ]; then',
+    '      gh release edit "$TAG" --repo "$R" --latest',
+    '      echo flipped',
+    '    fi',
   ].join('\n')
+  const FLIP = '      gh release edit "$TAG" --repo "$R" --latest\n'
+  const GUARDED = `    if [ "$MINT" = true ]; then\n${FLIP}      echo flipped\n    fi`
   const mobile = 'run: |\n  gh release create "$TAG" --target "$SHA" --title "$TAG" --prerelease --notes-file notes.md\n'
   const run = (over = {}, c = conf) => {
     const w = new Map([
@@ -173,9 +238,33 @@ export function selfTest() {
   expect('server create marked --latest', run({ [SERVER]: server.replace('--latest=false "${pre[@]}"\n  fi', '--latest "${pre[@]}"\n  fi') }), 2)
   expect('server with no release step', run({ [SERVER]: 'run: echo nothing' }), 1)
   expect('desktop mint left to GitHub', run({ [DESKTOP]: desktop.replace(' --latest=false \\', ' \\') }), 2)
-  expect('desktop never flips Latest', run({ [DESKTOP]: desktop.replace('    gh release edit "$TAG" --repo "$R" --latest\n', '') }), 1)
-  const early = desktop.replace('  gh release upload "$TAG" --repo "$R" assets/* --clobber', '  gh release edit "$TAG" --repo "$R" --latest\n  gh release upload "$TAG" --repo "$R" assets/* --clobber')
+  expect('desktop never flips Latest', run({ [DESKTOP]: desktop.replace(FLIP, '') }), 1)
+  const early = desktop.replace(GUARDED, '').replace(
+    '    gh release upload "$TAG" --repo "$R" assets/* --clobber',
+    `${GUARDED}\n    gh release upload "$TAG" --repo "$R" assets/* --clobber`,
+  )
   expect('desktop flips Latest before latest.json lands', run({ [DESKTOP]: early }), 1)
+  // The flip off the mint path: attach runs for release.yml's v* tags too.
+  expect('desktop flip with its MINT guard removed', run({ [DESKTOP]: desktop.replace(GUARDED, `${FLIP}      echo flipped`) }), 1)
+  expect(
+    "desktop flip in the guard's else branch",
+    run({ [DESKTOP]: desktop.replace(GUARDED, `    if [ "$MINT" = true ]; then\n      echo minted\n    else\n${FLIP}    fi`) }),
+    1,
+  )
+  expect('desktop flip guarded by the wrong test', run({ [DESKTOP]: desktop.replace(GUARDED, GUARDED.replace('[ "$MINT" = true ]', '[ -f ./latest.json ]')) }), 1)
+  expect('desktop flip guarded by an || test', run({ [DESKTOP]: desktop.replace(GUARDED, GUARDED.replace('[ "$MINT" = true ]', '[ "$MINT" = true ] || [ -n "$TAG" ]')) }), 1)
+  expect('desktop flip with MINT not bound to resolve', run({ [DESKTOP]: desktop.replace('MINT: ${{ needs.resolve.outputs.mint }}', "MINT: 'true'") }), 1)
+  expect(
+    'desktop flip after an unrelated if … fi, guard removed',
+    run({ [DESKTOP]: desktop.replace(GUARDED, `    if [ -n "$TAG" ]; then\n      echo tag\n    fi\n${FLIP}`) }),
+    1,
+  )
+  expect('desktop flip with an && guard', run({ [DESKTOP]: desktop.replace(GUARDED, GUARDED.replace('[ "$MINT" = true ]', '[ "$MINT" = true ] && [ -f ./latest.json ]')) }), 0)
+  expect(
+    'desktop flip under a step-level mint if:',
+    run({ [DESKTOP]: desktop.replace(GUARDED, FLIP).replace("- name: Upload\n", "- name: Upload\n  if: needs.resolve.outputs.mint == 'true'\n") }),
+    0,
+  )
   expect('another workflow marks a release Latest', run({ 'mobile-package.yml': mobile.replace('--prerelease', '--latest') }), 1)
   expect('another workflow leaves Latest to GitHub', run({ 'mobile-package.yml': mobile.replace(' --prerelease', '') }), 1)
   expect('the updater reads another URL', run({}, JSON.stringify({ plugins: { updater: { endpoints: ['https://example.test/feed.json'] } } })), 1)
