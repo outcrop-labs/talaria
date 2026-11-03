@@ -3810,6 +3810,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-user-notifications",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "tauri",

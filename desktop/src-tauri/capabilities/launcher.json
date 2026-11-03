@@ -20,6 +20,7 @@
     "allow-desktop-window",
     "allow-check-for-update",
     "allow-install-update",
+    "allow-snooze-update",
     "allow-desktop-notification-status",
     "allow-desktop-notification-request",
     "allow-desktop-notification-test",

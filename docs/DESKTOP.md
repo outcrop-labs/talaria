@@ -142,9 +142,9 @@ a choice made in one instance reaches the others.
   dynamic-ACL) of `INSTANCE_PERMISSIONS` on that one webview: `list_instances`,
   `activate_instance`, `show_welcome`, `get_desktop_settings`, `set_titlebar_mode`,
   `set_suspend_after`, `desktop_window`, `check_for_update`, `install_update`,
-  `desktop_notify`, `desktop_notification_status`, `desktop_notification_request`,
-  `desktop_notification_test`, `desktop_set_badge`, `desktop_quit`,
-  `set_close_to_background` and `desktop_suspend_report`. A suspend report counts only as
+  `snooze_update`, `desktop_notify`, `desktop_notification_status`,
+  `desktop_notification_request`, `desktop_notification_test`, `desktop_set_badge`,
+  `desktop_quit`, `set_close_to_background` and `desktop_suspend_report`. A suspend report counts only as
   the answer to the question the shell just asked that webview (a nonce). No fs, no generic
   window API, and **no `core:*` permission** (a unit test holds the line): `core:event`
   would let a page listen, and an event emitted to `EventTarget::Any` reaches every
@@ -633,12 +633,56 @@ themed min/max/close off-screen). The minimum is 760×480, also shrunk to fit.
 ## Updates
 
 A stable GitHub Release carries `latest.json` plus minisign signatures of the AppImage,
-the universal `.app.tar.gz`, and the NSIS installer. The running app checks
-`/releases/latest/download/latest.json` (Settings → Profile, or the launcher), verifies
-the payload against the pubkey in `tauri.conf.json`, replaces itself, and relaunches. The
-check is bounded at 10 s (the plugin's default is no bound); the install is not, because the
-plugin applies one timeout to the check and to the whole download.
-RCs do not publish `latest.json` — `/releases/latest` is GitHub's stable pointer.
+the universal `.app.tar.gz`, and the NSIS installer. The running app reads
+`/releases/latest/download/latest.json`, verifies the payload against the pubkey in
+`tauri.conf.json`, replaces itself, and relaunches. The check is bounded at 10 s (the
+plugin's default is no bound); the install is not, because the plugin applies one timeout to
+the check and to the whole download. RCs do not publish `latest.json` — `/releases/latest`
+is GitHub's stable pointer.
+
+**The update chip** (`src-tauri/src/update.rs`). Nobody had to find "Check for updates"
+for the app to learn about a release: the shell checks on its own, 30 s after launch (after
+the launch-time loads) and then every 6 hours by the wall clock, so a laptop that slept
+through the interval checks when it wakes; an hour after a check that failed. A failed
+background check is a log line, never a chip. A dev build never checks on its own (its
+version is the decorative one in `tauri.conf.json`). The check runs on a tokio worker, and
+everything it changes on screen is a main-thread turn of its own. When the feed has a newer
+version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and **Later**:
+
+- **On the launcher** it is a toast in the corner (`UpdateChip.svelte`), from the snapshot
+  (`ShellSnapshot.update`).
+- **Over an instance** the shell evaluates the same chip into the page (`update::chip_js`):
+  a shadow root on `<html>`, bottom right, styled from a constructed stylesheet (no inline
+  `<style>` a page CSP could refuse), text set as text, never focused. It is the shell's,
+  not the instance UI's, because the instance webview fills the window and its UI is on its
+  own release cadence: a chip that went through the desktop bridge into ui's toast stack
+  would show only on instances already running this release, and nowhere while the page is
+  half up. A native OS banner was the other way, and it is worse at this: it needs the OS's
+  permission (macOS asks first), Windows routes only its button and loses the click after a
+  restart, and a banner cannot hold a Later that every view honours. The chip is re-added
+  when a page loads (`on_page_load`), and only to a page on the instance's own origin, never
+  to a sign-in provider the page went to.
+- **Later** puts that version off for 24 hours, in `settings.json`
+  (`updateSnooze: {version, untilMs}`): the chip comes down in every view at once, and a
+  relaunch keeps it put off. A newer version than the one put off is offered at once. A
+  snooze that ends more than a day out (the clock went back, a hand-edited file) has run out.
+- **Update** is `install_update`. The chip says the install is running and, if it fails,
+  why, in a sentence, in every view (a second click while it runs is refused). On success
+  Talaria restarts: on Linux and macOS through the app's own exit, so every page is
+  remembered and the single-instance name is free first; on Windows the NSIS installer runs
+  passively (`installMode`), and relaunches the app when it is done.
+
+**No Update where the updater cannot replace the copy.** The feed has one Linux entry, the
+AppImage, and one Windows entry, the NSIS setup, and the updater falls back to them for
+every bundle. A deb or rpm install would download the AppImage and refuse it ("invalid
+updater binary format", after the whole download), the pacman package and the Flatpak are
+read-only, and an `.msi` install would get a second, per-user NSIS copy beside it while its
+Start-menu entry kept the old one. So Update is offered only to an AppImage (`$APPIMAGE`,
+as the updater itself reads it), the NSIS install, and the macOS app (not one running from
+its disk image or a quarantine copy, which it cannot replace). Everywhere else the chip, the
+launcher's Check for updates and Settings → Desktop say how to update instead — the new
+package or `.msi` from the Releases page — and the chip offers Later only; `install_update`
+refuses with the same sentence, for an older instance UI that still shows Install.
 
 Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
 means installed copies can no longer verify a new payload. OS code signing

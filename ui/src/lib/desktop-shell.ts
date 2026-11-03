@@ -79,6 +79,11 @@ export async function shellDesktopWindow(action: DesktopWindowAction): Promise<v
 export interface DesktopUpdate {
   version: string
   notes: string | null
+  /** `elsewhere`: this copy cannot update itself (a Linux package, an .msi
+   *  install), and `how` says what does. Absent: an older shell, which
+   *  offers the install everywhere. */
+  install?: 'updater' | 'elsewhere'
+  how?: string
 }
 
 export async function shellCheckForUpdate(): Promise<DesktopUpdate | null> {

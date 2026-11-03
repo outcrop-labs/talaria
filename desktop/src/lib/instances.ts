@@ -59,6 +59,23 @@ export interface ShellSnapshot {
   muted?: string[]
   /** Each instance's unread count (For you), by local id. */
   unread?: Record<string, number>
+  /** The update chip: a newer Talaria Desktop nobody put off (update.rs).
+   *  Absent: a shell that predates the chip. */
+  update?: UpdateOffer | null
+}
+
+/** The update chip's offer, the same in every view (src-tauri/src/update.rs
+ *  `Offer`). */
+export interface UpdateOffer {
+  version: string
+  /** `updater`: Update installs it here. `elsewhere`: `how` says what does
+   *  (a Linux package, an .msi install). */
+  install: 'updater' | 'elsewhere'
+  how?: string
+  /** An install is running. */
+  busy: boolean
+  /** The last install failed, in a sentence. */
+  error?: string
 }
 
 /** What closing the window does: hide to the tray (Linux) or the menu bar
@@ -119,6 +136,9 @@ export const desktopWindow = (action: DesktopWindowAction) =>
 export interface DesktopUpdate {
   version: string
   notes: string | null
+  /** `elsewhere`: this copy cannot update itself; `how` says what does. */
+  install?: 'updater' | 'elsewhere'
+  how?: string
 }
 
 export const checkForUpdate = () => invoke<DesktopUpdate | null>('check_for_update')
@@ -131,6 +151,9 @@ export const requestNotifications = () => invoke<NotificationStatus>('desktop_no
 export const quit = () => invoke<void>('desktop_quit')
 
 export const installUpdate = () => invoke<void>('install_update')
+
+/** The update chip's Later: the version on offer is put off for a day. */
+export const snoozeUpdate = () => invoke<void>('snooze_update')
 
 /** Strip an invoke rejection down to the message the shell sent. */
 export const errorText = (e: unknown): string =>

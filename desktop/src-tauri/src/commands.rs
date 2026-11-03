@@ -33,11 +33,10 @@ use tauri::{
     AppHandle, Emitter, EventTarget, Manager, Webview, WebviewBuilder, WebviewUrl, Window,
     window::Color,
 };
-use tauri_plugin_updater::UpdaterExt;
 
 use crate::{
     AddAttempt, LoadFailure, ShellState, Suspended, View, beacon, layout, notify, registry,
-    registry::Instance, settings, suspend, watch,
+    registry::Instance, settings, suspend, update, watch,
 };
 
 /// The launcher's ground (`--color-ground` in desktop/src/app.css), painted by
@@ -53,11 +52,6 @@ pub const STATE_EVENT: &str = "shell-state";
 
 /// What an add that the person cancelled answers.
 pub const CANCELLED: &str = "cancelled";
-
-/// The update check's bound. GitHub answers in about a second and a half; the
-/// plugin's default is no bound at all, which was 30 s of a disabled button
-/// on a network that drops packets.
-const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long `desktop_notify` waits for the OS notification service before it
 /// answers the page anyway. The post keeps going on its own task, and the
@@ -252,6 +246,8 @@ pub struct ShellSnapshot {
     /// Each instance's unread count (its share of the badge: For you), by
     /// local id; an instance with none is absent.
     pub unread: BTreeMap<String, u32>,
+    /// The update chip (update.rs): a newer version nobody put off.
+    pub update: Option<update::Offer>,
 }
 
 fn snapshot(app: &AppHandle) -> ShellSnapshot {
@@ -309,6 +305,7 @@ fn snapshot(app: &AppHandle) -> ShellSnapshot {
         background: crate::background::mode(app).as_str(),
         muted,
         unread,
+        update: update::current(app),
     }
 }
 
@@ -1027,6 +1024,28 @@ fn live_instances(window: &Window) -> Vec<(String, Webview)> {
         .collect()
 }
 
+/// The instance webviews that show a page on their own instance's origin: the
+/// ones the shell may hand a script of its own (update::push). A webview that
+/// followed a link elsewhere (a sign-in provider) is left alone.
+pub(crate) fn instance_pages(app: &AppHandle) -> Vec<Webview> {
+    let Ok(window) = main_window(app) else {
+        return Vec::new();
+    };
+    let state = app.state::<ShellState>();
+    live_instances(&window)
+        .into_iter()
+        .filter(|(id, webview)| on_own_origin(&state, id, webview))
+        .map(|(_, webview)| webview)
+        .collect()
+}
+
+fn on_own_origin(state: &ShellState, id: &str, webview: &Webview) -> bool {
+    let (Ok(instance), Ok(page)) = (state.find(id), webview.url()) else {
+        return false;
+    };
+    url::Url::parse(&instance.url).is_ok_and(|base| base.origin() == page.origin())
+}
+
 /// Minimized or hidden — not merely unfocused.
 ///
 /// The shell's own minimize counts until the window is focused again (GTK on
@@ -1506,76 +1525,28 @@ pub fn desktop_window(app: AppHandle, action: WindowAction) -> Result<(), String
     Ok(())
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateInfo {
-    pub version: String,
-    pub notes: Option<String>,
-}
-
-/// An updater failure in words: a timeout says so, a transport error says
-/// which (beacon::classify), and the rest keep the plugin's own text.
-fn update_failure(e: tauri_plugin_updater::Error) -> String {
-    match e {
-        tauri_plugin_updater::Error::Reqwest(e) => {
-            let host = e
-                .url()
-                .and_then(|u| u.host_str().map(str::to_string))
-                .unwrap_or_else(|| "the update server".into());
-            if e.is_timeout() {
-                format!(
-                    "Could not check for updates: {host} did not answer within {} seconds",
-                    UPDATE_CHECK_TIMEOUT.as_secs()
-                )
-            } else {
-                let url = e
-                    .url()
-                    .cloned()
-                    .unwrap_or_else(|| "https://github.com".parse().unwrap());
-                format!(
-                    "Could not check for updates: {}",
-                    beacon::classify(&e).reason(&url)
-                )
-            }
-        }
-        other => format!("Could not check for updates: {other}"),
-    }
-}
-
 /// Compare this build to GitHub's latest stable `latest.json`. None means
-/// this version is current (or the endpoint had nothing newer).
+/// this version is current (or the endpoint had nothing newer). What it finds
+/// is the update chip's offer too (update.rs).
 #[tauri::command]
-pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
-    let updater = app
-        .updater_builder()
-        .timeout(UPDATE_CHECK_TIMEOUT)
-        .build()
-        .map_err(|e| format!("updater: {e}"))?;
-    match updater.check().await {
-        Ok(Some(update)) => Ok(Some(UpdateInfo {
-            version: update.version,
-            notes: update.body,
-        })),
-        Ok(None) => Ok(None),
-        Err(e) => Err(update_failure(e)),
-    }
+pub async fn check_for_update(app: AppHandle) -> Result<Option<update::UpdateInfo>, String> {
+    update::check_now(&app).await
 }
 
-/// Download the latest signed payload, apply it, and relaunch. The updater
-/// verifies the minisign signature against the pubkey in tauri.conf.json
-/// before touching the install. No short bound here: the download is the
-/// whole installer, and the plugin applies one timeout to check and download.
+/// Download the latest signed payload, apply it, and relaunch (update.rs).
+/// A copy the updater cannot replace (a Linux package, an `.msi` install)
+/// answers how to update it instead.
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
-    let updater = app.updater().map_err(|e| format!("updater: {e}"))?;
-    let Some(update) = updater.check().await.map_err(update_failure)? else {
-        return Err("already on the latest version".into());
-    };
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| format!("installing the update: {e}"))?;
-    app.restart();
+    update::install(&app).await
+}
+
+/// The update chip's Later: the version on offer is put off for a day, in
+/// every view (update.rs). Async, so the settings write and the push to the
+/// pages run off the caller's IPC callback.
+#[tauri::command]
+pub async fn snooze_update(app: AppHandle) -> Result<(), String> {
+    update::snooze(&app)
 }
 
 /// What the person calls the instance behind a webview label, for the banner:
@@ -2022,14 +1993,20 @@ fn prewarm(app: &AppHandle, id: &str) {
     }
 }
 
-/// A page finished loading. One loaded hidden at launch is asked now
-/// whether it can go (the tick would ask within five seconds anyway).
+/// A page finished loading: it gets the update chip if one is on offer, and
+/// one loaded hidden at launch is asked now whether it can go (the tick would
+/// ask within five seconds anyway).
 fn page_loaded(app: &AppHandle, id: &str) {
     let app = app.clone();
     let id = id.to_string();
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         let state = handle.state::<ShellState>();
+        if let Some(webview) = handle.get_webview(&instance_label(&id))
+            && on_own_origin(&state, &id, &webview)
+        {
+            update::page_loaded(&handle, &webview);
+        }
         if !state.activity.lock().unwrap().prewarm_loaded(&id) {
             return;
         }

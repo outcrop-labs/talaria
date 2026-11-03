@@ -20,6 +20,7 @@ fn main() {
             "desktop_window",
             "check_for_update",
             "install_update",
+            "snooze_update",
             "desktop_notify",
             "desktop_notification_status",
             "desktop_notification_request",
