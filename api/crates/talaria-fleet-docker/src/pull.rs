@@ -21,13 +21,23 @@
 //   going for the next.
 // - Progress is compose's own: `--progress json` streams an event per layer
 //   update, bytes included ([`Tally`]), which the hire shows as its phase so
-//   a long download never reads as a stall.
+//   a long download never reads as a stall. Pinned against the real output
+//   of compose v5.5.1 (this host) and v2.31.0 (the production image's
+//   Alpine package), which differ in their fields.
+//
+// Per SERVICE, not per image: two agents hired at once run two `compose
+// pull`s, and the daemon downloads each layer once for both (measured: 1,001
+// MB through the registry for two hires of a 1 GB layer). And an END is not
+// kept: a pull that finished is gone from the map, so the next asker starts a
+// fresh `--policy missing` pull — a no-op once the image is there, a fresh
+// try after a failure (which resumes what had arrived, on a containerd image
+// store).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
@@ -206,23 +216,55 @@ impl Tally {
 static PULLS: LazyLock<Mutex<HashMap<String, watch::Receiver<PullStatus>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// What one pull runs, and how long it may go quiet or last. The real one is
+/// compose's ([`PullCmd::compose`]); a test's is a script.
+pub(crate) struct PullCmd {
+    program: String,
+    args: Vec<String>,
+    silence: Duration,
+    ceiling: Duration,
+    /// The quiet pull to fall back to on a compose too old for
+    /// `--progress json` or `--policy`; none for a test's script.
+    fallback: Option<Vec<String>>,
+}
+
+impl PullCmd {
+    fn compose(svc: &str) -> PullCmd {
+        PullCmd {
+            program: "docker".into(),
+            args: super::compose_args(&["--progress", "json", "pull", "--policy", "missing", svc]),
+            silence: PULL_SILENCE,
+            ceiling: PULL_CEILING,
+            fallback: Some(super::compose_args(&[
+                "pull", "--policy", "missing", "--quiet", svc,
+            ])),
+        }
+    }
+}
+
 /// Join the pull of `svc`'s image in flight in this process, or start one on
 /// a task of its own.
 pub(crate) fn join(svc: &str) -> watch::Receiver<PullStatus> {
+    join_with(svc, || PullCmd::compose(svc))
+}
+
+/// [`join`] for any command, keyed by `key`.
+fn join_with(key: &str, cmd: impl FnOnce() -> PullCmd) -> watch::Receiver<PullStatus> {
     let mut pulls = PULLS.lock().unwrap_or_else(|p| p.into_inner());
     // Still running, and its task still holds the sender: a task that died
     // without an answer leaves `Running` behind, which is not a pull to join.
-    if let Some(rx) = pulls.get(svc)
+    if let Some(rx) = pulls.get(key)
         && matches!(*rx.borrow(), PullStatus::Running(_))
         && rx.has_changed().is_ok()
     {
         return rx.clone();
     }
     let (tx, rx) = watch::channel(PullStatus::Running(PullProgress::starting()));
-    pulls.insert(svc.to_string(), rx.clone());
-    let svc = svc.to_string();
+    pulls.insert(key.to_string(), rx.clone());
+    let key = key.to_string();
+    let cmd = cmd();
     tokio::spawn(async move {
-        let end = match run(&svc, &tx).await {
+        let end = match run(&key, cmd, &tx).await {
             Ok(()) => PullStatus::Done,
             Err(e) => {
                 tracing::warn!("[fleet] {e}");
@@ -232,10 +274,10 @@ pub(crate) fn join(svc: &str) -> watch::Receiver<PullStatus> {
         tx.send_replace(end);
         let mut pulls = PULLS.lock().unwrap_or_else(|p| p.into_inner());
         if pulls
-            .get(&svc)
+            .get(&key)
             .is_some_and(|rx| rx.same_channel(&tx.subscribe()))
         {
-            pulls.remove(&svc);
+            pulls.remove(&key);
         }
     });
     rx
@@ -267,13 +309,46 @@ pub(crate) async fn wait(
     }
 }
 
-/// The pull itself: `compose pull --policy missing` for the service, with
-/// compose's json progress read line by line into the channel.
-async fn run(svc: &str, tx: &watch::Sender<PullStatus>) -> Result<(), String> {
-    let fail = |why: String| format!("could not pull the image for {svc}: {why}");
-    let args = super::compose_args(&["--progress", "json", "pull", "--policy", "missing", svc]);
-    let mut child = tokio::process::Command::new("docker")
-        .args(&args)
+/// Feed one stream's lines into `tx` — lossily, so a byte that is not UTF-8
+/// costs that line, not the rest of the stream (a reader that stopped would
+/// leave the pipe undrained and the CLI blocked on it).
+fn feed(
+    stream: impl AsyncRead + Send + Unpin + 'static,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stream);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let line = String::from_utf8_lossy(&buf).trim_end().to_string();
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// What ended one wait of the read loop.
+enum Heard {
+    Line(String),
+    Closed,
+    Exited(std::io::Result<std::process::ExitStatus>),
+    Quiet,
+}
+
+/// The pull itself: `compose pull --policy missing` for the service (or a
+/// test's command), with its json progress read line by line into the
+/// channel. `label` names it in the error.
+async fn run(label: &str, cmd: PullCmd, tx: &watch::Sender<PullStatus>) -> Result<(), String> {
+    let fail = |why: String| format!("could not pull the image for {label}: {why}");
+    let mut child = tokio::process::Command::new(&cmd.program)
+        .args(&cmd.args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -281,30 +356,14 @@ async fn run(svc: &str, tx: &watch::Sender<PullStatus>) -> Result<(), String> {
         .spawn()
         .map_err(|e| fail(format!("docker compose …: {e}")))?;
     // Both streams, merged into one line feed: compose's events and its
-    // errors do not agree on which one they use.
+    // errors do not agree on which one they use (v5.5.1 and v2.31.0 both
+    // write the json to stderr).
     let (lines_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
-    for stream in [
-        child
-            .stdout
-            .take()
-            .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
-        child
-            .stderr
-            .take()
-            .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let lines_tx = lines_tx.clone();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stream).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                if lines_tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
+    if let Some(out) = child.stdout.take() {
+        feed(out, lines_tx.clone());
+    }
+    if let Some(err) = child.stderr.take() {
+        feed(err, lines_tx.clone());
     }
     drop(lines_tx);
 
@@ -315,57 +374,82 @@ async fn run(svc: &str, tx: &watch::Sender<PullStatus>) -> Result<(), String> {
     let mut tally = Tally::default();
     // What compose said that was not progress — its error, when it fails.
     let mut said: Vec<String> = Vec::new();
-    loop {
-        let left = PULL_CEILING.saturating_sub(started.elapsed());
-        match tokio::time::timeout(PULL_SILENCE.min(left), lines.recv()).await {
-            Ok(Some(line)) => {
-                if tally.see(&line) {
-                    tx.send_replace(PullStatus::Running(tally.progress(started)));
-                } else if let Some(text) = said_of(&line) {
-                    if said.len() == 8 {
-                        said.remove(0);
-                    }
-                    said.push(text);
-                }
+    let hear = |line: String, tally: &mut Tally, said: &mut Vec<String>| {
+        if tally.see(&line) {
+            tx.send_replace(PullStatus::Running(tally.progress(started)));
+        } else if let Some(text) = said_of(&line) {
+            if said.len() == 8 {
+                said.remove(0);
             }
-            Ok(None) => break,
-            Err(_) => {
+            said.push(text);
+        }
+    };
+    let status = loop {
+        let left = cmd.ceiling.saturating_sub(started.elapsed());
+        let by_ceiling = left < cmd.silence;
+        let heard = tokio::select! {
+            line = lines.recv() => match line {
+                Some(line) => Heard::Line(line),
+                None => Heard::Closed,
+            },
+            status = child.wait() => Heard::Exited(status),
+            _ = tokio::time::sleep(cmd.silence.min(left)) => Heard::Quiet,
+        };
+        match heard {
+            Heard::Line(line) => hear(line, &mut tally, &mut said),
+            // Both pipes closed: the CLI is ending — wait for it, bounded.
+            Heard::Closed => {
+                break tokio::time::timeout(Duration::from_secs(30), child.wait())
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(std::io::Error::other(
+                            "did not exit after closing its output",
+                        ))
+                    });
+            }
+            // It exited: what it already wrote is still worth reading.
+            Heard::Exited(status) => {
+                while let Ok(Some(line)) =
+                    tokio::time::timeout(Duration::from_secs(2), lines.recv()).await
+                {
+                    hear(line, &mut tally, &mut said);
+                }
+                break status;
+            }
+            Heard::Quiet => {
                 let _ = child.start_kill();
-                let _ = child.wait().await;
-                return Err(fail(if left <= PULL_SILENCE {
+                let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+                let silence_min = cmd.silence.as_secs() / 60;
+                return Err(fail(if by_ceiling {
                     format!(
-                        "it was still going after {} min, and was stopped",
-                        PULL_CEILING.as_secs() / 60
+                        "it ran past its {}-min ceiling and was stopped — {}",
+                        cmd.ceiling.as_secs() / 60,
+                        tally.progress(started).phase()
                     )
                 } else if tally.layers.is_empty() {
                     format!(
-                        "docker never started the download (nothing from docker for {} min)",
-                        PULL_SILENCE.as_secs() / 60
+                        "docker never started the download (nothing from docker for {silence_min} min)"
                     )
                 } else {
                     format!(
-                        "the download stopped making progress (nothing from docker for {} min) — {}",
-                        PULL_SILENCE.as_secs() / 60,
+                        "the download stopped making progress (nothing from docker for {silence_min} min) — {}",
                         tally.progress(started).phase()
                     )
                 }));
             }
         }
-    }
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| fail(format!("docker compose …: {e}")))?;
+    };
+    let status = status.map_err(|e| fail(format!("docker compose …: {e}")))?;
     if status.success() {
         return Ok(());
     }
     let why = said.join(" ");
-    // A compose too old for `--policy` (before v2.22) or `--progress json`:
-    // the quiet pull this replaced, under its old deadline — and with no
+    // A compose too old for `--policy` (before v2.22) or for `--progress json`
+    // (before v2.29, which says `unsupported --progress value "json"`): the
+    // quiet pull this replaced, under its old deadline — and with no
     // `--policy` at all, `up` pulls a missing image itself, just without the
     // early, clean failure.
-    if why.contains("unknown flag") || (why.contains("progress") && why.contains("invalid")) {
-        let quiet = super::compose_args(&["pull", "--policy", "missing", "--quiet", svc]);
+    if let Some(quiet) = cmd.fallback.as_ref().filter(|_| is_too_old(&why)) {
         let refs: Vec<&str> = quiet.iter().map(String::as_str).collect();
         return match super::docker(&refs, Duration::from_secs(1_200)).await {
             Ok(_) => Ok(()),
@@ -383,6 +467,14 @@ async fn run(svc: &str, tx: &watch::Sender<PullStatus>) -> Result<(), String> {
     )))
 }
 
+/// Whether compose refused the pull's flags rather than the pull: too old for
+/// `--policy` or for the `json` progress mode.
+fn is_too_old(said: &str) -> bool {
+    said.contains("unknown flag")
+        || said.contains("unsupported --progress")
+        || (said.contains("progress") && said.contains("invalid"))
+}
+
 /// The words in a line compose printed that was not a layer's progress: a
 /// json event's own text and error, or the plain line.
 fn said_of(line: &str) -> Option<String> {
@@ -392,14 +484,19 @@ fn said_of(line: &str) -> Option<String> {
     }
     match serde_json::from_str::<serde_json::Value>(line) {
         Ok(serde_json::Value::Object(ev)) => {
+            let field = |k: &str| ev.get(k).and_then(|v| v.as_str()).unwrap_or("");
+            // v5.5.1 marks a failed resource `status: "Error"`; v2.31.0 marks
+            // it `text: "Error"` and puts the reason in `status`; both end
+            // with `{"error": true, "message": …}`.
             let errored = ev.get("error").and_then(|v| v.as_bool()).unwrap_or(false)
-                || ev.get("status").and_then(|v| v.as_str()) == Some("Error");
+                || field("status") == "Error"
+                || field("text") == "Error";
             if !errored {
                 return None;
             }
-            let text = ["details", "text", "message", "status"]
+            let text = ["message", "details", "status", "text"]
                 .iter()
-                .filter_map(|k| ev.get(*k).and_then(|v| v.as_str()))
+                .map(|k| field(k))
                 .find(|s| !s.is_empty() && *s != "Error")
                 .unwrap_or("error");
             Some(text.to_string())
@@ -522,5 +619,208 @@ mod tests {
             ),
             Some("manifest unknown".into())
         );
+    }
+    #[test]
+    fn compose_2_31_s_json_events_read_as_layers_and_its_error_is_kept() {
+        // Verbatim from compose v2.31.0 — the production api image's Alpine
+        // 3.21 `docker-cli-compose` — pulling through docker 29.8.1: a
+        // layer's parent is the SERVICE, `status` carries the bar text, and a
+        // failed service says `text: "Error"` with the reason in `status`.
+        let start = Instant::now();
+        let mut t = Tally::default();
+        for (line, layer) in [
+            (r#"{"id":"agent-ok","text":"Pulling"}"#, false),
+            (
+                r#"{"id":"034d6572bf28","parent_id":"agent-ok","text":"Pulling fs layer"}"#,
+                true,
+            ),
+            (
+                r#"{"id":"034d6572bf28","parent_id":"agent-ok","text":"Downloading","status":"[=======================>                           ]  1.049MB/2.206MB","current":1048576,"total":2206402,"percent":47}"#,
+                true,
+            ),
+        ] {
+            assert_eq!(t.see(line), layer, "{line}");
+            assert_eq!(said_of(line), None, "{line}");
+        }
+        assert_eq!(t.progress(start).downloaded, 1_048_576);
+        for line in [
+            r#"{"id":"034d6572bf28","parent_id":"agent-ok","text":"Download complete","percent":100}"#,
+            r#"{"id":"034d6572bf28","parent_id":"agent-ok","text":"Extracting","status":"1 s","current":1}"#,
+        ] {
+            assert!(t.see(line));
+        }
+        assert!(t.progress(start).unpacking);
+        assert!(t.see(
+            r#"{"id":"034d6572bf28","parent_id":"agent-ok","text":"Pull complete","percent":100}"#
+        ));
+        assert!(!t.see(r#"{"id":"agent-ok","text":"Pulled"}"#));
+        let p = t.progress(start);
+        assert_eq!((p.downloaded, p.layers_ready, p.layers), (2_206_402, 1, 1));
+
+        let service_error = r#"{"id":"agent-bad","text":"Error","status":"failed to resolve reference \"docker.io/library/busybox:talaria-no-such-tag\": docker.io/library/busybox:talaria-no-such-tag: not found"}"#;
+        let final_error = r#"{"error":true,"message":"Error response from daemon: failed to resolve reference \"docker.io/library/busybox:talaria-no-such-tag\": docker.io/library/busybox:talaria-no-such-tag: not found"}"#;
+        assert!(!t.see(service_error) && !t.see(final_error));
+        assert_eq!(
+            said_of(service_error).as_deref(),
+            Some(
+                "failed to resolve reference \"docker.io/library/busybox:talaria-no-such-tag\": docker.io/library/busybox:talaria-no-such-tag: not found"
+            )
+        );
+        assert!(
+            said_of(final_error)
+                .unwrap()
+                .starts_with("Error response from daemon: failed to resolve")
+        );
+    }
+
+    #[test]
+    fn a_compose_too_old_for_the_pull_s_flags_is_told_from_a_failed_pull() {
+        assert!(is_too_old("unknown flag: --policy"));
+        assert!(is_too_old("unsupported --progress value \"json\""));
+        assert!(is_too_old("invalid progress mode json"));
+        assert!(!is_too_old("Error response from daemon: manifest unknown"));
+        assert!(!is_too_old(""));
+    }
+
+    // ── The shared pull, driven by a script in place of compose ─────────────
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("talaria-pull-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    fn sh(script: String, silence: Duration) -> PullCmd {
+        PullCmd {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            silence,
+            ceiling: Duration::from_secs(60),
+            fallback: None,
+        }
+    }
+
+    fn runs(file: &std::path::Path) -> usize {
+        std::fs::read_to_string(file)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    const LAYER: &str =
+        r#"{"id":"aa","parent_id":"svc","text":"Downloading","current":5000000,"total":10000000}"#;
+
+    #[tokio::test]
+    async fn askers_share_one_pull_and_one_who_comes_after_its_end_starts_another() {
+        let count = scratch("share");
+        let script = format!(
+            "echo run >> {c}; echo '{LAYER}' >&2; sleep 1; echo '{{\"id\":\"aa\",\"parent_id\":\"svc\",\"text\":\"Pull complete\"}}' >&2",
+            c = count.display()
+        );
+        let key = "test-share";
+        let a = join_with(key, || sh(script.clone(), Duration::from_secs(30)));
+        let b = join_with(key, || panic!("a second asker must join, not start a pull"));
+        assert!(a.same_channel(&b));
+        assert_eq!(wait(a, None).await, PullStatus::Done);
+        assert_eq!(wait(b, None).await, PullStatus::Done);
+        assert_eq!(runs(&count), 1, "one pull for both");
+        // The end is not kept: the next asker starts a fresh pull.
+        let c = join_with(key, || sh(script.clone(), Duration::from_secs(30)));
+        assert_eq!(wait(c, None).await, PullStatus::Done);
+        assert_eq!(runs(&count), 2);
+        let _ = std::fs::remove_file(&count);
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_stops_waiting_leaves_the_pull_going() {
+        let done = scratch("drop");
+        let script = format!(
+            "echo '{LAYER}' >&2; sleep 2; echo done > {d}",
+            d = done.display()
+        );
+        let key = "test-drop";
+        let rx = join_with(key, || sh(script, Duration::from_secs(30)));
+        // A slice that ends mid-pull answers what has arrived so far…
+        let early = wait(rx.clone(), Some(Duration::from_millis(1_200))).await;
+        let PullStatus::Running(p) = early else {
+            panic!("still running after 1.2 s: {early:?}")
+        };
+        assert_eq!(p.downloaded, 5_000_000);
+        // …and a caller whose wait is dropped outright cancels nothing.
+        let dropped = tokio::spawn(wait(rx.clone(), None));
+        dropped.abort();
+        drop(rx);
+        let again = join_with(key, || panic!("still running: must be joined"));
+        assert_eq!(wait(again, None).await, PullStatus::Done);
+        assert_eq!(std::fs::read_to_string(&done).unwrap().trim(), "done");
+        let _ = std::fs::remove_file(&done);
+    }
+
+    #[tokio::test]
+    async fn a_failed_pull_answers_compose_s_own_reason() {
+        let script = r#"echo '{"id":"svc","text":"Error","status":"manifest unknown"}' >&2; echo '{"error":true,"message":"Error response from daemon: manifest unknown"}' >&2; exit 18"#;
+        let end = wait(
+            join_with("test-fail", || sh(script.into(), Duration::from_secs(30))),
+            None,
+        )
+        .await;
+        let PullStatus::Failed(e) = end else {
+            panic!("expected a failure: {end:?}")
+        };
+        assert!(
+            e.starts_with(
+                "could not pull the image for test-fail: docker compose failed: manifest unknown"
+            ),
+            "{e}"
+        );
+        assert!(
+            e.contains("Error response from daemon: manifest unknown"),
+            "{e}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pull_docker_goes_quiet_on_is_stopped_and_says_which_quiet_it_was() {
+        let never = wait(
+            join_with("test-never", || {
+                sh("sleep 30".into(), Duration::from_millis(500))
+            }),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(&never, PullStatus::Failed(e) if e.contains("docker never started the download")),
+            "{never:?}"
+        );
+        let stalled = wait(
+            join_with("test-stalled", || {
+                sh(
+                    format!("echo '{LAYER}' >&2; sleep 30"),
+                    Duration::from_millis(500),
+                )
+            }),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(&stalled, PullStatus::Failed(e) if e.contains("the download stopped making progress") && e.contains("5 MB so far")),
+            "{stalled:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pull_whose_task_died_without_an_answer_is_not_joined() {
+        let key = "test-dead";
+        let (tx, rx) = watch::channel(PullStatus::Running(PullProgress::starting()));
+        drop(tx);
+        PULLS.lock().unwrap().insert(key.to_string(), rx.clone());
+        // Its waiter hears the end it never got…
+        assert!(
+            matches!(wait(rx.clone(), None).await, PullStatus::Failed(e) if e.contains("without an answer"))
+        );
+        // …and the next asker starts a pull of its own.
+        let fresh = join_with(key, || sh("true".into(), Duration::from_secs(30)));
+        assert!(!fresh.same_channel(&rx));
+        assert_eq!(wait(fresh, None).await, PullStatus::Done);
     }
 }

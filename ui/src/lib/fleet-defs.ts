@@ -245,6 +245,9 @@ export interface ReconcileResult {
   started?: string[]
   alreadyRunning?: string[]
   warnings?: string[]
+  /** Still starting past the route's answer bound (a cold host downloads the
+   *  agent image first); the roster shows each agent as it comes up. */
+  pending?: boolean
   error?: string
 }
 
@@ -536,15 +539,19 @@ export async function retryFleetHire(id: string): Promise<{ ok?: boolean; hire?:
   }
 }
 
-/** The hires the roster's strip shows. A failed hire's row stays for the
- *  hires window so its sentence can be read and retried — but not once it is
- *  answered: a newer hire of the same agent (its Retry, or a fresh hire of the
- *  handle) is the row to watch, and an agent that runs (Start pressed on it, or
- *  a boot that landed after the run gave up) has its answer on the tile. */
-export function hiresToShow(hires: AgentHire[], runningDepartments: Set<string>): AgentHire[] {
+/** The hires the roster's strip shows. A failed hire's row stays so its
+ *  sentence can be read and retried — the server keeps an unanswered one
+ *  listed whatever its age, so a draft left by a hire that failed before an
+ *  upgrade still has its Retry — but not once it is answered: a newer hire of
+ *  the same agent (its Retry, or a fresh hire of the handle) is the row to
+ *  watch, and an agent whose container has RUN (Start pressed on it, or a boot
+ *  that landed after the run gave up — running now or stopped since) is its
+ *  people's to start, not the hire's to retry. `ranDepartments`: departments
+ *  whose container exists in any state but `created`. */
+export function hiresToShow(hires: AgentHire[], ranDepartments: Set<string>): AgentHire[] {
   return hires.filter((h) => {
     if (h.state !== 'error') return true
-    if (runningDepartments.has(h.department)) return false
+    if (ranDepartments.has(h.department)) return false
     return !hires.some((o) => o.id !== h.id && o.slug === h.slug && o.createdAt > h.createdAt)
   })
 }

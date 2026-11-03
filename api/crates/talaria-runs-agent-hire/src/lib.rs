@@ -206,10 +206,10 @@ pub const PULL_SLICE: std::time::Duration = std::time::Duration::from_secs(15);
 /// its card runs the same pull again, which resumes what had arrived.
 pub fn pull_failure_sentence(error: &str) -> String {
     let lower = error.to_lowercase();
-    let what = if lower.contains("toomanyrequests") || lower.contains("rate limit") {
-        "Docker Hub refused the agent image: this server has reached its pull limit. Sign the \
-         server's docker in (docker login) or wait a few hours, then press Retry (or Start on the agent)."
-    } else if lower.contains("no space left on device") {
+    // Most specific first: the error joins up to eight lines compose said,
+    // and an early transient one (a rate-limit retry) must not outrank the
+    // final cause. The two Talaria sentences are matched before docker's.
+    let what = if lower.contains("no space left on device") {
         "The server ran out of disk space downloading the agent image (it needs about 6 GB \
          free). Free some space, then press Retry (or Start on the agent)."
     } else if lower.contains("never started the download") {
@@ -219,6 +219,10 @@ pub fn pull_failure_sentence(error: &str) -> String {
     } else if lower.contains("stopped making progress") {
         "The agent image download stopped making progress. Check the server's connection to \
          the registry, then press Retry (or Start on the agent)."
+    } else if lower.contains("toomanyrequests") || lower.contains("rate limit") {
+        "The registry refused the agent image: this server has reached its pull limit (Docker \
+         Hub limits anonymous pulls per address). Sign the server's docker in (docker login) \
+         or wait a few hours, then press Retry (or Start on the agent)."
     } else {
         "The agent image could not be downloaded. Press Retry (or Start on the agent) to try again."
     };
@@ -230,13 +234,69 @@ pub fn pull_failure_sentence(error: &str) -> String {
 }
 
 /// How long the hire's second `up` waits for a container the first one's
-/// killed CLI asked docker to create to show up (see the up dep).
+/// killed CLI asked docker to create to show up ([`up_with_one_more`]).
 pub const CREATE_LANDS_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The hire's `up`, answered by the container rather than by compose:
+/// - success, or a failure after which the container runs the current render
+///   (`landed`), is success;
+/// - an `up` killed at its deadline that did not land gets ONE more. Measured
+///   under heavy IO: compose had asked for the container and was killed before
+///   the start, the container turned up `Created` a minute later, and a second
+///   `up` sent before docker showed it failed on the name ("Conflict. The
+///   container name … is already in use"). So the second waits up to `within`
+///   for docker to show the container (`seen`: neither absent nor unreadable),
+///   then runs — and starts the `Created` container;
+/// - any other failure is compose's answer, and repeating it would only repeat
+///   it.
+pub async fn up_with_one_more<U, UF, L, LF, S, SF>(
+    up: U,
+    landed: L,
+    seen: S,
+    within: std::time::Duration,
+    poll: std::time::Duration,
+) -> Result<(), String>
+where
+    U: Fn() -> UF,
+    UF: std::future::Future<Output = Result<(), String>>,
+    L: Fn(String) -> LF,
+    LF: std::future::Future<Output = bool>,
+    S: Fn() -> SF,
+    SF: std::future::Future<Output = bool>,
+{
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        match up().await {
+            Ok(()) => return Ok(()),
+            Err(e) if landed(e.clone()).await => {
+                tracing::warn!(
+                    "[fleet] compose reported a failure ({e}), but the container runs the current render — going on"
+                );
+                return Ok(());
+            }
+            Err(e) if tries == 1 && talaria_fleet_docker::is_timeout(&e) => {
+                tracing::warn!("[fleet] up ran out its time and did not land ({e}) — once more");
+                let until = tokio::time::Instant::now() + within;
+                while !seen().await && tokio::time::Instant::now() < until {
+                    tokio::time::sleep(poll).await;
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
 
 /// The sentence a hire whose container would not start fails with — one line,
 /// with docker's own error rather than compose's first line of progress
 /// ("Container … Creating", which is what the run row kept before).
 pub fn boot_failure_sentence(error: &str) -> String {
+    if error.starts_with(talaria_fleet_docker::NOT_STARTED) {
+        // A person stopped or retired the agent while its image downloaded.
+        return "Not started: a stop was asked while the agent image downloaded. Press Start on \
+                the agent when you want it running."
+            .to_string();
+    }
     if error.starts_with("could not pull the image") {
         // A row checkpointed at `boot` before the pull stage pulls in its up.
         return pull_failure_sentence(error);
@@ -570,46 +630,38 @@ pub fn real_agent_hire_deps(state: talaria_state::AppState) -> AgentHireDeps {
                     // failure is compose's answer, and repeating it would
                     // only repeat it.
                     let up = tokio::spawn(async move {
-                        let mut tries = 0;
-                        loop {
-                            tries += 1;
-                            match talaria_fleet_docker::fleet_up(&pg, &department).await {
-                                Ok(_) => return Ok(()),
-                                Err(e)
-                                    if talaria_fleet_docker::up_landed(&pg, &department, &e)
-                                        .await =>
-                                {
-                                    tracing::warn!(
-                                        "[fleet] hire of {department}: compose reported a failure ({e}), but the container runs the current render — going on"
-                                    );
-                                    return Ok(());
+                        let (pg_up, pg_landed, pg_seen) = (pg.clone(), pg.clone(), pg);
+                        let (d_up, d_landed, d_seen) =
+                            (department.clone(), department.clone(), department.clone());
+                        let result = up_with_one_more(
+                            move || {
+                                let (pg, d) = (pg_up.clone(), d_up.clone());
+                                async move {
+                                    talaria_fleet_docker::fleet_up(&pg, &d).await.map(|_| ())
                                 }
-                                Err(e) if tries == 1 && talaria_fleet_docker::is_timeout(&e) => {
-                                    tracing::warn!(
-                                        "[fleet] hire of {department}: up ran out its time and did not land ({e}) — once more"
-                                    );
-                                    // The killed CLI's create may still be
-                                    // landing in the daemon. Measured: a
-                                    // second `up` sent before docker showed
-                                    // the container failed on the name
-                                    // ("Conflict. The container name … is
-                                    // already in use") and the container
-                                    // turned up `Created` a minute later. So
-                                    // wait for docker to show it first.
-                                    let until = tokio::time::Instant::now() + CREATE_LANDS_WITHIN;
-                                    while talaria_fleet_docker::observe(&pg, &department).await
-                                        == talaria_fleet_docker::Observed::Absent
-                                        && tokio::time::Instant::now() < until
-                                    {
-                                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                                    }
+                            },
+                            move |e: String| {
+                                let (pg, d) = (pg_landed.clone(), d_landed.clone());
+                                async move { talaria_fleet_docker::up_landed(&pg, &d, &e).await }
+                            },
+                            move || {
+                                let (pg, d) = (pg_seen.clone(), d_seen.clone());
+                                async move {
+                                    !matches!(
+                                        talaria_fleet_docker::observe(&pg, &d).await,
+                                        talaria_fleet_docker::Observed::Absent
+                                            | talaria_fleet_docker::Observed::Unreadable
+                                    )
                                 }
-                                Err(e) => {
-                                    tracing::warn!("[fleet] hire of {department}: up failed: {e}");
-                                    return Err(e);
-                                }
-                            }
+                            },
+                            CREATE_LANDS_WITHIN,
+                            std::time::Duration::from_secs(3),
+                        )
+                        .await;
+                        if let Err(e) = &result {
+                            tracing::warn!("[fleet] hire of {department}: up failed: {e}");
                         }
+                        result
                     });
                     up.await
                         .unwrap_or_else(|e| Err(format!("the hire's up task failed: {e}")))
@@ -654,11 +706,15 @@ pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
                 })
             }),
             audience: Arc::new(audience),
-            // Boot is the long stage: an up (two minutes at most, its
-            // settle window, and — when it ran out its time without landing
-            // — up to `CREATE_LANDS_WITHIN` for the create to show and a
-            // second up) and waitHealthy's own two-minute window: about ten
-            // minutes in the worst case measured on a saturated disk. The image is already
+            // Boot is the long stage: an up — each pass the network check,
+            // stranded-container cleanup, the browser-engine install, compose
+            // up's two minutes and its settle window — and, when it ran out
+            // its time without landing, up to `CREATE_LANDS_WITHIN` for the
+            // create to show and a second pass, then waitHealthy's two
+            // minutes. Every bound at once comes to about 16 minutes; what was
+            // measured on a saturated disk stayed under ten. A boot past the
+            // ceiling fails the run while its up goes on, and Retry picks the
+            // agent up from there. The image is already
             // on the host by then — the pull stage's steps each wait one
             // `PULL_SLICE` and come back, however long the download takes.
             // The step ceiling clears the worst case rather than the typical
@@ -1142,7 +1198,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.starts_with("Docker Hub refused the agent image"),
+            err.starts_with("The registry refused the agent image"),
             "{err}"
         );
         assert!(err.contains("press Retry (or Start on the agent)"), "{err}");
@@ -1197,6 +1253,82 @@ mod tests {
             err.ends_with("Docker said: Error response from daemon: port is already allocated"),
             "{err}"
         );
+    }
+
+    /// A scripted `up`: each call answers the next of `answers`; `seen`
+    /// turns true at its `seen_after`-th question.
+    async fn drive_up(
+        answers: Vec<Result<(), String>>,
+        landed: bool,
+        seen_after: usize,
+    ) -> (Result<(), String>, usize, usize) {
+        let answers = Arc::new(Mutex::new(answers.into_iter()));
+        let ups = Arc::new(Mutex::new(0usize));
+        let asks = Arc::new(Mutex::new(0usize));
+        let r = up_with_one_more(
+            {
+                let (answers, ups) = (answers.clone(), ups.clone());
+                move || {
+                    *ups.lock().unwrap() += 1;
+                    let next = answers.lock().unwrap().next().expect("one up too many");
+                    async move { next }
+                }
+            },
+            move |_| async move { landed },
+            {
+                let asks = asks.clone();
+                move || {
+                    let mut n = asks.lock().unwrap();
+                    *n += 1;
+                    let seen = *n >= seen_after;
+                    async move { seen }
+                }
+            },
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(1),
+        )
+        .await;
+        let (ups, asks) = (*ups.lock().unwrap(), *asks.lock().unwrap());
+        (r, ups, asks)
+    }
+
+    const TIMED_OUT: &str = "docker compose …: timed out after 120s";
+
+    #[tokio::test]
+    async fn an_up_that_ran_out_its_time_waits_for_the_container_then_runs_once_more() {
+        // Docker shows the container at the third look; the second up starts it.
+        let (r, ups, asks) = drive_up(vec![Err(TIMED_OUT.into()), Ok(())], false, 3).await;
+        assert_eq!(r, Ok(()));
+        assert_eq!((ups, asks), (2, 3));
+        // A second timeout is the answer: no third up.
+        let (r, ups, _) =
+            drive_up(vec![Err(TIMED_OUT.into()), Err(TIMED_OUT.into())], false, 1).await;
+        assert_eq!(r, Err(TIMED_OUT.to_string()));
+        assert_eq!(ups, 2);
+    }
+
+    #[tokio::test]
+    async fn an_up_answered_by_compose_or_by_the_container_is_not_repeated() {
+        // Compose's own error: once, and it is the answer.
+        let conflict = "docker compose failed: port is already allocated".to_string();
+        let (r, ups, asks) = drive_up(vec![Err(conflict.clone())], false, 1).await;
+        assert_eq!((r, ups, asks), (Err(conflict), 1, 0));
+        // A failure after which the container runs the render is success.
+        let (r, ups, _) = drive_up(vec![Err(TIMED_OUT.into())], true, 1).await;
+        assert_eq!((r, ups), (Ok(()), 1));
+    }
+
+    #[test]
+    fn a_full_disk_outranks_an_earlier_rate_limit_line_and_a_stop_is_not_a_failure() {
+        let s = pull_failure_sentence(
+            "could not pull the image for agent-ops: docker compose failed: toomanyrequests: retrying write /var/lib/docker/x: no space left on device",
+        );
+        assert!(s.starts_with("The server ran out of disk space"), "{s}");
+        let stop = boot_failure_sentence(&format!(
+            "{} ops was asked to stop while its image downloaded",
+            talaria_fleet_docker::NOT_STARTED
+        ));
+        assert!(stop.starts_with("Not started: a stop was asked"), "{stop}");
     }
 
     #[test]

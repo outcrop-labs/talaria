@@ -3,6 +3,13 @@
 // the surface to see the transition (and a failure's sentence) before the
 // row goes away.
 //
+// An UNANSWERED failure stays, however old: the newest hire of its handle,
+// failed, with the agent's def still there — a draft its Retry can still
+// finish. Hires that failed before an upgrade (on main, a cold host's first
+// hire always did) are exactly those, and their people had no row to retry
+// from once ten minutes passed. The roster drops such a row once the agent
+// has run (`hiresToShow`), and the retry route refuses one that has.
+//
 // The getter call is for REGISTRATION only: a process that lists hires can
 // also be the process a reclaim sweep asks to resume one, and a kind this
 // route never registered would be a run nothing can drive.
@@ -54,7 +61,13 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
          from runs \
          where kind = 'agent-hire' \
            and (state in ('queued', 'running') \
-                or (state in ('done', 'error') and updated_at > now() - interval '10 minutes')) \
+                or (state in ('done', 'error') and updated_at > now() - interval '10 minutes') \
+                or (state = 'error' \
+                    and exists (select 1 from agent_defs d where d.slug = runs.input->>'slug') \
+                    and not exists (select 1 from runs n where n.kind = 'agent-hire' \
+                                    and n.id <> runs.id \
+                                    and n.input->>'slug' = runs.input->>'slug' \
+                                    and n.created_at >= runs.created_at))) \
          order by created_at desc \
          limit 12",
     )

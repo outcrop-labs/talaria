@@ -266,14 +266,31 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// Bring a department's managed agent up. Answers with compose's stderr
 /// (trimmed), which on success carries its progress/warnings — the run logs
 /// nothing of it.
+///
+/// The image comes first, OUTSIDE the move lock: on a host that lacks it the
+/// download runs to minutes, and a Stop or Retire takes the same lock — held
+/// across the download, it waited out the pull and the `up`, so the agent
+/// started and was then stopped. And a stop asked while the image downloaded
+/// cancels the start ([`NOT_STARTED`]): the person's last word was stop.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
+    let mark = stop_mark(department);
+    pull_agent_image(pg, department).await?;
     // Not mid-way through a legacy agent's move home: wait for one to end,
     // so the `up` addresses wherever the agent is then.
     let _moving = lock_move(department).await;
+    if stopped_since(department, mark) {
+        return Err(format!(
+            "{NOT_STARTED} {department} was asked to stop while its image downloaded"
+        ));
+    }
     compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
         .await
         .map(UpOutcome::into_stderr)
 }
+
+/// How [`fleet_up`]'s error starts when it started nothing because a stop was
+/// asked while the image downloaded — a person's choice, not a failure.
+pub const NOT_STARTED: &str = "not started:";
 
 /// Recreate a department's managed agent IN PLACE — the roll. Compose stops
 /// the running container (SIGTERM, then `stop_grace_period` before a KILL),
@@ -1171,8 +1188,12 @@ async fn compose_up(
 /// it runs on its own task, so this caller going away does not cancel it.
 async fn pull_missing(svc: &str) -> Result<(), String> {
     match pull::wait(pull::join(svc), None).await {
+        PullStatus::Done => Ok(()),
         PullStatus::Failed(e) => Err(e),
-        PullStatus::Done | PullStatus::Running(_) => Ok(()),
+        // `wait` with no bound answers only an end.
+        PullStatus::Running(_) => Err(format!(
+            "could not pull the image for {svc}: the pull answered before it ended"
+        )),
     }
 }
 
@@ -1594,6 +1615,26 @@ pub async fn docker_exec_as(
 /// an old blue/green roll left behind lives in "-b-1" until its next roll).
 /// Resolved per call, never cached: the roll can happen between any two
 /// commands.
+/// Whether a department's managed container has ever started: `Some(false)`
+/// when docker has no such container or only created it (a hire or start that
+/// never got as far as the start), `Some(true)` once it has run — running now,
+/// or stopped since, by a person or on its own — and `None` when docker did
+/// not answer. What a hire's Retry asks before it boots an agent: one that has
+/// run since its hire failed is a person's to start, not the retry's.
+pub async fn has_run(pg: &PgPool, department: &str) -> Option<bool> {
+    let name = managed_container(pg, department).await;
+    match docker(
+        &["inspect", "-f", "{{.State.Status}}", &name],
+        Duration::from_secs(20),
+    )
+    .await
+    {
+        Ok((out, _)) => Some(out.trim() != "created"),
+        Err(e) if e.to_lowercase().contains("no such") => Some(false),
+        Err(_) => None,
+    }
+}
+
 pub async fn managed_container(pg: &PgPool, department: &str) -> String {
     let slot = active_slot(pg, department).await;
     slot_container(department, slot)

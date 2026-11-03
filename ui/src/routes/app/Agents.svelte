@@ -92,11 +92,16 @@
   })
   const byDept = $derived(new Map((containersQuery.data ?? []).map((c) => [c.department, c])))
   // The strip's rows: a failed hire's row (with its Retry) goes once it is
-  // answered — a newer hire of the agent, or the agent running (`hiresToShow`).
+  // answered — a newer hire of the agent, or a container that has run
+  // (`hiresToShow`). A container only `created` is still the hire's draft.
   const stripHires = $derived(
     hiresToShow(
       hiresQuery.data?.hires ?? [],
-      new Set((containersQuery.data ?? []).filter((c) => c.managed?.state === 'running').map((c) => c.department)),
+      new Set(
+        (containersQuery.data ?? [])
+          .filter((c) => c.managed && c.managed.state !== 'created')
+          .map((c) => c.department),
+      ),
     ),
   )
 

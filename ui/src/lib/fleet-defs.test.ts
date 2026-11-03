@@ -228,7 +228,7 @@ describe('hiresToShow', () => {
     const older = hire('0', 'rcone', 'done', '2026-11-02T20:00:00.000Z')
     expect(hiresToShow([failed, older], new Set())).toEqual([failed, older])
   })
-  it('drops a failed hire once its agent runs, and leaves live rows alone', () => {
+  it('drops a failed hire once its agent has run, and leaves live rows alone', () => {
     const failed = hire('1', 'rcone', 'error', '2026-11-02T23:57:44.000Z')
     const other = hire('3', 'fxone', 'running', '2026-11-03T00:31:00.000Z')
     expect(hiresToShow([failed, other], new Set(['rcone', 'fxone']))).toEqual([other])
