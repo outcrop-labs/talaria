@@ -19,7 +19,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_agent_crons::schedule_from_conversation;
+use talaria_agent_crons::{may_still_land, schedule_from_conversation};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
 use talaria_conversations::accessible_conversation;
@@ -120,6 +120,11 @@ pub async fn post(
                 });
                 Json(json!({ "ok": true, "jobId": job_id })).into_response()
             }
+            // A create still running at its deadline, or one the agent took
+            // and never answered, may still make the job: the 503 the fleet
+            // door answers (fleet_agents_id_crons.rs), whose sentence says to
+            // check the list before trying again.
+            Err(e) if may_still_land(&e) => house_error(StatusCode::SERVICE_UNAVAILABLE, &e),
             // Hermes is the validator for the schedule's own grammar and the
             // frequency floor, and its refusal is the one worth reading.
             Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),

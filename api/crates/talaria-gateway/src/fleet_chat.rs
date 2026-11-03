@@ -60,6 +60,12 @@ pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<By
 /// Only silence past this reads as "not serving yet". It is also how long a
 /// let-go completions turn keeps being sent its stop while Hermes cannot
 /// place it yet (fleet_abandoned.rs): the same patience, for the same agent.
+///
+/// It is three times the edge's [`EDGE_CUTOFF`], and that is fine: no
+/// browser waits on it for a first byte. `/api/chat` opens its own answer
+/// within its first-byte bound and keeps it alive while this runs
+/// (talaria-chat-persist `edge`). An app's agent turn waits on it from the
+/// app host, inside the instance, and never through the edge.
 pub const HEADERS_WINDOW: Duration = Duration::from_secs(300);
 /// The bound on a steer or a stop. A control call names a run that is live
 /// at this instant and the container answers it in milliseconds or not at
@@ -80,19 +86,31 @@ pub const HOLD_WINDOW: Duration = Duration::from_secs(120);
 /// ([`TurnAttribution::attended`]: a conversation turn from `/api/chat`, or
 /// one chained from it), when its caller names no window.
 ///
-/// SHORTER, BECAUSE OF THE EDGE. `/api/chat` sends nothing, not even its
-/// headers, until the hold ends: its status is the agent's. Every real
-/// instance sits behind Cloudflare, which answers 524 for a request whose
-/// origin has sent no headers for 100 s. Measured: a chat to a stopped agent
-/// on the two-minute hold had its first byte at 124 s, so behind the edge the
-/// person got a 524 instead of "restarting (or down)". This hold ends by 80 s,
-/// with 15 s to spare for the route's own reads before the turn and the hops
-/// to the edge. A turn nobody waits on keeps [`HOLD_WINDOW`]'s patience.
+/// SHORTER, BECAUSE OF THE EDGE. `/api/chat` used to send nothing, not even
+/// its headers, until the hold ended. Every real instance sits behind
+/// Cloudflare, which answers 524 for a request whose origin has sent no
+/// headers for 100 s. Measured: a chat to a stopped agent on the two-minute
+/// hold had its first byte at 124 s, so behind the edge the person got a 524
+/// instead of "restarting (or down)". This hold ends by 80 s, with 15 s to
+/// spare for the route's own reads before the turn and the hops to the edge.
+/// A turn nobody waits on keeps [`HOLD_WINDOW`]'s patience.
+///
+/// The route now opens its answer within its own first-byte bound however
+/// long the turn takes to open (talaria-chat-persist `edge`), so this bound
+/// is the belt, not the only thing between a person and a 524. It stays at
+/// 80 s on purpose: an agent that comes back 80 to 120 s after a restart
+/// gets the "didn't come back within 80 seconds" reply, where the two-minute
+/// hold waited for it.
 pub const ATTENDED_HOLD: Duration = Duration::from_secs(80);
 
 /// How long Cloudflare's edge waits for a response's headers before it
-/// answers 524 itself.
-const EDGE_CUTOFF: Duration = Duration::from_secs(100);
+/// answers 524 itself. Every real instance sits behind it, so a request a
+/// browser waits on has to answer, or start an answer it then keeps alive,
+/// inside this. It is the one spelling for the routes that hold a request
+/// on an agent: the chat route's first byte (talaria-chat-persist `edge`)
+/// and a cron change (talaria-agent-crons). `talaria-fleet-docker` does not
+/// depend on this crate, and keeps its own copy beside its `ANSWER_WITHIN`.
+pub const EDGE_CUTOFF: Duration = Duration::from_secs(100);
 
 // An attended hold sized for anything slower does not build.
 const _: () = assert!(ATTENDED_HOLD.as_secs() + 15 <= EDGE_CUTOFF.as_secs());
