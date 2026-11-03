@@ -1,5 +1,3 @@
-// The themed titlebar's behavior, for whichever bar is the top of the window:
-// the tab bar in the app, a plain band on screens without one.
 import { inDesktopShell } from './desktop-shell'
 import { desktopSettings, desktopWindow } from './desktop-settings.svelte'
 
@@ -9,7 +7,6 @@ export type ControlsSide = 'left' | 'right'
 export const controlsSide = (): ControlsSide =>
   /Mac|iPhone|iPad/.test(navigator.userAgent) ? 'left' : 'right'
 
-/** The page draws the window chrome: the desktop shell with the themed titlebar. */
 export const themedTitlebar = (): boolean =>
   inDesktopShell() && desktopSettings().titlebar === 'themed'
 
@@ -21,8 +18,7 @@ type BarEvent = Pick<MouseEvent, 'button'> & { target: EventTarget | null }
 export const onDragSurface = (e: BarEvent): boolean =>
   e.button === 0 && !(e.target as Element | null)?.closest(CONTROLS)
 
-/** Makes `node` the window's drag surface while the titlebar is themed:
- *  press and drag moves the window, a double-click toggles maximize. */
+/** Inert unless the titlebar is themed, checked per event: the mode can change while the bar is mounted. */
 export function windowDrag(node: HTMLElement) {
   if (!inDesktopShell()) return
   const down = (e: MouseEvent) => {

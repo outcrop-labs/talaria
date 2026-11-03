@@ -1,10 +1,6 @@
 <script lang="ts">
   import { themedTitlebar, windowDrag } from '@/lib/desktop-titlebar'
   import DesktopWindowControls from './DesktopWindowControls.svelte'
-
-  // The themed titlebar as a band of its own, for screens with no tab bar to
-  // carry the window controls: sign-in and the session hold. Renders nothing
-  // in a browser or under the OS titlebar.
 </script>
 
 {#if themedTitlebar()}
