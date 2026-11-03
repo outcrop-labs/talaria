@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use sqlx::PgPool;
 use talaria_agent_auth::now_ms;
 use talaria_agent_defs::pinned_sessions_for_model;
+use talaria_conversations::fan_conversation_event;
 use talaria_conversations::{
     ReplyFate, ReplyWriter, WRITER_BEAT, WRITER_LEASE, active_streaming_assistant, beat_replies,
     fold_tool_failures, hermes_epoch, insert_streaming_assistant, last_user_message_effort,
@@ -42,7 +43,7 @@ use talaria_gateway::guard::{
 };
 use talaria_gateway::usage::TurnAttribution;
 use talaria_model_efforts::efforts_for_model;
-use talaria_notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
+use talaria_notify::{NotifyDeps, notify_agent_reply};
 use talaria_plan_doc::{
     PLAN_MODE_PROMPT, PlanOwner, notify_plan_mentions, plan_doc_for, plan_routing_block,
     sync_plan_doc,

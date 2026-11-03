@@ -28,11 +28,11 @@ use talaria_chat_persist::{
 };
 use talaria_conversations::{
     ReplyWriter, accessible_conversation, active_streaming_assistant, create_conversation,
-    insert_streaming_assistant, insert_user_message, is_seq_collision, list_plan_members, next_seq,
-    prior_messages, title_from, touch_conversation,
+    fan_conversation_event, insert_streaming_assistant, insert_user_message, is_seq_collision,
+    list_plan_members, next_seq, prior_messages, title_from, touch_conversation,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::{NotifyDeps, fan_conversation_event};
+use talaria_notify::NotifyDeps;
 use talaria_permissions::has_perm;
 use talaria_persona::persona_configured_effort;
 use talaria_plan_doc::{PLAN_MODE_PROMPT, plan_routing_block};

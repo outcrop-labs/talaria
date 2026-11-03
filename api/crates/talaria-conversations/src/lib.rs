@@ -19,6 +19,50 @@ use std::sync::OnceLock;
 pub static REF_BLOCKS: OnceLock<fn(&Value) -> String> = OnceLock::new();
 use talaria_uploads::attachment_text_blocks;
 
+/// Who can read conversation `c`, as a WHERE clause over `$viewer` (a bind
+/// like `"$1::uuid"`, or a column like `"u.id"`): the owner; for plans and
+/// work sessions, a member or a team member; for research, whoever the run's
+/// own audience admits. Chats admit only their owner. The read gates, the
+/// listing, the unread badge, the working read and the firehose audience all
+/// filter by this one spelling. A macro, not a const, so each query stays one
+/// `'static` literal.
+macro_rules! audience_sql {
+    ($viewer:literal) => {
+        concat!(
+            "(c.user_id = ",
+            $viewer,
+            " \
+              or (c.kind in ('plan', 'work') and ( \
+                exists(select 1 from conversation_members cm \
+                       where cm.conversation_id = c.id and cm.user_id = ",
+            $viewer,
+            ") \
+                or exists(select 1 from conversation_teams ct \
+                          join team_members tm on tm.team_id = ct.team_id \
+                          where ct.conversation_id = c.id and tm.user_id = ",
+            $viewer,
+            "))) \
+              or (c.kind = 'research' and exists( \
+                select 1 from research_runs r \
+                  left join research_members rm on rm.run_id = r.id and rm.user_id = ",
+            $viewer,
+            " \
+                 where r.conversation_id = c.id \
+                   and (r.owner_user_id = ",
+            $viewer,
+            " or rm.user_id is not null \
+                     or exists(select 1 from research_teams rt \
+                               join team_members tm on tm.team_id = rt.team_id \
+                               where rt.run_id = r.id and tm.user_id = ",
+            $viewer,
+            ")))))"
+        )
+    };
+}
+
+mod audience;
+pub use audience::{conversation_audience_ids, fan_conversation_event, fan_known_conversation};
+
 /// The access gate, reduced to the question its callers that only gate ask:
 /// does this row exist for this person? The WHERE clause is the whole rule —
 /// the OWNER, or (a PLAN, and a member), or (RESEARCH, and the run says so):
@@ -35,26 +79,12 @@ pub async fn conversation_accessible(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let row: Option<(i32,)> = sqlx::query_as(
+    let row: Option<(i32,)> = sqlx::query_as(concat!(
         "select 1 from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
-           and (c.user_id = $2::uuid \
-             or (c.kind in ('plan', 'work') and ( \
-               exists(select 1 from conversation_members cm \
-                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
-               or exists(select 1 from conversation_teams ct \
-                         join team_members tm on tm.team_id = ct.team_id \
-                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
-             or (c.kind = 'research' and exists( \
-               select 1 from research_runs r \
-                 left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
-                where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
-                    or exists(select 1 from research_teams rt \
-                              join team_members tm on tm.team_id = rt.team_id \
-                              where rt.run_id = r.id and tm.user_id = $2::uuid))))) \
-         limit 1",
-    )
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid"),
+        " limit 1"
+    ))
     .bind(conversation_id)
     .bind(user_id)
     .fetch_optional(pg)
@@ -73,26 +103,12 @@ pub async fn accessible_conversation_agent(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> = sqlx::query_as(
+    let row: Option<(String,)> = sqlx::query_as(concat!(
         "select agent_model from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
-           and (c.user_id = $2::uuid \
-             or (c.kind in ('plan', 'work') and ( \
-               exists(select 1 from conversation_members cm \
-                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
-               or exists(select 1 from conversation_teams ct \
-                         join team_members tm on tm.team_id = ct.team_id \
-                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
-             or (c.kind = 'research' and exists( \
-               select 1 from research_runs r \
-                 left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
-                where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
-                    or exists(select 1 from research_teams rt \
-                              join team_members tm on tm.team_id = rt.team_id \
-                              where rt.run_id = r.id and tm.user_id = $2::uuid))))) \
-         limit 1",
-    )
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid"),
+        " limit 1"
+    ))
     .bind(conversation_id)
     .bind(user_id)
     .fetch_optional(pg)
@@ -237,28 +253,14 @@ pub async fn accessible_conversation(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<Option<AccessibleConversation>, sqlx::Error> {
-    let row: Option<AccessibleRow> = sqlx::query_as(
-        "select agent_model, kind, title, user_id::text, \
-                    case when user_id = $2::uuid then 'owner' else 'collaborator' end, \
-                    plan_template_id::text \
-             from conversations c \
-             where id = $1::uuid and kind in ('chat', 'plan', 'research', 'work') \
-               and (user_id = $2::uuid \
-                 or (kind in ('plan', 'work') and ( \
-                   exists(select 1 from conversation_members cm \
-                          where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
-                   or exists(select 1 from conversation_teams ct \
-                             join team_members tm on tm.team_id = ct.team_id \
-                             where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
-                 or (kind = 'research' and exists( \
-                   select 1 from research_runs r \
-                     left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
-                    where r.conversation_id = c.id \
-                      and (r.owner_user_id = $2::uuid or rm.user_id is not null \
-                        or exists(select 1 from research_teams rt \
-                                  join team_members tm on tm.team_id = rt.team_id \
-                                  where rt.run_id = r.id and tm.user_id = $2::uuid)))))",
-    )
+    let row: Option<AccessibleRow> = sqlx::query_as(concat!(
+        "select c.agent_model, c.kind, c.title, c.user_id::text, \
+                case when c.user_id = $2::uuid then 'owner' else 'collaborator' end, \
+                c.plan_template_id::text \
+         from conversations c \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid")
+    ))
     .bind(conversation_id)
     .bind(user_id)
     .fetch_optional(pg)
@@ -315,31 +317,6 @@ pub struct ConversationListRow {
     pub pinned: bool,
     pub group: Option<String>,
     pub position: Option<i32>,
-}
-
-/// The viewer-`$1` audience of a conversation `c`: the owner; for plans and
-/// work sessions, a member or a team member; for research, whoever the run's
-/// own audience admits. Chats admit only their owner. The listing, the unread
-/// badge and the working read all filter by this one spelling. A macro, not a
-/// const, so each query stays one `'static` literal.
-macro_rules! audience_sql {
-    () => {
-        "(c.user_id = $1::uuid \
-          or (c.kind in ('plan', 'work') and ( \
-            exists(select 1 from conversation_members cm \
-                   where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
-            or exists(select 1 from conversation_teams ct \
-                      join team_members tm on tm.team_id = ct.team_id \
-                      where ct.conversation_id = c.id and tm.user_id = $1::uuid))) \
-          or (c.kind = 'research' and exists( \
-            select 1 from research_runs r \
-              left join research_members rm on rm.run_id = r.id and rm.user_id = $1::uuid \
-             where r.conversation_id = c.id \
-               and (r.owner_user_id = $1::uuid or rm.user_id is not null \
-                 or exists(select 1 from research_teams rt \
-                           join team_members tm on tm.team_id = rt.team_id \
-                           where rt.run_id = r.id and tm.user_id = $1::uuid)))))"
-    };
 }
 
 /// Conversation `c` has an assistant reply streaming right now: the row is
@@ -441,7 +418,7 @@ pub async fn list_conversations_in(
          left join conversation_layout l \
                 on l.conversation_id = c.id and l.user_id = $1::uuid \
          where c.archived = $3 and c.kind = any($2) and ",
-        audience_sql!(),
+        audience_sql!("$1::uuid"),
         " order by coalesce(l.pinned, false) desc, l.position asc nulls last, \
                   c.updated_at desc",
     ))
@@ -724,31 +701,15 @@ pub async fn get_conversation(
         i64,
         String,
         serde_json::Value,
-    )> = sqlx::query_as(
+    )> = sqlx::query_as(concat!(
         "select c.id::text, c.agent_model, c.title, \
                 (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
                 case when c.user_id = $2::uuid then 'owner' else 'collaborator' end, \
                 c.pinned_files \
          from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
-           and ( \
-             c.user_id = $2::uuid \
-             or (c.kind in ('plan', 'work') and ( \
-               exists(select 1 from conversation_members cm \
-                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
-               or exists(select 1 from conversation_teams ct \
-                         join team_members tm on tm.team_id = ct.team_id \
-                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
-             or (c.kind = 'research' and exists( \
-               select 1 from research_runs r \
-                 left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
-                where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
-                    or exists(select 1 from research_teams rt \
-                              join team_members tm on tm.team_id = rt.team_id \
-                              where rt.run_id = r.id and tm.user_id = $2::uuid)))) \
-           )",
-    )
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid")
+    ))
     .bind(conversation_id)
     .bind(user_id)
     .fetch_optional(pg)
@@ -1070,7 +1031,7 @@ pub async fn conversation_unread_total(
            and m.status = 'complete' \
            and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
            and ",
-        audience_sql!()
+        audience_sql!("$1::uuid")
     ))
     .bind(user_id)
     .bind(kind)
@@ -1106,7 +1067,7 @@ pub async fn working_conversations(
          where c.archived = false and c.kind = any($2) and ",
         working_sql!(),
         " and ",
-        audience_sql!(),
+        audience_sql!("$1::uuid"),
         " order by 5 desc"
     ))
     .bind(user_id)
@@ -2295,6 +2256,9 @@ pub fn mark_tool_failures(tools: &mut [ToolCall], failed: &[&str]) -> bool {
 
 #[cfg(test)]
 mod orphan_live;
+
+#[cfg(test)]
+mod audience_live;
 
 #[cfg(test)]
 mod tests {
