@@ -213,4 +213,49 @@ class MergeToolTest {
         tools = mergeTool(tools, running("b", "bash", "two"))
         assertEquals(2, tools.size)
     }
+
+    /** A turn that failed says why, as `Failed`. The server opens the answer
+     *  itself when an agent is slow to (a 200 kept alive with SSE comments),
+     *  so an error status the agent answers after that arrives as this frame
+     *  instead of a status line. Read as nothing, the phone showed an empty
+     *  bubble with no reason. */
+    @Test
+    fun a_late_error_status_is_failed_with_its_sentence() {
+        assertEquals(
+            listOf(ChatEvent.Failed("the model provider refused the turn")),
+            one("""{"error":{"message":"the model provider refused the turn"}}"""),
+        )
+    }
+
+    /** Every failure shape the gateway reads, with the sentence the reply row
+     *  lands with — the same cases `ui/src/lib/sse-parse.test.ts` pins. */
+    @Test
+    fun every_failure_shape_the_gateway_reads_is_failed() {
+        assertEquals(
+            listOf(ChatEvent.Failed("the agent reported an error")),
+            one("""{"choices":[{"delta":{},"finish_reason":"error"}]}"""),
+        )
+        assertEquals(
+            listOf(ChatEvent.Failed("context window exceeded")),
+            one("""{"hermes":{"failed":true,"error":"context window exceeded"}}"""),
+        )
+        assertEquals(listOf(ChatEvent.Failed("the agent reported an error")), one("""{"error":"busy"}"""))
+    }
+
+    /** The failure first, then whatever words the same chunk carried. */
+    @Test
+    fun a_failure_frame_with_words_is_failed_first() {
+        assertEquals(
+            listOf(ChatEvent.Failed("cut off"), ChatEvent.Content("partial")),
+            one("""{"error":{"message":"cut off"},"choices":[{"delta":{"content":"partial"}}]}"""),
+        )
+    }
+
+    /** A healthy chunk and a cancelled one are not failures. */
+    @Test
+    fun a_healthy_or_cancelled_chunk_is_not_failed() {
+        assertEquals(listOf(ChatEvent.Content("hi")), one("""{"choices":[{"delta":{"content":"hi"}}]}"""))
+        assertTrue(one("""{"choices":[{"delta":{},"finish_reason":"cancelled"}]}""").isEmpty())
+        assertTrue(one("""{"hermes":{"failed":false}}""").isEmpty())
+    }
 }
