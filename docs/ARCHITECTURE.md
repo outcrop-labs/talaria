@@ -525,25 +525,37 @@ multiplexer.
      whenever `stable` moves — before anything is downloaded. An unforced Upgrade that has no
      agent in hand **gives way** to whatever the latest successful check names: a newer
      release replaces it, `stable` back on the fleet's own image cancels it. So a release
-     Hermes pulls within 48 h is never rolled out anywhere.
+     Hermes pulls within 48 h is never rolled out anywhere. One stable withdraws after it
+     moved agents (it waited its 48 h, then Hermes pulled it mid-rollout) first opens a
+     **rollback without a ban** of those agents to the fleet's image, so the withdrawn release
+     is never left running, unwatched, while the next waits its time.
   3. *Prepare*: the shared pull (`pull.rs`) through the canary's own compose project, waiting
      while any other pull runs in the process and never past the disk's room: the docker root
      — where every volume, Postgres's among them, lives — must hold the image (sized as the
      fleet's current image plus a quarter) and keep a tenth of its filesystem free, or the
      rollout holds and the admins hear it. Every rollout's image is checked to be on the host
-     (a pruned one is pulled again, the compiled pin included). Then `docker run --rm
-     --network none --memory 1g --pids-limit 256 --cpus 1` of the image's Python, with nothing
-     mounted and no secret in its environment, reads `DEFAULT_CONFIG["_config_version"]`, the
+     (a pruned one is pulled again, the compiled pin included). A rollback's download needs
+     only the image and a fiftieth of the disk free; a disk this api cannot read (no `/host`,
+     a remote daemon) holds a download until Roll now, a rollback's excepted. Then `docker run
+     --rm --name talaria-inspect-<digest> --network none --memory 1g --pids-limit 256 --cpus 1
+     --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --user
+     65534:65534` of the image's Python (the container removed before and after, a timeout's
+     included), with only the agents' configs mounted read-only and no secret in its
+     environment, reads `DEFAULT_CONFIG["_config_version"]`, the
      env names its Hermes strips (`_HERMES_PROVIDER_ENV_BLOCKLIST | _ALWAYS_STRIP_KEYS`), its
      version, and whether `/command/s6-svc` and `s6-svwait` exist — and **checks the contract**:
-     on Talaria's rendered config (as the canary has it) stamped with the schema this release
-     renders, what Hermes' own `load_config` gives with the migration skipped must equal what it
-     gives after Hermes' own `migrate_config`, on every key Talaria writes (Talaria stamps the
+     on every on-channel agent's rendered config, whole (MCP servers, platforms and toolset
+     lists included; a credential typed in literally is replaced by `${TALARIA_PROBE_REDACTED}`,
+     a `${VAR}` handle kept) stamped with the schema this release renders, what Hermes' own
+     `load_config` gives with the migration skipped must equal what it gives after Hermes' own
+     `migrate_config`, on every key of every config (Talaria stamps the
      image's own `_config_version`, so a migration that matters is one the stamp would skip — a
      rename the loader reads either way, as v0.22.6 does `model.model`, passes; a key it drops,
      as it does `browser.backend`, holds the release), and a platform manifest declaring a
      `CONFIG_*` name must put it in `_home_adapter_secret_env()`, the set Hermes keeps out of
-     every command. All of it is
+     every command; and a job made in its temp home and claimed (`claim_job_for_fire(…,
+     force=True)`) must list with `fire_claim.at`, Hermes' heartbeat
+     (`_RUN_CLAIM_HEARTBEAT_SECONDS`) no longer than the 5 min `busy.rs` allows a claim. All of it is
      untrusted and checked: a digest must be `sha256:<64 hex>`, a tag `vX.Y.Z`, a config version
      a small integer. A stripped set counts only once its image is `good`: every render (and
      the api at boot) reads the good images' sets from the records (`set_image_stripped`, so
@@ -566,16 +578,25 @@ multiplexer.
      for a **soak** of 5 min (`TALARIA_HERMES_CANARY_SOAK_SECS`). It spends no tokens and is
      taken down with its volume either way. A contract the inspection or the canary found
      changed **holds** the release (not a ban): the panel lists what changed, an admin's
-     **Accept** sends it on, and the admins are told once.
+     **Accept** sends it on for exactly those problems (the canary's shape check still runs,
+     and a new problem holds it again), and the admins are told once. A canary that does not
+     answer is the host's (a transport failure), never a contract change.
   5. *Roll* agents one at a time through the in-place roll. **What is left to move is read from
-     the assignments**, never from a list of who moved: an agent is pending while its
-     assignment is not the rollout's image (for a rollback: while it is the image being left —
-     a rollback touches no other agent). Its assignment is written in the same transaction as
-     "this agent is in hand" (`Rollout.agent`), so an admin's Roll back committed first refuses
-     both. An agent **a person stopped** (exited: the agents run `restart: unless-stopped`) is
-     assigned and starts on the image when someone starts it, never started by the channel;
-     one **down without being stopped** (restarting, or left created by an interrupted
-     recreate) is recreated whatever it is doing. A running agent is passed over and asked
+     the assignments and the containers**, never from a list of who moved: an agent is settled
+     only when its assignment is the rollout's image AND its container runs it (or a person
+     stopped it); every other agent in scope is pending — for a rollback, scope is an agent
+     assigned or running the image being left, so a put-back that failed is found too. Its
+     assignment is written in the same transaction as "this agent is in hand"
+     (`Rollout.agent`), so an admin's Roll back committed first refuses both. An agent **a
+     person stopped** — exited, with a Stop recorded (`agent_defs.stopped_at`, set by Talaria's
+     Stop and cleared by any start) — is assigned and starts on the image when someone starts
+     it, never started by the channel; one **down without a recorded Stop** (restarting, left
+     created by an interrupted recreate, or exited after a roll that failed) is recreated
+     whatever it is doing. With no rollout open, an agent off its image (down unwillingly, or
+     running another image id than its digest's — the `:latest` a pre-channel release left)
+     opens a **catch-up** onto the fleet's image (checked every 5 min). A catch-up agent that
+     fails on that image goes back and is remembered (`catchup_failed`, agent → digest), so it
+     is not tried again until the image changes or Roll now; the admins hear it once a month. A running agent is passed over and asked
      again the next minute while it is working or about to (`busy.rs`, fields read from the
      source of both v0.22.4 and v0.22.6): its Hermes API server has a turn in flight
      (`api_server.active_runs`, live, every `/v1/chat/completions` and `/v1/runs`) or a
@@ -588,11 +609,14 @@ multiplexer.
      120 s); a reply or channel reply is being written, a work session or workbench job is
      live, a conversation with it had a message in the last 10 min, or a model call finished
      in the last 5. An answer Talaria cannot read (none, a non-2xx, an unknown shape) is
-     **unknown**, and an unknown agent is not restarted now. A rollback moves every agent on
+     **unknown**, and an unknown agent is not restarted on its own; a forced rollout (Roll now,
+     Pin) restarts it. On an image no inspection checked (a pre-channel Hermes: v0.21.4 has no
+     `api_server` or `background_queues`), a missing counter reads as none, so its jobs and
+     Talaria's records decide. A rollback moves every agent on
      the image it leaves now, mid-turn included. One busy the whole window (three hours for
      Roll now) is left on its image for a **catch-up** in a later window instead of holding
-     the release open — three windows in a row tells the admins; a newer release supersedes a
-     waiting catch-up. On an image not yet known good, each moved agent is **watched** —
+     the release open — three windows in a row tells the admins, and again weekly; a newer
+     release supersedes a waiting catch-up. On an image not yet known good, each moved agent is **watched** —
      running, healthy, its docker restart count unchanged since it came up, no config fault in
      its log its old image's log did not already carry — for 10 min after the first and 3 min
      after each later one before the next moves; every watched agent is asked again before
@@ -610,10 +634,14 @@ multiplexer.
      5 min; only **the same thing** failing again (the canary, the preparation, one agent)
      marks the digest `bad` with the reason and opens a rollback, in one transaction, and
      tells every admin (`hermes_update_failed`, titled with the version). A strike clears once
-     its thing passes, so failures of different things never add up. A version already known
-     good here — a rollback's, a catch-up's, a pin to one — is never banned: an agent unhealthy
-     on it stays there and the admins hear it once; a catch-up's agent that fails goes back to
-     what it ran. A bad digest is never rolled out, pinned or rendered until an admin presses
+     its thing passes, but a rollout's third image failure of anything bans too. A daemon
+     restart (the same container started again, its restart count unchanged) or a health
+     still `starting` within 10 min of a start is the host's, not a failure. A version already
+     known good here — a rollback's, a catch-up's, a pin to one — is never banned: an agent
+     unhealthy on it stays there, left behind, and the admins hear it once; a pin stops there
+     (`Rollout.halted`) before it moves anyone else, until Roll now; a catch-up's agent that
+     fails goes back to what it ran. A rollout no agent ran (every one stopped) finishes without calling its
+     image good. A bad digest is never rolled out, pinned or rendered until an admin presses
      **Allow again**. The one before the current image stays on the host three days, a
      candidate nobody rolled out a week; then images this instance pulled itself and no longer
      runs are removed (never the compiled pin, never an image another stack pulled, never on

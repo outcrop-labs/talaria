@@ -189,7 +189,7 @@
   const accept = async (i: ImageView) => {
     const ok = await confirm({
       title: `Roll out ${i.label} anyway?`,
-      message: `Talaria checked the Hermes internals it relies on, and this release changed some: ${i.contractProblems.join('; ')}. Rolled out anyway, it still goes through the canary and the soaks, one agent at a time — but what changed is not checked again.`,
+      message: `Talaria checked the Hermes internals it relies on, and this release changed some: ${i.contractProblems.join('; ')}. Rolled out anyway, it still goes through the canary and the soaks, one agent at a time. These problems are not checked again; one the canary finds that is not listed here holds it again.`,
       confirmLabel: 'Accept and roll out',
     })
     if (ok) await act('accept', { digest: i.digest })
@@ -208,7 +208,7 @@
   const rollNow = async () => {
     const ok = await confirm({
       title: 'Roll out now?',
-      message: 'The new Hermes is tested in a canary and then every agent restarts onto it, one at a time, now instead of in the maintenance window. An agent in a conversation waits until it is free.',
+      message: 'The new Hermes is tested in a canary and then every agent restarts onto it, one at a time, now instead of in the maintenance window. An agent in a conversation waits until it is free. An agent whose Hermes does not say whether it is working is restarted anyway, and so is one that failed an earlier catch-up.',
       confirmLabel: 'Roll now',
     })
     if (ok) await act('roll')
@@ -216,7 +216,7 @@
   const pinTo = async (body: { digest?: string; version?: string }, label: string) => {
     const ok = await confirm({
       title: `Pin every agent to ${label}?`,
-      message: `Every agent restarts onto ${label} now, one at a time, and stays there until you unpin. A version that never ran here is tested in a canary first.`,
+      message: `Every agent restarts onto ${label} now, one at a time, and stays there until you unpin. A version that never ran here is tested in a canary first. An agent working waits until it is free; one whose Hermes does not say whether it is working is restarted anyway.`,
       confirmLabel: 'Pin',
     })
     if (ok) await act('pin', body)
