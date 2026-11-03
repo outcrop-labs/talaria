@@ -1298,6 +1298,27 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     } else {
         talaria_hermes_images::ImagePlan::compiled(compiled_plan())
     };
+    // The env names the good Hermes images on record strip from an agent's
+    // commands, from the records (so every api process agrees): a per-agent
+    // secret under one of them is not loaded, and the materialize below says
+    // so per agent. A read that fails keeps the set this process last read.
+    match talaria_hermes_images::stripped_env_of_good(pg).await {
+        Ok(names) => {
+            let added = talaria_agent_secrets::set_image_stripped(names);
+            if !added.is_empty() {
+                let line = format!(
+                    "a Hermes image now in use strips {} more env name(s) from an agent's commands: {} — a per-agent secret stored under one of them is no longer loaded",
+                    added.len(),
+                    added.join(", ")
+                );
+                tracing::warn!("[fleet] {line}");
+                result.warnings.push(line);
+            }
+        }
+        Err(e) => tracing::warn!(
+            "[fleet] render: the Hermes images' stripped env could not be read ({e}); keeping the last set"
+        ),
+    }
 
     // Every rendered soul opens with the toolkit contract (always), the
     // dev-work policy (always): dev work flows through a ticket and a

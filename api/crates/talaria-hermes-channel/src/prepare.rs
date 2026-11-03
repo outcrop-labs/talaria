@@ -198,11 +198,11 @@ pub async fn inspect(image: &str) -> Result<Inspected, (String, bool)> {
     match ran {
         Ok((stdout, _)) => parse_inspection(&stdout).map_err(|e| (e, true)),
         Err(e) => {
-            // The image's Python failing (a traceback, no such interpreter)
-            // is the image's answer; anything else is docker's trouble.
-            let definitive = e.contains("Traceback")
-                || e.contains("no such file or directory")
-                || e.contains("executable file not found");
+            // The image's own Python failing (a traceback) is the image's
+            // answer at once. A missing file or interpreter can be the host's
+            // overlay as well as the image, so it is tried again like any
+            // other docker trouble, and only reproducing it gives up.
+            let definitive = e.contains("Traceback");
             Err((
                 format!(
                     "the image could not be inspected: {}",
@@ -306,7 +306,6 @@ pub async fn prepare(pg: &PgPool, record: &ImageRecord) -> Prepared {
                     definitive: false,
                 };
             }
-            talaria_agent_secrets::adopt_image_stripped(found.stripped_env.iter().cloned());
             INSPECT_FAILURES
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())

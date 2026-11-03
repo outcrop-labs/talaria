@@ -81,6 +81,32 @@ pub async fn check(pg: &PgPool) -> Result<Found, String> {
     })
 }
 
+/// Resolve a release tag of the channel's repository (`v0.22.5`) for a Pin,
+/// and record its digest: one anonymous HEAD, the same as the check's.
+pub async fn resolve_version(pg: &PgPool, version: &str) -> Result<Found, String> {
+    if !images::is_version_tag(version) {
+        return Err("a version is vX.Y.Z".into());
+    }
+    let reference = stable_ref();
+    let image = parse_image_ref(&reference)
+        .ok_or_else(|| format!("the channel reference is not readable: {reference:.200}"))?;
+    let repo = PublicRepo::open(&image).await?;
+    let digest = repo.digest(version).await?;
+    if !images::is_digest(&digest) {
+        return Err("the registry named a digest that is not one".into());
+    }
+    let repository = pull_repository(&image);
+    let new = images::note_seen(pg, &digest, &repository, Some(version))
+        .await
+        .map_err(|e| format!("the image record could not be written: {e}"))?;
+    Ok(Found {
+        digest,
+        repository,
+        version: Some(version.to_string()),
+        new,
+    })
+}
+
 /// Which release tag shares `digest`: the newest release tags, HEADed one
 /// at a time until one names it. Best-effort — a digest with no matching
 /// tag still rolls, labelled by its digest.

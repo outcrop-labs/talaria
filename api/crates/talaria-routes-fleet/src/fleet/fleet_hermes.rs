@@ -7,12 +7,16 @@
 //         flight or the last one (its phase, the agents moved and passed
 //         over); every image this instance has seen, with its status.
 //   POST  {action}: `check` checks stable now; `roll` runs the rollout now,
-//         outside the maintenance window; `rollback` moves every agent back
-//         to the previous version and marks the one they leave bad; `pin`
-//         ({digest}) holds every agent on a version that ran well here;
-//         `unpin` follows stable again; `window` ({start, end}, HH:MM) sets
-//         the maintenance window. Answers `{ok, message, status}`, the
-//         status as GET answers it; a rollout runs on after the answer.
+//         outside the maintenance window and before its minimum time on
+//         stable; `rollback` moves every agent back to the previous version
+//         (a version that came from stable is marked bad, a pinned one is
+//         not); `pin` ({digest} or {version}: vX.Y.Z) holds every agent on a
+//         version not marked bad, canarying one that never ran here first;
+//         `unpin` follows stable again; `allow` ({digest}) lifts a version's
+//         ban; `window` ({start, end}, HH:MM) sets the maintenance window.
+//         Answers `{ok, message, status}`, the status as GET answers it; a
+//         rollout runs on after the answer. A state row that cannot be read
+//         is a 409 that says so, and nothing is changed.
 
 use axum::Json;
 use axum::extract::State;
@@ -21,18 +25,25 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{optional_enum_member, optional_string_member, parse};
-use talaria_error::{house_error, internal, object_or_400};
+use talaria_error::{house_error, object_or_400};
 use talaria_hermes_channel::ChannelDeps;
 use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
-const ACTIONS: &[&str] = &["check", "roll", "rollback", "pin", "unpin", "window"];
+const ACTIONS: &[&str] = &[
+    "check", "roll", "rollback", "pin", "unpin", "allow", "window",
+];
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     require_admin(&state, &headers).await?;
     match talaria_hermes_channel::status(&state.pg).await {
         Ok(status) => Ok(Json(json!({ "ok": true, "status": status })).into_response()),
-        Err(e) => Ok(internal("[fleet] hermes channel status failed", e)),
+        // An unreadable state row (or a store that will not answer) says
+        // why, so the panel can: nothing is read as a default.
+        Err(e) => {
+            tracing::warn!("[fleet] hermes channel status: {e}");
+            Ok(house_error(StatusCode::CONFLICT, &e))
+        }
     }
 }
 
@@ -49,7 +60,7 @@ pub async fn post(
         Ok(None) => {
             return Ok(house_error(
                 StatusCode::BAD_REQUEST,
-                "action is required (check, roll, rollback, pin, unpin, window)",
+                "action is required (check, roll, rollback, pin, unpin, allow, window)",
             ));
         }
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -77,21 +88,32 @@ pub async fn post(
         }
         "roll" => talaria_hermes_channel::roll_now(&deps).await,
         "rollback" => talaria_hermes_channel::roll_back(&deps, &actor).await,
-        "pin" => match optional_string_member(obj, "digest", 80) {
+        "pin" => match (
+            optional_string_member(obj, "digest", 80),
+            optional_string_member(obj, "version", 16),
+        ) {
+            (Ok(d), Ok(v)) if d.is_some() || v.is_some() => {
+                target = d.clone().or(v.clone());
+                talaria_hermes_channel::pin(&deps, d.as_deref(), v.as_deref(), &actor).await
+            }
+            (Err(msg), _) | (_, Err(msg)) => Err(msg),
+            _ => Err("digest or version is required to pin".into()),
+        },
+        "allow" => match optional_string_member(obj, "digest", 80) {
             Ok(Some(d)) => {
                 target = Some(d.clone());
-                talaria_hermes_channel::pin(&deps, Some(&d), &actor).await
+                talaria_hermes_channel::allow(&deps, &d, &actor).await
             }
-            Ok(None) => Err("digest is required to pin".into()),
+            Ok(None) => Err("digest is required to allow a version again".into()),
             Err(msg) => Err(msg),
         },
-        "unpin" => talaria_hermes_channel::pin(&deps, None, &actor).await,
+        "unpin" => talaria_hermes_channel::pin(&deps, None, None, &actor).await,
         "window" => match (
             optional_string_member(obj, "start", 5),
             optional_string_member(obj, "end", 5),
         ) {
             (Ok(Some(start)), Ok(Some(end))) => {
-                talaria_hermes_channel::set_window(&state.pg, &start, &end)
+                talaria_hermes_channel::set_window(&deps, &start, &end)
                     .await
                     .map(|w| format!("the maintenance window is {}–{}", w.start, w.end))
             }

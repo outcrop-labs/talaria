@@ -1,10 +1,10 @@
 // THE HEALTH QUESTIONS — asked of the canary before any agent runs a new
-// image, and of each agent the rollout moves onto it. None costs a token:
-// docker's own health, the API server's `/health` and `/v1/models` (which
-// Hermes answers from its own config), the container's logs, and the s6
-// tools every roll's drain relies on. Each is asked the way the gateway
-// asks — over the dial the persona door uses — so "the gateway can reach
-// it" is the probe itself.
+// image, and of each agent the rollout moves onto it, again and again while
+// it soaks. None costs a token: docker's own health and restart count, the
+// API server's `/health` and `/v1/models` (which Hermes answers from its own
+// config), the container's logs, and the s6 tools every roll's drain relies
+// on. Each is asked the way the gateway asks — over the dial the persona door
+// uses — so "the gateway can reach it" is the probe itself.
 
 use std::time::Duration;
 
@@ -12,18 +12,34 @@ use talaria_fleet_docker::docker;
 use talaria_fleet_render::canary::{CanaryFiles, render_canary};
 use talaria_hermes_images::ImageRecord;
 
+use crate::ops::{Fault, Snapshot};
+
 /// How long the canary may take to report healthy. The chassis gives a boot
 /// 60 s before its health check counts and five checks after; a loaded host
 /// boots slower than that, so `unhealthy` before this is still booting.
 const CANARY_HEALTH_WAIT: Duration = Duration::from_secs(8 * 60);
 
-/// Its `compose up`'s bound: the image is already on the host.
-const CANARY_UP: Duration = Duration::from_secs(5 * 60);
+/// Its `compose up`'s bound: the image is already on the host, but docker
+/// has been measured taking five minutes to create a container on a
+/// saturated disk.
+const CANARY_UP: Duration = Duration::from_secs(10 * 60);
+
+/// How often a soaking canary is asked again.
+const CANARY_SOAK_EVERY: Duration = Duration::from_secs(20);
+
+/// How long the canary soaks once healthy: it stays up and is asked again
+/// and again, so an image that dies a minute or two after boot (on its first
+/// cron tick, a platform thread, a refresh) fails here rather than on the
+/// fleet. `TALARIA_HERMES_CANARY_SOAK_SECS` sets it.
+pub fn canary_soak() -> Duration {
+    Duration::from_secs(crate::env_secs("TALARIA_HERMES_CANARY_SOAK_SECS", 5 * 60))
+}
 
 /// The log lines that say a Hermes boot went wrong with its config: the
 /// migration Talaria's version stamp exists to prevent (it fails on the
 /// read-only bind), and a config Hermes refused. Lowercase; matched on a
-/// lowercased log.
+/// lowercased log. An agent's are counted only when new against the image it
+/// left ([`log_faults`] normalizes them for that comparison).
 const LOG_FAULTS: &[&str] = &[
     "read-only file system",
     "config migration failed",
@@ -47,6 +63,37 @@ pub fn log_fault(logs: &str) -> Option<String> {
             .any(|f| lower.contains(f))
             .then(|| line.trim().chars().take(300).collect())
     })
+}
+
+/// A fault line as the soak compares it: lowercased, without its digits
+/// (timestamps, pids, counts) and with its whitespace collapsed, so the same
+/// complaint on two boots reads the same.
+pub fn normalize_fault(line: &str) -> String {
+    line.to_lowercase()
+        .chars()
+        .filter(|c| !c.is_ascii_digit())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(300)
+        .collect()
+}
+
+/// Every fault line in a log, normalized and deduplicated.
+pub fn log_faults(logs: &str) -> Vec<String> {
+    let mut out: Vec<String> = logs
+        .lines()
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            LOG_FAULTS.iter().any(|f| lower.contains(f))
+        })
+        .map(normalize_fault)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// A container's logs (stdout and stderr), its last `tail` lines.
@@ -101,20 +148,48 @@ pub async fn api_answers(base_url: &str, bearer: Option<&str>) -> Result<(), Str
     Ok(())
 }
 
-/// Whether the container runs `image`: the image it was created from is the
-/// one the reference resolves to on this host.
-pub async fn runs_image(container: &str, image: &str) -> Result<bool, String> {
-    let (ran, _) = docker(
-        &["inspect", "--format", "{{.Image}}", container],
+/// What docker says of a container, as a [`Snapshot`]. A container that does
+/// not exist is a snapshot with `exists: false`; docker failing to answer is
+/// an error.
+pub async fn snapshot(container: &str) -> Result<Snapshot, String> {
+    let format = "{{.Id}}|{{.Image}}|{{.State.Status}}|{{.State.Running}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}";
+    match docker(
+        &["inspect", "--format", format, container],
         Duration::from_secs(30),
     )
-    .await?;
-    let (want, _) = docker(
+    .await
+    {
+        Ok((out, _)) => Ok(parse_snapshot(&out)),
+        Err(e) if e.to_lowercase().contains("no such") => Ok(Snapshot::default()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Read [`snapshot`]'s format line.
+pub fn parse_snapshot(out: &str) -> Snapshot {
+    let mut p = out.trim().split('|');
+    let mut next = || p.next().unwrap_or("").trim().to_string();
+    let (container, image, status, running, restarts, health) =
+        (next(), next(), next(), next(), next(), next());
+    Snapshot {
+        exists: !container.is_empty(),
+        running: running == "true",
+        status,
+        health: (!health.is_empty()).then_some(health),
+        restart_count: restarts.parse().unwrap_or(0),
+        container,
+        image,
+    }
+}
+
+/// The id `image` resolves to on this host.
+pub async fn image_id(image: &str) -> Result<String, String> {
+    docker(
         &["image", "inspect", "--format", "{{.Id}}", image],
         Duration::from_secs(30),
     )
-    .await?;
-    Ok(ran.trim() == want.trim())
+    .await
+    .map(|(out, _)| out.trim().to_string())
 }
 
 /// Whether the drain's tools are where every roll and stop calls them, in a
@@ -142,35 +217,21 @@ pub async fn drain_ready(container: &str) -> Result<(), String> {
 enum Boot {
     Healthy,
     Booting,
+    Unhealthy,
     Exited(String),
+    Unreadable(String),
 }
 
 async fn boot_state(container: &str) -> Boot {
-    match docker(
-        &[
-            "inspect",
-            "--format",
-            "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.State.ExitCode}}",
-            container,
-        ],
-        Duration::from_secs(15),
-    )
-    .await
-    {
-        Ok((out, _)) => {
-            let mut parts = out.trim().split('|');
-            let (status, health, code) = (
-                parts.next().unwrap_or(""),
-                parts.next().unwrap_or(""),
-                parts.next().unwrap_or(""),
-            );
-            match (status, health) {
-                ("running", "healthy") => Boot::Healthy,
-                ("exited" | "dead", _) => Boot::Exited(format!("exited (code {code})")),
-                _ => Boot::Booting,
-            }
-        }
-        Err(_) => Boot::Booting,
+    match snapshot(container).await {
+        Ok(s) if !s.exists => Boot::Exited("is gone".into()),
+        Ok(s) => match (s.status.as_str(), s.health.as_deref()) {
+            ("running", Some("healthy")) => Boot::Healthy,
+            ("running", Some("unhealthy")) => Boot::Unhealthy,
+            ("exited" | "dead", _) => Boot::Exited("exited".into()),
+            _ => Boot::Booting,
+        },
+        Err(e) => Boot::Unreadable(e),
     }
 }
 
@@ -203,14 +264,17 @@ pub async fn canary_down(files: &CanaryFiles) {
 }
 
 /// Boot `record`'s image as the canary, with `base` (an agent's rendered
-/// config.yaml) shaping its config, and ask it every health question. The
-/// canary is taken down whatever the answer. `Ok` carries what passed.
-pub async fn run_canary(record: &ImageRecord, base: Option<&str>) -> Result<String, String> {
+/// config.yaml) shaping its config, ask it every health question, then keep
+/// it up and ask again for [`canary_soak`]. The canary is taken down whatever
+/// the answer. `Ok` carries what passed; a failure says whose it is.
+pub async fn run_canary(record: &ImageRecord, base: Option<&str>) -> Result<String, Fault> {
     let config_version = record
         .config_version
-        .ok_or_else(|| "the image's config version is not known".to_string())?;
+        .ok_or_else(|| Fault::Image("the image's config version is not known".to_string()))?;
     let image = record.image_ref();
-    let files = render_canary(&image, config_version, base).await?;
+    let files = render_canary(&image, config_version, base)
+        .await
+        .map_err(Fault::Infra)?;
     // A canary an interrupted step left behind goes first.
     canary_down(&files).await;
     let verdict = canary_checks(&files, &image).await;
@@ -222,61 +286,120 @@ pub async fn run_canary(record: &ImageRecord, base: Option<&str>) -> Result<Stri
     verdict
 }
 
-async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, String> {
+/// The config fault if the log names one, else its last word.
+async fn last_word(container: &str) -> Option<String> {
+    let log = logs(container, 400).await;
+    log_fault(&log).or_else(|| {
+        log.lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .map(|l| l.chars().take(200).collect())
+    })
+}
+
+async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, Fault> {
     // The image is on the host already (prepared), so compose's default pull
     // policy pulls nothing; no `--pull` flag, which an older compose refuses
     // (and a refusal here would mark a good image bad).
     let up = files.compose_args(&["up", "-d"]);
     let refs: Vec<&str> = up.iter().map(String::as_str).collect();
     docker(&refs, CANARY_UP).await.map_err(|e| {
-        format!(
+        Fault::Infra(format!(
             "the canary would not start: {}",
             e.chars().take(400).collect::<String>()
-        )
+        ))
     })?;
     let started = tokio::time::Instant::now();
     loop {
         match boot_state(&files.container).await {
             Boot::Healthy => break,
-            Boot::Exited(why) => {
-                let log = logs(&files.container, 400).await;
-                // The config fault if the log names one, else its last word.
-                let said = log_fault(&log).or_else(|| {
-                    log.lines()
-                        .map(str::trim)
-                        .rfind(|l| !l.is_empty())
-                        .map(|l| l.chars().take(200).collect())
-                });
-                return Err(format!(
-                    "the canary {why} before it reported healthy{}",
+            Boot::Exited(how) => {
+                let said = last_word(&files.container).await;
+                return Err(Fault::Image(format!(
+                    "the canary {how} before it reported healthy{}",
                     said.map(|f| format!(" — its log: {f}")).unwrap_or_default()
-                ));
+                )));
             }
-            Boot::Booting if started.elapsed() > CANARY_HEALTH_WAIT => {
-                return Err(format!(
+            Boot::Unreadable(e) if started.elapsed() > CANARY_HEALTH_WAIT => {
+                return Err(Fault::Infra(format!(
+                    "docker would not describe the canary: {e}"
+                )));
+            }
+            Boot::Booting | Boot::Unhealthy | Boot::Unreadable(_)
+                if started.elapsed() > CANARY_HEALTH_WAIT =>
+            {
+                return Err(Fault::Image(format!(
                     "the canary did not report healthy within {} min",
                     CANARY_HEALTH_WAIT.as_secs() / 60
-                ));
+                )));
             }
-            Boot::Booting => tokio::time::sleep(Duration::from_secs(3)).await,
+            _ => tokio::time::sleep(Duration::from_secs(3)).await,
         }
     }
     let booted = started.elapsed().as_secs();
-    let url = canary_url(files).await?;
-    api_answers(&url, Some(&files.api_key))
-        .await
-        .map_err(|e| format!("the canary is healthy but {e}"))?;
-    if !runs_image(&files.container, image).await.unwrap_or(false) {
-        return Err(format!("the canary does not run {image}"));
+    let url = canary_url(files).await.map_err(Fault::Infra)?;
+    let ask = |phase: &'static str| {
+        let url = url.clone();
+        async move {
+            api_answers(&url, Some(&files.api_key))
+                .await
+                .map_err(|e| Fault::Image(format!("the canary is up but {e} ({phase})")))?;
+            if let Some(fault) = log_fault(&logs(&files.container, 2000).await) {
+                return Err(Fault::Image(format!(
+                    "the canary's log says: {fault} ({phase})"
+                )));
+            }
+            Ok::<(), Fault>(())
+        }
+    };
+    ask("at boot").await?;
+    let runs = match (snapshot(&files.container).await, image_id(image).await) {
+        (Ok(s), Ok(want)) => s.image == want,
+        _ => false,
+    };
+    if !runs {
+        return Err(Fault::Infra(format!("the canary does not run {image}")));
     }
     drain_ready(&files.container)
         .await
-        .map_err(|e| format!("the canary booted, but {e}"))?;
-    if let Some(fault) = log_fault(&logs(&files.container, 2000).await) {
-        return Err(format!("the canary booted, but its log says: {fault}"));
+        .map_err(|e| Fault::Image(format!("the canary booted, but {e}")))?;
+    // The soak: up, healthy and answering for the whole of it. The canary is
+    // `restart: no`, so a crash is an exit, never a quiet restart.
+    let soak = canary_soak();
+    let soaking = tokio::time::Instant::now();
+    while soaking.elapsed() < soak {
+        tokio::time::sleep(CANARY_SOAK_EVERY.min(soak)).await;
+        let at = soaking.elapsed().as_secs();
+        match boot_state(&files.container).await {
+            Boot::Healthy => {}
+            Boot::Exited(how) => {
+                let said = last_word(&files.container).await;
+                return Err(Fault::Image(format!(
+                    "the canary {how} {at}s into its soak{}",
+                    said.map(|f| format!(" — its log: {f}")).unwrap_or_default()
+                )));
+            }
+            Boot::Unhealthy => {
+                return Err(Fault::Image(format!(
+                    "the canary turned unhealthy {at}s into its soak"
+                )));
+            }
+            Boot::Booting => {
+                return Err(Fault::Image(format!(
+                    "the canary stopped reporting healthy {at}s into its soak"
+                )));
+            }
+            Boot::Unreadable(e) => {
+                return Err(Fault::Infra(format!(
+                    "docker would not describe the canary {at}s into its soak: {e}"
+                )));
+            }
+        }
+        ask("during its soak").await?;
     }
     Ok(format!(
-        "the canary reported healthy in {booted}s; its API server answered the gateway; its log names no config or migration fault; its drain tools are in place"
+        "the canary reported healthy in {booted}s and stayed healthy for a {}s soak; its API server answered the gateway; its log names no config or migration fault; its drain tools are in place",
+        soak.as_secs()
     ))
 }
 
@@ -286,7 +409,7 @@ mod tests {
 
     #[test]
     fn a_config_or_migration_fault_in_the_log_is_named_and_a_clean_boot_is_not() {
-        let clean = "[2026-11-03 01:02:03] gateway starting\nAPI server listening on 0.0.0.0:8642\nplugins loaded: talaria-events\n";
+        let clean = "[2026-11-03 01:02:03] gateway starting\nAPI server listening on 0.0.0.0:8642\n[config-migrate] HERMES_SKIP_CONFIG_MIGRATION is set; skipping config migration\n";
         assert_eq!(log_fault(clean), None);
         let migrating = "boot\nconfig migration failed: [Errno 30] Read-only file system: '/opt/data/config.yaml'\n";
         assert_eq!(
@@ -297,5 +420,31 @@ mod tests {
         );
         assert!(log_fault("hermes_cli.config.ConfigError: unknown key").is_some());
         assert!(log_fault("PermissionError: [Errno 30] Read-only file system").is_some());
+    }
+
+    #[test]
+    fn the_same_fault_on_two_boots_reads_the_same_and_a_new_one_does_not() {
+        let old = "2026-11-03 01:02:03,100 ERROR mcp: invalid config for server 'x' (pid 41)\n";
+        let new = "2026-11-04 02:03:04,200 ERROR mcp: invalid config for server 'x' (pid 977)\n\
+                   2026-11-04 02:03:05,000 ERROR boot: config migration failed\n";
+        let before = log_faults(old);
+        let after = log_faults(new);
+        assert_eq!(before.len(), 1);
+        let fresh: Vec<&String> = after.iter().filter(|f| !before.contains(f)).collect();
+        assert_eq!(fresh.len(), 1, "{after:?}");
+        assert!(fresh[0].contains("config migration failed"));
+    }
+
+    #[test]
+    fn a_snapshot_reads_dockers_line() {
+        let s = parse_snapshot("abc|sha256:img|restarting|false|3|starting\n");
+        assert!(s.exists && !s.running);
+        assert_eq!(
+            (s.status.as_str(), s.restart_count, s.health.as_deref()),
+            ("restarting", 3, Some("starting"))
+        );
+        let s = parse_snapshot("abc|sha256:img|running|true|0|\n");
+        assert_eq!(s.health, None);
+        assert!(!parse_snapshot("").exists);
     }
 }

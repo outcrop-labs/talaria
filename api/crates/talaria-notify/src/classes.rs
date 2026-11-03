@@ -103,6 +103,13 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
         "gap_reported",
         "Agent image update failed",
     ),
+    // The channel cannot do its job: its checks have failed for days, a
+    // rollout has been open for a week, or its state row is unreadable.
+    (
+        "hermes_channel_stuck",
+        "gap_reported",
+        "Agent image updates stuck",
+    ),
 ];
 
 /// Where a class sits in the center and the matrix.
@@ -476,6 +483,7 @@ mod tests {
             ("mcp_server_down", "gap_reported"),
             // The stable channel's stopped rollout: the workspace's health.
             ("hermes_update_failed", "gap_reported"),
+            ("hermes_channel_stuck", "gap_reported"),
             // Every class id is its own kind.
             ("judge_escalation", "judge_escalation"),
             ("gap_reported", "gap_reported"),

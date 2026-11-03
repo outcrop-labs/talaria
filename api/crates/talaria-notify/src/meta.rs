@@ -159,9 +159,10 @@ pub mod group_key {
     pub fn mcp_down(server_id: &str) -> String {
         format!("mcp:{server_id}:down")
     }
-    /// One Hermes image digest's failed rollout.
-    pub fn hermes_update(digest: &str) -> String {
-        format!("hermes:{digest}:failed")
+    /// The agent image channel's alerts: one open row per topic (a digest's
+    /// failed rollout, `<digest>:failed`; a stuck state, `checks-failing`).
+    pub fn hermes(topic: &str) -> String {
+        format!("hermes:{topic}")
     }
     /// One approval waiting.
     pub fn approval(approval_id: &str) -> String {

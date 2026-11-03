@@ -117,33 +117,53 @@ fn hermes_stripped() -> &'static std::collections::HashSet<&'static str> {
     })
 }
 
-/// The names the Hermes images this instance runs strip beyond the compiled
+/// The names the GOOD Hermes images on record strip beyond the compiled
 /// snapshot: the agent image follows Hermes' stable channel, and its
-/// inspection reads each image's own set (talaria-hermes-channel), which it
-/// adopts here. Only ever added to — a name a newer Hermes strips is refused
-/// as a secret and unset in the sandbox's commands from then on, and the
-/// snapshot stays the floor for the pin every release ships.
+/// inspection reads each image's own set (talaria-hermes-channel). Every
+/// render replaces this from the records ([`set_image_stripped`]), so every
+/// api process holds the same set, an image counts only once it has run well
+/// here, and an image that goes bad stops counting. The snapshot stays the
+/// floor for the pin every release ships.
 static IMAGE_STRIPPED: std::sync::LazyLock<std::sync::RwLock<std::collections::BTreeSet<String>>> =
     std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::BTreeSet::new()));
 
-/// The most names one adoption takes: a stripped set is a few hundred, and
-/// the list comes out of an image, so it is bounded where it is read.
+/// The most names one set holds: a stripped set is a few hundred, and the
+/// list comes out of an image, so it is bounded where it is read.
 const IMAGE_STRIPPED_CAP: usize = 4096;
 
-/// Adopt the names a Hermes image strips (read from the image by the
-/// channel's inspection). Answers how many were new. A name that is not an
-/// env name is dropped.
-pub fn adopt_image_stripped(names: impl IntoIterator<Item = String>) -> usize {
+/// Names Talaria itself hands the sandbox, which no image's list may take
+/// away: a tool that reads one would never see it.
+const MUST_SURVIVE: &[&str] = &[
+    "LLM_API_KEY",
+    "OMP_AUTH_BROKER_TOKEN",
+    "OMP_AUTH_BROKER_URL",
+    "TALARIA_AGENT_KEY",
+    "TALARIA_WORKBENCH_API_KEY",
+];
+
+/// Whether an image's list may add this name: an env name, not one the
+/// snapshot already has, and not one Talaria relies on.
+fn image_may_strip(name: &str) -> bool {
+    name_ok(name)
+        && !hermes_stripped().contains(name)
+        && !MUST_SURVIVE.contains(&name)
+        && !TALARIA_STAMPED.contains(&name)
+        && !TALARIA_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// Replace the image-derived set with `names` (the good images' lists, read
+/// from the records). Answers the names it adds that were not in force
+/// before, for the caller to say so: a per-agent secret stored under one of
+/// them stops being loaded from the next render.
+pub fn set_image_stripped(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let next: std::collections::BTreeSet<String> = names
+        .into_iter()
+        .filter(|n| image_may_strip(n))
+        .take(IMAGE_STRIPPED_CAP)
+        .collect();
     let mut set = IMAGE_STRIPPED.write().unwrap_or_else(|p| p.into_inner());
-    let mut added = 0;
-    for name in names.into_iter().take(IMAGE_STRIPPED_CAP) {
-        if set.len() >= IMAGE_STRIPPED_CAP {
-            break;
-        }
-        if name_ok(&name) && !hermes_stripped().contains(name.as_str()) && set.insert(name) {
-            added += 1;
-        }
-    }
+    let added = next.difference(&set).cloned().collect();
+    *set = next;
     added
 }
 
@@ -157,7 +177,7 @@ fn is_hermes_stripped(name: &str) -> bool {
 
 /// Every name Hermes strips from the commands an agent runs: the pinned
 /// image's snapshot and every name an image this instance runs adds
-/// ([`adopt_image_stripped`]). A command the platform runs in the sandbox on
+/// ([`set_image_stripped`]). A command the platform runs in the sandbox on
 /// the agent's behalf (`docker exec`) unsets these first, so it sees the env
 /// the agent's own terminal would — not one that passes where the agent's
 /// would fail.
@@ -767,23 +787,37 @@ mod tests {
     }
 
     #[test]
-    fn a_name_a_newer_image_strips_is_refused_and_unset_from_then_on() {
+    fn a_name_a_good_image_strips_is_refused_until_the_image_stops_counting() {
         // The stable channel's inspection reads each image's own stripped
         // set; a name only the newer Hermes strips was a secret Talaria
-        // accepted (and a command it ran kept) before it was adopted.
+        // accepted (and a command it ran kept) before the image ran well.
         let added = "ZZ_IMAGE_ONLY_PROVIDER_KEY";
         assert_eq!(reserved(added), None);
-        assert!(!hermes_stripped_names().iter().any(|n| n == added));
-        let n = adopt_image_stripped([
+        let new = set_image_stripped([
             added.to_string(),
             "OPENAI_API_KEY".to_string(), // the snapshot's already
             "not an env name".to_string(),
-            "lower_case".to_string(),
+            // Talaria's own: never taken away, whatever an image lists.
+            "TALARIA_WORKBENCH_API_KEY".to_string(),
+            "LLM_API_KEY".to_string(),
+            "OMP_AUTH_BROKER_TOKEN".to_string(),
+            "TALARIA_ANYTHING".to_string(),
         ]);
-        assert_eq!(n, 1, "only the new, well-formed name is adopted");
+        assert_eq!(new, vec![added.to_string()], "only the new, allowed name");
         assert!(reserved(added).is_some());
         assert!(hermes_stripped_names().iter().any(|n| n == added));
-        assert_eq!(adopt_image_stripped([added.to_string()]), 0);
+        for ours in [
+            "TALARIA_WORKBENCH_API_KEY",
+            "LLM_API_KEY",
+            "OMP_AUTH_BROKER_TOKEN",
+        ] {
+            assert!(!hermes_stripped_names().iter().any(|n| n == ours), "{ours}");
+        }
+        // The same set again adds nothing; an empty set (the image went
+        // bad) drops it, and the secret loads again.
+        assert!(set_image_stripped([added.to_string()]).is_empty());
+        set_image_stripped(Vec::<String>::new());
+        assert_eq!(reserved(added), None);
     }
 
     #[test]
