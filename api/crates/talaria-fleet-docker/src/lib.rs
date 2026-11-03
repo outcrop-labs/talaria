@@ -33,10 +33,12 @@ use std::time::Duration;
 
 mod browser_engine;
 mod lost_turns;
+mod pull;
 pub use browser_engine::{
     MANIFEST_FILE as BROWSER_ENGINE_FILE, manifest_text as browser_engine_manifest,
 };
 pub use lost_turns::discard_lost_turns;
+pub use pull::{PULL_CEILING, PULL_SILENCE, PullProgress, PullStatus};
 
 /// Set from the api binary so `fleet_up` can run preflight without this crate
 /// depending on the rest of the fleet engine.
@@ -1122,16 +1124,13 @@ async fn compose_up(
 /// is pulled once and then kept as cached: re-pull it yourself, or pin a
 /// digest. Done as its own step, ahead of `up`, so a registry problem fails
 /// here — with the running container untouched — and not halfway through a
-/// recreate.
+/// recreate. The pull is the service's one pull in this process (pull.rs):
+/// one already in flight — a hire's, a roll's — is joined, not repeated, and
+/// it runs on its own task, so this caller going away does not cancel it.
 async fn pull_missing(svc: &str) -> Result<(), String> {
-    let args = compose_args(&["pull", "--policy", "missing", "--quiet", svc]);
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    match docker(&refs, Duration::from_secs(1_200)).await {
-        Ok(_) => Ok(()),
-        // A compose too old for `--policy` (before v2.22): `up` still pulls a
-        // missing image itself, just without the early, clean failure.
-        Err(e) if e.contains("unknown flag") => Ok(()),
-        Err(e) => Err(format!("could not pull the image for {svc}: {e}")),
+    match pull::wait(pull::join(svc), None).await {
+        PullStatus::Failed(e) => Err(e),
+        PullStatus::Done | PullStatus::Running(_) => Ok(()),
     }
 }
 
@@ -1141,6 +1140,21 @@ async fn pull_missing(svc: &str) -> Result<(), String> {
 /// home retires `-b` itself, so it pulls first, while `-b` still serves.
 pub async fn pull_agent_image(pg: &PgPool, department: &str) -> Result<(), String> {
     pull_missing(&slot_service(department, active_slot(pg, department).await)).await
+}
+
+/// Start (or join) the pull of a department's image and wait at most
+/// `within` for it: [`PullStatus::Done`] once the image is on the host,
+/// [`PullStatus::Failed`] with docker's reason, or
+/// [`PullStatus::Running`] with what it has brought down so far. The pull
+/// goes on after this answers — the hire's pull stage asks again, a slice at
+/// a time, and shows the progress.
+pub async fn pull_agent_image_within(
+    pg: &PgPool,
+    department: &str,
+    within: Duration,
+) -> PullStatus {
+    let svc = slot_service(department, active_slot(pg, department).await);
+    pull::wait(pull::join(&svc), Some(within)).await
 }
 
 /// Whether the named container exists and is running.

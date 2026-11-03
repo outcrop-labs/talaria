@@ -12,18 +12,34 @@
 // working through its phases, and a server restart mid-boot re-enters from the
 // last stage that finished.
 //
-// THREE STAGES, ONE STEP FUNCTION (the engine's contract is a single `step`
+// FOUR STAGES, ONE STEP FUNCTION (the engine's contract is a single `step`
 // re-entered with a checkpoint; stages are the checkpoint's value):
 //   create → key + def row + v1 config + starter skills + audit
 //   render → write the fleet compose/config files
+//   pull   → the agent image onto the host, only when `start` was asked for
 //   boot   → up + waitHealthy, only when `start` was asked for
+//
+// THE PULL IS ITS OWN STAGE because it is the one part of a hire with no
+// honest bound. The Hermes image is about 1.1 GB to download and 4.5 GB on
+// disk, and a host that lacks it (a fresh install, or every host on the
+// first hire after a pin bump) downloads it at whatever its link does. Inside
+// `boot` it was capped by this run's `max_step_ms`, which a step that blows
+// is filed as an error and never retried: on a link slower than about 2.5
+// MB/s the hire failed at ten minutes with the download still going, and
+// the roster said "starting the container" the whole time. So the pull runs
+// on a task of its own (talaria-fleet-docker's single-flight pull, which
+// every other start and roll joins), and each step of this stage waits a
+// short slice on it and reports what it has downloaded so far as the phase.
+// No step runs long, the roster shows the download moving, and a re-entered
+// step joins the pull already in flight instead of starting it over.
 //
 // RESUME RULES. `create` is the one stage that is not naturally idempotent —
 // createAgent refuses a taken slug — so a driver that dies between the def row
 // and the checkpoint write would, on reclaim, error against its own work. The
 // real deps therefore treat "already exists" as the resume signal and hand
-// back the existing def: the work is done, not failed. `render` and `boot` are
-// idempotent by nature (they rewrite/re-up the same files).
+// back the existing def: the work is done, not failed. `render`, `pull` and
+// `boot` are idempotent by nature (they rewrite/re-up the same files, and a
+// pull of an image the host has is a no-op).
 //
 // THE REAL DEPS ARE THE FLEET WRITE PLANE: createAgent
 // (talaria_fleet_create::create_or_resume), writeSkill, renderFleet,
@@ -84,11 +100,14 @@ pub struct SkillSeed {
     pub content: String,
 }
 
+/// A row checkpointed at `boot` by an image from before the pull stage still
+/// parses and boots as it did: its `up` pulls the image itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HireStage {
     Create,
     Render,
+    Pull,
     Boot,
 }
 
@@ -154,8 +173,14 @@ pub type WriteSkillsFn =
 pub type AuditFn = Arc<dyn Fn(&HiredDef, &str) + Send + Sync>;
 pub type RenderFn =
     Arc<dyn Fn() -> BoxFuture<'static, Result<RenderOutcome, StepError>> + Send + Sync>;
+/// Start (or join) the pull of the department's image and wait one slice on
+/// it: done, failed, or still downloading with what it has so far. Never
+/// waits long — the slice is the dep's, well inside `max_step_ms`.
+pub type PullFn = Arc<dyn Fn(String) -> BoxFuture<'static, PullStatus> + Send + Sync>;
 pub type UpFn = Arc<dyn Fn(String) -> BoxFuture<'static, Result<(), StepError>> + Send + Sync>;
 pub type WaitHealthyFn = Arc<dyn Fn(String) -> BoxFuture<'static, bool> + Send + Sync>;
+
+pub use talaria_fleet_docker::{PullProgress, PullStatus};
 
 #[derive(Clone)]
 pub struct AgentHireDeps {
@@ -163,8 +188,83 @@ pub struct AgentHireDeps {
     pub write_skills: WriteSkillsFn,
     pub audit: AuditFn,
     pub render: RenderFn,
+    pub pull: PullFn,
     pub up: UpFn,
     pub wait_healthy: WaitHealthyFn,
+}
+
+/// How long one step of the pull stage waits on the pull before it reports
+/// progress and comes back. Short enough that the roster's phase moves
+/// every few polls; long enough that a fast or already-present image goes
+/// straight through in one step.
+pub const PULL_SLICE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The sentence a hire whose image could not be downloaded fails with — one
+/// line (the run row keeps the first), saying what happened in words an
+/// admin can act on, then docker's own reason. The agent exists by then:
+/// Retry on the hire's row (`POST /api/fleet/hires/{id}/retry`) or Start on
+/// its card runs the same pull again, which resumes what had arrived.
+pub fn pull_failure_sentence(error: &str) -> String {
+    let lower = error.to_lowercase();
+    let what = if lower.contains("toomanyrequests") || lower.contains("rate limit") {
+        "Docker Hub refused the agent image: this server has reached its pull limit. Sign the \
+         server's docker in (docker login) or wait a few hours, then press Retry (or Start on the agent)."
+    } else if lower.contains("no space left on device") {
+        "The server ran out of disk space downloading the agent image (it needs about 6 GB \
+         free). Free some space, then press Retry (or Start on the agent)."
+    } else if lower.contains("never started the download") {
+        "Docker on the server did not start the agent image download for 10 minutes: it is \
+         overloaded or stuck (check its disk, or restart docker), then press Retry (or Start \
+         on the agent)."
+    } else if lower.contains("stopped making progress") {
+        "The agent image download stopped making progress. Check the server's connection to \
+         the registry, then press Retry (or Start on the agent)."
+    } else {
+        "The agent image could not be downloaded. Press Retry (or Start on the agent) to try again."
+    };
+    let why = error.lines().map(str::trim).find(|l| !l.is_empty());
+    match why {
+        Some(why) => format!("{what} Docker said: {why}"),
+        None => what.to_string(),
+    }
+}
+
+/// How long the hire's second `up` waits for a container the first one's
+/// killed CLI asked docker to create to show up (see the up dep).
+pub const CREATE_LANDS_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The sentence a hire whose container would not start fails with — one line,
+/// with docker's own error rather than compose's first line of progress
+/// ("Container … Creating", which is what the run row kept before).
+pub fn boot_failure_sentence(error: &str) -> String {
+    if error.starts_with("could not pull the image") {
+        // A row checkpointed at `boot` before the pull stage pulls in its up.
+        return pull_failure_sentence(error);
+    }
+    let lines: Vec<&str> = error
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let said = lines
+        .iter()
+        .rev()
+        .find(|l| l.contains("Error") || l.contains("error"))
+        .or(lines.first())
+        .copied()
+        .unwrap_or("");
+    let what = if talaria_fleet_docker::is_timeout(error) {
+        "Docker did not finish starting the agent's container in time (the server's disk may be \
+         busy). Press Retry (or Start on the agent) to try again."
+    } else {
+        "The agent's container could not be started. Press Retry (or Start on the agent) to try \
+         again."
+    };
+    if said.is_empty() {
+        what.to_string()
+    } else {
+        format!("{what} Docker said: {said}")
+    }
 }
 
 /// The stage machine. Pure with respect to the deps: every branch is entered
@@ -257,18 +357,47 @@ pub async fn agent_hire_step(
         });
         let checkpoint = serde_json::to_value(AgentHireCheckpoint {
             def_id: Some(def_id),
-            stage: HireStage::Boot,
+            stage: HireStage::Pull,
             warnings: render.warnings,
         })
         .map_err(|e| e.to_string())?;
         return Ok(StepResult::Next {
             checkpoint,
-            phase: Some("starting the container".into()),
+            phase: Some("checking the agent image".into()),
         });
     }
 
+    if cp.stage == HireStage::Pull {
+        return match (deps.pull)(input.department.clone()).await {
+            PullStatus::Done => {
+                let checkpoint = serde_json::to_value(AgentHireCheckpoint {
+                    def_id: Some(def_id),
+                    stage: HireStage::Boot,
+                    warnings: cp.warnings,
+                })
+                .map_err(|e| e.to_string())?;
+                Ok(StepResult::Next {
+                    checkpoint,
+                    phase: Some("starting the container".into()),
+                })
+            }
+            // Still downloading: the same checkpoint again, with what has
+            // arrived so far as the phase. The next step joins the same pull.
+            PullStatus::Running(progress) => {
+                let checkpoint = serde_json::to_value(&cp).map_err(|e| e.to_string())?;
+                Ok(StepResult::Next {
+                    checkpoint,
+                    phase: Some(progress.phase()),
+                })
+            }
+            PullStatus::Failed(error) => Err(pull_failure_sentence(&error)),
+        };
+    }
+
     // boot
-    (deps.up)(input.department.clone()).await?;
+    (deps.up)(input.department.clone())
+        .await
+        .map_err(|e| boot_failure_sentence(&e))?;
     let healthy = (deps.wait_healthy)(input.department.clone()).await;
     (ctx.log)(if healthy {
         format!("{} is up and healthy", input.display_name)
@@ -400,6 +529,20 @@ pub fn real_agent_hire_deps(state: talaria_state::AppState) -> AgentHireDeps {
                 })
             })
         },
+        pull: {
+            let pg = state.pg.clone();
+            Arc::new(move |department: String| {
+                let pg = pg.clone();
+                Box::pin(async move {
+                    // The pull runs on a task of its own inside fleet-docker
+                    // and outlives this wait: a slice that ends, a step the
+                    // engine drops, or a run cancelled mid-download leaves
+                    // the download going for whoever asks next.
+                    talaria_fleet_docker::pull_agent_image_within(&pg, &department, PULL_SLICE)
+                        .await
+                })
+            })
+        },
         up: {
             let pg = state.pg.clone();
             Arc::new(move |department: String| {
@@ -418,20 +561,53 @@ pub fn real_agent_hire_deps(state: talaria_state::AppState) -> AgentHireDeps {
                     // verb with it, halfway — `docker()` kills its CLI with
                     // the future that waits on it. The step still waits for
                     // the verdict; a re-entered step finds the container.
+                    //
+                    // An `up` killed at its deadline that did not land gets
+                    // ONE more: measured under heavy IO, compose had created
+                    // the container and was killed before the start, leaving
+                    // it `Created` with the hire failed — and a second `up`
+                    // starts exactly that container in seconds. Any other
+                    // failure is compose's answer, and repeating it would
+                    // only repeat it.
                     let up = tokio::spawn(async move {
-                        match talaria_fleet_docker::fleet_up(&pg, &department).await {
-                            Ok(_) => Ok(()),
-                            Err(e)
-                                if talaria_fleet_docker::up_landed(&pg, &department, &e).await =>
-                            {
-                                tracing::warn!(
-                                    "[fleet] hire of {department}: compose reported a failure ({e}), but the container runs the current render — going on"
-                                );
-                                Ok(())
-                            }
-                            Err(e) => {
-                                tracing::warn!("[fleet] hire of {department}: up failed: {e}");
+                        let mut tries = 0;
+                        loop {
+                            tries += 1;
+                            match talaria_fleet_docker::fleet_up(&pg, &department).await {
+                                Ok(_) => return Ok(()),
                                 Err(e)
+                                    if talaria_fleet_docker::up_landed(&pg, &department, &e)
+                                        .await =>
+                                {
+                                    tracing::warn!(
+                                        "[fleet] hire of {department}: compose reported a failure ({e}), but the container runs the current render — going on"
+                                    );
+                                    return Ok(());
+                                }
+                                Err(e) if tries == 1 && talaria_fleet_docker::is_timeout(&e) => {
+                                    tracing::warn!(
+                                        "[fleet] hire of {department}: up ran out its time and did not land ({e}) — once more"
+                                    );
+                                    // The killed CLI's create may still be
+                                    // landing in the daemon. Measured: a
+                                    // second `up` sent before docker showed
+                                    // the container failed on the name
+                                    // ("Conflict. The container name … is
+                                    // already in use") and the container
+                                    // turned up `Created` a minute later. So
+                                    // wait for docker to show it first.
+                                    let until = tokio::time::Instant::now() + CREATE_LANDS_WITHIN;
+                                    while talaria_fleet_docker::observe(&pg, &department).await
+                                        == talaria_fleet_docker::Observed::Absent
+                                        && tokio::time::Instant::now() < until
+                                    {
+                                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("[fleet] hire of {department}: up failed: {e}");
+                                    return Err(e);
+                                }
                             }
                         }
                     });
@@ -478,13 +654,17 @@ pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
                 })
             }),
             audience: Arc::new(audience),
-            // Boot is the long stage: a cold pull plus the healthcheck window
-            // is waitHealthy's own two-minute ceiling, and the up before it
-            // can take its time building. The step ceiling clears the worst
-            // case rather than the typical one; a step that blows THIS is
-            // filed as an error, not retried, because it is probably still
-            // running.
-            max_step_ms: 10 * 60_000,
+            // Boot is the long stage: an up (two minutes at most, its
+            // settle window, and — when it ran out its time without landing
+            // — up to `CREATE_LANDS_WITHIN` for the create to show and a
+            // second up) and waitHealthy's own two-minute window: about ten
+            // minutes in the worst case measured on a saturated disk. The image is already
+            // on the host by then — the pull stage's steps each wait one
+            // `PULL_SLICE` and come back, however long the download takes.
+            // The step ceiling clears the worst case rather than the typical
+            // one; a step that blows THIS is filed as an error, not retried,
+            // because it is probably still running.
+            max_step_ms: 15 * 60_000,
             idle_step_ms: None,
             // No override — the default three.
             max_attempts: DEFAULT_MAX_ATTEMPTS,
@@ -625,6 +805,16 @@ mod tests {
                     })
                 })
             },
+            pull: {
+                let calls = calls.clone();
+                Arc::new(move |_| {
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        calls.lock().unwrap().push("pull".into());
+                        PullStatus::Done
+                    })
+                })
+            },
             up: {
                 let calls = calls.clone();
                 Arc::new(move |_| {
@@ -654,7 +844,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn walks_create_render_boot_each_stage_entered_from_the_last_checkpoint() {
+    async fn walks_create_render_pull_boot_each_stage_entered_from_the_last_checkpoint() {
         let (calls, deps) = recording();
 
         let a = agent_hire_step(ctx(&input(true), None), &deps)
@@ -678,12 +868,28 @@ mod tests {
         };
         assert_eq!(
             checkpoint,
+            serde_json::json!({"defId": "def-1", "stage": "pull", "warnings": ["one warning"]})
+        );
+        assert_eq!(phase, Some("checking the agent image".to_string()));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["create", "skills", "audit", "render"]
+        );
+
+        let p = agent_hire_step(ctx(&input(true), Some(cp_of_from(checkpoint))), &deps)
+            .await
+            .unwrap();
+        let StepResult::Next { checkpoint, phase } = p else {
+            panic!("expected next after pull")
+        };
+        assert_eq!(
+            checkpoint,
             serde_json::json!({"defId": "def-1", "stage": "boot", "warnings": ["one warning"]})
         );
         assert_eq!(phase, Some("starting the container".to_string()));
         assert_eq!(
             *calls.lock().unwrap(),
-            vec!["create", "skills", "audit", "render"]
+            vec!["create", "skills", "audit", "render", "pull"]
         );
 
         let c = agent_hire_step(ctx(&input(true), Some(cp_of_from(checkpoint))), &deps)
@@ -698,7 +904,9 @@ mod tests {
         );
         assert_eq!(
             *calls.lock().unwrap(),
-            vec!["create", "skills", "audit", "render", "up", "healthy"]
+            vec![
+                "create", "skills", "audit", "render", "pull", "up", "healthy"
+            ]
         );
     }
 
@@ -753,7 +961,13 @@ mod tests {
         let c = agent_hire_step(ctx(&input(true), Some(cp_of_from(checkpoint))), &deps)
             .await
             .unwrap();
-        let StepResult::Done { result } = c else {
+        let StepResult::Next { checkpoint, .. } = c else {
+            panic!("expected next after pull")
+        };
+        let d = agent_hire_step(ctx(&input(true), Some(cp_of_from(checkpoint))), &deps)
+            .await
+            .unwrap();
+        let StepResult::Done { result } = d else {
             panic!("expected done")
         };
         assert_eq!(result["healthy"], serde_json::json!(false));
@@ -833,5 +1047,188 @@ mod tests {
             "the create error carries through: {err}"
         );
         assert_eq!(*calls.lock().unwrap(), Vec::<String>::new());
+    }
+    fn at(stage: HireStage) -> AgentHireCheckpoint {
+        AgentHireCheckpoint {
+            def_id: Some("def-1".into()),
+            stage,
+            warnings: vec!["kept".into()],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slow_pull_stays_its_own_stage_and_says_what_has_arrived_until_it_lands() {
+        // The pull answers a slice at a time: twice still downloading, then
+        // done. Each step comes back at once with the same checkpoint and
+        // the download so far as its phase, and nothing touches the
+        // container until the image is on the host. The old machine pulled
+        // inside boot's one step, under max_step_ms.
+        let (calls, deps) = recording();
+        let answers = Arc::new(Mutex::new(vec![
+            PullStatus::Done,
+            PullStatus::Running(PullProgress {
+                downloaded: 1_020_000_000,
+                layers_ready: 36,
+                layers: 38,
+                unpacking: true,
+                started: tokio::time::Instant::now(),
+            }),
+            PullStatus::Running(PullProgress {
+                downloaded: 412_000_000,
+                layers_ready: 36,
+                layers: 38,
+                unpacking: false,
+                started: tokio::time::Instant::now(),
+            }),
+        ]));
+        let deps = AgentHireDeps {
+            pull: {
+                let calls = calls.clone();
+                Arc::new(move |department| {
+                    assert_eq!(department, "research");
+                    let next = answers.lock().unwrap().pop().expect("asked once too often");
+                    calls.lock().unwrap().push("pull".into());
+                    Box::pin(async move { next })
+                })
+            },
+            ..deps
+        };
+
+        let mut cp = at(HireStage::Pull);
+        let mut phases = Vec::new();
+        loop {
+            let step = agent_hire_step(ctx(&input(true), Some(cp.clone())), &deps)
+                .await
+                .unwrap();
+            let StepResult::Next { checkpoint, phase } = step else {
+                panic!("the pull stage only ever moves on")
+            };
+            phases.push(phase.unwrap_or_default());
+            let next = cp_of_from(checkpoint);
+            if next.stage == HireStage::Boot {
+                assert_eq!(next.warnings, vec!["kept".to_string()]);
+                break;
+            }
+            assert_eq!(next, cp, "a pull still running keeps its checkpoint");
+            cp = next;
+        }
+        assert_eq!(
+            phases,
+            vec![
+                "downloading the agent image — 412 MB so far, 36 of 38 layers ready",
+                "unpacking the agent image — 1.0 GB so far, 36 of 38 layers ready",
+                "starting the container",
+            ]
+        );
+        assert_eq!(*calls.lock().unwrap(), vec!["pull", "pull", "pull"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_pull_fails_the_hire_with_what_to_do_and_never_boots() {
+        let (calls, deps) = recording();
+        let deps = AgentHireDeps {
+            pull: Arc::new(|_| {
+                Box::pin(async move {
+                    PullStatus::Failed(
+                        "could not pull the image for agent-research: docker compose failed: \
+                         toomanyrequests: You have reached your unauthenticated pull rate limit."
+                            .into(),
+                    )
+                })
+            }),
+            ..deps
+        };
+        let err = agent_hire_step(ctx(&input(true), Some(at(HireStage::Pull))), &deps)
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("Docker Hub refused the agent image"),
+            "{err}"
+        );
+        assert!(err.contains("press Retry (or Start on the agent)"), "{err}");
+        assert!(
+            err.contains("toomanyrequests"),
+            "docker's own reason is kept: {err}"
+        );
+        assert!(!err.contains('\n'), "the run row keeps one line: {err}");
+        assert_eq!(*calls.lock().unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_boot_failure_keeps_docker_s_error_not_compose_s_progress() {
+        // Verbatim shape of a failed second up, measured on this branch.
+        let e = "docker compose failed: Container talaria-wt-rel-hire-fleet-agent-fxone-1 Creating \n \
+                 service:agent-fxone:1 Error response from daemon: Conflict. The container name \
+                 \"/talaria-wt-rel-hire-fleet-agent-fxone-1\" is already in use by container \"9be6\". \n\
+                 Error response from daemon: Conflict. The container name \"/x\" is already in use.";
+        let s = boot_failure_sentence(e);
+        assert!(
+            s.starts_with("The agent's container could not be started."),
+            "{s}"
+        );
+        assert!(s.ends_with("Docker said: Error response from daemon: Conflict. The container name \"/x\" is already in use."), "{s}");
+        assert!(!s.contains('\n'), "{s}");
+        let t = boot_failure_sentence("docker compose …: timed out after 120s");
+        assert!(t.starts_with("Docker did not finish starting"), "{t}");
+        let p = boot_failure_sentence(
+            "could not pull the image for agent-ops: docker compose failed: manifest unknown",
+        );
+        assert!(
+            p.starts_with("The agent image could not be downloaded."),
+            "{p}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_up_fails_the_hire_with_docker_s_reason() {
+        let (_, deps) = recording();
+        let deps = AgentHireDeps {
+            up: Arc::new(|_| {
+                Box::pin(async move {
+                    Err("docker compose failed: Container x Creating \nError response from daemon: port is already allocated".into())
+                })
+            }),
+            ..deps
+        };
+        let err = agent_hire_step(ctx(&input(true), Some(at(HireStage::Boot))), &deps)
+            .await
+            .unwrap_err();
+        assert!(
+            err.ends_with("Docker said: Error response from daemon: port is already allocated"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_pull_failure_reads_as_what_an_admin_can_do_about_it() {
+        let full = pull_failure_sentence(
+            "could not pull the image for agent-ops: docker compose failed: write /var/lib/docker/x: no space left on device",
+        );
+        assert!(
+            full.starts_with("The server ran out of disk space"),
+            "{full}"
+        );
+        let stalled = pull_failure_sentence(
+            "could not pull the image for agent-ops: the download stopped making progress (nothing from docker for 10 min) — downloading the agent image — 412 MB so far",
+        );
+        assert!(
+            stalled.starts_with("The agent image download stopped making progress"),
+            "{stalled}"
+        );
+        let never = pull_failure_sentence(
+            "could not pull the image for agent-ops: docker never started the download (nothing from docker for 10 min)",
+        );
+        assert!(
+            never.starts_with("Docker on the server did not start"),
+            "{never}"
+        );
+        let other = pull_failure_sentence(
+            "could not pull the image for agent-ops: docker compose failed: manifest unknown\nmore",
+        );
+        assert_eq!(
+            other,
+            "The agent image could not be downloaded. Press Retry (or Start on the agent) to try \
+             again. Docker said: could not pull the image for agent-ops: docker compose failed: manifest unknown"
+        );
     }
 }
