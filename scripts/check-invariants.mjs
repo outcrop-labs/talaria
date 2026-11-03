@@ -3219,13 +3219,15 @@ const UNSET_SEAM_CENSUS = [
         'that is the only URL the desktop updater reads (tauri.conf.json). release.yml creates and',
         'edits every vX.Y.Z release with --latest=false. desktop-package.yml creates its desktop-v',
         'mint with --latest=false and marks it Latest with `gh release edit "$TAG" --latest` after',
-        'the latest.json upload, never before. Any other `gh release create` says --prerelease or',
-        'an explicit --latest=false. RELEASING.md, "The desktop installers".',
+        'the latest.json upload, never before, and only inside `if [ "$MINT" = true ]` with MINT',
+        "bound to needs.resolve.outputs.mint: `attach` also runs for release.yml's vX.Y.Z tags. Any",
+        'other `gh release create` says --prerelease or an explicit --latest=false. RELEASING.md,',
+        '"The desktop installers".',
       ],
       found,
     })
   } else {
-    notes.push('release Latest flag: release.yml never takes it; desktop-package.yml takes it after latest.json lands')
+    notes.push('release Latest flag: release.yml never takes it; desktop-package.yml takes it after latest.json lands, on the mint path only')
   }
 }
 
