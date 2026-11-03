@@ -23,7 +23,7 @@ export type WaitingFamily = 'braille' | 'grid'
  * semantic one — it answers "does this fit", not "does this mean the right
  * thing". Semantics are `WaitingRole` below.
  */
-export type WaitingSlot = 'button' | 'inline' | 'status'
+export type WaitingSlot = 'tab' | 'button' | 'inline' | 'status'
 
 /**
  * What the wait MEANS, mapped to Mercury's state table (spec §9).
@@ -93,9 +93,14 @@ export interface WaitingState {
  * 28px button either overflows it or shrinks until the dots merge. Everything
  * fits `inline` and `status`; the difference between those two is the size the
  * call site renders at, not the set it draws from.
+ *
+ * A `tab` takes the place of a nav icon, so it holds exactly one square: a
+ * single braille cell, or a grid drawn at the icon's size. Anything wider
+ * reaches into the next tab.
  */
 function slotsFor(family: WaitingFamily, cols: number): readonly WaitingSlot[] {
-  if (family === 'grid') return ['inline', 'status']
+  if (family === 'grid') return ['tab', 'inline', 'status']
+  if (cols === 1) return ['tab', 'button', 'inline', 'status']
   return cols <= 3 ? ['button', 'inline', 'status'] : ['inline', 'status']
 }
 

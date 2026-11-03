@@ -8,7 +8,7 @@
 //   <div transition:fade>            import { fade } from '@/lib/motion'
 //   <div in:fly={{ y: 8 }}>          import { fly } from '@/lib/motion'
 import { flip as svFlip, type FlipParams, type AnimationConfig } from 'svelte/animate'
-import { quintOut } from 'svelte/easing'
+import { cubicOut, quintOut } from 'svelte/easing'
 import {
   crossfade as svCrossfade,
   fade as svFade,
@@ -240,6 +240,21 @@ export function pop(
     delay,
     easing: quintOut,
     css: (t, u) => `opacity: ${t}; transform: translateY(${u * y}px) scale(${start + t * (1 - start)})`,
+  }
+}
+
+/** Two states of one object trading one spot: a tab's icon and its waiting
+ *  glyph. The 2px blur makes the pair read as one thing changing rather than
+ *  two overlapping, and the scale starts at 0.9 because nothing appears from
+ *  nothing. Pass a shorter duration on `out:`. Reduced motion keeps only the
+ *  fade. */
+export function swap(node: Element, params?: { duration?: number }): TransitionConfig {
+  if (prefersReducedMotion()) return svFade(node, { duration: 120 })
+  const { duration = 180 } = params ?? {}
+  return {
+    duration,
+    easing: cubicOut,
+    css: (t, u) => `opacity: ${t}; filter: blur(${u * 2}px); transform: scale(${0.9 + 0.1 * t})`,
   }
 }
 

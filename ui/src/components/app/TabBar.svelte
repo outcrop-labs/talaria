@@ -30,7 +30,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import type { NavItem } from '@/lib/nav'
-  import NavIcon from './NavIcon.svelte'
+  import TabFace from './TabFace.svelte'
   import RailTooltip from './RailTooltip.svelte'
   import DesktopSwitcher from './DesktopSwitcher.svelte'
   import SidebarAssistant from './SidebarAssistant.svelte'
@@ -43,6 +43,9 @@
   import { useAppGrants, useDeniedViews } from '@/lib/session'
   import { manageArea, MANAGE_HOME } from '@/lib/manage-area'
   import { edgeFade, revealCurrent } from '@/lib/tab-strip'
+  import { readout, tabWorking } from '@/lib/tab-working'
+  import { useWorking } from '@/lib/working.svelte'
+  import { swap } from '@/lib/motion'
   import { cn } from '@/lib/cn'
   import { p, route } from '@/router'
 
@@ -51,6 +54,7 @@
   const denied = useDeniedViews()
   const appGrants = useAppGrants()
   const badges = useNavBadges(() => route.pathname)
+  const working = useWorking()
 
   const appsQuery = useEnabledApps()
   const appsList = listQuery(appsQuery, { title: 'App links unavailable', variant: 'inline' })
@@ -66,10 +70,11 @@
   )
   const activeCandidates = $derived([...row, ...(manageSection ? [manageSection] : [])])
   const activePath = $derived(navActiveItem(route.pathname, activeCandidates)?.to ?? null)
+  const workingElsewhere = $derived(readout(row.flatMap((s) => s.items), working.current, activePath))
 </script>
 
 {#snippet face(item: NavItem, size: number)}
-  <NavIcon icon={item.icon} {size} />
+  <TabFace icon={item.icon} {size} site={tabWorking(item.to, working.current)?.site ?? null} />
 {/snippet}
 
 {#snippet badgeMark(badge: number | null, className: string)}
@@ -138,6 +143,23 @@
   </div>
 
   <div class="flex shrink-0 items-center gap-2">
+    {#if workingElsewhere}
+      {@const w = workingElsewhere}
+      <a
+        href={w.lead.href}
+        title={w.title}
+        aria-label="{w.count} working. {w.title.replaceAll('\n', '. ')}"
+        class="flex h-7 max-w-[18rem] shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
+        in:swap={{ duration: 200 }}
+        out:swap={{ duration: 120 }}
+      >
+        <TabFace icon={w.tab.icon} size={12} site={w.site} />
+        <span class="font-mono text-[10px] uppercase leading-3 tracking-[0.08em]"
+          >{w.count}<span class="hidden pl-1 @2xl:inline">working</span></span
+        >
+        <span class="hidden min-w-0 truncate font-sans text-[12px] leading-4 text-fg @5xl:block">{w.lead.label}</span>
+      </a>
+    {/if}
     {#if appsBroken}
       <RailTooltip label="App links unavailable; retry">
         <button

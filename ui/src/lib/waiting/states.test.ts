@@ -4,7 +4,9 @@ import { ANIMATIONS, AMBIENT, IMMEDIATE, STANDARD } from './animations'
 import { GRID_ANIMATIONS } from './grid-animations'
 import { rasterise, cellsKey } from './braille'
 import { clamp01 } from './field'
-import { WAITING_STATES } from './registry'
+import { WAITING_STATES, waitingState } from './registry'
+import { deal } from './rotation'
+import { WAITING_SITES, WAITING_SITE_KEYS } from './sites'
 
 // The rules the set was built to satisfy, as assertions rather than as a
 // paragraph on a gallery page nobody runs. Each of these caught a real bug in
@@ -138,4 +140,25 @@ test('braille cell widths match what the registry advertises', () => {
   for (const a of ANIMATIONS) {
     assert.equal(rasterise(a.cols, 0, a.field, a.cellAlpha).length, a.cols, `${a.id} width`)
   }
+})
+
+test('every state dealt to a tab slot is one cell wide', () => {
+  // A tab glyph replaces a nav icon. A second braille column reaches into the
+  // next tab; a grid is one square by construction.
+  const tabSites = WAITING_SITE_KEYS.filter((k) => WAITING_SITES[k].slot === 'tab')
+  assert.ok(tabSites.length > 0, 'no tab sites')
+  const families = new Set<string>()
+  for (let seed = 0; seed < 500; seed++) {
+    const hand = deal(seed)
+    for (const key of tabSites) {
+      const state = waitingState(hand[key])!
+      families.add(state.family)
+      if (state.family === 'grid') continue
+      const a = ANIMATIONS.find((x) => x.id === state.slug)!
+      for (const p of phases) {
+        assert.equal(rasterise(a.cols, p, a.field, a.cellAlpha).length, 1, `seed ${seed}: ${key} got ${a.id}`)
+      }
+    }
+  }
+  assert.deepEqual([...families].sort(), ['braille', 'grid'], 'tab sites are dealt from one family only')
 })
