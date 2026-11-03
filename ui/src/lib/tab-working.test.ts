@@ -37,8 +37,8 @@ test('an idle or missing arm draws nothing', () => {
 })
 
 test('the readout counts views other than the open one and leads with the first in bar order', () => {
-  const r = readout(TABS, busy, '/comms')!
-  assert.equal(r.count, 2)
+  const r = readout(TABS, busy, '/comms/agent/m/1')!
+  assert.equal(r.elsewhere, 2)
   assert.equal(r.site, 'nav/tab-work')
   assert.equal(r.lead.href, '/work/2')
   assert.equal(r.title, 'Work: Migrate auth\nBoards: Ticket 9')
@@ -53,6 +53,13 @@ test('the open view alone working shows no readout', () => {
 test('a view the viewer has no tab for never counts', () => {
   const noBoards = TABS.filter((t) => t.to !== '/boards')
   const r = readout(noBoards, busy, '/home')!
-  assert.equal(r.count, 2)
+  assert.equal(r.elsewhere, 2)
   assert.ok(!r.title.includes('Ticket 9'))
+})
+
+test('the Work harness at its legacy addresses is the open Work view', () => {
+  const onlyWork: Working = { comms: null, work: busy.work, boards: null }
+  for (const path of ['/work/2', '/plan/p1', '/research/run-1', '/research']) {
+    assert.equal(readout(TABS, onlyWork, path), null, path)
+  }
 })

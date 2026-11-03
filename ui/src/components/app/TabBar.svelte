@@ -70,7 +70,7 @@
   )
   const activeCandidates = $derived([...row, ...(manageSection ? [manageSection] : [])])
   const activePath = $derived(navActiveItem(route.pathname, activeCandidates)?.to ?? null)
-  const workingElsewhere = $derived(readout(row.flatMap((s) => s.items), working.current, activePath))
+  const workingElsewhere = $derived(readout(row.flatMap((s) => s.items), working.current, route.pathname))
 </script>
 
 {#snippet face(item: NavItem, size: number)}
@@ -148,14 +148,14 @@
       <a
         href={w.lead.href}
         title={w.title}
-        aria-label="{w.count} working. {w.title.replaceAll('\n', '. ')}"
+        aria-label="{w.elsewhere} working. {w.title.replaceAll('\n', '. ')}"
         class="flex h-7 max-w-[18rem] shrink-0 items-center gap-1.5 rounded-md border border-line px-2 text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
         in:swap={{ duration: 200 }}
         out:swap={{ duration: 120 }}
       >
         <TabFace icon={w.tab.icon} size={12} site={w.site} />
         <span class="font-mono text-[10px] uppercase leading-3 tracking-[0.08em]"
-          >{w.count}<span class="hidden pl-1 @2xl:inline">working</span></span
+          >{w.elsewhere}<span class="hidden pl-1 @2xl:inline">working</span></span
         >
         <span class="hidden min-w-0 truncate font-sans text-[12px] leading-4 text-fg @5xl:block">{w.lead.label}</span>
       </a>

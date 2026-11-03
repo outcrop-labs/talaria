@@ -41,8 +41,6 @@ export const WAITING_SITES = {
   },
 
   /* ── Tab bar ──────────────────────────────────────────────────────────── */
-  // One per arm /api/working serves. A view with no arm has no row, so it
-  // cannot be given a glyph by accident.
   'nav/tab-comms': {
     role: 'background',
     slot: 'tab',

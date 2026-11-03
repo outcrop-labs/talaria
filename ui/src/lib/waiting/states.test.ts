@@ -143,8 +143,6 @@ test('braille cell widths match what the registry advertises', () => {
 })
 
 test('every state dealt to a tab slot is one cell wide', () => {
-  // A tab glyph replaces a nav icon. A second braille column reaches into the
-  // next tab; a grid is one square by construction.
   const tabSites = WAITING_SITE_KEYS.filter((k) => WAITING_SITES[k].slot === 'tab')
   assert.ok(tabSites.length > 0, 'no tab sites')
   const families = new Set<string>()

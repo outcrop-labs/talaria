@@ -94,9 +94,8 @@ export interface WaitingState {
  * fits `inline` and `status`; the difference between those two is the size the
  * call site renders at, not the set it draws from.
  *
- * A `tab` takes the place of a nav icon, so it holds exactly one square: a
- * single braille cell, or a grid drawn at the icon's size. Anything wider
- * reaches into the next tab.
+ * A `tab` holds one square: a single braille cell, or a grid drawn at the
+ * icon's size.
  */
 function slotsFor(family: WaitingFamily, cols: number): readonly WaitingSlot[] {
   if (family === 'grid') return ['tab', 'inline', 'status']
