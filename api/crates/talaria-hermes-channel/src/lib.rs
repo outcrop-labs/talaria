@@ -362,18 +362,21 @@ async fn prune_if_due(engine: &Engine<'_>) -> Option<String> {
         return None;
     }
     let state = engine.load().await.ok()?;
-    // Not while agents move; a rollout still preparing or waiting (one held
-    // for disk room among them) is no reason not to make room — the plan
-    // keeps its image and the one it leaves.
-    if state
-        .rollout
-        .as_ref()
-        .is_some_and(|r| r.open() && !matches!(r.phase, Phase::Preparing | Phase::Waiting))
-    {
+    if !prune_may_run(&state) {
         return None;
     }
     PRUNED_AT.store(now, Ordering::Relaxed);
     prune(engine, &state).await
+}
+
+/// Whether the prune may run now: not while agents move. A rollout still
+/// preparing or waiting (one held for disk room among them) is no reason not
+/// to make room — the plan keeps its image and the one it leaves.
+fn prune_may_run(state: &ChannelState) -> bool {
+    !state
+        .rollout
+        .as_ref()
+        .is_some_and(|r| r.open() && !matches!(r.phase, Phase::Preparing | Phase::Waiting))
 }
 
 /// Remove [`prune_plan`]'s images now: None when there was nothing to
@@ -1225,6 +1228,30 @@ mod tests {
         };
         let plan = prune_plan(&open, &records, &assigned, &d(8), now);
         assert!(!plan.contains(&d(4)) && !plan.contains(&d(6)));
+    }
+
+    #[test]
+    fn the_prune_waits_while_agents_move_but_not_while_a_rollout_waits_for_room() {
+        let with = |phase: Phase| ChannelState {
+            rollout: Some(images::Rollout {
+                phase,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(prune_may_run(&ChannelState::default()));
+        for phase in [
+            Phase::Preparing,
+            Phase::Waiting,
+            Phase::Done,
+            Phase::Failed,
+            Phase::Cancelled,
+        ] {
+            assert!(prune_may_run(&with(phase)), "{phase:?}");
+        }
+        for phase in [Phase::Canary, Phase::Rolling, Phase::Soaking] {
+            assert!(!prune_may_run(&with(phase)), "{phase:?}");
+        }
     }
 
     #[test]

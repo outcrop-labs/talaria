@@ -2655,3 +2655,29 @@ async fn an_agent_busy_every_night_does_not_hold_the_fleet_off_stable() {
     assert_eq!(w.fake.on(&w.slug(0)), latest, "the busy one waits");
     w.done().await;
 }
+
+/// Surface S3: a problem the canary finds on every step is listed once.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_contract_problem_found_again_is_listed_once() {
+    let w = World::new("dedupe", 1).await;
+    let p = vec!["/api/jobs answered 404".to_string()];
+    for _ in 0..3 {
+        images::note_contract(&w.pg, &w.new, &p).await.unwrap();
+    }
+    images::note_contract(
+        &w.pg,
+        &w.new,
+        &["/health/detailed answered 500".to_string()],
+    )
+    .await
+    .unwrap();
+    let rec = images::record(&w.pg, &w.new).await.unwrap().unwrap();
+    let mut got = rec.contract_problems();
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["/api/jobs answered 404", "/health/detailed answered 500"]
+    );
+    w.done().await;
+}

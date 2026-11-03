@@ -216,6 +216,18 @@ impl Tally {
 static PULLS: LazyLock<Mutex<HashMap<String, watch::Receiver<PullStatus>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Each key's last pull failure, kept until [`take_failed`] reads it: a pull
+/// that fails while nobody waits on it (a background preparation asks once a
+/// minute, for seconds) is otherwise forgotten, and the next ask starts
+/// another at once — no backoff. A pull that succeeds clears it.
+static FAILED: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The last failure of `key`'s pull since it was last read, if any.
+pub(crate) fn take_failed(key: &str) -> Option<String> {
+    FAILED.lock().unwrap_or_else(|p| p.into_inner()).remove(key)
+}
+
 /// What one pull runs, and how long it may go quiet or last. The real one is
 /// compose's ([`PullCmd::compose`]); a test's is a script.
 pub(crate) struct PullCmd {
@@ -311,9 +323,19 @@ fn join_with(key: &str, cmd: impl FnOnce() -> PullCmd) -> watch::Receiver<PullSt
     let cmd = cmd();
     tokio::spawn(async move {
         let end = match run(&key, cmd, &tx).await {
-            Ok(()) => PullStatus::Done,
+            Ok(()) => {
+                FAILED
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&key);
+                PullStatus::Done
+            }
             Err(e) => {
                 tracing::warn!("[fleet] {e}");
+                FAILED
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(key.clone(), e.clone());
                 PullStatus::Failed(e)
             }
         };
@@ -823,6 +845,41 @@ mod tests {
             e.contains("Error response from daemon: manifest unknown"),
             "{e}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failure_nobody_waited_for_is_kept_until_it_is_read() {
+        let rx = join_with("test-unwatched", || {
+            sh("echo nope >&2; exit 3".into(), Duration::from_secs(30))
+        });
+        // Nobody waits: the pull ends on its own.
+        drop(rx);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while running_key("test-unwatched") && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let e = take_failed("test-unwatched").expect("the failure is kept");
+        assert!(
+            e.contains("could not pull the image for test-unwatched"),
+            "{e}"
+        );
+        assert_eq!(take_failed("test-unwatched"), None, "read once");
+        // A pull that succeeds clears an unread failure.
+        let _ = wait(
+            join_with("test-unwatched", || {
+                sh("exit 3".into(), Duration::from_secs(30))
+            }),
+            None,
+        )
+        .await;
+        let _ = wait(
+            join_with("test-unwatched", || {
+                sh("exit 0".into(), Duration::from_secs(30))
+            }),
+            None,
+        )
+        .await;
+        assert_eq!(take_failed("test-unwatched"), None);
     }
 
     #[tokio::test]

@@ -688,6 +688,15 @@ pub async fn prepare(
     let key = format!("hermes-image:{}", record.digest);
     let ours = talaria_fleet_docker::pull_running(&key);
     if ours || !image_present(&image).await {
+        // A download of ours that failed since the last step (a stalled
+        // disk, a lost network) is a host failure to back off from, not a
+        // reason to start another now.
+        if !ours && let Some(e) = talaria_fleet_docker::take_pull_failure(&key) {
+            return Prepared::Failed {
+                why: e,
+                definitive: false,
+            };
+        }
         if !ours {
             // Someone else's download goes first.
             if talaria_fleet_docker::pulls_running() > 0 {
@@ -766,6 +775,8 @@ pub async fn prepare(
         {
             PullStatus::Running(p) => return Prepared::Pulling(p.phase()),
             PullStatus::Failed(e) => {
+                // Seen here: not counted again at the next step.
+                let _ = talaria_fleet_docker::take_pull_failure(&key);
                 return Prepared::Failed {
                     why: e,
                     definitive: false,

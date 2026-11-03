@@ -1292,6 +1292,13 @@ pub fn pull_running(key: &str) -> bool {
     pull::running_key(key)
 }
 
+/// The last failure of the pull keyed `key` since it was last read: a
+/// background caller that asks now and then learns of a pull that failed
+/// between its asks, so it backs off instead of starting another at once.
+pub fn take_pull_failure(key: &str) -> Option<String> {
+    pull::take_failed(key)
+}
+
 /// Whether the named container exists and is running.
 pub async fn container_running(name: &str) -> bool {
     docker(

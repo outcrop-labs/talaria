@@ -560,6 +560,56 @@ mod tests {
         assert!(fresh[0].contains("config migration failed"));
     }
 
+    /// A server on 127.0.0.1 that answers every request with `status`.
+    fn answering(status: &'static str, n: usize) -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for s in l.incoming().take(n) {
+                let Ok(mut s) = s else { continue };
+                let mut buf = [0u8; 4096];
+                let _ = std::io::Read::read(&mut s, &mut buf);
+                let _ = std::io::Write::write_all(
+                    &mut s,
+                    format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}").as_bytes(),
+                );
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[tokio::test]
+    async fn a_canary_that_does_not_answer_is_the_hosts_and_a_wrong_answer_is_the_contract() {
+        // Nothing listens: no answer at all, the host's to retry.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let e = contract_shapes(&format!("http://127.0.0.1:{port}"), "k")
+            .await
+            .unwrap_err();
+        assert!(e.contains("/health/detailed"), "{e}");
+        // An answer of the wrong status: the contract changed.
+        let url = answering("404 Not Found", 2);
+        let problems = contract_shapes(&url, "k").await.unwrap();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(
+            problems[0].contains("/health/detailed answered 404"),
+            "{problems:?}"
+        );
+        assert!(
+            problems[1].contains("/api/jobs answered 404"),
+            "{problems:?}"
+        );
+        // An answer of the wrong shape: the contract changed.
+        let url = answering("200 OK", 2);
+        let problems = contract_shapes(&url, "k").await.unwrap();
+        assert!(
+            problems[0].contains("api_server.active_runs"),
+            "{problems:?}"
+        );
+    }
+
     #[test]
     fn a_snapshot_reads_dockers_line() {
         let s = parse_snapshot("abc|sha256:img|restarting|false|3|starting\n");
