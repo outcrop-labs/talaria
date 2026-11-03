@@ -24,6 +24,8 @@
 // `unattended`, per job — reaching the ledger and the agent's budget whether
 // or not a chat turn is open at the same moment.
 
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -31,8 +33,10 @@ use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_error::store_fault;
-use talaria_gateway::fleet_chat::{Method, agent_request, unanswered};
+use talaria_gateway::fleet_chat::{EDGE_CUTOFF, Method, agent_request, unanswered};
 use talaria_gateway::settings::get_setting;
+use tokio::sync::{Semaphore, oneshot};
+use tokio::time::Instant;
 
 /// The bound on one `/api/jobs` call. Hermes answers these in milliseconds,
 /// but a write can wait up to 30s on the jobs-file lock while another process
@@ -40,6 +44,26 @@ use talaria_gateway::settings::get_setting;
 /// still apply afterwards — so the window sits past that wait, and a write
 /// Hermes went on to make is never reported as failed.
 const JOBS_WINDOW: Duration = Duration::from_secs(40);
+
+/// How long a change's request waits on the agent before it answers.
+///
+/// A change can be several `/api/jobs` calls, each bounded at
+/// [`JOBS_WINDOW`]: a guarded create writes the job, starts it, and takes it
+/// back out on a refusal, and a guarded schedule edit reads, pauses,
+/// patches, starts, and puts the fields back on a refusal. An agent slow
+/// enough, but answering each call inside its window, ran the whole past the
+/// edge's cutoff: Cloudflare answered 524 for a change that landed. So the
+/// request waits this long for the whole change and then answers that the
+/// change may still land ([`still_changing`], a 503 at the routes), while the
+/// change runs on to its end ([`detached`]).
+pub const CHANGE_WITHIN: Duration = Duration::from_secs(75);
+
+// The answer leaves with 15 s to spare for the route's own reads and the
+// hops to the edge: a deadline sized for anything slower does not build.
+const _: () = assert!(CHANGE_WITHIN.as_secs() + 15 <= EDGE_CUTOFF.as_secs());
+// A change of one call is answered by that call, as it always was: its own
+// window ends first.
+const _: () = assert!(JOBS_WINDOW.as_secs() < CHANGE_WITHIN.as_secs());
 
 /// Hermes's cap on a cron prompt over REST (`api_server.py`
 /// `_MAX_PROMPT_LENGTH`), counted the way Python counts a str: code points.
@@ -84,6 +108,9 @@ async fn jobs_call(
 /// The words that mark a change's failure as unconfirmed ([`may_still_land`]).
 const MAY_STILL_LAND: &str = "the change may still land";
 
+/// The same, for a run: a run-now that was not confirmed may still be queued.
+const RUN_MAY_BE_QUEUED: &str = "the run may still be queued";
+
 /// Why a call got no answer, as a sentence.
 ///
 /// A WRITE THE AGENT TOOK AND NEVER ANSWERED WAS NOT REFUSED. Hermes writes
@@ -105,12 +132,43 @@ fn no_answer(model: &str, write: bool, why: &str) -> String {
     }
 }
 
+/// Why a change's request answered before the change ended: its calls on
+/// the agent were still running at [`CHANGE_WITHIN`]. They run on, so the
+/// change may still land, the same as a write the agent never answered.
+fn still_changing(model: &str) -> String {
+    format!(
+        "{model}'s scheduler was still taking the change after {}s, so {MAY_STILL_LAND} — check the job list in a minute before trying again",
+        CHANGE_WITHIN.as_secs()
+    )
+}
+
+/// Why a run-now's request answered before the agent confirmed it, after
+/// `waited`. A run is not a change the job list shows: REST `run` only marks
+/// the job due for the scheduler's next tick, and the list reads the same
+/// before and after. So the sentence does not send anyone to the list. It
+/// says to wait for the job's next result, because a second run-now could
+/// run it twice.
+fn run_unconfirmed(model: &str, waited: Duration) -> String {
+    format!(
+        "{model}'s scheduler did not confirm the run within {}s, so {RUN_MAY_BE_QUEUED} — the job list cannot show that, so wait for the job's next result before running it again, or it may run twice",
+        waited.as_secs()
+    )
+}
+
+/// [`run_unconfirmed`] at the change's deadline: a run's [`detached`]
+/// sentence.
+fn run_still_unconfirmed(model: &str) -> String {
+    run_unconfirmed(model, CHANGE_WITHIN)
+}
+
 /// Whether a cron call's error is a write the agent took and never answered
-/// ([`no_answer`]): not a refusal, and not confirmed either way. A route
+/// ([`no_answer`]), a change still running at its deadline
+/// ([`still_changing`]), or a run not confirmed ([`run_unconfirmed`]): not a
+/// refusal, and not confirmed either way. A route
 /// answers it 503 — the house's "not confirmed" (the control route's for a
 /// docker verb past its deadline) — rather than the 400 of a refusal.
 pub fn may_still_land(error: &str) -> bool {
-    error.contains(MAY_STILL_LAND)
+    error.contains(MAY_STILL_LAND) || error.contains(RUN_MAY_BE_QUEUED)
 }
 
 /// Hermes's refusal as a sentence. `/api/jobs` answers `{"error": "…"}`; the
@@ -378,20 +436,55 @@ fn floor_verdict(schedule: Option<&Value>, floor: f64) -> Result<(), String> {
 }
 
 /// Run a change that takes several calls on the agent to its end, whatever
-/// happens to the request that asked for it. A guarded create (write paused →
-/// judge → start) and a schedule edit (pause → patch → judge → resume, or put
-/// back) leave the job paused between their calls, and a request future
-/// dropped there — the client hung up — would strand it paused: failing
-/// closed, but with nobody told. A spawned task is not dropped with the
-/// request, so the sequence finishes. Only the process itself exiting can
-/// still cut one short, and that leaves a paused job: no spend, and shown as
-/// paused on its list.
+/// happens to the request that asked for it, and answer that request by
+/// `deadline`.
+///
+/// A guarded create (write paused → judge → start) and a schedule edit
+/// (pause → patch → judge → resume, or put back) leave the job paused between
+/// their calls, and a request future dropped there — the client hung up —
+/// would strand it paused: failing closed, but with nobody told. A spawned
+/// task is not dropped with the request, so the sequence finishes. Only the
+/// process itself exiting can still cut one short, and that leaves a paused
+/// job: no spend, and shown as paused on its list.
+///
+/// The same is what lets the request answer before the change ends: at
+/// `deadline` it says so with `late` (the change may still land,
+/// [`still_changing`]; a run may still be queued, [`run_still_unconfirmed`]),
+/// and the change goes on without it. How that change then ended is logged,
+/// since nobody is waiting to be told.
 async fn detached<T: Send + 'static>(
+    model: &str,
+    deadline: Instant,
+    late: fn(&str) -> String,
     work: impl std::future::Future<Output = Result<T, String>> + Send + 'static,
 ) -> Result<T, String> {
-    tokio::spawn(work)
-        .await
-        .map_err(|e| format!("the change on the agent did not finish: {e}"))?
+    let (tx, mut rx) = oneshot::channel::<Result<T, String>>();
+    let label = model.to_string();
+    tokio::spawn(async move {
+        let outcome = work.await;
+        if let Err(outcome) = tx.send(outcome) {
+            match outcome {
+                Ok(_) => tracing::info!(
+                    "[crons] {label}: a change finished after its request had answered"
+                ),
+                Err(e) => tracing::warn!(
+                    "[crons] {label}: a change failed after its request had answered: {e}"
+                ),
+            }
+        }
+    });
+    match tokio::time::timeout_at(deadline, &mut rx).await {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(_)) => {
+            Err("the change on the agent did not finish: its task ended early".to_string())
+        }
+        // Closed first, then read once: an outcome sent in the meantime is
+        // still this request's answer, and none can be sent after.
+        Err(_) => {
+            rx.close();
+            rx.try_recv().unwrap_or_else(|_| Err(late(model)))
+        }
+    }
 }
 
 /// Create a job on the agent and return the id Hermes assigned.
@@ -407,6 +500,75 @@ pub async fn create_cron_job(
     schedule: &str,
     prompt: &str,
 ) -> Result<String, String> {
+    let deadline = Instant::now() + CHANGE_WITHIN;
+    create_within(pg, def_id, name, schedule, prompt, deadline, None).await
+}
+
+/// A create answered by `deadline`. With a `gate`, its calls on the agent
+/// wait for one of the gate's permits first: the fleet-wide create's cap on
+/// how many agents are written at once ([`create_fleet_crons`]).
+async fn create_within(
+    pg: &PgPool,
+    def_id: &str,
+    name: &str,
+    schedule: &str,
+    prompt: &str,
+    deadline: Instant,
+    gate: Option<Arc<Semaphore>>,
+) -> Result<String, String> {
+    let create = create_request(pg, def_id, name, schedule, prompt).await?;
+    let model = create.model.clone();
+    detached(&model, deadline, still_changing, gated(gate, create.run())).await
+}
+
+/// `work`, once `gate` (when there is one) gives it a permit. The wait for the
+/// permit is part of the change, so it counts against the change's deadline.
+async fn gated<T>(
+    gate: Option<Arc<Semaphore>>,
+    work: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let _permit = match gate {
+        Some(gate) => Some(
+            gate.acquire_owned()
+                .await
+                .map_err(|_| "the fleet-wide create was abandoned".to_string())?,
+        ),
+        None => None,
+    };
+    work.await
+}
+
+/// Each agent once, in the order first named.
+fn distinct_agents(agent_ids: &[String]) -> Vec<&String> {
+    let mut named = HashSet::new();
+    agent_ids
+        .iter()
+        .filter(|id| named.insert(id.as_str()))
+        .collect()
+}
+
+/// A create, checked and ready for the agent: whose it is, the body it
+/// sends, and the floor its start is judged by.
+struct CreateRequest {
+    model: String,
+    body: Value,
+    floor: f64,
+}
+
+impl CreateRequest {
+    fn run(self) -> impl std::future::Future<Output = Result<String, String>> + Send + 'static {
+        create_and_start(self.model, self.body, self.floor)
+    }
+}
+
+/// The checks a create makes before it reaches the agent.
+async fn create_request(
+    pg: &PgPool,
+    def_id: &str,
+    name: &str,
+    schedule: &str,
+    prompt: &str,
+) -> Result<CreateRequest, String> {
     let model = agent_for(pg, def_id).await?;
     let name = name.trim();
     let schedule = schedule.trim();
@@ -423,7 +585,7 @@ pub async fn create_cron_job(
         "deliver": "local",
         "paused": floor > 0.0,
     });
-    detached(create_and_start(model, body, floor)).await
+    Ok(CreateRequest { model, body, floor })
 }
 
 /// A create's calls on the agent: the write (paused when a floor is set), the
@@ -481,6 +643,7 @@ pub async fn edit_cron_job(
     schedule: Option<&str>,
     prompt: Option<&str>,
 ) -> Result<(), String> {
+    let deadline = Instant::now() + CHANGE_WITHIN;
     let path = jobs_path(job_id)?;
     let model = agent_for(pg, def_id).await?;
     let mut patch = serde_json::Map::new();
@@ -508,13 +671,12 @@ pub async fn edit_cron_job(
             .map(|_| ());
     };
     let floor = cron_floor_minutes(pg).await;
-    detached(edit_with_schedule(
-        model,
-        path,
-        patch,
-        schedule.to_string(),
-        floor,
-    ))
+    detached(
+        &model.clone(),
+        deadline,
+        still_changing,
+        edit_with_schedule(model, path, patch, schedule.to_string(), floor),
+    )
     .await
 }
 
@@ -629,8 +791,20 @@ pub async fn resume_cron_job(pg: &PgPool, def_id: &str, job_id: &str) -> Result<
 /// again after the trigger is no answer: the fire happens on a later tick,
 /// and a pause before that tick cancels it. Resume first, then run.
 pub async fn run_cron_job(pg: &PgPool, def_id: &str, job_id: &str) -> Result<(), String> {
+    let deadline = Instant::now() + CHANGE_WITHIN;
     let path = jobs_path(job_id)?;
     let model = agent_for(pg, def_id).await?;
+    // Two calls, each inside its own window, together under the change's.
+    detached(
+        &model.clone(),
+        deadline,
+        run_still_unconfirmed,
+        run_unpaused(model, path),
+    )
+    .await
+}
+
+async fn run_unpaused(model: String, path: String) -> Result<(), String> {
     let job = job_in(jobs_call(&model, Method::GET, &path, None).await?)?;
     if is_paused(&job) {
         return Err(
@@ -638,9 +812,18 @@ pub async fn run_cron_job(pg: &PgPool, def_id: &str, job_id: &str) -> Result<(),
                 .to_string(),
         );
     }
+    // A run the agent took and did not answer is a run that may be queued,
+    // not a change to look for on the list.
     jobs_call(&model, Method::POST, &format!("{path}/run"), None)
         .await
         .map(|_| ())
+        .map_err(|e| {
+            if e.contains(MAY_STILL_LAND) {
+                run_unconfirmed(&model, JOBS_WINDOW)
+            } else {
+                e
+            }
+        })
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -701,6 +884,9 @@ pub struct FleetCronResult {
     pub error: Option<String>,
 }
 
+/// How many agents a fleet-wide create writes at once.
+const FLEET_CREATES_AT_ONCE: usize = 8;
+
 /// Create the same job on many agents. When the schedule is a cron expression
 /// with a plain numeric minute, each agent is staggered by `stagger_minutes`
 /// so the fleet doesn't hit the shared LLM at the same instant (the stack's
@@ -716,29 +902,47 @@ pub async fn create_fleet_crons(
     let stagger = stagger_minutes.unwrap_or(2);
     let m = regex::Regex::new(r"^(\d{1,2})((?:\s+\S+){4})$").unwrap();
     let caps = m.captures(schedule.trim());
-    let mut results = Vec::new();
-    for (i, agent_id) in agent_ids.iter().enumerate() {
-        let schedule_i = match &caps {
-            Some(c) => {
-                let minute: i64 = c[1].parse().unwrap_or(0);
-                format!("{}{}", (minute + i as i64 * stagger).rem_euclid(60), &c[2])
+    // ONE REQUEST, ONE DEADLINE, A FEW AGENTS AT A TIME. In turn, a fleet of
+    // slow agents ran one deadline each and took the request past the edge's
+    // cutoff. So every create shares the request's deadline
+    // ([`CHANGE_WITHIN`]), and the request answers by it: a create still
+    // running then says it may still land, and runs on. The calls on the
+    // agents go [`FLEET_CREATES_AT_ONCE`] at a time, so a large fleet is not
+    // written all at once, and an agent named twice gets one job, not two
+    // writes contending for its jobs-file lock.
+    let deadline = Instant::now() + CHANGE_WITHIN;
+    let gate = Arc::new(Semaphore::new(FLEET_CREATES_AT_ONCE));
+    let creates = distinct_agents(agent_ids)
+        .into_iter()
+        .enumerate()
+        .map(|(i, agent_id)| {
+            let schedule_i = match &caps {
+                Some(c) => {
+                    let minute: i64 = c[1].parse().unwrap_or(0);
+                    format!("{}{}", (minute + i as i64 * stagger).rem_euclid(60), &c[2])
+                }
+                None => schedule.to_string(),
+            };
+            let gate = gate.clone();
+            async move {
+                let created = create_within(
+                    pg,
+                    agent_id,
+                    name,
+                    &schedule_i,
+                    prompt,
+                    deadline,
+                    Some(gate),
+                )
+                .await;
+                FleetCronResult {
+                    agent_id: agent_id.clone(),
+                    ok: created.is_ok(),
+                    error: created.err(),
+                }
             }
-            None => schedule.to_string(),
-        };
-        match create_cron_job(pg, agent_id, name, &schedule_i, prompt).await {
-            Ok(_) => results.push(FleetCronResult {
-                agent_id: agent_id.clone(),
-                ok: true,
-                error: None,
-            }),
-            Err(e) => results.push(FleetCronResult {
-                agent_id: agent_id.clone(),
-                ok: false,
-                error: Some(e),
-            }),
-        }
-    }
-    Ok(results)
+        });
+    Ok(futures_util::future::join_all(creates).await)
 }
 
 // ── Schedules a conversation owns ───────────────────────────────────────────
@@ -786,6 +990,7 @@ pub async fn schedule_from_conversation(
     schedule: &str,
     prompt: &str,
 ) -> Result<String, String> {
+    let deadline = Instant::now() + CHANGE_WITHIN;
     let model: Option<String> =
         sqlx::query_scalar("select agent_model from conversations where id = $1::uuid")
             .bind(conversation_id)
@@ -805,36 +1010,75 @@ pub async fn schedule_from_conversation(
     // Every refusal the fleet door answers with — the prompt cap, the
     // frequency floor, Hermes' own schedule parser and prompt scan — this door
     // answers with too, verbatim, because it is the same call.
-    let job = create_cron_job(pg, &def_id, name, schedule, prompt).await?;
-    // The trimmed text, so the row and jobs.json agree about what was asked
-    // for: create_cron_job trims before handing it to Hermes.
-    let written = sqlx::query(
-        "insert into conversation_schedules \
-           (agent_model, job_id, conversation_id, name, schedule, created_by) \
-         values ($1, $2, $3::uuid, $4, $5, $6::uuid)",
-    )
-    .bind(&model)
-    .bind(&job)
-    .bind(conversation_id)
-    .bind(name.trim())
-    .bind(schedule.trim())
-    .bind(created_by)
-    .execute(pg)
-    .await;
-    if let Err(e) = written {
-        // The job is already in the container's jobs.json by now, and a job
-        // with no row pointing at a conversation is spend nobody reads: it
-        // fires forever, reaches the cron-output door, finds no listener and
-        // is dropped. Take it back out rather than leave it ticking. A failed
-        // undo is only logged — the caller is owed the write that failed, not
-        // the cleanup that followed it, and the job is still visible on the
-        // agent's own cron list.
-        if let Err(undo) = remove_cron_job(pg, &def_id, &job).await {
-            tracing::error!("[crons] orphan job {job} on {model} could not be removed: {undo}");
+    let create = create_request(pg, &def_id, name, schedule, prompt).await?;
+    // THE ROW IS PART OF THE CHANGE. A create that outlasts its request's
+    // deadline lands later, and a job with no row pointing at this thread is
+    // spend nobody reads, so the row is written by the same task that makes
+    // the job, whenever that ends.
+    let agent = create.model.clone();
+    let row = ScheduleWrite {
+        pg: pg.clone(),
+        model,
+        def_id,
+        conversation_id: conversation_id.to_string(),
+        created_by: created_by.to_string(),
+        name: name.trim().to_string(),
+        schedule: schedule.trim().to_string(),
+    };
+    detached(&agent, deadline, still_changing, async move {
+        let job = create.run().await?;
+        row.write(job).await
+    })
+    .await
+}
+
+/// The thread's record of a job it scheduled, written once the agent has
+/// made the job.
+struct ScheduleWrite {
+    pg: PgPool,
+    model: String,
+    def_id: String,
+    conversation_id: String,
+    created_by: String,
+    name: String,
+    schedule: String,
+}
+
+impl ScheduleWrite {
+    async fn write(self, job: String) -> Result<String, String> {
+        // The trimmed text, so the row and jobs.json agree about what was
+        // asked for: the create trims before handing it to Hermes.
+        let written = sqlx::query(
+            "insert into conversation_schedules \
+               (agent_model, job_id, conversation_id, name, schedule, created_by) \
+             values ($1, $2, $3::uuid, $4, $5, $6::uuid)",
+        )
+        .bind(&self.model)
+        .bind(&job)
+        .bind(&self.conversation_id)
+        .bind(&self.name)
+        .bind(&self.schedule)
+        .bind(&self.created_by)
+        .execute(&self.pg)
+        .await;
+        if let Err(e) = written {
+            // The job is already in the container's jobs.json by now, and a
+            // job with no row pointing at a conversation is spend nobody
+            // reads: it fires forever, reaches the cron-output door, finds no
+            // listener and is dropped. Take it back out rather than leave it
+            // ticking. A failed undo is only logged — the caller is owed the
+            // write that failed, not the cleanup that followed it, and the job
+            // is still visible on the agent's own cron list.
+            if let Err(undo) = remove_cron_job(&self.pg, &self.def_id, &job).await {
+                tracing::error!(
+                    "[crons] orphan job {job} on {} could not be removed: {undo}",
+                    self.model
+                );
+            }
+            return Err(store_fault("[crons] schedule row write failed", e));
         }
-        return Err(store_fault("[crons] schedule row write failed", e));
+        Ok(job)
     }
-    Ok(job)
 }
 
 /// Take a thread's schedule away: the job goes out of the agent's own
@@ -895,6 +1139,7 @@ pub async fn unschedule_from_conversation(
 /// Call site (owned elsewhere): `talaria-routes-comms`'s conversation
 /// DELETE, before `delete_conversation` / `archive_conversation`.
 pub async fn remove_jobs_for_conversation(pg: &PgPool, conversation_id: &str) -> Vec<String> {
+    let deadline = Instant::now() + CHANGE_WITHIN;
     let rows: Vec<(String, String)> = match sqlx::query_as(
         "select agent_model, job_id from conversation_schedules \
          where conversation_id = $1::uuid",
@@ -911,29 +1156,49 @@ pub async fn remove_jobs_for_conversation(pg: &PgPool, conversation_id: &str) ->
             return Vec::new();
         }
     };
-    let mut removed = Vec::new();
-    for (model, job_id) in rows {
-        let def_id = match managed_def_for_model(pg, &model).await {
-            Ok(Some(id)) => id,
-            Ok(None) => {
-                tracing::warn!(
-                    "[crons] {conversation_id}: job {job_id} on {model} stays — not a running managed agent"
-                );
-                continue;
+    // The rows are read; the removals run to their end without the request
+    // (a call each, on as many agents), which waits for them no longer than a
+    // change ([`CHANGE_WITHIN`]).
+    let (pg, conversation) = (pg.clone(), conversation_id.to_string());
+    let removals = async move {
+        let mut removed = Vec::new();
+        for (model, job_id) in rows {
+            let def_id = match managed_def_for_model(&pg, &model).await {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    tracing::warn!(
+                        "[crons] {conversation}: job {job_id} on {model} stays — not a running managed agent"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!("[crons] {conversation}: job {job_id} on {model} stays: {e}");
+                    continue;
+                }
+            };
+            match remove_cron_job(&pg, &def_id, &job_id).await {
+                Ok(()) => removed.push(job_id),
+                Err(e) => tracing::warn!(
+                    "[crons] {conversation}: job {job_id} stays in the container: {e}"
+                ),
             }
-            Err(e) => {
-                tracing::warn!("[crons] {conversation_id}: job {job_id} on {model} stays: {e}");
-                continue;
-            }
-        };
-        match remove_cron_job(pg, &def_id, &job_id).await {
-            Ok(()) => removed.push(job_id),
-            Err(e) => tracing::warn!(
-                "[crons] {conversation_id}: job {job_id} stays in the container: {e}"
-            ),
         }
-    }
-    removed
+        Ok::<_, String>(removed)
+    };
+    detached(
+        &format!("thread {conversation_id}"),
+        deadline,
+        still_changing,
+        removals,
+    )
+        .await
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                "[crons] {conversation_id}: its jobs are still being removed after {}s; how that ends is logged",
+                CHANGE_WITHIN.as_secs()
+            );
+            Vec::new()
+        })
 }
 
 /// Pause (or resume) every schedule a thread owns, for archive and restore:
@@ -947,6 +1212,7 @@ pub async fn set_jobs_paused_for_conversation(
     conversation_id: &str,
     paused: bool,
 ) -> usize {
+    let deadline = Instant::now() + CHANGE_WITHIN;
     let rows = match schedules_for_conversation(pg, conversation_id).await {
         Ok(rows) => rows,
         Err(e) => {
@@ -954,44 +1220,64 @@ pub async fn set_jobs_paused_for_conversation(
             return 0;
         }
     };
-    let mut changed = 0;
-    for row in rows {
-        let model: Option<String> = sqlx::query_scalar(
-            "select agent_model from conversation_schedules \
-             where conversation_id = $1::uuid and job_id = $2",
-        )
-        .bind(conversation_id)
-        .bind(&row.job_id)
-        .fetch_optional(pg)
-        .await
-        .ok()
-        .flatten();
-        let def_id = match model {
-            Some(model) => managed_def_for_model(pg, &model).await.ok().flatten(),
-            None => None,
-        };
-        let Some(def_id) = def_id else {
-            tracing::warn!(
-                "[crons] {conversation_id}: job {} has no running managed agent to pause",
-                row.job_id
-            );
-            continue;
-        };
-        let done = if paused {
-            pause_cron_job(pg, &def_id, &row.job_id).await
-        } else {
-            resume_cron_job(pg, &def_id, &row.job_id).await
-        };
-        match done {
-            Ok(()) => changed += 1,
-            Err(e) => tracing::warn!(
-                "[crons] {conversation_id}: job {} could not be {}: {e}",
-                row.job_id,
-                if paused { "paused" } else { "resumed" }
-            ),
+    // Bounded like the removals above: the changes run to their end, and
+    // the request waits for them no longer than a change.
+    let (pg, conversation) = (pg.clone(), conversation_id.to_string());
+    let changes = async move {
+        let mut changed = 0;
+        for row in rows {
+            let model: Option<String> = sqlx::query_scalar(
+                "select agent_model from conversation_schedules \
+                 where conversation_id = $1::uuid and job_id = $2",
+            )
+            .bind(&conversation)
+            .bind(&row.job_id)
+            .fetch_optional(&pg)
+            .await
+            .ok()
+            .flatten();
+            let def_id = match model {
+                Some(model) => managed_def_for_model(&pg, &model).await.ok().flatten(),
+                None => None,
+            };
+            let Some(def_id) = def_id else {
+                tracing::warn!(
+                    "[crons] {conversation}: job {} has no running managed agent to pause",
+                    row.job_id
+                );
+                continue;
+            };
+            let done = if paused {
+                pause_cron_job(&pg, &def_id, &row.job_id).await
+            } else {
+                resume_cron_job(&pg, &def_id, &row.job_id).await
+            };
+            match done {
+                Ok(()) => changed += 1,
+                Err(e) => tracing::warn!(
+                    "[crons] {conversation}: job {} could not be {}: {e}",
+                    row.job_id,
+                    if paused { "paused" } else { "resumed" }
+                ),
+            }
         }
-    }
-    changed
+        Ok::<_, String>(changed)
+    };
+    detached(
+        &format!("thread {conversation_id}"),
+        deadline,
+        still_changing,
+        changes,
+    )
+        .await
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                "[crons] {conversation_id}: its jobs are still being {} after {}s; how that ends is logged",
+                if paused { "paused" } else { "resumed" },
+                CHANGE_WITHIN.as_secs()
+            );
+            0
+        })
 }
 
 /// The thread listening to a job, and the person who set the job up — the
@@ -1340,5 +1626,143 @@ mod tests {
             404,
             &json!({ "error": "Job not found" })
         )));
+    }
+
+    /// A CHANGE ANSWERS INSIDE THE EDGE, HOWEVER MANY CALLS IT IS. Each call
+    /// answers inside its own window, and a guarded create is three of them,
+    /// a guarded edit up to six: the sequence alone ran past the cutoff.
+    #[test]
+    fn a_change_is_answered_inside_the_edges_cutoff() {
+        assert!(
+            JOBS_WINDOW * 3 > EDGE_CUTOFF,
+            "a create's calls in turn can outlast the edge: why the deadline exists"
+        );
+        assert!(
+            CHANGE_WITHIN + Duration::from_secs(15) <= EDGE_CUTOFF,
+            "a change answered at {CHANGE_WITHIN:?} is past the edge's {EDGE_CUTOFF:?}"
+        );
+        assert!(JOBS_WINDOW < CHANGE_WITHIN);
+        let said = still_changing("ada-ops");
+        assert_eq!(
+            said,
+            "ada-ops's scheduler was still taking the change after 75s, so the change may still land — check the job list in a minute before trying again"
+        );
+        assert!(may_still_land(&said));
+    }
+
+    /// A change still running at its deadline is answered then, as one that
+    /// may still land, and goes on to its end without the request. On rc the
+    /// request waited for the end, so it answered whenever the agent was done.
+    #[tokio::test]
+    async fn a_change_past_its_deadline_may_still_land_and_runs_on() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = finished.clone();
+        let asked = Instant::now();
+        let deadline = asked + Duration::from_millis(150);
+        let answer = detached("ada-ops", deadline, still_changing, async move {
+            // Three calls on a slow agent, each inside its window.
+            for _ in 0..3 {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            done.store(true, Ordering::SeqCst);
+            Ok::<_, String>("0123456789ab".to_string())
+        })
+        .await;
+        let answered = asked.elapsed();
+        let said = answer.expect_err("answered before the change ended");
+        assert!(may_still_land(&said), "{said}");
+        assert!(
+            answered < Duration::from_millis(450),
+            "answered at {answered:?}, with the deadline at 150ms"
+        );
+        assert!(!finished.load(Ordering::SeqCst));
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the change ran on to its end"
+        );
+    }
+
+    /// A change that ends inside its deadline is answered as it ended: its
+    /// result, or its own sentence.
+    #[tokio::test]
+    async fn a_change_inside_its_deadline_is_answered_as_it_ended() {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let made = detached("ada-ops", deadline, still_changing, async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok::<_, String>("0123456789ab".to_string())
+        })
+        .await;
+        assert_eq!(made.as_deref(), Ok("0123456789ab"));
+        let refused = detached("ada-ops", deadline, still_changing, async {
+            Err::<String, _>("Invalid schedule".to_string())
+        })
+        .await;
+        assert_eq!(refused, Err("Invalid schedule".to_string()));
+    }
+
+    /// A RUN IS NOT A CHANGE THE LIST SHOWS. REST `run` marks the job due for
+    /// the next tick, and the job list reads the same before and after, so a
+    /// run the agent did not confirm says to wait for its result, and warns
+    /// that a second run-now could run it twice. It is still unconfirmed, a
+    /// 503 at the routes.
+    #[test]
+    fn a_run_not_confirmed_says_it_may_be_queued_and_could_run_twice() {
+        for said in [
+            run_still_unconfirmed("ada-ops"),
+            run_unconfirmed("ada-ops", JOBS_WINDOW),
+        ] {
+            assert!(may_still_land(&said), "{said}");
+            assert!(said.contains("the run may still be queued"), "{said}");
+            assert!(said.contains("it may run twice"), "{said}");
+            assert!(!said.contains("check the job list"), "{said}");
+        }
+        assert_eq!(
+            run_still_unconfirmed("ada-ops"),
+            "ada-ops's scheduler did not confirm the run within 75s, so the run may still be queued — the job list cannot show that, so wait for the job's next result before running it again, or it may run twice"
+        );
+    }
+
+    /// A fleet-wide create writes each agent once, in the order named.
+    #[test]
+    fn a_fleet_create_names_each_agent_once() {
+        let ids: Vec<String> = ["a", "b", "a", "c", "b"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let once: Vec<&str> = distinct_agents(&ids)
+            .into_iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(once, ["a", "b", "c"]);
+    }
+
+    /// A create waiting for one of the fleet-wide create's permits is still
+    /// answered by the shared deadline, and then runs once a permit frees.
+    #[tokio::test]
+    async fn a_create_waiting_for_its_turn_is_answered_by_the_deadline() {
+        let gate = Arc::new(Semaphore::new(1));
+        let held = gate.clone().acquire_owned().await.unwrap();
+        let asked = Instant::now();
+        let (ran_tx, ran_rx) = oneshot::channel::<()>();
+        let answer = detached(
+            "ada-ops",
+            asked + Duration::from_millis(100),
+            still_changing,
+            gated(Some(gate), async move {
+                let _ = ran_tx.send(());
+                Ok::<_, String>("0123456789ab".to_string())
+            }),
+        )
+        .await;
+        assert!(may_still_land(&answer.expect_err("past the deadline")));
+        assert!(asked.elapsed() < Duration::from_millis(400));
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(2), ran_rx)
+            .await
+            .expect("the create ran once its turn came")
+            .unwrap();
     }
 }

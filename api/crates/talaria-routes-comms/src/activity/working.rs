@@ -53,6 +53,11 @@ fn lead(items: Vec<Item>) -> Option<Lead> {
     })
 }
 
+/// A thread's name: its title, or its agent when the title is missing or empty.
+fn thread_label(title: Option<String>, agent_model: String) -> String {
+    title.filter(|t| !t.is_empty()).unwrap_or(agent_model)
+}
+
 /// The read itself, apart from the session door. `Err` names the arm that
 /// failed: one failed arm fails the whole read, because a view reading
 /// "nothing working" over a failed query is a silent zero.
@@ -75,33 +80,39 @@ pub async fn read(pg: &PgPool, user_id: &str) -> Result<Working, (&'static str, 
         .map(|c| Item {
             at: c.streamed_ms,
             href: format!("/comms/agent/{}/{}", c.agent_model, c.id),
-            label: c.title.unwrap_or(c.agent_model),
+            label: thread_label(c.title, c.agent_model),
         })
         .chain(rooms.into_iter().map(|r| Item {
             at: r.streamed_ms,
             href: format!("/comms/channel/{}", r.id),
-            label: r.name,
+            label: r.title,
         }))
         .collect();
 
-    // A run's discussion thread streaming is the run's own work, so the
-    // thread is dropped in favour of the run rather than counted twice.
-    let run_threads: Vec<String> = runs
-        .iter()
-        .filter_map(|r| r.conversation_id.clone())
-        .collect();
+    // A run's discussion thread streaming is the run's own work: the thread
+    // is folded into the run rather than counted twice, and its stamp still
+    // counts toward which item is freshest.
+    let (run_threads, threads): (Vec<_>, Vec<_>) = threads.into_iter().partition(|t| {
+        runs.iter()
+            .any(|r| r.conversation_id.as_ref() == Some(&t.id))
+    });
     let work = threads
         .into_iter()
-        .filter(|t| !run_threads.contains(&t.id))
         .map(|t| Item {
             at: t.streamed_ms,
             href: format!("/work/{}", t.id),
-            label: t.title.unwrap_or(t.agent_model),
+            label: thread_label(t.title, t.agent_model),
         })
-        .chain(runs.into_iter().map(|r| Item {
-            at: r.updated_ms,
-            href: format!("/research/{}", r.id),
-            label: r.title,
+        .chain(runs.into_iter().map(|r| {
+            Item {
+                at: run_threads
+                    .iter()
+                    .filter(|t| r.conversation_id.as_ref() == Some(&t.id))
+                    .map(|t| t.streamed_ms)
+                    .fold(r.updated_ms, i64::max),
+                href: format!("/research/{}", r.id),
+                label: r.title,
+            }
         }))
         .collect();
 
