@@ -37,7 +37,8 @@ export function clientSpecifiers(): string[] {
 }
 
 /** The packages an app's server-side code imports by name besides the SDK,
- *  each by its bare entry only (no subpath). zod is the copy
+ *  each by its bare entry (zod/v4 is an alias of it, below; no other
+ *  subpath). zod is the copy
  *  `@talaria/sdk/server` re-exports as `z`, so a schema an app builds with
  *  either is one zod's. main's SDK shared it, and apps written then import it
  *  directly (`import { z } from 'zod'` in a lib/schema.ts that the app's

@@ -4,9 +4,9 @@
 // The typecheck resolves exactly what an app may import: @talaria/sdk and its
 // /server and /testing entries (the kit's declarations), the shared client
 // packages (svelte, @lucide/svelte, @tanstack/svelte-query) and the shared
-// server packages by their bare entry (zod, the one `@talaria/sdk/server`
-// re-exports as `z`). Anything else — a package the app's author has locally,
-// a subpath like `zod/mini` — does not resolve, because it does not resolve
+// server packages by their bare entry or an alias of it (zod and zod/v4, the
+// one `@talaria/sdk/server` re-exports as `z`). Anything else — a package the
+// app's author has locally, a subpath like `zod/mini` — does not resolve, because it does not resolve
 // on the host either: an app has no node_modules of its own there.
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
