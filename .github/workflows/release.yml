@@ -9,6 +9,8 @@
 #   03:17 UTC daily     rc's tip    → image `nightly` + `nightly-YYYYMMDD`, no Release
 #   push vX.Y.Z-rc.N    (tag cut on rc)   → image `X.Y.Z-rc.N` + moving `rc` + GitHub PRERELEASE
 #   push vX.Y.Z         (tag cut on main) → image `X.Y.Z` + moving `latest` + GitHub Release
+#                       (never marked the repo's Latest release: that is the desktop
+#                       updater feed, a desktop-v release — see the GitHub Release step)
 #   dispatch            manual re-run of a channel (nightly from rc; `rc` pushes the
 #                       moving tag from the rc tip — a dispatch cannot invent a version,
 #                       only a tag carries one)
@@ -26,7 +28,9 @@
 # WHY GIT IS THE AUTHORITY AND THE package.json FILES ARE NOT. Every version
 #   field in this repo says "0.1.0" decoratively and nothing reads them; the
 #   TAG is the version. The workflow never edits a file to release — there is
-#   no version-bump commit, no changelog commit, nothing to merge afterwards.
+#   no version-bump commit and nothing to merge afterwards. The one file a
+#   release changes is CHANGELOG.md, and that lands BEFORE the tag, as the
+#   changelog roll's pull request against rc (RELEASING.md), never from here.
 #   A malformed tag (v1.0, v1.0.0-beta.1) fails loudly in `resolve` rather
 #   than falling through to `latest`, because a tag that silently published
 #   as stable is the one mistake here that cannot be undone by deleting it.
@@ -292,6 +296,18 @@ jobs:
       # opening a release for a ref that isn't there. The notes body is a
       # printf with pre-computed vars — single-quoted, so the markdown
       # backticks are literal and no shell logic runs inside the string.
+      #
+      # NEVER "LATEST", stable or not: GitHub's Latest release is the desktop
+      # updater feed. The shell reads /releases/latest/download/latest.json
+      # (desktop/src-tauri/tauri.conf.json), and desktop-package.yml marks each
+      # desktop-v release it mints Latest once that file is on it. A stable
+      # release created here would take the flag by default the moment it
+      # opens, with no latest.json until the desktop jobs below finish (and
+      # none at all if one of them fails), and every installed app's update
+      # check would 404. So the create and the re-run's edit both say
+      # --latest=false; a prerelease can never be Latest anyway.
+      # check-invariants.mjs (`release-latest-is-the-desktop-feed`) holds
+      # both flags.
       - name: GitHub Release
         if: needs.resolve.outputs.release == 'true'
         env:
@@ -314,9 +330,9 @@ jobs:
           if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release for $TAG exists — refreshing notes (re-run of the same tag)"
-            gh release edit "$TAG" --title "$TAG" --notes "$notes" "${pre[@]}"
+            gh release edit "$TAG" --title "$TAG" --notes "$notes" --latest=false "${pre[@]}"
           else
-            gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" "${pre[@]}"
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" --latest=false "${pre[@]}"
           fi
 
   # The desktop installers, attached to the release the publish job just

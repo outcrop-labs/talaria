@@ -16,6 +16,10 @@
 #       committed ui/src/server/db/schema.snapshot.sql — drift fails with the
 #       regen command, so every schema-touching PR carries the real schema
 #       diff as its review artifact
+#     - runs ui/scripts/check-git-hosts-mirror.sql on both databases: the
+#       compensating git-hosts statements (#651) DO what they say, not only
+#       apply — the defaults land, the copy-back holds what the baseline had,
+#       and both mirror triggers fire in each direction
 #
 # WHY A SEPARATE FILE (not a job in ci.yml). ci.yml's contract is service-free
 #   and dependency-free, and release.yml runs its jobs via workflow_call as
@@ -49,6 +53,7 @@ on:
       - 'ui/src/server/db/**'
       - 'ui/scripts/check-migrations.ts'
       - 'ui/scripts/migrate-file.ts'
+      - 'ui/scripts/check-git-hosts-mirror.sql'
       - 'ui/package.json'
       - '.github/workflows/migrations.yml'
       - '.github/actions/**'
@@ -58,6 +63,7 @@ on:
       - 'ui/src/server/db/**'
       - 'ui/scripts/check-migrations.ts'
       - 'ui/scripts/migrate-file.ts'
+      - 'ui/scripts/check-git-hosts-mirror.sql'
       - 'ui/package.json'
       - '.github/workflows/migrations.yml'
       - '.github/actions/**'
@@ -70,6 +76,10 @@ jobs:
   migrations:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Placeholders in main's github_config shape, never a real token: the
+      # upgrade pass seeds it, and the mirror check holds the result to it.
+      GITHUB_CONFIG_SEED: '{"mode": "app", "pat": {"tokenEnc": null}, "app": {"appId": "123456", "installationIds": ["7890"], "privateKeyEnc": "v1:ci-placeholder-sealed-key"}, "repoCreationOrgs": ["ci-org"]}'
     steps:
       - uses: actions/checkout@v5
 
@@ -162,7 +172,32 @@ jobs:
         run: |
           bun run migrate-file src/server/db/pg.main-upgrade.ts
           rm src/server/db/pg.main-upgrade.ts
+          # A connected GitHub on the baseline, in the shape main's
+          # set_github_config writes it, so the upgrade has a real config to
+          # move into the `github` row and copy back (the mirror check below).
+          # (stdin, not -c: psql does not interpolate :'seed' into a -c string)
+          echo "insert into app_settings (key, value) values ('github_config', :'seed'::jsonb)
+                on conflict (key) do update set value = excluded.value, updated_at = now();" \
+            | docker exec -i talaria-mig-pg-up psql -U talaria -d talaria -v ON_ERROR_STOP=1 -v "seed=$GITHUB_CONFIG_SEED"
           bun run migrations:check
+
+      # The compensating git-hosts statements (#651, pg.ts "The git-hosts move,
+      # made roll-safe") exist for what the previous release does on this
+      # schema, and the snapshot only pins their text. This runs them: the
+      # host_id defaults, the setting folded back from the row, and both
+      # triggers in each direction, inside a transaction it rolls back. On the
+      # upgraded database it also requires the baseline's GitHub config to
+      # come through the move and back unchanged. Delete it with the contract
+      # release that drops the mirrors (the file's header).
+      - name: The git-hosts mirror holds, fresh and upgraded
+        run: |
+          set -eu
+          echo "fresh replay:"
+          docker exec -i talaria-mig-pg psql -U talaria -d talaria -v ON_ERROR_STOP=1 -q \
+            < ui/scripts/check-git-hosts-mirror.sql
+          echo "upgrade from the baseline, which had GitHub connected:"
+          docker exec -i talaria-mig-pg-up psql -U talaria -d talaria -v ON_ERROR_STOP=1 -q -v "seeded=$GITHUB_CONFIG_SEED" \
+            < ui/scripts/check-git-hosts-mirror.sql
 
       - name: Replay again — nothing new may apply
         working-directory: ui

@@ -49,7 +49,11 @@ git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 ```
 
 The roll comes first because the tagged tree must carry the version's
-section: the release's notes point at CHANGELOG.md as of the tag. It is a pull
+section: a checkout of the tag then says what it holds, and the promotion
+carries the same section to main. The release's notes link is not pinned to
+the tag: `release.yml` points it at `blob/main/CHANGELOG.md`, so an RC's
+section shows behind that link only once rc is promoted, and until then it is
+in rc's CHANGELOG.md. It is a pull
 request because rc moves only by merges — `scripts/flow-guard.mjs` refuses a
 hand-made commit pushed to rc, in the pre-push hook and in `flow.yml` alike.
 Hold other merges to rc until the tag is cut: a pull request that lands in
@@ -126,16 +130,36 @@ git tag v0.2.0 && git push origin v0.2.0
 
 A stable's notes come from the same roll. If entries landed on rc after the
 last RC's roll, roll them the same way — a pull request against rc — before
-step 1. A roll can never go to main directly: main takes rc's content and
-nothing else (flow-guard).
+step 1, under the stable's own version: `bun scripts/changelog-roll.mjs 0.2.0`
+writes a `## 0.2.0 (date)` section above the `0.2.0-rc.N` ones, which hold
+everything before it. If `changelog/` is empty, the roll refuses ("no
+changelog/*.md entries to roll"). That is the usual case right after an RC,
+and it means nothing has landed since the RC's roll: the RC sections already
+describe everything the stable carries, so there is nothing to roll. Skip it
+and go to step 1. A roll can never go to main directly: main takes rc's
+content and nothing else (flow-guard).
 
 Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
-`latest` moves on nothing else — only a `vX.Y.Z` tag with no suffix.
+`latest`, the image tag, moves on nothing else — only a `vX.Y.Z` tag with no
+suffix.
 
-A stable desktop release also attaches `latest.json` and `.sig` files so
-installed copies can update in-app. That needs the
-`TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey is in
-`desktop/src-tauri/tauri.conf.json`). An RC does not publish `latest.json`.
+**The GitHub Release is never marked "Latest".** GitHub's Latest release is
+the desktop updater feed: the shell reads
+`/releases/latest/download/latest.json`, and the release behind that is the
+newest `desktop-v*` one (the next section). GitHub would make a new stable
+release Latest by default, before its installers are attached (and for good
+if a desktop job fails), and every installed app's update check would 404.
+So `release.yml` creates and edits every `v*` release with `--latest=false`,
+and `scripts/check-invariants.mjs` (`release-latest-is-the-desktop-feed`)
+fails a workflow that drops the flag. Leave it that way in the Releases page
+too.
+
+The desktop installers a stable tag attaches carry `latest.json` and `.sig`
+files as well, which needs the `TAURI_SIGNING_PRIVATE_KEY` Actions secret (the
+matching pubkey is in `desktop/src-tauri/tauri.conf.json`). They are
+downloads: nothing serves this release's `latest.json`, and installed apps
+keep updating from the newest `desktop-v*` release. An RC does not publish
+`latest.json`.
 
 ## Nightlies
 
@@ -226,8 +250,12 @@ that touches `desktop/` IS a desktop release — the auto-minor channel: once
 every platform job is green, `desktop-package.yml` mints `desktop-vX.Y.0`
 (highest suffix-free X.Y.Z across the `v*` and `desktop-v*` tags, minor+1,
 patch 0) and opens a regular Release for it carrying the installers and
-`latest.json` — the LIVE in-app updater feed, because `/releases/latest`
-resolves to it and installed desktop apps update themselves. The `desktop-v*`
+`latest.json` — the LIVE in-app updater feed. The release is created with
+`--latest=false` and marked GitHub's **Latest** explicitly once its
+`latest.json` is uploaded, so `/releases/latest` (the only URL the updater
+reads) moves to it only when there is a feed to serve, and never to anything
+but a desktop release. Installed apps read it when someone checks for updates;
+they do not update unasked. The `desktop-v*`
 namespace keeps a desktop auto-minor from ever firing `release.yml` (its tag
 trigger is `v[0-9]*`). Auto never crosses a major: **majors (and any
 hand-picked number) are manual** — dispatch `desktop-package` with

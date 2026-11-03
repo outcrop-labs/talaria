@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-15 routes.
+16 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -28,6 +28,7 @@
 | [`/api/push/subscribe`](#apipushsubscribe) | POST | `session` |
 | [`/api/push/unsubscribe`](#apipushunsubscribe) | POST | `session` |
 | [`/api/unreads`](#apiunreads) | GET | `session` |
+| [`/api/working`](#apiworking) | GET | `session` |
 
 ## `/api/activity`
 
@@ -276,4 +277,18 @@ Source: [`api/crates/talaria-routes-comms/src/activity/unreads.rs`](../../api/cr
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{comms, plan, work, research, notifications}` | 200 | — |
+
+## `/api/working`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/working.rs`](../../api/crates/talaria-routes-comms/src/activity/working.rs)
+
+> /api/working. The tab bar's one read: which views an agent is working in
+> right now, as { comms, work, boards }, each a Lead or null. A view the
+> server has no predicate for has no key, so the client cannot light it.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `…` | 200 | — |
 
