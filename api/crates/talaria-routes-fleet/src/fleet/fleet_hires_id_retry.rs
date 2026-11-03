@@ -219,7 +219,7 @@ pub async fn post(
         agent_hire_run(),
         input,
         EnqueueOptions {
-            id: Some(retry_id),
+            id: Some(retry_id.clone()),
             owner_user_id: Some(user.id.clone()),
             subject_type: Some("agent-hire".into()),
             subject_id: Some(slug),
@@ -231,19 +231,27 @@ pub async fn post(
     .await
     {
         Ok(row) => row,
-        // The derived id is taken: this hire was retried already (a second
-        // tab, a second admin, a double click past the button's guard).
-        Err(e)
-            if e.as_database_error()
-                .and_then(|d| d.code())
-                .is_some_and(|c| c == "23505") =>
-        {
-            return Ok(house_error(
-                StatusCode::CONFLICT,
-                "this hire was retried already — its retry is on the roster",
-            ));
+        Err(e) => {
+            // The derived id is taken: this hire was retried already (a
+            // second tab, a second admin, a double click past the button's
+            // guard). Asked of the row rather than read off the error: the
+            // run store re-wraps the insert's error, and its unique-violation
+            // code does not survive that (measured: two Retries at once got a
+            // 200 and a 500).
+            let taken: bool =
+                sqlx::query_scalar("select exists (select 1 from runs where id = $1::uuid)")
+                    .bind(&retry_id)
+                    .fetch_one(&state.pg)
+                    .await
+                    .unwrap_or(false);
+            if taken {
+                return Ok(house_error(
+                    StatusCode::CONFLICT,
+                    "this hire was retried already — its retry is on the roster",
+                ));
+            }
+            return Ok(internal("[fleet/hires/retry] hire enqueue failed", e));
         }
-        Err(e) => return Ok(internal("[fleet/hires/retry] hire enqueue failed", e)),
     };
     Ok(Json(json!({
         "ok": true,
