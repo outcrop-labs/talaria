@@ -140,8 +140,8 @@ impl Activity {
         }
     }
 
-    // Read by the WebKitGTK load-failed hook, which is Linux-only.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Loaded hidden at launch, and not shown since: a page that does not
+    /// come up is closed and loaded again later (commands::retry_prewarm).
     pub fn prewarming(&self, id: &str) -> bool {
         self.prewarm.contains_key(id)
     }

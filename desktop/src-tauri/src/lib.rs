@@ -66,6 +66,7 @@ mod beacon;
 mod commands;
 mod layout;
 mod links;
+mod loading;
 mod logfile;
 mod notify;
 mod registry;
@@ -93,8 +94,10 @@ pub enum View {
     Active,
 }
 
-/// An instance whose page failed to load (WebKit's `load-failed`, Linux). The
-/// launcher shows it with a retry until the next activation.
+/// An instance whose page did not come up (loading.rs): it failed (WebKit's
+/// `load-failed`, WebView2's `NavigationCompleted`, an HTTP 5xx), or it has
+/// not loaded in `loading::LOAD_WAIT`. The launcher shows it as a card until
+/// the next activation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadFailure {
@@ -104,6 +107,21 @@ pub struct LoadFailure {
     pub id: String,
     pub label: String,
     pub message: String,
+    pub kind: FailureKind,
+}
+
+/// What the card offers (loading.rs). Every card has Retry and Back to
+/// instances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FailureKind {
+    /// Nothing answered (the network): the page is closed.
+    Failed,
+    /// Still loading behind the card: Keep waiting.
+    Stalled,
+    /// Something answered that is not Talaria (an error page, a challenge, a
+    /// sign-in gate), kept behind the card: Show the page.
+    Blocked,
 }
 
 /// The add in flight: Cancel aborts its probe, so a cancelled add can never
@@ -150,9 +168,9 @@ pub struct ShellState {
     /// first view change, so a launcher reload never reopens it twice.
     reopen: Mutex<Option<String>>,
     failure: Mutex<Option<LoadFailure>>,
-    // Written by the WebKitGTK load-failed hook, which is Linux-only.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     failure_seq: std::sync::atomic::AtomicU64,
+    /// Every instance page's load, for the watchdog (loading.rs).
+    loads: Mutex<loading::Loads>,
     adding: Mutex<Option<AddAttempt>>,
     add_seq: std::sync::atomic::AtomicU64,
     /// Local id → the last page it showed (registry `lastUrls`).
@@ -237,7 +255,8 @@ pub const INSTANCE_PERMISSIONS: &[&str] = &[
     "allow-desktop-open-link",
 ];
 
-/// Grant one instance origin `INSTANCE_PERMISSIONS`, for its own webview.
+/// Grant one instance origin `INSTANCE_PERMISSIONS`, for its own webview,
+/// and the way back (`grant_way_back`).
 fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
     let capability = INSTANCE_PERMISSIONS.iter().fold(
         tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
@@ -246,7 +265,36 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
         |capability, permission| capability.permission(*permission),
     );
     app.add_capability(capability)
-        .map_err(|e| format!("granting the instance switcher access: {e}"))
+        .map_err(|e| format!("granting the instance switcher access: {e}"))?;
+    grant_way_back(app, instance)
+}
+
+/// What an instance's webview may call on any origin: the way back alone,
+/// so a page the instance sent the person to (a sign-in provider) still has
+/// the pill and Ctrl/Cmd+Shift+H. Never Quit, never anything else.
+///
+/// Frames: on Linux and macOS Tauri puts its IPC into the main frame only.
+/// WebView2 (Windows) puts it into every frame, so there a frame is held by
+/// the origin ACL and the gate, not by frame scope: a sandboxed microsite
+/// frame has an opaque origin and is refused before any command runs; a
+/// cross-origin frame reaches this grant only, and `show_welcome` takes it
+/// only for the page on screen, once a second (commands.rs); a same-origin
+/// frame is the instance's own content.
+pub const WAY_BACK_PERMISSIONS: &[&str] = &["allow-show-welcome"];
+/// Any http(s) page, with or without a port.
+pub const WAY_BACK_ORIGINS: &[&str] = &["https://*", "https://*:*", "http://*", "http://*:*"];
+
+fn grant_way_back(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
+    let capability = WAY_BACK_ORIGINS.iter().fold(
+        WAY_BACK_PERMISSIONS.iter().fold(
+            tauri::ipc::CapabilityBuilder::new(format!("way-back-{}", instance.id))
+                .webview(format!("instance-{}", instance.id)),
+            |capability, permission| capability.permission(*permission),
+        ),
+        |capability, origin| capability.remote(origin.to_string()),
+    );
+    app.add_capability(capability)
+        .map_err(|e| format!("granting the instance its way back: {e}"))
 }
 
 /// What the shell's own requests call themselves (the crate version is
@@ -296,6 +344,8 @@ fn http_client() -> reqwest::Client {
 }
 
 pub fn run() {
+    // A page's Quit waits out the first seconds of a launch (commands::desktop_quit).
+    commands::launched();
     // A panic is the one thing `eprintln!` never says: the default hook writes
     // it to stderr, which a release build on Windows does not have. Into the
     // log file too, once setup has opened it.
@@ -417,6 +467,7 @@ pub fn run() {
                 reopen: Mutex::new(reopen),
                 failure: Mutex::new(None),
                 failure_seq: Default::default(),
+                loads: Mutex::new(loading::Loads::default()),
                 adding: Mutex::new(None),
                 add_seq: Default::default(),
                 last_urls: Mutex::new(last_urls),
@@ -484,6 +535,8 @@ pub fn run() {
             commands::probe_instance,
             commands::activate_instance,
             commands::show_welcome,
+            commands::close_instance_page,
+            commands::show_instance_page,
             commands::remove_instance,
             commands::get_desktop_settings,
             commands::set_titlebar_mode,
@@ -651,6 +704,37 @@ mod tests {
         ] {
             assert!(INSTANCE_PERMISSIONS.contains(&needed), "{needed}");
         }
+    }
+
+    // B3: what any origin may call in an instance webview: the way back,
+    // nothing more, and every origin's patterns parse as Tauri reads them.
+    #[test]
+    fn any_origin_gets_the_way_back_and_nothing_else() {
+        assert_eq!(WAY_BACK_PERMISSIONS, &["allow-show-welcome"]);
+        assert!(!WAY_BACK_PERMISSIONS.contains(&"allow-desktop-quit"));
+        for origin in WAY_BACK_ORIGINS {
+            assert!(
+                origin.starts_with("http://") || origin.starts_with("https://"),
+                "{origin}"
+            );
+            let pattern: tauri::utils::acl::RemoteUrlPattern = origin.parse().unwrap();
+            assert!(
+                !pattern.test(&"tauri://localhost/".parse().unwrap()),
+                "{origin}"
+            );
+        }
+        let matches = |url: &str| {
+            let url: tauri::Url = url.parse().unwrap();
+            WAY_BACK_ORIGINS.iter().any(|o| {
+                o.parse::<tauri::utils::acl::RemoteUrlPattern>()
+                    .unwrap()
+                    .test(&url)
+            })
+        };
+        assert!(matches("https://accounts.google.com/signin?x=1"));
+        assert!(matches("http://127.0.0.1:47394/provider"));
+        // Not the custom scheme the launcher is served on (macOS, Linux).
+        assert!(!matches("tauri://localhost/index.html"));
     }
 
     #[cfg(target_os = "linux")]

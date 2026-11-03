@@ -100,6 +100,11 @@ mac-notification-sys = "0.6.15"
 # Toasts under the app's own AUMID (notify/windows.rs). 4.18's Windows backend.
 [target.'cfg(target_os = "windows")'.dependencies]
 notify-rust = "4.18"
+# WebView2's NavigationCompleted (loading::webview2): Tauri exposes the
+# controller, not its events. The webview2-com wry links, and its windows-core,
+# at the versions in the lock: no new compile.
+webview2-com = "=0.38.2"
+windows-core = "0.61"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
