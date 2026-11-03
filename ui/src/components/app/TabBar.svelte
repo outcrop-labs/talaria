@@ -111,6 +111,7 @@
         {#if item.to === activePath}
           <a
             href={item.to}
+            aria-label={item.label}
             aria-current="page"
             class="ears-bottom flex h-11 min-w-0 max-w-[15rem] shrink-0 items-center gap-2 rounded-t-[10px] border border-b-0 border-line bg-surface pl-3 pr-4 text-fg focus-visible:outline-offset-[-2px]"
           >
