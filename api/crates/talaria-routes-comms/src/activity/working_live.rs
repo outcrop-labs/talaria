@@ -27,7 +27,6 @@ async fn cleanup(pg: &PgPool, tag: &str) {
         .unwrap();
 }
 
-/// The database, and a fresh person tagged `tag` in it.
 async fn setup(tag: &str) -> (PgPool, String) {
     let url = std::env::var("DATABASE_URL")
         .expect("set DATABASE_URL (a migrated database) to run the ignored live tests");

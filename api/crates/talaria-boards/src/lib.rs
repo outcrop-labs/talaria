@@ -23,13 +23,11 @@ pub fn board_visibility_sql(user_1: &str, user_2: &str, include_archived: bool) 
     }
 }
 
-/// A ticket an agent is working, as the tab bar names it.
 #[derive(Debug)]
 pub struct WorkingTicket {
     pub id: String,
     pub board_id: String,
     pub title: String,
-    /// The live session's last write, epoch ms.
     pub updated_ms: i64,
 }
 

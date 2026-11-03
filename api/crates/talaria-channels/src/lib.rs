@@ -425,12 +425,10 @@ pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sql
     Ok(n)
 }
 
-/// A Comms-rail room with an agent reply streaming, as the tab bar names it.
 #[derive(Debug)]
 pub struct StreamingChannel {
     pub id: String,
     pub name: String,
-    /// The freshest live reply's last flush, epoch ms.
     pub streamed_ms: i64,
 }
 

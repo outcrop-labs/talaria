@@ -1,7 +1,6 @@
 // The tab bar's agent signal: one query over /api/working, which answers
 // which views an agent is working in right now. A glyph is drawn only from
-// this read. A view the server has no arm for has no key here, so nothing can
-// light it.
+// this read.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 import { onUserStreamOpen, useUserEvents } from '@/lib/user-events.svelte'
@@ -24,8 +23,8 @@ export interface Working {
 const KEY = ['working'] as const
 
 /** Room replies and ticket sessions announce their start on the firehose but
- *  never their end, so while anything is lit the read polls at the pace the
- *  sidebar and the ticket ticker poll their own working rows. Idle, the 30s
+ *  never their end, so while anything is lit the read polls at the ticket
+ *  ticker's 5s (the sidebar polls its working rows every 4s). Idle, the 30s
  *  floor covers a dropped stream, as it does for /api/unreads. */
 const LIT_POLL_MS = 5_000
 const IDLE_POLL_MS = 30_000

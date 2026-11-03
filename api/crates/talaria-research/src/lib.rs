@@ -634,7 +634,6 @@ pub async fn briefable_research(
     Ok(rows)
 }
 
-/// A research run an agent is working on, as the tab bar names it.
 #[derive(Debug)]
 pub struct WorkingResearch {
     pub id: String,

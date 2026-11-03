@@ -5,7 +5,7 @@
 // Every arm is an engine's own predicate, never a second spelling: the
 // sidebar's `working` flag for threads, the room page's dead-stream silence
 // for rooms, the research status projection for runs, and the board's
-// work-session join for tickets. All read concurrently; none is a write.
+// work-session join for tickets.
 
 use axum::Json;
 use axum::extract::State;

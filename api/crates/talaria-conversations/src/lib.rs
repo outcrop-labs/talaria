@@ -321,8 +321,7 @@ pub struct ConversationListRow {
 /// work sessions, a member or a team member; for research, whoever the run's
 /// own audience admits. Chats admit only their owner. The listing, the unread
 /// badge and the working read all filter by this one spelling. A macro, not a
-/// const, so each query stays one `'static` literal (sqlx takes no built
-/// string).
+/// const, so each query stays one `'static` literal.
 macro_rules! audience_sql {
     () => {
         "(c.user_id = $1::uuid \
@@ -1052,11 +1051,6 @@ pub async fn remove_plan_team(
 /// rail badge's number. The SAME audience `list_conversations_in` filters by
 /// (`audience_sql!`, one spelling for both), and the -1 no-cursor floor.
 ///
-/// The research arm is why the two must not drift: when this read had its own
-/// copy of the audience, a badge counted only the research threads you OWN
-/// while the list showed every one shared with you, so the number under the
-/// icon disagreed with the rows behind it.
-///
 /// `kind` is a parameter rather than a list for the same reason: Work's badge
 /// is this read with `"work"` and nothing else, because the shared-kind
 /// scoping below already spans plans and work sessions — a session someone
@@ -1085,15 +1079,12 @@ pub async fn conversation_unread_total(
     Ok(n)
 }
 
-/// A conversation with an assistant reply streaming, as the tab bar names it.
 #[derive(Debug)]
 pub struct WorkingConversation {
     pub id: String,
     pub kind: String,
     pub agent_model: String,
     pub title: Option<String>,
-    /// The reply writer's last stamp, epoch ms: which working thread is the
-    /// freshest.
     pub streamed_ms: i64,
 }
 
