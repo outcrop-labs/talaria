@@ -287,11 +287,18 @@ mod live_db {
     async fn isolated() -> (PgPool, String, String) {
         let url = std::env::var("DATABASE_URL")
             .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        // The pid and the clock keep two processes (and a rerun) apart; the
+        // counter keeps two tests of ONE process apart. The tests run on
+        // parallel threads, and two of them can read the same clock value —
+        // CI did, and the second `create schema` failed on pg_namespace's
+        // unique key.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let schema = format!("sb_retry_{}_{nanos}", std::process::id());
+        let schema = format!("sb_retry_{}_{nanos}_{n}", std::process::id());
         let admin = PgPool::connect(&url).await.expect("connect");
         // AssertSqlSafe: the name is this function's own digits and underscores.
         sqlx::query(sqlx::AssertSqlSafe(format!("create schema {schema}")))
