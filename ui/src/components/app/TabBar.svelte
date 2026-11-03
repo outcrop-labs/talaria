@@ -3,11 +3,6 @@
   import { navSections, navActiveItem, appWorkItem, appManageItem } from '@/lib/nav-sections'
   import { NAV } from '@/lib/nav'
 
-  // The section derivation the sidebar shares, wired for the bar's narrower
-  // question: which items are tabs at all? Manage is not — the manage views
-  // live behind the gear in the right cluster, which goes to the /manage
-  // overview, and in the sidebar docked on every manage page. So the strip
-  // is Work, then Apps.
   function dockSections(
     user: SessionUser,
     appsRows: { slug: string; icon: string; surfaces: { work?: string; manage?: string } }[],
@@ -21,9 +16,6 @@
       const item = appManageItem(a)
       return item === null ? [] : [item]
     })
-    // navSections appends app manage entries to the section whose id is
-    // 'manage', which we keep in the result so the sidebar and the bar see
-    // one derivation, not two.
     const sections = navSections(NAV, appWork, appManage, { isAdmin: user.role === 'admin', ...grants })
     return {
       row: sections.filter((s) => s.id !== 'manage'),
@@ -50,47 +42,30 @@
   import { useEnabledApps } from '@/lib/apps'
   import { useAppGrants, useDeniedViews } from '@/lib/session'
   import { manageArea, MANAGE_HOME } from '@/lib/manage-area'
-  import { edgeFade } from '@/lib/tab-strip'
+  import { edgeFade, revealCurrent } from '@/lib/tab-strip'
   import { cn } from '@/lib/cn'
   import { p, route } from '@/router'
 
-  // THE TAB BAR, the shell's primary nav and its only chrome row. The open
-  // view is a tab cut from the page surface: the page's colour, rounded on
-  // top, curving out at its feet, breaking the bar's bottom hairline so the
-  // bar reads as the top of the window and the tab as the sheet in front.
-  // Every other view is a small icon tile. Manage gets no tab: it lives
-  // behind one gear in the right cluster, beside the other instance-level
-  // controls. Settings and Admin get none either: the account chip lights
-  // for them.
   let { user, onLogout }: { user: SessionUser; onLogout: () => void } = $props()
 
   const denied = useDeniedViews()
   const appGrants = useAppGrants()
   const badges = useNavBadges(() => route.pathname)
 
-  // Keep the query, default off it: a failed /api/apps must say so here, not
-  // silently remove every app's tab.
   const appsQuery = useEnabledApps()
   const appsList = listQuery(appsQuery, { title: 'App links unavailable', variant: 'inline' })
   const appsBroken = $derived(appsList.failed || appsList.stale)
 
-  // The boards view carries its own search in its toolbar.
-  const onBoardsHere = $derived(isUnder(route.pathname, '/boards'))
-  // Settings and Admin render no title of their own, so the chip that owns
-  // them lights to say where you are, as the gear does for the manage half.
-  const onSystemHere = $derived(isUnder(route.pathname, '/settings') || isUnder(route.pathname, '/admin'))
+  const boardsHasOwnSearch = $derived(isUnder(route.pathname, '/boards'))
+  const onSettingsOrAdmin = $derived(isUnder(route.pathname, '/settings') || isUnder(route.pathname, '/admin'))
 
   const grants = $derived({ denied: denied.current, appGrants: appGrants.current })
   const { row, manage: manageSection } = $derived(dockSections(user, appsList.rows, grants))
   const manage = $derived(
     manageArea(NAV, appsList.rows, { isAdmin: user.role === 'admin', ...grants }, route.pathname),
   )
-  const activePath = $derived(
-    // The manage items join the contest though they have no tab: an app's
-    // manage surface (/x/<app>/manage) must beat its own work tab (/x/<app>)
-    // by the most-specific rule, or standing on it would open the work tab.
-    navActiveItem(route.pathname, [...row, ...(manageSection ? [manageSection] : [])])?.to ?? null,
-  )
+  const activeCandidates = $derived([...row, ...(manageSection ? [manageSection] : [])])
+  const activePath = $derived(navActiveItem(route.pathname, activeCandidates)?.to ?? null)
 </script>
 
 {#snippet face(item: NavItem, size: number)}
@@ -98,7 +73,6 @@
 {/snippet}
 
 {#snippet badgeMark(badge: number | null, className: string)}
-  <!-- `!` when the count could not be read, never a silent 0. -->
   <span
     title={badgeTitle(badge)}
     class={cn(
@@ -112,11 +86,9 @@
 {/snippet}
 
 <!-- h-14 is shell chrome, not a stage header, so it does not join the h-12
-     stage-header line (UI-CONVENTIONS). `@container` drives the wordmark from
-     the bar's own width, which the desktop shell can narrow. -->
+     stage-header line (UI-CONVENTIONS). -->
 <nav aria-label="Primary" class="@container relative z-40 flex h-14 shrink-0 items-stretch gap-2 bg-sidebar px-2">
-  <!-- The hairline the open tab breaks through, as its own layer under the
-       strip: a border on the nav would paint over the tab. -->
+  <!-- A border on the nav would paint over the open tab. -->
   <div class="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-line" aria-hidden="true"></div>
 
   <div class="flex shrink-0 items-center gap-2">
@@ -130,9 +102,7 @@
     <DesktopSwitcher collapsed />
   </div>
 
-  <!-- Scrolls in x rather than wrapping, so the right cluster never leaves
-       the band. `px-3` is room for the open tab's feet at either end. -->
-  <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade>
+  <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade use:revealCurrent>
     {#each row as section, si (section.id)}
       {#if si > 0}<div class="mb-3 h-5 w-px shrink-0 bg-line"></div>{/if}
       {#each section.items as item (item.to)}
@@ -167,9 +137,6 @@
     {/if}
   </div>
 
-  <!-- THE RIGHT CLUSTER, read right to left: who you are, what is waiting
-       for you, what you are looking for, then the workspace affordances. The
-       divider is the seam between the workspace and the person. -->
   <div class="flex shrink-0 items-center gap-2">
     {#if appsBroken}
       <RailTooltip label="App links unavailable; retry">
@@ -184,9 +151,6 @@
       </RailTooltip>
     {/if}
     <SidebarAssistant collapsed />
-    <!-- A link to the /manage overview, lit anywhere in the manage area, and
-         absent for a member with no manage grants so it never opens onto an
-         empty room. -->
     {#if manage.items.length > 0}
       <RailTooltip label="Manage">
         <a
@@ -204,10 +168,10 @@
       </RailTooltip>
     {/if}
     <div class="my-2 h-6 w-px shrink-0 bg-line"></div>
-    {#if !onBoardsHere}
+    {#if !boardsHasOwnSearch}
       <BoardsSearch />
     {/if}
     <NotificationBell />
-    <UserMenu {user} {onLogout} active={onSystemHere} hasManage={manage.items.length > 0} />
+    <UserMenu {user} {onLogout} active={onSettingsOrAdmin} hasManage={manage.items.length > 0} />
   </div>
 </nav>

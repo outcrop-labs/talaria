@@ -195,8 +195,7 @@
   <MercuryBackdrop />
   <div class="flex h-full flex-col">
     <!-- Dock-shaped skeleton: exactly the one band the real chrome paints, so
-         loading never reflows. h-8 tiles and the h-14 band match the real
-         tab bar's geometry, and the right cluster is held open too — the strip
+         loading never reflows. The right cluster is held open too — the strip
          it used to stand in for no longer exists, so if this band did not
          carry the cluster's width the real chrome would land wider.
          ThemeToggle rides here in the ERROR case (where `content` is the
@@ -205,10 +204,14 @@
          unable to change theme is a small cruelty with no reason. -->
     <nav
       aria-label="Primary"
-      class="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
+      class="@container flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
     >
-      <div class="flex h-9 shrink-0 items-center pl-1" aria-label="Talaria">
+      <div class="flex h-9 shrink-0 items-center gap-2.5 pl-1" aria-label="Talaria">
         <WingMark size={28} />
+        <span
+          class="hidden font-sans text-[13px] font-semibold leading-4 tracking-[0.18em] text-fg @4xl:block"
+          aria-hidden="true">TALARIA</span
+        >
       </div>
       <div class="flex items-center gap-2 px-3">
         {#each [0, 1, 2, 3, 4, 5] as i (i)}

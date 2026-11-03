@@ -291,14 +291,7 @@ body {
   outline-offset: 2px;
 }
 
-/* ── The tab bar (components/app/TabBar.svelte) ──────────────────────────────
-   The open view is a tab cut from the page surface. Where it meets the bar's
-   bottom hairline, its feet curve OUTWARD into the page: two pseudo-elements,
-   each a square of the page colour with a quarter circle bitten out of it,
-   and a 1px ring on that circle's edge in the hairline colour, so the hairline
-   runs up the curve, over the tab and back down as one outline.
-
-   In a layer so Tailwind utilities on the same element still win. */
+/* In a layer so Tailwind utilities on the same element still win. */
 @layer components {
   .ears-bottom {
     position: relative;
@@ -332,12 +325,8 @@ body {
   }
 }
 
-/* A narrow window scrolls the strip sideways. The scrollbar is noise in a
-   56px band; the overflow is said by a short trailing fade instead, only
-   while there is more to the right (lib/tab-strip.ts sets `data-more`).
-   Unlayered on purpose: the global `* { scrollbar-width: thin }` above is
-   unlayered too, and would beat a layered `none`, reserving a scrollbar's
-   height under the strip and lifting the open tab off the hairline. */
+/* Unlayered on purpose: the global `* { scrollbar-width: thin }` above is
+   unlayered too, and would beat a layered `none`. */
 .tab-strip {
   scrollbar-width: none;
 }

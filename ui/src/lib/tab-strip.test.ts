@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { edgeFade } from './tab-strip'
+import { edgeFade, revealCurrent } from './tab-strip'
 
 class FakeStrip {
   scrollWidth = 0
@@ -21,6 +21,7 @@ class FakeStrip {
 }
 
 let resized: () => void = () => {}
+let mutated: () => void = () => {}
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -36,6 +37,9 @@ beforeEach(() => {
   vi.stubGlobal(
     'MutationObserver',
     class {
+      constructor(cb: () => void) {
+        mutated = cb
+      }
       observe() {}
       disconnect() {}
     },
@@ -87,5 +91,54 @@ describe('edgeFade', () => {
     action.destroy()
     strip.scrollTo(500)
     expect(strip.dataset.more).toBe('')
+  })
+})
+
+class FakeTabStrip {
+  scrollLeft = 0
+  open: { offset: number; width: number } | null = null
+  constructor(readonly left: number, readonly width: number) {}
+  getBoundingClientRect() {
+    return { left: this.left, right: this.left + this.width }
+  }
+  querySelector() {
+    if (!this.open) return null
+    const left = this.left + this.open.offset - this.scrollLeft
+    return { getBoundingClientRect: () => ({ left, right: left + this.open!.width }) }
+  }
+}
+
+describe('revealCurrent', () => {
+  it('scrolls an open tab past the right edge into view, clear of the fade', () => {
+    const strip = new FakeTabStrip(48, 150)
+    strip.open = { offset: 220, width: 90 }
+    revealCurrent(strip as unknown as HTMLElement)
+    const tab = strip.querySelector()!.getBoundingClientRect()
+    expect(tab.right).toBeLessThanOrEqual(48 + 150 - 32)
+    expect(tab.left).toBeGreaterThanOrEqual(48)
+  })
+
+  it('scrolls back when the newly opened tab is left of the view', () => {
+    const strip = new FakeTabStrip(48, 150)
+    strip.scrollLeft = 200
+    strip.open = { offset: 20, width: 32 }
+    revealCurrent(strip as unknown as HTMLElement)
+    expect(strip.querySelector()!.getBoundingClientRect().left).toBe(48 + 12)
+  })
+
+  it('leaves the strip alone when the open tab is already in view', () => {
+    const strip = new FakeTabStrip(48, 150)
+    strip.open = { offset: 40, width: 60 }
+    revealCurrent(strip as unknown as HTMLElement)
+    expect(strip.scrollLeft).toBe(0)
+  })
+
+  it('reveals again when the open tab changes', () => {
+    const strip = new FakeTabStrip(48, 150)
+    strip.open = { offset: 40, width: 60 }
+    revealCurrent(strip as unknown as HTMLElement)
+    strip.open = { offset: 300, width: 90 }
+    mutated()
+    expect(strip.querySelector()!.getBoundingClientRect().right).toBe(48 + 150 - 32)
   })
 })
