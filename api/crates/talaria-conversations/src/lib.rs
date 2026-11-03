@@ -1120,51 +1120,296 @@ pub async fn insert_user_message(
     Ok(id)
 }
 
-/// The conversation's in-flight assistant reply, if any. A streaming row that
-/// has not MOVED in 15 minutes is a crashed persist — mark it errored and
-/// report none, so a dead stream can never wedge the conversation's
-/// turn-taking. The signal is `streamed_at` (stamped on every flush), not the
-/// row's age: a long agent turn — the kind that builds out a knowledgebase —
-/// streams tool progress for an hour, and age alone would kill it at ten
-/// minutes while it was still working. Fifteen minutes of SILENCE is the
-/// honest bar: the drain loop owns a 10-minute idle ceiling (chat_persist's
-/// STREAM_IDLE), so a row this quiet means its writer is gone.
+// ── Who is writing a reply ───────────────────────────────────────────────────
+//
+// A REPLY ROW SAYS `streaming` WHILE A PROCESS WRITES IT, and until now
+// nothing said whether one still did. The drain that writes a reply lives in
+// the api process that took the turn, so a restart in the middle of a reply
+// (a deploy update, a container restart, an OOM) took its writer away and
+// left the row `streaming` for good: the next message queued behind a reply
+// nobody would finish and was never answered, and the sweep below needed 15
+// minutes of silence to call the row dead, because silence was the only sign
+// it had. On an instance that deploys mid-turn that is a thread unusable for
+// a quarter of an hour.
+//
+// So every process says which replies it is writing. It holds a
+// [`ReplyWriter`] from the row's insert to its landing write, and stamps
+// `streamed_at` on those rows every [`WRITER_BEAT`] (talaria-chat-persist
+// `keep_replies`), quiet stretches included: a turn waiting minutes for the
+// agent's response headers, or a tool call that streams nothing, used to look
+// exactly like a dead one. A `streaming` row is then an ORPHAN when this
+// process is not writing it and no process has stamped it for
+// [`WRITER_LEASE`]. Two app containers run side by side during a deploy
+// (docs/UPDATES.md, "The overlap contract"), so the lease, not "this process
+// is not writing it", is what decides: the old container's drains keep
+// beating their rows until it exits.
+//
+// A CONTAINER FROM BEFORE THE BEAT DOES NOT BEAT, and the first overlap onto
+// this release has one. Its drains stamp a row only when a chunk arrives
+// (Hermes' keep-alives included), so a reply of its that waits for the
+// agent's response headers is stamped by nothing from its insert on, for as
+// long as the old gateway holds the turn and then waits for them. Closed at
+// the ordinary lease, its thread read as idle while the old drain still ran,
+// and a send there started a second turn beside it. So a reply that has
+// said nothing and that no write has touched since it was made (or taken up
+// again by a resume) is given [`WRITER_LEASE_UNWRITTEN`]: past every wait a
+// pre-beat writer can be in before its first chunk.
+//
+// An orphan is closed as an error that says why, the way a drain that died
+// closes its own row, and stamped `orphaned`. It is not picked back up: the
+// agent may have finished the turn, and landing that reply is the reattach a
+// later change adds. A send that queues behind a row this process is not
+// writing watches it, and answers the queue itself if the row turns out to be
+// an orphan (talaria-chat-persist `answer_after_orphan`).
+
+/// How often a process stamps `streamed_at` on the replies it is writing.
+pub const WRITER_BEAT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a `streaming` reply goes unstamped before it has no writer.
+/// Twelve beats: well past a beat a busy database held up, and past the
+/// longest a writer that does not beat holds a row `streaming` (the inbox
+/// assistant's reply, bounded at 90 s).
+pub const WRITER_LEASE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The lease of a reply that has said nothing and that no write has touched
+/// since its insert (or its resume): a writer from before the beat holds the
+/// turn for its agent up to `HOLD_WINDOW` and then waits up to
+/// `HEADERS_WINDOW` for the response headers without writing the row (main's
+/// gateway has the same two bounds), and only then do chunks start stamping
+/// it. Half a minute of margin past both.
+pub const WRITER_LEASE_UNWRITTEN: std::time::Duration = std::time::Duration::from_secs(
+    talaria_gateway::fleet_chat::HOLD_WINDOW.as_secs()
+        + talaria_gateway::fleet_chat::HEADERS_WINDOW.as_secs()
+        + 30,
+);
+
+/// The line an orphaned reply is closed with, after whatever prose it had.
+/// A restart is the usual way a writer goes, not the only one (a writer task
+/// that panicked goes the same way), so the line says "most likely".
+pub const ORPHANED_LINE: &str = "(agent error: this reply stopped being saved partway through, \
+     most likely because Talaria restarted)";
+
+/// The reply rows this process is writing, by id, with how many holds each
+/// has (a resumed row is held again by its new drive).
+static WRITING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The key a row is held under: the canonical text Postgres answers `id::text`
+/// with, whatever spelling a caller had.
+fn writer_key(message_id: &str) -> String {
+    message_id.trim().to_ascii_lowercase()
+}
+
+/// This process's hold on a reply row it writes, from the row's insert to its
+/// landing write. While any hold on a row lives, the row is beaten and is
+/// never this process's orphan, however long it goes quiet.
+#[derive(Debug)]
+pub struct ReplyWriter {
+    key: String,
+}
+
+impl ReplyWriter {
+    pub fn hold(message_id: &str) -> Self {
+        let key = writer_key(message_id);
+        if let Ok(mut writing) = WRITING.lock() {
+            *writing.entry(key.clone()).or_default() += 1;
+        }
+        ReplyWriter { key }
+    }
+}
+
+impl Drop for ReplyWriter {
+    fn drop(&mut self) {
+        if let Ok(mut writing) = WRITING.lock()
+            && let Some(holds) = writing.get_mut(&self.key)
+        {
+            *holds -= 1;
+            if *holds == 0 {
+                writing.remove(&self.key);
+            }
+        }
+    }
+}
+
+/// Whether this process is writing this reply row.
+pub fn written_here(message_id: &str) -> bool {
+    WRITING
+        .lock()
+        .is_ok_and(|writing| writing.contains_key(&writer_key(message_id)))
+}
+
+/// Every reply row this process is writing.
+pub fn replies_written_here() -> Vec<String> {
+    WRITING
+        .lock()
+        .map(|writing| writing.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The beat: stamp the rows this process writes as alive, those still
+/// streaming. Returns how many it stamped.
+pub async fn beat_replies(pg: &PgPool, message_ids: &[String]) -> Result<u64, sqlx::Error> {
+    if message_ids.is_empty() {
+        return Ok(0);
+    }
+    let done = sqlx::query(
+        "update messages set streamed_at = now() \
+         where id::text = any($1::text[]) and status = 'streaming'",
+    )
+    .bind(message_ids)
+    .execute(pg)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// The close every orphan gets: an error whose reason follows the prose that
+/// arrived (or stands alone on an empty row), stamped `orphaned`. Guarded on
+/// the row still being an orphan, so a row a writer stamped or revived since
+/// it was read is left alone. `$1` is the lease in seconds, `$6` the lease
+/// of a reply that has said nothing and that no write has touched since its
+/// insert or its resume ([`WRITER_LEASE_UNWRITTEN`]; an insert sets
+/// `created_at` and `streamed_at` from one clock reading), `$2` the line with
+/// the separator before it, `$3` the line alone, `$4` the whitespace a row's
+/// prose is trimmed of. A macro, not a const, so each query below is one
+/// `'static` literal (sqlx takes no built string).
+macro_rules! close_orphan_sql {
+    () => {
+        "update messages set status = 'error', \
+            content = case when btrim(content, $4) = '' then $3 \
+                           else rtrim(content, $4) || $2 end, \
+            metadata = coalesce(metadata, '{}'::jsonb) || '{\"orphaned\": true}'::jsonb \
+         where role = 'assistant' and status = 'streaming' \
+           and streamed_at < now() - make_interval(secs => case \
+             when btrim(content, $4) = '' and btrim(reasoning, $4) = '' \
+               and tools = '[]'::jsonb \
+               and (streamed_at = created_at or coalesce(metadata, '{}'::jsonb) ? 'resumed') \
+             then $6 else $1 end)"
+    };
+}
+
+const PROSE_WHITESPACE: &str = " \t\r\n";
+
+/// Close one row as an orphan, if it still is one. True when it was closed
+/// here.
+async fn close_orphan(pg: &PgPool, message_id: &str) -> Result<bool, sqlx::Error> {
+    if written_here(message_id) {
+        return Ok(false);
+    }
+    let done = sqlx::query(concat!(close_orphan_sql!(), " and id = $5::uuid"))
+        .bind(WRITER_LEASE.as_secs_f64())
+        .bind(format!("\n\n{ORPHANED_LINE}"))
+        .bind(ORPHANED_LINE)
+        .bind(PROSE_WHITESPACE)
+        .bind(message_id)
+        .bind(WRITER_LEASE_UNWRITTEN.as_secs_f64())
+        .execute(pg)
+        .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// THE SWEEP: close every orphaned reply, whichever conversation it is in.
+/// Run at boot, and on every beat after it, by each process; the rows this
+/// one writes are never its orphans. Answers the closed rows as
+/// `(message_id, conversation_id)`.
+pub async fn sweep_orphaned_replies(pg: &PgPool) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        close_orphan_sql!(),
+        " and not (id::text = any($5::text[])) \
+         returning id::text, conversation_id::text"
+    ))
+    .bind(WRITER_LEASE.as_secs_f64())
+    .bind(format!("\n\n{ORPHANED_LINE}"))
+    .bind(ORPHANED_LINE)
+    .bind(PROSE_WHITESPACE)
+    .bind(replies_written_here())
+    .bind(WRITER_LEASE_UNWRITTEN.as_secs_f64())
+    .fetch_all(pg)
+    .await
+}
+
+/// Where a reply row stands, for a send queued behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyFate {
+    /// Still being written: this process holds it, or a process stamped it
+    /// inside the lease.
+    Writing,
+    /// Nobody was writing it: closed as an orphan, here or by another
+    /// process's sweep.
+    Orphaned,
+    /// Its writer ended it (or the row is gone): that writer's tail is what
+    /// answers anything queued behind it.
+    Landed,
+}
+
+/// Read where a reply row stands, and close it if it is an orphan. Quiet for
+/// less than the ordinary lease, a row is written; past it, the guarded close
+/// decides (a reply that has said nothing may have the longer lease).
+pub async fn reply_fate(pg: &PgPool, message_id: &str) -> Result<ReplyFate, sqlx::Error> {
+    // Twice at most: a stale row the guarded close left alone was revived by
+    // its writer, has the longer lease, or was closed a moment earlier by
+    // another sweep, and only a second read tells which.
+    for _ in 0..2 {
+        let row: Option<(String, bool, bool)> = sqlx::query_as(
+            "select status, coalesce(metadata, '{}'::jsonb) ? 'orphaned', \
+                streamed_at < now() - make_interval(secs => $2) \
+             from messages where id = $1::uuid",
+        )
+        .bind(message_id)
+        .bind(WRITER_LEASE.as_secs_f64())
+        .fetch_optional(pg)
+        .await?;
+        match row {
+            None => return Ok(ReplyFate::Landed),
+            Some((status, _, stale)) if status == "streaming" => {
+                if !stale || written_here(message_id) {
+                    return Ok(ReplyFate::Writing);
+                }
+                if close_orphan(pg, message_id).await? {
+                    return Ok(ReplyFate::Orphaned);
+                }
+            }
+            Some((status, true, _)) if status == "error" => return Ok(ReplyFate::Orphaned),
+            Some(_) => return Ok(ReplyFate::Landed),
+        }
+    }
+    Ok(ReplyFate::Writing)
+}
+
+/// The conversation's in-flight assistant reply, if any: the question "may a
+/// NEW turn start, or does it queue". A reply some process is writing is in
+/// flight. An orphan is not: it is closed here (see "Who is writing a reply",
+/// above) and reported as none, so a send never queues behind a reply nobody
+/// will finish. The test is the writer's beat on `streamed_at`, never the
+/// row's age: a long agent turn, the kind that builds out a knowledgebase,
+/// streams for an hour, and its writer keeps beating it all that time. A row
+/// quiet for less than the ordinary lease costs no more than the read.
 pub async fn active_streaming_assistant(
     pg: &PgPool,
     conversation_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String, bool)> = sqlx::query_as(
-        "select id::text, streamed_at < now() - interval '15 minutes' as stale \
+        "select id::text, streamed_at < now() - make_interval(secs => $2) as stale \
          from messages \
          where conversation_id = $1::uuid and role = 'assistant' and status = 'streaming' \
          order by seq desc limit 1",
     )
     .bind(conversation_id)
+    .bind(WRITER_LEASE.as_secs_f64())
     .fetch_optional(pg)
     .await?;
     match row {
         None => Ok(None),
-        Some((id, stale)) => {
-            if stale {
-                // The reason lands only on an EMPTY row: a writer that died
-                // mid-prose keeps its prose (the mark renders beside it), and
-                // this sweep is the last-resort writer — the normal death
-                // paths put a better sentence in the row themselves.
-                sqlx::query(
-                    "update messages set status = 'error', \
-                        content = case when content = '' \
-                          then '(agent error: the stream writer vanished mid-turn)' \
-                          else content end \
-                     where id = $1::uuid",
-                )
-                .bind(&id)
-                .execute(pg)
-                .await?;
-                Ok(None)
-            } else {
+        Some((id, true)) if !written_here(&id) => {
+            // Closed here, or by another sweep a moment ago; either way it is
+            // no turn to wait for. A row the guarded close left alone (a
+            // writer revived it, or it has the longer lease) is in flight.
+            if reply_fate(pg, &id).await? == ReplyFate::Writing {
                 Ok(Some(id))
+            } else {
+                Ok(None)
             }
         }
+        Some((id, _)) => Ok(Some(id)),
     }
 }
 
@@ -1275,8 +1520,9 @@ pub async fn message_run_id(pg: &PgPool, message_id: &str) -> Result<Option<Stri
 /// is the whole of the refusal both routes answer with.
 ///
 /// A PLAIN READ, deliberately unlike `active_streaming_assistant`: that one
-/// sweeps a row that has gone quiet for fifteen minutes into an error, because
-/// its question is "may a NEW turn start". This one's question is "what is the
+/// closes a row no process is writing (an orphan, see "Who is writing a
+/// reply"), because its question is "may a NEW turn start". This one's
+/// question is "what is the
 /// reader looking at right now", and the reader is looking at a spinner over
 /// exactly this row — killing it out from under a stop would answer "nothing is
 /// streaming" to a person who can see that something is. The run id is absent
@@ -1379,6 +1625,11 @@ pub fn pinned_history_fits_counts(assistant_rows: i64, pinned_rows: i64) -> bool
 /// signal everywhere liveness is asked about (the sweep above, the sidebar's
 /// working flag): a streaming row that is still writing is still alive,
 /// however long the turn runs.
+///
+/// Every write here is the row's writer's, so it also takes off an `orphaned`
+/// stamp: a reply closed as an orphan whose writer was alive after all (a
+/// process from before the beat, in a deploy's overlap) is written again by
+/// that writer, and the row it lands must not say it was abandoned.
 pub async fn update_assistant(
     pg: &PgPool,
     message_id: &str,
@@ -1389,7 +1640,7 @@ pub async fn update_assistant(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update messages set content = $2, reasoning = $3, tools = $4, status = $5, \
-            streamed_at = now() \
+            streamed_at = now(), metadata = metadata - 'orphaned' \
          where id = $1::uuid",
     )
     .bind(message_id)
@@ -1414,7 +1665,7 @@ pub async fn resurrect_streaming_assistant(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update messages set content = '', reasoning = '', tools = '[]'::jsonb, \
-            status = 'streaming', streamed_at = now() \
+            status = 'streaming', streamed_at = now(), metadata = metadata - 'orphaned' \
          where id = $1::uuid",
     )
     .bind(message_id)
@@ -1993,6 +2244,9 @@ pub fn mark_tool_failures(tools: &mut [ToolCall], failed: &[&str]) -> bool {
 }
 
 #[cfg(test)]
+mod orphan_live;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2213,5 +2467,39 @@ mod tests {
         assert_eq!(reaction_actor(Some("a@x"), Some("A")), "a@x");
         assert_eq!(reaction_actor(None, Some("A")), "A");
         assert_eq!(reaction_actor(None, None), "user");
+    }
+
+    /// A row is written here while any hold on it lives, whatever spelling of
+    /// its id the holder had, and stops being so when the last hold goes.
+    #[test]
+    fn a_reply_is_written_here_while_a_hold_lives() {
+        let row = "5e1ec7ed-0000-4000-8000-0000000000f1";
+        assert!(!written_here(row));
+        let first = ReplyWriter::hold(&row.to_ascii_uppercase());
+        assert!(written_here(row));
+        assert!(replies_written_here().contains(&row.to_string()));
+        // A resumed row is held again by its new drive before the old hold
+        // goes: the row stays written here across the hand-over.
+        let second = ReplyWriter::hold(row);
+        drop(first);
+        assert!(written_here(row));
+        drop(second);
+        assert!(!written_here(row));
+        assert!(!replies_written_here().contains(&row.to_string()));
+    }
+
+    /// The beat outlives the longest quiet stretch of a live writer by a wide
+    /// margin, and the lease outlives the inbox reply's 90 s bound.
+    #[test]
+    fn the_lease_is_many_beats_and_outlives_a_writer_that_does_not_beat() {
+        assert!(WRITER_LEASE >= WRITER_BEAT * 10);
+        assert!(WRITER_LEASE > std::time::Duration::from_secs(90));
+        // A pre-beat writer is silent through its hold and its headers wait.
+        assert!(
+            WRITER_LEASE_UNWRITTEN
+                > talaria_gateway::fleet_chat::HOLD_WINDOW
+                    + talaria_gateway::fleet_chat::HEADERS_WINDOW
+        );
+        assert!(ORPHANED_LINE.starts_with("(agent error:"));
     }
 }

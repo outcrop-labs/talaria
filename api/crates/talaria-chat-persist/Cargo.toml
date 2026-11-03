@@ -35,3 +35,6 @@ tracing = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 talaria-model-efforts = { workspace = true }
+
+[dev-dependencies]
+talaria-config = { workspace = true }

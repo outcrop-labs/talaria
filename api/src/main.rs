@@ -73,6 +73,16 @@ async fn serve() {
         tokio::spawn(async move { jobs::arm(st).await });
     }
 
+    // The replies this process writes say so, and the ones nobody writes
+    // are closed: first the boot sweep of what a restart left streaming,
+    // then a beat (talaria-conversations, "Who is writing a reply"). Not a
+    // scheduled job and not behind the switch above: the beat is how this
+    // process's own drains stay alive to every other process's sweep.
+    {
+        let st = state.clone();
+        tokio::spawn(async move { talaria_chat_persist::keep_replies(st).await });
+    }
+
     // The builtin MCP rows (the toolkit, the Workbench) are this api's to
     // guarantee: every reader — the gateway, agents' rendered configs, the
     // SPA harness's capability reach — treats them as present, so boot seeds

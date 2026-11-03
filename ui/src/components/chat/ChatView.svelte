@@ -26,8 +26,8 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import { slide } from '@/lib/motion'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { queueChatMessage, steerChat, stopChat, stopTurn, streamChat, type ChatFocus, type ChatKind } from '@/lib/chat'
-  import { HttpError } from '@/lib/fetch-json'
+  import { queueChatMessage, steerChat, stopChat, stopTurn, streamChat, type ChatFocus, type ChatKind, type StopResult } from '@/lib/chat'
+  import { HttpError, errorMessage } from '@/lib/fetch-json'
   import { mergeTool } from '@/lib/sse-parse'
   import { onUserEvent } from '@/lib/user-events.svelte'
   import {
@@ -759,7 +759,7 @@
           if (pendingStop?.ctrl === ctrl) {
             const { latch } = pendingStop
             pendingStop = null
-            latch.named(meta.conversationId, meta.messageId !== '', (id) => void stopChat(id, turn).catch(() => {}))
+            latch.named(meta.conversationId, meta.messageId !== '', (id) => reportStop(turn, stopChat(id, turn)))
           }
         },
         ctrl.signal,
@@ -818,9 +818,12 @@
    *  client's read: a Hermes run kept generating (and spending) behind the
    *  frozen transcript, and the turn landed minutes later full of work nobody
    *  was waiting for. So the run is told first and the reader hangs up second;
-   *  the call is fire-and-forget because the transcript must freeze on the
-   *  keypress, not on a round trip, and a 409 (the turn finished on its own)
-   *  is nothing to report. Everything `userStopped` means is unchanged.
+   *  the call is not awaited because the transcript must freeze on the
+   *  keypress, not on a round trip. Its answer is read when it comes
+   *  (`reportStop`): a stop the agent has not taken yet, or one that never
+   *  reached it, is said, because the agent may still be working, and
+   *  spending, behind the frozen transcript. A 409 (the turn finished on its
+   *  own) is nothing to report. Everything `userStopped` means is unchanged.
    *
    *  Every stop names this page's own send (`turnId`), so one that reaches
    *  the server before the send does is held for it rather than answered
@@ -843,7 +846,7 @@
     const ctrl = abortCtrl
     const turn = turnId ?? undefined
     if (id) {
-      void stopChat(id, turn).catch(() => {})
+      reportStop(turn, stopChat(id, turn))
       ctrl?.abort()
       return
     }
@@ -852,8 +855,30 @@
     // The server hears this stop now, by the send's own name: it waits for
     // the send or holds the stop for it, so a page closed right after Stop,
     // or a view that starts a new chat, no longer takes the stop along.
-    if (turn) void stopTurn(turn).catch(() => {})
+    if (turn) reportStop(turn, stopTurn(turn))
     pendingStop = { ctrl, latch: stopOnceNamed(() => ctrl.abort()) }
+  }
+
+  /** What a stop's answer tells the person, once it comes: whether the AGENT
+   *  stopped, which the frozen transcript cannot say. `held` is a stop the
+   *  agent has not taken yet (it had not opened the turn, or could not place
+   *  the stop in time); the server sends it again until it does. A refusal
+   *  (the agent's own, or a stop that cannot reach it) is not sent again,
+   *  and the agent may finish the reply. A 409 is a turn
+   *  that ended on its own. One toast per turn (`key`): a new thread's first
+   *  turn is stopped by its name and then again by its thread's id. */
+  const reportStop = (turn: string | undefined, sent: Promise<StopResult>) => {
+    const key = turn ? `stop:${turn}` : undefined
+    sent.then(
+      (r) => {
+        if (r.held) pushToast({ title: 'Still stopping', body: 'The agent has not taken the stop yet. It is sent again until the agent does.', key })
+      },
+      (e: unknown) => {
+        if (e instanceof HttpError && e.status === 409) return
+        // toastError's shape, keyed: one toast per turn.
+        pushToast({ title: 'The stop did not reach the agent, which may finish this reply', body: errorMessage(e), tone: 'danger', key })
+      },
+    )
   }
 
   /** Merge the server's identity fields onto what is on screen — never its

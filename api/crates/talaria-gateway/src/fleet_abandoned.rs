@@ -419,7 +419,21 @@ async fn stop(entry: &ManifestEntry, run: &str, deadline: Instant) -> Stop {
         }
     })
     .await;
-    asked.unwrap_or_else(|_| Stop::Refused("no answer inside the control window".into()))
+    asked.unwrap_or_else(|_| Stop::Refused(NO_ANSWER.into()))
+}
+
+/// The refusal a stop that got no answer at all before its deadline carries.
+const NO_ANSWER: &str = "no answer inside the control window";
+
+/// Whether a stop's refusal ([`stop_open_completion`]'s `Err`) only says
+/// Hermes could not place it in time, rather than that it would not take it:
+/// the run was not bound to its admission yet (`409 not_found`), its store was
+/// busy (`503 storage_unavailable`), or the agent did not answer at all before
+/// the deadline. Sent again with more patience, such a stop can still land.
+/// Anything else (another code, a status with none, a stop that never reached
+/// the agent) is the agent's answer, and sending it again changes nothing.
+pub(crate) fn not_placed(why: &str) -> bool {
+    matches!(why, "409 not_found" | "503 storage_unavailable" | NO_ANSWER)
 }
 
 /// What a stop Hermes took did to the turn, said so a log line can read
@@ -1077,6 +1091,7 @@ mod tests {
         )
         .await;
         assert_eq!(done, Err("409 unknown_execution".into()));
+        assert!(!not_placed("409 unknown_execution"));
 
         let (entry, _) = scripted(vec![(409, NOT_FOUND); 8]).await;
         let done = stop_open_completion(
@@ -1086,6 +1101,27 @@ mod tests {
         )
         .await;
         assert_eq!(done, Err("409 not_found".into()));
+        assert!(not_placed("409 not_found"));
+    }
+
+    /// Only a stop Hermes could not place yet reads as not placed: not one
+    /// it refused, and not one that never reached it.
+    #[test]
+    fn only_a_stop_hermes_could_not_place_yet_is_not_placed() {
+        for why in ["409 not_found", "503 storage_unavailable", NO_ANSWER] {
+            assert!(not_placed(why), "{why}");
+        }
+        for why in [
+            "401",
+            "403 forbidden",
+            "404 not_found",
+            "409 unknown_execution",
+            "500",
+            "no such agent",
+            "connection refused",
+        ] {
+            assert!(!not_placed(why), "{why}");
+        }
     }
 
     /// A stop that never reached the agent reads as what broke, never where:
@@ -1115,5 +1151,6 @@ mod tests {
         assert!(!why.contains("for url"), "{why}");
         assert!(!why.contains("/v1/runs"), "{why}");
         assert!(why.to_ascii_lowercase().contains("refused"), "{why}");
+        assert!(!not_placed(&why), "{why}");
     }
 }

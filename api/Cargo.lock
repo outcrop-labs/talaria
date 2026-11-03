@@ -4490,6 +4490,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-defs",
  "talaria-body",
+ "talaria-config",
  "talaria-conversations",
  "talaria-fleet-agents",
  "talaria-fleet-layout",
@@ -4613,6 +4614,7 @@ dependencies = [
  "talaria-params",
  "talaria-secretbox",
  "talaria-uploads",
+ "tokio",
  "tracing",
 ]
 
