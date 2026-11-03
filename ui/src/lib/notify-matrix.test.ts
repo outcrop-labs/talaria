@@ -153,10 +153,30 @@ describe('the missed-activity fine print (notify-web-4)', () => {
     expect(mailNote([real('approval_pending', 'A', 'needs_you', [true, true, true], 1)], undefined)).toBe('Needs you waits 1 minute whatever you pick.')
   })
 
+  it('on Never nothing is mailed — email_due returns no time for off before any class delay', () => {
+    const never = mailNote(REGISTRY, undefined, 'off')
+    expect(never).toBe('Nothing is mailed while this is Never, whatever the Email column says.')
+    expect(never).not.toMatch(/waits|whatever you pick|Following/)
+    // Any other pick still says the delay and the Following clause.
+    for (const f of ['15m', '1h', '1d'] as const) expect(mailNote(REGISTRY, undefined, f)).toBe(mailNote(REGISTRY, undefined))
+  })
+
+  it('a class waits its delay only where the person has its Email cell on', () => {
+    const delayed = real('approval_pending', 'A', 'needs_you', [true, true, true], 15)
+    expect(mailNote([delayed], undefined, '1h')).toBe('Needs you waits 15 minutes whatever you pick.')
+    const off = { approval_pending: { inApp: true as const, desktop: true, push: true, email: false } }
+    expect(mailNote([delayed], off, '1h')).toBe('')
+    // A class whose Email is off by default says nothing until the person turns it on.
+    const quiet = real('approval_pending', 'A', 'needs_you', [true, true, false], 15)
+    expect(mailNote([quiet], undefined)).toBe('')
+    const on = { approval_pending: { inApp: true as const, desktop: true, push: true, email: true } }
+    expect(mailNote([quiet], on)).toBe('Needs you waits 15 minutes whatever you pick.')
+  })
+
   it('Settings reads its fine print from mailNote, not a sentence of its own', () => {
     const here = dirname(fileURLToPath(import.meta.url))
     const section = readFileSync(join(here, '../routes/app/settings/NotificationsSection.svelte'), 'utf8')
-    expect(section).toMatch(/mailNote\(classes, data\?\.channels\)/)
+    expect(section).toMatch(/mailNote\(classes, data\?\.channels, frequency\)/)
     expect(section).not.toMatch(/never mailed/i)
   })
 })

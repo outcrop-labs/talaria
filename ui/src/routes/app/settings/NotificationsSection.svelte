@@ -262,7 +262,7 @@
                 <!-- Said from the registry and this person's matrix: a hand-kept
                      sentence here told people Following is not mailed, while
                      Channel activity mailed by default (notify-web-4). -->
-                {#if classes}{mailNote(classes, data?.channels)}{/if}
+                {#if classes}{mailNote(classes, data?.channels, frequency)}{/if}
               {:else}
                 Saved now; this instance starts batching by it with its next delivery update.
               {/if}

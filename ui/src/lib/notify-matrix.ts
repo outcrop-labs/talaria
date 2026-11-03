@@ -150,21 +150,28 @@ export function emailColumnNote(emailEnabled: boolean): string | null {
 const listOf = (items: readonly string[]): string =>
   items.length < 2 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
 
-/** The missed-activity row's fine print — which rows wait their own time
- *  whatever the frequency, and what of Following is mailed — said from the
- *  registry and the person's effective channels, never kept as a sentence.
- *  The sentence it replaces, "Following is never mailed", sat over a
- *  registry whose Channel activity mails by default (classes.rs: a channel
- *  set to All gets what a DM gets), and the batcher mailed it under a
- *  FOLLOWING heading (notify-web-4). Same rule as the matrix above it: the
- *  registry owns every default, so the words follow it. */
-export function mailNote(classes: readonly ClassInfo[], channels: ChannelsPrefs | undefined): string {
+/** The missed-activity row's fine print — Never mails nothing, which rows wait
+ *  their own time whatever the frequency, and what of Following is mailed —
+ *  said from the registry, the person's effective channels and their pick,
+ *  never kept as a sentence. It mirrors `email_due` (deliver.rs): `off`
+ *  returns no due time at all, before a class's own delay applies, so on
+ *  Never nothing is mailed whatever a class waits; a class's delay applies
+ *  only to a row whose Email cell is on. The sentence it replaces, "Following
+ *  is never mailed", sat over a registry whose Channel activity mails by
+ *  default (classes.rs: a channel set to All gets what a DM gets), and the
+ *  batcher mailed it under a FOLLOWING heading (notify-web-4). Same rule as
+ *  the matrix above it: the registry owns every default, so the words follow
+ *  it. `frequency` is the person's pick; unknown (not yet loaded) says the
+ *  rest. */
+export function mailNote(classes: readonly ClassInfo[], channels: ChannelsPrefs | undefined, frequency?: EmailFrequency | null): string {
+  if (frequency === 'off') return 'Nothing is mailed while this is Never, whatever the Email column says.'
   const out: string[] = []
   // A class with its own delay waits it whatever the frequency (Needs you:
-  // 15 minutes, deliver.rs email_due) — one sentence per category and delay.
+  // 15 minutes, deliver.rs email_due) — when its Email cell is on, one
+  // sentence per category and delay.
   const delays = new Map<string, { category: Category; minutes: number }>()
   for (const c of classes) {
-    if (c.emailDelayMin > 0) delays.set(`${c.category}:${c.emailDelayMin}`, { category: c.category, minutes: c.emailDelayMin })
+    if (c.emailDelayMin > 0 && effectiveChannels(c, channels).email) delays.set(`${c.category}:${c.emailDelayMin}`, { category: c.category, minutes: c.emailDelayMin })
   }
   for (const { category, minutes } of delays.values()) {
     out.push(`${CATEGORY_LABEL[category] ?? category} waits ${minutes} minute${minutes === 1 ? '' : 's'} whatever you pick.`)
