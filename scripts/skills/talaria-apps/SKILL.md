@@ -53,8 +53,8 @@ Every argument, answer and refusal of these steps:
 
 **Import only what the host shares.** A surface (`app.ts`, `*.svelte`): `svelte`,
 `@talaria/sdk`, `@lucide/svelte`, `@tanstack/svelte-query`. Server code (`server.ts`, `mcp.ts`,
-`harnesses/*.ts`): `@talaria/sdk/server`, `zod` (bare, the same copy the SDK re-exports as `z`)
-and node's builtins; a surface takes a type from a zod module by `import type`. Tests
+`harnesses/*.ts`): `@talaria/sdk/server`, `zod` or `zod/v4` (the same copy the SDK re-exports as `z`; not
+`zod/mini`) and node's builtins; a surface takes a type from a zod module by `import type`. Tests
 (`*.test.ts`) add `@talaria/sdk/testing` and `vitest`. Anything else fails, by name:
 `"clsx" is not shared with apps: …`.
 

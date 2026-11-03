@@ -37,12 +37,19 @@ export function clientSpecifiers(): string[] {
 }
 
 /** The packages an app's server-side code imports by name besides the SDK,
- *  each by its bare entry only (no subpath). zod is the copy
+ *  each by its bare entry (zod/v4 is an alias of it, below; no other
+ *  subpath). zod is the copy
  *  `@talaria/sdk/server` re-exports as `z`, so a schema an app builds with
  *  either is one zod's. main's SDK shared it, and apps written then import it
  *  directly (`import { z } from 'zod'` in a lib/schema.ts that the app's
  *  plain-`bun test` half also imports). */
 export const SHARED_SERVER_PACKAGES: readonly string[] = ['zod']
+
+/** Other names for a shared server specifier, linked to the same runtime file
+ *  — one copy, not two. `zod/v4` is zod 4's own name for the entry `zod`
+ *  already is (the host's zod is ^4), and main's in-host build bundled it, so
+ *  apps written then import it. `zod/mini` is a different API and stays out. */
+export const SERVER_SPECIFIER_ALIASES: Readonly<Record<string, string>> = { 'zod/v4': 'zod' }
 
 /** Specifiers an app server/mcp chunk must import from the host, never bundle. */
 export function serverSpecifiers(): string[] {
@@ -71,10 +78,11 @@ export function shimSource(spec: string, from: string = spec): string {
 /** Why `id`, a subpath of a shared package or no shared package at all, has
  *  no runtime file. */
 function unsharedSubpath(id: string, shared: readonly string[]): Error {
-  const pkg = shared.filter((s) => id.startsWith(`${s}/`)).sort((a, b) => b.length - a.length)[0]
-  return new Error(
-    pkg ? `"${id}" is not shared with apps; the host shares "${pkg}" and its listed subpaths only` : `"${id}" is not shared with apps`,
-  )
+  const pkg = shared.filter((s) => id.startsWith(`${s}/`)).sort((a, b) => a.length - b.length)[0]
+  if (!pkg) return new Error(`"${id}" is not shared with apps`)
+  const own = shared.filter((s) => s === pkg || s.startsWith(`${pkg}/`))
+  const what = own.length <= 3 ? own.map((s) => `"${s}"`).join(' and ') : `"${pkg}" and its listed subpaths`
+  return new Error(`"${id}" is not shared with apps; the host shares ${what} only`)
 }
 
 /** The host runtime file an app client chunk imports for `id`. Every shared
@@ -97,16 +105,19 @@ export function clientRuntimePath(id: string): string {
  *  fails naming the import. */
 export function serverRuntimeFile(id: string): string {
   const shared = serverSpecifiers()
-  if (shared.includes(id)) return `${shimFileName(id)}.js`
-  throw unsharedSubpath(id, shared)
+  const target = SERVER_SPECIFIER_ALIASES[id] ?? id
+  if (shared.includes(target)) return `${shimFileName(target)}.js`
+  throw unsharedSubpath(id, [...shared, ...Object.keys(SERVER_SPECIFIER_ALIASES)])
 }
 
 export function isClientSpecifier(id: string): boolean {
   return clientSpecifiers().some((s) => id === s || id.startsWith(`${s}/`))
 }
 
+/** Exactly a shared server specifier or an alias of one: `zod/mini` is not,
+ *  so the guard refuses it by name before the build looks for a runtime file. */
 export function isServerSpecifier(id: string): boolean {
-  return serverSpecifiers().some((s) => id === s || id.startsWith(`${s}/`))
+  return serverSpecifiers().includes(id) || id in SERVER_SPECIFIER_ALIASES
 }
 
 /** Host half of the app-build cache key. A host upgrade invalidates every app. */

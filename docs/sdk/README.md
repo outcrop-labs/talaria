@@ -13,7 +13,7 @@ nothing** and carries no `package.json`; `svelte`, svelte-query and `@lucide/sve
 resolve from the host, exactly one copy in the deployment. So does `zod`, in server-side code
 (`server.ts`, `mcp.ts`, `harnesses/`): `import { z } from 'zod'` is the very module
 `@talaria/sdk/server` re-exports as `z`, so a schema built with either is one zod's. It is shared by
-its bare entry only (`zod/mini` is not), and a surface takes types from a module that imports it by
+its bare entry or as `zod/v4`, the same module (`zod/mini` is not), and a surface takes types from a module that imports it by
 `import type`. Import `svelte` and icons freely; import everything else through the SDK — routing
 included: an app's routes are the host's, reached through `useAppRoute`, `appHref` and
 `appNavigate` ([client.md](./client.md#routes-inside-your-app)), never by importing a router of its

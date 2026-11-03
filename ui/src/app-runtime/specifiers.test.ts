@@ -6,10 +6,13 @@ import { compile, compileModule } from 'svelte/compiler'
 import { describe, expect, it } from 'vitest'
 import * as zod from 'zod'
 import { z } from 'zod'
+import * as zodV4 from 'zod/v4'
+import zodV4Default, { z as zodV4Z } from 'zod/v4'
 import {
   bundledShared,
   clientRuntimePath,
   clientSpecifiers,
+  isServerSpecifier,
   serverRuntimeFile,
   serverSpecifiers,
   shimFileName,
@@ -68,9 +71,14 @@ describe('server specifiers', () => {
     expect(serverRuntimeFile('zod')).toBe('rt-zod.js')
   })
 
-  it('share no subpath of zod, naming the import', () => {
-    expect(() => serverRuntimeFile('zod/mini')).toThrow('"zod/mini" is not shared with apps; the host shares "zod" and its listed subpaths only')
-    expect(() => serverRuntimeFile('zod/v4/core')).toThrow('the host shares "zod"')
+  it('share zod/v4 as the same runtime file, and no other subpath, naming the import', () => {
+    expect(serverRuntimeFile('zod/v4')).toBe('rt-zod.js')
+    expect(isServerSpecifier('zod/v4')).toBe(true)
+    // Exact, not a prefix: zod/mini is a different API and has no file.
+    expect(isServerSpecifier('zod/mini')).toBe(false)
+    expect(isServerSpecifier('zod/v4/core')).toBe(false)
+    expect(() => serverRuntimeFile('zod/mini')).toThrow('"zod/mini" is not shared with apps; the host shares "zod" and "zod/v4" only')
+    expect(() => serverRuntimeFile('zod/v4/core')).toThrow('the host shares "zod" and "zod/v4" only')
     expect(() => serverRuntimeFile('lodash')).toThrow('"lodash" is not shared with apps')
   })
 
@@ -84,6 +92,14 @@ describe('shimSource', () => {
   it('re-exports a module whole, as the host build always has', () => {
     expect(shimSource('svelte')).toBe('export * from "svelte";\nimport "svelte";\n')
     expect(shimSource('@talaria/sdk/server', '/ui/src/sdk/server.ts')).toBe('export * from "/ui/src/sdk/server.ts";\nimport "/ui/src/sdk/server.ts";\n')
+  })
+
+  it('aliases zod/v4 to the same module: every export of it is the very value zod exports', () => {
+    // The alias links zod/v4 to rt-zod.js; this is why that is safe (and why
+    // `instanceof ZodError` holds across the two names): there is one zod 4.
+    expect(zodV4Z).toBe(z)
+    expect(zodV4Default).toBe(z)
+    for (const [name, value] of Object.entries(zodV4)) expect(zod[name as keyof typeof zod], name).toBe(value)
   })
 
   it("carries zod's default too: `import z from 'zod'` is the same namespace as `{ z }`", async () => {
@@ -122,7 +138,7 @@ describe("the dev server resolves an app's server-side zod to the host's", () =>
     symlinkSync(resolve('node_modules/zod'), join(root, 'node_modules', 'zod'))
     writeFileSync(join(root, 'host.ts'), "export { z } from 'zod'\n")
     mkdirSync(join(dir, 'apps', 'notes'), { recursive: true })
-    writeFileSync(join(dir, 'apps', 'notes', 'server.ts'), "import { z } from 'zod'\nimport zdef from 'zod'\nexport { z, zdef }\n")
+    writeFileSync(join(dir, 'apps', 'notes', 'server.ts'), "import { z } from 'zod'\nimport zdef from 'zod'\nimport { z as z4 } from 'zod/v4'\nexport { z, zdef, z4 }\n")
     const server = await createServer({
       configFile: false,
       root,
@@ -134,9 +150,10 @@ describe("the dev server resolves an app's server-side zod to the host's", () =>
     })
     try {
       const host = (await server.ssrLoadModule('/host.ts')) as { z: unknown }
-      const app = (await server.ssrLoadModule(`/@fs${join(dir, 'apps', 'notes', 'server.ts')}`)) as { z: unknown; zdef: unknown }
+      const app = (await server.ssrLoadModule(`/@fs${join(dir, 'apps', 'notes', 'server.ts')}`)) as { z: unknown; zdef: unknown; z4: unknown }
       expect(app.z).toBe(host.z)
       expect(app.zdef).toBe(host.z)
+      expect(app.z4).toBe(host.z)
       expect(devConfig.resolve.dedupe).toContain('zod')
     } finally {
       await server.close()

@@ -64,7 +64,7 @@ export function unsharedImport(source: string, kind: 'client' | 'server'): strin
   if (kind === 'client' && isServerSpecifier(source)) {
     return `"${source}" is shared with server-side modules only (server.ts, mcp.ts, harnesses/): a surface may import only ${client}, and takes a type from a module that imports ${source} by \`import type\`, which the build erases`
   }
-  const shared = kind === 'client' ? client : "@talaria/sdk/server, zod and node's builtins"
+  const shared = kind === 'client' ? client : "@talaria/sdk/server, zod (or zod/v4) and node's builtins"
   return `"${source}" is not shared with apps: an app has no node_modules of its own where it is installed, so a ${kind === 'client' ? 'surface' : 'server-side module'} may import only ${shared}`
 }
 

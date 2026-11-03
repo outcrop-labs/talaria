@@ -19,8 +19,13 @@ import { clientSpecifiers, serverSpecifiers } from '@/app-runtime/specifiers'
  *  3. harnesses/*.ts compile into harnesses.js, one lazy chunk per file
  *     under _harnesses/, which the host registers for fitness;
  *  4. a harness file that does not compile is left out of harnesses.js and
- *     named in its `skipped` export, instead of failing the app's build. */
-export const BUILD_RECIPE = 4
+ *     named in its `skipped` export, instead of failing the app's build;
+ *  5. `zod/v4` links to the host's zod (SERVER_SPECIFIER_ALIASES), and the
+ *     server guard matches exactly. Neither the server specifiers nor the
+ *     emitted files of an app that built before changed, but an app that
+ *     imports `zod/v4` failed under the old recipe, and a failed build keeps
+ *     its key where the host build id does not move (dev, checkout installs). */
+export const BUILD_RECIPE = 5
 
 const SKIP: Record<string, true> = { node_modules: true, '.git': true, dist: true }
 
