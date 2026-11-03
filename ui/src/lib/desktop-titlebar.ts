@@ -12,22 +12,30 @@ export const themedTitlebar = (): boolean =>
 
 const CONTROLS = 'a, button, input, textarea, select'
 
-type BarEvent = Pick<MouseEvent, 'button'> & { target: EventTarget | null }
-
-/** A primary press on the bar itself, not on a control inside it. */
-export const onDragSurface = (e: BarEvent): boolean =>
-  e.button === 0 && !(e.target as Element | null)?.closest(CONTROLS)
+// A press drags only when nothing between it and the bar is a control or a
+// layer that hangs out of the bar's box, such as a dropdown panel rendered
+// inside the bar rather than portaled out of it.
+const onDragSurface = (e: MouseEvent, bar: HTMLElement): boolean => {
+  if (e.button !== 0) return false
+  const { top, bottom } = bar.getBoundingClientRect()
+  for (let el = e.target as Element | null; el && el !== bar; el = el.parentElement) {
+    if (el.matches(CONTROLS)) return false
+    const r = el.getBoundingClientRect()
+    if (r.top < top - 0.5 || r.bottom > bottom + 0.5) return false
+  }
+  return true
+}
 
 /** Inert unless the titlebar is themed, checked per event: the mode can change while the bar is mounted. */
 export function windowDrag(node: HTMLElement) {
   if (!inDesktopShell()) return
   const down = (e: MouseEvent) => {
-    if (!themedTitlebar() || !onDragSurface(e)) return
+    if (!themedTitlebar() || !onDragSurface(e, node)) return
     e.preventDefault()
     desktopWindow('startDragging')
   }
   const double = (e: MouseEvent) => {
-    if (!themedTitlebar() || !onDragSurface(e)) return
+    if (!themedTitlebar() || !onDragSurface(e, node)) return
     desktopWindow('toggleMaximize')
   }
   node.addEventListener('mousedown', down)
