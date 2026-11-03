@@ -209,9 +209,9 @@ const DROP_GUARD: &str = r#"
 /// navigates to a local file. Pages and their frames use `about:`, `blob:` and
 /// `data:`, and a sign-in goes to other https origins and back: those load. An
 /// allow-list would break them, and a dropped link cannot be told from a
-/// clicked one by its URL: that is the guard's job, in the page. `mailto:`,
-/// `tel:` and app links are not page loads: they go to the OS, and the few
-/// schemes browsers never hand the OS are refused (links.rs).
+/// clicked one by its URL: that is the guard's job, in the page. Any other
+/// scheme is refused, `mailto:` included: an OS link reaches the OS only from
+/// a click in the page (links.rs says why).
 fn allowed_navigation(label: &str, url: &tauri::Url) -> bool {
     if url.scheme() == "file" {
         eprintln!("talaria-desktop: {label}: refused a navigation to a local file");
@@ -766,9 +766,10 @@ fn create_instance_webview(
     // DROP_GUARD and allowed_navigation keep a drop the page does not take
     // from navigating it away.
     let nav_label = label.clone();
-    // A link that opens a new window (links.rs): another site goes to the
-    // default browser, mailto: and app links to the OS, and a popup on the
-    // instance's own origin opens in the app. wry drops the request without it.
+    // A link that opens a new window (links.rs): an http(s) page goes to the
+    // default browser, the MCP connect opens in the app, the rest is refused.
+    // wry drops the request without it. OS_LINKS sends a clicked mailto: to
+    // the OS.
     let popup_label = label.clone();
     let home: tauri::Url = instance
         .url
@@ -783,6 +784,7 @@ fn create_instance_webview(
         .initialization_script(ESCAPE_HATCH)
         .initialization_script(DROP_GUARD)
         .initialization_script(crate::reload::RELOAD_KEYS)
+        .initialization_script(crate::links::OS_LINKS)
         .on_page_load(move |webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 page_loaded(webview.app_handle(), &loaded_id);
@@ -2090,8 +2092,18 @@ mod tests {
         ] {
             assert!(allowed_navigation("instance-x", &url(ok)), "{ok}");
         }
-        // mailto: and app links are no page load: they go to the OS and the
-        // page stays (links.rs, whose tests cover them without opening one).
+        // No page load, and no hand-off: an OS link reaches the OS only from
+        // a click in the page (links.rs, OS_LINKS). Refusing opens nothing.
+        for refused in [
+            "mailto:someone@example.com",
+            "vscode://file/x",
+            "jnlp://x/a.jnlp",
+        ] {
+            assert!(
+                !allowed_navigation("instance-x", &url(refused)),
+                "{refused}"
+            );
+        }
     }
 
     /// The shape only: the behaviour (zones, fields, contenteditable, a

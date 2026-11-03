@@ -60,6 +60,7 @@ import { fileURLToPath } from 'node:url'
 import { scanWebviewThreading, selfTest as desktopThreadingSelfTest } from './desktop-threading.mjs'
 import { checkDropGuard } from './desktop-drop-guard.mjs'
 import { checkReloadKeys } from './desktop-reload-keys.mjs'
+import { checkOsLinks } from './desktop-os-links.mjs'
 import { checkReleaseLatest, selfTest as releaseLatestSelfTest } from './release-latest.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
@@ -2722,6 +2723,27 @@ const UNSET_SEAM_CENSUS = [
     })
   } else {
     notes.push('desktop reload keys: Ctrl+R/F5 (Cmd+R on macOS) reload, other chords left to the page (stub window)')
+  }
+
+  // The OS-link click script (OS_LINKS in links.rs): the one way a link
+  // reaches the OS, so it takes only a trusted click on a mailto:, tel: or
+  // sms: link that the page left alone. Run against a stub window.
+  const osWrong = checkOsLinks(files.get(`${desktopSrc}/links.rs`) ?? '')
+  if (osWrong.length) {
+    failures.push({
+      id: 'desktop-os-links',
+      what: "the instance webviews' OS-link script hands over more, or less, than a person's click",
+      fix: [
+        'OS_LINKS (desktop/src-tauri/src/links.rs) is the only path from a page to the OS: the',
+        'navigation and new-window handlers refuse every OS scheme, because no engine tells them a',
+        'click from a script or the page from an artifact frame. It must take a trusted, primary-',
+        'button click on a mailto:, tel: or sms: link the page did not handle, and nothing else.',
+        'scripts/desktop-os-links.mjs clicks each case; if the script needs more of the DOM, grow it.',
+      ],
+      found: osWrong.map((text) => ({ path: `${desktopSrc}/links.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop OS links: only a trusted click on mailto:/tel:/sms: goes to the OS (stub window)')
   }
 }
 

@@ -234,6 +234,7 @@ pub const INSTANCE_PERMISSIONS: &[&str] = &[
     "allow-desktop-notify-close",
     "allow-desktop-os-idle",
     "allow-desktop-reload",
+    "allow-desktop-open-link",
 ];
 
 /// Grant one instance origin `INSTANCE_PERMISSIONS`, for its own webview.
@@ -502,6 +503,7 @@ pub fn run() {
             commands::desktop_os_idle,
             commands::set_instance_muted,
             reload::desktop_reload,
+            links::desktop_open_link,
         ])
         .build(tauri::generate_context!())
         .expect("talaria desktop shell could not start");
@@ -644,6 +646,8 @@ mod tests {
             "allow-desktop-os-idle",
             // The key script reloads through it (reload.rs).
             "allow-desktop-reload",
+            // A clicked mailto: reaches the OS through it (links.rs).
+            "allow-desktop-open-link",
         ] {
             assert!(INSTANCE_PERMISSIONS.contains(&needed), "{needed}");
         }

@@ -17,7 +17,7 @@
 // this is the cheap check on every commit that the branches stay right.
 //
 // THE STUB. Only what the script touches: `window.__TAURI_INTERNALS__.invoke`,
-// `window.addEventListener`, `navigator.userAgent`, `location.reload`, and a
+// `window.addEventListener`, `window.opener`, `navigator.userAgent`, `location.reload`, and a
 // keydown event with `key`, `code`, the four modifiers, `repeat` and
 // `preventDefault()`. If the script starts using more, this fails loudly and
 // the stub grows with it. Stdlib only.
@@ -34,11 +34,12 @@ const WINDOWS = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (K
 
 /** Load the script in a stub window. `refuse`: the shell answers every
  *  invoke with an error, as it does for an origin with no grant. */
-function load(src, userAgent, { refuse = false } = {}) {
+function load(src, userAgent, { refuse = false, opener = null } = {}) {
   const listeners = []
   const calls = []
   let reloads = 0
   const window = {
+    opener,
     __TAURI_INTERNALS__: {
       invoke(cmd, args) {
         calls.push({ cmd, args })
@@ -137,6 +138,13 @@ export async function checkReloadKeys(rust) {
     granted.press('F5')
     await settle()
     expect('a granted desktop_reload does not also reload the page itself', granted.reloads() === 0)
+
+    // A popup (the MCP connect, which macOS hands the opener's scripts and
+    // IPC): it reloads itself and never asks the shell, which would reload the
+    // instance page behind it.
+    const popup = load(src, MAC, { opener: {} })
+    const p = popup.press('r', { meta: true })
+    expect('a popup reloads itself, not the instance behind it', p.prevented && p.calls.length === 0 && popup.reloads() === 1)
 
     // A webview without the shell's internals (never the case in the shell,
     // but the script must not throw there).

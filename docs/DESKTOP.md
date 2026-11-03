@@ -61,22 +61,47 @@ those load. `mailto:`, `tel:` and app links are not page loads, so they go to th
 An instance webview is a browser tab with no browser around it. A `target="_blank"` link or
 a `window.open` asks the engine for a new window, and wry drops that request when the shell
 installs no handler, so on every OS the click did nothing. Each instance webview now has a
-new-window handler, and its navigation handler routes OS schemes too. Both are in
+new-window handler and a click script for OS links. Both are in
 `desktop/src-tauri/src/links.rs`:
 
 | The link | Where it goes |
 |---|---|
-| http(s) on another origin: a Drive file, a GitHub settings page, a source the agent read, a coding-harness sign-in | the **default browser**, where the person is signed in to that site |
-| http(s) on the instance's own origin | a **popup window of the engine's own**, with the instance's session and `window.opener` |
-| `mailto:`, `tel:`, `sms:`, app links (`zoommtg:`, `slack:`, `msteams:`…), as a new window or in place | the **OS handler** for the scheme |
-| `file:`, `javascript:`, `data:`, `blob:`, `about:` as a new window, and the schemes browsers refuse to hand the OS | **nowhere**: refused and logged |
+| http(s), another origin or the instance's own: a Drive file, a GitHub settings page, a source the agent read, a coding-harness sign-in, a public artifact | the **default browser**, where the person is signed in to that site and has an address bar |
+| the MCP connect (`/api/mcp/oauth/start` on the instance's own origin) | an **in-app popup**, the engine's own window, with the instance's session and `window.opener` |
+| `mailto:`, `tel:` or `sms:`, **clicked by the person** in the instance's own page | the **OS handler** for the scheme |
+| every other scheme; an OS link that arrives as a navigation or a new-window request; `file:`; `javascript:`, `data:`, `blob:` and `about:` as a new window | **nowhere**: refused and logged by scheme |
 
 Why each one goes where it does:
 
-- **Same-origin popups stay in the app.** The MCP connect popup (`connectPopup`:
-  `/api/mcp/oauth/start`) needs the instance's session cookie to start. When it finishes, it
-  posts `talaria:mcp-oauth-done` to `window.opener` and closes. The default browser has
-  neither the session nor the opener.
+- **An OS link opens only from a click.** The engine's handlers cannot tell a click from a
+  script, or the page from a frame inside it:
+  - WebKitGTK and WKWebView ask about subframe navigations and redirects with no frame or
+    gesture flag;
+  - WebView2's new-window request reaches wry's handler without `IsUserInitiated`;
+  - a microsite artifact is agent-written HTML, run in a sandboxed iframe that may run
+    scripts and open popups.
+
+  So both handlers refuse every OS scheme. The click script `OS_LINKS` runs in the main
+  frame only, as initialization scripts do, so never in an artifact's frame. It catches a
+  trusted, primary-button click on a `mailto:`, `tel:` or `sms:` link that the page did not
+  handle, and asks `desktop_open_link`. That command opens only those three schemes, and
+  only the instance's own origin holds its grant. `scripts/desktop-os-links.mjs` clicks
+  each case in `bun run check`.
+- **The OS schemes are an allowlist of three.** Browsers hand nearly any scheme to the OS,
+  but only after a prompt of their own, and the shell has none. App links have https forms
+  (a Zoom or Teams join link, a Slack message link). Those go to the default browser, which
+  asks before it hands them to the app.
+- **One in-app window: the MCP connect.** It (`connectPopup`) needs the instance's session
+  cookie to start. When it finishes, it posts `talaria:mcp-oauth-done` to `window.opener` and
+  closes. The default browser has neither the session nor the opener.
+  - Its path runs from the instance's `/api/mcp/oauth/start` to the provider the admin
+    registered, then back to the instance's callback.
+  - The popup is the engine's own window: no address bar and none of the shell's handlers.
+    Every other same-origin `_blank`, such as a public artifact or a download, goes to the
+    browser instead.
+  - **Residual:** a page that opens the connect URL can re-navigate the window it opened.
+    The shell cannot see a popup's later navigations, and on Linux the window keeps the
+    start URL as its title.
 - **A popup that closes itself.** On Linux, wry answers `window.close()` by destroying only
   the page, which left an empty window. The shell closes that window too
   (`links::close_emptied_popups`). On macOS, wry's popup has no handler for
@@ -85,11 +110,8 @@ Why each one goes where it does:
 - **Google's connects are not popups.** They are full-page navigations
   (`/api/integrations/google/connect`), so they keep loading in the instance webview, as
   before.
-- **The refused schemes** are:
-  - Chrome's denied external schemes (`shell:`, `vbscript:`, `hcp:`…);
-  - the Windows handlers that web pages have abused (`ms-msdt:`, `search-ms:`,
-    `ms-officecmd:`, `ms-appinstaller:`);
-  - remote file shares (`smb:`, `ftp:`, `nfs:`…), which a link would mount.
+- **At most one hand-off a second per webview** (`HAND_OFF_GAP`). A script that opens a stream
+  of windows gets one browser tab, and the rest are logged and dropped.
 
 The hand-off uses `tauri-plugin-opener`'s free `open_url` (on Linux, `xdg-open` and its
 fallbacks), on a blocking worker, never on the handler's thread. The plugin is **not
@@ -185,6 +207,13 @@ How each path works:
     reloads the page itself.
   - `scripts/desktop-reload-keys.mjs` presses each key, on each OS, in `bun run check`. It
     also checks the chords the script must leave to the page.
+  - The keys work in the page's main frame only, as initialization scripts run. With the
+    focus inside an iframe (the artifact preview, the Google file pane), Ctrl/Cmd+R does
+    nothing on Linux and macOS.
+  - The script takes the keys in the capture phase, so a page's own Ctrl/Cmd+R binding never
+    runs. Nothing in `ui/` binds one.
+  - A popup (macOS hands the connect popup the opener's scripts and IPC) reloads itself
+    rather than the instance page behind it.
 - **The switcher** calls `desktop_reload`. A shell that predates the command gets an ordinary
   `location.reload()`.
 - **The grant.** `desktop_reload` is in `INSTANCE_PERMISSIONS`, so every registered instance

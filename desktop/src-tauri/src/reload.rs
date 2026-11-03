@@ -43,6 +43,9 @@ pub const RELOAD_KEYS: &str = r#"
       else if (!mac && k === 'f5' && !e.metaKey) hard = e.ctrlKey || e.shiftKey;
       else return;
       e.preventDefault();
+      // A popup (macOS hands the connect popup the opener's scripts and IPC)
+      // reloads itself, not the instance page behind it.
+      if (window.opener) return location.reload();
       window.__TAURI_INTERNALS__.invoke('desktop_reload', { hard }).catch(() => location.reload());
     }, true);
   }
