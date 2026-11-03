@@ -284,12 +284,10 @@ pub fn run() {
     if notify::linux::single_instance() {
         std::process::exit(0);
     }
-    // The program name GTK gives X11's WM_CLASS: the app id, as the Wayland
-    // app_id is (`enableGTKAppId`), so a dock on either matches the window to
-    // `app.talaria.desktop.desktop`, or to `Talaria.desktop` by its
-    // `StartupWMClass` (packaging/linux).
+    // The program name GTK gives X11's WM_CLASS, and the name a person reads
+    // (`name_the_process`).
     #[cfg(target_os = "linux")]
-    gtk::glib::set_prgname(Some(notify::linux::APP_ID));
+    name_the_process();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -526,6 +524,23 @@ fn install_quit_action(app: &tauri::AppHandle) {
     );
 }
 
+/// The process's two GLib names, set before GTK starts.
+///
+/// The program name is X11's `WM_CLASS`: the app id, as the Wayland `app_id`
+/// is (`enableGTKAppId`), so a dock on either matches the window to
+/// `app.talaria.desktop.desktop`, or to `Talaria.desktop` by its
+/// `StartupWMClass` (packaging/linux).
+///
+/// The application name is the one a person reads. Unset, GLib answers the
+/// program name for it, and libayatana-appindicator gives that as the tray
+/// item's StatusNotifierItem `Title` (the entry's name in Plasma's tray and
+/// its settings): `app.talaria.desktop`.
+#[cfg(target_os = "linux")]
+fn name_the_process() {
+    gtk::glib::set_prgname(Some(notify::linux::APP_ID));
+    gtk::glib::set_application_name(notify::linux::APP_NAME);
+}
+
 /// Block every handler of the application's `activate` signal connected so
 /// far (tao's start handler); the number blocked.
 #[cfg(target_os = "linux")]
@@ -577,6 +592,16 @@ mod tests {
         ] {
             assert!(INSTANCE_PERMISSIONS.contains(&needed), "{needed}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_process_has_a_name_for_docks_and_one_for_people() {
+        name_the_process();
+        assert_eq!(gtk::glib::prgname().as_deref(), Some("app.talaria.desktop"));
+        // What the tray's StatusNotifierItem Title reads (the program name
+        // when this is unset).
+        assert_eq!(gtk::glib::application_name().as_deref(), Some("Talaria"));
     }
 
     #[test]
