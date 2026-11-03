@@ -19,7 +19,7 @@ type BarEvent = Pick<MouseEvent, 'button'> & { target: EventTarget | null }
 
 /** A primary press on the bar itself, not on a control inside it. */
 export const onDragSurface = (e: BarEvent): boolean =>
-  e.button === 0 && !(e.target as Element | null)?.closest?.(CONTROLS)
+  e.button === 0 && !(e.target as Element | null)?.closest(CONTROLS)
 
 /** Makes `node` the window's drag surface while the titlebar is themed:
  *  press and drag moves the window, a double-click toggles maximize. */
