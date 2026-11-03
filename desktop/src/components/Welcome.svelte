@@ -311,7 +311,12 @@
 
       <div class="mt-6">
         <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Updates</div>
-        {#if update}
+        {#if update?.install === 'elsewhere'}
+          <!-- A Linux package or an .msi install: the updater cannot replace
+               this copy, so it says what does. -->
+          <p class="text-xs text-readout">Talaria Desktop {update.version} is available</p>
+          <p class="mt-1 break-words text-xs text-muted select-text">{update.how}</p>
+        {:else if update}
           <button
             type="button"
             class="rounded bg-gold px-5 py-2 text-xs font-semibold text-ground hover:brightness-110 disabled:opacity-50"

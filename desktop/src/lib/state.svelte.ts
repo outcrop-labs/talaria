@@ -14,6 +14,7 @@ import {
   getShellState,
   notificationStatus,
   onShellState,
+  installUpdate,
   probeInstance,
   removeInstance,
   requestNotifications,
@@ -21,12 +22,14 @@ import {
   setSuspendAfter,
   setTitlebarMode,
   showInstancePage,
+  snoozeUpdate,
   type Background,
   type Instance,
   type LoadFailure,
   type NotificationStatus,
   type ShellSnapshot,
   type TitlebarMode,
+  type UpdateOffer,
 } from './instances'
 
 export interface Problem {
@@ -83,6 +86,8 @@ export const shell = $state({
   muted: [] as string[],
   /** Each instance's unread count (For you), by local id. */
   unread: {} as Record<string, number>,
+  /** The update chip (Rust decides; every view shows the same one). */
+  update: null as UpdateOffer | null,
 })
 
 let dismissedFailure = 0
@@ -108,6 +113,7 @@ function sync(s: ShellSnapshot) {
   shell.closeToBackground = s.closeToBackground ?? shell.closeToBackground
   shell.muted = s.muted ?? []
   shell.unread = s.unread ?? {}
+  shell.update = s.update ?? null
   shell.recentId = mostRecent(s.instances)
   applyFailure(s.failure)
   if (shell.confirmRemove && !s.instances.some((i) => i.id === shell.confirmRemove)) {
@@ -316,6 +322,31 @@ export async function setSuspend(minutes: number) {
   shell.error = ''
   try {
     shell.suspendAfterMinutes = (await setSuspendAfter(minutes)).suspendAfterMinutes
+  } catch (e) {
+    shell.error = errorText(e)
+  }
+}
+
+/** The chip's Update. Rust shows the install running and, if it fails, why,
+ * in every view; it restarts Talaria when it is done. A refusal it answers
+ * without a push (a second click, an older shell) still says why here. */
+export async function updateNow() {
+  const offer = shell.update
+  if (!offer) return
+  shell.update = { ...offer, busy: true, error: undefined }
+  try {
+    await installUpdate()
+  } catch (e) {
+    const error = errorText(e)
+    if (shell.update?.version === offer.version) shell.update = { ...offer, busy: false, error }
+  }
+}
+
+/** The chip's Later: that version is put off for a day, in every view. */
+export async function updateLater() {
+  shell.update = null
+  try {
+    await snoozeUpdate()
   } catch (e) {
     shell.error = errorText(e)
   }

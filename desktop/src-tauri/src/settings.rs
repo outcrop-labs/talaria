@@ -1,7 +1,7 @@
 //! Shell settings — `settings.json` next to the instance registry: the window
 //! titlebar mode, how long an instance's page may stay off screen before the
-//! shell suspends it (suspend.rs), and whether closing the window keeps
-//! Talaria running (background.rs). Written atomically (tmp + rename), same
+//! shell suspends it (suspend.rs), whether closing the window keeps Talaria
+//! running (background.rs), and the update Later put off (update.rs). Written atomically (tmp + rename), same
 //! as the registry, so a crash mid-write cannot truncate it.
 //!
 //! Reading it never stops the app: a value this build does not know (a newer
@@ -50,6 +50,14 @@ pub struct DesktopSettings {
     /// The one-time "Talaria is still running" notice has been shown.
     #[serde(default, deserialize_with = "lenient")]
     pub background_notice_shown: bool,
+    /// The update Later put off, and until when (update.rs). An older build
+    /// ignores the field.
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub update_snooze: Option<crate::update::Snooze>,
 }
 
 impl Default for DesktopSettings {
@@ -59,6 +67,7 @@ impl Default for DesktopSettings {
             suspend_after_minutes: DEFAULT_SUSPEND_MINUTES,
             close_to_background: true,
             background_notice_shown: false,
+            update_snooze: None,
         }
     }
 }
@@ -182,10 +191,41 @@ mod tests {
             suspend_after_minutes: 0,
             close_to_background: false,
             background_notice_shown: true,
+            update_snooze: Some(crate::update::Snooze {
+                version: "0.13.0".into(),
+                until_ms: 1_800_000_000_000,
+            }),
         };
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), (settings, None));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_snooze_is_kept_by_version_and_a_bad_one_reads_as_none() {
+        let parsed: DesktopSettings = serde_json::from_str(
+            r#"{"updateSnooze":{"version":"0.13.0","untilMs":1800000000000}}"#,
+        )
+        .unwrap();
+        let snooze = parsed.update_snooze.unwrap();
+        assert_eq!(snooze.version, "0.13.0");
+        assert_eq!(snooze.until_ms, 1_800_000_000_000);
+        for junk in [
+            r#"{"updateSnooze":"0.13.0"}"#,
+            r#"{"updateSnooze":{"version":"0.13.0"}}"#,
+            r#"{"updateSnooze":{"version":"0.13.0","untilMs":-1}}"#,
+            r#"{"updateSnooze":null}"#,
+        ] {
+            let parsed: DesktopSettings = serde_json::from_str(junk).unwrap();
+            assert_eq!(parsed.update_snooze, None, "{junk}");
+        }
+        // Nothing put off writes nothing, so an older build's file is unchanged.
+        let json = serde_json::to_string(&DesktopSettings::default()).unwrap();
+        assert!(!json.contains("updateSnooze"), "{json}");
+        // And a snooze never costs the titlebar beside it.
+        let parsed: DesktopSettings =
+            serde_json::from_str(r#"{"titlebar":"os","updateSnooze":7}"#).unwrap();
+        assert_eq!(parsed.titlebar, TitlebarMode::Os);
     }
 
     #[test]
