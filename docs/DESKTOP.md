@@ -102,25 +102,56 @@ save.
 
 An instance with no webview yet (the first open of a session, a relaunch) is probed first,
 from the launcher, which shows "Opening X…" with a way to stay. An unreachable instance is
-then a sentence with Retry on the launcher, not a blank window or WebKit's error page — in
-the themed titlebar mode the only chrome is drawn by the page, so that page was a trap.
-The card also offers **Open anyway**, because the check is not the webview: it is the
-shell's own HTTP client, with no cookies and its own proxy lookup and TLS trust (on Linux,
-the proxy comes only from the environment). An instance behind a sign-in gate that refuses
-the beacon without a session, or one reachable only through a proxy set in the desktop's
-settings, fails the check and still loads in the webview. Open anyway opens it without the
-check; on Linux a page that then fails comes back as a load failure (below), and on macOS
-and Windows the person gets what the platform webview shows for a failed load, as every open
-did before the probe.
+then a sentence with Retry on the launcher, not a blank window or the engine's error page —
+in the themed titlebar mode (the default on every OS) the only chrome is drawn by the page,
+so that page was a trap. The card also offers **Open anyway**, because the check is not the
+webview: it is the shell's own HTTP client, with no cookies and its own proxy lookup and TLS
+trust (on Linux, the proxy comes only from the environment). An instance behind a sign-in
+gate that refuses the beacon without a session, or one reachable only through a proxy set in
+the desktop's settings, fails the check and still loads in the webview.
 
-**Linux only:** each instance webview's WebKitGTK `load-failed` signal is watched
-(`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
-http(s) main-frame load that fails — the instance went away mid-session, a full reload
-while it is down — closes that webview and returns to the launcher with WebKit's reason and
-Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`)
-or content it cannot show inline is answered "handled", so the page the person is on stays;
-left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown".
-macOS and Windows rely on the probe before a cold open.
+The probe passing is not the page loading. Cloudflare holds a request to a restarting origin
+for about 100 s and then answers 524, or answers 502 at once; a suspended instance coming
+back is not probed at all; a page already open reloads into a restart. So the shell watches
+every instance page's load itself (`src-tauri/src/loading.rs`), on every OS:
+
+- **The watchdog.** A load is armed when an instance webview is created, and when a new
+  document commits after a load that settled (a reload, a link to a new page); the
+  page-load Finished event settles it. If it has not finished 25 s later, and the page has
+  not installed the UI's shell hook either (`window.__TALARIA_DESKTOP__`: a page whose
+  `load` event waits on one slow image is up, with its titlebar drawn), the load has
+  stalled. On screen, the person is back on the launcher with the card "<instance> is not
+  answering", offering **Retry** (close the page, open it again, probe first), **Keep
+  waiting** (show the page again and wait 60 s more) and **Back to instances** (close the
+  page). The page keeps loading behind the card, and if it loads while the card is up the
+  shell opens it. Off screen (loaded hidden at launch, or the person moved on) the page is
+  closed and logged, and the next open starts over.
+- **A load that failed** — the network failed, or the main document answered HTTP 5xx — is
+  the same card at once, with Retry and Back to instances, and the page is closed:
+  - **Linux:** WebKitGTK's `load-failed` (`commands.rs::watch_load_failures`; the
+    `webkit2gtk` crate is a Linux-only dependency) for an http(s) main-frame load that
+    failed, and the main resource's status when the document commits for a 5xx. A
+    navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`) or
+    content it cannot show inline is answered "handled", so the page the person is on
+    stays; left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't
+    be shown".
+  - **Windows:** WebView2's main-frame `NavigationCompleted`, subscribed through
+    `with_webview` and webview2-com (`watch_navigation`, `loading::webview2`): a 5xx
+    `HttpStatusCode`, or `IsSuccess` false with no HTTP answer at all — the network error
+    page, where no init script runs and Alt+F4 was the only way out. A cancelled navigation
+    (`OPERATION_CANCELED`: replaced, or stopped) is not a failure, and neither is a 4xx: that
+    is a page the instance answered.
+  - **macOS:** WKWebView tells only its navigation delegate, which is wry's, what a page
+    answered, and WebKit's Navigation Timing has no `responseStatus` (WebKitGTK 2.52 on
+    the rig has none either). So a page that finished without the Talaria UI in it — an
+    error page such as Cloudflare's 502, or an older Talaria — is asked of the server again
+    by the shell (`ask_status`, `loading::page_status`: a HEAD with the shell's own client,
+    10 s at most), and a 5xx is the card. A page with the UI booted costs nothing more. A
+    load that fails before it commits never finishes on macOS; the watchdog takes it.
+
+Every one of these is queued: nothing is decided or closed inside the engine's callback,
+which only marks the page failed (so the Finished the same navigation raised cannot reopen
+it) and hands the rest to a main-thread turn of its own.
 
 ### The launcher follows the shell
 
@@ -223,7 +254,8 @@ read, when an async command can reach one from its tokio worker, or when a callb
 reach one inline. Callbacks are the closures handed to `.on_*(…)` (window, webview,
 page-load, navigation, menu and tray events), `.run(…)`, `.with_webview(…)` and GTK
 `connect_*` signals, plus any function marked `// webview-threading: callback` (the
-notification-click entry points the OS calls). It follows free function calls by name, not
+notification-click entry points the OS calls, WebView2's `NavigationCompleted` handler
+and the macOS page-status answer). It follows free function calls by name, not
 method calls or macro expansions: a regression guard for this shape of bug, not a proof.
 CI's connect smoke proves the connect path on every OS (Gates, below).
 

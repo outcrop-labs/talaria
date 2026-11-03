@@ -9,6 +9,7 @@
 import { tick } from 'svelte'
 import {
   activateInstance,
+  closeInstancePage,
   errorText,
   getShellState,
   notificationStatus,
@@ -36,6 +37,9 @@ export interface Problem {
    * and TLS trust — so an instance behind a sign-in gate, or behind a proxy
    * only the webview uses, can fail it and still load. */
   probe: boolean
+  /** The page has not loaded and is still loading behind the card: it also
+   * offers Keep waiting, and Retry and Back close it first. */
+  stalled: boolean
 }
 
 export const shell = $state({
@@ -107,11 +111,24 @@ function sync(s: ShellSnapshot) {
   shell.ready = true
 }
 
-/** A page that failed to load (Rust closed its webview and showed us). */
+/** A page that did not come up (Rust closed or kept its webview and showed
+ * us). Gone from the snapshot: the instance was opened since (the shell
+ * opens a page that answers while its card is up), so the card goes too; a
+ * probe's card is the launcher's own and stays. */
 function applyFailure(failure: LoadFailure | null) {
-  if (!failure || failure.seq <= dismissedFailure) return
+  if (!failure) {
+    if (shell.problem && !shell.problem.probe) shell.problem = null
+    return
+  }
+  if (failure.seq <= dismissedFailure) return
   dismissedFailure = failure.seq
-  shell.problem = { id: failure.id, label: failure.label, message: failure.message, probe: false }
+  shell.problem = {
+    id: failure.id,
+    label: failure.label,
+    message: failure.message,
+    probe: false,
+    stalled: failure.kind === 'stalled',
+  }
 }
 
 export async function refresh() {
@@ -182,7 +199,7 @@ export async function open(id: string, o: { fresh?: boolean; settle?: boolean } 
     } catch (e) {
       if (seq !== openSeq) return
       shell.opening = null
-      shell.problem = { id, label: instance.label, message: errorText(e), probe: true }
+      shell.problem = { id, label: instance.label, message: errorText(e), probe: true, stalled: false }
       return
     }
     if (seq !== openSeq) return
@@ -196,6 +213,46 @@ export async function open(id: string, o: { fresh?: boolean; settle?: boolean } 
   }
   try {
     await activateInstance(id)
+  } catch (e) {
+    shell.error = errorText(e)
+  }
+}
+
+/** The card's Back to instances. A page still loading behind it is closed,
+ * so nothing keeps trying in the background. */
+export async function backToInstances(problem: Problem) {
+  shell.problem = null
+  if (!problem.stalled) return
+  try {
+    await closeInstancePage(problem.id)
+    shell.loaded = shell.loaded.filter((id) => id !== problem.id)
+  } catch (e) {
+    shell.error = errorText(e)
+  }
+}
+
+/** The card's Retry: a page still loading is closed first, so the open is a
+ * fresh one, probe first, like any cold open. */
+export async function retry(problem: Problem) {
+  if (problem.stalled) {
+    try {
+      await closeInstancePage(problem.id)
+      shell.loaded = shell.loaded.filter((id) => id !== problem.id)
+    } catch (e) {
+      shell.error = errorText(e)
+      return
+    }
+  }
+  await open(problem.id)
+}
+
+/** The card's Keep waiting: back to the page, which is still loading; the
+ * shell gives it longer before the card comes back. */
+export async function keepWaiting(problem: Problem) {
+  shell.problem = null
+  shell.recentId = problem.id
+  try {
+    await activateInstance(problem.id)
   } catch (e) {
     shell.error = errorText(e)
   }

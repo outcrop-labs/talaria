@@ -25,12 +25,16 @@ export interface DesktopSettings {
 
 export type DesktopWindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'startDragging'
 
-/** An instance whose page failed to load; the launcher offers a retry. */
+/** An instance whose page did not come up (src-tauri/src/loading.rs): it
+ *  failed (a network error, an HTTP 5xx), or it has not loaded in 25 s and is
+ *  still loading behind the card (`stalled`). */
 export interface LoadFailure {
   seq: number
   id: string
   label: string
   message: string
+  /** Absent: a shell from before the watchdog (a failure). */
+  kind?: 'failed' | 'stalled'
 }
 
 /** Everything the launcher renders (commands.rs::ShellSnapshot). */
@@ -100,6 +104,10 @@ export const activateInstance = (id: string) => invoke<void>('activate_instance'
 export const showWelcome = () => invoke<void>('show_welcome')
 
 export const removeInstance = (id: string) => invoke<Instance[]>('remove_instance', { id })
+
+/** Close an instance's page that is still loading behind the card (the
+ *  instance stays registered). */
+export const closeInstancePage = (id: string) => invoke<void>('close_instance_page', { id })
 
 /** Mute an instance on this desktop: its banners stop, its badge share stays. */
 export const setInstanceMuted = (id: string, muted: boolean) =>

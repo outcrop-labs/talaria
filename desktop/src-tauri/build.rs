@@ -12,6 +12,7 @@ fn main() {
             "probe_instance",
             "activate_instance",
             "show_welcome",
+            "close_instance_page",
             "remove_instance",
             "get_desktop_settings",
             "set_titlebar_mode",

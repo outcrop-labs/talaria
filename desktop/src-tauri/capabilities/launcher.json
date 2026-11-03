@@ -13,6 +13,7 @@
     "allow-probe-instance",
     "allow-activate-instance",
     "allow-show-welcome",
+    "allow-close-instance-page",
     "allow-remove-instance",
     "allow-get-desktop-settings",
     "allow-set-titlebar-mode",

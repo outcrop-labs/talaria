@@ -3821,6 +3821,8 @@ dependencies = [
  "uuid",
  "webkit2gtk",
  "webpki-root-certs",
+ "webview2-com",
+ "windows-core 0.61.2",
  "zbus",
 ]
 

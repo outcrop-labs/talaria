@@ -65,6 +65,7 @@ mod background;
 mod beacon;
 mod commands;
 mod layout;
+mod loading;
 mod logfile;
 mod notify;
 mod registry;
@@ -91,8 +92,10 @@ pub enum View {
     Active,
 }
 
-/// An instance whose page failed to load (WebKit's `load-failed`, Linux). The
-/// launcher shows it with a retry until the next activation.
+/// An instance whose page did not come up (loading.rs): it failed (WebKit's
+/// `load-failed`, WebView2's `NavigationCompleted`, an HTTP 5xx), or it has
+/// not loaded in `loading::LOAD_WAIT`. The launcher shows it as a card until
+/// the next activation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadFailure {
@@ -102,6 +105,16 @@ pub struct LoadFailure {
     pub id: String,
     pub label: String,
     pub message: String,
+    pub kind: FailureKind,
+}
+
+/// What the card offers: a page that failed is closed (Retry, Back to
+/// instances); one that stalled is still loading (Keep waiting too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FailureKind {
+    Failed,
+    Stalled,
 }
 
 /// The add in flight: Cancel aborts its probe, so a cancelled add can never
@@ -148,9 +161,9 @@ pub struct ShellState {
     /// first view change, so a launcher reload never reopens it twice.
     reopen: Mutex<Option<String>>,
     failure: Mutex<Option<LoadFailure>>,
-    // Written by the WebKitGTK load-failed hook, which is Linux-only.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     failure_seq: std::sync::atomic::AtomicU64,
+    /// Every instance page's load, for the watchdog (loading.rs).
+    loads: Mutex<loading::Loads>,
     adding: Mutex<Option<AddAttempt>>,
     add_seq: std::sync::atomic::AtomicU64,
     /// Local id → the last page it showed (registry `lastUrls`).
@@ -413,6 +426,7 @@ pub fn run() {
                 reopen: Mutex::new(reopen),
                 failure: Mutex::new(None),
                 failure_seq: Default::default(),
+                loads: Mutex::new(loading::Loads::default()),
                 adding: Mutex::new(None),
                 add_seq: Default::default(),
                 last_urls: Mutex::new(last_urls),
@@ -474,6 +488,7 @@ pub fn run() {
             commands::probe_instance,
             commands::activate_instance,
             commands::show_welcome,
+            commands::close_instance_page,
             commands::remove_instance,
             commands::get_desktop_settings,
             commands::set_titlebar_mode,
