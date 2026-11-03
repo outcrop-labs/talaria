@@ -338,16 +338,25 @@ export function appHarnessRunner(binding: AppHarnessBinding): AppHarnessRunner {
  *  and the free runner take a spec from app code as written, and a slot is
  *  the model an admin set for one app's harness — another app's is not this
  *  one's to run on, or to read. Outside every app scope no slot is anyone's.
- *  A slot dropped here is said once, in the host's log. */
+ *  A slot dropped here is said once, in the host's log.
+ *
+ *  ONE READ, INTO AN OBJECT THE HOST BUILT. The spec is the app's object: a
+ *  getter or a Proxy could show its own slot to this check and another app's
+ *  to the resolver that reads it afterwards. Every field is read once, here,
+ *  into a plain copy (the chain into a fresh array), and only the copy goes
+ *  on — never `spec` itself. */
 export function ownSlotOnly(spec: ModelSpec, warn: (message: string) => void, who: string): ModelSpec {
-  if (!spec || spec.slot === undefined) return spec
+  if (!spec || typeof spec !== 'object') return spec
+  const { slot, chain, ...fields } = { ...spec }
+  const copy: ModelSpec = { ...fields }
+  if (chain !== undefined) copy.chain = Array.isArray(chain) ? [...chain] : chain
+  if (slot === undefined) return copy
   const app = appInScope()
-  if (app !== null && typeof spec.slot === 'string' && spec.slot.startsWith(`app:${app}/`)) return spec
+  if (app !== null && typeof slot === 'string' && slot.startsWith(`app:${app}/`)) return { ...copy, slot }
   warn(
-    `[sdk] ${who} named the slot ${JSON.stringify(spec.slot)}, which is not ${app ? `app "${app}"'s own (app:${app}/<harness id>)` : 'an app\'s: no app is running here'}; it is ignored`,
+    `[sdk] ${who} named the slot ${JSON.stringify(slot)}, which is not ${app ? `app "${app}"'s own (app:${app}/<harness id>)` : 'an app\'s: no app is running here'}; it is ignored`,
   )
-  const { slot: _slot, ...rest } = spec
-  return rest
+  return copy
 }
 
 /** THE FREE PROBE, as the SDK exports it (`resolveHarnessModel`): the chain
@@ -401,6 +410,8 @@ export async function runHarnessForApp<I, O>(
     }
   }
   // A slot the definition names counts only when it is this app's own.
-  const owned = def?.model ? { ...def, model: ownSlotOnly(def.model, e.warn, `runHarness("${def.id}")`) } : def
+  // `def.model` is read once, and the host's copy replaces it.
+  const model = def?.model
+  const owned = model ? { ...def, model: ownSlotOnly(model, e.warn, `runHarness("${def.id}")`) } : def
   return e.run(owned, input, rest)
 }

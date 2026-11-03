@@ -359,6 +359,61 @@ describe("a slot named from app code is the calling app's own, or nothing", () =
     expect(r.warnings.join('\n')).toMatch(/no app is running here/)
   })
 
+  // A spec is the app's object. One whose slot answers the app's own for the
+  // first reads (as many as a check might make) and another app's after must
+  // reach the resolver as its own slot, every read; one that answers another
+  // app's first must reach it with no slot. A getter and a Proxy each.
+  const OWN = 'app:helpdesk/helpdesk:triage'
+  const FOREIGN = 'app:billing/billing:triage'
+  const flipping = (first: string, then: string) => {
+    let reads = 0
+    return () => (reads++ < 3 ? first : then)
+  }
+  const withGetter = (read: () => string): ModelSpec =>
+    Object.defineProperty({ role: 'utility' }, 'slot', { get: read, enumerable: true, configurable: true }) as ModelSpec
+  const asProxy = (read: () => string): ModelSpec =>
+    new Proxy({ role: 'utility', slot: 'placeholder' } as ModelSpec, { get: (t, k) => (k === 'slot' ? read() : Reflect.get(t, k)) })
+  /** The probe, with a resolver that reads the slot as often as the chain does. */
+  const slotsSeen = async (spec: ModelSpec): Promise<(string | undefined)[]> => {
+    let seen: (string | undefined)[] = []
+    await withApp('helpdesk', () =>
+      resolveHarnessModelForApp(spec, {
+        resolve: async (s) => {
+          seen = [s.slot, s.slot, s.slot, s.slot]
+          return null
+        },
+        warn: () => {},
+      }),
+    )
+    return seen
+  }
+
+  it("reads a getter slot once, so the resolver sees the slot the check saw", async () => {
+    expect(await slotsSeen(withGetter(flipping(OWN, FOREIGN)))).toEqual([OWN, OWN, OWN, OWN])
+    expect(await slotsSeen(withGetter(flipping(FOREIGN, OWN)))).toEqual([undefined, undefined, undefined, undefined])
+  })
+
+  it('reads a Proxy spec once, so the resolver sees the slot the check saw', async () => {
+    expect(await slotsSeen(asProxy(flipping(OWN, FOREIGN)))).toEqual([OWN, OWN, OWN, OWN])
+    expect(await slotsSeen(asProxy(flipping(FOREIGN, OWN)))).toEqual([undefined, undefined, undefined, undefined])
+  })
+
+  it('hands the free runner a model it read once, never the app’s object', async () => {
+    let seen: (string | undefined)[] = []
+    const edges = {
+      run: (async (d: HarnessDefinition<unknown, unknown>) => {
+        seen = [d.model.slot, d.model.slot, d.model.slot, d.model.slot]
+        return ok(null)
+      }) as unknown as RunnerEdges['run'],
+      warn: () => {},
+      fleetAgentOf: async () => null,
+    }
+    for (const model of [withGetter(flipping(OWN, FOREIGN)), asProxy(flipping(OWN, FOREIGN))]) {
+      await withApp('helpdesk', () => runHarnessForApp({ ...triage, model }, { text: 'x' }, { caller: 'app:helpdesk' }, edges))
+      expect(seen).toEqual([OWN, OWN, OWN, OWN])
+    }
+  })
+
   it("the free runner runs on its own slot, never another app's", async () => {
     const seen: ModelSpec[] = []
     const warnings: string[] = []

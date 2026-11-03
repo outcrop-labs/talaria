@@ -573,6 +573,25 @@ pub fn grants_belong_to(data: &Path, src: &GitSource) -> bool {
     read_data_source(data).is_some_and(|r| r.same_repo(src))
 }
 
+/// Tests only: the next record an install writes fails, as a full or
+/// read-only disk would — the one failure that shows whether another
+/// repository's record was removed first (`lifecycle/live.rs`).
+#[cfg(test)]
+static FAIL_NEXT_INSTALL_RECORD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The record an install writes once the app is placed.
+fn write_install_record(dir: &Path, source: &DataSource) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_NEXT_INSTALL_RECORD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err(format!(
+            "could not record whose data {} holds: injected by a test",
+            dir.display()
+        ));
+    }
+    write_data_source(dir, source)
+}
+
 /// Remove `dir`'s record of whose it is. Nothing to remove is no error.
 fn forget_data_source(dir: &Path) -> Result<(), String> {
     match std::fs::remove_file(dir.join(DATA_SOURCE_FILE)) {
@@ -796,8 +815,10 @@ pub async fn install_app(
         }
     };
     // The data is this repository's from now on. A failed write only costs
-    // a later reinstall a question (no record: it asks before it adopts).
-    if let Err(e) = write_data_source(&data, &DataSource::of(&src)) {
+    // a later reinstall a question (no record: it asks before it adopts),
+    // and vouches for nothing: another repository's record went before the
+    // app was placed (`forget_data_source`).
+    if let Err(e) = write_install_record(&data, &DataSource::of(&src)) {
         tracing::warn!("[apps] {slug}: {e}");
     }
     write_source(pg, &slug, &src, req.git_ref, &sha, req.secret, req.actor).await?;
@@ -1297,20 +1318,31 @@ pub async fn remove_data_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// The record an uninstall that does not wipe leaves in the slug's data
-/// directory: the one there, else one written now from the app's source
-/// record (an app installed before install wrote one). None when there is
-/// neither, or the write failed: nothing then says whose the slug's grants
-/// are.
+/// directory (`keep_record`, with the app's `app_sources` row).
 async fn record_to_keep(pg: &PgPool, slug: &str, data: &Path) -> Option<DataSource> {
-    if let Some(r) = read_data_source(data) {
-        return Some(r);
-    }
-    let rec = source_record(pg, slug).await?;
-    let r = DataSource {
+    let row = source_record(pg, slug).await.map(|rec| DataSource {
         url: rec.url,
         host: rec.host,
         repo: rec.repo,
+    });
+    keep_record(slug, data, row)
+}
+
+/// The record `data` keeps from now on, given the app's source row. The row
+/// wins whenever there is one: install and update write it, and only the
+/// host can, while a running app can write files in its own data directory —
+/// a record it forged would otherwise vouch, after the uninstall, for a
+/// repository it never was. The file is rewritten from the row when they
+/// differ, and stands alone only for an app with no row (one placed by hand).
+/// None when there is neither, or the rewrite failed: nothing then says whose
+/// the slug's grants are.
+fn keep_record(slug: &str, data: &Path, row: Option<DataSource>) -> Option<DataSource> {
+    let Some(r) = row else {
+        return read_data_source(data);
     };
+    if read_data_source(data).as_ref() == Some(&r) {
+        return Some(r);
+    }
     match write_data_source(data, &r) {
         Ok(()) => Some(r),
         Err(e) => {
@@ -1609,6 +1641,58 @@ mod tests {
         std::fs::create_dir_all(dir.join("pg")).unwrap();
         assert!(grants_belong_to(&dir, &a));
         assert!(!grants_belong_to(&dir, &fork));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Uninstall keeps the host's record over the file: a running app can
+    /// write its own data directory, and a record it forged must not outlive
+    /// it. The file alone counts only when there is no row, and a rewrite
+    /// that fails leaves nothing vouching.
+    #[test]
+    fn the_host_row_wins_over_a_record_the_app_could_write() {
+        let mine = DataSource::of(&parse_source("https://github.com/acme/crm", false).unwrap());
+        let forged = DataSource::of(&parse_source("https://github.com/evil/crm", false).unwrap());
+        let dir = scratch("keep");
+        // A forged file and the host's row: the row, and the file follows it.
+        write_data_source(&dir, &forged).unwrap();
+        assert_eq!(
+            keep_record("crm", &dir, Some(mine.clone())),
+            Some(mine.clone())
+        );
+        assert_eq!(read_data_source(&dir), Some(mine.clone()));
+        // The same record already: kept as it is.
+        assert_eq!(
+            keep_record("crm", &dir, Some(mine.clone())),
+            Some(mine.clone())
+        );
+        // No row (an app placed by hand): the file is all there is.
+        write_data_source(&dir, &forged).unwrap();
+        assert_eq!(keep_record("crm", &dir, None), Some(forged.clone()));
+        // Neither: nothing vouches.
+        std::fs::remove_file(dir.join(DATA_SOURCE_FILE)).unwrap();
+        assert_eq!(keep_record("crm", &dir, None), None);
+        // A row whose record cannot be written: nothing vouches either.
+        let blocked = dir.join("a-file");
+        std::fs::write(&blocked, "").unwrap();
+        assert_eq!(keep_record("crm", &blocked.join("crm"), Some(mine)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn forgetting_a_record_that_is_not_there_is_no_error() {
+        let dir = scratch("forget");
+        assert_eq!(forget_data_source(&dir), Ok(()));
+        write_data_source(
+            &dir,
+            &DataSource::of(&parse_source("https://github.com/acme/crm", false).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(forget_data_source(&dir), Ok(()));
+        assert_eq!(read_data_source(&dir), None);
+        // A record that cannot be removed is an error (here: a directory in
+        // its place), which stops the install before anything is placed.
+        std::fs::create_dir(dir.join(DATA_SOURCE_FILE)).unwrap();
+        assert!(forget_data_source(&dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

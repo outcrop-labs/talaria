@@ -649,7 +649,9 @@ impl Grantees {
 /// slug whose grants nothing vouches for (an orphan an uninstall left before
 /// uninstall dropped them). Other apps' views, one whose slug begins with
 /// this one's included, and core views are never touched; each list keeps
-/// its order.
+/// its order. The host's `app_sources` row outranks a record the app could
+/// have forged, and another repository's record never outlives an install
+/// whose own record failed to write.
 #[tokio::test]
 #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
 async fn grants_go_back_only_to_their_own_repository() {
@@ -805,6 +807,22 @@ async fn grants_go_back_only_to_their_own_repository() {
         assert_eq!(repaired.grants_removed, 0);
         assert_eq!(people.held(&pg).await, granted, "a repair");
 
+        // A record the running app forged (it can write its own data
+        // directory) names another repository: uninstall keeps the host's
+        // row, so the forgery cannot vouch for B later.
+        let b_src = parse_source(&b.url, true).unwrap();
+        write_data_source(&data, &DataSource::of(&b_src)).unwrap();
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 0));
+        assert_eq!(owner(), Some(a_url.clone()), "the host's row, not the file");
+        let back = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
+            .await
+            .unwrap();
+        assert_eq!(back.grants_removed, 0);
+        assert_eq!(people.held(&pg).await, granted, "after a forged record");
+
         // An app installed before install wrote the record, that stored
         // nothing: uninstall writes the record from the source record.
         std::fs::remove_file(data.join(DATA_SOURCE_FILE)).unwrap();
@@ -817,13 +835,30 @@ async fn grants_go_back_only_to_their_own_repository() {
 
         // A record alone is not kept data: another repository installs
         // fresh, without asking, and none of the grants go with the slug.
+        // Its own record fails to write here (a full disk, say): A's was
+        // removed before the app was placed, so no record is left vouching
+        // for the grants B is given, rather than A's.
+        FAIL_NEXT_INSTALL_RECORD.store(true, std::sync::atomic::Ordering::SeqCst);
         let other = install_app(&pg, &NoCreds, Some(&host), request(&b.url, &slug, None))
             .await
             .unwrap();
         assert!(!other.kept_data && !other.wiped_data);
         assert_eq!(other.grants_removed, 2);
         assert_eq!(people.held(&pg).await, none_of_its, "a record alone");
+        assert_eq!(owner(), None, "no record, rather than A's");
+        // B is granted; uninstalling writes B's record from its row, and B
+        // finds its grants again.
+        people.set(&pg, &granted).await;
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 0));
         assert_eq!(owner(), Some(b_url.clone()));
+        let b_again = install_app(&pg, &NoCreds, Some(&host), request(&b.url, &slug, None))
+            .await
+            .unwrap();
+        assert_eq!(b_again.grants_removed, 0);
+        assert_eq!(people.held(&pg).await, granted, "B's own");
 
         // A wipe takes them with the data, and the record with it.
         people.set(&pg, &granted).await;
@@ -848,6 +883,7 @@ async fn grants_go_back_only_to_their_own_repository() {
         assert_eq!(forget_app_grants(&pg, &slug).await, Ok(0));
     };
     let outcome = std::panic::AssertUnwindSafe(run).catch_unwind().await;
+    FAIL_NEXT_INSTALL_RECORD.store(false, std::sync::atomic::Ordering::SeqCst);
     people.drop_rows(&pg).await;
     let _ = uninstall_app(&pg, &sb, Some(&host), &slug, true).await;
     forget(&pg, &slug).await;

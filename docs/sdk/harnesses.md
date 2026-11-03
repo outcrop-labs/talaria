@@ -301,8 +301,9 @@ You don't declare it. The host sets `model.slot` from your slug and the harness 
 `ctx.harness`, and overwrites anything your spec put there. Wherever app code names a slot itself,
 in the free probe below or the free `runHarness`, the host keeps it only when it is your own app's
 (`app:<your slug>/…`, your slug as the host knows which app is running, not as you say it). Another
-app's slot is dropped with a warning in the host's log, so no app can read or run on another app's
-setting.
+app's slot is dropped with a warning in the host's log, so an app cannot read or run on another
+app's setting through the SDK. The check reads your spec once, so a getter or a Proxy cannot show
+it one slot and the chain another.
 
 **The free probe is not bound.** `resolveHarnessModel(spec)` resolves the spec you hand it, and
 your harness's `model` spec carries no slot. Probed bare, it never sees this setting: where the
