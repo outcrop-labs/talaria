@@ -8,6 +8,7 @@
   import AppsTile from '@/components/manage/AppsTile.svelte'
   import AttentionPanel from '@/components/manage/AttentionPanel.svelte'
   import FleetControls from '@/components/manage/FleetControls.svelte'
+  import HermesChannelPanel from '@/components/manage/HermesChannelPanel.svelte'
   import McpTile from '@/components/manage/McpTile.svelte'
   import ModelsTile from '@/components/manage/ModelsTile.svelte'
   import SpendTile from '@/components/manage/SpendTile.svelte'
@@ -91,7 +92,12 @@
       {/if}
 
       <div class="grid items-start gap-4 lg:grid-cols-2">
-        {#if isAdmin}<FleetControls />{/if}
+        {#if isAdmin}
+          <div class="grid gap-4">
+            <FleetControls />
+            <HermesChannelPanel />
+          </div>
+        {/if}
         <ActivityPanel />
       </div>
     {/if}

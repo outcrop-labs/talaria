@@ -134,6 +134,8 @@ export const WAITING_SITES = {
   'manage/fleet-roll': { role: 'tool', slot: 'button', note: 'Rolling every agent from the Manage overview.' },
   'manage/fleet-start': { role: 'tool', slot: 'button', note: 'Starting every stopped agent from the Manage overview.' },
   'manage/mcp-check': { role: 'tool', slot: 'button', note: 'Re-probing every MCP server from the Manage overview.' },
+  'manage/hermes-check': { role: 'tool', slot: 'button', note: 'Checking Hermes stable for a new agent image.' },
+  'manage/hermes-rollout': { role: 'tool', slot: 'inline', note: 'The agent image rollout moving agents onto a new Hermes.' },
   'skills/marketplace-search': { role: 'tool', slot: 'inline', note: 'Catalog search in flight.' },
   'skills/marketplace-install': { role: 'submitting', slot: 'button', note: "Fetching a skill, scanning it with Hermes' Skills Guard, or writing it into a destination." },
 

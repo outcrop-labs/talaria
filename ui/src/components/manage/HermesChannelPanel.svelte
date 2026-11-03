@@ -1,0 +1,312 @@
+<script lang="ts">
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import { RefreshCw, Rocket, Undo2, Pin, PinOff } from '@lucide/svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import Input from '@/components/ui/Input.svelte'
+  import Panel from '@/components/ui/Panel.svelte'
+  import Select from '@/components/ui/Select.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
+  import { confirm } from '@/components/ui/confirm.svelte'
+  import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
+  import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
+
+  // THE AGENT IMAGE: which Hermes every agent runs, and the stable channel
+  // that moves them (talaria-hermes-channel; docs/ARCHITECTURE.md "The
+  // fleet"). Automatic follows Hermes' `stable` — a check every ~6 h, the new
+  // image prepared in the background, a canary, then agents one at a time in
+  // the maintenance window — and Pinned holds every agent on one version.
+  // Admin-only on the server, so the overview mounts it for admins only.
+
+  interface Labelled {
+    digest: string
+    label: string
+  }
+  interface Skipped {
+    slug: string
+    why: string
+    at: number
+  }
+  interface RolloutView {
+    digest: string
+    label: string
+    fromLabel: string | null
+    kind: 'upgrade' | 'rollback' | 'pin'
+    phase: 'preparing' | 'waiting' | 'canary' | 'rolling' | 'done' | 'failed'
+    open: boolean
+    forced: boolean
+    startedAt: number
+    updatedAt: number
+    agent: string | null
+    moved: string[]
+    skipped: Skipped[]
+    detail: string | null
+  }
+  interface ImageView {
+    digest: string
+    label: string
+    configVersion: number | null
+    status: 'candidate' | 'good' | 'bad'
+    reason: string | null
+    goodSince: number | null
+  }
+  interface AgentView {
+    slug: string
+    displayName: string
+    image: Labelled | null
+    onChannel: boolean
+  }
+  interface ChannelStatus {
+    standing: 'following' | 'pinned' | 'off'
+    offReason: string | null
+    channel: string
+    pinned: Labelled | null
+    current: Labelled
+    previous: Labelled | null
+    compiled: Labelled
+    lastCheck: { at: number; digest: string | null; label: string | null; error: string | null } | null
+    nextCheckAt: number | null
+    window: { start: string; end: string; zone: string; open: boolean }
+    rollout: RolloutView | null
+    agents: AgentView[]
+    images: ImageView[]
+    events: { at: number; text: string }[]
+  }
+
+  const queryClient = useQueryClient()
+  const query = createQuery<ChannelStatus>(() => ({
+    queryKey: ['fleet-hermes'],
+    queryFn: async () => (await getJson<{ status: ChannelStatus }>('/api/fleet/hermes')).status,
+    refetchInterval: (q) => (q.state.data?.rollout?.open ? 5_000 : 30_000),
+  }))
+  const s = $derived(query.data)
+
+  const ago = (ms: number | null | undefined) => (ms ? relativeTime(new Date(ms).toISOString()) : 'never')
+  const until = (ms: number | null | undefined) => {
+    if (!ms) return null
+    const mins = Math.round((ms - Date.now()) / 60_000)
+    if (mins <= 1) return 'within a minute'
+    if (mins < 90) return `in ${mins} min`
+    return `in about ${Math.round(mins / 60)} h`
+  }
+
+  const PHASE: Record<RolloutView['phase'], string> = {
+    preparing: 'Downloading and inspecting',
+    waiting: 'Ready, waiting for the window',
+    canary: 'Testing in a canary',
+    rolling: 'Moving agents one at a time',
+    done: 'Done',
+    failed: 'Stopped',
+  }
+  // The rollout's heading: what it is doing while it runs, what it did once
+  // it ended.
+  const KIND: Record<RolloutView['kind'], { open: string; done: string; failed: string }> = {
+    upgrade: { open: 'Updating to', done: 'Updated to', failed: 'Stopped the update to' },
+    rollback: { open: 'Rolling back to', done: 'Rolled back to', failed: 'Stopped the rollback to' },
+    pin: { open: 'Pinning to', done: 'Pinned to', failed: 'Stopped pinning to' },
+  }
+  const heading = (r: RolloutView) =>
+    r.phase === 'failed' ? KIND[r.kind].failed : r.open ? KIND[r.kind].open : KIND[r.kind].done
+
+  const rollout = $derived(s?.rollout ?? null)
+  // Stable names something the fleet does not run, and it has not failed here.
+  const stableNewer = $derived.by(() => {
+    const d = s?.lastCheck?.digest
+    if (!s || s.standing !== 'following' || !d || d === s.current.digest) return false
+    return s.images.find((i) => i.digest === d)?.status !== 'bad'
+  })
+  const pinnable = $derived((s?.images ?? []).filter((i) => i.status === 'good'))
+  let pinChoice = $state('')
+  $effect(() => {
+    if (!pinChoice && s) pinChoice = s.pinned?.digest ?? s.current.digest
+  })
+  let windowStart = $state('')
+  let windowEnd = $state('')
+  $effect(() => {
+    if (s && !windowStart && !windowEnd) {
+      windowStart = s.window.start
+      windowEnd = s.window.end
+    }
+  })
+
+  let busy = $state<string | null>(null)
+  let line = $state<{ tone: 'ok' | 'danger'; text: string } | null>(null)
+  const act = async (action: string, body: Record<string, unknown> = {}) => {
+    busy = action
+    line = null
+    try {
+      const r = await postJson<{ message: string }>('/api/fleet/hermes', { action, ...body })
+      line = { tone: 'ok', text: r.message }
+      await queryClient.invalidateQueries({ queryKey: ['fleet-hermes'] })
+    } catch (e) {
+      line = { tone: 'danger', text: errorMessage(e) }
+    } finally {
+      busy = null
+    }
+  }
+  const rollBack = async () => {
+    const to = rollout?.open && rollout.kind !== 'rollback' ? rollout.fromLabel : (s?.previous?.label ?? s?.compiled.label)
+    const ok = await confirm({
+      title: 'Roll back the agent image?',
+      message: `Every agent moves to ${to ?? 'the previous version'}, one at a time, and the version they leave is marked bad and never rolled out again. Each agent is offline for its restart.`,
+      confirmLabel: 'Roll back',
+    })
+    if (ok) await act('rollback')
+  }
+  const rollNow = async () => {
+    const ok = await confirm({
+      title: 'Roll out now?',
+      message: 'The new Hermes is tested in a canary and then every agent restarts onto it, one at a time, now instead of in the maintenance window. An agent in a conversation waits until it is free.',
+      confirmLabel: 'Roll now',
+    })
+    if (ok) await act('roll')
+  }
+
+  const TONE = { ok: 'text-fg', danger: 'text-danger' } as const
+  const agentNote = (a: AgentView) => {
+    if (!rollout?.open) return null
+    if (rollout.agent === a.slug) return 'moving now'
+    const skip = rollout.skipped.find((k) => k.slug === a.slug)
+    if (skip) return `waiting: ${skip.why}`
+    if (rollout.phase === 'rolling' && !rollout.moved.includes(a.slug)) return 'queued'
+    return null
+  }
+</script>
+
+<Panel class="px-4 py-3">
+  <div class="mb-1 flex min-h-6 items-center gap-2">
+    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent image</span>
+    {#if rollout?.open}<StatusDot status="accent" pulse title="A rollout is in progress" />{/if}
+  </div>
+  {#if query.isPending}
+    <p class="py-2 font-sans text-xs text-muted">Reading the agent image…</p>
+  {:else if query.isError || !s}
+    <p class="py-2 font-sans text-xs text-danger">Could not read the agent image: {errorMessage(query.error)}</p>
+  {:else}
+    <div class="space-y-3 py-2">
+      <div>
+        <div class="font-sans text-sm text-fg">
+          Hermes {s.current.label}
+          <span class="text-muted">·</span>
+          {#if s.standing === 'following'}
+            Automatic: follows <span class="font-mono text-xs">stable</span>
+          {:else if s.standing === 'pinned'}
+            Pinned to {s.pinned?.label}
+          {:else}
+            Set by the operator
+          {/if}
+        </div>
+        {#if s.standing === 'off'}
+          <div class="font-sans text-xs text-muted">{s.offReason}</div>
+        {:else}
+          <div class="font-sans text-xs text-muted">
+            {#if s.lastCheck}
+              Checked {ago(s.lastCheck.at)}{#if s.lastCheck.label}: stable is {s.lastCheck.label}{/if}.
+            {:else}
+              Not checked yet.
+            {/if}
+            {#if until(s.nextCheckAt)}Next check {until(s.nextCheckAt)}.{/if}
+            Maintenance window {s.window.start}–{s.window.end} {s.window.zone}{s.window.open ? ' (open now)' : ''}.
+          </div>
+          {#if s.lastCheck?.error}
+            <div class="font-sans text-xs text-danger">The last check failed: {s.lastCheck.error}</div>
+          {/if}
+        {/if}
+      </div>
+
+      {#if rollout}
+        <div class="rounded-md border border-line-subtle px-3 py-2">
+          <div class="flex items-center gap-2 font-sans text-sm text-fg">
+            {#if rollout.open}<WaitingMark site="manage/hermes-rollout" size={12} />{/if}
+            {heading(rollout)} {rollout.label}
+            {#if rollout.open}<span class="text-muted">— {PHASE[rollout.phase]}</span>{/if}
+          </div>
+          {#if rollout.detail}
+            <div class="font-sans text-xs {rollout.phase === 'failed' ? 'text-danger' : 'text-muted'}">{rollout.detail}</div>
+          {/if}
+          <div class="font-sans text-xs text-muted">
+            Started {ago(rollout.startedAt)}{#if rollout.moved.length > 0}, {rollout.moved.length} of {s.agents.length} moved{/if}.
+          </div>
+        </div>
+      {/if}
+
+      {#if s.agents.length > 0}
+        <ul class="divide-y divide-line-subtle">
+          {#each s.agents as a (a.slug)}
+            <li class="flex items-baseline justify-between gap-3 py-1.5">
+              <span class="min-w-0 truncate font-sans text-sm text-fg">{a.displayName}</span>
+              <span class="shrink-0 font-sans text-xs text-muted">
+                {#if agentNote(a)}<span class="mr-2">{agentNote(a)}</span>{/if}
+                <span class="font-mono">{a.image?.label ?? (a.onChannel ? 'operator image' : 'workbench image')}</span>
+              </span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if s.standing !== 'off'}
+        <div class="flex flex-wrap gap-2 border-t border-line pt-3">
+          <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => act('check')}>
+            {#if busy === 'check'}<WaitingMark site="manage/hermes-check" size={12} />{:else}<RefreshCw size={14} />{/if}
+            {busy === 'check' ? 'Checking…' : 'Check now'}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy !== null || s.standing === 'pinned' || (!stableNewer && !rollout?.open) || !!rollout?.forced}
+            onclick={rollNow}
+            title={rollout?.forced ? 'Already rolling out now' : undefined}
+          >
+            <Rocket size={14} />
+            Roll now
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy !== null || (rollout?.open && rollout.kind === 'rollback') || (!rollout?.open && !s.previous && s.current.digest === s.compiled.digest)}
+            onclick={rollBack}
+          >
+            <Undo2 size={14} />
+            Roll back
+          </Button>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          {#if s.standing === 'pinned'}
+            <Button variant="ghost" size="sm" disabled={busy !== null} onclick={() => act('unpin')}>
+              <PinOff size={14} />
+              Unpin: follow stable
+            </Button>
+          {:else}
+            <Select size="sm" bind:value={pinChoice} aria-label="Version to pin">
+              {#each pinnable as i (i.digest)}
+                <option value={i.digest}>{i.label}</option>
+              {/each}
+            </Select>
+            <Button variant="ghost" size="sm" disabled={busy !== null || !pinChoice} onclick={() => act('pin', { digest: pinChoice })}>
+              <Pin size={14} />
+              Pin
+            </Button>
+          {/if}
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-sans text-xs text-muted">Window</span>
+          <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowStart} aria-label="Window start (HH:MM)" />
+          <span class="font-sans text-xs text-muted">to</span>
+          <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowEnd} aria-label="Window end (HH:MM)" />
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy !== null || (windowStart === s.window.start && windowEnd === s.window.end)}
+            onclick={() => act('window', { start: windowStart, end: windowEnd })}
+          >
+            Save
+          </Button>
+        </div>
+      {/if}
+      {#if line}
+        <p transition:slide={{ duration: 150 }} class="font-sans text-xs {TONE[line.tone]}">{line.text}</p>
+      {/if}
+    </div>
+  {/if}
+</Panel>
