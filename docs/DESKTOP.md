@@ -47,7 +47,10 @@ page does not take is a browser tab's: it loads what was dropped, and a file rel
 message list replaced the instance with the file — no titlebar in the themed mode, and the
 escape keys are refused from a `file://` page. Two things stop that. An initialization
 script (`DROP_GUARD`) answers any drag that no drop zone took with "no drop here", after
-every zone in the page has seen it; and the webview refuses to navigate to `file:` at all
+every zone in the page has seen it — except over a native field (`<input>`, `<textarea>`,
+`<select>`, anything contenteditable), which takes text, a moved selection or a file by the
+engine's own default, with no handler to say so; `scripts/desktop-drop-guard.mjs` runs the
+script against each case in `bun run check`. And the webview refuses to navigate to `file:` at all
 (`allowed_navigation`), for a page where the script did not get the chance. Only `file:` is
 refused: pages and their frames use `about:`, `blob:` and `data:`, `mailto:` and app links
 go to the OS, and a sign-in goes to other https origins and back.
