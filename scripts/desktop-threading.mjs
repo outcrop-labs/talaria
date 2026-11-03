@@ -15,7 +15,13 @@
 // creation (or a wait on WebView2, like a cookie read) at all; an async command
 // may reach it only through a hop to the main thread (`on_main_turn`), because
 // creating from a tokio worker splits hide → create → show across turns, which
-// WebKitGTK's geometry depends on.
+// WebKitGTK's geometry depends on. A CALLBACK may not reach it either: a closure
+// handed to `.on_*(…)` (window, webview, page-load, navigation, menu and tray
+// events), to `.run(…)`, `.with_webview(…)` or a GTK `connect_*` signal, and any
+// function marked `// webview-threading: callback` (the notification-click entry
+// points the OS calls). On Windows a window event fires synchronously inside a
+// sync command's window operation — inside a WebView2 callback — so a restore
+// there must queue its turn (`queue_main_turn`), as every such path does now.
 //
 // HOW IT JUDGES. A crude call graph over desktop/src-tauri/src, by function
 // name: comments and literals blanked, `#[cfg(test)]` modules skipped. A
@@ -24,8 +30,16 @@
 // caller does not reach it: tokio and thread spawns, and the shell's two
 // main-turn helpers. `run_on_main_thread` is NOT a hop for code already on the
 // main thread — Tauri runs the closure inline there — so a sync command that
-// wraps the creation in it still reaches it. Names are matched as free calls
-// (`name(`, `path::name(`), never method calls (`.name(`).
+// wraps the creation in it still reaches it. `block_on(on_main_turn(…))` on the
+// main thread waits for a turn that cannot run until it returns: that counts as
+// a creation too. Names are matched as free calls (`name(`, `path::name(`),
+// never method calls (`.name(`).
+//
+// KNOWN LIMITS. Method-call edges are not followed (moving `activate` into an
+// `impl` and calling it as `x.activate()` would drop the edge), macro bodies
+// are read as plain text, and names are merged across modules. The misses are
+// false negatives on a refactor of exactly these paths, which review and the
+// connect smoke in CI back up; every false positive falls on the safe side.
 //
 // Stdlib only, like everything `bun run check` runs.
 
@@ -36,7 +50,21 @@ export const CREATES = [
   { re: /\bWebviewWindowBuilder::new\s*\(/g, what: 'WebviewWindowBuilder::new(' },
   { re: /\.cookies_for_url\s*\(/g, what: '.cookies_for_url(' },
   { re: /\.cookies\s*\(\s*\)/g, what: '.cookies()' },
+  { re: /\bWebviewWindow::builder\s*\(/g, what: 'WebviewWindow::builder(' },
+  { re: /\bWebview(?:Window)?Builder::from_config\s*\(/g, what: 'WebviewBuilder::from_config(' },
+  { re: /\bblock_on\s*\(\s*on_main_turn\s*\(/g, what: 'block_on(on_main_turn(' },
 ]
+
+/** Calls that hand a closure to the platform, to run later as a callback:
+ *  a `.on_*(|…|` event handler, `.run(|…|`, `.with_webview(|…|`, a listener,
+ *  a GTK `connect_*(|…|` signal or a glib idle. The closure is a root. */
+const CALLBACKS = [
+  /\.(on_[a-z_]+|run|with_webview|listen(?:_any)?|once(?:_any)?)\s*\(\s*(?:move\s*)?\|/g,
+  /\b(connect_[a-z_]+|idle_add(?:_local)?(?:_once)?)\s*\(\s*(?:move\s*)?\|/g,
+]
+
+/** A function the OS or a platform library calls back, marked in the source. */
+const MARKER = /\/\/\s*webview-threading:\s*callback\b/
 
 /** Calls whose closure argument runs on another thread, or in a later
  *  main-thread turn — never inline in the caller. */
@@ -148,7 +176,7 @@ const lineAt = (text, index) => text.slice(0, index).split('\n').length
 
 /** Every function with a body: name, async, whether it is a Tauri command,
  *  and its body text. */
-export function rustFns(path, blanked) {
+export function rustFns(path, blanked, raw = blanked) {
   const skip = []
   for (const m of blanked.matchAll(/#\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{/g)) {
     const open = m.index + m[0].length - 1
@@ -158,23 +186,41 @@ export function rustFns(path, blanked) {
   for (const m of blanked.matchAll(/\bfn\s+([A-Za-z_]\w*)/g)) {
     if (skip.some(([s, e]) => m.index > s && m.index < e)) continue
     let k = m.index + m[0].length
-    let parens = 0
+    let depth = 0 // parens and brackets: `-> [u8; 4]` is still a signature
     for (; k < blanked.length; k++) {
       const ch = blanked[k]
-      if (ch === '(') parens++
-      else if (ch === ')') parens--
-      else if (parens === 0 && (ch === '{' || ch === ';')) break
+      if (ch === '(' || ch === '[') depth++
+      else if (ch === ')' || ch === ']') depth--
+      else if (depth === 0 && (ch === '{' || ch === ';')) break
     }
     if (blanked[k] !== '{') continue // a declaration with no body
     const before = blanked.slice(0, m.index)
-    const prefix = before.slice(Math.max(before.lastIndexOf('}'), before.lastIndexOf(';'), before.lastIndexOf('{')) + 1)
+    const from = Math.max(before.lastIndexOf('}'), before.lastIndexOf(';'), before.lastIndexOf('{')) + 1
+    const prefix = before.slice(from)
+    const bodyStart = k + 1
+    const body = blanked.slice(bodyStart, matching(blanked, k) - 1)
+    // The closures this function hands to the platform, each a root of its own.
+    const callbacks = []
+    for (const re of CALLBACKS) {
+      re.lastIndex = 0
+      for (const c of body.matchAll(re)) {
+        const open = c.index + c[0].lastIndexOf('(')
+        callbacks.push({
+          via: c[0].startsWith('.') ? `.${c[1]}(` : `${c[1]}(`,
+          line: lineAt(blanked, bodyStart + c.index),
+          text: body.slice(open + 1, matching(body, open) - 1),
+        })
+      }
+    }
     fns.push({
       path,
       name: m[1],
       line: lineAt(blanked, m.index),
       async: /\basync\s+(?:unsafe\s+)?$/.test(prefix),
       command: /#\[\s*tauri\s*::\s*command\b/.test(prefix),
-      body: blanked.slice(k + 1, matching(blanked, k) - 1),
+      marked: MARKER.test(raw.slice(from, m.index)),
+      body,
+      callbacks,
     })
   }
   return fns
@@ -189,7 +235,7 @@ export function rustFns(path, blanked) {
  */
 export function scanWebviewThreading(files) {
   const fns = []
-  for (const [path, src] of files) fns.push(...rustFns(path, blankRust(src)))
+  for (const [path, src] of files) fns.push(...rustFns(path, blankRust(src), src))
   const names = [...new Set(fns.map((f) => f.name))]
   const callRe = new RegExp(String.raw`(?<![\w.])(?<!\bfn\s+)(${names.join('|')})\s*(?:::<[^>]*>\s*)?\(`, 'g')
   const sinkIn = (text) => {
@@ -235,6 +281,30 @@ export function scanWebviewThreading(files) {
   }
 
   const violations = []
+  // A callback runs on the main thread (or wherever the platform calls it),
+  // inline: judged as a sync command is.
+  const reachesInline = (text) => {
+    const body = blankCalls(text, HOPS)
+    const sink = sinkIn(body)
+    if (sink) return [sink]
+    const callee = callsIn(body).find((c) => via.has(c))
+    return callee ? chain(callee) : null
+  }
+  let callbacks = 0
+  for (const f of fns) {
+    if (f.marked) {
+      callbacks++
+      const reach = reachesInline(f.body)
+      if (reach) violations.push({ path: f.path, line: f.line, command: f.name, kind: 'callback', chain: [f.name, ...reach] })
+    }
+    for (const c of f.callbacks) {
+      callbacks++
+      const reach = reachesInline(c.text)
+      if (reach) {
+        violations.push({ path: f.path, line: c.line, command: `${f.name}/${c.via}`, kind: 'callback', chain: [`${f.name}: ${c.via}…)`, ...reach] })
+      }
+    }
+  }
   const commands = fns.filter((f) => f.command)
   for (const f of commands) {
     if (!f.async) {
@@ -258,7 +328,7 @@ export function scanWebviewThreading(files) {
       })
     }
   }
-  return { violations, commands: commands.length, creators: [...via.keys()].filter((n) => main.get(n)?.sink) }
+  return { violations, commands: commands.length, callbacks, creators: [...via.keys()].filter((n) => main.get(n)?.sink) }
 }
 
 /** The tripwire run against a fixture it must catch, so a scanner that has
@@ -290,6 +360,20 @@ export function selfTest() {
     pub fn sync_queued(app: AppHandle) { queue_main_turn(&app, move |app| { let _ = make(app); }); }
     #[tauri::command]
     pub fn sync_cookies(webview: Webview) { let _ = webview.cookies(); }
+    #[tauri::command]
+    pub fn sync_block_on(app: AppHandle) { let _ = tauri::async_runtime::block_on(on_main_turn(&app, |_| ())); }
+    fn wire_window(builder: Builder, app: AppHandle) -> [u8; 4] {
+        builder.on_window_event(move |window, event| { let _ = make(&app); });
+        [0; 4]
+    }
+    fn wire_tray(builder: TrayIconBuilder) {
+        builder.on_menu_event(move |app, event| queue_main_turn(app, |app| { let _ = make(app); }));
+        let _ = settings.connect_timeout(CONNECT_TIMEOUT);
+    }
+    // webview-threading: callback
+    pub(crate) fn clicked(app: &AppHandle) { let _ = make(app); }
+    // webview-threading: callback
+    pub(crate) fn clicked_queued(app: &AppHandle) { queue_main_turn(app, |app| { let _ = make(app); }); }
     #[cfg(test)]
     mod tests {
         #[tauri::command]
@@ -298,7 +382,15 @@ export function selfTest() {
   `
   const got = scanWebviewThreading(new Map([['fixture.rs', fixture]]))
   const flagged = got.violations.map((v) => `${v.command}:${v.kind}`).sort()
-  const want = ['async_worker:worker', 'sync_cookies:sync', 'sync_direct:sync', 'sync_inline_main:sync']
+  const want = [
+    'async_worker:worker',
+    'clicked:callback',
+    'sync_block_on:sync',
+    'sync_cookies:sync',
+    'sync_direct:sync',
+    'sync_inline_main:sync',
+    'wire_window/.on_window_event(:callback',
+  ]
   const wrong = []
   if (flagged.join() !== want.join()) wrong.push(`flagged ${flagged.join(', ') || 'nothing'}; want ${want.join(', ')}`)
   const direct = got.violations.find((v) => v.command === 'sync_direct')

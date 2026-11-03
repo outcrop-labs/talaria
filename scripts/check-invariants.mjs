@@ -2515,7 +2515,10 @@ const UNSET_SEAM_CENSUS = [
 // finishes: `activate_instance` did exactly that, and every first open of an
 // instance froze Talaria Desktop on Windows for good. Linux and macOS create
 // synchronously, so only a Windows run could see it — this sees it on any OS,
-// before review. The judging (a call graph by name, hops, what counts as a
+// before review. Callbacks are held to the same rule — window, menu, tray and
+// page events, GTK signals, the notification-click entry points — because a
+// window event fires synchronously inside a sync command's window operation on
+// Windows. The judging (a call graph by name, hops, callbacks, what counts as a
 // creation) and its fixture live in scripts/desktop-threading.mjs; the rule is
 // stated at the top of desktop/src-tauri/src/commands.rs.
 {
@@ -2525,7 +2528,7 @@ const UNSET_SEAM_CENSUS = [
     files.set(relative(ROOT, f).split(sep).join('/'), readFileSync(f, 'utf8'))
   }
   const wrong = desktopThreadingSelfTest()
-  const { violations, commands, creators } = scanWebviewThreading(files)
+  const { violations, commands, callbacks, creators } = scanWebviewThreading(files)
   if (wrong.length || commands === 0 || creators.length === 0) {
     failures.push({
       id: 'desktop-webview-threading-blind',
@@ -2552,17 +2555,18 @@ const UNSET_SEAM_CENSUS = [
         'creation as one main-thread turn with `on_main_turn(&app, move |app| …).await` (commands.rs).',
         'An async command must not create from its tokio worker either — the same hop keeps hide →',
         'create → show in one turn, the order WebKitGTK geometry needs. Code that may already be on',
-        'the main thread (a window event, a notification click) queues with `queue_main_turn`;',
-        '`run_on_main_thread` runs inline there, so it is not a way out. docs/DESKTOP.md, "Threading".',
+        'the main thread — a callback: a window, menu, tray or page event, a GTK signal, a function',
+        'marked `// webview-threading: callback` — queues with `queue_main_turn`. `run_on_main_thread`',
+        'runs inline there, so it is not a way out. docs/DESKTOP.md, "Threading".',
       ],
       found: violations.map((v) => ({
         path: v.path,
         line: v.line,
-        text: `${v.kind === 'sync' ? 'sync command' : 'async command, from its tokio worker'}: ${v.chain.join(' → ')}`,
+        text: `${{ sync: 'sync command', worker: 'async command, from its tokio worker', callback: 'callback, inline' }[v.kind]}: ${v.chain.join(' → ')}`,
       })),
     })
   }
-  notes.push(`desktop threading: ${commands} shell commands, none reaches webview creation inline`)
+  notes.push(`desktop threading: ${commands} shell commands and ${callbacks} callbacks, none reaches webview creation inline`)
 }
 
 // THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
