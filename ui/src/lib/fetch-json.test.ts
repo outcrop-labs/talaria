@@ -1,5 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HttpError, delJson, delJsonGone, getJson, postJson, postJsonOr, postStream, putJson, readJson } from '@/lib/fetch-json'
+import {
+  HttpError,
+  delJson,
+  delJsonGone,
+  errorMessage,
+  errorSentence,
+  getJson,
+  getStream,
+  postJson,
+  postJsonOr,
+  postStream,
+  putJson,
+  readJson,
+} from '@/lib/fetch-json'
 
 // The mutation door. The whole point of this file's subjects is the ERROR
 // CONTRACT — before they existed, 134 hand-rolled stanzas each decided for
@@ -162,5 +175,50 @@ describe('the read deadline', () => {
     for (const [, init] of fetchMock.mock.calls) {
       expect(init?.signal).toBeUndefined()
     }
+  })
+})
+
+// While the api restarts (every deploy), the app's proxy is still up and
+// answers every /api/* path with 502 `{"error":{"message":"upstream
+// unreachable"}}` (rust-proxy.ts) — the OpenAI shape, not the house string.
+// Every door read only `data.error`, passed the OBJECT to `new Error()`, and
+// every page loaded in that window said "Could not reach your session —
+// [object Object]"; the hire modal said "[object Object]" (ui-2, fleet-4).
+describe('the error sentence — both envelopes the product speaks', () => {
+  const PROXY_DOWN = { error: { message: 'upstream unreachable' } }
+
+  it('every door reads the proxy’s { error: { message } } as its sentence, never "[object Object]"', async () => {
+    const doors: Array<[string, () => Promise<unknown>]> = [
+      ['getJson (readJson)', () => getJson('/api/auth/session')],
+      ['postJson (sendJson → readJson)', () => postJson('/api/fleet/create', { slug: 'x' })],
+      ['postStream', () => postStream('/api/chat', { m: 1 })],
+      ['getStream', () => getStream('/api/work/watch')],
+    ]
+    for (const [door, call] of doors) {
+      fetchMock.mockImplementationOnce(async () => jsonResponse(502, PROXY_DOWN))
+      const e = (await call().catch((x: unknown) => x)) as HttpError
+      expect(e, door).toBeInstanceOf(HttpError)
+      expect(e.status, door).toBe(502)
+      expect(e.message, door).toBe('upstream unreachable')
+      expect(errorMessage(e), door).toBe('Could not reach the server.')
+    }
+  })
+
+  it('the house string still wins, and the OpenAI shape from the gateway passes its own sentence', () => {
+    expect(errorSentence({ error: 'only the owner can change sharing' }, 403)).toBe('only the owner can change sharing')
+    expect(errorSentence({ error: { message: 'rate limit exceeded for this key', type: 'rate_limit_exceeded' } }, 429)).toBe(
+      'rate limit exceeded for this key',
+    )
+  })
+
+  it('anything that is not a non-empty string is no sentence: the status line instead', () => {
+    for (const body of [null, 'plain text', [], {}, { error: '' }, { error: '  ' }, { error: 42 }, { error: {} }, { error: { message: { nested: 1 } } }, { error: { message: '' } }, { error: null }]) {
+      expect(errorSentence(body, 502), JSON.stringify(body)).toBe('request failed (502)')
+    }
+  })
+
+  it('an HTML error page (the edge’s own 502/524) still reads as the status line', async () => {
+    fetchMock.mockImplementationOnce(async () => new Response('<html>Bad gateway</html>', { status: 524, headers: { 'content-type': 'text/html' } }))
+    await expect(getJson('/api/home')).rejects.toThrow('request failed (524)')
   })
 })
