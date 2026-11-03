@@ -667,8 +667,13 @@ version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and
 - **On the launcher** it is a toast in the corner (`UpdateChip.svelte`), from the snapshot
   (`ShellSnapshot.update`).
 - **Over an instance** the shell evaluates the same chip into the page (`update::chip_js`):
-  a shadow root on `<html>`, bottom right, styled from a constructed stylesheet (no inline
-  `<style>` a page CSP could refuse), text set as text, never focused. It is the shell's,
+  a shadow root on `<html>`, one compact row (the version, Later, Update) 76 px above the
+  bottom right corner, clear of a composer's send button, with Later always on it; a second
+  line only while an install runs, after one failed, or when **How?** is opened on a copy
+  the updater cannot replace. It is styled from a constructed stylesheet, which a page's
+  CSP does not govern (on the rig, a page whose `style-src 'self'` refused its own inline
+  styles showed the chip styled), and if a sheet ever did not apply, the same rules are set
+  through CSSOM, which no CSP refuses. Text is set as text, and it never takes the focus. It is the shell's,
   not the instance UI's, because the instance webview fills the window and its UI is on its
   own release cadence: a chip that went through the desktop bridge into ui's toast stack
   would show only on instances already running this release, and nowhere while the page is
@@ -682,7 +687,10 @@ version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and
   relaunch keeps it put off. A newer version than the one put off is offered at once. A
   snooze that ends more than a day out (the clock went back, a hand-edited file) has run out.
 - **Update** is `install_update`. The chip says the install is running and, if it fails,
-  why, in a sentence, in every view (a second click while it runs is refused). On success
+  why, in a sentence, in every view (a second click while it runs is refused). Its look at
+  the feed is bounded at 20 s, and the download by its progress: nothing arriving for 60 s,
+  or a download still going after 30 minutes, stops it with a sentence and Update offered
+  again; installing the bytes once they are here is local and never cut off. On success
   Talaria restarts: on Linux and macOS through the app's own exit, so every page is
   remembered and the single-instance name is free first; on Windows the NSIS installer runs
   passively (`installMode`), and relaunches the app when it is done.

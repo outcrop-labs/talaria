@@ -52,6 +52,18 @@ pub const SNOOZE_MS: u64 = 24 * 60 * 60 * 1000;
 /// on a network that drops packets.
 pub const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Update's own look at the feed, before it downloads. Longer than the
+/// background check's: someone is waiting on the answer.
+const INSTALL_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// The download's bounds. The payload is the whole installer, so there is no
+/// short total; a download that stops arriving for `DOWNLOAD_STALL` is a
+/// failure, and so is one still going after `DOWNLOAD_CAP`. Installing the
+/// bytes once they are here is local and never cut off.
+pub const DOWNLOAD_STALL: Duration = Duration::from_secs(60);
+pub const DOWNLOAD_CAP: Duration = Duration::from_secs(30 * 60);
+/// How often the download's bounds are looked at.
+const DOWNLOAD_LOOK: Duration = Duration::from_secs(5);
+
 /// Where a person gets the installers.
 const RELEASES: &str = "github.com/outcrop-labs/talaria/releases";
 
@@ -450,15 +462,26 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
         let updater = app
             .updater()
             .map_err(|e| format!("Could not start the update: {e}."))?;
-        let Some(update) = updater.check().await.map_err(check_failure)? else {
+        let Some(update) = tokio::time::timeout(INSTALL_CHECK_TIMEOUT, updater.check())
+            .await
+            .map_err(|_| {
+                format!(
+                    "Could not check for updates: the update server did not answer within {} seconds.",
+                    INSTALL_CHECK_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(check_failure)?
+        else {
             return Ok(None);
         };
         let version = update.version.clone();
         eprintln!("talaria-desktop: downloading update {version}");
-        update
-            .download_and_install(|_, _| {}, || {})
-            .await
-            .map_err(install_failure)?;
+        let bytes = download_watched(&update).await?;
+        eprintln!(
+            "talaria-desktop: downloaded update {version} ({} bytes); installing",
+            bytes.len()
+        );
+        update.install(bytes).map_err(install_failure)?;
         Ok(Some(version))
     }
     .await;
@@ -490,6 +513,49 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
             Err(e)
         }
     }
+}
+
+/// The update's download, bounded by `download_stalled`: a download that is
+/// dropped stops, and the chip says so and offers Update again.
+async fn download_watched(update: &tauri_plugin_updater::Update) -> Result<Vec<u8>, String> {
+    let last = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_ms()));
+    let arrived = last.clone();
+    let started = std::time::Instant::now();
+    let download = update.download(
+        move |_, _| arrived.store(now_ms(), std::sync::atomic::Ordering::Relaxed),
+        || {},
+    );
+    let mut download = std::pin::pin!(download);
+    loop {
+        match tokio::time::timeout(DOWNLOAD_LOOK, &mut download).await {
+            Ok(done) => return done.map_err(install_failure),
+            Err(_) => {
+                let idle = now_ms().saturating_sub(last.load(std::sync::atomic::Ordering::Relaxed));
+                if let Some(why) = download_stalled(idle, started.elapsed()) {
+                    eprintln!("talaria-desktop: update download: {why}");
+                    return Err(why);
+                }
+            }
+        }
+    }
+}
+
+/// Is a download that has run for `elapsed`, with nothing arriving for the
+/// last `idle_ms`, past its bounds? The sentence for the chip if so.
+pub fn download_stalled(idle_ms: u64, elapsed: Duration) -> Option<String> {
+    if idle_ms >= DOWNLOAD_STALL.as_millis() as u64 {
+        return Some(format!(
+            "The download stopped: nothing arrived for {} seconds, so nothing was installed. Try Update again.",
+            DOWNLOAD_STALL.as_secs()
+        ));
+    }
+    if elapsed >= DOWNLOAD_CAP {
+        return Some(format!(
+            "The download took more than {} minutes, so it was stopped and nothing was installed. Try Update again.",
+            DOWNLOAD_CAP.as_secs() / 60
+        ));
+    }
+    None
 }
 
 /// A failed check in a sentence: a timeout says so, a transport error says
@@ -576,15 +642,26 @@ fn sentence(lead: &str, detail: &str) -> String {
 
 /// The chip in an instance page: `offer`, or none. Evaluated by the shell
 /// (`push`, `page_loaded`), so it needs nothing from the page and works on any
-/// Talaria version. It lives in a shadow root on `<html>`, styled from a
-/// constructed sheet (no inline `<style>`, so a page CSP that forbids one does
-/// not matter), and never takes the focus. Update and Later call the shell
-/// (`install_update`, `snooze_update`) and the shell pushes what follows to
+/// Talaria version. It lives in a shadow root on `<html>`, never takes the
+/// focus, and stays small: one row (the version, Later, Update), plus a line
+/// only while an install runs, after one failed, or when "How?" is opened on
+/// a copy the updater cannot replace. It sits `CHIP_LIFT` above the bottom
+/// right corner, clear of a composer's send button, and Later is always on
+/// it. Styles come from a constructed sheet, which a page's CSP does not
+/// govern; if one did not apply, the same styles are set through CSSOM
+/// (`el.style`), which no CSP refuses either. Update and Later call the shell
+/// (`install_update`, `snooze_update`), and the shell pushes what follows to
 /// every view; a call the shell refuses says why in the chip.
 pub fn chip_js(offer: Option<&Offer>) -> String {
     let data = serde_json::to_string(&offer).unwrap_or_else(|_| "null".into());
-    CHIP_JS.replace("__OFFER__", &data)
+    CHIP_JS
+        .replace("__OFFER__", &data)
+        .replace("__LIFT__", &CHIP_LIFT.to_string())
 }
+
+/// How far above the window's bottom edge the page chip sits, in CSS px:
+/// above a chat composer's row, so its send button stays reachable.
+pub const CHIP_LIFT: u32 = 76;
 
 const CHIP_JS: &str = r#"(() => {
   const offer = __OFFER__;
@@ -599,23 +676,23 @@ const CHIP_JS: &str = r#"(() => {
     host.attachShadow({ mode: 'open' });
     root.appendChild(host);
   }
-  host.style.cssText = 'all:initial;position:fixed;right:16px;bottom:16px;z-index:2147483647;display:block;';
+  host.style.cssText = 'all:initial;position:fixed;right:16px;bottom:__LIFT__px;z-index:2147483647;display:block;';
   const shadow = host.shadowRoot;
-  const CSS = `
-    .chip { box-sizing: border-box; width: min(340px, calc(100vw - 32px)); padding: 10px 12px;
-      border: 1px solid #302d29; border-radius: 6px; background: #141312; color: #e7e2db;
-      font: 13px/1.4 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif;
-      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45); text-align: left; }
-    .title { font-weight: 600; }
-    .line { margin-top: 4px; color: #8e877e; user-select: text; -webkit-user-select: text; overflow-wrap: anywhere; }
-    .error { color: #ee6018; }
-    .actions { margin-top: 8px; display: flex; justify-content: flex-end; gap: 8px; }
-    button { font: 600 12px/1.4 inherit; font-family: inherit; padding: 3px 10px; border-radius: 4px;
-      border: 1px solid #4a4640; background: transparent; color: #e7e2db; cursor: pointer; }
-    button.update { background: #c8b46c; border-color: #c8b46c; color: #090a09; }
-    button:hover:not(:disabled) { filter: brightness(1.1); }
-    button:disabled { opacity: 0.5; cursor: default; }
-    button:focus-visible { outline: 2px solid #c8b46c; outline-offset: 2px; }`;
+  // Each rule is also what CSSOM sets when the sheet did not apply.
+  const RULES = {
+    chip: 'box-sizing:border-box;max-width:min(340px,calc(100vw - 32px));padding:6px 6px 6px 10px;border:1px solid #302d29;border-radius:6px;background:#141312;color:#e7e2db;font:12px/1.35 "IBM Plex Sans",ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,0.45);text-align:left;',
+    row: 'display:flex;align-items:center;gap:6px;',
+    title: 'flex:1 1 auto;min-width:0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;',
+    line: 'margin:4px 4px 2px 0;color:#8e877e;user-select:text;-webkit-user-select:text;overflow-wrap:anywhere;',
+    error: 'color:#ee6018;',
+    button: 'flex:0 0 auto;font:600 11px/1.4 inherit;font-family:inherit;padding:2px 8px;border-radius:4px;border:1px solid #4a4640;background:transparent;color:#e7e2db;cursor:pointer;',
+    update: 'background:#c8b46c;border-color:#c8b46c;color:#090a09;',
+    how: 'border-color:transparent;color:#8e877e;',
+  };
+  const CSS = `.chip{${RULES.chip}} .row{${RULES.row}} .title{${RULES.title}} .line{${RULES.line}}
+    .error{${RULES.error}} button{${RULES.button}} button.update{${RULES.update}} button.how{${RULES.how}}
+    button:hover:not(:disabled){filter:brightness(1.15);} button:disabled{opacity:0.5;cursor:default;}
+    button:focus-visible{outline:2px solid #c8b46c;outline-offset:2px;}`;
   let style = null;
   try {
     if (!shadow.adoptedStyleSheets.length) {
@@ -637,41 +714,66 @@ const CHIP_JS: &str = r#"(() => {
     ? window.__TAURI_INTERNALS__.invoke(cmd, {})
     : Promise.reject(new Error('This page cannot reach Talaria Desktop.'));
   const said = (e) => String(e && e.message || e).replace(/^Error:\s*/, '');
+  let open = !!host.dataset.how;
   const render = (o) => {
     const box = el('div', 'chip');
     box.setAttribute('role', 'status');
     box.setAttribute('aria-live', 'polite');
     box.dataset.version = o.version;
-    box.append(el('div', 'title', 'Talaria Desktop ' + o.version + ' is available'));
-    const line = o.error || (o.busy
-      ? 'Updating. Talaria restarts when it is done.'
-      : o.how || 'Update downloads it and restarts Talaria.');
-    box.append(el('div', o.error ? 'line error' : 'line', line));
-    const actions = el('div', 'actions');
-    const later = el('button', 'later', 'Later');
-    later.type = 'button';
-    later.disabled = !!o.busy;
-    later.addEventListener('click', (e) => {
-      e.stopPropagation();
+    const row = el('div', 'row');
+    const title = el('div', 'title', 'Talaria Desktop ' + o.version + ' is available');
+    title.title = title.textContent;
+    row.append(title);
+    const button = (cls, text, onclick) => {
+      const b = el('button', cls, text);
+      b.type = 'button';
+      b.disabled = !!o.busy;
+      b.addEventListener('click', (e) => { e.stopPropagation(); onclick(); });
+      row.append(b);
+      return b;
+    };
+    if (o.install !== 'updater') {
+      const how = button('how', open ? 'Hide' : 'How?', () => {
+        open = !open;
+        if (open) host.dataset.how = '1'; else delete host.dataset.how;
+        render(o);
+      });
+      how.disabled = false;
+      how.setAttribute('aria-expanded', String(open));
+    }
+    button('later', 'Later', () => {
       host.remove();
       invoke('snooze_update').catch(() => {});
     });
-    actions.append(later);
     if (o.install === 'updater') {
-      const update = el('button', 'update', o.busy ? 'Updating' : 'Update');
-      update.type = 'button';
-      update.disabled = !!o.busy;
-      update.addEventListener('click', (e) => {
-        e.stopPropagation();
+      const update = button('update', o.busy ? 'Updating' : 'Update', () => {
         render(Object.assign({}, o, { busy: true, error: null }));
         invoke('install_update').catch((err) =>
           render(Object.assign({}, o, { busy: false, error: said(err) })));
       });
-      actions.append(update);
+      update.title = 'Downloads it and restarts Talaria';
     }
-    box.append(actions);
+    box.append(row);
+    const line = o.error
+      || (o.busy ? 'Updating. Talaria restarts when it is done.' : null)
+      || (open ? o.how : null);
+    if (line) box.append(el('div', o.error ? 'line error' : 'line', line));
     if (style) shadow.replaceChildren(style, box);
     else shadow.replaceChildren(box);
+    // The sheet did not take (a page that refuses it, an engine without
+    // constructed sheets): the same rules, through CSSOM.
+    if (getComputedStyle(box).borderTopLeftRadius !== '6px') {
+      const set = (e, ...names) => { e.style.cssText = names.map((n) => RULES[n]).join(''); };
+      set(box, 'chip');
+      set(row, 'row');
+      set(title, 'title');
+      box.querySelectorAll('button').forEach((b) =>
+        set(b, 'button', ...(b.classList.contains('update') ? ['update'] : b.classList.contains('how') ? ['how'] : [])));
+      box.querySelectorAll('.line').forEach((l) => set(l, 'line', ...(l.classList.contains('error') ? ['error'] : [])));
+      host.dataset.styled = 'cssom';
+    } else {
+      host.dataset.styled = style ? 'style' : 'sheet';
+    }
   };
   render(offer);
 })();"#;
@@ -957,6 +1059,28 @@ mod tests {
     }
 
     #[test]
+    fn a_download_that_stops_or_runs_too_long_is_given_up_with_a_sentence() {
+        let stall = DOWNLOAD_STALL.as_millis() as u64;
+        // Bytes arriving: never cut off before the cap, however slow.
+        assert_eq!(download_stalled(0, Duration::from_secs(5)), None);
+        assert_eq!(
+            download_stalled(stall - 1, DOWNLOAD_CAP - Duration::from_secs(1)),
+            None
+        );
+        // Nothing for a minute: stopped.
+        let said = download_stalled(stall, Duration::from_secs(61)).unwrap();
+        assert!(
+            said.starts_with("The download stopped: nothing arrived for 60 seconds"),
+            "{said}"
+        );
+        assert!(said.ends_with("Try Update again."), "{said}");
+        // Still going after the cap: stopped too.
+        let said = download_stalled(0, DOWNLOAD_CAP).unwrap();
+        assert!(said.contains("more than 30 minutes"), "{said}");
+        assert!(DOWNLOAD_STALL < DOWNLOAD_CAP);
+    }
+
+    #[test]
     fn the_page_chip_carries_the_offer_and_nothing_else() {
         let gone = chip_js(None);
         assert!(gone.contains("const offer = null;"));
@@ -970,6 +1094,10 @@ mod tests {
         // inline <style> a page CSP could refuse (only the fallback makes one).
         assert!(!js.contains("innerHTML"));
         assert!(js.contains("adoptedStyleSheets"));
+        // And when no sheet applies, CSSOM sets the same rules.
+        assert!(js.contains("e.style.cssText = names.map"));
+        assert!(js.contains(&format!("bottom:{CHIP_LIFT}px")));
+        assert!(!js.contains("__LIFT__"));
         assert!(js.contains("invoke('snooze_update')"));
         assert!(js.contains("invoke('install_update')"));
         // A version that is not a plain one still cannot break out of the
