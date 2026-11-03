@@ -149,6 +149,9 @@
               <span class="grid w-4 shrink-0 place-items-center text-muted">{@render menuIcon(item.icon)}</span>
             {/if}
             <span class="min-w-0 flex-1 truncate">{item.label}</span>
+            {#if item.hint}
+              <span class="shrink-0 font-mono text-[10px] text-ink-dim">{item.hint}</span>
+            {/if}
             {#if hasKids}
               <span class="shrink-0 text-xs text-muted">▸</span>
             {/if}
