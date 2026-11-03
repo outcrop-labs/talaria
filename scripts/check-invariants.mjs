@@ -57,6 +57,8 @@ import {
 } from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { scanWebviewThreading, selfTest as desktopThreadingSelfTest } from './desktop-threading.mjs'
+import { checkDropGuard } from './desktop-drop-guard.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
@@ -2615,6 +2617,88 @@ const UNSET_SEAM_CENSUS = [
       ],
       found,
     })
+  }
+}
+
+// THE DESKTOP SHELL MAKES WEBVIEWS ONLY IN A MAIN-THREAD TURN OF ITS OWN.
+//
+// A sync `#[tauri::command]` runs inside the calling webview's IPC callback.
+// On Windows that is a WebView2 handler, and a WebView2 created there never
+// finishes: `activate_instance` did exactly that, and every first open of an
+// instance froze Talaria Desktop on Windows for good. Linux and macOS create
+// synchronously, so only a Windows run could see it — this sees it on any OS,
+// before review. Callbacks are held to the same rule — window, menu, tray and
+// page events, GTK signals, the notification-click entry points — because a
+// window event fires synchronously inside a sync command's window operation on
+// Windows. The judging (a call graph by name, hops, callbacks, what counts as a
+// creation) and its fixture live in scripts/desktop-threading.mjs; the rule is
+// stated at the top of desktop/src-tauri/src/commands.rs.
+{
+  const desktopSrc = 'desktop/src-tauri/src'
+  const files = new Map()
+  for (const f of walk(join(ROOT, desktopSrc), [], ['.rs'])) {
+    files.set(relative(ROOT, f).split(sep).join('/'), readFileSync(f, 'utf8'))
+  }
+  const wrong = desktopThreadingSelfTest()
+  const { violations, commands, callbacks, creators } = scanWebviewThreading(files)
+  if (wrong.length || commands === 0 || creators.length === 0) {
+    failures.push({
+      id: 'desktop-webview-threading-blind',
+      what: 'the desktop webview-threading tripwire can no longer see what it guards',
+      fix: [
+        'scripts/desktop-threading.mjs must flag its own fixture, and must find the shell\'s',
+        `\`#[tauri::command]\`s and at least one webview creation under ${desktopSrc}. If the`,
+        'commands or the creation moved (a new file, a renamed builder), point the scanner at',
+        'them in the same commit — a tripwire that sees nothing passes while guarding nothing.',
+      ],
+      found: [
+        ...wrong.map((text) => ({ path: 'scripts/desktop-threading.mjs', line: 0, text: `self-test: ${text}` })),
+        ...(commands === 0 ? [{ path: desktopSrc, line: 0, text: 'no #[tauri::command] found' }] : []),
+        ...(creators.length === 0 ? [{ path: desktopSrc, line: 0, text: 'no webview creation found' }] : []),
+      ],
+    })
+  }
+  if (violations.length) {
+    failures.push({
+      id: 'desktop-webview-created-inside-ipc',
+      what: 'a desktop shell command can create a webview (or wait on WebView2) where Windows deadlocks',
+      fix: [
+        'A sync command runs inside the caller\'s WebView2 IPC callback: make it `async`, and run the',
+        'creation as one main-thread turn with `on_main_turn(&app, move |app| …).await` (commands.rs).',
+        'An async command must not create from its tokio worker either — the same hop keeps hide →',
+        'create → show in one turn, the order WebKitGTK geometry needs. Code that may already be on',
+        'the main thread — a callback: a window, menu, tray or page event, a GTK signal, a function',
+        'marked `// webview-threading: callback` — queues with `queue_main_turn`. `run_on_main_thread`',
+        'runs inline there, so it is not a way out. docs/DESKTOP.md, "Threading".',
+      ],
+      found: violations.map((v) => ({
+        path: v.path,
+        line: v.line,
+        text: `${{ sync: 'sync command', worker: 'async command, from its tokio worker', callback: 'callback, inline' }[v.kind]}: ${v.chain.join(' → ')}`,
+      })),
+    })
+  }
+  notes.push(`desktop threading: ${commands} shell commands and ${callbacks} callbacks, none reaches webview creation inline`)
+
+  // The drop guard every instance webview runs (DROP_GUARD in commands.rs):
+  // a drag no zone took is "no drop here", never a navigation, and a drag
+  // over a native field is left to the engine. Run against a stub DOM.
+  const guardWrong = checkDropGuard(files.get(`${desktopSrc}/commands.rs`) ?? '')
+  if (guardWrong.length) {
+    failures.push({
+      id: 'desktop-drop-guard',
+      what: "the instance webviews' drop guard does not do what it promises",
+      fix: [
+        'DROP_GUARD (desktop/src-tauri/src/commands.rs) cancels a drag that no drop zone took —',
+        'without it, the engine loads a dropped file or link in place of the instance — and must',
+        'leave a drag over <input>, <textarea>, <select> or anything contenteditable to the engine,',
+        'which takes those drops with nobody calling preventDefault. scripts/desktop-drop-guard.mjs',
+        'runs the script against each case; if the guard now needs more of the DOM, grow its stub.',
+      ],
+      found: guardWrong.map((text) => ({ path: `${desktopSrc}/commands.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop drop guard: stray drags cancelled, zones and native fields left alone (stub DOM)')
   }
 }
 

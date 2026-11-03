@@ -355,7 +355,14 @@ mod tests {
     #[tokio::test]
     async fn a_closed_port_reads_refused() {
         let o = origin(&closed_port());
-        let err = probe(&client(), &o).await.unwrap_err();
+        // Windows refuses a closed loopback port only after retrying the SYN,
+        // about 2 s in, which `client()`'s 600 ms total would read as a
+        // timeout. The shell's own bound is the 5 s connect timeout.
+        let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap();
+        let err = probe(&client, &o).await.unwrap_err();
         assert!(err.contains("connection refused"), "{err}");
         assert!(!err.contains("error sending request"), "{err}");
     }
