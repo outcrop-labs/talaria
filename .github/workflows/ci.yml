@@ -283,11 +283,38 @@ jobs:
           # writes against the SDK (ui/src/sdk/client-docs.test.ts and
           # server.test.ts). Without them, a docs-only or scaffold-only edit
           # that stops compiling skips this job, and a skip reports success.
-          surface ui      'ui/*' 'apps/*' 'docs/sdk/*' 'cli/src/cmd/app/*' '.github/workflows/ci.yml' '.github/actions/**'
+          #
+          # The same rule holds for every file a job reads from OUTSIDE its own
+          # directory: each one below is a file the job's tests read, import or
+          # compile in, so an edit to it alone can turn the job red.
+          #   ui    the fixtures it shares with the api (app grants, the app
+          #         manifest, secretbox vectors and their generator), the Rust
+          #         sources it holds its tables to (the harness registry, the
+          #         gateway guard, the platform agents), the chassis template and
+          #         the workbench image files (chassis.test.ts), and
+          #         check-invariants.mjs (server-import-invariant.test.ts runs it).
+          #   cli   every api .rs file (box.test.ts reads them for the env keys
+          #         a box's api must be handed), the grants fixture,
+          #         docs/CONTAINER.md's up command, the devbox compose, and the
+          #         repo's .gitignore (ignore.test.ts asks git about it).
+          #   api   the chassis template, the Hermes toolset and skill-authority
+          #         files (include_str!), the shipped skills tree, and
+          #         mcp/src/index.ts (the fitness catalog's sync test).
+          #   desktop  ui/src/lib/dither-engine.ts, which the launcher imports
+          #         as `@dither` (desktop/vite.config.ts, tsconfig.json).
+          surface ui      'ui/*' 'apps/*' 'docs/sdk/*' 'cli/src/cmd/app/*' \
+                          'api/tests/it/fixtures/*' 'api/crates/talaria-harness-defs/src/registry.rs' \
+                          'api/crates/talaria-gateway/src/guard.rs' 'api/crates/talaria-platform-agents/src/lib.rs' \
+                          'scripts/chassis.template.yml' 'scripts/workbench.Dockerfile' 'scripts/build-workbench-image.sh' \
+                          'scripts/check-invariants.mjs' 'scripts/gen-secretbox-vectors.mjs' \
+                          '.github/workflows/ci.yml' '.github/actions/**'
           surface mcp     'mcp/*' '.github/workflows/ci.yml' '.github/actions/**'
-          surface cli     'cli/*' '.github/workflows/ci.yml' '.github/actions/**'
-          surface api     'api/*' '.github/workflows/ci.yml' '.github/actions/**'
-          surface desktop 'desktop/*' '.github/workflows/ci.yml' '.github/actions/**'
+          surface cli     'cli/*' 'api/*.rs' 'api/tests/it/fixtures/*' 'docs/CONTAINER.md' 'docker/devbox.compose.yml' \
+                          '.gitignore' '.github/workflows/ci.yml' '.github/actions/**'
+          surface api     'api/*' 'scripts/chassis.template.yml' 'scripts/hermes-toolsets.json' \
+                          'scripts/hermes-skill-authority.json' 'scripts/skills/*' 'mcp/src/index.ts' \
+                          '.github/workflows/ci.yml' '.github/actions/**'
+          surface desktop 'desktop/*' 'ui/src/lib/dither-engine.ts' '.github/workflows/ci.yml' '.github/actions/**'
           surface mobile  'mobile/*' '.github/workflows/ci.yml' '.github/actions/**'
           # The MCP end-to-end suite drives the ui, the stubs and the api's MCP
           # crates together; a change to any of them can break the story. The
@@ -298,10 +325,27 @@ jobs:
           # check, and the spend boundary. A required check that this filter
           # skips still reports success (job-level `if`), so a crate missing
           # here is a story that silently stops being tested.
+          #
+          # The notification specs (ui/e2e/notify-*.spec.ts) are stories too:
+          # the inbox, prefs and push routes (routes-comms), the engine behind
+          # them (notify, with tz for "until tomorrow 9:00" in the person's
+          # zone), push delivery and devices (push), the person's one stream
+          # (realtime and realtime-watch), and a channel's notify level
+          # (channels). Every chapter of every spec also signs in through the
+          # session crate, and the fleet and MCP routes reach their engines
+          # through the facades. Beyond the crates: the api binary itself
+          # (api/src, which boots the realtime hub and the schedulers), the
+          # workspace manifest (a dependency's features, such as the TLS roots
+          # the stubs' throwaway CA relies on, change with no lockfile line),
+          # and the chassis template this job copies in for the hire.
           surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/talaria-mcp*' 'api/crates/talaria-routes-fleet/*' \
                           'api/crates/talaria-agent-mcp/*' 'api/crates/talaria-fleet-render/*' 'api/crates/talaria-safe-fetch/*' \
                           'api/crates/talaria-api-routes/*' 'api/crates/talaria-routes-integrations/*' 'api/crates/talaria-body/*' \
                           'api/crates/talaria-users/*' 'api/crates/talaria-workspace-secrets/*' \
+                          'api/crates/talaria-routes-comms/*' 'api/crates/talaria-notify/*' 'api/crates/talaria-tz/*' \
+                          'api/crates/talaria-push/*' 'api/crates/talaria-realtime*' 'api/crates/talaria-channels/*' \
+                          'api/crates/talaria-session/*' 'api/crates/talaria-api-facades/*' \
+                          'api/src/*' 'api/Cargo.toml' 'scripts/chassis.template.yml' \
                           'api/Cargo.lock' '.github/workflows/ci.yml' '.github/actions/**'
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,

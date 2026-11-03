@@ -10,9 +10,12 @@ lives in [`.github/workflows/release.yml`](./.github/workflows/release.yml).
 **Git tags are the version authority.** Every `package.json` in this repo
 says `"0.1.0"` decoratively and nothing reads them; the running version of
 any install is the commit it runs (the Updates panel shows it), and the
-version of any published image is the tag that built it. Releasing never
-edits a file — no version-bump commit, no changelog commit, nothing to
-merge afterwards.
+version of any published image is the tag that built it. No release writes
+its version into a file — there is no version-bump commit, and nothing to
+merge afterwards. The one file a release changes is `CHANGELOG.md`: the
+roll (`scripts/changelog-roll.mjs`) folds the `changelog/` entries into a
+section for the version, and that commit reaches rc the way every change
+does — through a pull request — before the tag (see "Cutting an RC").
 
 Two long-lived branches, both already deployed before a version is cut:
 [`docs/BRANCHES.md`](./docs/BRANCHES.md) is the model in full.
@@ -29,15 +32,35 @@ call is the one thing that should be: whether a version exists.
 
 ## Cutting an RC
 
+Two steps, in this order: the changelog roll, as a pull request, then the tag.
+
 ```bash
+# 1. roll the changelog on a branch from rc, and open the pull request
+git fetch origin && git switch -c release/roll-0.2.0-rc.1 origin/rc
+bun scripts/changelog-roll.mjs 0.2.0-rc.1     # folds changelog/*.md into a section
+git add CHANGELOG.md changelog/
+git commit -m "changelog: roll 0.2.0-rc.1 — the entries since the last release"
+git push -u origin release/roll-0.2.0-rc.1
+gh pr create --base rc --title "changelog: roll 0.2.0-rc.1"
+#    merge it as a merge commit once CI is green; rc-deploy deploys the merge
+# 2. tag that merge
 git switch rc && git pull                     # the tip you mean to cut
 git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 ```
 
-Nothing needs advancing first: `rc` is where the work already is, and its tip
-has been deployed and smoke-tested by `rc-deploy.yml` on the way in — which is
-the guarantee an RC is supposed to carry. Tag the tip whose deploy you watched
-(`git log --oneline -1` against the run list under Actions → rc-deploy).
+The roll comes first because the tagged tree must carry the version's
+section: the release's notes point at CHANGELOG.md as of the tag. It is a pull
+request because rc moves only by merges — `scripts/flow-guard.mjs` refuses a
+hand-made commit pushed to rc, in the pre-push hook and in `flow.yml` alike.
+Hold other merges to rc until the tag is cut: a pull request that lands in
+between ships in the tag with its entry still under `changelog/`, outside the
+section.
+
+Nothing else needs advancing first: `rc` is where the work already is, and its
+tip has been deployed and smoke-tested by `rc-deploy.yml` on the way in — which
+is the guarantee an RC is supposed to carry. Tag the tip whose deploy you
+watched (`git log --oneline -1` against the run list under Actions →
+rc-deploy).
 
 The tag push runs the release workflow: the full CI suite against the tag,
 then the image builds and lands on GHCR as `0.2.0-rc.1` and (moving) `rc`,
@@ -68,12 +91,13 @@ installs and each needs a version an installer can compare:
 
 | Surface | Namespace | Auto | Manual door |
 |---|---|---|---|
-| Desktop | `desktop-v*` | a `desktop/` push to main mints `desktop-vX.Y.0` (minor+1 across **both** `v*` and `desktop-v*`) and attaches the installers | dispatch `desktop-package.yml` with `version` + `publish=true` |
+| Desktop | `desktop-v*` | a `desktop/` push to main (or one to `ui/src/lib/dither-engine.ts`, which the launcher bundles) mints `desktop-vX.Y.0` (minor+1 across **both** `v*` and `desktop-v*`) and attaches the installers | dispatch `desktop-package.yml` with `version` + `publish=true` |
 | Mobile | `mobile-v*` | a `mobile/` push to main mints `mobile-vX.Y.0` (minor+1 within `mobile-v*` only; first is `0.1.0`) and attaches the Android APK | dispatch `mobile-package.yml` with `version` + `publish=true` |
 
-Neither edits a file to do it: both inject the resolved version into the build
-the same way a platform release does, so the rule above holds — **releasing
-never edits a file.**
+Neither writes its version into a file: both inject the resolved version into
+the build the same way a platform release does, so the rule above holds — **no
+release writes its version into a file.** Neither rolls the changelog either:
+that belongs to the platform release.
 
 The one place they differ from each other is what they count. Desktop tracks
 the platform's version line, so its auto-minor reads the app's `v*` tags too.
@@ -99,6 +123,11 @@ An RC becoming stable is two steps, in this order: the promotion, then the tag.
 git switch main && git pull
 git tag v0.2.0 && git push origin v0.2.0
 ```
+
+A stable's notes come from the same roll. If entries landed on rc after the
+last RC's roll, roll them the same way — a pull request against rc — before
+step 1. A roll can never go to main directly: main takes rc's content and
+nothing else (flow-guard).
 
 Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
 `latest` moves on nothing else — only a `vX.Y.Z` tag with no suffix.
@@ -270,4 +299,6 @@ itself, and it pushes to the package release.yml already made public.
 - No signed attestations, and no signed or notarized desktop installers (see
   "The desktop installers" above).
 - No nightly-tag pruning (see above: negligible growth).
-- No auto-changelog; CHANGELOG.md is hand-maintained, and PRs update it.
+- No generated changelog. Every pull request writes its own entry under
+  `changelog/`, and the roll folds them into CHANGELOG.md through a pull
+  request before a tag (see "Cutting an RC").
