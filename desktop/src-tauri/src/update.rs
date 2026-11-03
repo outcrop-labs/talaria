@@ -785,7 +785,10 @@ fn sentence(lead: &str, detail: &str) -> String {
 ///   line, and stays folded unless the person opens it.
 ///
 /// The page is measured again a moment after the chip arrives (the UI may
-/// mount after it), on resize, and every 2 s.
+/// mount after it), on resize, and every 2 s, but never while the pointer is
+/// on the chip or a press is in progress (it is measured again once the
+/// pointer leaves), and not at all once the chip is gone: its interval and
+/// resize listener stop with it.
 ///
 /// The chip folds to the pill ("–") at any time, an install included: the
 /// pill keeps its progress, and folding cancels nothing. An install that
@@ -831,7 +834,13 @@ const CHIP_JS: &str = r#"(() => {
   const ID = 'talaria-desktop-update';
   const KEY = 'talaria-desktop-update-fold';
   let host = document.getElementById(ID);
-  if (!offer) { if (host) host.remove(); return; }
+  // The page is measured only while a chip is up: when it goes (Later, a
+  // snooze, no offer), its interval and its resize listener go with it.
+  const stopFit = () => {
+    const f = window.__talariaChipFits;
+    if (f) { clearInterval(f.timer); removeEventListener('resize', f.fit); window.__talariaChipFits = null; }
+  };
+  if (!offer) { stopFit(); if (host) host.remove(); return; }
   const root = document.documentElement;
   if (!root) return;
   if (!host) {
@@ -1004,6 +1013,7 @@ const CHIP_JS: &str = r#"(() => {
         }
         button('later', 'Later', () => {
           host.remove();
+          stopFit();
           invoke('snooze_update').catch(() => {});
         });
         if (o.install === 'updater') {
@@ -1049,6 +1059,9 @@ const CHIP_JS: &str = r#"(() => {
   // the latest offer's render: on resize, a moment after it is added, and
   // every 2 s.
   host.__talariaFit = () => {
+    // Never moved under the person's pointer, nor mid-press: measured again
+    // once the pointer leaves.
+    if (host.dataset.over || host.dataset.press) return;
     const was = collapsed;
     top = place();
     collapsed = folded();
@@ -1057,9 +1070,17 @@ const CHIP_JS: &str = r#"(() => {
   };
   const fit = () => { const h = document.getElementById(ID); if (h && h.__talariaFit) h.__talariaFit(); };
   if (!window.__talariaChipFits) {
-    window.__talariaChipFits = true;
+    window.__talariaChipFits = { timer: setInterval(fit, 2000), fit };
     addEventListener('resize', fit);
-    setInterval(fit, 2000);
+  }
+  if (!host.dataset.watched) {
+    host.dataset.watched = '1';
+    const again = () => setTimeout(fit, 300);
+    host.addEventListener('pointerenter', () => { host.dataset.over = '1'; });
+    host.addEventListener('pointerleave', () => { delete host.dataset.over; if (!host.dataset.press) again(); });
+    host.addEventListener('pointerdown', () => { host.dataset.press = '1'; });
+    addEventListener('pointerup', () => { if (host.dataset.press) { delete host.dataset.press; if (!host.dataset.over) again(); } }, true);
+    addEventListener('pointercancel', () => { delete host.dataset.press; }, true);
   }
   setTimeout(fit, 300);
   render(offer);
@@ -1529,6 +1550,12 @@ mod tests {
         // The pill goes where nothing under it takes a click, below the bar or
         // across its lower edge.
         assert!(js.contains("for (const y of [below, edge])"));
+        // It never moves under the pointer, and the measuring stops when the
+        // chip goes: no offer, or Later.
+        assert!(js.contains("if (host.dataset.over || host.dataset.press) return;"));
+        assert!(js.contains("if (!offer) { stopFit(); if (host) host.remove(); return; }"));
+        assert!(js.contains("host.remove();\n          stopFit();"));
+        assert!(js.contains("clearInterval(f.timer); removeEventListener('resize', f.fit);"));
         assert!(js.contains("const BAR = true;"));
         assert!(js.contains(&format!("innerWidth < {CHIP_NARROW}")));
         for hole in [

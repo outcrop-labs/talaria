@@ -779,7 +779,10 @@ version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and
   (`ShellSnapshot.update`).
 - **Over an instance** the shell evaluates the same chip into the page (`update::chip_js`):
   a shadow root on `<html>`. Instances run different Talaria versions, so the chip measures
-  the page it lands in, a moment after it arrives, on resize and every 2 s:
+  the page it lands in, a moment after it arrives, on resize and every 2 s — never while the
+  pointer is on it or a press is in progress (it measures again once the pointer leaves),
+  and not at all once it is gone: Later, a snooze or no offer stops its timer and resize
+  listener with it:
   - **Themed** (the default), **where the top band's middle takes no click** — an older
     Talaria's 36 px titlebar, a sign-in page, the tab bar's empty middle on a wide window:
     one 28 px row (the version, Later, Update) centred 4 px from the top. That band has the
@@ -792,7 +795,8 @@ version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and
     lower edge (on a small window zoomed in, where the sidebar's search and the header's
     buttons fill the row below the bar). If no spot is free it takes the middle, below the
     bar. Opened, its row sits centred below the bar, over the top of the page's header line,
-    until it is folded again. Changing the titlebar mode moves it at once
+    until it is folded again; on a 1000 px window that covers a header button (rc's star) by
+    3 px, and on a small window zoomed in to 175 % the end of the sidebar's search. Changing the titlebar mode moves it at once
     (`update::repaint`).
 
   Its **–** makes it a small pill at any time, an install included: the pill keeps the
