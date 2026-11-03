@@ -1144,6 +1144,17 @@ pub async fn insert_user_message(
 // is not writing it", is what decides: the old container's drains keep
 // beating their rows until it exits.
 //
+// A CONTAINER FROM BEFORE THE BEAT DOES NOT BEAT, and the first overlap onto
+// this release has one. Its drains stamp a row only when a chunk arrives
+// (Hermes' keep-alives included), so a reply of its that waits for the
+// agent's response headers is stamped by nothing from its insert on, for as
+// long as the old gateway holds the turn and then waits for them. Closed at
+// the ordinary lease, its thread read as idle while the old drain still ran,
+// and a send there started a second turn beside it. So a reply that has
+// said nothing and that no write has touched since it was made (or taken up
+// again by a resume) is given [`WRITER_LEASE_UNWRITTEN`]: past every wait a
+// pre-beat writer can be in before its first chunk.
+//
 // An orphan is closed as an error that says why, the way a drain that died
 // closes its own row, and stamped `orphaned`. It is not picked back up: the
 // agent may have finished the turn, and landing that reply is the reattach a
@@ -1159,6 +1170,18 @@ pub const WRITER_BEAT: std::time::Duration = std::time::Duration::from_secs(10);
 /// longest a writer that does not beat holds a row `streaming` (the inbox
 /// assistant's reply, bounded at 90 s).
 pub const WRITER_LEASE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The lease of a reply that has said nothing and that no write has touched
+/// since its insert (or its resume): a writer from before the beat holds the
+/// turn for its agent up to `HOLD_WINDOW` and then waits up to
+/// `HEADERS_WINDOW` for the response headers without writing the row (main's
+/// gateway has the same two bounds), and only then do chunks start stamping
+/// it. Half a minute of margin past both.
+pub const WRITER_LEASE_UNWRITTEN: std::time::Duration = std::time::Duration::from_secs(
+    talaria_gateway::fleet_chat::HOLD_WINDOW.as_secs()
+        + talaria_gateway::fleet_chat::HEADERS_WINDOW.as_secs()
+        + 30,
+);
 
 /// The line an orphaned reply is closed with, after whatever prose it had.
 /// A restart is the usual way a writer goes, not the only one (a writer task
@@ -1242,10 +1265,13 @@ pub async fn beat_replies(pg: &PgPool, message_ids: &[String]) -> Result<u64, sq
 /// The close every orphan gets: an error whose reason follows the prose that
 /// arrived (or stands alone on an empty row), stamped `orphaned`. Guarded on
 /// the row still being an orphan, so a row a writer stamped or revived since
-/// it was read is left alone. `$1` is the lease in seconds, `$2` the line
-/// with the separator before it, `$3` the line alone, `$4` the whitespace a
-/// row's prose is trimmed of. A macro, not a const, so each query below is
-/// one `'static` literal (sqlx takes no built string).
+/// it was read is left alone. `$1` is the lease in seconds, `$6` the lease
+/// of a reply that has said nothing and that no write has touched since its
+/// insert or its resume ([`WRITER_LEASE_UNWRITTEN`]; an insert sets
+/// `created_at` and `streamed_at` from one clock reading), `$2` the line with
+/// the separator before it, `$3` the line alone, `$4` the whitespace a row's
+/// prose is trimmed of. A macro, not a const, so each query below is one
+/// `'static` literal (sqlx takes no built string).
 macro_rules! close_orphan_sql {
     () => {
         "update messages set status = 'error', \
@@ -1253,7 +1279,11 @@ macro_rules! close_orphan_sql {
                            else rtrim(content, $4) || $2 end, \
             metadata = coalesce(metadata, '{}'::jsonb) || '{\"orphaned\": true}'::jsonb \
          where role = 'assistant' and status = 'streaming' \
-           and streamed_at < now() - make_interval(secs => $1)"
+           and streamed_at < now() - make_interval(secs => case \
+             when btrim(content, $4) = '' and btrim(reasoning, $4) = '' \
+               and tools = '[]'::jsonb \
+               and (streamed_at = created_at or coalesce(metadata, '{}'::jsonb) ? 'resumed') \
+             then $6 else $1 end)"
     };
 }
 
@@ -1271,6 +1301,7 @@ async fn close_orphan(pg: &PgPool, message_id: &str) -> Result<bool, sqlx::Error
         .bind(ORPHANED_LINE)
         .bind(PROSE_WHITESPACE)
         .bind(message_id)
+        .bind(WRITER_LEASE_UNWRITTEN.as_secs_f64())
         .execute(pg)
         .await?;
     Ok(done.rows_affected() > 0)
@@ -1291,6 +1322,7 @@ pub async fn sweep_orphaned_replies(pg: &PgPool) -> Result<Vec<(String, String)>
     .bind(ORPHANED_LINE)
     .bind(PROSE_WHITESPACE)
     .bind(replies_written_here())
+    .bind(WRITER_LEASE_UNWRITTEN.as_secs_f64())
     .fetch_all(pg)
     .await
 }
@@ -1309,29 +1341,38 @@ pub enum ReplyFate {
     Landed,
 }
 
-/// Read where a reply row stands, and close it if it is an orphan.
+/// Read where a reply row stands, and close it if it is an orphan. Quiet for
+/// less than the ordinary lease, a row is written; past it, the guarded close
+/// decides (a reply that has said nothing may have the longer lease).
 pub async fn reply_fate(pg: &PgPool, message_id: &str) -> Result<ReplyFate, sqlx::Error> {
-    let row: Option<(String, bool, bool)> = sqlx::query_as(
-        "select status, coalesce(metadata, '{}'::jsonb) ? 'orphaned', \
-            streamed_at < now() - make_interval(secs => $2) \
-         from messages where id = $1::uuid",
-    )
-    .bind(message_id)
-    .bind(WRITER_LEASE.as_secs_f64())
-    .fetch_optional(pg)
-    .await?;
-    Ok(match row {
-        None => ReplyFate::Landed,
-        Some((status, _, stale)) if status == "streaming" => {
-            if stale && close_orphan(pg, message_id).await? {
-                ReplyFate::Orphaned
-            } else {
-                ReplyFate::Writing
+    // Twice at most: a stale row the guarded close left alone was revived by
+    // its writer, has the longer lease, or was closed a moment earlier by
+    // another sweep, and only a second read tells which.
+    for _ in 0..2 {
+        let row: Option<(String, bool, bool)> = sqlx::query_as(
+            "select status, coalesce(metadata, '{}'::jsonb) ? 'orphaned', \
+                streamed_at < now() - make_interval(secs => $2) \
+             from messages where id = $1::uuid",
+        )
+        .bind(message_id)
+        .bind(WRITER_LEASE.as_secs_f64())
+        .fetch_optional(pg)
+        .await?;
+        match row {
+            None => return Ok(ReplyFate::Landed),
+            Some((status, _, stale)) if status == "streaming" => {
+                if !stale || written_here(message_id) {
+                    return Ok(ReplyFate::Writing);
+                }
+                if close_orphan(pg, message_id).await? {
+                    return Ok(ReplyFate::Orphaned);
+                }
             }
+            Some((status, true, _)) if status == "error" => return Ok(ReplyFate::Orphaned),
+            Some(_) => return Ok(ReplyFate::Landed),
         }
-        Some((status, true, _)) if status == "error" => ReplyFate::Orphaned,
-        Some(_) => ReplyFate::Landed,
-    })
+    }
+    Ok(ReplyFate::Writing)
 }
 
 /// The conversation's in-flight assistant reply, if any: the question "may a
@@ -1340,7 +1381,8 @@ pub async fn reply_fate(pg: &PgPool, message_id: &str) -> Result<ReplyFate, sqlx
 /// above) and reported as none, so a send never queues behind a reply nobody
 /// will finish. The test is the writer's beat on `streamed_at`, never the
 /// row's age: a long agent turn, the kind that builds out a knowledgebase,
-/// streams for an hour, and its writer keeps beating it all that time.
+/// streams for an hour, and its writer keeps beating it all that time. A row
+/// quiet for less than the ordinary lease costs no more than the read.
 pub async fn active_streaming_assistant(
     pg: &PgPool,
     conversation_id: &str,
@@ -1359,12 +1401,12 @@ pub async fn active_streaming_assistant(
         None => Ok(None),
         Some((id, true)) if !written_here(&id) => {
             // Closed here, or by another sweep a moment ago; either way it is
-            // no turn to wait for. A row a writer revived in between (the
-            // guarded close left it alone) is in flight after all.
-            if close_orphan(pg, &id).await? || reply_fate(pg, &id).await? != ReplyFate::Writing {
-                Ok(None)
-            } else {
+            // no turn to wait for. A row the guarded close left alone (a
+            // writer revived it, or it has the longer lease) is in flight.
+            if reply_fate(pg, &id).await? == ReplyFate::Writing {
                 Ok(Some(id))
+            } else {
+                Ok(None)
             }
         }
         Some((id, _)) => Ok(Some(id)),
@@ -1583,6 +1625,11 @@ pub fn pinned_history_fits_counts(assistant_rows: i64, pinned_rows: i64) -> bool
 /// signal everywhere liveness is asked about (the sweep above, the sidebar's
 /// working flag): a streaming row that is still writing is still alive,
 /// however long the turn runs.
+///
+/// Every write here is the row's writer's, so it also takes off an `orphaned`
+/// stamp: a reply closed as an orphan whose writer was alive after all (a
+/// process from before the beat, in a deploy's overlap) is written again by
+/// that writer, and the row it lands must not say it was abandoned.
 pub async fn update_assistant(
     pg: &PgPool,
     message_id: &str,
@@ -1593,7 +1640,7 @@ pub async fn update_assistant(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update messages set content = $2, reasoning = $3, tools = $4, status = $5, \
-            streamed_at = now() \
+            streamed_at = now(), metadata = metadata - 'orphaned' \
          where id = $1::uuid",
     )
     .bind(message_id)
@@ -1618,7 +1665,7 @@ pub async fn resurrect_streaming_assistant(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update messages set content = '', reasoning = '', tools = '[]'::jsonb, \
-            status = 'streaming', streamed_at = now() \
+            status = 'streaming', streamed_at = now(), metadata = metadata - 'orphaned' \
          where id = $1::uuid",
     )
     .bind(message_id)
@@ -2447,6 +2494,12 @@ mod tests {
     fn the_lease_is_many_beats_and_outlives_a_writer_that_does_not_beat() {
         assert!(WRITER_LEASE >= WRITER_BEAT * 10);
         assert!(WRITER_LEASE > std::time::Duration::from_secs(90));
+        // A pre-beat writer is silent through its hold and its headers wait.
+        assert!(
+            WRITER_LEASE_UNWRITTEN
+                > talaria_gateway::fleet_chat::HOLD_WINDOW
+                    + talaria_gateway::fleet_chat::HEADERS_WINDOW
+        );
         assert!(ORPHANED_LINE.starts_with("(agent error:"));
     }
 }

@@ -60,7 +60,7 @@ pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<By
 /// Only silence past this reads as "not serving yet". It is also how long a
 /// let-go completions turn keeps being sent its stop while Hermes cannot
 /// place it yet (fleet_abandoned.rs): the same patience, for the same agent.
-pub(crate) const HEADERS_WINDOW: Duration = Duration::from_secs(300);
+pub const HEADERS_WINDOW: Duration = Duration::from_secs(300);
 /// The bound on a steer or a stop. A control call names a run that is live
 /// at this instant and the container answers it in milliseconds or not at
 /// all; the drain loop fires these from inside a stream it must keep
@@ -1307,6 +1307,15 @@ pub async fn stop_completion(
         tokio::time::Instant::now() + CONTROL_WINDOW,
     )
     .await
+}
+
+/// Whether [`stop_completion`]'s refusal only says Hermes could not place
+/// the stop within the window (the turn not bound yet, a busy store, no
+/// answer at all), so it can still land if sent again with more patience
+/// ([`stop_completion_held`]). Every other refusal is Hermes' answer, or a
+/// stop that never reached it, and is the caller's to report as such.
+pub fn stop_not_placed(why: &str) -> bool {
+    crate::fleet_abandoned::not_placed(why)
 }
 
 /// [`stop_completion`] for a stop nobody is waiting on: a person's stop that

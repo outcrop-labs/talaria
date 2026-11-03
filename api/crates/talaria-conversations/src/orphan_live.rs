@@ -288,4 +288,153 @@ mod lease {
         );
         cleanup(&pg, "fate").await;
     }
+
+    /// Set when a reply was made and last stamped, merge `metadata` into it,
+    /// and give it `tools`.
+    async fn age(
+        pg: &PgPool,
+        id: String,
+        created_secs_ago: f64,
+        streamed_secs_ago: f64,
+        metadata: Value,
+        tools: Option<Value>,
+    ) -> String {
+        sqlx::query(
+            "update messages set created_at = now() - make_interval(secs => $2), \
+                streamed_at = now() - make_interval(secs => $3), \
+                metadata = metadata || $4, tools = coalesce($5, tools) \
+             where id = $1::uuid",
+        )
+        .bind(&id)
+        .bind(created_secs_ago)
+        .bind(streamed_secs_ago)
+        .bind(metadata)
+        .bind(tools)
+        .execute(pg)
+        .await
+        .unwrap();
+        id
+    }
+
+    /// A reply that has said nothing, and that no write has touched since it
+    /// was made, may be a turn still waiting on the agent's response headers
+    /// in a process that does not beat: the old container of the very deploy
+    /// that ships the beat, which writes nothing to the row until the first
+    /// chunk. Closed at 120 s, its thread read as idle and a second turn
+    /// started beside the first. It has the longer lease. So does a resumed
+    /// reply that has said nothing (the same wait, after a resurrect). One
+    /// any write has touched since (a beat, a chunk) has the ordinary lease,
+    /// and so does one that has begun.
+    #[tokio::test]
+    #[ignore = "needs a live dev database (DATABASE_URL)"]
+    async fn a_reply_nothing_has_written_waits_out_the_headers_wait() {
+        let pg = pg().await;
+        let unwritten = thread(&pg, "unwritten").await;
+        let resumed = thread(&pg, "resumed").await;
+        let beaten = thread(&pg, "beaten").await;
+        let tooled = thread(&pg, "tooled").await;
+        // Made 200 s ago, and nothing written since: one clock reading.
+        let waiting = age(
+            &pg,
+            reply(&pg, &unwritten, 1, "", 0.0).await,
+            200.0,
+            200.0,
+            json!({}),
+            None,
+        )
+        .await;
+        // Made long ago, taken up again by a resume 200 s ago.
+        let again = age(
+            &pg,
+            reply(&pg, &resumed, 1, "", 0.0).await,
+            3600.0,
+            200.0,
+            json!({ "resumed": true }),
+            None,
+        )
+        .await;
+        // Made 210 s ago and beaten once since, then nothing.
+        let left = age(
+            &pg,
+            reply(&pg, &beaten, 1, "", 0.0).await,
+            210.0,
+            200.0,
+            json!({}),
+            None,
+        )
+        .await;
+        // Had begun: a tool call, last stamped 200 s ago.
+        let working = age(
+            &pg,
+            reply(&pg, &tooled, 1, "", 0.0).await,
+            210.0,
+            200.0,
+            json!({}),
+            Some(json!([{ "name": "terminal", "label": "ls", "status": "running" }])),
+        )
+        .await;
+
+        let closed = sweep_orphaned_replies(&pg).await.unwrap();
+        for id in [&waiting, &again] {
+            assert!(!closed.iter().any(|(m, _)| m == id));
+            assert_eq!(row(&pg, id).await.0, "streaming");
+            assert_eq!(reply_fate(&pg, id).await.unwrap(), ReplyFate::Writing);
+        }
+        assert_eq!(
+            active_streaming_assistant(&pg, &unwritten).await.unwrap(),
+            Some(waiting.clone())
+        );
+        assert_eq!(
+            active_streaming_assistant(&pg, &resumed).await.unwrap(),
+            Some(again.clone())
+        );
+        // Closed by this sweep or a sibling test's.
+        for (conv, id) in [(&beaten, &left), (&tooled, &working)] {
+            assert_eq!(active_streaming_assistant(&pg, conv).await.unwrap(), None);
+            assert_eq!(row(&pg, id).await.0, "error");
+        }
+
+        // Past the hold and the headers wait, nothing is waiting any more.
+        let waiting = age(&pg, waiting, 500.0, 500.0, json!({}), None).await;
+        assert_eq!(
+            active_streaming_assistant(&pg, &unwritten).await.unwrap(),
+            None
+        );
+        assert_eq!(row(&pg, &waiting).await.0, "error");
+        for tag in ["unwritten", "resumed", "beaten", "tooled"] {
+            cleanup(&pg, tag).await;
+        }
+    }
+
+    /// A reply closed as an orphan whose writer was alive after all (a
+    /// process that did not beat, in a deploy's overlap) is written again by
+    /// that writer: its next write is the writer's, so it is no longer an
+    /// orphan, and the landed row must not say it was one.
+    #[tokio::test]
+    #[ignore = "needs a live dev database (DATABASE_URL)"]
+    async fn a_reply_its_writer_comes_back_to_is_not_marked_orphaned() {
+        let pg = pg().await;
+        let conv = thread(&pg, "revived").await;
+        let id = reply(&pg, &conv, 1, "half a", 200.0).await;
+        assert_eq!(active_streaming_assistant(&pg, &conv).await.unwrap(), None);
+        assert_eq!(row(&pg, &id).await.2["orphaned"], json!(true));
+
+        update_assistant(&pg, &id, "half a story", "", &[], "streaming")
+            .await
+            .unwrap();
+        let (status, _, metadata) = row(&pg, &id).await;
+        assert_eq!(status, "streaming");
+        assert_eq!(metadata.get("orphaned"), None, "{metadata}");
+        update_assistant(&pg, &id, "half a story, finished", "", &[], "complete")
+            .await
+            .unwrap();
+        let (status, content, metadata) = row(&pg, &id).await;
+        assert_eq!(
+            (status.as_str(), content.as_str()),
+            ("complete", "half a story, finished")
+        );
+        assert_eq!(metadata.get("orphaned"), None, "{metadata}");
+        assert_eq!(reply_fate(&pg, &id).await.unwrap(), ReplyFate::Landed);
+        cleanup(&pg, "revived").await;
+    }
 }
