@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   alertTarget,
@@ -95,6 +98,25 @@ describe('views and the badge', () => {
     expect(badgeCount({ unread: 9, unreadForYou: 5 })).toBe(5)
     expect(badgeCount({ unread: 9 })).toBe(9)
     expect(badgeCount(undefined)).toBe(0)
+  })
+
+  // Home's Inbox tab sits on the same screen as the bell, and counted every
+  // unread row (`/api/home`'s `unread`) while the bell counted For you: one
+  // unread ticket move made it INBOX 4 beside a bell of 3 (ui-3). No DOM in
+  // this suite, so the two components' reading is pinned at the source: the
+  // same query, through `badgeCount`, and never the home summary's count.
+  it('Home’s Inbox tab counts exactly what the bell counts', () => {
+    const src = (p: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), p), 'utf8')
+    const tabs = src('../routes/app/home/HomeTabs.svelte')
+    const bell = src('../components/app/NotificationBell.svelte')
+    for (const [name, s] of [['HomeTabs', tabs], ['NotificationBell', bell]] as const) {
+      expect(s, name).toMatch(/=\s*useNotifications\(\)/)
+      expect(s, name).toMatch(/badgeCount\(\w+\.data\)/)
+    }
+    expect(tabs).toMatch(/id: 'inbox'[^\n]*badgeCount\(notifications\.data\)/)
+    expect(tabs).not.toMatch(/home\.data\?\.unread\b/)
+    // The payload the sweep saw: a For-you DM plus Following rows.
+    expect(badgeCount({ unread: 4, unreadForYou: 3 })).toBe(3)
   })
 
   it('reads the view from the URL', () => {

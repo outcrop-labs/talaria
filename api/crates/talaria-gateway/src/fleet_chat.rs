@@ -71,6 +71,32 @@ pub(crate) const HEADERS_WINDOW: Duration = Duration::from_secs(300);
 /// which a caller with its own deadline counts in.
 pub const CONTROL_WINDOW: Duration = Duration::from_secs(10);
 
+/// How long a turn holds for an agent that is not serving yet — a restart
+/// under a roll, a stopped container — when its caller names no window. Past
+/// it the reply is the honest canned sentence (`unavailable_reply`).
+pub const HOLD_WINDOW: Duration = Duration::from_secs(120);
+
+/// The hold for a turn a person is reading as it is written
+/// ([`TurnAttribution::attended`]: a conversation turn from `/api/chat`, or
+/// one chained from it), when its caller names no window.
+///
+/// SHORTER, BECAUSE OF THE EDGE. `/api/chat` sends nothing, not even its
+/// headers, until the hold ends: its status is the agent's. Every real
+/// instance sits behind Cloudflare, which answers 524 for a request whose
+/// origin has sent no headers for 100 s. Measured: a chat to a stopped agent
+/// on the two-minute hold had its first byte at 124 s, so behind the edge the
+/// person got a 524 instead of "restarting (or down)". This hold ends by 80 s,
+/// with 15 s to spare for the route's own reads before the turn and the hops
+/// to the edge. A turn nobody waits on keeps [`HOLD_WINDOW`]'s patience.
+pub const ATTENDED_HOLD: Duration = Duration::from_secs(80);
+
+/// How long Cloudflare's edge waits for a response's headers before it
+/// answers 524 itself.
+const EDGE_CUTOFF: Duration = Duration::from_secs(100);
+
+// An attended hold sized for anything slower does not build.
+const _: () = assert!(ATTENDED_HOLD.as_secs() + 15 <= EDGE_CUTOFF.as_secs());
+
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
 /// `AgentStreamParser`. `content_type` is what the upstream answered,
@@ -211,8 +237,8 @@ fn on_thread(payload: &Value, thread: Option<&str>) -> Value {
 /// Send one chat turn to the agent's container. Seals every
 /// message's content through a per-call vault (an image turn's text part is as
 /// credential-prone as any prose turn), retries while the agent's gateway is
-/// coming up (502/503/504, backoff capped at 5s), and never waits past two
-/// minutes — past the deadline the reply is the honest canned sentence, so
+/// coming up (502/503/504, backoff capped at 5s), and never waits past the
+/// hold window — past the deadline the reply is the honest canned sentence, so
 /// history shows what happened rather than a silent failure.
 ///
 /// `payload` is the WHOLE request body the agent's gateway sees — the turn
@@ -220,8 +246,9 @@ fn on_thread(payload: &Value, thread: Option<&str>) -> Value {
 /// turn carries beside model and messages (`model_options` for its effort)
 /// is decided by the one mapping that builds it (`persona_payload`,
 /// `chat_payload`). `messages` is the OpenAI history (system + turns, content
-/// string or parts). `wait_ms` is the hold window; None is the two-minute
-/// default.
+/// string or parts). `wait_ms` is the hold window; None is the default —
+/// [`ATTENDED_HOLD`] for a turn a person is reading, [`HOLD_WINDOW`] for any
+/// other (`hold_window`).
 ///
 /// `attribution` is the flow this turn belongs to: the conversation key
 /// Hermes answers is recorded under it, so every call the agent makes for
@@ -267,6 +294,7 @@ pub async fn proxy_chat_on(
     }
     report_sealed(&vault, &model);
 
+    let window = hold_window(wait_ms, attribution.as_ref());
     match hold_for_agent(
         &model,
         AgentRequest::ChatCompletions {
@@ -274,7 +302,7 @@ pub async fn proxy_chat_on(
             epoch: thread.epoch,
             remember: std::sync::Mutex::new(thread.remember),
         },
-        wait_ms,
+        window,
         attribution,
     )
     .await
@@ -284,7 +312,7 @@ pub async fn proxy_chat_on(
         // room for it to find gone: its sessions are derived, and a wedged one
         // is left for a fresh one (`Thread`). The canned sentence is the honest
         // answer if the type ever says otherwise.
-        Err(SessionLost) => canned_chat_stream(&unavailable_reply(&model), "hold"),
+        Err(SessionLost) => canned_chat_stream(&unavailable_reply(&model, window), "hold"),
     }
 }
 
@@ -345,6 +373,7 @@ pub async fn proxy_session_turn(
     let body = session_turn_body(message, system_message, effort, &mut vault);
     report_sealed(&vault, agent_model);
 
+    let window = hold_window(wait_ms, attribution.as_ref());
     hold_for_agent(
         agent_model,
         AgentRequest::SessionTurn {
@@ -352,7 +381,7 @@ pub async fn proxy_session_turn(
             body,
             history_expected,
         },
-        wait_ms,
+        window,
         attribution,
     )
     .await
@@ -633,9 +662,10 @@ fn lost_sessions_first_sight(conversation_id: &str) -> bool {
 }
 
 /// The hold: retry while the agent's gateway is coming up (502/503/504,
-/// backoff capped at 5s) and never wait past the window — past the deadline
+/// backoff capped at 5s) and never wait past `window` ([`hold_window`]) — the
+/// last attempt is made at the deadline, not a backoff after it, and past it
 /// the reply is the honest canned sentence, so history shows what happened
-/// rather than a silent failure. `wait_ms` None is the two-minute default.
+/// rather than a silent failure.
 /// `Err(SessionLost)` is the session arm's one way out that is not a stream:
 /// the room it expected is gone, and the caller decides what to send instead.
 ///
@@ -649,7 +679,7 @@ fn lost_sessions_first_sight(conversation_id: &str) -> bool {
 async fn hold_for_agent(
     model: &str,
     request: AgentRequest,
-    wait_ms: Option<u64>,
+    window: Duration,
     attribution: Option<TurnAttribution>,
 ) -> Result<ChatStream, SessionLost> {
     if let (
@@ -662,7 +692,7 @@ async fn hold_for_agent(
     {
         record(a, &key).await;
     }
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms.unwrap_or(120_000));
+    let deadline = tokio::time::Instant::now() + window;
     let mut attempt: u32 = 0;
     loop {
         let manifest = read_manifest().await;
@@ -691,15 +721,34 @@ async fn hold_for_agent(
             }
         }
 
-        if tokio::time::Instant::now() >= deadline {
-            return Ok(canned_chat_stream(&unavailable_reply(model), "hold"));
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Ok(canned_chat_stream(
+                &unavailable_reply(model, window),
+                "hold",
+            ));
         }
         attempt += 1;
-        tokio::time::sleep(Duration::from_millis(
-            (1_500u64 * attempt as u64).min(5_000),
-        ))
-        .await;
+        tokio::time::sleep(backoff(attempt, deadline - now)).await;
     }
+}
+
+/// The hold window for a turn whose caller named `wait_ms`, or none: a turn
+/// a person is reading holds [`ATTENDED_HOLD`] — the answer has to beat the
+/// edge — and any other [`HOLD_WINDOW`].
+fn hold_window(wait_ms: Option<u64>, attribution: Option<&TurnAttribution>) -> Duration {
+    match wait_ms {
+        Some(ms) => Duration::from_millis(ms),
+        None if attribution.is_some_and(|a| a.attended) => ATTENDED_HOLD,
+        None => HOLD_WINDOW,
+    }
+}
+
+/// The pause before the hold's next attempt: 1.5 s more each try, capped at
+/// 5 s, and never past what is `left` of the window — so the hold ends at its
+/// window, where an uncapped pause ran it up to 5 s over.
+fn backoff(attempt: u32, left: Duration) -> Duration {
+    Duration::from_millis((1_500u64 * attempt as u64).min(5_000)).min(left)
 }
 
 /// The key a turn's calls reach the relay under: the session id we created,
@@ -1094,13 +1143,25 @@ fn session_create_answer(status: u16, code: Option<&str>) -> SessionCreate {
     }
 }
 
-/// The agent stayed down past the hold window: say so honestly, streamed as a
-/// normal reply so history shows what happened, not a silent failure.
-fn unavailable_reply(model: &str) -> String {
+/// The agent stayed down past the hold `window`: say so honestly, streamed as
+/// a normal reply so history shows what happened, not a silent failure.
+fn unavailable_reply(model: &str, window: Duration) -> String {
     format!(
-        "{} is restarting (or down) and didn't come back within two minutes. Your message is saved; send it again in a moment.",
-        describe_agent(model).label
+        "{} is restarting (or down) and didn't come back within {}. Your message is saved; send it again in a moment.",
+        describe_agent(model).label,
+        spoken_window(window)
     )
+}
+
+/// A hold window as the sentence says it: "two minutes", "80 seconds".
+fn spoken_window(window: Duration) -> String {
+    let secs = window.as_secs();
+    match (secs / 60, secs % 60) {
+        (1, 0) => "a minute".into(),
+        (2, 0) => "two minutes".into(),
+        (m, 0) if m > 2 => format!("{m} minutes"),
+        _ => format!("{secs} seconds"),
+    }
 }
 
 /// Offline fallback: mock mode, no agents rendered yet.
@@ -1293,8 +1354,10 @@ pub struct AgentAnswer {
 /// legitimately take.
 ///
 /// `Err` means NO ANSWER — no manifest row, a refused or reset connection, or
-/// silence past the window. Any status is an answer and comes back `Ok`; what
-/// a refusal means is the caller's to read, so this never interprets it.
+/// silence past the window ([`unanswered`], the one of the three where the
+/// request went out and may still be carried out). Any status is an answer
+/// and comes back `Ok`; what a refusal means is the caller's to read, so this
+/// never interprets it.
 pub async fn agent_request(
     agent_model: &str,
     method: Method,
@@ -1324,8 +1387,17 @@ pub async fn agent_request(
             body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         }),
         Ok(Err(e)) => Err(transport_error(e)),
-        Err(_) => Err(format!("no answer within {}s", window.as_secs())),
+        Err(_) => Err(unanswered(window)),
     }
+}
+
+/// [`agent_request`]'s error when the agent accepted the connection (the
+/// connect alone is bounded at 10 s, and failing it is a transport error) and
+/// then said nothing for the whole `window`: the request went out, so the agent
+/// may still carry it out. A caller that changes something compares its error
+/// to this to tell "may still land" from "never reached it".
+pub fn unanswered(window: Duration) -> String {
+    format!("no answer within {}s", window.as_secs())
 }
 
 /// What Hermes is holding for one pinned conversation: how much of the
@@ -3777,5 +3849,81 @@ data: {"session_id": "fu-c2-probe", "run_id": "run_caafc7a88e35432ca627e870623b4
         ));
         assert_eq!(session_create_answer(409, None), SessionCreate::NotReady);
         assert_eq!(session_create_answer(404, None), SessionCreate::NotReady);
+    }
+
+    /// FLEET-2: `/api/chat` sends no headers until the hold ends, and
+    /// Cloudflare answers 524 at 100 s without them. A chat to a stopped agent
+    /// on the two-minute default had its first byte at 124 s; a turn a person
+    /// is reading now holds 80 s and gets its "restarting" sentence in time.
+    /// A turn nobody waits on keeps the two minutes, and a caller's own
+    /// window is its own.
+    #[tokio::test]
+    async fn a_turn_a_person_reads_holds_inside_the_edges_cutoff() {
+        let pg = sqlx::PgPool::connect_lazy("postgres://nobody@127.0.0.1:9/none").unwrap();
+        let flow = |attended| TurnAttribution {
+            pg: pg.clone(),
+            agent_model: "ada-ops".into(),
+            source: "chat".into(),
+            ref_id: None,
+            task_id: None,
+            attended,
+        };
+        let read = flow(true);
+        let unread = flow(false);
+        assert!(
+            hold_window(None, Some(&read)) + Duration::from_secs(15) <= EDGE_CUTOFF,
+            "an attended hold of {:?} is past the edge's {EDGE_CUTOFF:?}",
+            hold_window(None, Some(&read))
+        );
+        assert_eq!(hold_window(None, Some(&read)), Duration::from_secs(80));
+        assert_eq!(hold_window(None, Some(&unread)), Duration::from_secs(120));
+        assert_eq!(hold_window(None, None), Duration::from_secs(120));
+        assert_eq!(
+            hold_window(Some(600_000), Some(&read)),
+            Duration::from_secs(600)
+        );
+        assert_eq!(hold_window(Some(30_000), None), Duration::from_secs(30));
+    }
+
+    /// The hold's pauses grow 1.5 s a try to a 5 s cap, and the last one
+    /// stops at the window's end: the final attempt is made at the deadline,
+    /// where an uncapped pause ran the hold up to 5 s past it (124 s for a
+    /// 120 s window, measured).
+    #[test]
+    fn the_holds_last_pause_ends_at_its_window() {
+        let plenty = Duration::from_secs(60);
+        assert_eq!(backoff(1, plenty), Duration::from_millis(1_500));
+        assert_eq!(backoff(3, plenty), Duration::from_millis(4_500));
+        assert_eq!(backoff(4, plenty), Duration::from_secs(5));
+        assert_eq!(backoff(40, plenty), Duration::from_secs(5));
+        assert_eq!(
+            backoff(4, Duration::from_millis(700)),
+            Duration::from_millis(700)
+        );
+        assert_eq!(backoff(4, Duration::ZERO), Duration::ZERO);
+        // Summed over a whole hold, the pauses never pass the window.
+        for window in [ATTENDED_HOLD, HOLD_WINDOW, Duration::from_secs(7)] {
+            let (mut slept, mut attempt) = (Duration::ZERO, 0);
+            while slept < window {
+                attempt += 1;
+                slept += backoff(attempt, window - slept);
+            }
+            assert_eq!(slept, window);
+        }
+    }
+
+    /// The canned sentence says the window the turn actually held for.
+    #[test]
+    fn the_restarting_sentence_names_the_hold_it_waited() {
+        assert_eq!(spoken_window(HOLD_WINDOW), "two minutes");
+        assert_eq!(spoken_window(ATTENDED_HOLD), "80 seconds");
+        assert_eq!(spoken_window(Duration::from_secs(60)), "a minute");
+        assert_eq!(spoken_window(Duration::from_secs(600)), "10 minutes");
+        assert_eq!(spoken_window(Duration::from_secs(30)), "30 seconds");
+        let said = unavailable_reply("ada-ops", ATTENDED_HOLD);
+        assert!(
+            said.contains("didn't come back within 80 seconds."),
+            "{said}"
+        );
     }
 }

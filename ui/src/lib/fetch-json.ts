@@ -46,8 +46,30 @@ const withDeadline = (init: RequestInit | undefined, ms: number): RequestInit =>
   return { ...init, signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline }
 }
 
-/** Read a JSON body, throwing on non-2xx with the server's `error` string when
- *  it sent one (API-CONVENTIONS: errors are `{ error: string }`).
+/** The sentence a failed response's body carries, else `request failed (N)`.
+ *
+ *  TWO ENVELOPES reach this door, because the product speaks two
+ *  (talaria-error's header): the house `{ error: "…" }` (API-CONVENTIONS),
+ *  and the OpenAI-shaped `{ error: { message: "…" } }` — the /api/llm/v1/*
+ *  exception, and what the app's own proxy answers for ANY path while the
+ *  api behind it is down (rust-proxy.ts: 502 "upstream unreachable"; the
+ *  proxy fronts /api/llm/v1/* too, whose external clients switch on that
+ *  shape, so the proxy keeps it). Reading only the first handed the second's
+ *  OBJECT to `new Error()`, and every page loaded during an api restart —
+ *  every deploy, behind Cloudflare — said "[object Object]". Anything that is
+ *  not a non-empty string is no sentence. The server side of this door,
+ *  app-context.ts's `ctx.api`, has read both shapes since it was written. */
+export function errorSentence(body: unknown, status: number): string {
+  const e = body && typeof body === 'object' ? (body as { error?: unknown }).error : undefined
+  if (typeof e === 'string' && e.trim()) return e
+  const m = e && typeof e === 'object' ? (e as { message?: unknown }).message : undefined
+  if (typeof m === 'string' && m.trim()) return m
+  return `request failed (${status})`
+}
+
+/** Read a JSON body, throwing on non-2xx with the server's sentence when it
+ *  sent one (`errorSentence`: API-CONVENTIONS' `{ error: string }`, or the
+ *  proxy's `{ error: { message } }`).
  *
  *  `statusesAsData` lists 4xx codes whose body is a legitimate ANSWER rather
  *  than an error envelope — those resolve to the body instead of throwing
@@ -55,12 +77,12 @@ const withDeadline = (init: RequestInit | undefined, ms: number): RequestInit =>
  *  gets here). Use only where the surface has a real story to tell with the
  *  body, e.g. focus actions answer `{ status: 'stale' }` on 409. */
 export async function readJson<T>(r: Response, statusesAsData: number[] = []): Promise<T> {
-  const data = (await r.json().catch(() => null)) as (T & { error?: string }) | null
+  const data = (await r.json().catch(() => null)) as T | null
   // Two different failures, two different sentences. Folding them together
   // produced `HttpError(200, 'request failed (200)')` for a 2xx with an empty
   // or non-JSON body — a status that plainly succeeded, quoted back to the
   // user as the reason it failed. `status` still carries the real code.
-  if (!r.ok && !statusesAsData.includes(r.status)) throw new HttpError(r.status, data?.error ?? `request failed (${r.status})`)
+  if (!r.ok && !statusesAsData.includes(r.status)) throw new HttpError(r.status, errorSentence(data, r.status))
   if (data === null) throw new HttpError(r.status, 'The server sent a reply this app could not read.')
   return data
 }
@@ -125,7 +147,10 @@ export function errorMessage(e: unknown): string {
   const m = e instanceof Error ? e.message.trim() : ''
   if (!m) return 'The server did not respond.'
   // A bare "Failed to fetch" (offline, server restarting) reads as a bug report.
-  return /^(failed to fetch|networkerror|load failed)$/i.test(m) ? 'Could not reach the server.' : m
+  // So does the app proxy's "upstream unreachable" (rust-proxy.ts): the same
+  // moment one hop further in — the page reached the app, the app could not
+  // reach the api — and the person sees the same sentence for both.
+  return /^(failed to fetch|networkerror|load failed|upstream unreachable)$/i.test(m) ? 'Could not reach the server.' : m
 }
 
 // ── Mutations ────────────────────────────────────────────────────────────────
@@ -213,10 +238,7 @@ export async function postStream(url: string, body?: unknown, init?: RequestInit
     ...(json ? { headers: { 'content-type': 'application/json' } } : {}),
     ...init,
   })
-  if (!r.ok || !r.body) {
-    const data = (await r.json().catch(() => null)) as { error?: string } | null
-    throw new HttpError(r.status, data?.error ?? `request failed (${r.status})`)
-  }
+  if (!r.ok || !r.body) throw new HttpError(r.status, errorSentence(await r.json().catch(() => null), r.status))
   // The null check above is the guarantee; the type just carries it out.
   return r as Response & { body: ReadableStream<Uint8Array> }
 }
@@ -226,9 +248,6 @@ export async function postStream(url: string, body?: unknown, init?: RequestInit
  *  exists for. Same error contract as every other verb. */
 export async function getStream(url: string, init?: RequestInit): Promise<Response & { body: ReadableStream<Uint8Array> }> {
   const r = await fetch(url, { ...SAME_ORIGIN, method: 'GET', ...init })
-  if (!r.ok || !r.body) {
-    const data = (await r.json().catch(() => null)) as { error?: string } | null
-    throw new HttpError(r.status, data?.error ?? `request failed (${r.status})`)
-  }
+  if (!r.ok || !r.body) throw new HttpError(r.status, errorSentence(await r.json().catch(() => null), r.status))
   return r as Response & { body: ReadableStream<Uint8Array> }
 }

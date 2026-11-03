@@ -70,9 +70,10 @@ a usage error.
   to the schema), typechecks with svelte-check against the kit's declarations and the host's
   compiler options, and runs the app's own `*.test.ts` with vitest, `@talaria/sdk/testing`
   included. The typecheck resolves exactly what an app may import: the SDK's three entries,
-  `svelte`, `@lucide/svelte` and `@tanstack/svelte-query`. Nothing else resolves — not
-  `zod`, not a package you happen to have locally — because nothing else resolves on the host
-  either. `z` comes from `@talaria/sdk/server`.
+  `svelte`, `@lucide/svelte`, `@tanstack/svelte-query`, and `zod` by its bare entry — the copy
+  `@talaria/sdk/server` re-exports as `z`, shared with server-side code. Nothing else resolves —
+  not `zod/mini`, not a package you happen to have locally — because nothing else resolves on
+  the host either. The tests get the same `zod` a built server links to.
 - **`build`** runs the host's build recipe and the host's load probe, and reports what Manage →
   Apps would: the build (its key, files and size), the surfaces, the server, each MCP tool kept or
   left out with the reason, each harness registered or skipped with the reason (and a warning on
@@ -107,8 +108,10 @@ they read and write: the build goes to a work area outside the app's tree
 (`~/.cache/talaria-app/<dir>-<digest>/`), the probe publishes no MCP catalog and touches no other
 app, and the host's database is a stand-in with no server behind it — every setting reads as its
 default, as on a fresh instance. The host build refuses a bare import it does not share by name
-(`"zod" is not shared with apps: …`), and so does the kit, even where the package would resolve
-from some `node_modules` above the app.
+(`"clsx" is not shared with apps: …`), and so does the kit, even where the package would resolve
+from some `node_modules` above the app. A shared one is linked, never bundled: a built
+`server.js` imports `zod` from the runtime file beside the SDK's (`rt-zod.js`), on the host and
+in the kit alike.
 
 ## The sandbox loop
 

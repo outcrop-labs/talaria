@@ -605,10 +605,11 @@ pub(crate) enum BoundedApply {
 /// halfway, stranding its new container. BOUNDED: a roll's drain, stop and
 /// recreate (2 m 41 s measured under heavy IO) plus its 180 s health wait
 /// outlast the app proxy's 300 s, which answered a save that had landed with
-/// a 502. The caller passes what is left of [`ANSWER_WITHIN`] (210 s, the
-/// control route's bound) after its own work, so the whole request answers
-/// before the proxy gives up. The verdict is logged here, once, because past
-/// the bound nobody else hears it.
+/// a 502 — and Cloudflare's edge, in front of a real instance, answers 524
+/// after 100 s with no headers. The caller passes what is left of
+/// [`ANSWER_WITHIN`] (75 s, the control route's bound) after its own work, so
+/// the whole request answers before the edge gives up. The verdict is logged
+/// here, once, because past the bound nobody else hears it.
 pub(crate) async fn bounded_apply(
     state: &AppState,
     sb: talaria_secretbox::SecretBox,

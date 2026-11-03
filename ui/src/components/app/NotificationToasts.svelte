@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
+  import DesktopNotifyPermission from '@/components/app/DesktopNotifyPermission.svelte'
   import NotifyPrompt from '@/components/app/NotifyPrompt.svelte'
   import {
     browserNotifyEnabled,
@@ -24,7 +25,7 @@
   import { blockedSteps, detectBrowser, type BlockedSteps } from '@/lib/notify-help'
   import type { NotifyLeader } from '@/lib/notify-leader'
   import { openNotification } from '@/lib/notify-open'
-  import { clientId, createAckBatcher, deskClientId, notePresence, presenceView, presenceWinner } from '@/lib/notify-presence'
+  import { clientId, createAckBatcher, deskClientId, notePresence, presenceView, presenceWinner, type AckRow } from '@/lib/notify-presence'
   import { shouldAsk, turnOnResult, type PromptMemory } from '@/lib/notify-prompt'
   import { applyReadSync, registrationBanners } from '@/lib/notify-readsync'
   import { setPresence } from '@/lib/notify-status.svelte'
@@ -68,7 +69,8 @@
   // AND THE SUBSCRIPTION. A browser whose grant already stands files its push
   // subscription at boot and again when the permission turns granted — no
   // click needed — and the soft ask (notify-prompt.ts) invites the grant at
-  // a moment that has a reason.
+  // a moment that has a reason. In the desktop shell, the OS grant is the
+  // shell's: DesktopNotifyPermission asks for it while macOS has not.
 
   /** A row as this runtime reads it: wave 1's seven keys, and the v2 ones an
    *  api since the contract adds (absent from an older one). */
@@ -134,9 +136,11 @@
   // ── The ack (I-18) ───────────────────────────────────────────────────────
   // `keepalive`: a batch still queued when the tab goes away (flushed on
   // pagehide, below) outlives the page.
+  // Per row VERSION (notify-presence.ts `AckRow`): a re-alert of a row this
+  // page already acked is a new version the server re-armed a push for.
   const acker = createAckBatcher((ids) => postJson('/api/notifications/ack', { ids }, { keepalive: true }))
-  const ack = (ids: string[]) => {
-    if (has('ack')) acker.add(ids)
+  const ack = (rows: AckRow[]) => {
+    if (has('ack')) acker.add(rows)
   }
 
   // ── The runtime: the tab registry, the leader lock and the hub ───────────
@@ -541,7 +545,7 @@
       await surfaceOne({
         key: SUMMARY_TAG,
         id: '',
-        ids: arrivals.map((a) => a.row.id),
+        rows: arrivals.map((a) => a.row),
         title: summaryTitle(p.count, p.newest.title),
         body: undefined,
         href: '',
@@ -556,7 +560,7 @@
       await surfaceOne({
         key: a.row.id,
         id: a.row.id,
-        ids: [a.row.id],
+        rows: [a.row],
         title: a.row.title,
         body: a.row.body || undefined,
         href: a.row.href || '',
@@ -571,7 +575,8 @@
   async function surfaceOne(n: {
     key: string
     id: string
-    ids: string[]
+    /** The rows it stands for, at the version surfaced (the ack's key). */
+    rows: AckRow[]
     title: string
     body?: string
     href: string
@@ -598,7 +603,7 @@
       toast()
       l?.claim(n.key, n.version)
       // Shown to a person looking at it: the deferred push need not follow.
-      if (selfLooking(ctx.self, ctx.now)) ack(n.ids)
+      if (selfLooking(ctx.self, ctx.now)) ack(n.rows)
       // In front of the person: a reason to ask now. A toast in a visible
       // window they are not typing in asks when they come to it (focus).
       if (lookingHere()) askTrigger++
@@ -614,7 +619,7 @@
     if (!n.realert && (await onScreen(n.key))) return note(n.key, 'none: already on screen')
     await markBannered(bannered, n.key, n.version)
     note(n.key, n.realert ? 'banner (re-alert)' : 'banner')
-    if (n.summary) summaryIds = n.ids
+    if (n.summary) summaryIds = n.rows.map((r) => r.id)
     const shown = await showOsNotification(
       {
         id: n.id,
@@ -629,7 +634,7 @@
       },
       (o) => void open(o),
     )
-    if (shown) ack(n.ids)
+    if (shown) ack(n.rows)
   }
 
   /** Is a banner with this tag already on screen (from the worker, say)? */
@@ -714,3 +719,6 @@
   onNotNow={() => void notNow()}
   onClose={() => (promptShown = false)}
 />
+<!-- The shell's own ask (macOS has not asked yet): the browser's card above
+     never shows in the shell. -->
+{#if shell}<DesktopNotifyPermission />{/if}

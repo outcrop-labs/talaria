@@ -414,7 +414,7 @@ export async function saveAgentEdit(
    *  was not in effect is applied, and this says whether it now is. */
   inEffect?: boolean
   /** A 202: the version is saved, and its apply (the render, a roll) was
-   *  still going when the route stopped waiting (210 s). It goes on. */
+   *  still going when the route stopped waiting (75 s). It goes on. */
   pending?: boolean
   error?: string
 }> {
@@ -566,7 +566,8 @@ export async function rotateAgentKey(id: string): Promise<{ ok?: boolean; rollin
 }
 
 /** What the control route answers. `pending` (a 202) means the verb was still
- *  running when the route stopped waiting (210 s): it goes on, and `state` is
+ *  running when the route stopped waiting (75 s, so the answer beats
+ *  Cloudflare's 100 s): it goes on, and `state` is
  *  the container as docker described it then (running, stopped, gone or
  *  unknown). The roster's polled container state shows the rest. */
 export interface ControlAnswer {

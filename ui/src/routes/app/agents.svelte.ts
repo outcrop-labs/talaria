@@ -54,7 +54,7 @@ export interface AgentControlsState {
 
 // ── A control the route is still carrying out ──
 // The control route runs a verb on a task of its own and answers within
-// 210 s; past that it answers 202 `{ pending: true }` and the verb goes on (a
+// 75 s (inside Cloudflare's 100 s); past that it answers 202 `{ pending: true }` and the verb goes on (a
 // stop waiting out an image pull, a legacy agent's move home, a slow disk).
 // The roster used to show nothing then: the call returned, the spinner went,
 // and the agent sat in its old state with no word of the verb still under
@@ -64,7 +64,7 @@ export interface AgentControlsState {
 // instances, and either may have asked.
 //
 // `apply` is a saved config change whose apply outlived the def edit's or the
-// MCP tab's answer (the same 210 s bound, a 202 `pending`): the version is
+// MCP tab's answer (the same 75 s bound, a 202 `pending`): the version is
 // saved, and its render and roll go on.
 export type StillWorkingAction = FleetAction | 'apply'
 
@@ -104,7 +104,7 @@ export const STILL_WORKING_LABEL: Record<StillWorkingAction, string> = {
 }
 
 /** For an apply noted without its send time: how long before its 202 its
- *  roll can have started, the route's bound (210 s) with a margin. */
+ *  roll can have started: the route's bound (75 s) with a wide margin. */
 const APPLY_ROLL_WINDOW_MS = 300_000
 
 /** The roll picture's `since` is the server's clock and `sentAt` the

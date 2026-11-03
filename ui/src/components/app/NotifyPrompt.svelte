@@ -2,6 +2,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import { fade, fly, QUICK } from '@/lib/motion'
+  import { intoToastLead } from '@/lib/toast.svelte'
   import type { BlockedSteps } from '@/lib/notify-help'
 
   // The one-time invitation to turn desktop alerts on — the card, not the
@@ -26,23 +27,11 @@
     onClose: () => void
   }
   let { show, message = null, blocked = null, browserName = 'your browser', onTurnOn, onNotNow, onClose }: Props = $props()
-
-  // Into the toast stack's lead slot (Toasts.svelte), so the card stacks
-  // ABOVE the toasts; on its own at the corner if that host is not mounted.
-  function intoStack(node: HTMLElement) {
-    const slot = document.querySelector<HTMLElement>('[data-toast-lead]')
-    if (slot) slot.prepend(node)
-    else {
-      node.classList.add('fixed', 'bottom-4', 'right-4', 'z-[70]', 'w-[min(92vw,340px)]')
-      document.body.appendChild(node)
-    }
-    return { destroy: () => node.remove() }
-  }
 </script>
 
 {#if show}
   <div
-    use:intoStack
+    use:intoToastLead
     in:fly={{ y: 8, duration: 220 }}
     out:fade={QUICK}
     class="pointer-events-auto"

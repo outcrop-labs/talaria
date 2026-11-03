@@ -34,6 +34,21 @@ export interface ToastItem {
   key?: string
 }
 
+/** A Svelte action: put a card into the stack's lead slot (Toasts.svelte's
+ *  `data-toast-lead`), so it stacks ABOVE the toasts instead of covering the
+ *  one that gave it a reason to show; on its own at the corner when that host
+ *  is not mounted. The desktop-alerts cards (NotifyPrompt.svelte,
+ *  DesktopNotifyPermission.svelte) sit there. */
+export function intoToastLead(node: HTMLElement): { destroy: () => void } {
+  const slot = document.querySelector<HTMLElement>('[data-toast-lead]')
+  if (slot) slot.prepend(node)
+  else {
+    node.classList.add('fixed', 'bottom-4', 'right-4', 'z-[70]', 'w-[min(92vw,340px)]')
+    document.body.appendChild(node)
+  }
+  return { destroy: () => node.remove() }
+}
+
 // Long enough to read two lines; short enough that a stack of these never
 // walls off a corner of the screen for long. A click dismisses instantly.
 const TOAST_TTL_MS = 6_500

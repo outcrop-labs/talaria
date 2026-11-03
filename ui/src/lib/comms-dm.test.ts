@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'vitest'
-import { findDm, groupDmCount, groupDmLabel, isGroupDm } from './comms-dm'
+import { dmZeroState, findDm, groupDmCount, groupDmLabel, isGroupDm } from './comms-dm'
 
 const maya = { userId: 'u-maya', name: 'Maya Chen', email: 'maya@x.co' }
 const jordan = { userId: 'u-jordan', name: 'Jordan Ellis', email: 'jordan@x.co' }
@@ -36,4 +39,28 @@ test('recipients find their existing DM — the same people and the same agents,
   assert.equal(findDm(all, 'me', ['u-maya'], ['atlas-operations']), null, 'a different set is a new conversation')
   assert.equal(findDm(all, 'me', [], ['atlas-operations']), null, 'one agent alone is its own conversation')
   assert.equal(findDm(all, 'me', [], []), null)
+})
+
+// An empty DM rendered ChannelView's channel hero: a `#` mark, "Welcome to
+// #Dana Okafor", "Say something, or add people & agents." — on a
+// conversation that is no #channel and takes no added people (ui-7).
+test('an empty DM says it is a conversation with them, not "Welcome to #<name>"', () => {
+  const z = dmZeroState(pair, 'Maya Chen')
+  assert.equal(z.title, 'The start of your conversation with Maya Chen')
+  assert.equal(z.hint, 'Say something to Maya.')
+  assert.notEqual(z.icon, '#')
+  for (const zero of [z, dmZeroState(group, 'Maya, Jordan, Atlas'), dmZeroState(named, 'Launch prep')]) {
+    assert.doesNotMatch(zero.title, /#/)
+    assert.doesNotMatch(zero.hint ?? '', /add people/)
+  }
+  assert.equal(dmZeroState(named, 'Launch prep').title, 'Welcome to Launch prep')
+  assert.equal(dmZeroState(named, 'Launch prep').hint, 'Say something to everyone here.')
+  // A DM that seats agents keeps ChannelView's "@mention … to bring the agents in".
+  assert.equal(dmZeroState(group, 'Maya, Jordan, Atlas').hint, undefined)
+})
+
+test('Comms hands an empty DM its own zero state', () => {
+  const comms = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../routes/app/Comms.svelte'), 'utf8')
+  assert.match(comms, /dmZeroState\(selected, title\)/)
+  for (const prop of ['zeroIcon={dmZero?.icon}', 'zeroTitle={dmZero?.title}', 'zeroHint={dmZero?.hint}']) assert.ok(comms.includes(prop), prop)
 })
