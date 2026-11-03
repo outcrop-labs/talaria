@@ -1111,7 +1111,8 @@ fn retry_prewarm(app: &AppHandle, id: &str) {
 
 /// The platform's words on a page's load (loading.rs): kept for the card,
 /// and only for a page on the instance's own origin. The judgement is
-/// `page_finished`'s, when the page finishes.
+/// `page_finished`'s, when the page finishes. macOS has no words to keep.
+#[cfg(any(target_os = "linux", windows))]
 fn note_load(app: &AppHandle, id: &str, url: &str, what: String) {
     let state = app.state::<ShellState>();
     if state

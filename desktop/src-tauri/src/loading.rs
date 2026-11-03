@@ -192,7 +192,8 @@ impl Loads {
     }
 
     /// The platform's words on the current document (a status, a network
-    /// failure), for the card if it comes to one.
+    /// failure), for the card if it comes to one. macOS has none to give.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn note(&mut self, id: &str, what: String) {
         self.noted.insert(id.to_string(), what);
     }
