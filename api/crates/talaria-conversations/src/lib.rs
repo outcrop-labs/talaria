@@ -14,15 +14,84 @@ use talaria_gateway::fleet_chat::ToolCall;
 use talaria_params::uuid_shaped;
 use talaria_secretbox::SecretBox;
 
-use std::sync::{LazyLock, OnceLock};
+use std::sync::OnceLock;
 
 pub static REF_BLOCKS: OnceLock<fn(&Value) -> String> = OnceLock::new();
 use talaria_uploads::attachment_text_blocks;
 
+/// Everyone who can read conversation `c`, as a subquery body correlated on
+/// `c` with one column: the firehose audience. The same paths as
+/// `audience_sql!`, written as a set. May repeat a reader; callers take
+/// `distinct`.
+macro_rules! readers_sql {
+    () => {
+        "select c.user_id \
+         union all \
+         select cm.user_id from conversation_members cm \
+          where cm.conversation_id = c.id and c.kind in ('plan', 'work') \
+         union all \
+         select tm.user_id from conversation_teams ct \
+           join team_members tm on tm.team_id = ct.team_id \
+          where ct.conversation_id = c.id and c.kind in ('plan', 'work') \
+         union all \
+         select r.owner_user_id from research_runs r \
+          where r.conversation_id = c.id and c.kind = 'research' \
+            and r.owner_user_id is not null \
+         union all \
+         select rm.user_id from research_runs r \
+           join research_members rm on rm.run_id = r.id \
+          where r.conversation_id = c.id and c.kind = 'research' \
+         union all \
+         select tm.user_id from research_runs r \
+           join research_teams rt on rt.run_id = r.id \
+           join team_members tm on tm.team_id = rt.team_id \
+          where r.conversation_id = c.id and c.kind = 'research'"
+    };
+}
+
+/// `$viewer` (a bind like `"$1::uuid"`) can read conversation `c`. The read
+/// gates, the listing, the unread badge and the working read filter by it.
+/// It stays rc's correlated `exists` chain, which the planner hashes for a
+/// list and probes for one gate: every spelling derived from `readers_sql!`
+/// lost one of the two. `audience_live_the_gate_and_the_fan_agree_on_every_path`
+/// holds the two to one answer, so a path added to one belongs in the other.
+/// A macro, not a const, so each query stays one `'static` literal.
+macro_rules! audience_sql {
+    ($viewer:literal) => {
+        concat!(
+            "(c.user_id = ",
+            $viewer,
+            " \
+              or (c.kind in ('plan', 'work') and ( \
+                exists(select 1 from conversation_members cm \
+                       where cm.conversation_id = c.id and cm.user_id = ",
+            $viewer,
+            ") \
+                or exists(select 1 from conversation_teams ct \
+                          join team_members tm on tm.team_id = ct.team_id \
+                          where ct.conversation_id = c.id and tm.user_id = ",
+            $viewer,
+            "))) \
+              or (c.kind = 'research' and exists( \
+                select 1 from research_runs r \
+                  left join research_members rm on rm.run_id = r.id and rm.user_id = ",
+            $viewer,
+            " \
+                 where r.conversation_id = c.id \
+                   and (r.owner_user_id = ",
+            $viewer,
+            " or rm.user_id is not null \
+                     or exists(select 1 from research_teams rt \
+                               join team_members tm on tm.team_id = rt.team_id \
+                               where rt.run_id = r.id and tm.user_id = ",
+            $viewer,
+            ")))))"
+        )
+    };
+}
+
 mod audience;
-mod readers;
 pub use audience::{conversation_audience_ids, fan_conversation_event, fan_known_conversation};
-use readers::viewer_sql;
 
 /// The access gate, reduced to the question its callers that only gate ask:
 /// does this row exist for this person? The WHERE clause is the whole rule —
@@ -40,20 +109,16 @@ pub async fn conversation_accessible(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    static SQL: LazyLock<String> = LazyLock::new(|| {
-        [
-            "select 1 from conversations c \
+    let row: Option<(i32,)> = sqlx::query_as(concat!(
+        "select 1 from conversations c \
          where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
-            viewer_sql("$2::uuid").as_str(),
-            " limit 1",
-        ]
-        .concat()
-    });
-    let row: Option<(i32,)> = sqlx::query_as(SQL.as_str())
-        .bind(conversation_id)
-        .bind(user_id)
-        .fetch_optional(pg)
-        .await?;
+        audience_sql!("$2::uuid"),
+        " limit 1"
+    ))
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
     Ok(row.is_some())
 }
 
@@ -68,20 +133,16 @@ pub async fn accessible_conversation_agent(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    static SQL: LazyLock<String> = LazyLock::new(|| {
-        [
-            "select agent_model from conversations c \
+    let row: Option<(String,)> = sqlx::query_as(concat!(
+        "select agent_model from conversations c \
          where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
-            viewer_sql("$2::uuid").as_str(),
-            " limit 1",
-        ]
-        .concat()
-    });
-    let row: Option<(String,)> = sqlx::query_as(SQL.as_str())
-        .bind(conversation_id)
-        .bind(user_id)
-        .fetch_optional(pg)
-        .await?;
+        audience_sql!("$2::uuid"),
+        " limit 1"
+    ))
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
     Ok(row.filter(|(m,)| !m.is_empty()).map(|(m,)| m))
 }
 
@@ -222,22 +283,18 @@ pub async fn accessible_conversation(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<Option<AccessibleConversation>, sqlx::Error> {
-    static SQL: LazyLock<String> = LazyLock::new(|| {
-        [
-            "select c.agent_model, c.kind, c.title, c.user_id::text, \
+    let row: Option<AccessibleRow> = sqlx::query_as(concat!(
+        "select c.agent_model, c.kind, c.title, c.user_id::text, \
                 case when c.user_id = $2::uuid then 'owner' else 'collaborator' end, \
                 c.plan_template_id::text \
          from conversations c \
          where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
-            viewer_sql("$2::uuid").as_str(),
-        ]
-        .concat()
-    });
-    let row: Option<AccessibleRow> = sqlx::query_as(SQL.as_str())
-        .bind(conversation_id)
-        .bind(user_id)
-        .fetch_optional(pg)
-        .await?;
+        audience_sql!("$2::uuid")
+    ))
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
     Ok(row.map(
         |(agent_model, kind, title, owner_user_id, role, plan_template_id)| {
             AccessibleConversation {
@@ -363,12 +420,11 @@ pub async fn list_conversations_in(
         Option<String>,
         Option<i32>,
     );
-    static SQL: LazyLock<String> = LazyLock::new(|| {
-        [
-            "select c.id::text, c.agent_model, c.title, \
+    let rows: Vec<Row> = sqlx::query_as(concat!(
+        "select c.id::text, c.agent_model, c.title, \
                 (trunc(extract(epoch from c.updated_at) * 1000))::bigint, ",
-            working_sql!(),
-            ", \
+        working_sql!(),
+        ", \
                 coalesce(( \
                   select m.status = 'error' from messages m \
                   where m.conversation_id = c.id and m.role = 'assistant' \
@@ -392,23 +448,20 @@ pub async fn list_conversations_in(
          left join conversation_layout l \
                 on l.conversation_id = c.id and l.user_id = $1::uuid \
          where c.archived = $3 and c.kind = any($2) and ",
-            viewer_sql("$1::uuid").as_str(),
-            " order by coalesce(l.pinned, false) desc, l.position asc nulls last, \
+        audience_sql!("$1::uuid"),
+        " order by coalesce(l.pinned, false) desc, l.position asc nulls last, \
                   c.updated_at desc",
-        ]
-        .concat()
-    });
-    let rows: Vec<Row> = sqlx::query_as(SQL.as_str())
-        .bind(user_id)
-        .bind(
-            kinds
-                .iter()
-                .map(|k| (*k).to_string())
-                .collect::<Vec<String>>(),
-        )
-        .bind(archived)
-        .fetch_all(pg)
-        .await?;
+    ))
+    .bind(user_id)
+    .bind(
+        kinds
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect::<Vec<String>>(),
+    )
+    .bind(archived)
+    .fetch_all(pg)
+    .await?;
     Ok(rows
         .into_iter()
         .map(
@@ -671,18 +724,6 @@ pub async fn get_conversation(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<Option<(ConversationDetail, Vec<MessageRow>)>, sqlx::Error> {
-    static SQL: LazyLock<String> = LazyLock::new(|| {
-        [
-            "select c.id::text, c.agent_model, c.title, \
-                (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
-                case when c.user_id = $2::uuid then 'owner' else 'collaborator' end, \
-                c.pinned_files \
-         from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
-            viewer_sql("$2::uuid").as_str(),
-        ]
-        .concat()
-    });
     let conv: Option<(
         String,
         String,
@@ -690,11 +731,19 @@ pub async fn get_conversation(
         i64,
         String,
         serde_json::Value,
-    )> = sqlx::query_as(SQL.as_str())
-        .bind(conversation_id)
-        .bind(user_id)
-        .fetch_optional(pg)
-        .await?;
+    )> = sqlx::query_as(concat!(
+        "select c.id::text, c.agent_model, c.title, \
+                (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
+                case when c.user_id = $2::uuid then 'owner' else 'collaborator' end, \
+                c.pinned_files \
+         from conversations c \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid")
+    ))
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
     let Some((id, agent_model, title, updated_ms, role, pinned_files)) = conv else {
         return Ok(None);
     };
@@ -991,7 +1040,7 @@ pub async fn remove_plan_team(
 
 /// The caller's total unread messages across conversations of one kind — a
 /// rail badge's number. The SAME audience `list_conversations_in` filters by
-/// (`viewer_sql`, one spelling for both), and the -1 no-cursor floor.
+/// (`audience_sql!`, one spelling for both), and the -1 no-cursor floor.
 ///
 /// `kind` is a parameter rather than a list for the same reason: Work's badge
 /// is this read with `"work"` and nothing else, because the shared-kind
@@ -1003,9 +1052,8 @@ pub async fn conversation_unread_total(
     user_id: &str,
     kind: &str,
 ) -> Result<i32, sqlx::Error> {
-    static SQL: LazyLock<String> = LazyLock::new(|| {
-        [
-            "select count(*)::int from conversations c \
+    let (n,): (i32,) = sqlx::query_as(concat!(
+        "select count(*)::int from conversations c \
          join messages m on m.conversation_id = c.id \
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
          where c.archived = false and c.kind = $2 \
@@ -1013,15 +1061,12 @@ pub async fn conversation_unread_total(
            and m.status = 'complete' \
            and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
            and ",
-            viewer_sql("$1::uuid").as_str(),
-        ]
-        .concat()
-    });
-    let (n,): (i32,) = sqlx::query_as(SQL.as_str())
-        .bind(user_id)
-        .bind(kind)
-        .fetch_one(pg)
-        .await?;
+        audience_sql!("$1::uuid")
+    ))
+    .bind(user_id)
+    .bind(kind)
+    .fetch_one(pg)
+    .await?;
     Ok(n)
 }
 
@@ -1043,31 +1088,27 @@ pub async fn working_conversations(
     user_id: &str,
     kinds: &[&str],
 ) -> Result<Vec<WorkingConversation>, sqlx::Error> {
-    static SQL: LazyLock<String> = LazyLock::new(|| {
-        [
-            "select c.id::text, c.kind, c.agent_model, c.title, \
+    let rows: Vec<(String, String, String, Option<String>, i64)> = sqlx::query_as(concat!(
+        "select c.id::text, c.kind, c.agent_model, c.title, \
                 coalesce((select (trunc(extract(epoch from max(m.streamed_at)) * 1000))::bigint \
                    from messages m \
                   where m.conversation_id = c.id and m.status = 'streaming'), 0) \
          from conversations c \
          where c.archived = false and c.kind = any($2) and ",
-            working_sql!(),
-            " and ",
-            viewer_sql("$1::uuid").as_str(),
-            " order by 5 desc",
-        ]
-        .concat()
-    });
-    let rows: Vec<(String, String, String, Option<String>, i64)> = sqlx::query_as(SQL.as_str())
-        .bind(user_id)
-        .bind(
-            kinds
-                .iter()
-                .map(|k| (*k).to_string())
-                .collect::<Vec<String>>(),
-        )
-        .fetch_all(pg)
-        .await?;
+        working_sql!(),
+        " and ",
+        audience_sql!("$1::uuid"),
+        " order by 5 desc"
+    ))
+    .bind(user_id)
+    .bind(
+        kinds
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect::<Vec<String>>(),
+    )
+    .fetch_all(pg)
+    .await?;
     Ok(rows
         .into_iter()
         .map(

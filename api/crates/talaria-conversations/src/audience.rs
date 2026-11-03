@@ -1,31 +1,25 @@
-// A conversation's firehose audience: everyone `readers_sql` lists, so a
+// A conversation's firehose audience: everyone `readers_sql!` lists, so a
 // `conversation` event reaches exactly the people whose list, unread pill or
 // working glyph it can move, and nobody the read gates would refuse.
-
-use std::sync::LazyLock;
 
 use sqlx::PgPool;
 use talaria_notify::NotifyDeps;
 use talaria_realtime::{UserEvent, publish_user};
 
-use crate::readers::readers_sql;
-
-/// Who can read a conversation, as user ids.
+/// Who can read a conversation, as user ids: `readers_sql!` for that row.
 pub async fn conversation_audience_ids(
     pg: &PgPool,
     conversation_id: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
-    static SQL: LazyLock<String> = LazyLock::new(|| {
-        format!(
-            "select distinct a.id::text from conversations c \
-             cross join lateral ({}) a(id) where c.id = $1::uuid",
-            readers_sql()
-        )
-    });
-    let rows: Vec<(String,)> = sqlx::query_as(SQL.as_str())
-        .bind(conversation_id)
-        .fetch_all(pg)
-        .await?;
+    let rows: Vec<(String,)> = sqlx::query_as(concat!(
+        "select distinct a.id::text from conversations c \
+         cross join lateral (",
+        readers_sql!(),
+        ") a(id) where c.id = $1::uuid"
+    ))
+    .bind(conversation_id)
+    .fetch_all(pg)
+    .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
