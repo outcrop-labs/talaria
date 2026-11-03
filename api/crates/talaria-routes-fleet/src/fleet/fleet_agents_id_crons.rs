@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_agent_crons::{create_cron_job, list_cron_jobs};
+use talaria_agent_crons::{create_cron_job, list_cron_jobs, may_still_land};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
 use talaria_error::{house_error, object_or_400, store_answer};
@@ -79,6 +79,12 @@ pub async fn post(
                 // wire shape — { ok, id }, id after ok.
                 Json(json!({ "ok": true, "id": created })).into_response()
             }
+            // A create the agent took and never answered may still make the
+            // job: the 503 `cron_failure` answers for the job routes
+            // (fleet_agents_id_crons_jobid.rs), whose sentence says to check
+            // the list before trying again — a second create would make a
+            // second job.
+            Err(e) if may_still_land(&e) => house_error(StatusCode::SERVICE_UNAVAILABLE, &e),
             Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )

@@ -31,7 +31,7 @@ use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_error::store_fault;
-use talaria_gateway::fleet_chat::{Method, agent_request};
+use talaria_gateway::fleet_chat::{Method, agent_request, unanswered};
 use talaria_gateway::settings::get_setting;
 
 /// The bound on one `/api/jobs` call. Hermes answers these in milliseconds,
@@ -64,20 +64,53 @@ async fn agent_for(pg: &PgPool, def_id: &str) -> Result<String, String> {
 /// `Err` is a sentence a person can act on: Hermes's own refusal verbatim
 /// (its schedule parser, its prompt cap and scan, "Job not found"), which is
 /// the one worth reading, as the CLI's stderr was; or why the agent never
-/// answered.
+/// answered ([`no_answer`]).
 async fn jobs_call(
     model: &str,
     method: Method,
     path: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
+    let write = method != Method::GET;
     let answer = agent_request(model, method, path, body.as_ref(), JOBS_WINDOW)
         .await
-        .map_err(|e| format!("cannot reach {model}'s scheduler: {e}"))?;
+        .map_err(|e| no_answer(model, write, &e))?;
     if (200..300).contains(&answer.status) {
         return Ok(answer.body);
     }
     Err(refusal_of(answer.status, &answer.body))
+}
+
+/// The words that mark a change's failure as unconfirmed ([`may_still_land`]).
+const MAY_STILL_LAND: &str = "the change may still land";
+
+/// Why a call got no answer, as a sentence.
+///
+/// A WRITE THE AGENT TOOK AND NEVER ANSWERED WAS NOT REFUSED. Hermes writes
+/// `jobs.json` under its lock and an fsync on the API server's own loop, and
+/// on a starved disk that stalled for ten minutes: a pause answered "cannot
+/// reach … no answer within 40s" and the job ended paused all the same. So
+/// that one says the change may still land, and to look before trying again —
+/// a second create would make a second job. A read that timed out, and an
+/// agent that could not be reached at all, changed nothing, and say so as
+/// they always did.
+fn no_answer(model: &str, write: bool, why: &str) -> String {
+    if write && why == unanswered(JOBS_WINDOW) {
+        format!(
+            "{model}'s scheduler did not answer within {}s, so {MAY_STILL_LAND} — check the job list in a minute before trying again",
+            JOBS_WINDOW.as_secs()
+        )
+    } else {
+        format!("cannot reach {model}'s scheduler: {why}")
+    }
+}
+
+/// Whether a cron call's error is a write the agent took and never answered
+/// ([`no_answer`]): not a refusal, and not confirmed either way. A route
+/// answers it 503 — the house's "not confirmed" (the control route's for a
+/// docker verb past its deadline) — rather than the 400 of a refusal.
+pub fn may_still_land(error: &str) -> bool {
+    error.contains(MAY_STILL_LAND)
 }
 
 /// Hermes's refusal as a sentence. `/api/jobs` answers `{"error": "…"}`; the
@@ -1265,5 +1298,47 @@ mod tests {
         assert_eq!(job_id_of_task("cron:abc123:f00d!"), None);
         assert_eq!(job_id_of_task("cron:abc123:"), None);
         assert_eq!(job_id_of_task("cron:abc123"), None);
+    }
+
+    /// FLEET-5: a pause the agent took and did not answer within the window
+    /// was answered "cannot reach … no answer within 40s", and the job ended
+    /// paused all the same. A write that timed out says the change may still
+    /// land; a read that timed out, and an agent never reached, changed
+    /// nothing and say what they always said.
+    #[test]
+    fn a_write_the_agent_never_answered_may_still_land() {
+        let silent = unanswered(JOBS_WINDOW);
+        let said = no_answer("ada-ops", true, &silent);
+        assert_eq!(
+            said,
+            "ada-ops's scheduler did not answer within 40s, so the change may still land — check the job list in a minute before trying again"
+        );
+        assert!(may_still_land(&said));
+        // Folded into an edit's compound sentence, it is still unconfirmed.
+        assert!(may_still_land(&format!(
+            "Invalid schedule (and the job could not be resumed: {said})"
+        )));
+
+        // A read: nothing was asked of the job.
+        let read = no_answer("ada-ops", false, &silent);
+        assert_eq!(
+            read,
+            "cannot reach ada-ops's scheduler: no answer within 40s"
+        );
+        assert!(!may_still_land(&read));
+        // Never reached: a refused connection, or no manifest row.
+        for why in [
+            "error sending request: tcp connect error: Connection refused (os error 111)",
+            "not in the fleet manifest",
+        ] {
+            let said = no_answer("ada-ops", true, why);
+            assert_eq!(said, format!("cannot reach ada-ops's scheduler: {why}"));
+            assert!(!may_still_land(&said));
+        }
+        // Hermes's own refusal is a refusal.
+        assert!(!may_still_land(&refusal_of(
+            404,
+            &json!({ "error": "Job not found" })
+        )));
     }
 }

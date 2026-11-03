@@ -95,7 +95,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](.
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{jobs}` | 200, 400 | — |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcrons-body) | `{ok, id}` | 200, 400 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcrons-body) | `{ok, id}` | 200, 400, 503 | audit |
 
 ### POST `/api/fleet/agents/{id}/crons` body
 
@@ -117,9 +117,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400 | audit |
-| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400 | audit |
-| DELETE | `session` + `agent-manager` | — | `{ok}` | 200, 400 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 503 | audit |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 503 | audit |
+| DELETE | `session` + `agent-manager` | — | `{ok}` | 200, 400, 503 | audit |
 
 ### POST `/api/fleet/agents/{id}/crons/{jobId}` body
 
