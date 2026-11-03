@@ -3,6 +3,7 @@
   import AddInstanceDialog from './components/AddInstanceDialog.svelte'
   import RemoveDialog from './components/RemoveDialog.svelte'
   import Titlebar from './components/Titlebar.svelte'
+  import UpdateChip from './components/UpdateChip.svelte'
   import Welcome from './components/Welcome.svelte'
   import { quit } from './lib/instances'
   import { boot, shell } from './lib/state.svelte'
@@ -37,6 +38,7 @@
   <div class="min-h-0 flex-1">
     <Welcome />
   </div>
+  <UpdateChip />
 </div>
 
 {#if shell.adding}

@@ -25,12 +25,17 @@ export interface DesktopSettings {
 
 export type DesktopWindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'startDragging'
 
-/** An instance whose page failed to load; the launcher offers a retry. */
+/** An instance whose page did not come up (src-tauri/src/loading.rs): it got
+ *  no answer and was closed (`failed`), it answered with something that is
+ *  not Talaria and is kept behind the card (`blocked`: Show the page), or it
+ *  has not loaded in 25 s and is still loading behind the card (`stalled`). */
 export interface LoadFailure {
   seq: number
   id: string
   label: string
   message: string
+  /** Absent: a shell from before the watchdog (a failure). */
+  kind?: 'failed' | 'stalled' | 'blocked'
 }
 
 /** Everything the launcher renders (commands.rs::ShellSnapshot). */
@@ -59,6 +64,25 @@ export interface ShellSnapshot {
   muted?: string[]
   /** Each instance's unread count (For you), by local id. */
   unread?: Record<string, number>
+  /** The update chip: a newer Talaria Desktop nobody put off (update.rs).
+   *  Absent: a shell that predates the chip. */
+  update?: UpdateOffer | null
+}
+
+/** The update chip's offer, the same in every view (src-tauri/src/update.rs
+ *  `Offer`). */
+export interface UpdateOffer {
+  version: string
+  /** `updater`: Update installs it here. `elsewhere`: `how` says what does
+   *  (a Linux package, an .msi install). */
+  install: 'updater' | 'elsewhere'
+  how?: string
+  /** An install is running. */
+  busy: boolean
+  /** How much of the download has arrived, in percent, while it runs. */
+  progress?: number
+  /** The last install failed, in a sentence. */
+  error?: string
 }
 
 /** What closing the window does: hide to the tray (Linux) or the menu bar
@@ -101,6 +125,13 @@ export const showWelcome = () => invoke<void>('show_welcome')
 
 export const removeInstance = (id: string) => invoke<Instance[]>('remove_instance', { id })
 
+/** Close an instance's page kept behind the card, still loading or not
+ *  Talaria (the instance stays registered; its last page is forgotten). */
+export const closeInstancePage = (id: string) => invoke<void>('close_instance_page', { id })
+
+/** Show a page that is not Talaria as it is, with the shell's way back on it. */
+export const showInstancePage = (id: string) => invoke<void>('show_instance_page', { id })
+
 /** Mute an instance on this desktop: its banners stop, its badge share stays. */
 export const setInstanceMuted = (id: string, muted: boolean) =>
   invoke<void>('set_instance_muted', { id, muted })
@@ -119,6 +150,9 @@ export const desktopWindow = (action: DesktopWindowAction) =>
 export interface DesktopUpdate {
   version: string
   notes: string | null
+  /** `elsewhere`: this copy cannot update itself; `how` says what does. */
+  install?: 'updater' | 'elsewhere'
+  how?: string
 }
 
 export const checkForUpdate = () => invoke<DesktopUpdate | null>('check_for_update')
@@ -131,6 +165,9 @@ export const requestNotifications = () => invoke<NotificationStatus>('desktop_no
 export const quit = () => invoke<void>('desktop_quit')
 
 export const installUpdate = () => invoke<void>('install_update')
+
+/** The update chip's Later: the version on offer is put off for a day. */
+export const snoozeUpdate = () => invoke<void>('snooze_update')
 
 /** Strip an invoke rejection down to the message the shell sent. */
 export const errorText = (e: unknown): string =>

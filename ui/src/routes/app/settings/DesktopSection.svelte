@@ -311,7 +311,13 @@
     trip to the releases page. The app relaunches when it is done.
   </p>
   <div class="flex flex-wrap items-center gap-3">
-    {#if update}
+    {#if update?.install === 'elsewhere'}
+      <!-- A Linux package or an .msi install: the shell says what updates it
+           (and refuses install_update), so there is no Install to offer. -->
+      <span class="max-w-xl font-sans text-sm text-fg" data-testid="desktop-update-elsewhere">
+        Talaria Desktop {update.version} is available. {update.how}
+      </span>
+    {:else if update}
       <Button size="sm" disabled={updateBusy} onclick={() => void install()}>
         {updateBusy ? 'Installing' : `Install ${update.version}`}
       </Button>

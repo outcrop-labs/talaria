@@ -165,26 +165,121 @@ save.
 
 An instance with no webview yet (the first open of a session, a relaunch) is probed first,
 from the launcher, which shows "Opening X…" with a way to stay. An unreachable instance is
-then a sentence with Retry on the launcher, not a blank window or WebKit's error page — in
-the themed titlebar mode the only chrome is drawn by the page, so that page was a trap.
-The card also offers **Open anyway**, because the check is not the webview: it is the
-shell's own HTTP client, with no cookies and its own proxy lookup and TLS trust (on Linux,
-the proxy comes only from the environment). An instance behind a sign-in gate that refuses
-the beacon without a session, or one reachable only through a proxy set in the desktop's
-settings, fails the check and still loads in the webview. Open anyway opens it without the
-check; on Linux a page that then fails comes back as a load failure (below), and on macOS
-and Windows the person gets what the platform webview shows for a failed load, as every open
-did before the probe.
+then a sentence with Retry on the launcher, not a blank window or the engine's error page —
+in the themed titlebar mode (the default on every OS) the only chrome is drawn by the page,
+so that page was a trap. The card also offers **Open anyway**, because the check is not the
+webview: it is the shell's own HTTP client, with no cookies and its own proxy lookup and TLS
+trust (on Linux, the proxy comes only from the environment). An instance behind a sign-in
+gate that refuses the beacon without a session, or one reachable only through a proxy set in
+the desktop's settings, fails the check and still loads in the webview.
 
-**Linux only:** each instance webview's WebKitGTK `load-failed` signal is watched
-(`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
-http(s) main-frame load that fails — the instance went away mid-session, a full reload
-while it is down — closes that webview and returns to the launcher with WebKit's reason and
-Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere
-or content it cannot show inline is answered "handled", so the page the person is on stays;
-left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown"
-(the navigation handler now gives a `mailto:` to the OS before WebKit sees it).
-macOS and Windows rely on the probe before a cold open.
+The probe passing is not the page loading. Cloudflare holds a request to a restarting origin
+for about 100 s and then answers 524, or answers 502 at once, or a WAF answers 403; a
+suspended instance coming back is not probed at all; a page already open reloads into a
+restart. So the shell judges every instance page itself (`src-tauri/src/loading.rs`), by
+three rules, the same on every OS:
+
+1. **A page with the Talaria UI up is never interrupted.** Up is the UI's shell hook
+   (`window.__TALARIA_DESKTOP__`), or the page's titlebar asking the shell for something
+   (`get_desktop_settings`, `list_instances`), which every UI's titlebar does once it has
+   mounted, on the sign-in page too. The second is what keeps an instance on an older
+   Talaria, from before the hook, from being judged broken. It comes late: the titlebar is
+   in a chunk of its own, loaded after the main bundle and after its own import of the
+   Tauri API, so a slow instance can finish its page several seconds before it asks. A
+   page that is Talaria's shell still starting (its `#root` and module script, no UI yet) is
+   looked at again about 8 s and 20 s after it finished before anything is said. A failed download, an
+   aborted navigation or a 5xx that does not replace the page changes nothing.
+2. **A page on the instance's own origin that is not Talaria is the card.** A main-frame
+   page there that finished, and still has no UI 3 s later (and after those looks, if it
+   was starting), puts the person back on the launcher with the card, saying what answered
+   when the platform said. The card takes nothing away:
+   - A page that answered — Cloudflare's 502, 524 or 403 challenge, a sign-in gate, a
+     mis-routed 404, a page with no Talaria in it — is **kept** behind the card, which
+     offers **Retry** and **Back to instances** (both close the page first) and **Show the
+     page**: the page as it is, with the shell's own **← Instances** on it, bottom left
+     (text, styled through the CSSOM in a shadow root, so a strict CSP cannot strip it), as
+     the way back, which brings the card back. A page shown that way is judged no more,
+     unless a later document is one the way back cannot reach (below). Show the page is the
+     only way a kept page is shown as it is: opening the instance any other way — its row,
+     the tray, a notification, another instance's switcher — closes the kept page and loads
+     the instance fresh (Retry without the probe).
+   - A load that got no answer at all (refused, dropped, an engine's network error page),
+     and a page that never answers the shell's script (WebView2's own page for an error
+     with no body, where no script runs; a page too busy to answer, looked at again 5 s and
+     12 s later first), is closed: Retry, Back to instances. Neither offers Show the page:
+     the way back could not land there.
+   - Whichever it was, if the instance's UI comes up while the card is up (a challenge
+     that solves itself, a slow start), the shell opens it; if it comes up on a page shown
+     as it is, the way back comes down.
+   - A kept page is not the instance's page: the instance's remembered page is forgotten,
+     so Retry and the next launch open its root. A network failure, a stall and a page
+     loaded hidden at launch say nothing against the page, and keep it.
+
+   A page that never finishes is the watchdog's: 25 s after a webview is made, or after a
+   document commits, a page still loading without its UI is "<instance> is not
+   answering", with **Retry**, **Keep waiting** (show the page again, with the way back on
+   it at once, and wait 60 s more) and **Back to instances**. The page keeps loading behind that
+   card and is judged when it finishes: Talaria opens it; anything else (Cloudflare's 524
+   after holding the request) is the card for what it is. A file the person opened in the
+   window (an image, a PDF, JSON: not HTML, and nothing failed) is left alone, and Keep
+   waiting on one that has finished waits for nothing.
+3. **Pages on other origins are never judged.** A sign-in provider, a Cloudflare Access
+   login: not Talaria, and not the shell's to call broken. A document that commits there
+   starts no watchdog and is judged when it finishes only if the platform said its load
+   failed on the instance's own origin. The shell takes one call from such a page, and
+   only one: the way back (`show_welcome`, granted to the instance's webview for any http(s)
+   origin by `lib.rs::grant_way_back`). So the pill and `Ctrl/Cmd+Shift+H` work on a sign-in
+   provider's page too; `Ctrl+Q` works only on the instance's own origin (the OS's own quit,
+   Alt+F4 or the macOS menu, works everywhere). Going back from another origin marks the
+   page as not the instance's, so the next open loads the instance fresh instead of showing
+   that page again.
+
+**Who may take the way back, and Quit.** A page's script can do anything a page can, so
+the shell decides by who is asking, never by a navigation (an earlier build of this change
+navigated to `talaria-desktop.invalid` for it, which any page or frame could do; that host
+is now refused like `file:`, and nothing acts on it):
+- On Linux and macOS Tauri gives the IPC to the main frame only, so no frame (a
+  microsite's sandboxed `srcdoc` frame, an ad) can call anything. WebView2 (Windows) gives
+  it to every frame, so there a frame is held by the origin ACL and the gate below, not by
+  frame scope: a sandboxed frame has an opaque origin and is refused before any command
+  runs, a cross-origin frame reaches only the way back, and a same-origin frame is the
+  instance's own content.
+- The pill and the escape keys take only real input (`isTrusted`): a page's own
+  `dispatchEvent` or `.click()` does nothing.
+- `show_welcome` from an instance page is taken only for the page on screen, at most once a
+  second (`loading::may_go_back`): a page in the background, or one calling it in a loop,
+  cannot throw the person out of what they are using.
+- `desktop_quit` from an instance page is taken only on the instance's own origin, for the
+  page on screen, and not in the first 10 s after launch (`loading::may_quit`): no page can
+  quit the app from the background, or on every start.
+
+Off screen, a page that does not come up is closed. One loaded hidden at launch (D8) is
+loaded again 1, 2, 5, 15 and 30 minutes later, so its instance's notifications are not lost
+for the session; a page left behind on the card is closed when the person opens another
+instance.
+
+What the platform says, kept for the card's words only (the rules above decide):
+
+- **Linux:** WebKitGTK's `load-failed` for an http(s) main-frame load that failed
+  (`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency),
+  and the main resource's status when a document commits. The failed load is answered
+  "handled", so WebKit shows no error page of its own and a page that was up stays up; a
+  navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`) or
+  content it cannot show inline says nothing (left to WebKit, a `mailto:` link replaced the
+  whole instance with "The URL can't be shown"; the navigation handler now refuses it, and
+  one the person clicks goes to the OS, links.rs).
+- **Windows:** WebView2's main-frame `NavigationCompleted`, subscribed through
+  `with_webview` and webview2-com (`watch_navigation`, `loading::webview2`), for an http(s)
+  page: its `HttpStatusCode` from 400, or `IsSuccess` false with no HTTP answer at all —
+  the network error page, where no init script runs and Alt+F4 was the only way out. A
+  cancelled navigation (`OPERATION_CANCELED`: replaced, or stopped) and one that became a
+  download (`CONNECTION_ABORTED`) say nothing.
+- **macOS:** nothing: WKWebView tells only its navigation delegate, which is wry's, what a
+  page answered, and WebKit's Navigation Timing has no `responseStatus`. Rule 2 needs none —
+  the card names no status there. A load that fails before it commits never finishes on
+  macOS; the watchdog takes it.
+
+Each engine callback only records; every decision is a main-thread turn of its own.
 
 ### Reloading a page
 
@@ -249,9 +344,9 @@ a choice made in one instance reaches the others.
   dynamic-ACL) of `INSTANCE_PERMISSIONS` on that one webview: `list_instances`,
   `activate_instance`, `show_welcome`, `get_desktop_settings`, `set_titlebar_mode`,
   `set_suspend_after`, `desktop_window`, `check_for_update`, `install_update`,
-  `desktop_notify`, `desktop_notification_status`, `desktop_notification_request`,
-  `desktop_notification_test`, `desktop_set_badge`, `desktop_quit`,
-  `set_close_to_background` and `desktop_suspend_report`. A suspend report counts only as
+  `snooze_update`, `desktop_notify`, `desktop_notification_status`,
+  `desktop_notification_request`, `desktop_notification_test`, `desktop_set_badge`,
+  `desktop_quit`, `set_close_to_background` and `desktop_suspend_report`. A suspend report counts only as
   the answer to the question the shell just asked that webview (a nonce). No fs, no generic
   window API, and **no `core:*` permission** (a unit test holds the line): `core:event`
   would let a page listen, and an event emitted to `EventTarget::Any` reaches every
@@ -330,7 +425,8 @@ read, when an async command can reach one from its tokio worker, or when a callb
 reach one inline. Callbacks are the closures handed to `.on_*(…)` (window, webview,
 page-load, navigation, menu and tray events), `.run(…)`, `.with_webview(…)` and GTK
 `connect_*` signals, plus any function marked `// webview-threading: callback` (the
-notification-click entry points the OS calls). It follows free function calls by name, not
+notification-click entry points the OS calls, and WebView2's `NavigationCompleted`
+handler). It follows free function calls by name, not
 method calls or macro expansions: a regression guard for this shape of bug, not a proof.
 CI's connect smoke proves the connect path on every OS (Gates, below).
 
@@ -750,9 +846,9 @@ themed min/max/close off-screen). The minimum is 760×480, also shrunk to fit.
 ## Updates
 
 A stable GitHub Release carries `latest.json` plus minisign signatures of the AppImage,
-the universal `.app.tar.gz`, and the NSIS installer. When someone checks for updates
-(Settings → Profile, or the launcher), the running app fetches
-`/releases/latest/download/latest.json`, verifies the payload against the pubkey in
+the universal `.app.tar.gz`, and the NSIS installer. The running app fetches
+`/releases/latest/download/latest.json` (on its own, below, or when someone checks in
+Settings → Profile or on the launcher), verifies the payload against the pubkey in
 `tauri.conf.json`, replaces itself, and relaunches. The check is bounded at 10 s (the
 plugin's default is no bound); the install is not, because the plugin applies one timeout
 to the check and to the whole download.
@@ -765,6 +861,86 @@ flag by default the moment it opened, an hour before its installers are attached
 every update check would 404. Its installers are downloads; its `latest.json` is not served.
 RCs do not publish `latest.json` at all. `check-invariants.mjs`
 (`release-latest-is-the-desktop-feed`) holds both workflows to this.
+
+**The update chip** (`src-tauri/src/update.rs`). Nobody had to find "Check for updates"
+for the app to learn about a release: the shell checks on its own, 30 s after launch (after
+the launch-time loads) and then every 6 hours by the wall clock, so a laptop that slept
+through the interval checks when it wakes; an hour after a check that failed. A failed
+background check is a log line, never a chip. A dev build never checks on its own (its
+version is the decorative one in `tauri.conf.json`). The check runs on a tokio worker, and
+everything it changes on screen is a main-thread turn of its own. When the feed has a newer
+version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and **Later**:
+
+- **On the launcher** it is a toast in the corner (`UpdateChip.svelte`), from the snapshot
+  (`ShellSnapshot.update`).
+- **Over an instance** the shell evaluates the same chip into the page (`update::chip_js`):
+  a shadow root on `<html>`. Instances run different Talaria versions, so the chip measures
+  the page it lands in, a moment after it arrives, on resize and every 2 s — never while the
+  pointer is on it or a press is in progress (it measures again once the pointer leaves),
+  and not at all once it is gone: Later, a snooze or no offer stops its timer and resize
+  listener with it:
+  - **Themed** (the default), **where the top band's middle takes no click** — an older
+    Talaria's 36 px titlebar, a sign-in page, the tab bar's empty middle on a wide window:
+    one 28 px row (the version, Later, Update) centred 4 px from the top. That band has the
+    window controls at one end and empty drag space in its middle, so the row covers nothing
+    a person types into or reads, and the window still drags from either side of it.
+  - **Otherwise** — a UI whose tab bar is the titlebar with its tabs in the middle, the OS
+    titlebar, or none: the chip starts as its small pill just below the bar across the top
+    of the page (62 px if there is none to measure), where nothing under it takes a click:
+    the middle, else a quarter or an eighth in from either side, else across the bar's
+    lower edge (on a small window zoomed in, where the sidebar's search and the header's
+    buttons fill the row below the bar). If no spot is free it takes the middle, below the
+    bar. Opened, its row sits centred below the bar, over the top of the page's header line,
+    until it is folded again; on a 1000 px window that covers a header button (rc's star) by
+    3 px, and on a small window zoomed in to 175 % the end of the sidebar's search. Changing the titlebar mode moves it at once
+    (`update::repaint`).
+
+  Its **–** makes it a small pill at any time, an install included: the pill keeps the
+  download's progress, and nothing is cancelled; a progress push changes the text in place,
+  so a click or the focus is never lost to a re-render. An install that fails folds it to
+  "↑ Update failed" until the person opens it. A second line (the failed install's sentence,
+  the **How?** sentence) drops below the row only when the person asks for it, and then it
+  is over the page's nav until folded. A window too narrow for the row (a small window, or a
+  page zoomed in: below 560 CSS px) starts folded, and the row never spills over the window
+  controls. It is styled from a constructed stylesheet, which a page's CSP does not govern,
+  and if a sheet ever does not apply, the same rules are set through CSSOM (`el.style`),
+  which no CSP refuses. Text is set as text, and it never takes the focus. It is the shell's,
+  not the instance UI's, because the instance webview fills the window and its UI is on its
+  own release cadence: a chip that went through the desktop bridge into ui's toast stack
+  would show only on instances already running this release, and nowhere while the page is
+  half up. A native OS banner was the other way, and it is worse at this: it needs the OS's
+  permission (macOS asks first), Windows routes only its button and loses the click after a
+  restart, and a banner cannot hold a Later that every view honours. The chip is re-added
+  when a page loads (`on_page_load`), and only to a page on the instance's own origin, never
+  to a sign-in provider the page went to.
+- **Later** puts that version off for 24 hours, in `settings.json`
+  (`updateSnooze: {version, untilMs}`): the chip comes down in every view at once, and a
+  relaunch keeps it put off. A newer version than the one put off is offered at once. A
+  snooze that ends more than a day out (the clock went back, a hand-edited file) has run out.
+- **Update** is `install_update`. The chip says the install is running, how much of the
+  download has arrived, and, if it fails, why, in a sentence, in every view (a second click
+  while it runs is refused). Its look at the feed is bounded at 20 s, and the download by its
+  progress, on the monotonic clock: nothing arriving for 60 s stops it with a sentence and
+  Update offered again. There is no short total — the Linux AppImage is about 83 MB, 43
+  minutes at 256 kbit/s — only a 4-hour backstop for a download that trickles forever, whose
+  sentence points to the releases page. Installing the bytes once they are here is local and
+  never cut off, and however `install` ends, a panic included, the chip stops saying
+  "Updating" (`InstallRun`). On success
+  Talaria restarts: on Linux and macOS through the app's own exit, so every page is
+  remembered and the single-instance name is free first; on Windows the NSIS installer runs
+  passively (`installMode`), and relaunches the app when it is done.
+
+**No Update where the updater cannot replace the copy.** The feed has one Linux entry, the
+AppImage, and one Windows entry, the NSIS setup, and the updater falls back to them for
+every bundle. A deb or rpm install would download the AppImage and refuse it ("invalid
+updater binary format", after the whole download), the pacman package and the Flatpak are
+read-only, and an `.msi` install would get a second, per-user NSIS copy beside it while its
+Start-menu entry kept the old one. So Update is offered only to an AppImage (`$APPIMAGE`,
+as the updater itself reads it), the NSIS install, and the macOS app (not one running from
+its disk image or a quarantine copy, which it cannot replace). Everywhere else the chip, the
+launcher's Check for updates and Settings → Profile say how to update instead — the new
+package or `.msi` from the Releases page — and the chip offers Later only; `install_update`
+refuses with the same sentence, for an older instance UI that still shows Install.
 
 Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
 means installed copies can no longer verify a new payload. OS code signing
