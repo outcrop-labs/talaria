@@ -47,12 +47,12 @@
 </script>
 
 {#if braille}
-  <WaitingBraille animation={braille} {size} speed={resolved.speed} class={className} />
+  <WaitingBraille animation={braille} {size} speed={resolved.speed} frameMs={resolved.frameMs} class={className} />
 {:else if grid}
   <!-- GRID_SCALE, applied HERE and only here. A braille glyph fills most of its
        em; a 5×5 lattice spends 38% of its box on gaps, so matched px sizes make
        the grid read markedly smaller than the text beside it. Every call site
        passing one `size` and getting equal visual weight from either family is
        the whole reason this dispatcher exists rather than two imports. -->
-  <WaitingGrid animation={grid} size={size * GRID_SCALE} speed={resolved.speed} class={className} />
+  <WaitingGrid animation={grid} size={size * GRID_SCALE} speed={resolved.speed} frameMs={resolved.frameMs} class={className} />
 {/if}

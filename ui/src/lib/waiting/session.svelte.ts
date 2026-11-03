@@ -5,7 +5,7 @@ import {
   type InlineWaitingSite,
   type WaitingAssignment,
 } from './rotation'
-import { speedFor, type WaitingState } from './registry'
+import { SLOT_FRAME_MS, speedFor, type WaitingState } from './registry'
 import { WAITING_SITES, type WaitingSiteKey } from './sites'
 
 /**
@@ -105,6 +105,8 @@ export interface ResolvedWaiting {
   state: WaitingState
   /** Playback multiplier that lands the state on the site's rung. */
   speed: number
+  /** Milliseconds between drawn frames for the site's slot; 0 is every frame. */
+  frameMs: number
 }
 
 /**
@@ -125,8 +127,9 @@ export type WaitingSiteRef = WaitingSiteKey | InlineWaitingSite
 export function waitingFor(ref: WaitingSiteRef): ResolvedWaiting {
   if (typeof ref === 'string') {
     const state = resolveSite(assignment(), ref, pin)
-    return { state, speed: speedFor(state, WAITING_SITES[ref].role) }
+    const site = WAITING_SITES[ref]
+    return { state, speed: speedFor(state, site.role), frameMs: SLOT_FRAME_MS[site.slot] }
   }
   const state = pickInline(seed, ref, pin)
-  return { state, speed: speedFor(state, ref.role) }
+  return { state, speed: speedFor(state, ref.role), frameMs: SLOT_FRAME_MS[ref.slot ?? 'inline'] }
 }

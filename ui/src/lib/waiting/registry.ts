@@ -141,6 +141,16 @@ const BY_SLUG = new Map(WAITING_STATES.map((s) => [s.slug, s]))
 
 export const waitingState = (slug: string): WaitingState | undefined => BY_SLUG.get(slug)
 
+/**
+ * Milliseconds between drawn frames, per slot; 0 draws every frame.
+ *
+ * A tab mark is chrome on every page and can run for minutes. Each changed
+ * frame costs the whole page a style, layout and paint pass: three tab marks
+ * at 60fps held the main thread 9.4% busy against 0.3% idle, and 2.2% at
+ * 10fps. The other slots sit in content that is waited on for seconds.
+ */
+export const SLOT_FRAME_MS: Record<WaitingSlot, number> = { tab: 100, button: 0, inline: 0, status: 0 }
+
 export const statesForSlot = (slot: WaitingSlot): readonly WaitingState[] =>
   WAITING_STATES.filter((s) => s.slots.includes(slot))
 

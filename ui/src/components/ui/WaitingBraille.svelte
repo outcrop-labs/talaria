@@ -53,6 +53,7 @@
     animation,
     size = 14,
     speed = 1,
+    frameMs = 0,
     forceReduced,
     class: className,
   }: {
@@ -62,6 +63,8 @@
     /** Playback multiplier. 1 is the animation's declared period. */
     speed?: number
     /** Force the reduced-motion rendering regardless of the OS setting. */
+    /** Milliseconds between drawn frames; 0 draws every frame. */
+    frameMs?: number
     forceReduced?: boolean
     class?: string
   } = $props()
@@ -81,6 +84,7 @@
     // change; everything below runs off the captured values.
     const a = animation
     const mult = speed
+    const every = frameMs
     const cells = Array.from(host.children) as HTMLElement[]
     let lastKey = ''
 
@@ -98,7 +102,7 @@
         const opacity = cell.alpha === 1 ? '' : cell.alpha.toFixed(2)
         if (el.style.opacity !== opacity) el.style.opacity = opacity
       }
-    })
+    }, every)
   })
 </script>
 
