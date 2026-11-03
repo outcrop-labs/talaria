@@ -198,3 +198,134 @@ async fn audience_live_a_chat_reaches_its_owner_alone() {
     );
     cleanup(&pg, "chat").await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn audience_live_the_gate_and_the_fan_agree_on_every_path() {
+    let pg = pg().await;
+    cleanup(&pg, "agree").await;
+    let mut people = Vec::new();
+    for who in [
+        "owner",
+        "member",
+        "plan-team",
+        "run-owner",
+        "run-member",
+        "run-team",
+        "stray",
+        "outsider",
+    ] {
+        people.push(reader(&pg, "agree", who).await);
+    }
+    let [
+        owner,
+        member,
+        plan_team,
+        run_owner,
+        run_member,
+        run_team,
+        stray,
+        _outsider,
+    ] = people.clone().try_into().unwrap();
+
+    let (team,): (String,) = sqlx::query_as(
+        "insert into teams (name) values ('audience-live-agree') returning id::text",
+    )
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    for who in [&plan_team, &run_team] {
+        sqlx::query(
+            "insert into team_members (team_id, user_id, role) values ($1::uuid, $2::uuid, 'member')",
+        )
+        .bind(&team)
+        .bind(who)
+        .execute(&pg)
+        .await
+        .unwrap();
+    }
+    let mut conversations = Vec::new();
+    for kind in ["chat", "plan", "work", "research"] {
+        let id = conversation(&pg, &owner, kind).await;
+        sqlx::query(
+            "insert into conversation_members (conversation_id, user_id) values ($1::uuid, $2::uuid)",
+        )
+        .bind(&id)
+        .bind(if kind == "chat" { &stray } else { &member })
+        .execute(&pg)
+        .await
+        .unwrap();
+        if kind == "plan" || kind == "work" {
+            sqlx::query(
+                "insert into conversation_teams (conversation_id, team_id) values ($1::uuid, $2::uuid)",
+            )
+            .bind(&id)
+            .bind(&team)
+            .execute(&pg)
+            .await
+            .unwrap();
+        }
+        if kind == "research" {
+            let (run,): (String,) = sqlx::query_as(
+                "insert into research_runs \
+                   (conversation_id, owner_user_id, question, mode, agent_model, requested_by) \
+                 values ($1::uuid, $2::uuid, 'q', 'brief', 'claude-test', 'x') returning id::text",
+            )
+            .bind(&id)
+            .bind(&run_owner)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+            sqlx::query(
+                "insert into research_members (run_id, user_id) values ($1::uuid, $2::uuid)",
+            )
+            .bind(&run)
+            .bind(&run_member)
+            .execute(&pg)
+            .await
+            .unwrap();
+            sqlx::query("insert into research_teams (run_id, team_id) values ($1::uuid, $2::uuid)")
+                .bind(&run)
+                .bind(&team)
+                .execute(&pg)
+                .await
+                .unwrap();
+        }
+        conversations.push((kind, id));
+    }
+
+    for (kind, id) in &conversations {
+        let audience = conversation_audience_ids(&pg, id).await.unwrap();
+        for person in &people {
+            assert_eq!(
+                conversation_accessible(&pg, person, id).await.unwrap(),
+                audience.contains(person),
+                "{kind}: the gate and the fan disagree about {person}"
+            );
+        }
+    }
+    let readers = |kind: &str| {
+        let id = &conversations.iter().find(|(k, _)| *k == kind).unwrap().1;
+        let pg = pg.clone();
+        let id = id.clone();
+        async move {
+            let mut a = conversation_audience_ids(&pg, &id).await.unwrap();
+            a.sort();
+            a
+        }
+    };
+    let sorted = |mut v: Vec<&String>| {
+        v.sort();
+        v.into_iter().cloned().collect::<Vec<String>>()
+    };
+    assert_eq!(readers("chat").await, sorted(vec![&owner]));
+    assert_eq!(
+        readers("plan").await,
+        sorted(vec![&owner, &member, &plan_team, &run_team])
+    );
+    assert_eq!(
+        readers("research").await,
+        sorted(vec![&owner, &run_owner, &run_member, &plan_team, &run_team])
+    );
+    cleanup(&pg, "agree").await;
+}

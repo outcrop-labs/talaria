@@ -19,44 +19,44 @@ use std::sync::OnceLock;
 pub static REF_BLOCKS: OnceLock<fn(&Value) -> String> = OnceLock::new();
 use talaria_uploads::attachment_text_blocks;
 
-/// Who can read conversation `c`, as a WHERE clause over `$viewer` (a bind
-/// like `"$1::uuid"`, or a column like `"u.id"`): the owner; for plans and
-/// work sessions, a member or a team member; for research, whoever the run's
-/// own audience admits. Chats admit only their owner. The read gates, the
-/// listing, the unread badge, the working read and the firehose audience all
-/// filter by this one spelling. A macro, not a const, so each query stays one
-/// `'static` literal.
+/// Everyone who can read conversation `c`, as a subquery body correlated on
+/// `c`: the owner; for plans and work sessions, the named members and the
+/// members of each team it is shared with; for research, the run's owner,
+/// members and team members. Chats admit only their owner. This is the one
+/// definition: `audience_sql!` asks whether a viewer is in it, and
+/// `conversation_audience_ids` lists it. A macro, not a const, so each query
+/// stays one `'static` literal.
+macro_rules! readers_sql {
+    () => {
+        "select c.user_id \
+         union all \
+         select cm.user_id from conversation_members cm \
+          where cm.conversation_id = c.id and c.kind in ('plan', 'work') \
+         union all \
+         select tm.user_id from conversation_teams ct \
+           join team_members tm on tm.team_id = ct.team_id \
+          where ct.conversation_id = c.id and c.kind in ('plan', 'work') \
+         union all \
+         select r.owner_user_id from research_runs r \
+          where r.conversation_id = c.id and c.kind = 'research' \
+            and r.owner_user_id is not null \
+         union all \
+         select rm.user_id from research_runs r \
+           join research_members rm on rm.run_id = r.id \
+          where r.conversation_id = c.id and c.kind = 'research' \
+         union all \
+         select tm.user_id from research_runs r \
+           join research_teams rt on rt.run_id = r.id \
+           join team_members tm on tm.team_id = rt.team_id \
+          where r.conversation_id = c.id and c.kind = 'research'"
+    };
+}
+
+/// `$viewer` (a bind like `"$1::uuid"`) can read conversation `c`. The read
+/// gates, the listing, the unread badge and the working read filter by it.
 macro_rules! audience_sql {
     ($viewer:literal) => {
-        concat!(
-            "(c.user_id = ",
-            $viewer,
-            " \
-              or (c.kind in ('plan', 'work') and ( \
-                exists(select 1 from conversation_members cm \
-                       where cm.conversation_id = c.id and cm.user_id = ",
-            $viewer,
-            ") \
-                or exists(select 1 from conversation_teams ct \
-                          join team_members tm on tm.team_id = ct.team_id \
-                          where ct.conversation_id = c.id and tm.user_id = ",
-            $viewer,
-            "))) \
-              or (c.kind = 'research' and exists( \
-                select 1 from research_runs r \
-                  left join research_members rm on rm.run_id = r.id and rm.user_id = ",
-            $viewer,
-            " \
-                 where r.conversation_id = c.id \
-                   and (r.owner_user_id = ",
-            $viewer,
-            " or rm.user_id is not null \
-                     or exists(select 1 from research_teams rt \
-                               join team_members tm on tm.team_id = rt.team_id \
-                               where rt.run_id = r.id and tm.user_id = ",
-            $viewer,
-            ")))))"
-        )
+        concat!("(", $viewer, " in (", readers_sql!(), "))")
     };
 }
 

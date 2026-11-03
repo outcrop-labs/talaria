@@ -1,4 +1,4 @@
-// A conversation's firehose audience: everyone `audience_sql!` admits, so a
+// A conversation's firehose audience: everyone `readers_sql!` lists, so a
 // `conversation` event reaches exactly the people whose list, unread pill or
 // working glyph it can move, and nobody the read gates would refuse.
 
@@ -6,16 +6,16 @@ use sqlx::PgPool;
 use talaria_notify::NotifyDeps;
 use talaria_realtime::{UserEvent, publish_user};
 
-/// Who can read a conversation, as user ids. The read gates' predicate run
-/// over every person rather than bound to one.
+/// Who can read a conversation, as user ids: `readers_sql!` for that row.
 pub async fn conversation_audience_ids(
     pg: &PgPool,
     conversation_id: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(concat!(
-        "select u.id::text from conversations c cross join users u \
-         where c.id = $1::uuid and ",
-        audience_sql!("u.id")
+        "select distinct a.id::text from conversations c \
+         cross join lateral (",
+        readers_sql!(),
+        ") a(id) where c.id = $1::uuid"
     ))
     .bind(conversation_id)
     .fetch_all(pg)
