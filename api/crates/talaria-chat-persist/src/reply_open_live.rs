@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use talaria_conversations::{add_plan_member, create_conversation};
 use talaria_notify::NotifyDeps;
 
-use super::open_streaming_reply;
+use super::{open_streaming_reply, reopen_streaming_reply};
 
 type Rung = Arc<Mutex<Vec<(String, String)>>>;
 
@@ -128,16 +128,83 @@ async fn reply_open_live_rings_plan_members_and_no_one_else() {
     cleanup(&pg, "plan").await;
 }
 
+/// A pool that refuses every query, for the write, beside a live one for the
+/// audience: a fan that ran before the write would still find the owner.
+async fn refusing_pool() -> PgPool {
+    let pg = pool().await;
+    pg.close().await;
+    pg
+}
+
 #[tokio::test]
 #[ignore]
 async fn reply_open_live_rings_no_one_when_the_row_is_not_inserted() {
     let pg = pool().await;
-    let missing = "00000000-0000-4000-8000-00000000d1e5";
+    cleanup(&pg, "fail").await;
+    let owner = person(&pg, "fail", "owner").await;
+    let conv = create_conversation(&pg, &owner, "reply-open-agent", "chat", "chat", None)
+        .await
+        .unwrap();
+
     let (deps, rung) = recording(&pg);
+    let refused = refusing_pool().await;
     assert!(
-        open_streaming_reply(&pg, deps, missing, 1, &json!({}))
+        open_streaming_reply(&refused, deps, &conv, 1, &json!({}))
             .await
             .is_err()
     );
-    assert!(rung_for(&rung, Duration::from_millis(300)).await.is_empty());
+    assert!(rung_for(&rung, Duration::from_millis(500)).await.is_empty());
+    cleanup(&pg, "fail").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn reply_open_live_a_resumed_reply_rings_its_readers_again() {
+    let pg = pool().await;
+    cleanup(&pg, "resume").await;
+    let owner = person(&pg, "resume", "owner").await;
+    let member = person(&pg, "resume", "member").await;
+    let conv = create_conversation(&pg, &owner, "reply-open-agent", "plan", "plan", None)
+        .await
+        .unwrap();
+    add_plan_member(&pg, &conv, &member).await.unwrap();
+    let (deps, _) = recording(&pg);
+    let reply = open_streaming_reply(&pg, deps, &conv, 1, &json!({}))
+        .await
+        .unwrap();
+    sqlx::query("update messages set status = 'error' where id = $1::uuid")
+        .bind(&reply)
+        .execute(&pg)
+        .await
+        .unwrap();
+
+    let (deps, rung) = recording(&pg);
+    let refused = refusing_pool().await;
+    assert!(
+        reopen_streaming_reply(&refused, deps, &conv, &reply)
+            .await
+            .is_err()
+    );
+    assert!(rung_for(&rung, Duration::from_millis(500)).await.is_empty());
+
+    let (deps, rung) = recording(&pg);
+    reopen_streaming_reply(&pg, deps, &conv, &reply)
+        .await
+        .unwrap();
+    let channels: BTreeSet<String> = rung_for(&rung, Duration::from_millis(500))
+        .await
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
+    assert_eq!(
+        channels,
+        BTreeSet::from([format!("user:{owner}"), format!("user:{member}")]),
+    );
+    let (status,): (String,) = sqlx::query_as("select status from messages where id = $1::uuid")
+        .bind(&reply)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(status, "streaming");
+    cleanup(&pg, "resume").await;
 }

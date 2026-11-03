@@ -388,6 +388,19 @@ pub async fn open_streaming_reply(
     Ok(id)
 }
 
+/// Reopen a reply the resume path picked back up: its row streams again, so
+/// its readers hear it start again, exactly as `open_streaming_reply` rings.
+pub async fn reopen_streaming_reply(
+    pg: &PgPool,
+    notify: NotifyDeps,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<(), sqlx::Error> {
+    resurrect_streaming_assistant(pg, message_id).await?;
+    fan_conversation_event(notify, conversation_id.to_string());
+    Ok(())
+}
+
 pub async fn send_turn(
     pg: &PgPool,
     pinned: bool,
@@ -652,16 +665,13 @@ async fn continue_inner(
     // itself rather than missing it (`OpeningTurn`).
     let opening = OpeningTurn::take(conversation_id);
     let assistant_id = match resume {
-        Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
-            Ok(()) => {
-                fan_conversation_event(
-                    NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
-                    conversation_id.to_string(),
-                );
-                row.to_string()
+        Some(row) => {
+            let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+            match reopen_streaming_reply(&state.pg, notify, conversation_id, row).await {
+                Ok(()) => row.to_string(),
+                Err(_) => return,
             }
-            Err(_) => return,
-        },
+        }
         None => {
             let Ok(seq) = next_seq(&state.pg, conversation_id).await else {
                 return;
