@@ -1281,7 +1281,10 @@ mod tests {
         // Unlisted, or a list that is not one: metered.
         assert!(!listed_unmetered(&after_rollback, "my-key"));
         assert!(!listed_unmetered(&json!([]), "ops-shared-key"));
-        assert!(!listed_unmetered(&json!({"ops-shared-key": true}), "ops-shared-key"));
+        assert!(!listed_unmetered(
+            &json!({"ops-shared-key": true}),
+            "ops-shared-key"
+        ));
     }
 
     #[test]
