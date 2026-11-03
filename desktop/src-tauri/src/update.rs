@@ -769,18 +769,23 @@ fn sentence(lead: &str, detail: &str) -> String {
 /// works on any Talaria version. It lives in a shadow root on `<html>` and
 /// never takes the focus.
 ///
-/// Where depends on the window's titlebar mode:
-/// - **Themed** (the default on every OS): one 28 px row centred in the top
-///   bar every Talaria UI draws (36 px), `CHIP_TOP` from the top. The bar has
-///   the window controls at one end and empty drag space everywhere else, so
-///   the row covers nothing a person types into or reads, and the window
-///   still drags from either side of it. A second line (an install's
-///   error, the "How?" sentence) drops below the bar, over the page's nav,
-///   only once the person asked for it.
-/// - **OS titlebar, or none:** there is no such bar; the page's first row is
-///   its nav. The chip starts as the small pill, `CHIP_TOP_BARE` from the
-///   top, below a nav row's 56 px, and stays folded unless the person opens
-///   it; opened, it sits over the top of the page's header until folded.
+/// Where depends on the window's titlebar mode and on the page, which the
+/// chip measures, since instances run different Talaria versions:
+/// - **Themed** (the default on every OS), on a page whose themed band's
+///   middle takes no click — an older Talaria's 36 px band, a sign-in page:
+///   one 28 px row centred in it, `CHIP_TOP` from the top. The band has the
+///   window controls at one end and empty drag space everywhere else, so
+///   the row covers nothing a person types into or reads. A second line (an
+///   install's error, the "How?" sentence) drops below the band, over the
+///   page's nav, only once the person asked for it.
+/// - **Themed, on a UI whose tab bar is the titlebar** (its tabs are in that
+///   middle), **and the OS titlebar or none:** the chip starts as the small
+///   pill, just below the bar across the top of the page (`CHIP_TOP_BARE`
+///   when there is none to measure), over the middle of the page's header
+///   line, and stays folded unless the person opens it.
+///
+/// The page is measured again a moment after the chip arrives (the UI may
+/// mount after it), on resize, and every 2 s.
 ///
 /// The chip folds to the pill ("–") at any time, an install included: the
 /// pill keeps its progress, and folding cancels nothing. An install that
@@ -801,10 +806,8 @@ pub fn chip_js(offer: Option<&Offer>, titlebar: settings::TitlebarMode) -> Strin
     CHIP_JS
         .replace("__OFFER__", &data)
         .replace("__BAR__", if bar { "true" } else { "false" })
-        .replace(
-            "__TOP__",
-            &if bar { CHIP_TOP } else { CHIP_TOP_BARE }.to_string(),
-        )
+        .replace("__TOP__", &CHIP_TOP.to_string())
+        .replace("__BARE_TOP__", &CHIP_TOP_BARE.to_string())
         .replace("__NARROW__", &CHIP_NARROW.to_string())
 }
 
@@ -812,7 +815,8 @@ pub fn chip_js(offer: Option<&Offer>, titlebar: settings::TitlebarMode) -> Strin
 /// themed mode: inside the 36 px titlebar, 4 px clear of its edges.
 pub const CHIP_TOP: u32 = 4;
 
-/// The same with no themed titlebar: below the page's nav row (56 px).
+/// Below the bar across the top of the page, when the chip cannot measure
+/// it: a nav row's 56 px, and 6 px clear.
 pub const CHIP_TOP_BARE: u32 = 62;
 
 /// Below this window width, in CSS px, the chip starts folded: the row and
@@ -822,6 +826,8 @@ pub const CHIP_NARROW: u32 = 560;
 const CHIP_JS: &str = r#"(() => {
   const offer = __OFFER__;
   const BAR = __BAR__;
+  const BAND = __TOP__;
+  const BELOW = __BARE_TOP__;
   const ID = 'talaria-desktop-update';
   const KEY = 'talaria-desktop-update-fold';
   let host = document.getElementById(ID);
@@ -834,7 +840,57 @@ const CHIP_JS: &str = r#"(() => {
     host.attachShadow({ mode: 'open' });
     root.appendChild(host);
   }
-  host.style.cssText = 'all:initial;position:fixed;top:__TOP__px;left:50%;transform:translateX(-50%);z-index:2147483647;display:block;';
+  // Where: in the themed band's middle when nothing there takes a click (an
+  // older Talaria's 36 px band, a sign-in page); otherwise just below the bar
+  // across the top of the page (a UI whose tab bar is the titlebar, the OS
+  // titlebar's nav row), folded.
+  const CONTROLS = 'a, button, input, select, textarea, [role="tab"], [role="button"], [contenteditable="true"]';
+  // Nothing that takes a click in the box `half` either side of `x`, from
+  // `y` down `h` px (the chip's own host aside).
+  const clear = (x, half, y, h) => {
+    for (const dy of [2, h / 2, h - 2]) {
+      for (const dx of [-half, -half / 2, 0, half / 2, half]) {
+        for (const e of document.elementsFromPoint(x + dx, y + dy)) {
+          if (e !== host && e.closest(CONTROLS)) return false;
+        }
+      }
+    }
+    return true;
+  };
+  const bandFree = () => clear(innerWidth / 2, Math.max(0, Math.min(180, innerWidth / 2 - 130)), BAND, 28);
+  // The bottom of the bar across the top of the page.
+  const barBottom = () => {
+    for (const e of document.elementsFromPoint(innerWidth / 2, 18)) {
+      if (e === host || e === document.documentElement || e === document.body) continue;
+      const r = e.getBoundingClientRect();
+      if (r.top <= 1 && r.width >= innerWidth * 0.9 && r.height >= 24 && r.height <= 120) return Math.round(r.bottom);
+    }
+    return BELOW - 6;
+  };
+  const place = () => (BAR && bandFree() ? BAND : barBottom() + 6);
+  // The folded pill below the bar goes where nothing under it takes a click:
+  // just below the bar, in the middle, else a quarter or an eighth in from
+  // either side; else across the bar's lower edge, where a bar's tabs and a
+  // header's controls leave a strip (a page zoomed in on a small window,
+  // whose sidebar search and header buttons fill the row below).
+  const PILL_H = 22;
+  const spot = () => {
+    const below = top, edge = top - 6 - 10;
+    for (const y of [below, edge]) {
+      for (const f of [0.5, 0.75, 0.25, 0.875, 0.125]) {
+        const x = Math.max(62, Math.min(innerWidth - 62, innerWidth * f));
+        if (clear(x, 60, y, PILL_H)) return [x, y];
+      }
+    }
+    return [innerWidth / 2, below];
+  };
+  const setX = () => {
+    const [x, y] = top !== BAND && collapsed ? spot() : [innerWidth / 2, top];
+    host.style.left = x + 'px';
+    host.style.top = y + 'px';
+  };
+  let top = place();
+  host.style.cssText = 'all:initial;position:fixed;top:' + top + 'px;left:50%;transform:translateX(-50%);z-index:2147483647;display:block;';
   const shadow = host.shadowRoot;
   // Each rule is also what CSSOM sets when the sheet did not apply.
   const RULES = {
@@ -846,7 +902,7 @@ const CHIP_JS: &str = r#"(() => {
     button: 'flex:0 0 auto;font-family:inherit;font-weight:600;font-size:11px;line-height:1.4;padding:1px 8px;border-radius:4px;border:1px solid #4a4640;background:transparent;color:#e7e2db;cursor:pointer;',
     update: 'background:#c8b46c;border-color:#c8b46c;color:#090a09;',
     quiet: 'border-color:transparent;color:#8e877e;',
-    pill: 'display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:inherit;font-weight:600;font-size:11px;line-height:1.4;padding:4px 10px;border:0;border-radius:6px;background:transparent;color:#c8b46c;cursor:pointer;',
+    pill: 'display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:inherit;font-weight:600;font-size:11px;line-height:1.4;padding:2px 10px;border:0;border-radius:6px;background:transparent;color:#c8b46c;cursor:pointer;',
     failed: 'color:#ee6018;',
   };
   const CSS = `.chip{${RULES.chip}} .row{${RULES.row}} .title{${RULES.title}} .line{${RULES.line}}
@@ -888,8 +944,9 @@ const CHIP_JS: &str = r#"(() => {
   // the pill says so, and its sentence waits for them (it would sit over the
   // page's nav).
   const unseen = () => !!offer.error && host.dataset.seen !== offer.error;
-  const folded = () => chose('small') || unseen() || (!chose('open') && (!BAR || innerWidth < __NARROW__));
+  const folded = () => chose('small') || unseen() || (!chose('open') && (top !== BAND || innerWidth < __NARROW__));
   let collapsed = folded();
+  setX();
   let how = host.dataset.how === '1';
   const pillText = (o, pct) => o.error ? '↑ Update failed' : o.busy ? '↑ Updating' + pct : '↑ ' + o.version;
   const titleText = (o, pct) => o.busy
@@ -920,7 +977,7 @@ const CHIP_JS: &str = r#"(() => {
       pill.addEventListener('click', (e) => {
         e.stopPropagation();
         if (o.error) host.dataset.seen = o.error;
-        collapsed = false; choose('open');
+        collapsed = false; choose('open'); setX();
         render(o);
       });
       box.append(pill);
@@ -959,7 +1016,7 @@ const CHIP_JS: &str = r#"(() => {
         }
       }
       const hide = button('quiet hide', '–', () => {
-        collapsed = true; choose('small');
+        collapsed = true; choose('small'); setX();
         render(o);
       });
       hide.title = 'Make this small';
@@ -987,17 +1044,24 @@ const CHIP_JS: &str = r#"(() => {
       host.dataset.styled = style ? 'style' : 'sheet';
     }
   };
-  // A window that narrows (or a page zoomed in) folds a chip nobody chose to
-  // open; one that widens again unfolds it. The latest offer's render.
+  // The page changes under the chip: its UI mounts after the chip arrives, a
+  // window narrows or widens, a page is zoomed. Placed and folded again, by
+  // the latest offer's render: on resize, a moment after it is added, and
+  // every 2 s.
   host.__talariaFit = () => {
     const was = collapsed;
+    top = place();
     collapsed = folded();
     if (collapsed !== was) render(offer);
+    setX();
   };
-  if (!host.dataset.fits) {
-    host.dataset.fits = '1';
-    addEventListener('resize', () => { if (host.isConnected && host.__talariaFit) host.__talariaFit(); });
+  const fit = () => { const h = document.getElementById(ID); if (h && h.__talariaFit) h.__talariaFit(); };
+  if (!window.__talariaChipFits) {
+    window.__talariaChipFits = true;
+    addEventListener('resize', fit);
+    setInterval(fit, 2000);
   }
+  setTimeout(fit, 300);
   render(offer);
 })();"#;
 
@@ -1457,19 +1521,30 @@ mod tests {
         assert!(js.contains("adoptedStyleSheets"));
         // And when no sheet applies, CSSOM sets the same rules.
         assert!(js.contains("e.style.cssText = names.map"));
-        // In the themed titlebar's middle, open unless the window is narrow.
-        assert!(js.contains(&format!("top:{CHIP_TOP}px")));
+        // In the themed band's middle if nothing there takes a click, open
+        // unless the window is narrow; else below the bar, folded.
+        assert!(js.contains(&format!("const BAND = {CHIP_TOP};")));
+        assert!(js.contains(&format!("const BELOW = {CHIP_TOP_BARE};")));
+        assert!(js.contains("const place = () => (BAR && bandFree() ? BAND : barBottom() + 6);"));
+        // The pill goes where nothing under it takes a click, below the bar or
+        // across its lower edge.
+        assert!(js.contains("for (const y of [below, edge])"));
         assert!(js.contains("const BAR = true;"));
         assert!(js.contains(&format!("innerWidth < {CHIP_NARROW}")));
-        for hole in ["__TOP__", "__BAR__", "__NARROW__", "__OFFER__"] {
+        for hole in [
+            "__TOP__",
+            "__BARE_TOP__",
+            "__BAR__",
+            "__NARROW__",
+            "__OFFER__",
+        ] {
             assert!(!js.contains(hole), "{hole}");
         }
         // With the OS titlebar, or none, the page's nav is the first row:
         // below it, and folded to the pill until the person opens it.
         let bare = chip_js(Some(&o), Os);
-        assert!(bare.contains(&format!("top:{CHIP_TOP_BARE}px")));
         assert!(bare.contains("const BAR = false;"));
-        assert!(bare.contains("(!BAR || innerWidth <"));
+        assert!(bare.contains("(top !== BAND || innerWidth <"));
         // A failed install says so in the pill, folded until it is opened.
         assert!(js.contains("o.error ? '↑ Update failed'"));
         assert!(js.contains("chose('small') || unseen() ||"));

@@ -778,17 +778,22 @@ version, a chip reads "Talaria Desktop 0.13.0 is available", with **Update** and
 - **On the launcher** it is a toast in the corner (`UpdateChip.svelte`), from the snapshot
   (`ShellSnapshot.update`).
 - **Over an instance** the shell evaluates the same chip into the page (`update::chip_js`):
-  a shadow root on `<html>`, where the window's titlebar mode puts it:
-  - **Themed** (the default): one 28 px row (the version, Later, Update) centred in the
-    window's top bar, 4 px from the top. The themed titlebar every Talaria UI draws (36 px,
-    since the shell's first release) has the window controls at one end and empty drag space
-    everywhere else, so the row covers nothing a person types into or reads — no composer,
-    however tall it grows, and not the toast stack, which is bottom right — and the window
-    still drags from either side of it.
-  - **The OS titlebar, or none:** there is no such bar, and the page's first row is its nav,
-    so the chip starts as its small pill, 62 px from the top, below a nav row, where it sits
-    over the middle of the page's header line; opened, its row sits there too until it is
-    folded again. Changing the mode moves the chip at once (`update::repaint`).
+  a shadow root on `<html>`. Instances run different Talaria versions, so the chip measures
+  the page it lands in, a moment after it arrives, on resize and every 2 s:
+  - **Themed** (the default), **where the top band's middle takes no click** — an older
+    Talaria's 36 px titlebar, a sign-in page, the tab bar's empty middle on a wide window:
+    one 28 px row (the version, Later, Update) centred 4 px from the top. That band has the
+    window controls at one end and empty drag space in its middle, so the row covers nothing
+    a person types into or reads, and the window still drags from either side of it.
+  - **Otherwise** — a UI whose tab bar is the titlebar with its tabs in the middle, the OS
+    titlebar, or none: the chip starts as its small pill just below the bar across the top
+    of the page (62 px if there is none to measure), where nothing under it takes a click:
+    the middle, else a quarter or an eighth in from either side, else across the bar's
+    lower edge (on a small window zoomed in, where the sidebar's search and the header's
+    buttons fill the row below the bar). If no spot is free it takes the middle, below the
+    bar. Opened, its row sits centred below the bar, over the top of the page's header line,
+    until it is folded again. Changing the titlebar mode moves it at once
+    (`update::repaint`).
 
   Its **–** makes it a small pill at any time, an install included: the pill keeps the
   download's progress, and nothing is cancelled; a progress push changes the text in place,
