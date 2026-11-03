@@ -1,15 +1,14 @@
 import { prefersReducedMotion } from '@/lib/motion'
+import { isUnder } from '@/lib/route-tabs'
 
-// The playground's "Lift", tuned: the clicked tab and its view rise out of the
-// bar while the old view keeps rising and fades. Durations in ms.
 export const LIFT = {
   ease: 'cubic-bezier(0.22, 1, 0.36, 1)',
-  reveal: 280,
-  exit: 160,
+  revealMs: 280,
+  exitMs: 160,
   tab: { rise: 8, scale: 0.92, opacity: 0.4 },
-  view: { rise: 12, delay: 40, blur: 3 },
-  sink: 8,
-  reduced: 150,
+  view: { rise: 12, delayMs: 40, blur: 3 },
+  exitRise: 8,
+  reducedMs: 150,
 } as const
 
 interface Track {
@@ -25,14 +24,14 @@ interface LiftPlan {
 
 export function liftPlan(reduced: boolean): LiftPlan {
   if (reduced) {
-    const fade = { duration: LIFT.reduced, easing: 'ease' }
+    const fade = { duration: LIFT.reducedMs, easing: 'ease' }
     return {
       tab: { frames: [{ opacity: LIFT.tab.opacity }, { opacity: 1 }], options: fade },
       view: { frames: [{ opacity: 0 }, { opacity: 1 }], options: fade },
       exit: { frames: [{ opacity: 1 }, { opacity: 0 }], options: { ...fade, fill: 'forwards' } },
     }
   }
-  const enter = { duration: LIFT.reveal, easing: LIFT.ease, fill: 'backwards' } as const
+  const enter = { duration: LIFT.revealMs, easing: LIFT.ease, fill: 'backwards' } as const
   return {
     tab: {
       frames: [
@@ -50,14 +49,14 @@ export function liftPlan(reduced: boolean): LiftPlan {
         { transform: `translateY(${LIFT.view.rise}px)`, opacity: 0, filter: `blur(${LIFT.view.blur}px)` },
         { transform: 'none', opacity: 1, filter: 'none' },
       ],
-      options: { ...enter, delay: LIFT.view.delay },
+      options: { ...enter, delay: LIFT.view.delayMs },
     },
     exit: {
       frames: [
         { transform: 'none', opacity: 1 },
-        { transform: `translateY(${-LIFT.sink}px)`, opacity: 0 },
+        { transform: `translateY(${-LIFT.exitRise}px)`, opacity: 0 },
       ],
-      options: { duration: LIFT.exit, easing: LIFT.ease, fill: 'forwards' },
+      options: { duration: LIFT.exitMs, easing: LIFT.ease, fill: 'forwards' },
     },
   }
 }
@@ -67,11 +66,12 @@ interface ExitView {
   scrolled: Array<{ el: Element; top: number; left: number }>
 }
 
-// The old view is gone once the route swaps, so a copy is taken at the click.
-// The copy loses its scroll offsets, which are carried over, and its embedded
-// media is blanked so an iframe never loads twice.
 function captureView(page: HTMLElement): ExitView {
-  const clone = page.cloneNode(true) as HTMLElement
+  // Copied inside a document with no browsing context, where nothing fetches,
+  // and its media dropped before it joins the page: a copied video or iframe
+  // would load again.
+  const inert = document.implementation.createHTMLDocument('')
+  const clone = inert.importNode(page, true)
   const from = page.querySelectorAll('*')
   const to = clone.querySelectorAll('*')
   const scrolled: ExitView['scrolled'] = []
@@ -79,7 +79,7 @@ function captureView(page: HTMLElement): ExitView {
     if (el.scrollTop || el.scrollLeft) scrolled.push({ el: to[i]!, top: el.scrollTop, left: el.scrollLeft })
   })
   for (const media of clone.querySelectorAll('iframe, video, audio, object, embed')) {
-    const blank = document.createElement('div')
+    const blank = inert.createElement('div')
     blank.className = media.className
     blank.style.cssText = (media as HTMLElement).style.cssText
     media.replaceWith(blank)
@@ -96,7 +96,7 @@ function captureView(page: HTMLElement): ExitView {
     margin: '0',
     pointerEvents: 'none',
   })
-  return { clone, scrolled }
+  return { clone: document.adoptNode(clone), scrolled }
 }
 
 let running: Animation[] = []
@@ -127,11 +127,7 @@ function play(tab: HTMLElement, page: HTMLElement | null, exit: ExitView | null)
   out.finished.then(done, done)
 }
 
-// The strip's switch hook. A plain left click on a closed tile arms the lift
-// and copies the open view; the lift plays once the strip shows the clicked
-// tile as the open tab. A route change nobody clicked here, such as a deep
-// link or the back button, never arms it.
-export function tabLift(strip: HTMLElement) {
+export function tabLift(strip: HTMLElement, _pathname: string) {
   let armed: { from: Element | null; to: string; exit: ExitView | null } | null = null
   const openTab = () => strip.querySelector<HTMLElement>('a[aria-current="page"]')
 
@@ -156,6 +152,11 @@ export function tabLift(strip: HTMLElement) {
   mo.observe(strip, { childList: true })
   strip.addEventListener('click', onClick)
   return {
+    // A route change outside the clicked tile spends the click: that tile's
+    // navigation was superseded or refused, so a later visit is not its lift.
+    update(pathname: string) {
+      if (armed && !isUnder(pathname, armed.to)) armed = null
+    },
     destroy() {
       mo.disconnect()
       strip.removeEventListener('click', onClick)

@@ -11,7 +11,7 @@ describe('liftPlan', () => {
     }
   })
 
-  it('full motion lifts the tab and the view and sinks the old view', () => {
+  it('full motion lifts the tab and the view, and the old view keeps rising as it fades', () => {
     const plan = liftPlan(false)
     expect(plan.tab.frames[0]).toMatchObject({ transform: 'translateY(8px) scale(0.92)', opacity: 0.4 })
     expect(plan.view.frames[0]).toMatchObject({ transform: 'translateY(12px)', filter: 'blur(3px)', opacity: 0 })
@@ -33,6 +33,7 @@ describe('tabLift', () => {
   let swapped: () => void = () => {}
   let open: ReturnType<typeof fakeTab>
   let click: (event: object) => void = () => {}
+  let lift: ReturnType<typeof tabLift>
   const strip = {
     querySelector: () => open,
     addEventListener: (_: string, fn: (event: object) => void) => (click = fn),
@@ -54,7 +55,7 @@ describe('tabLift', () => {
       },
     )
     vi.stubGlobal('document', { querySelector: () => null })
-    tabLift(strip as unknown as HTMLElement)
+    lift = tabLift(strip as unknown as HTMLElement, '/work')
   })
   afterEach(() => vi.unstubAllGlobals())
 
@@ -78,6 +79,22 @@ describe('tabLift', () => {
     open = fakeTab('/boards')
     swapped()
     expect(open.animate).not.toHaveBeenCalled()
+  })
+
+  it('a route change outside the clicked tile spends the click, so a later visit there does not lift', () => {
+    clickTile(fakeTab('/boards'))
+    lift.update('/work/a-thread')
+    open = fakeTab('/boards')
+    swapped()
+    expect(open.animate).not.toHaveBeenCalled()
+  })
+
+  it('the clicked tile redirecting inside its own route still lifts', () => {
+    clickTile(fakeTab('/boards'))
+    lift.update('/boards/b1')
+    open = fakeTab('/boards')
+    swapped()
+    expect(open.animate).toHaveBeenCalledTimes(1)
   })
 
   it('a click is spent by the next tab change, even one that lands elsewhere', () => {

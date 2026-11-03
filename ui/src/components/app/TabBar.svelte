@@ -103,7 +103,7 @@
     <DesktopSwitcher collapsed />
   </div>
 
-  <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade use:revealCurrent use:tabLift>
+  <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade use:revealCurrent use:tabLift={route.pathname}>
     {#each row as section, si (section.id)}
       {#if si > 0}<div class="mb-3 h-5 w-px shrink-0 bg-line"></div>{/if}
       {#each section.items as item (item.to)}
