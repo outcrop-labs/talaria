@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { createRequire } from 'node:module'
-import { clientSpecifiers, hostBuildStamp, serverSpecifiers } from '../src/app-runtime/specifiers'
+import { clientSpecifiers, hostBuildStamp, serverSpecifiers, SHARED_SERVER_PACKAGES, shimFileName, shimSource } from '../src/app-runtime/specifiers'
 import { SDK_VERSION } from '../src/server/app-build/manifest'
 import { KIT_FORMAT, KIT_PACKAGES, KIT_PATHS, kitVersionOk, type KitManifest } from '../src/sdk-kit/kit'
 import { kitSourceDigest, rewriteHostAliases, sdkSourceClosure, tarGz, type TarEntry } from '../src/sdk-kit/pack'
@@ -150,12 +150,13 @@ try {
   }
 
   // ── 2. The runtime ───────────────────────────────────────────────────────
-  // The CLI, the @talaria/sdk/server shim an app's server, mcp and harness
-  // chunks link to (where the build recipe looks for it), and the testing
-  // entry — one Bun.build with shared chunks, so the shim the app's code
-  // imports and the runner the CLI drives are the same modules (one zod, one
-  // defineHarness). The packages the kit installs stay external and resolve
-  // from its node_modules; the host's database and Redis clients are
+  // The CLI, the shims an app's server, mcp and harness chunks link to
+  // (@talaria/sdk/server's and zod's, where the build recipe looks for them),
+  // and the testing entry — one Bun.build with shared chunks, so the shim the
+  // app's code imports and the runner the CLI drives are the same modules
+  // (one zod, one defineHarness). The packages the kit installs stay external
+  // and resolve from its node_modules — zod's shim and the SDK's re-export
+  // both name the kit's one copy; the host's database and Redis clients are
   // replaced by stand-ins with no server behind them.
   // At a fixed path: Bun names each module's source in a comment, and a
   // temporary directory's name would make every build's bytes differ.
@@ -171,6 +172,7 @@ try {
     entrypoints: [
       entry('lib/cli.ts', `import { run } from ${ui('sdk-kit/cli.ts')}\nawait run(import.meta.url)\n`),
       entry('dist/server/runtime/rt-talaria-sdk-server.ts', `export * from ${ui('sdk/server.ts')}\n`),
+      ...SHARED_SERVER_PACKAGES.map((pkg) => entry(`${KIT_PATHS.serverShims}/${shimFileName(pkg)}.ts`, shimSource(pkg))),
       entry('lib/sdk-testing.ts', `export * from ${ui('sdk/testing.ts')}\n`),
       entry(
         'lib/sdk-client.ts',

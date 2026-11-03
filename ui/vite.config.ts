@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
 import { stampPeer, writeHeadHeaders } from './src/server/http'
+import { SHARED_SERVER_PACKAGES } from './src/app-runtime/specifiers'
 import { appRuntimeDev, appRuntimeHost } from './src/app-runtime/vite-plugin'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -219,9 +220,15 @@ export default defineConfig({
   // App codebases have no node_modules of their own; shared deps resolve from
   // the host's — the peer-dependency model (one Svelte, one router, one query
   // client across the whole deployment). dedupe (not alias) keeps Vite's
-  // normal CJS/ESM interop intact.
+  // normal CJS/ESM interop intact. The shared server packages (zod) ride the
+  // same rule: dev loads an app's server.ts, mcp.ts and harnesses/ from source,
+  // and Vite externalizes a bare `zod` once for every importer, then
+  // node-resolves it from the importer's own directory — from apps/ that found
+  // nothing ("Cannot find module 'zod'", and an update adding one rolled
+  // back). Deduped, it resolves from the root, to the very module the host's
+  // own code and `@talaria/sdk/server` import.
   resolve: {
-    dedupe: ['svelte', '@tanstack/svelte-query', 'sv-router', '@lucide/svelte'],
+    dedupe: ['svelte', '@tanstack/svelte-query', 'sv-router', '@lucide/svelte', ...SHARED_SERVER_PACKAGES],
     // The SDK ids must resolve for app files OUTSIDE the Vite root, where the
     // tsconfig-paths plugin doesn't reach (the '/server' and '/testing'
     // entries listed first — the bare id would otherwise prefix-match them).
