@@ -33,10 +33,12 @@ use std::time::Duration;
 
 mod browser_engine;
 mod lost_turns;
+mod pull;
 pub use browser_engine::{
     MANIFEST_FILE as BROWSER_ENGINE_FILE, manifest_text as browser_engine_manifest,
 };
 pub use lost_turns::discard_lost_turns;
+pub use pull::{PULL_CEILING, PULL_SILENCE, PullProgress, PullStatus};
 
 /// Set from the api binary so `fleet_up` can run preflight without this crate
 /// depending on the rest of the fleet engine.
@@ -264,14 +266,51 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// Bring a department's managed agent up. Answers with compose's stderr
 /// (trimmed), which on success carries its progress/warnings — the run logs
 /// nothing of it.
+///
+/// The image comes first, OUTSIDE the move lock: on a host that lacks it the
+/// download runs to minutes, and a Stop or Retire takes the same lock — held
+/// across the download, it waited out the pull and the `up`, so the agent
+/// started and was then stopped. And a stop asked while the image downloaded
+/// cancels the start ([`NOT_STARTED`]): the person's last word was stop.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
-    // Not mid-way through a legacy agent's move home: wait for one to end,
-    // so the `up` addresses wherever the agent is then.
-    let _moving = lock_move(department).await;
-    compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
-        .await
-        .map(UpOutcome::into_stderr)
+    start_unless_stopped(department, pull_agent_image(pg, department), || async {
+        compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
+            .await
+            .map(UpOutcome::into_stderr)
+    })
+    .await
 }
+
+/// [`fleet_up`]'s order, apart from docker: read the department's stop mark,
+/// wait for `pull` (no lock held), take the move lock — not mid-way through a
+/// legacy agent's move home, so the `up` addresses wherever the agent is then
+/// — and run `up` only if no stop was asked of the department meanwhile.
+async fn start_unless_stopped<P, U, UF>(department: &str, pull: P, up: U) -> Result<String, String>
+where
+    P: std::future::Future<Output = Result<(), String>>,
+    U: FnOnce() -> UF,
+    UF: std::future::Future<Output = Result<String, String>>,
+{
+    let mark = stop_mark(department);
+    pull.await?;
+    let _moving = lock_move(department).await;
+    if stopped_since(department, mark) {
+        return Err(format!(
+            "{NOT_STARTED} {department} was asked to stop while its image downloaded"
+        ));
+    }
+    up().await
+}
+
+/// How [`fleet_up`]'s error starts when it started nothing because a stop was
+/// asked while the image downloaded — a person's choice, not a failure.
+pub const NOT_STARTED: &str = "not started:";
+
+/// What a person is told of a start [`fleet_up`] cancelled for a stop — the
+/// hire's row and the Start control say the same.
+pub const NOT_STARTED_SENTENCE: &str = "Not started: a stop was asked while the agent image \
+                                        downloaded. Press Start on the agent when you want it \
+                                        running.";
 
 /// Recreate a department's managed agent IN PLACE — the roll. Compose stops
 /// the running container (SIGTERM, then `stop_grace_period` before a KILL),
@@ -1164,16 +1203,17 @@ async fn compose_up(
 /// is pulled once and then kept as cached: re-pull it yourself, or pin a
 /// digest. Done as its own step, ahead of `up`, so a registry problem fails
 /// here — with the running container untouched — and not halfway through a
-/// recreate.
+/// recreate. The pull is the service's one pull in this process (pull.rs):
+/// one already in flight — a hire's, a roll's — is joined, not repeated, and
+/// it runs on its own task, so this caller going away does not cancel it.
 async fn pull_missing(svc: &str) -> Result<(), String> {
-    let args = compose_args(&["pull", "--policy", "missing", "--quiet", svc]);
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    match docker(&refs, Duration::from_secs(1_200)).await {
-        Ok(_) => Ok(()),
-        // A compose too old for `--policy` (before v2.22): `up` still pulls a
-        // missing image itself, just without the early, clean failure.
-        Err(e) if e.contains("unknown flag") => Ok(()),
-        Err(e) => Err(format!("could not pull the image for {svc}: {e}")),
+    match pull::wait(pull::join(svc), None).await {
+        PullStatus::Done => Ok(()),
+        PullStatus::Failed(e) => Err(e),
+        // `wait` with no bound answers only an end.
+        PullStatus::Running(_) => Err(format!(
+            "could not pull the image for {svc}: the pull answered before it ended"
+        )),
     }
 }
 
@@ -1183,6 +1223,21 @@ async fn pull_missing(svc: &str) -> Result<(), String> {
 /// home retires `-b` itself, so it pulls first, while `-b` still serves.
 pub async fn pull_agent_image(pg: &PgPool, department: &str) -> Result<(), String> {
     pull_missing(&slot_service(department, active_slot(pg, department).await)).await
+}
+
+/// Start (or join) the pull of a department's image and wait at most
+/// `within` for it: [`PullStatus::Done`] once the image is on the host,
+/// [`PullStatus::Failed`] with docker's reason, or
+/// [`PullStatus::Running`] with what it has brought down so far. The pull
+/// goes on after this answers — the hire's pull stage asks again, a slice at
+/// a time, and shows the progress.
+pub async fn pull_agent_image_within(
+    pg: &PgPool,
+    department: &str,
+    within: Duration,
+) -> PullStatus {
+    let svc = slot_service(department, active_slot(pg, department).await);
+    pull::wait(pull::join(&svc), Some(within)).await
 }
 
 /// Whether the named container exists and is running.
@@ -1580,6 +1635,26 @@ pub async fn docker_exec_as(
 /// an old blue/green roll left behind lives in "-b-1" until its next roll).
 /// Resolved per call, never cached: the roll can happen between any two
 /// commands.
+/// Whether a department's managed container has ever started: `Some(false)`
+/// when docker has no such container or only created it (a hire or start that
+/// never got as far as the start), `Some(true)` once it has run — running now,
+/// or stopped since, by a person or on its own — and `None` when docker did
+/// not answer. What a hire's Retry asks before it boots an agent: one that has
+/// run since its hire failed is a person's to start, not the retry's.
+pub async fn has_run(pg: &PgPool, department: &str) -> Option<bool> {
+    let name = managed_container(pg, department).await;
+    match docker(
+        &["inspect", "-f", "{{.State.Status}}", &name],
+        Duration::from_secs(20),
+    )
+    .await
+    {
+        Ok((out, _)) => Some(out.trim() != "created"),
+        Err(e) if e.to_lowercase().contains("no such") => Some(false),
+        Err(_) => None,
+    }
+}
+
 pub async fn managed_container(pg: &PgPool, department: &str) -> String {
     let slot = active_slot(pg, department).await;
     slot_container(department, slot)
@@ -2295,6 +2370,53 @@ mod tests {
             w.see(Some(HealthWait::Healthy), s(90), true),
             Some(HealthWait::Healthy)
         );
+    }
+
+    #[tokio::test]
+    async fn a_stop_asked_while_the_image_downloads_cancels_the_start() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // The stop lands during the pull (no lock held), and the start that
+        // was waiting on the pull does not happen after it.
+        let started = Arc::new(AtomicBool::new(false));
+        let r = start_unless_stopped(
+            "cancel-ops",
+            async {
+                note_stop("cancel-ops");
+                Ok(())
+            },
+            || {
+                let started = started.clone();
+                async move {
+                    started.store(true, Ordering::SeqCst);
+                    Ok(String::new())
+                }
+            },
+        )
+        .await;
+        let e = r.unwrap_err();
+        assert!(e.starts_with(NOT_STARTED), "{e}");
+        assert!(
+            !started.load(Ordering::SeqCst),
+            "a stopped start must not run its up"
+        );
+
+        // No stop meanwhile: the up runs. A stop asked BEFORE the start read
+        // its mark is not this start's business.
+        note_stop("cancel-ops");
+        let r = start_unless_stopped("cancel-ops", async { Ok(()) }, || async {
+            Ok("up".to_string())
+        })
+        .await;
+        assert_eq!(r, Ok("up".to_string()));
+
+        // A failed pull is the answer, and nothing is started.
+        let r = start_unless_stopped(
+            "cancel-ops",
+            async { Err("no image".to_string()) },
+            || async { Err::<String, String>("the up ran after a failed pull".into()) },
+        )
+        .await;
+        assert_eq!(r, Err("no image".to_string()));
     }
 
     #[test]
