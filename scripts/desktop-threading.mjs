@@ -59,7 +59,9 @@ export const CREATES = [
  *  a `.on_*(|…|` event handler, `.run(|…|`, `.with_webview(|…|`, a listener,
  *  a GTK `connect_*(|…|` signal or a glib idle. The closure is a root. */
 const CALLBACKS = [
-  /\.(on_[a-z_]+|run|with_webview|listen(?:_any)?|once(?:_any)?)\s*\(\s*(?:move\s*)?\|/g,
+  /\.(on_[a-z_]+|run|with_webview)\s*\(\s*(?:move\s*)?\|/g,
+  // A listener names its event first: `.listen("shell-state", |e| …)`.
+  /\.(listen(?:_any)?|once(?:_any)?)\s*\(\s*"[^"]*"\s*,\s*(?:move\s*)?\|/g,
   /\b(connect_[a-z_]+|idle_add(?:_local)?(?:_once)?)\s*\(\s*(?:move\s*)?\|/g,
 ]
 
@@ -204,7 +206,7 @@ export function rustFns(path, blanked, raw = blanked) {
     for (const re of CALLBACKS) {
       re.lastIndex = 0
       for (const c of body.matchAll(re)) {
-        const open = c.index + c[0].lastIndexOf('(')
+        const open = c.index + c[0].indexOf('(')
         callbacks.push({
           via: c[0].startsWith('.') ? `.${c[1]}(` : `${c[1]}(`,
           line: lineAt(blanked, bodyStart + c.index),
@@ -370,6 +372,17 @@ export function selfTest() {
         builder.on_menu_event(move |app, event| queue_main_turn(app, |app| { let _ = make(app); }));
         let _ = settings.connect_timeout(CONNECT_TIMEOUT);
     }
+    fn wire_more(app: AppHandle, webview: Webview, application: Application) {
+        webview.with_webview(move |platform| { let _ = make(&app); });
+        app.listen("shell-state", move |event| { let _ = make(&app); });
+        application.connect_activate(move |_| { let _ = make(&app); });
+        glib::idle_add_local_once(move || { let _ = make(&app); });
+        app.run(|handle, event| { queue_main_turn(handle, |app| { let _ = make(app); }); });
+    }
+    #[tauri::command]
+    pub fn sync_window_builder(app: AppHandle) { let _ = WebviewWindow::builder(&app, "x", url).build(); }
+    #[tauri::command]
+    pub fn sync_from_config(app: AppHandle) { let _ = WebviewBuilder::from_config(&config); }
     // webview-threading: callback
     pub(crate) fn clicked(app: &AppHandle) { let _ = make(app); }
     // webview-threading: callback
@@ -388,7 +401,13 @@ export function selfTest() {
     'sync_block_on:sync',
     'sync_cookies:sync',
     'sync_direct:sync',
+    'sync_from_config:sync',
     'sync_inline_main:sync',
+    'sync_window_builder:sync',
+    'wire_more/.listen(:callback',
+    'wire_more/.with_webview(:callback',
+    'wire_more/connect_activate(:callback',
+    'wire_more/idle_add_local_once(:callback',
     'wire_window/.on_window_event(:callback',
   ]
   const wrong = []

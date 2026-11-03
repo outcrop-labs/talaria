@@ -58,6 +58,7 @@ import {
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { scanWebviewThreading, selfTest as desktopThreadingSelfTest } from './desktop-threading.mjs'
+import { checkDropGuard } from './desktop-drop-guard.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
@@ -2567,6 +2568,27 @@ const UNSET_SEAM_CENSUS = [
     })
   }
   notes.push(`desktop threading: ${commands} shell commands and ${callbacks} callbacks, none reaches webview creation inline`)
+
+  // The drop guard every instance webview runs (DROP_GUARD in commands.rs):
+  // a drag no zone took is "no drop here", never a navigation, and a drag
+  // over a native field is left to the engine. Run against a stub DOM.
+  const guardWrong = checkDropGuard(files.get(`${desktopSrc}/commands.rs`) ?? '')
+  if (guardWrong.length) {
+    failures.push({
+      id: 'desktop-drop-guard',
+      what: "the instance webviews' drop guard does not do what it promises",
+      fix: [
+        'DROP_GUARD (desktop/src-tauri/src/commands.rs) cancels a drag that no drop zone took —',
+        'without it, the engine loads a dropped file or link in place of the instance — and must',
+        'leave a drag over <input>, <textarea>, <select> or anything contenteditable to the engine,',
+        'which takes those drops with nobody calling preventDefault. scripts/desktop-drop-guard.mjs',
+        'runs the script against each case; if the guard now needs more of the DOM, grow its stub.',
+      ],
+      found: guardWrong.map((text) => ({ path: `${desktopSrc}/commands.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop drop guard: stray drags cancelled, zones and native fields left alone (stub DOM)')
+  }
 }
 
 // THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
