@@ -614,6 +614,20 @@ pub async fn roll_running_agent_outcome(
     roll_agent_mode(pg, sb, department, None, RollMode::IfRunning).await
 }
 
+/// A roll that recreates the department's container whatever state it is
+/// in — started if it was not running. Only for putting an agent BACK: the
+/// Hermes channel's rollback recreates an agent that it moved onto an image
+/// which then failed (exited, crash-looped, never came up), and which was
+/// running before the channel touched it. Every other roll is
+/// [`roll_running_agent_outcome`], which never starts an agent.
+pub async fn roll_agent_back_outcome(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+) -> Result<RollOutcome, String> {
+    roll_agent_mode(pg, sb, department, None, RollMode::Always).await
+}
+
 /// One member of a fleet-wide roll batch, its batch stamped on its registry
 /// records so the live picture can group them. `include_stopped` is the
 /// batch's `all`: the person asked for stopped agents to be rolled — and so

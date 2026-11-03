@@ -43,6 +43,7 @@ mod gateway_hot_caches;
 mod github_jwt;
 mod github_pem_repair;
 mod group_dm_live;
+mod hermes_channel_live;
 mod internal_routes;
 mod llm_models;
 mod malformed_path_ids;

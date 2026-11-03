@@ -159,6 +159,10 @@ pub mod group_key {
     pub fn mcp_down(server_id: &str) -> String {
         format!("mcp:{server_id}:down")
     }
+    /// One Hermes image digest's failed rollout.
+    pub fn hermes_update(digest: &str) -> String {
+        format!("hermes:{digest}:failed")
+    }
     /// One approval waiting.
     pub fn approval(approval_id: &str) -> String {
         format!("approval:{approval_id}")
@@ -176,6 +180,7 @@ pub mod entity {
     pub const CONVERSATION: &str = "conversation";
     pub const APPROVAL: &str = "approval";
     pub const MCP_SERVER: &str = "mcp_server";
+    pub const HERMES_IMAGE: &str = "hermes_image";
     pub const PLAN: &str = "plan";
     pub const RESEARCH_RUN: &str = "research_run";
     pub const KB_DOC: &str = "kb_doc";

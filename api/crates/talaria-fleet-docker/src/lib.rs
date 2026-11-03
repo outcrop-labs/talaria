@@ -1240,6 +1240,25 @@ pub async fn pull_agent_image_within(
     pull::wait(pull::join(&svc), Some(within)).await
 }
 
+/// Start (or join) the pull of a service's image in a compose project of its
+/// own — `project` is the `compose -p … -f … --env-file …` prefix — and wait
+/// at most `within`. The same one-pull-per-key machinery as an agent's
+/// ([`pull_agent_image_within`]): the pull goes on after this answers, and a
+/// caller that asks again joins it.
+pub async fn pull_project_image_within(
+    key: &str,
+    project: &[String],
+    svc: &str,
+    within: Duration,
+) -> PullStatus {
+    pull::wait(pull::join_project(key, project, svc), Some(within)).await
+}
+
+/// How many image pulls this process is running now.
+pub fn pulls_running() -> usize {
+    pull::running()
+}
+
 /// Whether the named container exists and is running.
 pub async fn container_running(name: &str) -> bool {
     docker(

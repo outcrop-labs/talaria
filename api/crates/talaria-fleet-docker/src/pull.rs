@@ -240,12 +240,50 @@ impl PullCmd {
             ])),
         }
     }
+
+    /// The same pull for a service of another compose project: `project`
+    /// is the `compose -p … -f … --env-file …` prefix that addresses it.
+    fn project(project: &[String], svc: &str) -> PullCmd {
+        let with = |extra: &[&str]| {
+            let mut args = project.to_vec();
+            args.extend(extra.iter().map(|s| s.to_string()));
+            args
+        };
+        PullCmd {
+            program: "docker".into(),
+            args: with(&["--progress", "json", "pull", "--policy", "missing", svc]),
+            silence: PULL_SILENCE,
+            ceiling: PULL_CEILING,
+            fallback: Some(with(&["pull", "--policy", "missing", "--quiet", svc])),
+        }
+    }
 }
 
 /// Join the pull of `svc`'s image in flight in this process, or start one on
 /// a task of its own.
 pub(crate) fn join(svc: &str) -> watch::Receiver<PullStatus> {
     join_with(svc, || PullCmd::compose(svc))
+}
+
+/// [`join`] for a service of another compose project (the Hermes image
+/// canary's), keyed by `key` so it is one pull however often it is asked.
+pub(crate) fn join_project(
+    key: &str,
+    project: &[String],
+    svc: &str,
+) -> watch::Receiver<PullStatus> {
+    join_with(key, || PullCmd::project(project, svc))
+}
+
+/// How many pulls are running in this process now — the agents' own and any
+/// other. A background pull that should give way (the channel's
+/// preparation of a new image) waits while this is above zero.
+pub(crate) fn running() -> usize {
+    let pulls = PULLS.lock().unwrap_or_else(|p| p.into_inner());
+    pulls
+        .values()
+        .filter(|rx| matches!(*rx.borrow(), PullStatus::Running(_)) && rx.has_changed().is_ok())
+        .count()
 }
 
 /// [`join`] for any command, keyed by `key`.

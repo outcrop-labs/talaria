@@ -117,14 +117,62 @@ fn hermes_stripped() -> &'static std::collections::HashSet<&'static str> {
     })
 }
 
-/// Every name Hermes strips from the commands an agent runs, at the pinned
-/// image. A command the platform runs in the sandbox on the agent's behalf
-/// (`docker exec`) unsets these first, so it sees the env the agent's own
-/// terminal would — not one that passes where the agent's would fail.
-pub fn hermes_stripped_names() -> impl Iterator<Item = &'static str> {
-    let mut names: Vec<&'static str> = hermes_stripped().iter().copied().collect();
+/// The names the Hermes images this instance runs strip beyond the compiled
+/// snapshot: the agent image follows Hermes' stable channel, and its
+/// inspection reads each image's own set (talaria-hermes-channel), which it
+/// adopts here. Only ever added to — a name a newer Hermes strips is refused
+/// as a secret and unset in the sandbox's commands from then on, and the
+/// snapshot stays the floor for the pin every release ships.
+static IMAGE_STRIPPED: std::sync::LazyLock<std::sync::RwLock<std::collections::BTreeSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::BTreeSet::new()));
+
+/// The most names one adoption takes: a stripped set is a few hundred, and
+/// the list comes out of an image, so it is bounded where it is read.
+const IMAGE_STRIPPED_CAP: usize = 4096;
+
+/// Adopt the names a Hermes image strips (read from the image by the
+/// channel's inspection). Answers how many were new. A name that is not an
+/// env name is dropped.
+pub fn adopt_image_stripped(names: impl IntoIterator<Item = String>) -> usize {
+    let mut set = IMAGE_STRIPPED.write().unwrap_or_else(|p| p.into_inner());
+    let mut added = 0;
+    for name in names.into_iter().take(IMAGE_STRIPPED_CAP) {
+        if set.len() >= IMAGE_STRIPPED_CAP {
+            break;
+        }
+        if name_ok(&name) && !hermes_stripped().contains(name.as_str()) && set.insert(name) {
+            added += 1;
+        }
+    }
+    added
+}
+
+fn is_hermes_stripped(name: &str) -> bool {
+    hermes_stripped().contains(name)
+        || IMAGE_STRIPPED
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(name)
+}
+
+/// Every name Hermes strips from the commands an agent runs: the pinned
+/// image's snapshot and every name an image this instance runs adds
+/// ([`adopt_image_stripped`]). A command the platform runs in the sandbox on
+/// the agent's behalf (`docker exec`) unsets these first, so it sees the env
+/// the agent's own terminal would — not one that passes where the agent's
+/// would fail.
+pub fn hermes_stripped_names() -> Vec<String> {
+    let mut names: Vec<String> = hermes_stripped().iter().map(|n| n.to_string()).collect();
+    names.extend(
+        IMAGE_STRIPPED
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .cloned(),
+    );
     names.sort_unstable();
-    names.into_iter()
+    names.dedup();
+    names
 }
 
 /// Why `name` cannot be a per-agent secret, or `None` when it can.
@@ -155,7 +203,7 @@ pub fn reserved(name: &str) -> Option<String> {
             "{name} is a Hermes setting ({prefix}* configures the agent's runtime), not a secret for its tools"
         ));
     }
-    if hermes_stripped().contains(name) {
+    if is_hermes_stripped(name) {
         return Some(format!(
             "{name} is one of Hermes's own provider, platform or tool names: Hermes strips it from every command the agent runs, so no tool of the agent's would see it, and reads it for itself instead. A key a command of the agent's reads goes under a name of your own; Hermes's own web search takes its key from Admin → Search"
         ));
@@ -701,7 +749,7 @@ mod tests {
 
     #[test]
     fn the_hermes_snapshot_is_loaded_and_clean() {
-        let names: Vec<&str> = hermes_stripped_names().collect();
+        let names: Vec<String> = hermes_stripped_names();
         assert!(names.len() > 400, "the snapshot loaded: {}", names.len());
         for n in &names {
             assert!(name_ok(n), "{n} is an env name");
@@ -714,8 +762,28 @@ mod tests {
             "TALARIA_AGENT_KEY",
             "LLM_API_KEY",
         ] {
-            assert!(!names.contains(&ours), "Hermes strips {ours}");
+            assert!(!names.iter().any(|n| n == ours), "Hermes strips {ours}");
         }
+    }
+
+    #[test]
+    fn a_name_a_newer_image_strips_is_refused_and_unset_from_then_on() {
+        // The stable channel's inspection reads each image's own stripped
+        // set; a name only the newer Hermes strips was a secret Talaria
+        // accepted (and a command it ran kept) before it was adopted.
+        let added = "ZZ_IMAGE_ONLY_PROVIDER_KEY";
+        assert_eq!(reserved(added), None);
+        assert!(!hermes_stripped_names().iter().any(|n| n == added));
+        let n = adopt_image_stripped([
+            added.to_string(),
+            "OPENAI_API_KEY".to_string(), // the snapshot's already
+            "not an env name".to_string(),
+            "lower_case".to_string(),
+        ]);
+        assert_eq!(n, 1, "only the new, well-formed name is adopted");
+        assert!(reserved(added).is_some());
+        assert!(hermes_stripped_names().iter().any(|n| n == added));
+        assert_eq!(adopt_image_stripped([added.to_string()]), 0);
     }
 
     #[test]

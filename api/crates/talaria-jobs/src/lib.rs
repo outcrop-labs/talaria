@@ -849,6 +849,18 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_update_job::register_update_reconcile_job(Arc::new(talaria_update_job::UpdateDeps {
         state: state.clone(),
     }));
+    // The agent image follows Hermes' stable channel: the check, the
+    // preparation, the canary and the one-at-a-time rollout, a step a
+    // minute (talaria-hermes-channel). Optional like the update pair: its
+    // absence leaves every agent on the image it runs.
+    talaria_hermes_channel::register_job(Arc::new(talaria_hermes_channel::ChannelDeps {
+        pg: state.pg.clone(),
+        sb: sb.clone(),
+        notify: talaria_notify::NotifyDeps {
+            pg: state.pg.clone(),
+            realtime: rt.clone(),
+        },
+    }));
 }
 
 /// The census kinds this build cannot define. Empty is arming's
@@ -1091,6 +1103,16 @@ mod tests {
         assert!(
             !REQUIRED_JOBS.contains(&JobName::UpdateReconcile),
             "update-reconcile must stay optional: dormant installs legitimately run it as a no-op"
+        );
+        // The agent image's stable channel: out of the table, every agent
+        // stays on the image it runs forever, with nothing to say so.
+        assert!(
+            names.contains(&JobName::HermesChannel),
+            "hermes-channel fell out of the job table — agents would never follow Hermes stable"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::HermesChannel),
+            "hermes-channel must stay optional: an operator's HERMES_IMAGE legitimately turns it off"
         );
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This
