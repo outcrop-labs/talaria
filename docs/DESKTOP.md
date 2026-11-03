@@ -626,7 +626,11 @@ manager draws the window's own title.
 The window ships `decorations: false`. Three titlebar modes live in
 `~/.local/share/app.talaria.desktop/settings.json` (themed / os / none). **Themed is the
 default on every OS**: custom min/max/close drawn in the webview (traffic-light side follows
-the OS — left on macOS, right elsewhere) and a bar you can drag. OS turns native decorations
+the OS — left on macOS, right elsewhere) and a bar you can drag. Inside an instance that bar
+is the tab bar: it holds the controls, a press on its empty space drags the window and a
+double-click maximizes it, while a press on a link, button or field does what it does in a
+browser. Screens with no tab bar (sign-in, the wait for the session) draw a 36px band of
+their own instead. OS turns native decorations
 on. None hides both. Settings → Profile (inside the desktop app) and the launcher welcome
 screen both set it. Turning the OS titlebar on keeps the window's outer size (the content
 loses the titlebar's height), and the shell re-places the visible webview straight away
