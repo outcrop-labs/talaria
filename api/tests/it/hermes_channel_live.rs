@@ -2489,3 +2489,40 @@ async fn an_accepted_release_is_held_again_for_a_problem_nobody_saw() {
     assert!(rec.held());
     w.done().await;
 }
+
+/// Engine S2: an Upgrade that gives way after moving agents takes them back
+/// to the fleet's image first, banning nothing.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_upgrade_that_gives_way_takes_the_agents_it_moved_back() {
+    let w = World::new("withdrawn", 2).await;
+    let mut t = tuning();
+    w.step(&t).await;
+    assert_eq!(w.fake.on(&w.slug(0)), w.new, "the first agent moved");
+    // Hermes withdraws it from stable for a hotfix mid-rollout; the hotfix
+    // waits its 48 h.
+    t.min_stable_ms = 48 * 60 * MIN;
+    w.fake.advance(2 * MIN);
+    let hotfix = w.extra(2, "v9.0.3", false).await;
+    w.stable_is(&hotfix, "v9.0.3").await;
+    w.step(&t).await;
+    for _ in 0..3 {
+        w.fake.advance(MIN);
+        w.step(&t).await;
+    }
+    assert_eq!(w.fake.on(&w.slug(0)), w.old, "back on the fleet's image");
+    assert_eq!(w.fake.on(&w.slug(1)), w.old);
+    assert_eq!(
+        w.status_of(&w.new).await,
+        Status::Candidate,
+        "giving way bans nothing"
+    );
+    let r = w.state().await.rollout.unwrap();
+    assert_eq!(
+        (r.kind, r.digest.clone()),
+        (RolloutKind::Upgrade, hotfix),
+        "then the hotfix waits"
+    );
+    settled(&w).await;
+    w.done().await;
+}

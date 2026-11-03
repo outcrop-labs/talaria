@@ -151,6 +151,23 @@ if isinstance(cv, int) and cv > want:
         contract["migrationChanged"] = changed[:40]
     except Exception as e:
         contract["migrationError"] = (type(e).__name__ + ": " + str(e))[:300]
+# How a running scheduled job looks: one made here, claimed as the scheduler
+# claims a due job, must list with its claim's time; and how often Hermes
+# refreshes that claim while the run lives.
+try:
+    from cron.jobs import create_job, claim_job_for_fire, list_jobs
+    job = create_job("talaria inspection", "every 1h", name="talaria-probe")
+    claim_job_for_fire(job["id"], force=True)
+    seen = [j for j in list_jobs(include_disabled=True) if j.get("id") == job["id"]]
+    claim = seen[0].get("fire_claim") if seen else None
+    contract["claimAt"] = claim.get("at") if isinstance(claim, dict) else None
+except Exception as e:
+    contract["claimError"] = (type(e).__name__ + ": " + str(e))[:300]
+try:
+    from cron.scheduler import _RUN_CLAIM_HEARTBEAT_SECONDS
+    contract["claimHeartbeat"] = _RUN_CLAIM_HEARTBEAT_SECONDS
+except Exception as e:
+    contract["claimHeartbeatError"] = (type(e).__name__ + ": " + str(e))[:300]
 out["contract"] = contract
 print(json.dumps(out))
 "#;
@@ -211,6 +228,32 @@ pub fn contract_problems(
     };
     let mut problems = Vec::new();
     let mut checked = Vec::new();
+    // A running job reads as running only while its claim is fresh to
+    // `busy.rs`: listed with a time, and refreshed with a minute to spare.
+    let beat_limit = crate::busy::CLAIM_LIVE_MS / 1000 - 60;
+    let claimed = contract
+        .get("claimAt")
+        .and_then(Value::as_str)
+        .and_then(crate::busy::parse_when);
+    let beat = contract.get("claimHeartbeat").and_then(Value::as_f64);
+    match (text("claimError"), claimed, beat) {
+        (Some(e), _, _) => problems.push(format!(
+            "Talaria could not check how Hermes marks a scheduled job running ({e})"
+        )),
+        (None, None, _) => problems.push(
+            "a scheduled job Hermes has claimed no longer lists the claim's time (fire_claim.at): Talaria would read every running job as idle and restart its agent mid-run".into(),
+        ),
+        (None, Some(_), None) => problems.push(format!(
+            "Hermes no longer says how often it refreshes a running job's claim (cron.scheduler _RUN_CLAIM_HEARTBEAT_SECONDS{}): a running job may read as idle",
+            text("claimHeartbeatError").map(|e| format!(": {e}")).unwrap_or_default()
+        )),
+        (None, Some(_), Some(b)) if b > beat_limit as f64 => problems.push(format!(
+            "Hermes refreshes a running job's claim every {b:.0} s, longer than the {beat_limit} s Talaria allows: a running job would read as idle between refreshes"
+        )),
+        (None, Some(_), Some(b)) => checked.push(format!(
+            "a claimed scheduled job reads as running (fire_claim.at, refreshed every {b:.0} s)"
+        )),
+    }
     match (contract.get("sealedHidden").and_then(Value::as_bool), text("sealedError")) {
         (Some(true), _) => checked.push("sealed CONFIG_* credentials stay out of commands".into()),
         (_, Some(e)) => problems.push(format!(
@@ -247,7 +290,7 @@ pub fn contract_problems(
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 checked.push(format!(
-                    "its migration from schema {ours} to {image_schema} leaves every key Talaria writes as it is, in the rendered config of {n} agent{}",
+                    "its migration from schema {ours} to {image_schema} leaves what Hermes reads of every agent's rendered config as it is ({n} config{} checked)",
                     if n == 1 { "" } else { "s" }
                 ));
             } else {
@@ -813,36 +856,79 @@ mod tests {
 
     #[test]
     fn the_contract_holds_a_release_whose_migration_moves_talarias_keys() {
-        let ok = json!({ "sealedHidden": true, "migrationChanged": [] });
+        let ok = json!({ "sealedHidden": true, "migrationChanged": [], "claimAt": CLAIM, "claimHeartbeat": 60.0 });
         let (problems, checked) = contract_problems(&ok, 52, 51);
         assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(checked.len(), 2);
+        assert_eq!(checked.len(), 3);
         // Same schema: nothing to migrate, nothing to check.
-        let (problems, checked) = contract_problems(&json!({ "sealedHidden": true }), 51, 51);
-        assert!(problems.is_empty() && checked.len() == 1);
-        let moved = json!({ "sealedHidden": true, "migrationChanged": ["agent.disabled_toolsets (removed)", "terminal.env_passthrough"] });
+        let (problems, checked) = contract_problems(
+            &json!({ "sealedHidden": true, "claimAt": CLAIM, "claimHeartbeat": 60.0 }),
+            51,
+            51,
+        );
+        assert!(problems.is_empty() && checked.len() == 2);
+        let moved = json!({ "claimAt": CLAIM, "claimHeartbeat": 60.0, "sealedHidden": true, "migrationChanged": ["agent.disabled_toolsets (removed)", "terminal.env_passthrough"] });
         let (problems, _) = contract_problems(&moved, 53, 51);
         assert_eq!(problems.len(), 1);
         assert!(
             problems[0].contains("agent.disabled_toolsets (removed), terminal.env_passthrough"),
             "{problems:?}"
         );
-        let failed = json!({ "sealedHidden": true, "migrationError": "KeyError: 'x'" });
+        let failed = json!({ "claimAt": CLAIM, "claimHeartbeat": 60.0, "sealedHidden": true, "migrationError": "KeyError: 'x'" });
         assert!(contract_problems(&failed, 53, 51).0[0].contains("could not be run"));
-        let unreported = json!({ "sealedHidden": true });
+        let unreported = json!({ "claimAt": CLAIM, "claimHeartbeat": 60.0, "sealedHidden": true });
         assert!(contract_problems(&unreported, 53, 51).0[0].contains("did not report"));
     }
 
     #[test]
     fn the_contract_holds_a_release_that_lets_sealed_secrets_reach_commands() {
         for c in [
-            json!({ "sealedHidden": false }),
-            json!({}),
-            json!({ "sealedError": "ImportError: x" }),
+            json!({ "sealedHidden": false, "claimAt": CLAIM, "claimHeartbeat": 60.0 }),
+            json!({ "claimAt": CLAIM, "claimHeartbeat": 60.0 }),
+            json!({ "sealedError": "ImportError: x", "claimAt": CLAIM, "claimHeartbeat": 60.0 }),
         ] {
             let (problems, _) = contract_problems(&c, 51, 51);
             assert_eq!(problems.len(), 1, "{c}");
             assert!(problems[0].contains("CONFIG_*"), "{problems:?}");
+        }
+    }
+
+    /// v0.22.4's and v0.22.6's own answer (2026-11-03, the hardened container).
+    const CLAIM: &str = "2026-11-03T21:41:16.639795+00:00";
+
+    #[test]
+    fn the_contract_holds_a_release_whose_running_jobs_would_read_idle() {
+        let ok = json!({ "sealedHidden": true, "claimAt": CLAIM, "claimHeartbeat": 60.0 });
+        assert!(contract_problems(&ok, 51, 51).0.is_empty());
+        for (c, says) in [
+            (
+                json!({ "sealedHidden": true, "claimAt": null, "claimHeartbeat": 60.0 }),
+                "fire_claim.at",
+            ),
+            (
+                json!({ "sealedHidden": true, "claimHeartbeat": 60.0 }),
+                "fire_claim.at",
+            ),
+            (
+                json!({ "sealedHidden": true, "claimAt": "soon", "claimHeartbeat": 60.0 }),
+                "fire_claim.at",
+            ),
+            (
+                json!({ "sealedHidden": true, "claimAt": CLAIM, "claimHeartbeatError": "ImportError: x" }),
+                "ImportError: x",
+            ),
+            (
+                json!({ "sealedHidden": true, "claimAt": CLAIM, "claimHeartbeat": 301.0 }),
+                "every 301 s",
+            ),
+            (
+                json!({ "sealedHidden": true, "claimError": "TypeError: y" }),
+                "TypeError: y",
+            ),
+        ] {
+            let (problems, _) = contract_problems(&c, 51, 51);
+            assert_eq!(problems.len(), 1, "{c}: {problems:?}");
+            assert!(problems[0].contains(says), "{c}: {problems:?}");
         }
     }
 

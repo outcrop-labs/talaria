@@ -507,7 +507,17 @@ impl<'a> Engine<'a> {
         let digests = self.effective(&state, &agents).await?;
         // A catch-up that failed on this image is not opened again for it.
         let behind = |slug: &str| state.catchup_failed.get(slug) != Some(&current);
+        // An Upgrade giving way with agents already on its image — moved
+        // before stable stopped naming it — takes them back to the fleet's
+        // image first, a rollback without a ban: a release Hermes withdrew is
+        // never left running, unwatched, while the next one waits its time.
+        let withdrawn = open
+            .as_ref()
+            .filter(|o| o.kind == RolloutKind::Upgrade && o.digest != current)
+            .filter(|o| digests.iter().any(|(_, d)| d == &o.digest))
+            .map(|o| o.digest.clone());
         let mut next = match &state.pinned {
+            _ if withdrawn.is_some() => Some((current.clone(), RolloutKind::Rollback)),
             Some(p) if p != &current || digests.iter().any(|(_, d)| d != p) => {
                 Some((p.clone(), RolloutKind::Pin))
             }
@@ -563,6 +573,9 @@ impl<'a> Engine<'a> {
                     Default::default()
                 };
                 sentences.push(match kind {
+                    RolloutKind::Rollback => {
+                        format!("moving the agents already on it back to {label} first")
+                    }
                     RolloutKind::Pin => format!("pinned to {label}: moving the fleet onto it"),
                     RolloutKind::Catchup => {
                         format!("moving the agents an earlier rollout left behind onto {label}")
@@ -573,13 +586,15 @@ impl<'a> Engine<'a> {
                     prev,
                     id: images::new_rollout_id(now),
                     digest: target,
-                    from: Some(current),
+                    // A withdrawn release's rollback leaves that release.
+                    from: Some(withdrawn.clone().unwrap_or(current)),
                     kind,
                     phase: Phase::Preparing,
                     started_at: now,
                     updated_at: now,
-                    // A pin is an admin's action: it runs now.
-                    forced: kind == RolloutKind::Pin,
+                    // A pin is an admin's action, and a rollback is the way
+                    // off a release: both run now.
+                    forced: matches!(kind, RolloutKind::Pin | RolloutKind::Rollback),
                     ..Default::default()
                 })
             }
