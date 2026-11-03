@@ -33,7 +33,7 @@
     label: string
     fromLabel: string | null
     kind: 'upgrade' | 'rollback' | 'pin' | 'catchup'
-    phase: 'preparing' | 'waiting' | 'canary' | 'rolling' | 'soaking' | 'done' | 'failed'
+    phase: 'cancelled' | 'preparing' | 'waiting' | 'canary' | 'rolling' | 'soaking' | 'done' | 'failed'
     open: boolean
     forced: boolean
     startedAt: number
@@ -53,6 +53,8 @@
     reason: string | null
     goodSince: number | null
     pinnable: boolean
+    held: boolean
+    contractProblems: string[]
   }
   interface AgentView {
     slug: string
@@ -70,7 +72,7 @@
     compiled: Labelled
     lastCheck: { at: number; digest: string | null; label: string | null; error: string | null } | null
     nextCheckAt: number | null
-    window: { start: string; end: string; zone: string; open: boolean }
+    window: { start: string; end: string; zone: string; zoneSaid: string; zoneSet: boolean; open: boolean }
     minStableHours: number
     rollout: RolloutView | null
     agents: AgentView[]
@@ -96,13 +98,14 @@
   }
 
   const PHASE: Record<RolloutView['phase'], string> = {
-    preparing: 'Downloading and inspecting',
+    preparing: 'Waiting its time on stable, then downloading and inspecting',
     waiting: 'Ready, waiting',
     canary: 'Testing in a canary',
     rolling: 'Moving agents one at a time',
     soaking: 'Watching every moved agent before calling it good',
     done: 'Done',
     failed: 'Stopped',
+    cancelled: 'Not rolled out',
   }
   // The rollout's heading: what it is doing while it runs, what it did once
   // it ended.
@@ -113,7 +116,13 @@
     catchup: { open: 'Catching up to', done: 'Caught up to', failed: 'Stopped catching up to' },
   }
   const heading = (r: RolloutView) =>
-    r.phase === 'failed' ? KIND[r.kind].failed : r.open ? KIND[r.kind].open : KIND[r.kind].done
+    r.phase === 'cancelled'
+      ? 'Did not roll out'
+      : r.phase === 'failed'
+        ? KIND[r.kind].failed
+        : r.open
+          ? KIND[r.kind].open
+          : KIND[r.kind].done
 
   const rollout = $derived(s?.rollout ?? null)
   // Stable names something the fleet does not run, and it has not failed here.
@@ -126,6 +135,14 @@
   // ran here is canaried first. A version tag that was never seen can be
   // typed instead (it is resolved, pulled and canaried).
   const pinnable = $derived((s?.images ?? []).filter((i) => i.pinnable))
+  // The open rollout's image, when the contract checks hold it for an admin.
+  const held = $derived.by(() => {
+    if (!rollout?.open) return null
+    const i = s?.images.find((x) => x.digest === rollout.digest)
+    return i?.held ? i : null
+  })
+  // The state row this build cannot read: the GET answers 409 and says so.
+  const unreadable = $derived(query.isError && /unreadable/.test(errorMessage(query.error)))
   const banned = $derived((s?.images ?? []).filter((i) => i.status === 'bad'))
   let pinChoice = $state('')
   let pinVersion = $state('')
@@ -158,13 +175,35 @@
     }
   }
   const rollBack = async () => {
-    const to = rollout?.open && rollout.kind !== 'rollback' ? rollout.fromLabel : (s?.previous?.label ?? s?.compiled.label)
+    const to =
+      rollout?.open && rollout.kind !== 'rollback' && rollout.kind !== 'catchup'
+        ? rollout.fromLabel
+        : (s?.previous?.label ?? s?.compiled.label)
     const ok = await confirm({
       title: 'Roll back the agent image?',
-      message: `Every agent moves to ${to ?? 'the previous version'}, one at a time, each offline for its restart. A version that came from stable is marked bad so it is not rolled forward again (Allow again lifts that); a pinned version is not.`,
+      message: `Every agent on the version you are leaving moves to ${to ?? 'the previous version'} within a minute, one at a time — now, even mid-conversation — each offline for its restart. An agent someone stopped stays stopped and starts on ${to ?? 'it'} next time. A version that came from stable is marked bad so it is not rolled forward again (Allow again lifts that); a pinned version is not.`,
       confirmLabel: 'Roll back',
     })
     if (ok) await act('rollback')
+  }
+  const accept = async (i: ImageView) => {
+    const ok = await confirm({
+      title: `Roll out ${i.label} anyway?`,
+      message: `Talaria checked the Hermes internals it relies on, and this release changed some: ${i.contractProblems.join('; ')}. Rolled out anyway, it still goes through the canary and the soaks, one agent at a time — but what changed is not checked again.`,
+      confirmLabel: 'Accept and roll out',
+    })
+    if (ok) await act('accept', { digest: i.digest })
+  }
+  const reset = async () => {
+    const ok = await confirm({
+      title: 'Reset the agent image state?',
+      message: 'Its saved state cannot be read by this version of Talaria (written by a later one, or damaged), so automatic updates are paused. Reset keeps it as it is under a new name and starts fresh: every agent stays on the image it runs, and updates resume.',
+      confirmLabel: 'Reset',
+    })
+    if (ok) {
+      await act('reset')
+      await query.refetch()
+    }
   }
   const rollNow = async () => {
     const ok = await confirm({
@@ -212,6 +251,13 @@
     <p class="py-2 font-sans text-xs text-muted">Reading the agent image…</p>
   {:else if query.isError || !s}
     <p class="py-2 font-sans text-xs text-danger">Could not read the agent image: {errorMessage(query.error)}</p>
+    {#if unreadable}
+      <p class="pb-2 font-sans text-xs text-muted">
+        Agents keep running, and hiring, starting and editing them work; only automatic image updates are paused.
+      </p>
+      <Button variant="outline" size="sm" disabled={busy !== null} onclick={reset}>Reset the state</Button>
+      {#if line}<p class="pt-2 font-sans text-xs {TONE[line.tone]}">{line.text}</p>{/if}
+    {/if}
   {:else}
     <div class="space-y-3 py-2">
       <div>
@@ -236,7 +282,8 @@
               Not checked yet.
             {/if}
             {#if until(s.nextCheckAt)}Next check {until(s.nextCheckAt)}.{/if}
-            Maintenance window {s.window.start}–{s.window.end} {s.window.zone}{s.window.open ? ' (open now)' : ''}.
+            Maintenance window {s.window.start}–{s.window.end}
+            <span class={s.window.zoneSet ? '' : 'text-danger'}>{s.window.zoneSaid}</span>{s.window.open ? ' (open now)' : ''}.
             A new release waits {s.minStableHours} h on stable first.
           </div>
           {#if s.lastCheck?.error}
@@ -252,12 +299,25 @@
             {heading(rollout)} {rollout.label}
             {#if rollout.open}<span class="text-muted">— {PHASE[rollout.phase]}</span>{/if}
           </div>
-          {#if rollout.detail}
+          {#if rollout.detail && !held}
             <div class="font-sans text-xs {rollout.phase === 'failed' ? 'text-danger' : 'text-muted'}">{rollout.detail}</div>
           {/if}
           <div class="font-sans text-xs text-muted">
             Started {ago(rollout.startedAt)}{#if rollout.moved.length > 0}, {rollout.moved.length} of {s.agents.length} moved{/if}.
           </div>
+          {#if held}
+            <div class="mt-2 space-y-1 border-t border-line-subtle pt-2">
+              <div class="font-sans text-xs text-danger">Held for review — a Hermes internal Talaria relies on changed:</div>
+              <ul class="list-disc pl-4">
+                {#each held.contractProblems as p, n (n)}
+                  <li class="font-sans text-xs text-muted">{p}</li>
+                {/each}
+              </ul>
+              <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => held && accept(held)}>
+                Accept and roll out
+              </Button>
+            </div>
+          {/if}
         </div>
       {/if}
 
