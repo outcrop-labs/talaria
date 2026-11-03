@@ -5,7 +5,7 @@
   import Brand from '@/components/Brand.svelte'
   import WingMark from '@/components/WingMark.svelte'
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
-  import TopDock from '@/components/app/TopDock.svelte'
+  import TabBar from '@/components/app/TabBar.svelte'
   import ManageSidebar from '@/components/app/ManageSidebar.svelte'
   import DesktopTitlebar from '@/components/app/DesktopTitlebar.svelte'
   import FileViewerHost from '@/components/app/FileViewerHost.svelte'
@@ -195,8 +195,7 @@
   <MercuryBackdrop />
   <div class="flex h-full flex-col">
     <!-- Dock-shaped skeleton: exactly the one band the real chrome paints, so
-         loading never reflows. h-9 tiles and the h-14 band match the real
-         dock's geometry, and the right cluster is held open too — the strip
+         loading never reflows. The right cluster is held open too — the strip
          it used to stand in for no longer exists, so if this band did not
          carry the cluster's width the real chrome would land wider.
          ThemeToggle rides here in the ERROR case (where `content` is the
@@ -205,14 +204,20 @@
          unable to change theme is a small cruelty with no reason. -->
     <nav
       aria-label="Primary"
-      class="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
+      class="@container flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
     >
-      <div class="grid h-9 w-9 shrink-0 place-items-center" aria-label="Talaria">
-        <WingMark class="h-5 w-5" />
+      <div class="flex h-9 shrink-0 items-center gap-2.5 pl-1" aria-label="Talaria">
+        <WingMark size={28} />
+        <span
+          class="hidden font-sans text-[13px] font-semibold leading-4 tracking-[0.18em] text-fg @4xl:block"
+          aria-hidden="true">TALARIA</span
+        >
       </div>
-      {#each [0, 1, 2, 3, 4, 5] as i (i)}
-        <Skeleton class="h-9 w-9 rounded-md" />
-      {/each}
+      <div class="flex items-center gap-2 px-3">
+        {#each [0, 1, 2, 3, 4, 5] as i (i)}
+          <Skeleton class="h-8 w-8 rounded-md" />
+        {/each}
+      </div>
       <div class="min-w-0 flex-1"></div>
       {#if content}
         <ThemeToggle />
@@ -273,7 +278,7 @@
          span the viewport's height to be a peer surface, and a dock band
          above it reads as the shell's top edge rather than a notch cut out
          of the drawer. Nothing sits between it and the view any more. -->
-    <TopDock {user} onLogout={() => void logout()} />
+    <TabBar {user} onLogout={() => void logout()} />
     <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
       <ManageSidebar {user} />
       <!-- THE ASSISTANT DRAWER IS A PEER OF THE DOCK'S ROW, not of the page
