@@ -1,0 +1,143 @@
+// Live-DB proof that a reply announces its start to the readers its end
+// reaches, and to no one else. The audience is a query over Postgres, so these
+// are `#[ignore]`d and CI's live-tests job runs them
+// (`cargo test --workspace --lib -- --ignored`):
+//
+//   DATABASE_URL=postgres://… cargo test -p talaria-chat-persist --lib -- --ignored reply_open_live
+
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use sqlx::PgPool;
+use talaria_conversations::{add_plan_member, create_conversation};
+use talaria_notify::NotifyDeps;
+
+use super::open_streaming_reply;
+
+type Rung = Arc<Mutex<Vec<(String, String)>>>;
+
+async fn pool() -> PgPool {
+    let url =
+        std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the ignored live tests");
+    PgPool::connect(&url).await.expect("connect")
+}
+
+async fn cleanup(pg: &PgPool, tag: &str) {
+    sqlx::query("delete from users where sub like $1")
+        .bind(format!("reply-open-{tag}-%"))
+        .execute(pg)
+        .await
+        .unwrap();
+}
+
+async fn person(pg: &PgPool, tag: &str, who: &str) -> String {
+    let (id,): (String,) = sqlx::query_as(
+        "insert into users (sub, email, name, role) values ($1, $2, 'Reply Open', 'member') \
+         returning id::text",
+    )
+    .bind(format!("reply-open-{tag}-{who}"))
+    .bind(format!("reply-open-{tag}-{who}@test.invalid"))
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    id
+}
+
+/// Notify deps whose publish edge records instead of sending.
+fn recording(pg: &PgPool) -> (NotifyDeps, Rung) {
+    let rung: Rung = Arc::new(Mutex::new(Vec::new()));
+    let mut deps = NotifyDeps::publishing(pg.clone(), None);
+    let sink = rung.clone();
+    deps.realtime.publish = Arc::new(move |channel, payload| {
+        sink.lock()
+            .unwrap()
+            .push((channel.to_string(), payload.to_string()));
+    });
+    (deps, rung)
+}
+
+/// The fan is detached, so give it a moment, then read who was rung.
+async fn rung_for(rung: &Rung, wait: Duration) -> Vec<(String, String)> {
+    tokio::time::sleep(wait).await;
+    rung.lock().unwrap().clone()
+}
+
+#[tokio::test]
+#[ignore]
+async fn reply_open_live_rings_the_sender_of_a_chat() {
+    let pg = pool().await;
+    cleanup(&pg, "chat").await;
+    let owner = person(&pg, "chat", "owner").await;
+    let outsider = person(&pg, "chat", "outsider").await;
+    let conv = create_conversation(&pg, &owner, "reply-open-agent", "chat", "chat", None)
+        .await
+        .unwrap();
+
+    let (deps, rung) = recording(&pg);
+    open_streaming_reply(&pg, deps, &conv, 1, &json!({}))
+        .await
+        .unwrap();
+    let events = rung_for(&rung, Duration::from_millis(500)).await;
+
+    let channels: BTreeSet<String> = events.iter().map(|(c, _)| c.clone()).collect();
+    assert_eq!(
+        channels,
+        BTreeSet::from([format!("user:{owner}")]),
+        "only the sender is rung"
+    );
+    assert!(!channels.contains(&format!("user:{outsider}")));
+    let payload: Value = serde_json::from_str(&events[0].1).unwrap();
+    assert_eq!(
+        payload,
+        json!({ "type": "conversation", "conversationId": conv }),
+        "ids only"
+    );
+    cleanup(&pg, "chat").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn reply_open_live_rings_plan_members_and_no_one_else() {
+    let pg = pool().await;
+    cleanup(&pg, "plan").await;
+    let owner = person(&pg, "plan", "owner").await;
+    let member = person(&pg, "plan", "member").await;
+    let outsider = person(&pg, "plan", "outsider").await;
+    let conv = create_conversation(&pg, &owner, "reply-open-agent", "plan", "plan", None)
+        .await
+        .unwrap();
+    add_plan_member(&pg, &conv, &member).await.unwrap();
+
+    let (deps, rung) = recording(&pg);
+    open_streaming_reply(&pg, deps, &conv, 1, &json!({}))
+        .await
+        .unwrap();
+    let channels: BTreeSet<String> = rung_for(&rung, Duration::from_millis(500))
+        .await
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect();
+
+    assert_eq!(
+        channels,
+        BTreeSet::from([format!("user:{owner}"), format!("user:{member}")]),
+    );
+    assert!(!channels.contains(&format!("user:{outsider}")));
+    cleanup(&pg, "plan").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn reply_open_live_rings_no_one_when_the_row_is_not_inserted() {
+    let pg = pool().await;
+    let missing = "00000000-0000-4000-8000-00000000d1e5";
+    let (deps, rung) = recording(&pg);
+    assert!(
+        open_streaming_reply(&pg, deps, missing, 1, &json!({}))
+            .await
+            .is_err()
+    );
+    assert!(rung_for(&rung, Duration::from_millis(300)).await.is_empty());
+}

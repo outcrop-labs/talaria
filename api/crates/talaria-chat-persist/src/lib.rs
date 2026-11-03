@@ -371,6 +371,23 @@ pub fn session_turn_parts(messages: &[Value]) -> (Option<String>, Value) {
 /// (`conversations.hermes_epoch`), so a conversation whose derived session
 /// lost a turn in a restart stays on the fresh session its repair moved it
 /// to (talaria-gateway `fleet_chat::Thread`).
+/// Open an assistant reply: insert its streaming row, then ring everyone who
+/// can read the thread. The tab bar refetches `/api/working` on this event,
+/// and a reply that announced only its end could stream and finish under the
+/// bar's idle poll with no glyph. The audience is the completion event's own,
+/// and nothing rings when the insert fails.
+pub async fn open_streaming_reply(
+    pg: &PgPool,
+    notify: NotifyDeps,
+    conversation_id: &str,
+    seq: i32,
+    metadata: &Value,
+) -> Result<String, sqlx::Error> {
+    let id = insert_streaming_assistant(pg, conversation_id, seq, metadata).await?;
+    fan_conversation_event(notify, conversation_id.to_string());
+    Ok(id)
+}
+
 pub async fn send_turn(
     pg: &PgPool,
     pinned: bool,
@@ -636,15 +653,22 @@ async fn continue_inner(
     let opening = OpeningTurn::take(conversation_id);
     let assistant_id = match resume {
         Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
-            Ok(()) => row.to_string(),
+            Ok(()) => {
+                fan_conversation_event(
+                    NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+                    conversation_id.to_string(),
+                );
+                row.to_string()
+            }
             Err(_) => return,
         },
         None => {
             let Ok(seq) = next_seq(&state.pg, conversation_id).await else {
                 return;
             };
+            let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
             let Ok(id) =
-                insert_streaming_assistant(&state.pg, conversation_id, seq, &json!({})).await
+                open_streaming_reply(&state.pg, notify, conversation_id, seq, &json!({})).await
             else {
                 return;
             };
@@ -1959,6 +1983,9 @@ pub fn answer_after_orphan(
 
 #[cfg(test)]
 mod stop_landing_live;
+
+#[cfg(test)]
+mod reply_open_live;
 
 #[cfg(test)]
 mod tests {
