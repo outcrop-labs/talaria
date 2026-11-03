@@ -330,19 +330,22 @@ body {
     --ear-at: 100% 0;
     left: 100%;
   }
+}
 
-  /* A narrow window scrolls the strip sideways. The scrollbar is noise in a
-     56px band; the overflow is said by a short trailing fade instead, only
-     while there is more to the right (lib/tab-strip.ts sets `data-more`). */
-  .tab-strip {
-    scrollbar-width: none;
-  }
-  .tab-strip::-webkit-scrollbar {
-    display: none;
-  }
-  .tab-strip[data-more] {
-    mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
-  }
+/* A narrow window scrolls the strip sideways. The scrollbar is noise in a
+   56px band; the overflow is said by a short trailing fade instead, only
+   while there is more to the right (lib/tab-strip.ts sets `data-more`).
+   Unlayered on purpose: the global `* { scrollbar-width: thin }` above is
+   unlayered too, and would beat a layered `none`, reserving a scrollbar's
+   height under the strip and lifting the open tab off the hairline. */
+.tab-strip {
+  scrollbar-width: none;
+}
+.tab-strip::-webkit-scrollbar {
+  display: none;
+}
+.tab-strip[data-more] {
+  mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
 }
 
 /* ── Theme utility classes (kept for lifted hermes-workspace components) ──── */
