@@ -249,3 +249,62 @@ works because of one standing rule on every schema change:
 
 See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for where this rule sits in the PR
 checklist.
+
+### What counts as a contract step, and the check that enforces it
+
+The rule covers more than data loss. The previous release keeps serving on
+the migrated schema during the drain, after an aborted roll (the unhealthy
+green is removed, but its migrations stay applied), and for the whole Roll
+back window. A step that takes away something its code reads or writes breaks
+it, even when every row survives:
+
+| Step | What the previous release hits |
+| :--- | :--- |
+| drop a table or column, rename one | its queries name the old thing |
+| `alter column … type` | its binds and reads use the old type |
+| `alter column … drop default` or `set not null` | its inserts leave the column out and fail NOT NULL |
+| drop a primary key or unique constraint (a re-key) | its `ON CONFLICT (…)` names a target that is gone, and the write answers 500 |
+| delete an `app_settings` row (a setting moved elsewhere) | it reads the key and finds nothing |
+
+`bun run check` enforces this list on every statement appended after index 526
+(the roll-safety guard in `scripts/check-invariants.mjs`). Such a statement
+must carry `-- contract: <what goes>, unread since <vX.Y.Z or #PR>` inside
+it, naming the release or pull request that stopped reading it. A
+`-- deliberate:` marker does not pass it. Moving data follows the same rule:
+copy it to the new place, keep the old copy current while both releases can
+run (the new code writes both, or a trigger mirrors them), and delete the old
+copy one release later.
+
+### Rolling back across the git-hosts release
+
+The git-hosts registry (#611) broke this rule. Its migration deleted
+`app_settings.github_config` after moving it into `git_hosts`, dropped the
+`'github'` default from every `host_id`, and re-keyed `workbench_repos` and
+`workbench_repo_flow`. On rollback the previous release showed GitHub as not
+connected, and every grant, job and repo request it filed failed NOT NULL. The
+release that ships the registry also appends the compensation (`pg.ts`, "The
+git-hosts move, made roll-safe"):
+
+- `github_config` is copied back from the `github` row. Two triggers keep the
+  copies equal while both releases can run, so a change on either side
+  (connect, rotate, clear, remove) reaches the other.
+- `host_id` defaults to `'github'` again on `workbench_repos`,
+  `workbench_repo_flow`, `workbench_jobs` and `workbench_repo_requests`, so
+  the previous release's inserts work.
+- A render on the previous release puts `fleet-gateway` back on
+  `gateway_unmetered_keys`. This release's relay ignores that entry, so after
+  rolling forward again every call on Talaria's own key is still metered.
+
+Two things still fail on the previous release over this schema:
+
+- **Editing a repo's git flow** (`PUT /api/workbench/flow`) answers 500. Its
+  upsert targets `ON CONFLICT (repo)`, and a unique index on the repo alone
+  would refuse the same owner/name on two hosts. Reading flows works. Edit
+  the flow after rolling forward.
+- On an upgrade straight from the previous release, the #611 statements and
+  the compensation apply in the same migration pass. While that pass runs,
+  the old container sees GitHub as not connected.
+
+The contract step ships in the release after this one: drop both triggers and
+their functions, delete `github_config`, and drop the four defaults. Each
+statement is marked `-- contract: … unread since <this release>`.
