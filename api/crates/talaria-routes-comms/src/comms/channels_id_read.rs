@@ -3,23 +3,29 @@
 // unread badges). Two arms, two cursors:
 //
 // - No `threadRootId`: the whole-channel cursor (`channel_members`).
-//   `seq` required. A cursor that reaches the channel's newest message also
-//   clears the bell rows pointing at the channel — its DM row and any
-//   @mention in it — and tells the person's other tabs and devices which rows
-//   (`{type: "notifications", readIds}`), the same end a conversation read
-//   gives an agent thread's rows.
+//   `seq` required. Once the person is caught up on the whole channel, the
+//   bell rows pointing at it clear — its DM row, any @mention in it, its
+//   thread-reply rows — and the person's other tabs and devices hear which
+//   rows (`{type: "notifications", readIds}`), the same end a conversation
+//   read gives an agent thread's rows.
 // - `threadRootId`: the ONE-thread cursor (`channel_thread_reads`) — reading
 //   a thread is not reading the channel (the channel cursor advances only on
 //   the main feed). `seq` optional: absent, the thread's newest complete reply
 //   is computed here, so the panel can post the read the moment it opens.
-//   Caught up = the thread cursor covers the thread's newest complete reply:
-//   the thread's OWN bell rows clear (`clear_channel_thread_notifications`,
-//   by group key — the href sweep would over-clear @mention rows sharing the
-//   channel's href).
+//   Caught up on the thread (its cursor covers every complete reply): the
+//   thread's OWN bell rows clear (`clear_channel_thread_notifications`, by
+//   group key). The href sweep would over-clear: an @mention row shares the
+//   channel's href, and a mention the main feed has not read is not read
+//   because a reply was. When the thread read leaves the whole channel caught
+//   up, the href sweep runs instead, since nothing on the channel is unread.
 //
-// The seqs are one space either way: replies share the channel's counter
-// (`insert_channel_message`), so a thread cursor is comparable to reply seqs
-// and the whole-channel caught-up gate still reads replies' seqs.
+// "Caught up on the whole channel" is `channel_read_caught_up`: no complete
+// message past the channel cursor, except replies their thread cursor covers.
+// That is the badge's own reading of a thread read. Without it, a channel
+// whose newest message is a reply could never catch up from the main feed
+// (which never shows replies), and the badge would read clean beside a lit
+// @mention. The seqs are one space: replies share the channel's counter
+// (`insert_channel_message`), so the two cursors compare against one another.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -28,7 +34,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{NumKind, optional_number_member, optional_uuid_member};
 use talaria_channels::{
-    channel_role, get_channel_message, mark_channel_read, mark_channel_thread_read,
+    channel_read_caught_up, channel_role, channel_thread_read_caught_up, get_channel_message,
+    mark_channel_read, mark_channel_thread_read,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{
@@ -105,24 +112,30 @@ pub async fn post(
         if let Err(e) = mark_channel_thread_read(&state.pg, &root_id, &user.id, seq as i32).await {
             return Ok(internal("[channels] thread read-cursor advance failed", e));
         }
-        // Caught up = the thread cursor (as stored — it only moves forward)
-        // covers the thread's newest complete reply. A failed sweep must not
-        // fail the read: the cursor advanced, and the rows still clear from
-        // the bell.
-        let caught_up: Result<bool, sqlx::Error> = sqlx::query_scalar(
-            "select coalesce((select last_read_seq from channel_thread_reads \
-                              where thread_root_id = $1::uuid and user_id = $2::uuid), 0) \
-                 >= coalesce((select max(seq) from channel_messages \
-                              where thread_root_id = $1::uuid and status = 'complete'), 0)",
-        )
-        .bind(&root_id)
-        .bind(&user.id)
-        .fetch_one(&state.pg)
-        .await;
+        // Caught up on the thread = its cursor (as stored — it only moves
+        // forward) covers every complete reply. If the whole channel is caught
+        // up too, the channel's own sweep runs (every row on its href, this
+        // thread's included): nothing on it is unread, so nothing over-clears.
+        // Otherwise only the thread's rows clear. A failed gate or sweep must
+        // not fail the read: the cursor advanced, and the rows still clear
+        // from the bell.
         let mut cleared: Vec<String> = Vec::new();
-        match caught_up {
+        match channel_thread_read_caught_up(&state.pg, &root_id, &user.id).await {
             Ok(true) => {
-                match clear_channel_thread_notifications(&state.pg, &user.id, &root_id).await {
+                let whole = channel_read_caught_up(&state.pg, &id, &user.id)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::error!(
+                            "[channels] channel caught-up read on thread read failed: {e}"
+                        );
+                        false
+                    });
+                let swept = if whole {
+                    clear_channel_notifications(&state.pg, &user.id, &id).await
+                } else {
+                    clear_channel_thread_notifications(&state.pg, &user.id, &root_id).await
+                };
+                match swept {
                     Ok(n) => cleared = n,
                     Err(e) => tracing::error!("[channels] thread sweep on read failed: {e}"),
                 }
@@ -144,22 +157,13 @@ pub async fn post(
         if let Err(e) = mark_channel_read(&state.pg, &id, &user.id, seq as i32).await {
             return Ok(internal("[channels] read-cursor advance failed", e));
         }
-        // Caught up = the cursor (as stored — it only moves forward) covers the
-        // newest complete message, thread replies included, the same messages
-        // the unread badge counts. A failed sweep must not fail the read: the
-        // cursor advanced, and the rows still clear from the bell.
+        // Caught up = the cursor (as stored — it only moves forward) covers
+        // every complete message, a reply its thread cursor covers counting as
+        // read: the same messages the unread badge counts. A failed sweep must
+        // not fail the read: the cursor advanced, and the rows still clear
+        // from the bell.
         let mut cleared: Vec<String> = Vec::new();
-        let caught_up: Result<bool, sqlx::Error> = sqlx::query_scalar(
-            "select coalesce((select last_read_seq from channel_members \
-                              where channel_id = $1::uuid and user_id = $2::uuid), 0) \
-                 >= coalesce((select max(seq) from channel_messages \
-                              where channel_id = $1::uuid and status = 'complete'), 0)",
-        )
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_one(&state.pg)
-        .await;
-        match caught_up {
+        match channel_read_caught_up(&state.pg, &id, &user.id).await {
             Ok(true) => match clear_channel_notifications(&state.pg, &user.id, &id).await {
                 Ok(n) => cleared = n,
                 Err(e) => tracing::error!("[channels] notification sweep on read failed: {e}"),
