@@ -25,12 +25,17 @@ export interface DesktopSettings {
 
 export type DesktopWindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'startDragging'
 
-/** An instance whose page failed to load; the launcher offers a retry. */
+/** An instance whose page did not come up (src-tauri/src/loading.rs): it got
+ *  no answer and was closed (`failed`), it answered with something that is
+ *  not Talaria and is kept behind the card (`blocked`: Show the page), or it
+ *  has not loaded in 25 s and is still loading behind the card (`stalled`). */
 export interface LoadFailure {
   seq: number
   id: string
   label: string
   message: string
+  /** Absent: a shell from before the watchdog (a failure). */
+  kind?: 'failed' | 'stalled' | 'blocked'
 }
 
 /** Everything the launcher renders (commands.rs::ShellSnapshot). */
@@ -119,6 +124,13 @@ export const activateInstance = (id: string) => invoke<void>('activate_instance'
 export const showWelcome = () => invoke<void>('show_welcome')
 
 export const removeInstance = (id: string) => invoke<Instance[]>('remove_instance', { id })
+
+/** Close an instance's page kept behind the card, still loading or not
+ *  Talaria (the instance stays registered; its last page is forgotten). */
+export const closeInstancePage = (id: string) => invoke<void>('close_instance_page', { id })
+
+/** Show a page that is not Talaria as it is, with the shell's way back on it. */
+export const showInstancePage = (id: string) => invoke<void>('show_instance_page', { id })
 
 /** Mute an instance on this desktop: its banners stop, its badge share stays. */
 export const setInstanceMuted = (id: string, muted: boolean) =>

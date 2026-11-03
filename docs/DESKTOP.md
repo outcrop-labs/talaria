@@ -165,26 +165,121 @@ save.
 
 An instance with no webview yet (the first open of a session, a relaunch) is probed first,
 from the launcher, which shows "Opening X…" with a way to stay. An unreachable instance is
-then a sentence with Retry on the launcher, not a blank window or WebKit's error page — in
-the themed titlebar mode the only chrome is drawn by the page, so that page was a trap.
-The card also offers **Open anyway**, because the check is not the webview: it is the
-shell's own HTTP client, with no cookies and its own proxy lookup and TLS trust (on Linux,
-the proxy comes only from the environment). An instance behind a sign-in gate that refuses
-the beacon without a session, or one reachable only through a proxy set in the desktop's
-settings, fails the check and still loads in the webview. Open anyway opens it without the
-check; on Linux a page that then fails comes back as a load failure (below), and on macOS
-and Windows the person gets what the platform webview shows for a failed load, as every open
-did before the probe.
+then a sentence with Retry on the launcher, not a blank window or the engine's error page —
+in the themed titlebar mode (the default on every OS) the only chrome is drawn by the page,
+so that page was a trap. The card also offers **Open anyway**, because the check is not the
+webview: it is the shell's own HTTP client, with no cookies and its own proxy lookup and TLS
+trust (on Linux, the proxy comes only from the environment). An instance behind a sign-in
+gate that refuses the beacon without a session, or one reachable only through a proxy set in
+the desktop's settings, fails the check and still loads in the webview.
 
-**Linux only:** each instance webview's WebKitGTK `load-failed` signal is watched
-(`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency). An
-http(s) main-frame load that fails — the instance went away mid-session, a full reload
-while it is down — closes that webview and returns to the launcher with WebKit's reason and
-Retry. A navigation that was replaced, a download, a link WebKit hands elsewhere
-or content it cannot show inline is answered "handled", so the page the person is on stays;
-left to WebKit, a `mailto:` link replaced the whole instance with "The URL can't be shown"
-(the navigation handler now gives a `mailto:` to the OS before WebKit sees it).
-macOS and Windows rely on the probe before a cold open.
+The probe passing is not the page loading. Cloudflare holds a request to a restarting origin
+for about 100 s and then answers 524, or answers 502 at once, or a WAF answers 403; a
+suspended instance coming back is not probed at all; a page already open reloads into a
+restart. So the shell judges every instance page itself (`src-tauri/src/loading.rs`), by
+three rules, the same on every OS:
+
+1. **A page with the Talaria UI up is never interrupted.** Up is the UI's shell hook
+   (`window.__TALARIA_DESKTOP__`), or the page's titlebar asking the shell for something
+   (`get_desktop_settings`, `list_instances`), which every UI's titlebar does once it has
+   mounted, on the sign-in page too. The second is what keeps an instance on an older
+   Talaria, from before the hook, from being judged broken. It comes late: the titlebar is
+   in a chunk of its own, loaded after the main bundle and after its own import of the
+   Tauri API, so a slow instance can finish its page several seconds before it asks. A
+   page that is Talaria's shell still starting (its `#root` and module script, no UI yet) is
+   looked at again about 8 s and 20 s after it finished before anything is said. A failed download, an
+   aborted navigation or a 5xx that does not replace the page changes nothing.
+2. **A page on the instance's own origin that is not Talaria is the card.** A main-frame
+   page there that finished, and still has no UI 3 s later (and after those looks, if it
+   was starting), puts the person back on the launcher with the card, saying what answered
+   when the platform said. The card takes nothing away:
+   - A page that answered — Cloudflare's 502, 524 or 403 challenge, a sign-in gate, a
+     mis-routed 404, a page with no Talaria in it — is **kept** behind the card, which
+     offers **Retry** and **Back to instances** (both close the page first) and **Show the
+     page**: the page as it is, with the shell's own **← Instances** on it, bottom left
+     (text, styled through the CSSOM in a shadow root, so a strict CSP cannot strip it), as
+     the way back, which brings the card back. A page shown that way is judged no more,
+     unless a later document is one the way back cannot reach (below). Show the page is the
+     only way a kept page is shown as it is: opening the instance any other way — its row,
+     the tray, a notification, another instance's switcher — closes the kept page and loads
+     the instance fresh (Retry without the probe).
+   - A load that got no answer at all (refused, dropped, an engine's network error page),
+     and a page that never answers the shell's script (WebView2's own page for an error
+     with no body, where no script runs; a page too busy to answer, looked at again 5 s and
+     12 s later first), is closed: Retry, Back to instances. Neither offers Show the page:
+     the way back could not land there.
+   - Whichever it was, if the instance's UI comes up while the card is up (a challenge
+     that solves itself, a slow start), the shell opens it; if it comes up on a page shown
+     as it is, the way back comes down.
+   - A kept page is not the instance's page: the instance's remembered page is forgotten,
+     so Retry and the next launch open its root. A network failure, a stall and a page
+     loaded hidden at launch say nothing against the page, and keep it.
+
+   A page that never finishes is the watchdog's: 25 s after a webview is made, or after a
+   document commits, a page still loading without its UI is "<instance> is not
+   answering", with **Retry**, **Keep waiting** (show the page again, with the way back on
+   it at once, and wait 60 s more) and **Back to instances**. The page keeps loading behind that
+   card and is judged when it finishes: Talaria opens it; anything else (Cloudflare's 524
+   after holding the request) is the card for what it is. A file the person opened in the
+   window (an image, a PDF, JSON: not HTML, and nothing failed) is left alone, and Keep
+   waiting on one that has finished waits for nothing.
+3. **Pages on other origins are never judged.** A sign-in provider, a Cloudflare Access
+   login: not Talaria, and not the shell's to call broken. A document that commits there
+   starts no watchdog and is judged when it finishes only if the platform said its load
+   failed on the instance's own origin. The shell takes one call from such a page, and
+   only one: the way back (`show_welcome`, granted to the instance's webview for any http(s)
+   origin by `lib.rs::grant_way_back`). So the pill and `Ctrl/Cmd+Shift+H` work on a sign-in
+   provider's page too; `Ctrl+Q` works only on the instance's own origin (the OS's own quit,
+   Alt+F4 or the macOS menu, works everywhere). Going back from another origin marks the
+   page as not the instance's, so the next open loads the instance fresh instead of showing
+   that page again.
+
+**Who may take the way back, and Quit.** A page's script can do anything a page can, so
+the shell decides by who is asking, never by a navigation (an earlier build of this change
+navigated to `talaria-desktop.invalid` for it, which any page or frame could do; that host
+is now refused like `file:`, and nothing acts on it):
+- On Linux and macOS Tauri gives the IPC to the main frame only, so no frame (a
+  microsite's sandboxed `srcdoc` frame, an ad) can call anything. WebView2 (Windows) gives
+  it to every frame, so there a frame is held by the origin ACL and the gate below, not by
+  frame scope: a sandboxed frame has an opaque origin and is refused before any command
+  runs, a cross-origin frame reaches only the way back, and a same-origin frame is the
+  instance's own content.
+- The pill and the escape keys take only real input (`isTrusted`): a page's own
+  `dispatchEvent` or `.click()` does nothing.
+- `show_welcome` from an instance page is taken only for the page on screen, at most once a
+  second (`loading::may_go_back`): a page in the background, or one calling it in a loop,
+  cannot throw the person out of what they are using.
+- `desktop_quit` from an instance page is taken only on the instance's own origin, for the
+  page on screen, and not in the first 10 s after launch (`loading::may_quit`): no page can
+  quit the app from the background, or on every start.
+
+Off screen, a page that does not come up is closed. One loaded hidden at launch (D8) is
+loaded again 1, 2, 5, 15 and 30 minutes later, so its instance's notifications are not lost
+for the session; a page left behind on the card is closed when the person opens another
+instance.
+
+What the platform says, kept for the card's words only (the rules above decide):
+
+- **Linux:** WebKitGTK's `load-failed` for an http(s) main-frame load that failed
+  (`commands.rs::watch_load_failures`; the `webkit2gtk` crate is a Linux-only dependency),
+  and the main resource's status when a document commits. The failed load is answered
+  "handled", so WebKit shows no error page of its own and a page that was up stays up; a
+  navigation that was replaced, a download, a link WebKit hands elsewhere (`mailto:`) or
+  content it cannot show inline says nothing (left to WebKit, a `mailto:` link replaced the
+  whole instance with "The URL can't be shown"; the navigation handler now refuses it, and
+  one the person clicks goes to the OS, links.rs).
+- **Windows:** WebView2's main-frame `NavigationCompleted`, subscribed through
+  `with_webview` and webview2-com (`watch_navigation`, `loading::webview2`), for an http(s)
+  page: its `HttpStatusCode` from 400, or `IsSuccess` false with no HTTP answer at all —
+  the network error page, where no init script runs and Alt+F4 was the only way out. A
+  cancelled navigation (`OPERATION_CANCELED`: replaced, or stopped) and one that became a
+  download (`CONNECTION_ABORTED`) say nothing.
+- **macOS:** nothing: WKWebView tells only its navigation delegate, which is wry's, what a
+  page answered, and WebKit's Navigation Timing has no `responseStatus`. Rule 2 needs none —
+  the card names no status there. A load that fails before it commits never finishes on
+  macOS; the watchdog takes it.
+
+Each engine callback only records; every decision is a main-thread turn of its own.
 
 ### Reloading a page
 
@@ -330,7 +425,8 @@ read, when an async command can reach one from its tokio worker, or when a callb
 reach one inline. Callbacks are the closures handed to `.on_*(…)` (window, webview,
 page-load, navigation, menu and tray events), `.run(…)`, `.with_webview(…)` and GTK
 `connect_*` signals, plus any function marked `// webview-threading: callback` (the
-notification-click entry points the OS calls). It follows free function calls by name, not
+notification-click entry points the OS calls, and WebView2's `NavigationCompleted`
+handler). It follows free function calls by name, not
 method calls or macro expansions: a regression guard for this shape of bug, not a proof.
 CI's connect smoke proves the connect path on every OS (Gates, below).
 

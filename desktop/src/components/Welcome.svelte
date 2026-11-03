@@ -13,12 +13,16 @@
   import WingMark from './WingMark.svelte'
   import {
     allowNotifications,
+    backToInstances,
     cancelOpen,
     dismissNotice,
+    keepWaiting,
     open,
+    retry,
     setSuspend,
     setTitlebar,
     shell,
+    showPage,
   } from '../lib/state.svelte'
 
   // The signature ambient field, wearing the same shape the nav rail wears in
@@ -194,12 +198,49 @@
 
       {#if shell.problem}
         {@const problem = shell.problem}
-        <div class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-left text-xs" role="alert">
+        <div
+          class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-left text-xs"
+          role="alert"
+          data-load-problem={problem.stalled ? 'stalled' : problem.blocked ? 'blocked' : problem.probe ? 'probe' : 'failed'}
+        >
           <p class="text-danger break-words">{problem.message}</p>
-          <div class="mt-2 flex justify-end gap-2">
-            <button type="button" class="rounded px-2 py-0.5 text-muted hover:bg-hover hover:text-readout" onclick={() => (shell.problem = null)}>
-              Dismiss
-            </button>
+          <div class="mt-2 flex flex-wrap justify-end gap-2">
+            {#if problem.probe}
+              <button type="button" class="rounded px-2 py-0.5 text-muted hover:bg-hover hover:text-readout" onclick={() => (shell.problem = null)}>
+                Dismiss
+              </button>
+            {:else}
+              <!-- The page did not come up (src-tauri/src/loading.rs). The
+                   window has no chrome of its own in the themed mode, so this
+                   card is the way back. -->
+              <button
+                type="button"
+                class="rounded px-2 py-0.5 text-muted hover:bg-hover hover:text-readout"
+                onclick={() => void backToInstances(problem)}
+              >
+                Back to instances
+              </button>
+            {/if}
+            {#if problem.stalled}
+              <button
+                type="button"
+                class="rounded px-2 py-0.5 text-muted hover:bg-hover hover:text-readout"
+                onclick={() => void keepWaiting(problem)}
+              >
+                Keep waiting
+              </button>
+            {/if}
+            {#if problem.blocked}
+              <!-- A challenge or a sign-in gate may need the person: the page
+                   as it is, with the shell's way back on it. -->
+              <button
+                type="button"
+                class="rounded px-2 py-0.5 text-muted hover:bg-hover hover:text-readout"
+                onclick={() => void showPage(problem)}
+              >
+                Show the page
+              </button>
+            {/if}
             {#if problem.probe}
               <!-- The check is not the page: an instance behind a sign-in gate,
                    or reachable only through a proxy the webview knows, can
@@ -213,7 +254,7 @@
                 Open anyway
               </button>
             {/if}
-            <button type="button" class="rounded border border-hairline-strong px-2 py-0.5 text-readout hover:bg-hover" onclick={() => void open(problem.id)}>
+            <button type="button" class="rounded border border-hairline-strong px-2 py-0.5 text-readout hover:bg-hover" onclick={() => void retry(problem)}>
               Retry
             </button>
           </div>

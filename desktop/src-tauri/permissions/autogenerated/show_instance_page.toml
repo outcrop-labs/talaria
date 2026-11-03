@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-instance-page"
+description = "Enables the show_instance_page command without any pre-configured scope."
+commands.allow = ["show_instance_page"]
+
+[[permission]]
+identifier = "deny-show-instance-page"
+description = "Denies the show_instance_page command without any pre-configured scope."
+commands.deny = ["show_instance_page"]

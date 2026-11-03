@@ -18,8 +18,9 @@
 //! - The engine's own keys where it has them: WebView2 reloads on F5 and Ctrl+R
 //!   on a page where the script could not run (its error page).
 //!
-//! A load that fails on Linux already comes back to the launcher with Retry
-//! (commands.rs::watch_load_failures).
+//! A reload into a page that does not come up (a restart behind Cloudflare,
+//! a page that is not Talaria) comes back to the launcher with its card, on
+//! every OS (loading.rs).
 
 use tauri::{AppHandle, Manager, Webview};
 
