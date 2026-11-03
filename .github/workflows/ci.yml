@@ -625,6 +625,83 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test --quiet
 
+  # The same crate on Windows, for the same reason as macOS: notify/windows.rs
+  # and every `cfg(windows)` branch are compiled by no other job, and the tests
+  # carry Windows semantics of their own (paths, the registry's tmp + rename
+  # write, the beacon tests over local sockets). No apt step: the WebView2
+  # bindings ship inside webview2-com-sys. Clippy and the tests cannot see a
+  # hang, though — the connect smoke below is the job that does.
+  desktop-windows:
+    name: clippy + test (desktop windows)
+    needs: [changes]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: desktop
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: desktop/src-tauri
+        run: cargo test --quiet
+
+  # THE WINDOWS CONNECT SMOKE: does the shell open an instance on Windows? Every
+  # first open froze the app for good there (a webview created inside a WebView2
+  # IPC callback deadlocks), and nothing could see it: the installer smoke in
+  # desktop-package.yml asks only whether the process is still up after 20 s,
+  # and a frozen one is. This builds the real shell (debug, launcher embedded),
+  # registers a fake instance on localhost as the last view, launches, and
+  # passes only if the instance page is requested and its script runs within
+  # 30 s — boot, probe, activate, webview, navigation: the whole connect path.
+  # desktop/packaging/connect-smoke.mjs is the script, and says which step was
+  # the last to happen when it fails.
+  desktop-windows-smoke:
+    name: connect smoke (desktop windows)
+    needs: [changes]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: desktop
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # `custom-protocol` embeds desktop/dist, so the launcher is the built one
+      # and not tauri.conf.json's devUrl (see the feature's note in Cargo.toml).
+      - name: Build the launcher
+        working-directory: desktop
+        run: bun run build:vite
+
+      - name: Build the shell
+        working-directory: desktop/src-tauri
+        run: cargo build --features custom-protocol
+
+      - name: Connect smoke
+        run: node desktop/packaging/connect-smoke.mjs desktop/src-tauri/target/debug/talaria-desktop.exe --wait 30
+
   # The surface gate, on Linux: what `bun run mobile:check` runs, and what a
   # devbox runs. `--no-daemon` because a CI runner is thrown away afterwards and
   # a lingering daemon only costs it memory.
