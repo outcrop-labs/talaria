@@ -103,7 +103,7 @@
         last[i] = v
         dots[i]!.style.opacity = String(v)
       }
-    }, every)
+    }, every, { early: true })
   })
 </script>
 

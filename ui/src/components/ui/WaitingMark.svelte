@@ -33,11 +33,14 @@
   let {
     site,
     size = 14,
+    still = false,
     class: className,
   }: {
     site: WaitingSiteRef
     /** Font size in px for braille; the grid derives its box from it. */
     size?: number
+    /** Hold the reduced-motion rendering: the mark is shown in motion elsewhere on screen. */
+    still?: boolean
     class?: string
   } = $props()
 
@@ -47,12 +50,12 @@
 </script>
 
 {#if braille}
-  <WaitingBraille animation={braille} {size} speed={resolved.speed} frameMs={resolved.frameMs} class={className} />
+  <WaitingBraille animation={braille} {size} speed={resolved.speed} frameMs={resolved.frameMs} forceReduced={still || undefined} class={className} />
 {:else if grid}
   <!-- GRID_SCALE, applied HERE and only here. A braille glyph fills most of its
        em; a 5×5 lattice spends 38% of its box on gaps, so matched px sizes make
        the grid read markedly smaller than the text beside it. Every call site
        passing one `size` and getting equal visual weight from either family is
        the whole reason this dispatcher exists rather than two imports. -->
-  <WaitingGrid animation={grid} size={size * GRID_SCALE} speed={resolved.speed} frameMs={resolved.frameMs} class={className} />
+  <WaitingGrid animation={grid} size={size * GRID_SCALE} speed={resolved.speed} frameMs={resolved.frameMs} forceReduced={still || undefined} class={className} />
 {/if}

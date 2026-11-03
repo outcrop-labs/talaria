@@ -44,6 +44,7 @@
   import { manageArea, MANAGE_HOME } from '@/lib/manage-area'
   import { edgeFade, revealCurrent } from '@/lib/tab-strip'
   import { readout, tabWorking } from '@/lib/tab-working'
+  import { tabMarkOnScreen } from '@/lib/tab-mark-on-screen'
   import { useWorking } from '@/lib/working.svelte'
   import { swap } from '@/lib/motion'
   import { cn } from '@/lib/cn'
@@ -74,7 +75,7 @@
 </script>
 
 {#snippet face(item: NavItem, size: number)}
-  <TabFace icon={item.icon} {size} site={tabWorking(item.to, working.current)?.site ?? null} />
+  <TabFace icon={item.icon} {size} site={tabWorking(item.to, working.current)?.site ?? null} tab />
 {/snippet}
 
 {#snippet badgeMark(badge: number | null, className: string)}
@@ -153,7 +154,7 @@
         in:swap={{ duration: 200 }}
         out:swap={{ duration: 120 }}
       >
-        <TabFace icon={w.tab.icon} size={12} site={w.site} />
+        <TabFace icon={w.tab.icon} size={12} site={w.site} still={tabMarkOnScreen(w.site)} />
         <span class="font-mono text-[10px] uppercase leading-3 tracking-[0.08em]"
           >{w.elsewhere}<span class="hidden pl-1 @2xl:inline">working</span></span
         >

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
 import { ANIMATIONS, AMBIENT, IMMEDIATE, STANDARD } from './animations'
-import { GRID_ANIMATIONS } from './grid-animations'
+import { GRID_ANIMATIONS, gridAnimationById } from './grid-animations'
 import { rasterise, cellsKey } from './braille'
 import { clamp01 } from './field'
-import { WAITING_STATES, waitingState } from './registry'
+import { TAB_GRIDS, WAITING_STATES, waitingState } from './registry'
 import { deal } from './rotation'
 import { WAITING_SITES, WAITING_SITE_KEYS } from './sites'
 
@@ -142,7 +142,10 @@ test('braille cell widths match what the registry advertises', () => {
   }
 })
 
-test('every state dealt to a tab slot is one cell wide', () => {
+/** Dots 7 and 8: the row at the font's descender, below the tab tile. */
+const lightsBottomRow = (ch: string) => ((ch.codePointAt(0)! - 0x2800) & 0xc0) !== 0
+
+test('every state dealt to a tab slot is one cell wide and stays above the bottom row', () => {
   const tabSites = WAITING_SITE_KEYS.filter((k) => WAITING_SITES[k].slot === 'tab')
   assert.ok(tabSites.length > 0, 'no tab sites')
   const families = new Set<string>()
@@ -154,9 +157,25 @@ test('every state dealt to a tab slot is one cell wide', () => {
       if (state.family === 'grid') continue
       const a = ANIMATIONS.find((x) => x.id === state.slug)!
       for (const p of phases) {
-        assert.equal(rasterise(a.cols, p, a.field, a.cellAlpha).length, 1, `seed ${seed}: ${key} got ${a.id}`)
+        const cells = rasterise(a.cols, p, a.field, a.cellAlpha)
+        assert.equal(cells.length, 1, `seed ${seed}: ${key} got ${a.id}`)
+        assert.ok(!lightsBottomRow(cells[0]!.ch), `seed ${seed}: ${key} got ${a.id}, which lights dot 7 or 8 at ${p}`)
       }
     }
   }
   assert.deepEqual([...families].sort(), ['braille', 'grid'], 'tab sites are dealt from one family only')
+})
+
+test('one-cell braille states that light the bottom row are kept out of the tab slot', () => {
+  const oneCell = ANIMATIONS.filter((a) => a.cols === 1)
+  const low = oneCell.filter((a) => phases.some((p) => lightsBottomRow(rasterise(1, p, a.field, a.cellAlpha)[0]!.ch)))
+  assert.ok(low.length > 0, 'no one-cell state lights the bottom row, so this rule guards nothing')
+  assert.ok(low.length < oneCell.length, 'every one-cell state lights the bottom row, so tabs deal no braille')
+  for (const a of low) assert.ok(!waitingState(a.id)!.slots.includes('tab'), `${a.id} lights dot 7 or 8 but fits a tab`)
+})
+
+test('the tab grid pool names real grid states, and only those reach a tab', () => {
+  for (const id of TAB_GRIDS) assert.ok(gridAnimationById(id), `${id} is not a grid state`)
+  const tabGrids = WAITING_STATES.filter((s) => s.family === 'grid' && s.slots.includes('tab')).map((s) => s.slug)
+  assert.deepEqual(tabGrids.sort(), [...TAB_GRIDS].sort())
 })
