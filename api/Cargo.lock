@@ -5665,6 +5665,7 @@ dependencies = [
 name = "talaria-hermes-channel"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
  "futures-util",
  "reqwest",
@@ -5672,13 +5673,14 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
- "talaria-agent-crons",
  "talaria-agent-secrets",
+ "talaria-daily-brief-config",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-fleet-reconcile",
  "talaria-fleet-render",
  "talaria-hermes-images",
+ "talaria-host-metrics",
  "talaria-notify",
  "talaria-scheduler",
  "talaria-secretbox",

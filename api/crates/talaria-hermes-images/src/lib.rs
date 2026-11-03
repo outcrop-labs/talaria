@@ -51,11 +51,13 @@ impl Status {
         }
     }
 
+    /// A status this build does not know (a later release's) reads as bad:
+    /// never rolled out, never planned, until a release that knows it says.
     fn parse(s: &str) -> Status {
         match s {
             "good" => Status::Good,
-            "bad" => Status::Bad,
-            _ => Status::Candidate,
+            "candidate" => Status::Candidate,
+            _ => Status::Bad,
         }
     }
 }
@@ -126,6 +128,37 @@ impl ImageRecord {
     /// When this image passed the canary here, if it has.
     pub fn canary_ok_at(&self) -> Option<i64> {
         self.inspect.get("canaryOkAt").and_then(|v| v.as_i64())
+    }
+
+    /// What the contract checks found changed in the Hermes internals
+    /// Talaria relies on (the inspection's, then the canary's): the image is
+    /// held, not banned, until an admin accepts it.
+    pub fn contract_problems(&self) -> Vec<String> {
+        self.inspect
+            .pointer("/contract/problems")
+            .and_then(|v| v.as_array())
+            .map(|ps| {
+                ps.iter()
+                    .filter_map(|p| p.as_str())
+                    .map(|p| p.chars().take(600).collect())
+                    .take(20)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Who accepted the contract problems, and when.
+    pub fn contract_accepted(&self) -> Option<(String, i64)> {
+        let a = self.inspect.get("contractAccepted")?;
+        Some((
+            a.get("by")?.as_str()?.chars().take(200).collect(),
+            a.get("at")?.as_i64()?,
+        ))
+    }
+
+    /// Held for an admin: a contract problem nobody accepted.
+    pub fn held(&self) -> bool {
+        !self.contract_problems().is_empty() && self.contract_accepted().is_none()
     }
 
     /// Whether an admin may pin it: it ran well here, or it passed the
@@ -351,6 +384,17 @@ pub async fn set_prepared(
     Ok(())
 }
 
+/// This instance pulled the image (so this instance may prune it).
+pub async fn note_pulled(pg: &PgPool, digest: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update hermes_images set pulled_here = true, updated_at = now() where digest = $1",
+    )
+    .bind(digest)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// The digest ran well here.
 pub async fn mark_good(pg: &PgPool, digest: &str) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -406,6 +450,49 @@ pub async fn note_canary_ok(pg: &PgPool, digest: &str, at_ms: i64) -> Result<(),
     Ok(())
 }
 
+/// The canary found contract problems of its own: added to the
+/// inspection's.
+pub async fn note_contract(
+    pg: &PgPool,
+    digest: &str,
+    problems: &[String],
+) -> Result<(), sqlx::Error> {
+    let list = serde_json::json!(problems);
+    sqlx::query(
+        "update hermes_images set inspect = jsonb_set(inspect, '{contract}', \
+           coalesce(inspect->'contract', '{}'::jsonb) || jsonb_build_object('problems', \
+             coalesce(inspect#>'{contract,problems}', '[]'::jsonb) || $2::jsonb)), \
+           updated_at = now() where digest = $1",
+    )
+    .bind(digest)
+    .bind(list)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// An admin accepts the contract problems: the image rolls out anyway.
+/// Answers whether the image had any.
+pub async fn accept_contract(
+    pg: &PgPool,
+    digest: &str,
+    by: &str,
+    at_ms: i64,
+) -> Result<bool, sqlx::Error> {
+    let changed = sqlx::query(
+        "update hermes_images set inspect = inspect || jsonb_build_object('contractAccepted', \
+           jsonb_build_object('by', $2::text, 'at', $3::bigint)), updated_at = now() \
+         where digest = $1 and jsonb_array_length(coalesce(inspect#>'{contract,problems}', '[]'::jsonb)) > 0",
+    )
+    .bind(digest)
+    .bind(by.chars().take(200).collect::<String>())
+    .bind(at_ms)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    Ok(changed > 0)
+}
+
 /// The image is no longer on the host (this instance removed it): a later
 /// preparation pulls it again, and only then is it this instance's to prune.
 pub async fn note_pruned(pg: &PgPool, digest: &str) -> Result<(), sqlx::Error> {
@@ -450,6 +537,9 @@ pub async fn assign(pg: &PgPool, agent_id: &str, digest: &str) -> Result<(), sql
 pub struct Window {
     pub start: String,
     pub end: String,
+    /// Fields a later release wrote, kept as they are.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for Window {
@@ -457,6 +547,7 @@ impl Default for Window {
         Window {
             start: "02:00".into(),
             end: "05:00".into(),
+            extra: Default::default(),
         }
     }
 }
@@ -503,6 +594,12 @@ pub struct CheckRecord {
     pub version: Option<String>,
     /// Why the check failed (the registry unreachable, a refusal).
     pub error: Option<String>,
+    /// Since when a successful check has named `digest` as stable: the
+    /// minimum age counts from here, and restarts whenever stable moves.
+    pub since: Option<i64>,
+    /// Fields a later release wrote, kept as they are.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Why a rollout exists.
@@ -545,6 +642,9 @@ pub enum Phase {
     Done,
     /// It stopped: the canary or an agent failed.
     Failed,
+    /// It gave way before it moved anyone: stable moved on (or back), so the
+    /// release it waited for is not rolled out.
+    Cancelled,
 }
 
 /// An agent the rollout passed over for now.
@@ -554,6 +654,9 @@ pub struct Skipped {
     pub slug: String,
     pub why: String,
     pub at: i64,
+    /// Fields a later release wrote, kept as they are.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// An agent the rollout moved, as its container was once it came up: the
@@ -572,6 +675,9 @@ pub struct Watched {
     /// image it left, normalized, so the soak counts only new ones.
     #[serde(default)]
     pub known_faults: Vec<String>,
+    /// Fields a later release wrote, kept as they are.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A rollout in flight, or the last one.
@@ -595,16 +701,20 @@ pub struct Rollout {
     pub forced: bool,
     /// When the canary passed.
     pub canary_ok_at: Option<i64>,
-    /// The agent rolling now (set before its roll, cleared after): a step
-    /// that finds it set after a restart re-verifies that agent.
+    /// The agent rolling now (set before its roll, in the same write as its
+    /// assignment; cleared after): a step that finds it set after a restart
+    /// re-verifies that agent.
     pub agent: Option<String>,
-    /// The agents moved so far.
+    /// The fault lines `agent`'s log carried on the image it left, so a
+    /// resumed check counts only new ones.
+    pub agent_faults: Vec<String>,
+    /// The agents moved so far (for the record: what is still to move is
+    /// read from the assignments, never from this list).
     pub moved: Vec<String>,
-    /// Each moved agent's container as it came up, for the soak.
+    /// Each agent this rollout recreated on an image not yet known good,
+    /// as its container came up: the soak compares the container against
+    /// this. An agent put back leaves it in the same write.
     pub watch: Vec<Watched>,
-    /// The agents a failed or cancelled rollout left on its image: a
-    /// rollback recreates them whatever state they are in.
-    pub reached: Vec<String>,
     /// The agents passed over, and why (each agent's latest).
     pub skipped: Vec<Skipped>,
     /// The agents busy all window: left on the image they run, for a
@@ -612,9 +722,18 @@ pub struct Rollout {
     pub deferred: Vec<String>,
     /// For a catch-up: each agent's digest before it moved, to put it back.
     pub prev: std::collections::BTreeMap<String, String>,
-    /// The image failures seen so far: one is retried to confirm it, the
-    /// second marks the image bad.
+    /// 1 after a first image failure of `strike_on`: the retry confirms it,
+    /// a second failure of the same thing marks the image bad. Cleared when
+    /// that thing passes.
     pub strikes: u32,
+    /// What the strike is for: `canary`, `prepare`, or an agent's slug.
+    pub strike_on: Option<String>,
+    /// Host failures in a row (each retry waits twice as long as the last,
+    /// to six hours; the third tells a person). Cleared by progress.
+    pub infra_failures: u32,
+    /// Image failures read as the host's because its disk was saturated
+    /// (at most two; the next is judged as the image's).
+    pub masked: u32,
     /// Not before this (epoch ms): a retry after a failure.
     pub retry_at: Option<i64>,
     /// When agents started moving.
@@ -631,7 +750,7 @@ pub struct Rollout {
 impl Rollout {
     /// Whether it still has work to do.
     pub fn open(&self) -> bool {
-        !matches!(self.phase, Phase::Done | Phase::Failed)
+        !matches!(self.phase, Phase::Done | Phase::Failed | Phase::Cancelled)
     }
 
     pub fn note_skip(&mut self, slug: &str, why: &str, at: i64) {
@@ -640,6 +759,7 @@ impl Rollout {
             slug: slug.into(),
             why: why.into(),
             at,
+            extra: Default::default(),
         });
     }
 }
@@ -658,6 +778,9 @@ pub fn new_rollout_id(now_ms: i64) -> String {
 pub struct ChannelEvent {
     pub at: i64,
     pub text: String,
+    /// Fields a later release wrote, kept as they are.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The channel's persisted state.
@@ -682,6 +805,8 @@ pub struct ChannelState {
     pub events: Vec<ChannelEvent>,
     /// When each stuck-state alert last went out, by its key.
     pub alerted: std::collections::BTreeMap<String, i64>,
+    /// How many windows in a row each agent (by slug) was left behind busy.
+    pub deferrals: std::collections::BTreeMap<String, u32>,
     /// Fields a later release wrote, kept as they are.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -694,6 +819,7 @@ impl ChannelState {
             ChannelEvent {
                 at,
                 text: text.into(),
+                extra: Default::default(),
             },
         );
         self.events.truncate(EVENTS_CAP);
@@ -754,6 +880,38 @@ pub async fn load_state(pg: &PgPool) -> Result<ChannelState, StateError> {
     load_state_at(pg, STATE_KEY).await
 }
 
+/// Writes to the records and the assignments that belong with a state
+/// change: applied in the state's own transaction, so they happen exactly
+/// when it commits — never after a write that was refused (a step whose
+/// rollout an admin replaced), never before one that fails.
+#[derive(Debug, Default)]
+pub struct Effects {
+    assign: Vec<(String, String)>,
+    good: Vec<String>,
+    bad: Vec<(String, String)>,
+    allow: Vec<String>,
+}
+
+impl Effects {
+    /// The agent (by `agent_defs.id`) runs `digest` from its next render.
+    pub fn assign(&mut self, agent_id: &str, digest: &str) {
+        self.assign.push((agent_id.to_string(), digest.to_string()));
+    }
+    /// The digest ran well here.
+    pub fn mark_good(&mut self, digest: &str) {
+        self.good.push(digest.to_string());
+    }
+    /// The digest failed here, and why.
+    pub fn mark_bad(&mut self, digest: &str, reason: &str) {
+        self.bad
+            .push((digest.to_string(), reason.chars().take(2_000).collect()));
+    }
+    /// An admin lifts the digest's ban.
+    pub fn allow_again(&mut self, digest: &str) {
+        self.allow.push(digest.to_string());
+    }
+}
+
 /// Read, change and write the state under `key` in one transaction, the row
 /// locked: two writers (the engine's step and an admin's action, on any api
 /// instance) take turns, and neither writes over what the other read. The
@@ -766,6 +924,19 @@ pub async fn patch_state_at<T, F>(
 ) -> Result<(ChannelState, T), StateError>
 where
     F: FnOnce(&mut ChannelState) -> Result<T, StateError>,
+{
+    patch_state_fx_at(pg, key, |s, _| f(s)).await
+}
+
+/// [`patch_state_at`], with the [`Effects`] the closure asks for applied in
+/// the same transaction.
+pub async fn patch_state_fx_at<T, F>(
+    pg: &PgPool,
+    key: &str,
+    f: F,
+) -> Result<(ChannelState, T), StateError>
+where
+    F: FnOnce(&mut ChannelState, &mut Effects) -> Result<T, StateError>,
 {
     let store = |e: sqlx::Error| StateError::Store(e.to_string());
     let mut tx = pg.begin().await.map_err(store)?;
@@ -783,7 +954,8 @@ where
             .await
             .map_err(store)?;
     let mut state = parse_state(stored)?;
-    let out = f(&mut state)?;
+    let mut fx = Effects::default();
+    let out = f(&mut state, &mut fx)?;
     let value = serde_json::to_value(&state)
         .map_err(|e| StateError::Unreadable(format!("the state would not serialize: {e}")))?;
     sqlx::query("update app_settings set value = $2, updated_at = now() where key = $1")
@@ -792,8 +964,112 @@ where
         .execute(&mut *tx)
         .await
         .map_err(store)?;
+    for (agent, digest) in &fx.assign {
+        sqlx::query(
+            "insert into hermes_agent_images (agent_id, digest) values ($1::uuid, $2) \
+             on conflict (agent_id) do update set digest = excluded.digest, updated_at = now()",
+        )
+        .bind(agent)
+        .bind(digest)
+        .execute(&mut *tx)
+        .await
+        .map_err(store)?;
+    }
+    for digest in &fx.good {
+        sqlx::query(
+            "update hermes_images set status = 'good', reason = null, \
+               good_since = coalesce(good_since, now()), updated_at = now() \
+             where digest = $1 and status <> 'bad'",
+        )
+        .bind(digest)
+        .execute(&mut *tx)
+        .await
+        .map_err(store)?;
+    }
+    for (digest, reason) in &fx.bad {
+        sqlx::query(
+            "update hermes_images set status = 'bad', reason = $2, good_since = null, \
+               updated_at = now() where digest = $1",
+        )
+        .bind(digest)
+        .bind(reason)
+        .execute(&mut *tx)
+        .await
+        .map_err(store)?;
+    }
+    for digest in &fx.allow {
+        sqlx::query(
+            "update hermes_images set status = 'candidate', reason = null, updated_at = now() \
+             where digest = $1 and status = 'bad'",
+        )
+        .bind(digest)
+        .execute(&mut *tx)
+        .await
+        .map_err(store)?;
+    }
     tx.commit().await.map_err(store)?;
     Ok((state, out))
+}
+
+/// Set an unreadable state aside and start a fresh one that keeps what the
+/// fleet runs: the old row is archived under `<key>:archived:<ms>` exactly as
+/// it was, and the new one carries over `current`, `previous` and `pinned`
+/// where they read as digests (and nothing else — no rollout). Refused when
+/// the row reads: there is nothing to reset. Answers the archive's key.
+pub async fn reset_state_at(
+    pg: &PgPool,
+    key: &str,
+    now_ms: i64,
+    by: &str,
+) -> Result<String, StateError> {
+    let store = |e: sqlx::Error| StateError::Store(e.to_string());
+    let mut tx = pg.begin().await.map_err(store)?;
+    let stored: Option<serde_json::Value> =
+        sqlx::query_scalar("select value from app_settings where key = $1 for update")
+            .bind(key)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store)?;
+    if parse_state(stored.clone()).is_ok() {
+        return Err(StateError::Store(
+            "the agent image state reads fine: there is nothing to reset".into(),
+        ));
+    }
+    let stored = stored.unwrap_or(serde_json::Value::Null);
+    let archive = format!("{key}:archived:{now_ms}");
+    sqlx::query("insert into app_settings (key, value) values ($1, $2)")
+        .bind(&archive)
+        .bind(&stored)
+        .execute(&mut *tx)
+        .await
+        .map_err(store)?;
+    let digest_at = |field: &str| {
+        stored
+            .get(field)
+            .and_then(|v| v.as_str())
+            .filter(|d| is_digest(d))
+            .map(str::to_string)
+    };
+    let mut fresh = ChannelState {
+        current: digest_at("current"),
+        previous: digest_at("previous"),
+        pinned: digest_at("pinned"),
+        ..Default::default()
+    };
+    fresh.note(
+        now_ms,
+        format!("{by} reset the unreadable state (kept as app_settings '{archive}'); the fleet stays on its image"),
+    );
+    let value = serde_json::to_value(&fresh)
+        .map_err(|e| StateError::Unreadable(format!("the state would not serialize: {e}")))?;
+    sqlx::query("update app_settings set value = $2, updated_at = now() where key = $1")
+        .bind(key)
+        .bind(&value)
+        .execute(&mut *tx)
+        .await
+        .map_err(store)?;
+    tx.commit().await.map_err(store)?;
+    Ok(archive)
 }
 
 /// [`patch_state_at`] on the channel's own row.
@@ -837,8 +1113,10 @@ impl ImagePlan {
 }
 
 /// Build the plan from what was read. A digest with no runnable record (not
-/// prepared, its config version unknown) is never planned: the agent stays
-/// on the default instead of rendering an image nobody inspected.
+/// prepared, its config version unknown), or one marked bad, is never
+/// planned: the agent stays on the default (the fleet's current image, else
+/// the compiled pin) instead of rendering an image nobody inspected or one
+/// that failed.
 pub fn plan_from(
     compiled: Planned,
     current: Option<&str>,
@@ -849,7 +1127,7 @@ pub fn plan_from(
     let planned = |digest: &str| {
         records
             .iter()
-            .find(|r| r.digest == digest && r.runnable())
+            .find(|r| r.digest == digest && r.runnable() && r.status != Status::Bad)
             .map(|r| Planned {
                 image: r.image_ref(),
                 config_version: r.config_version.unwrap_or(fallback_version),
@@ -863,20 +1141,42 @@ pub fn plan_from(
     ImagePlan { default, per_agent }
 }
 
-/// Read the plan. Any read that fails — the records, the assignments, or the
-/// channel's state — is the render's failure, never a silent fall back to the
-/// compiled pin: that would move every agent's image on a database hiccup,
-/// and the next apply would roll them all.
+/// Read the plan. A failed read of the records or the assignments is the
+/// render's failure, never a silent fall back to the compiled pin: that would
+/// move every agent's image on a database hiccup, and the next apply would
+/// roll them all.
+///
+/// The channel's state row is read for its `current` alone, and leniently: a
+/// row this build cannot read (written by a later release, or corrupt) stops
+/// the channel (engine.rs), never a hire, a start or an edit. `current` that
+/// is not a digest reads as none — every agent keeps its own assignment, and
+/// one without falls to the compiled pin until an admin resets the row.
 pub async fn image_plan(pg: &PgPool, compiled: Planned) -> Result<ImagePlan, String> {
+    image_plan_at(pg, STATE_KEY, compiled).await
+}
+
+/// [`image_plan`] over the state under `key`.
+pub async fn image_plan_at(pg: &PgPool, key: &str, compiled: Planned) -> Result<ImagePlan, String> {
     let records = records(pg).await.map_err(|e| e.to_string())?;
     let assigned = assignments(pg).await.map_err(|e| e.to_string())?;
-    let state = load_state(pg).await.map_err(|e| e.to_string())?;
+    let stored = talaria_gateway::settings::try_get_setting(pg, key)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(plan_from(
         compiled,
-        state.current.as_deref(),
+        current_of(stored.as_ref()).as_deref(),
         &records,
         &assigned,
     ))
+}
+
+/// A stored state's `current`, read on its own: a digest, or none.
+pub fn current_of(stored: Option<&serde_json::Value>) -> Option<String> {
+    stored?
+        .get("current")?
+        .as_str()
+        .filter(|d| is_digest(d))
+        .map(str::to_string)
 }
 
 /// The env names the GOOD images on record strip, for the render to adopt:
@@ -1036,6 +1336,39 @@ mod tests {
     }
 
     #[test]
+    fn a_status_this_build_does_not_know_reads_as_bad() {
+        assert_eq!(Status::parse("good"), Status::Good);
+        assert_eq!(Status::parse("candidate"), Status::Candidate);
+        assert_eq!(Status::parse("revoked"), Status::Bad, "fails closed");
+    }
+
+    #[test]
+    fn the_render_reads_current_alone_and_leniently() {
+        let newer = serde_json::json!({ "current": D2, "rollout": { "phase": "verifying" } });
+        assert_eq!(current_of(Some(&newer)).as_deref(), Some(D2));
+        assert_eq!(current_of(Some(&serde_json::json!("garbled"))), None);
+        assert_eq!(
+            current_of(Some(&serde_json::json!({ "current": "latest" }))),
+            None
+        );
+        assert_eq!(current_of(None), None);
+    }
+
+    #[test]
+    fn a_banned_digest_is_never_planned() {
+        // Bad under a rollback, or banned by an admin: an agent assigned it,
+        // and the fleet if it is current, render the next image down.
+        let mut bad = rec(D2, Some("v0.22.6"), Some(52), true);
+        bad.status = Status::Bad;
+        let records = vec![rec(D1, Some("v0.22.4"), Some(51), true), bad];
+        let assigned = HashMap::from([("a".to_string(), D2.to_string())]);
+        let plan = plan_from(compiled(), Some(D1), &records, &assigned);
+        assert_eq!(plan.for_agent("a").config_version, 51, "assigned a bad one");
+        let plan = plan_from(compiled(), Some(D2), &records, &HashMap::new());
+        assert_eq!(plan.for_agent("b"), &compiled(), "current is bad");
+    }
+
+    #[test]
     fn the_window_wraps_past_midnight_and_reads_its_default_when_garbled() {
         let w = Window::default();
         assert!(w.contains(2 * 60) && w.contains(4 * 60 + 59));
@@ -1043,12 +1376,14 @@ mod tests {
         let night = Window {
             start: "23:30".into(),
             end: "01:00".into(),
+            ..Default::default()
         };
         assert!(night.contains(23 * 60 + 45) && night.contains(30));
         assert!(!night.contains(60) && !night.contains(12 * 60));
         let garbled = Window {
             start: "25:00".into(),
             end: "nope".into(),
+            ..Default::default()
         };
         assert!(garbled.contains(3 * 60));
         assert_eq!(clock_minutes("2:05"), Some(125));

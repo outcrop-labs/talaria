@@ -1158,6 +1158,19 @@ pub fn is_stock_image(image: Option<&str>) -> bool {
         .is_some_and(|default| HERMES_IMAGE_DEFAULTS.contains(&default))
 }
 
+/// Whether an agent runs the planned image: every agent but a Developer
+/// Agent on the operator's workbench image (`TALARIA_WORKBENCH_IMAGE`). The
+/// one rule the render and the channel (talaria-hermes-channel's
+/// `on_channel`) both read.
+pub fn runs_planned_image(developer: bool) -> bool {
+    runs_planned_image_with(developer, talaria_workbench::sandbox_image().as_deref())
+}
+
+/// [`runs_planned_image`] with the workbench image given.
+pub fn runs_planned_image_with(developer: bool, workbench_image: Option<&str>) -> bool {
+    !(developer && workbench_image.is_some_and(|i| !i.trim().is_empty()))
+}
+
 /// Whether the agent image follows the planned image at all: a stock chassis
 /// image and no `HERMES_IMAGE` set by the operator. Either of those is the
 /// operator's choice, and the channel stands aside for it
@@ -1700,8 +1713,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         // A Developer Agent on the operator's workbench image runs that image,
         // not the planned one: it gets the compiled version, as before.
         let planned = image_plan.for_agent(&def.id);
-        let on_plan =
-            follows_plan && !(def.developer && talaria_workbench::sandbox_image().is_some());
+        let on_plan = follows_plan && runs_planned_image(def.developer);
         let config_version = if on_plan {
             planned.config_version
         } else {
@@ -5264,6 +5276,24 @@ service:
             "the pin splits into its parts"
         );
         assert_eq!(compiled_plan().config_version, HERMES_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn only_a_developer_agent_on_the_workbench_image_leaves_the_plan() {
+        assert!(runs_planned_image_with(false, None));
+        assert!(runs_planned_image_with(
+            false,
+            Some("ghcr.io/x/workbench:1")
+        ));
+        assert!(runs_planned_image_with(true, None));
+        assert!(
+            runs_planned_image_with(true, Some("  ")),
+            "a blank image is unset"
+        );
+        assert!(!runs_planned_image_with(
+            true,
+            Some("ghcr.io/x/workbench:1")
+        ));
     }
 
     #[test]

@@ -109,43 +109,79 @@ pub async fn logs(container: &str, tail: u32) -> String {
     }
 }
 
+/// A request that never got an answer: no connection, no name, no reply in
+/// time. Docker's own health check (inside the container) already said the
+/// API server answers, so not reaching it from here is the network between
+/// the api and the container — the host's, never the image's.
+fn unreached(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout() || e.is_request()
+}
+
 /// Whether the API server answers, the way the gateway reaches it: its
 /// `/health`, then — with the agent's bearer — `/v1/models`, which Hermes
-/// answers from its own config without calling a model.
-pub async fn api_answers(base_url: &str, bearer: Option<&str>) -> Result<(), String> {
+/// answers from its own config without calling a model. Not reaching it is
+/// [`Fault::Infra`]; a wrong answer is [`Fault::Image`].
+pub async fn api_answers(base_url: &str, bearer: Option<&str>) -> Result<(), Fault> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|e| format!("probe client would not build: {e}"))?;
+        .map_err(|e| Fault::Infra(format!("probe client would not build: {e}")))?;
     let base = base_url.trim_end_matches('/');
+    let sent = |e: reqwest::Error, what: &str| {
+        let text = format!("the gateway could not reach its API server at {base} ({what}): {e}");
+        if unreached(&e) {
+            Fault::Infra(text)
+        } else {
+            Fault::Image(text)
+        }
+    };
     let health = client
         .get(format!("{base}/health"))
         .send()
         .await
-        .map_err(|e| format!("the gateway could not reach its API server at {base}: {e}"))?;
+        .map_err(|e| sent(e, "/health"))?;
     if !health.status().is_success() {
-        return Err(format!(
+        return Err(Fault::Image(format!(
             "its API server answered {} to /health",
             health.status()
-        ));
+        )));
     }
-    if let Some(key) = bearer {
+    if let Some(key) = bearer.filter(|k| !k.is_empty()) {
         let models = client
             .get(format!("{base}/v1/models"))
             .bearer_auth(key)
             .send()
             .await
-            .map_err(|e| format!("its API server did not answer /v1/models: {e}"))?;
+            .map_err(|e| sent(e, "/v1/models"))?;
         if !models.status().is_success() {
-            return Err(format!(
+            return Err(Fault::Image(format!(
                 "its API server answered {} to /v1/models",
                 models.status()
-            ));
+            )));
         }
     }
     Ok(())
+}
+
+/// GET a JSON body with a bearer: the status and the body, or why there is
+/// none.
+pub async fn get_json(url: &str, bearer: Option<&str>) -> Result<(u16, serde_json::Value), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("probe client would not build: {e}"))?;
+    let mut req = client.get(url);
+    if let Some(key) = bearer.filter(|k| !k.is_empty()) {
+        req = req.bearer_auth(key);
+    }
+    let resp = req.send().await.map_err(|e| format!("no answer: {e}"))?;
+    let status = resp.status().as_u16();
+    let body = resp.json().await.unwrap_or(serde_json::Value::Null);
+    Ok((status, body))
 }
 
 /// What docker says of a container, as a [`Snapshot`]. A container that does
@@ -193,9 +229,11 @@ pub async fn image_id(image: &str) -> Result<String, String> {
 }
 
 /// Whether the drain's tools are where every roll and stop calls them, in a
-/// RUNNING container: the gateway's s6 service and `s6-svc`/`s6-svwait`.
-pub async fn drain_ready(container: &str) -> Result<(), String> {
-    docker(
+/// RUNNING container: the gateway's s6 service and `s6-svc`/`s6-svwait`. The
+/// test failing (an exit with nothing on stderr) is the image's; docker not
+/// running the exec is the host's.
+pub async fn drain_ready(container: &str) -> Result<(), Fault> {
+    match docker(
         &[
             "exec",
             container,
@@ -206,10 +244,15 @@ pub async fn drain_ready(container: &str) -> Result<(), String> {
         Duration::from_secs(30),
     )
     .await
-    .map(|_| ())
-    .map_err(|_| {
-        "its gateway is not the s6 service Talaria drains (/run/service/gateway-default with /command/s6-svc and s6-svwait) — every roll and stop would hard-kill it".to_string()
-    })
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.trim_end().ends_with("failed:") => Err(Fault::Image(
+            "its gateway is not the s6 service Talaria drains (/run/service/gateway-default with /command/s6-svc and s6-svwait) — every roll and stop would hard-kill it".into(),
+        )),
+        Err(e) => Err(Fault::Infra(format!(
+            "docker would not run the drain check in it: {e}"
+        ))),
+    }
 }
 
 /// Where docker's health check stands for a container.
@@ -219,12 +262,16 @@ enum Boot {
     Booting,
     Unhealthy,
     Exited(String),
+    /// The container is not there at all: something removed it (an
+    /// operator, another stack's cleanup), which an image cannot do to its
+    /// own container.
+    Gone,
     Unreadable(String),
 }
 
 async fn boot_state(container: &str) -> Boot {
     match snapshot(container).await {
-        Ok(s) if !s.exists => Boot::Exited("is gone".into()),
+        Ok(s) if !s.exists => Boot::Gone,
         Ok(s) => match (s.status.as_str(), s.health.as_deref()) {
             ("running", Some("healthy")) => Boot::Healthy,
             ("running", Some("unhealthy")) => Boot::Unhealthy,
@@ -266,8 +313,15 @@ pub async fn canary_down(files: &CanaryFiles) {
 /// Boot `record`'s image as the canary, with `base` (an agent's rendered
 /// config.yaml) shaping its config, ask it every health question, then keep
 /// it up and ask again for [`canary_soak`]. The canary is taken down whatever
-/// the answer. `Ok` carries what passed; a failure says whose it is.
-pub async fn run_canary(record: &ImageRecord, base: Option<&str>) -> Result<String, Fault> {
+/// the answer. `Ok` carries what passed; a failure says whose it is. `known`
+/// are the fault lines the agent `base` came from already logs on the image
+/// the fleet runs: the canary is held to the same standard, not a stricter
+/// one.
+pub async fn run_canary(
+    record: &ImageRecord,
+    base: Option<&str>,
+    known: &[String],
+) -> Result<String, Fault> {
     let config_version = record
         .config_version
         .ok_or_else(|| Fault::Image("the image's config version is not known".to_string()))?;
@@ -277,7 +331,7 @@ pub async fn run_canary(record: &ImageRecord, base: Option<&str>) -> Result<Stri
         .map_err(Fault::Infra)?;
     // A canary an interrupted step left behind goes first.
     canary_down(&files).await;
-    let verdict = canary_checks(&files, &image).await;
+    let verdict = canary_checks(&files, &image, known, record.contract_accepted().is_none()).await;
     if verdict.is_err() {
         let tail = logs(&files.container, 40).await;
         tracing::warn!("[hermes] canary of {image} failed; its last log lines:\n{tail}");
@@ -297,7 +351,48 @@ async fn last_word(container: &str) -> Option<String> {
     })
 }
 
-async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, Fault> {
+/// The first fault line in `logs` the fleet's own image does not log too.
+fn new_fault(logs: &str, known: &[String]) -> Option<String> {
+    logs.lines().find_map(|line| {
+        let fault = log_fault(line)?;
+        (!known.contains(&normalize_fault(line))).then_some(fault)
+    })
+}
+
+/// The Hermes answers Talaria reads to tell whether an agent is working
+/// (busy.rs), asked of the canary: a shape Talaria cannot read holds the
+/// release for an admin.
+async fn contract_shapes(url: &str, key: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    match get_json(&format!("{url}/health/detailed"), Some(key)).await {
+        Ok((200, body)) => {
+            if let Err(e) = crate::busy::hermes_busy(&body) {
+                problems.push(format!("/health/detailed: {e}"));
+            }
+        }
+        Ok((status, _)) => problems.push(format!("/health/detailed answered {status}")),
+        Err(e) => problems.push(format!("/health/detailed: {e}")),
+    }
+    match get_json(&format!("{url}/api/jobs?include_disabled=true"), Some(key)).await {
+        Ok((200, body)) => {
+            if let Err(e) = crate::busy::cron_busy(&body, talaria_agent_auth::now_ms()) {
+                problems.push(format!("/api/jobs: {e}"));
+            }
+        }
+        Ok((status, _)) => problems.push(format!(
+            "/api/jobs answered {status}: Talaria lists, adds and watches an agent's scheduled jobs through it"
+        )),
+        Err(e) => problems.push(format!("/api/jobs: {e}")),
+    }
+    problems
+}
+
+async fn canary_checks(
+    files: &CanaryFiles,
+    image: &str,
+    known: &[String],
+    check_contract: bool,
+) -> Result<String, Fault> {
     // The image is on the host already (prepared), so compose's default pull
     // policy pulls nothing; no `--pull` flag, which an older compose refuses
     // (and a refusal here would mark a good image bad).
@@ -313,6 +408,11 @@ async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, Fault
     loop {
         match boot_state(&files.container).await {
             Boot::Healthy => break,
+            Boot::Gone => {
+                return Err(Fault::Infra(
+                    "the canary's container was removed by something else before it reported healthy (an operator, or another stack's cleanup)".into(),
+                ));
+            }
             Boot::Exited(how) => {
                 let said = last_word(&files.container).await;
                 return Err(Fault::Image(format!(
@@ -343,8 +443,14 @@ async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, Fault
         async move {
             api_answers(&url, Some(&files.api_key))
                 .await
-                .map_err(|e| Fault::Image(format!("the canary is up but {e} ({phase})")))?;
-            if let Some(fault) = log_fault(&logs(&files.container, 2000).await) {
+                .map_err(|f| match f {
+                    Fault::Image(e) => Fault::Image(format!("the canary is up but {e} ({phase})")),
+                    Fault::Infra(e) => Fault::Infra(format!(
+                        "docker reports the canary healthy, but {e} ({phase}) — the network between the api and the fleet, not the image"
+                    )),
+                    held => held,
+                })?;
+            if let Some(fault) = new_fault(&logs(&files.container, 2000).await, known) {
                 return Err(Fault::Image(format!(
                     "the canary's log says: {fault} ({phase})"
                 )));
@@ -353,6 +459,12 @@ async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, Fault
         }
     };
     ask("at boot").await?;
+    if check_contract {
+        let problems = contract_shapes(&url, &files.api_key).await;
+        if !problems.is_empty() {
+            return Err(Fault::Held(problems));
+        }
+    }
     let runs = match (snapshot(&files.container).await, image_id(image).await) {
         (Ok(s), Ok(want)) => s.image == want,
         _ => false,
@@ -360,9 +472,10 @@ async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, Fault
     if !runs {
         return Err(Fault::Infra(format!("the canary does not run {image}")));
     }
-    drain_ready(&files.container)
-        .await
-        .map_err(|e| Fault::Image(format!("the canary booted, but {e}")))?;
+    drain_ready(&files.container).await.map_err(|f| match f {
+        Fault::Image(e) => Fault::Image(format!("the canary booted, but {e}")),
+        other => other,
+    })?;
     // The soak: up, healthy and answering for the whole of it. The canary is
     // `restart: no`, so a crash is an exit, never a quiet restart.
     let soak = canary_soak();
@@ -372,6 +485,11 @@ async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, Fault
         let at = soaking.elapsed().as_secs();
         match boot_state(&files.container).await {
             Boot::Healthy => {}
+            Boot::Gone => {
+                return Err(Fault::Infra(format!(
+                    "the canary's container was removed by something else {at}s into its soak (an operator, or another stack's cleanup)"
+                )));
+            }
             Boot::Exited(how) => {
                 let said = last_word(&files.container).await;
                 return Err(Fault::Image(format!(

@@ -853,6 +853,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // preparation, the canary and the one-at-a-time rollout, a step a
     // minute (talaria-hermes-channel). Optional like the update pair: its
     // absence leaves every agent on the image it runs.
+    talaria_hermes_channel::boot(&state.pg).await;
     talaria_hermes_channel::register_job(Arc::new(talaria_hermes_channel::ChannelDeps {
         pg: state.pg.clone(),
         sb: sb.clone(),

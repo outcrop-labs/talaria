@@ -286,6 +286,14 @@ pub(crate) fn running() -> usize {
         .count()
 }
 
+/// Whether this process has a pull of `key` running now.
+pub(crate) fn running_key(key: &str) -> bool {
+    let pulls = PULLS.lock().unwrap_or_else(|p| p.into_inner());
+    pulls.get(key).is_some_and(|rx| {
+        matches!(*rx.borrow(), PullStatus::Running(_)) && rx.has_changed().is_ok()
+    })
+}
+
 /// [`join`] for any command, keyed by `key`.
 fn join_with(key: &str, cmd: impl FnOnce() -> PullCmd) -> watch::Receiver<PullStatus> {
     let mut pulls = PULLS.lock().unwrap_or_else(|p| p.into_inner());

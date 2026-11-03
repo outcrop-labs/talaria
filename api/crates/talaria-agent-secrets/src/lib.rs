@@ -142,13 +142,19 @@ const MUST_SURVIVE: &[&str] = &[
 ];
 
 /// Whether an image's list may add this name: an env name, not one the
-/// snapshot already has, and not one Talaria relies on.
+/// snapshot already has, not one Talaria relies on, and not one the
+/// container's own processes or Hermes' runtime read (`PATH`, `HOME`,
+/// `S6_*`, `HERMES_*` …) — the list comes out of an image, and a sandboxed
+/// command that unsets those would not run at all.
 fn image_may_strip(name: &str) -> bool {
     name_ok(name)
         && !hermes_stripped().contains(name)
         && !MUST_SURVIVE.contains(&name)
         && !TALARIA_STAMPED.contains(&name)
         && !TALARIA_PREFIXES.iter().any(|p| name.starts_with(p))
+        && !PROCESS_RUNTIME.contains(&name)
+        && !PROCESS_RUNTIME_PREFIXES.iter().any(|p| name.starts_with(p))
+        && !HERMES_PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
 /// Replace the image-derived set with `names` (the good images' lists, read
@@ -802,6 +808,13 @@ mod tests {
             "LLM_API_KEY".to_string(),
             "OMP_AUTH_BROKER_TOKEN".to_string(),
             "TALARIA_ANYTHING".to_string(),
+            // What the container's processes and Hermes' runtime read: a
+            // sandboxed command that unset these would not run at all.
+            "PATH".to_string(),
+            "HOME".to_string(),
+            "S6_KEEP_ENV".to_string(),
+            "HERMES_HOME".to_string(),
+            "API_SERVER_KEY".to_string(),
         ]);
         assert_eq!(new, vec![added.to_string()], "only the new, allowed name");
         assert!(reserved(added).is_some());
@@ -810,6 +823,9 @@ mod tests {
             "TALARIA_WORKBENCH_API_KEY",
             "LLM_API_KEY",
             "OMP_AUTH_BROKER_TOKEN",
+            "PATH",
+            "HOME",
+            "HERMES_HOME",
         ] {
             assert!(!hermes_stripped_names().iter().any(|n| n == ours), "{ours}");
         }

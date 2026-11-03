@@ -32,17 +32,22 @@ pub struct ChannelAgent {
 /// Why something failed, and whose fault it is: only an [`Fault::Image`]
 /// failure counts toward marking an image bad (and only once it reproduces);
 /// an [`Fault::Infra`] one — docker slow or refusing, the host's disk
-/// saturated, a registry away — is tried again later and never bans.
+/// saturated, a registry away, the api unable to reach a container that
+/// docker calls healthy — is tried again later and never bans. A
+/// [`Fault::Held`] one is neither: the image works, but a Hermes internal
+/// Talaria relies on changed, so it waits for an admin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fault {
     Image(String),
     Infra(String),
+    Held(Vec<String>),
 }
 
 impl Fault {
-    pub fn text(&self) -> &str {
+    pub fn text(&self) -> String {
         match self {
-            Fault::Image(s) | Fault::Infra(s) => s,
+            Fault::Image(s) | Fault::Infra(s) => s.clone(),
+            Fault::Held(problems) => problems.join("; "),
         }
     }
 }
@@ -62,6 +67,22 @@ pub struct Snapshot {
     pub container: String,
     /// The id of the image it was created from.
     pub image: String,
+}
+
+impl Snapshot {
+    /// A person stopped it (the agents run `restart: unless-stopped`, so an
+    /// exited container is one somebody stopped), or it was never created:
+    /// it is assigned and starts on the image next time, never started.
+    pub fn person_stopped(&self) -> bool {
+        !self.exists || matches!(self.status.as_str(), "exited" | "paused")
+    }
+
+    /// Meant to run and not running: crash-looping (docker restarting it),
+    /// or left created or dead by an interrupted recreate. It is recreated
+    /// whatever it is doing — it cannot be doing anything.
+    pub fn down_unwillingly(&self) -> bool {
+        self.exists && !self.running && !self.person_stopped()
+    }
 }
 
 /// Every effect the engine has, in one place.
@@ -96,14 +117,16 @@ pub trait FleetOps: Send + Sync {
     /// Render, so a stopped agent starts on its assignment next time.
     fn render<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, ()>;
     /// Its API server answers over the gateway's dial, and its drain tools
-    /// are in place.
-    fn answers<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<(), String>>;
+    /// are in place. Not reaching it at all is the host's fault (docker
+    /// already said it is healthy); an answer that is wrong is the image's.
+    fn answers<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<(), Fault>>;
     /// The config or migration fault lines in its container's log, normalized.
     fn log_faults<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Vec<String>>;
     /// Why the agent is in use, or None.
     fn busy<'a>(&'a self, agent: &'a ChannelAgent)
     -> BoxFuture<'a, Result<Option<String>, String>>;
-    /// Whether the window is open now, and the zone it is read in.
+    /// Whether the window is open now, and the zone it is read in (with
+    /// where the zone came from).
     fn window_open<'a>(&'a self, window: &'a Window) -> BoxFuture<'a, (bool, String)>;
     /// Tell every admin. `topic` is the dedupe key's tail; `entity` the digest.
     fn notify<'a>(
@@ -131,10 +154,10 @@ pub struct DockerOps {
 }
 
 /// Whether the agent runs the channel's image at all: a Developer Agent on
-/// the operator's workbench image (`TALARIA_WORKBENCH_IMAGE`) does not.
+/// the operator's workbench image (`TALARIA_WORKBENCH_IMAGE`) does not. The
+/// render's own rule, not a copy of it.
 pub fn on_channel(agent: &ChannelAgent) -> bool {
-    !(agent.developer
-        && std::env::var("TALARIA_WORKBENCH_IMAGE").is_ok_and(|v| !v.trim().is_empty()))
+    talaria_fleet_render::runs_planned_image(agent.developer)
 }
 
 type AgentRow = (String, String, String, String, String, bool);
@@ -197,6 +220,30 @@ pub fn io_pressure_avg60(text: &str) -> Option<f64> {
 /// container and Hermes misses its own liveness probes.
 const STALLED_IO_AVG60: f64 = 40.0;
 
+impl DockerOps {
+    /// The first agent on the channel: the one whose rendered config shapes
+    /// the canary's and the inspection's.
+    async fn first_agent(&self) -> Option<ChannelAgent> {
+        channel_agents(&self.pg)
+            .await
+            .ok()?
+            .into_iter()
+            .find(on_channel)
+    }
+}
+
+/// An agent's rendered config.yaml, as text.
+async fn base_config(agent: &ChannelAgent) -> Option<String> {
+    tokio::fs::read_to_string(
+        talaria_fleet_layout::fleet_dir()
+            .join("agents")
+            .join(&agent.slug)
+            .join("config.yaml"),
+    )
+    .await
+    .ok()
+}
+
 impl FleetOps for DockerOps {
     fn now_ms(&self) -> i64 {
         talaria_agent_auth::now_ms()
@@ -223,26 +270,29 @@ impl FleetOps for DockerOps {
     }
 
     fn prepare<'a>(&'a self, record: &'a ImageRecord) -> BoxFuture<'a, prepare::Prepared> {
-        Box::pin(async move { prepare::prepare(&self.pg, record).await })
+        Box::pin(async move {
+            let base = match self.first_agent().await {
+                Some(a) => base_config(&a).await,
+                None => None,
+            };
+            prepare::prepare(&self.pg, record, base.as_deref()).await
+        })
     }
 
     fn canary<'a>(&'a self, record: &'a ImageRecord) -> BoxFuture<'a, Result<String, Fault>> {
         Box::pin(async move {
-            let base = match channel_agents(&self.pg).await {
-                Ok(agents) => match agents.iter().find(|a| on_channel(a)) {
-                    Some(a) => tokio::fs::read_to_string(
-                        talaria_fleet_layout::fleet_dir()
-                            .join("agents")
-                            .join(&a.slug)
-                            .join("config.yaml"),
+            let (base, known) = match self.first_agent().await {
+                Some(a) => {
+                    let container =
+                        talaria_fleet_docker::managed_container(&self.pg, &a.department).await;
+                    (
+                        base_config(&a).await,
+                        probe::log_faults(&probe::logs(&container, 2000).await),
                     )
-                    .await
-                    .ok(),
-                    None => None,
-                },
-                Err(_) => None,
+                }
+                None => (None, Vec::new()),
             };
-            probe::run_canary(record, base.as_deref()).await
+            probe::run_canary(record, base.as_deref(), &known).await
         })
     }
 
@@ -306,14 +356,16 @@ impl FleetOps for DockerOps {
         })
     }
 
-    fn answers<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<(), String>> {
+    fn answers<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<(), Fault>> {
         Box::pin(async move {
             let entry = talaria_fleet_layout::read_manifest()
                 .await
                 .into_iter()
                 .find(|e| e.model == agent.model)
                 .ok_or_else(|| {
-                    "it is not in the fleet manifest, so the gateway cannot dial it".to_string()
+                    Fault::Infra(
+                        "it is not in the fleet manifest, so the gateway cannot dial it".into(),
+                    )
                 })?;
             probe::api_answers(&entry.url, entry.key.as_deref()).await?;
             let container =
@@ -344,9 +396,9 @@ impl FleetOps for DockerOps {
 
     fn window_open<'a>(&'a self, window: &'a Window) -> BoxFuture<'a, (bool, String)> {
         Box::pin(async move {
-            let zone = talaria_notify::prefs::workspace_zone(&self.pg).await;
-            let m = talaria_tz::local_moment(&zone, talaria_agent_auth::now_ms());
-            (window.contains(m.hour * 60 + m.minute), m.zone)
+            let zone = crate::window_zone(&self.pg).await;
+            let m = talaria_tz::local_moment(&zone.zone, talaria_agent_auth::now_ms());
+            (window.contains(m.hour * 60 + m.minute), zone.said())
         })
     }
 

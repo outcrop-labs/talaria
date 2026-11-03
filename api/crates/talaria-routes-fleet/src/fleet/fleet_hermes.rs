@@ -13,10 +13,15 @@
 //         not); `pin` ({digest} or {version}: vX.Y.Z) holds every agent on a
 //         version not marked bad, canarying one that never ran here first;
 //         `unpin` follows stable again; `allow` ({digest}) lifts a version's
-//         ban; `window` ({start, end}, HH:MM) sets the maintenance window.
-//         Answers `{ok, message, status}`, the status as GET answers it; a
-//         rollout runs on after the answer. A state row that cannot be read
-//         is a 409 that says so, and nothing is changed.
+//         ban; `accept` ({digest}) rolls out a version the contract checks
+//         held (a Hermes internal Talaria relies on changed) anyway; `reset`
+//         sets an unreadable state aside, kept as it was, and starts a fresh
+//         one on the image the fleet runs; `window` ({start, end}, HH:MM)
+//         sets the maintenance window. Answers `{ok, message, status}`, the
+//         status as GET answers it; the channel's next step, within a
+//         minute, carries the action out. A state row that cannot be read is
+//         a 409 that says so (only `reset` acts on it), and nothing is
+//         changed; a check that cannot reach the registry is a 409 too.
 
 use axum::Json;
 use axum::extract::State;
@@ -31,7 +36,7 @@ use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
 const ACTIONS: &[&str] = &[
-    "check", "roll", "rollback", "pin", "unpin", "allow", "window",
+    "check", "roll", "rollback", "pin", "unpin", "allow", "accept", "reset", "window",
 ];
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
@@ -60,7 +65,7 @@ pub async fn post(
         Ok(None) => {
             return Ok(house_error(
                 StatusCode::BAD_REQUEST,
-                "action is required (check, roll, rollback, pin, unpin, allow, window)",
+                "action is required (check, roll, rollback, pin, unpin, allow, accept, reset, window)",
             ));
         }
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -74,18 +79,16 @@ pub async fn post(
     };
     let mut target: Option<String> = None;
     let done: Result<String, String> = match action.as_str() {
-        "check" => {
-            talaria_hermes_channel::check_now(&deps)
-                .await
-                .map(|c| match (c.error, c.digest) {
-                    (Some(e), _) => format!("the check failed: {e}"),
-                    (None, Some(d)) => format!(
-                        "stable is {}",
-                        talaria_hermes_images::label(c.version.as_deref(), &d)
-                    ),
-                    (None, None) => "the check found nothing".into(),
-                })
-        }
+        "check" => talaria_hermes_channel::check_now(&deps)
+            .await
+            .and_then(|c| match (c.error, c.digest) {
+                (Some(e), _) => Err(format!("the check failed: {e}")),
+                (None, Some(d)) => Ok(format!(
+                    "stable is {}",
+                    talaria_hermes_images::label(c.version.as_deref(), &d)
+                )),
+                (None, None) => Ok("the check found nothing".into()),
+            }),
         "roll" => talaria_hermes_channel::roll_now(&deps).await,
         "rollback" => talaria_hermes_channel::roll_back(&deps, &actor).await,
         "pin" => match (
@@ -107,6 +110,15 @@ pub async fn post(
             Ok(None) => Err("digest is required to allow a version again".into()),
             Err(msg) => Err(msg),
         },
+        "accept" => match optional_string_member(obj, "digest", 80) {
+            Ok(Some(d)) => {
+                target = Some(d.clone());
+                talaria_hermes_channel::accept(&deps, &d, &actor).await
+            }
+            Ok(None) => Err("digest is required to accept a held version".into()),
+            Err(msg) => Err(msg),
+        },
+        "reset" => talaria_hermes_channel::reset(&deps, &actor).await,
         "unpin" => talaria_hermes_channel::pin(&deps, None, None, &actor).await,
         "window" => match (
             optional_string_member(obj, "start", 5),

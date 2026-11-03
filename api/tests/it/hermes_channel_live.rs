@@ -352,7 +352,7 @@ async fn an_agent_mid_reply_or_mid_conversation_is_busy_and_a_quiet_one_is_not()
 // when, and what the row says after — including an admin pressing Roll back
 // or Pin while a step is mid-roll.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
@@ -373,23 +373,43 @@ struct Fake {
     /// clean roll.
     roll_script: Mutex<HashMap<String, VecDeque<Result<(), Fault>>>>,
     canary_script: Mutex<VecDeque<Result<String, Fault>>>,
+    /// Scripted preparations, front first; none scripted is the host's
+    /// answer (`missing`).
+    prepare_script: Mutex<VecDeque<Prepared>>,
+    /// Scripted answers of an agent's API, front first; none is an answer.
+    answers_script: Mutex<HashMap<String, VecDeque<Result<(), String>>>>,
     busy: Mutex<HashMap<String, String>>,
     window: AtomicBool,
     stalled: AtomicBool,
     found: Mutex<Option<Found>>,
-    /// (agent, digest it was rolled onto), in order.
+    /// Digests whose image is not on the host: `image_id` refuses them, and
+    /// a preparation pulls them (its first ask is the pull in progress).
+    missing: Mutex<HashSet<String>>,
+    /// Digests that leave the host just after a preparation answers Ready.
+    vanish: Mutex<HashSet<String>>,
+    /// (agent, digest it was recreated on), in order.
     rolls: Mutex<Vec<(String, String)>>,
-    notes: Mutex<Vec<(String, String)>>,
+    /// (kind, topic, title) of every notification.
+    notes: Mutex<Vec<(String, String, String)>>,
+    canary_calls: AtomicI64,
+    /// The images this test may remove (any other is "in use"), and those
+    /// removed — the suite's other tests share the records table.
+    removable: Mutex<HashSet<String>>,
+    removed: Mutex<Vec<String>>,
     /// A roll of this agent waits here until released (the B1 race).
-    hold: Mutex<
-        Option<(
-            String,
-            std::sync::Arc<tokio::sync::Notify>,
-            std::sync::Arc<tokio::sync::Notify>,
-        )>,
-    >,
+    hold: Mutex<Option<Hold>>,
+    /// A busy question of this agent waits here until released.
+    busy_hold: Mutex<Option<Hold>>,
     serial: AtomicI64,
 }
+
+/// (agent, reached, release): the fake says `reached` and waits on
+/// `release`.
+type Hold = (
+    String,
+    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<tokio::sync::Notify>,
+);
 
 impl Fake {
     fn new(pg: &PgPool, agents: Vec<ChannelAgent>, on: &str) -> Fake {
@@ -417,13 +437,21 @@ impl Fake {
             containers: Mutex::new(containers),
             roll_script: Mutex::new(HashMap::new()),
             canary_script: Mutex::new(VecDeque::new()),
+            prepare_script: Mutex::new(VecDeque::new()),
+            answers_script: Mutex::new(HashMap::new()),
             busy: Mutex::new(HashMap::new()),
             window: AtomicBool::new(true),
             stalled: AtomicBool::new(false),
             found: Mutex::new(None),
+            missing: Mutex::new(HashSet::new()),
+            vanish: Mutex::new(HashSet::new()),
             rolls: Mutex::new(Vec::new()),
             notes: Mutex::new(Vec::new()),
+            canary_calls: AtomicI64::new(0),
+            removable: Mutex::new(HashSet::new()),
+            removed: Mutex::new(Vec::new()),
             hold: Mutex::new(None),
+            busy_hold: Mutex::new(None),
             serial: AtomicI64::new(1),
         }
     }
@@ -433,13 +461,46 @@ impl Fake {
     fn on(&self, slug: &str) -> String {
         self.containers.lock().unwrap()[slug].image.clone()
     }
+    fn running(&self, slug: &str) -> bool {
+        self.containers.lock().unwrap()[slug].running
+    }
     fn crash(&self, slug: &str) {
         let mut c = self.containers.lock().unwrap();
         let s = c.get_mut(slug).unwrap();
         s.restart_count += 1;
     }
+    /// A person stopped it: exited, and docker leaves it so.
+    fn stop(&self, slug: &str) {
+        let mut c = self.containers.lock().unwrap();
+        let s = c.get_mut(slug).unwrap();
+        s.running = false;
+        s.status = "exited".into();
+    }
+    /// It keeps dying and docker keeps restarting it.
+    fn crashloop(&self, slug: &str) {
+        let mut c = self.containers.lock().unwrap();
+        let s = c.get_mut(slug).unwrap();
+        s.running = false;
+        s.status = "restarting".into();
+        s.restart_count += 3;
+    }
+    /// The container runs `digest` (it was created on it).
+    fn runs(&self, slug: &str, digest: &str) {
+        let mut c = self.containers.lock().unwrap();
+        c.get_mut(slug).unwrap().image = digest.to_string();
+    }
     fn rolled(&self) -> Vec<(String, String)> {
         self.rolls.lock().unwrap().clone()
+    }
+    fn notes_like(&self, needle: &str) -> usize {
+        self.notes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, topic, title)| {
+                k.contains(needle) || topic.contains(needle) || title.contains(needle)
+            })
+            .count()
     }
 }
 
@@ -465,11 +526,25 @@ impl FleetOps for Fake {
     fn resolve<'a>(&'a self, _v: &'a str) -> BoxFuture<'a, Result<Found, String>> {
         Box::pin(async { Err("not in this test".to_string()) })
     }
-    fn prepare<'a>(&'a self, _r: &'a ImageRecord) -> BoxFuture<'a, Prepared> {
-        Box::pin(async { Prepared::Ready })
+    fn prepare<'a>(&'a self, r: &'a ImageRecord) -> BoxFuture<'a, Prepared> {
+        Box::pin(async move {
+            if let Some(p) = self.prepare_script.lock().unwrap().pop_front() {
+                return p;
+            }
+            // The host's answer: an image not on it is pulled (the first ask
+            // finds the download in progress), one on it is ready.
+            if self.missing.lock().unwrap().remove(&r.digest) {
+                return Prepared::Pulling("downloading".into());
+            }
+            if self.vanish.lock().unwrap().remove(&r.digest) {
+                self.missing.lock().unwrap().insert(r.digest.clone());
+            }
+            Prepared::Ready
+        })
     }
     fn canary<'a>(&'a self, _r: &'a ImageRecord) -> BoxFuture<'a, Result<String, Fault>> {
         Box::pin(async move {
+            self.canary_calls.fetch_add(1, Ordering::SeqCst);
             self.canary_script
                 .lock()
                 .unwrap()
@@ -482,13 +557,19 @@ impl FleetOps for Fake {
     }
     fn image_id<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            image
+            let digest = image
                 .split_once('@')
                 .map(|(_, d)| d.to_string())
-                .ok_or_else(|| "no digest".to_string())
+                .ok_or_else(|| "no digest".to_string())?;
+            if self.missing.lock().unwrap().contains(&digest) {
+                return Err(format!(
+                    "Error response from daemon: No such image: {image}"
+                ));
+            }
+            Ok(digest)
         })
     }
-    fn roll<'a>(&'a self, a: &'a ChannelAgent, _start: bool) -> BoxFuture<'a, Result<(), Fault>> {
+    fn roll<'a>(&'a self, a: &'a ChannelAgent, start: bool) -> BoxFuture<'a, Result<(), Fault>> {
         Box::pin(async move {
             let held = self
                 .hold
@@ -500,6 +581,11 @@ impl FleetOps for Fake {
                 *self.hold.lock().unwrap() = None;
                 reached.notify_one();
                 release.notified().await;
+            }
+            // The reconcile's IfRunning: a container that is not running when
+            // the roll reaches it is left exactly as it is.
+            if !start && !self.containers.lock().unwrap()[&a.slug].running {
+                return Ok(());
             }
             let digest = images::assignments(&self.pg).await.unwrap()[&a.id].clone();
             self.rolls
@@ -536,14 +622,35 @@ impl FleetOps for Fake {
     fn render<'a>(&'a self, _a: &'a ChannelAgent) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
-    fn answers<'a>(&'a self, _a: &'a ChannelAgent) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async { Ok(()) })
+    fn answers<'a>(&'a self, a: &'a ChannelAgent) -> BoxFuture<'a, Result<(), Fault>> {
+        Box::pin(async move {
+            self.answers_script
+                .lock()
+                .unwrap()
+                .get_mut(&a.slug)
+                .and_then(|q| q.pop_front())
+                .unwrap_or(Ok(()))
+                .map_err(Fault::Image)
+        })
     }
     fn log_faults<'a>(&'a self, _a: &'a ChannelAgent) -> BoxFuture<'a, Vec<String>> {
         Box::pin(async { Vec::new() })
     }
     fn busy<'a>(&'a self, a: &'a ChannelAgent) -> BoxFuture<'a, Result<Option<String>, String>> {
-        Box::pin(async move { Ok(self.busy.lock().unwrap().get(&a.slug).cloned()) })
+        Box::pin(async move {
+            let held = self
+                .busy_hold
+                .lock()
+                .unwrap()
+                .clone()
+                .filter(|(slug, _, _)| slug == &a.slug);
+            if let Some((_, reached, release)) = held {
+                *self.busy_hold.lock().unwrap() = None;
+                reached.notify_one();
+                release.notified().await;
+            }
+            Ok(self.busy.lock().unwrap().get(&a.slug).cloned())
+        })
     }
     fn window_open<'a>(&'a self, _w: &'a Window) -> BoxFuture<'a, (bool, String)> {
         Box::pin(async move { (self.window.load(Ordering::SeqCst), "UTC".to_string()) })
@@ -551,19 +658,27 @@ impl FleetOps for Fake {
     fn notify<'a>(
         &'a self,
         kind: &'a str,
-        _topic: &'a str,
+        topic: &'a str,
         title: &'a str,
         _body: &'a str,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            self.notes
-                .lock()
-                .unwrap()
-                .push((kind.to_string(), title.to_string()));
+            self.notes.lock().unwrap().push((
+                kind.to_string(),
+                topic.to_string(),
+                title.to_string(),
+            ));
         })
     }
-    fn remove_image<'a>(&'a self, _i: &'a str) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async { Ok(()) })
+    fn remove_image<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let digest = image.split_once('@').map(|(_, d)| d).unwrap_or(image);
+            if !self.removable.lock().unwrap().contains(digest) {
+                return Err("image is being used by a running container".into());
+            }
+            self.removed.lock().unwrap().push(digest.to_string());
+            Ok(())
+        })
     }
     fn host_stalled(&self) -> bool {
         self.stalled.load(Ordering::SeqCst)
@@ -654,6 +769,7 @@ impl World {
             key: &self.key,
             ops: &self.fake,
             tuning: t,
+            fence: None,
         }
     }
     async fn step(&self, t: &Tuning) -> Vec<String> {
@@ -670,6 +786,96 @@ impl World {
     }
     fn slug(&self, i: usize) -> String {
         self.fake.agents[i].slug.clone()
+    }
+    /// A further digest (`n` ≥ 2): recorded and prepared; good or a
+    /// candidate.
+    async fn extra(&self, n: u8, version: &str, good: bool) -> String {
+        let d = digest(&self.tag, n);
+        images::note_seen(&self.pg, &d, "test/hermes", Some(version))
+            .await
+            .unwrap();
+        images::set_prepared(&self.pg, &d, 52, &serde_json::json!({}), false, None)
+            .await
+            .unwrap();
+        if good {
+            images::mark_good(&self.pg, &d).await.unwrap();
+        }
+        d
+    }
+    /// Hermes' stable names `d` from the next check, which is due now.
+    async fn stable_is(&self, d: &str, version: &str) {
+        *self.fake.found.lock().unwrap() = Some(Found {
+            digest: d.into(),
+            repository: "test/hermes".into(),
+            version: Some(version.into()),
+            new: false,
+        });
+        self.engine(&tuning())
+            .patch(|s| {
+                s.next_check_at = Some(0);
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+    /// Agent `i` assigned, and running, `d`.
+    async fn put(&self, i: usize, d: &str) {
+        images::assign(&self.pg, &self.fake.agents[i].id, d)
+            .await
+            .unwrap();
+        self.fake.runs(&self.slug(i), d);
+    }
+    async fn assigned(&self, i: usize) -> Option<String> {
+        images::assignments(&self.pg)
+            .await
+            .unwrap()
+            .get(&self.fake.agents[i].id)
+            .cloned()
+    }
+    /// The fleet already runs `new` (good and current), `old` before it.
+    async fn on_new(&self) {
+        images::mark_good(&self.pg, &self.new).await.unwrap();
+        for i in 0..self.fake.agents.len() {
+            self.put(i, &self.new).await;
+        }
+        let (old, new) = (self.old.clone(), self.new.clone());
+        self.engine(&tuning())
+            .patch(move |s| {
+                s.current = Some(new.clone());
+                s.previous = Some(old);
+                s.last_check = Some(images::CheckRecord {
+                    at: 1,
+                    digest: Some(new),
+                    version: Some("v9.0.2".into()),
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+    /// What holds after every step: an agent the open rollout watches is
+    /// assigned the rollout's image.
+    async fn invariants(&self) {
+        let s = self.state().await;
+        let Some(r) = s.rollout.filter(|r| r.open()) else {
+            return;
+        };
+        let assigned = images::assignments(&self.pg).await.unwrap();
+        for watched in &r.watch {
+            let a = self
+                .fake
+                .agents
+                .iter()
+                .find(|a| a.slug == watched.slug)
+                .unwrap();
+            assert_eq!(
+                assigned.get(&a.id),
+                Some(&r.digest),
+                "{} is watched on the rollout's image but assigned another",
+                watched.slug
+            );
+        }
     }
     async fn done(self) {
         sqlx::query("delete from app_settings where key = $1")
@@ -766,7 +972,7 @@ async fn a_crash_loop_in_the_soak_is_confirmed_then_bans_and_puts_every_agent_ba
     assert!(
         notes
             .iter()
-            .any(|(k, title)| k == "hermes_update_failed" && title.contains("v9.0.2")),
+            .any(|(k, _, title)| k == "hermes_update_failed" && title.contains("v9.0.2")),
         "the title names the version that failed: {notes:?}"
     );
     w.done().await;
@@ -795,16 +1001,23 @@ async fn a_failure_that_is_the_hosts_is_retried_and_never_bans() {
         .push_back(Err(Fault::Image(
             "the canary did not report healthy within 8 min".into(),
         )));
-    for _ in 0..4 {
+    // Each retry waits longer than the last; all four come and go.
+    for _ in 0..12 {
+        if w.fake.canary_calls.load(Ordering::SeqCst) == 4 {
+            break;
+        }
         w.step(&t).await;
-        w.fake.advance(15 * MIN + 1);
+        w.fake.advance(60 * MIN);
     }
+    assert_eq!(w.fake.canary_calls.load(Ordering::SeqCst), 4);
     let r = w.state().await.rollout.unwrap();
     assert_eq!(r.strikes, 0);
+    assert_eq!(r.infra_failures, 4);
     assert_eq!(w.status_of(&w.new).await, Status::Candidate);
     assert!(w.fake.rolled().is_empty());
     // The host recovers: the canary passes and the rollout goes on.
     w.fake.stalled.store(false, Ordering::SeqCst);
+    w.fake.advance(6 * 60 * MIN);
     w.step(&t).await;
     assert_eq!(w.fake.on(&w.slug(0)), w.new);
     w.done().await;
@@ -1016,8 +1229,9 @@ async fn a_release_waits_its_minimum_time_on_stable_unless_rolled_now() {
     let mut t = tuning();
     t.min_stable_ms = 48 * 60 * MIN;
     w.step(&t).await;
+    // Not even downloaded before its time on stable.
     let r = w.state().await.rollout.unwrap();
-    assert_eq!(r.phase, Phase::Waiting);
+    assert_eq!(r.phase, Phase::Preparing);
     assert!(r.detail.unwrap().contains("once it has been there 48 h"));
     assert!(w.fake.rolled().is_empty());
     talaria_hermes_channel::roll_now_with(&w.engine(&t))
@@ -1051,5 +1265,764 @@ async fn allow_again_lifts_a_ban_and_a_banned_version_cannot_be_pinned() {
         .unwrap();
     w.step(&t).await;
     assert_eq!(w.state().await.rollout.unwrap().digest, w.new);
+    w.done().await;
+}
+
+// ── Round three: the re-review's findings, each a test that failed first ────
+
+/// Engine B1: a release Hermes pulls off stable while it waits never runs.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_waiting_release_gives_way_when_stable_moves_on() {
+    let w = World::new("supersede", 1).await;
+    let mut t = tuning();
+    t.min_stable_ms = 48 * 60 * MIN;
+    w.step(&t).await;
+    assert_eq!(w.state().await.rollout.unwrap().digest, w.new);
+    // Twelve hours in, Hermes moves stable on to a hotfix.
+    w.fake.advance(12 * 60 * MIN);
+    let hotfix = w.extra(2, "v9.0.3", false).await;
+    w.stable_is(&hotfix, "v9.0.3").await;
+    w.step(&t).await;
+    let r = w.state().await.rollout.unwrap();
+    assert_eq!(
+        r.digest, hotfix,
+        "the waiting release gave way to the hotfix"
+    );
+    assert_eq!(
+        w.status_of(&w.new).await,
+        Status::Candidate,
+        "giving way bans nothing"
+    );
+    // The hotfix waits its own 48 h, counted from when stable named it.
+    for _ in 0..47 {
+        w.fake.advance(60 * MIN);
+        w.step(&t).await;
+    }
+    assert!(w.fake.rolled().is_empty(), "{:?}", w.fake.rolled());
+    w.fake.advance(2 * 60 * MIN);
+    w.step(&t).await;
+    assert_eq!(w.fake.on(&w.slug(0)), hotfix);
+    assert!(
+        !w.fake.rolled().iter().any(|(_, d)| d == &w.new),
+        "the release Hermes pulled never ran"
+    );
+    w.done().await;
+}
+
+/// Engine B1: stable going back to the fleet's own image cancels the wait.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_waiting_release_that_left_stable_is_cancelled() {
+    let w = World::new("revert", 1).await;
+    let mut t = tuning();
+    t.min_stable_ms = 48 * 60 * MIN;
+    w.step(&t).await;
+    assert_eq!(w.state().await.rollout.unwrap().digest, w.new);
+    w.stable_is(&w.old, "v9.0.1").await;
+    w.step(&t).await;
+    assert!(
+        !w.state().await.rollout.unwrap().open(),
+        "the wait for a release stable no longer names is over"
+    );
+    w.fake.advance(49 * 60 * MIN);
+    w.step(&t).await;
+    assert!(w.fake.rolled().is_empty(), "{:?}", w.fake.rolled());
+    assert_eq!(w.status_of(&w.new).await, Status::Candidate);
+    w.done().await;
+}
+
+/// Engine B2(a): an agent put back while the host is saturated leaves the
+/// watch, and the rollout goes on once the host recovers.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_relapse_while_the_host_is_saturated_never_sticks_the_rollout() {
+    let w = World::new("stallrel", 2).await;
+    let t = tuning();
+    w.step(&t).await;
+    assert_eq!(w.fake.on(&w.slug(0)), w.new);
+    w.fake.advance(MIN);
+    w.fake.stalled.store(true, Ordering::SeqCst);
+    w.fake.crash(&w.slug(0));
+    w.step(&t).await;
+    w.invariants().await;
+    assert_eq!(w.fake.on(&w.slug(0)), w.old, "put back at once");
+    assert_eq!(w.status_of(&w.new).await, Status::Candidate);
+    w.fake.stalled.store(false, Ordering::SeqCst);
+    for _ in 0..12 {
+        w.fake.advance(16 * MIN);
+        w.step(&t).await;
+        w.invariants().await;
+    }
+    let s = w.state().await;
+    assert_eq!(
+        s.rollout.as_ref().map(|r| r.phase),
+        Some(Phase::Done),
+        "{:?}",
+        s.rollout.as_ref().and_then(|r| r.detail.clone())
+    );
+    assert_eq!(w.fake.on(&w.slug(0)), w.new);
+    assert_eq!(w.fake.on(&w.slug(1)), w.new);
+    w.done().await;
+}
+
+/// Engine B2(b): a catch-up's agent that fails one health question never
+/// sticks the catch-up.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_catchup_agent_that_fails_once_never_sticks_the_catchup() {
+    let w = World::new("catchrel", 2).await;
+    let t = tuning();
+    w.on_new().await;
+    // Agent 1 was left behind on the old image by an earlier rollout.
+    w.put(1, &w.old).await;
+    // It answers its first question and times out on the next.
+    w.fake
+        .answers_script
+        .lock()
+        .unwrap()
+        .insert(w.slug(1), VecDeque::from([Ok(()), Err("timed out".into())]));
+    for _ in 0..6 {
+        w.step(&t).await;
+        w.invariants().await;
+        w.fake.advance(16 * MIN);
+    }
+    let r = w.state().await.rollout.unwrap();
+    assert_eq!(r.kind, RolloutKind::Catchup);
+    assert!(!r.open(), "the catch-up closed: {:?}", r.detail);
+    w.done().await;
+}
+
+/// Engine B2(c) and S6: a rollback tells a person about a stuck agent once,
+/// never every 15 minutes.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_rollback_never_alerts_every_retry() {
+    let w = World::new("rbloop", 2).await;
+    let t = tuning();
+    w.on_new().await;
+    w.fake
+        .busy
+        .lock()
+        .unwrap()
+        .insert(w.slug(1), "it is writing a reply".into());
+    talaria_hermes_channel::roll_back_with(&w.engine(&t), "admin@test")
+        .await
+        .unwrap();
+    w.step(&t).await;
+    // Agent 0 restarts once on the image it went back to.
+    w.fake.advance(MIN);
+    w.fake.crash(&w.slug(0));
+    for _ in 0..8 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    let stuck = w.fake.notes_like("is stuck");
+    assert!(
+        stuck <= 1,
+        "{stuck} stuck alerts: {:?}",
+        w.fake.notes.lock().unwrap()
+    );
+    w.done().await;
+}
+
+/// Engine B3: a rollback never starts an agent a person stopped.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_rollback_never_starts_an_agent_a_person_stopped() {
+    let w = World::new("stopped", 2).await;
+    let t = tuning();
+    w.fake.stop(&w.slug(1));
+    w.step(&t).await;
+    w.fake.advance(10 * MIN + 1);
+    w.step(&t).await;
+    assert_eq!(w.assigned(1).await.as_deref(), Some(w.new.as_str()));
+    assert!(!w.fake.running(&w.slug(1)), "assigned, not started");
+    talaria_hermes_channel::roll_back_with(&w.engine(&t), "admin@test")
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        w.fake.advance(16 * MIN);
+        w.step(&t).await;
+    }
+    assert!(
+        !w.fake.running(&w.slug(1)),
+        "the rollback started an agent a person stopped"
+    );
+    assert_eq!(
+        w.assigned(1).await.as_deref(),
+        Some(w.old.as_str()),
+        "it starts on the known good next time"
+    );
+    assert_eq!(w.fake.on(&w.slug(0)), w.old);
+    w.done().await;
+}
+
+/// Engine B3: a Pin pressed over a rollback recreates an agent that is
+/// crash-looping on the bad image.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_pin_over_a_rollback_recreates_an_agent_crash_looping_on_the_bad_image() {
+    let w = World::new("pinloop", 2).await;
+    let t = tuning();
+    w.step(&t).await;
+    assert_eq!(w.fake.on(&w.slug(0)), w.new);
+    w.fake.crashloop(&w.slug(0));
+    talaria_hermes_channel::roll_back_with(&w.engine(&t), "admin@test")
+        .await
+        .unwrap();
+    // Before any step moves it, the admin pins the old version instead.
+    talaria_hermes_channel::pin_with(&w.engine(&t), Some(&w.old), None, "admin@test")
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        w.fake.advance(16 * MIN);
+        w.step(&t).await;
+    }
+    assert_eq!(w.fake.on(&w.slug(0)), w.old, "recreated off the bad image");
+    assert!(w.fake.running(&w.slug(0)));
+    w.done().await;
+}
+
+/// Engine B4 / surface S1: a state row this build cannot read never stops a
+/// render — it plans the fleet's current image, or the compiled pin.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_state_row_this_build_cannot_read_never_stops_the_render() {
+    let w = World::new("plan", 1).await;
+    let compiled = images::Planned {
+        image: "test/hermes:v0.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+        config_version: 51,
+    };
+    let newer = serde_json::json!({
+        "current": w.new,
+        "rollout": { "id": "x", "digest": w.new, "phase": "verifying", "kind": "staged" }
+    });
+    talaria_gateway::settings::set_setting(&w.pg, &w.key, &newer)
+        .await
+        .unwrap();
+    let plan = images::image_plan_at(&w.pg, &w.key, compiled.clone())
+        .await
+        .expect("a later release's rollout never stops the render");
+    assert!(
+        plan.default.image.ends_with(&w.new),
+        "it plans the current image: {plan:?}"
+    );
+    assert!(
+        plan.for_agent(&w.fake.agents[0].id).image.ends_with(&w.old),
+        "an agent keeps its own image"
+    );
+    talaria_gateway::settings::set_setting(&w.pg, &w.key, &serde_json::json!("garbled"))
+        .await
+        .unwrap();
+    let plan = images::image_plan_at(&w.pg, &w.key, compiled.clone())
+        .await
+        .expect("a garbled row never stops the render");
+    assert_eq!(plan.default, compiled);
+    assert!(plan.for_agent(&w.fake.agents[0].id).image.ends_with(&w.old));
+    w.done().await;
+}
+
+/// Engine B5: an agent the step never touched is never restarted for a
+/// failure that came before it.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_agent_the_step_never_touched_is_never_restarted() {
+    let w = World::new("untouched", 1).await;
+    let t = tuning();
+    // The candidate is prepared, then leaves the host (an operator's prune).
+    w.fake.vanish.lock().unwrap().insert(w.new.clone());
+    for _ in 0..4 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    assert_eq!(
+        w.fake.rolled(),
+        vec![(w.slug(0), w.new.clone())],
+        "pulled again and moved once — never put back"
+    );
+    w.done().await;
+}
+
+/// Engine B5: a rollback whose image left the host pulls it again and
+/// finishes, without an alert every retry.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_rollback_whose_image_left_the_host_pulls_it_and_finishes() {
+    let w = World::new("rbpull", 2).await;
+    let t = tuning();
+    w.on_new().await;
+    w.fake.vanish.lock().unwrap().insert(w.old.clone());
+    talaria_hermes_channel::roll_back_with(&w.engine(&t), "admin@test")
+        .await
+        .unwrap();
+    for _ in 0..6 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    let r = w.state().await.rollout.unwrap();
+    assert_eq!(r.phase, Phase::Done, "{:?}", r.detail);
+    assert_eq!(w.fake.on(&w.slug(0)), w.old);
+    assert_eq!(w.fake.on(&w.slug(1)), w.old);
+    assert!(w.fake.notes_like("is stuck") <= 1);
+    w.done().await;
+}
+
+/// Engine B5: a bad image cannot escape its ban by failing only while the
+/// host is saturated.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_bad_image_is_judged_even_while_the_host_stays_saturated() {
+    let w = World::new("stallban", 1).await;
+    let t = tuning();
+    w.fake.stalled.store(true, Ordering::SeqCst);
+    for _ in 0..12 {
+        w.fake
+            .canary_script
+            .lock()
+            .unwrap()
+            .push_back(Err(Fault::Image(
+                "the canary exited 4s into its soak".into(),
+            )));
+    }
+    for _ in 0..12 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    assert_eq!(w.status_of(&w.new).await, Status::Bad);
+    assert!(w.fake.rolled().is_empty());
+    w.done().await;
+}
+
+/// Engine B5 / surface S6: a host failure that repeats backs off and is said
+/// to a person once.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_host_failure_backs_off_and_is_said_once() {
+    let w = World::new("backoff", 1).await;
+    let t = tuning();
+    for _ in 0..200 {
+        w.fake
+            .canary_script
+            .lock()
+            .unwrap()
+            .push_back(Err(Fault::Infra(
+                "docker compose … timed out after 600s".into(),
+            )));
+    }
+    // A day of steps, one every 15 minutes.
+    for _ in 0..96 {
+        w.step(&t).await;
+        w.fake.advance(15 * MIN);
+    }
+    let tries = w.fake.canary_calls.load(Ordering::SeqCst);
+    assert!(tries <= 12, "{tries} canaries in a day");
+    assert_eq!(
+        w.fake.notes_like("hermes_channel_stuck"),
+        1,
+        "{:?}",
+        w.fake.notes.lock().unwrap()
+    );
+    assert_eq!(w.status_of(&w.new).await, Status::Candidate);
+    w.done().await;
+}
+
+/// Engine S1: a preparation that fails once is asked again before anything
+/// is banned.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_preparation_that_fails_once_bans_nothing() {
+    let w = World::new("prepone", 1).await;
+    let t = tuning();
+    w.fake
+        .prepare_script
+        .lock()
+        .unwrap()
+        .push_back(Prepared::Failed {
+            why: "the image could not be inspected: no space left on device".into(),
+            definitive: true,
+        });
+    for _ in 0..3 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    assert_ne!(w.status_of(&w.new).await, Status::Bad);
+    assert_eq!(w.fake.on(&w.slug(0)), w.new);
+    w.done().await;
+}
+
+/// Engine S1: a rollback never bans the version it goes back to.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_rollback_never_bans_the_version_it_goes_back_to() {
+    let w = World::new("rbban", 1).await;
+    let t = tuning();
+    w.on_new().await;
+    for _ in 0..3 {
+        w.fake
+            .prepare_script
+            .lock()
+            .unwrap()
+            .push_back(Prepared::Failed {
+                why: "the image printed no inspection".into(),
+                definitive: true,
+            });
+    }
+    talaria_hermes_channel::roll_back_with(&w.engine(&t), "admin@test")
+        .await
+        .unwrap();
+    for _ in 0..8 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    assert_eq!(w.status_of(&w.old).await, Status::Good);
+    assert_eq!(w.fake.on(&w.slug(0)), w.old);
+    w.done().await;
+}
+
+/// Engine S1: a Pin to a good version never bans it.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_pin_to_a_good_version_never_bans_it() {
+    let w = World::new("pinban", 1).await;
+    let t = tuning();
+    w.on_new().await;
+    // Every roll of it fails (a put-back's included): slow to boot on a
+    // loaded host, which is not the image's fault.
+    w.fake.roll_script.lock().unwrap().insert(
+        w.slug(0),
+        (0..6)
+            .map(|_| {
+                Err(Fault::Image(
+                    "the recreated container did not report healthy within 900s".into(),
+                ))
+            })
+            .collect(),
+    );
+    talaria_hermes_channel::pin_with(&w.engine(&t), Some(&w.old), None, "admin@test")
+        .await
+        .unwrap();
+    for _ in 0..6 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    let s = w.state().await;
+    assert_eq!(w.status_of(&w.old).await, Status::Good, "never banned");
+    assert_eq!(s.pinned.as_deref(), Some(w.old.as_str()), "still pinned");
+    assert!(
+        !w.fake.rolled().iter().any(|(_, d)| d == &w.new),
+        "never put back on the version the admin pinned away from: {:?}",
+        w.fake.rolled()
+    );
+    w.done().await;
+}
+
+/// Engine S2: one failure of the canary and one of an agent, days apart,
+/// are two questions — not an answer.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn strikes_on_different_things_do_not_add_up() {
+    let w = World::new("strikes", 2).await;
+    let t = tuning();
+    w.fake
+        .canary_script
+        .lock()
+        .unwrap()
+        .push_back(Err(Fault::Image(
+            "the canary exited before it reported healthy".into(),
+        )));
+    w.step(&t).await;
+    w.fake.advance(6 * MIN);
+    w.step(&t).await;
+    assert_eq!(w.fake.on(&w.slug(0)), w.new, "the retried canary passed");
+    w.fake.roll_script.lock().unwrap().insert(
+        w.slug(1),
+        VecDeque::from([Err(Fault::Image(
+            "the recreated container stopped running before it reported healthy".into(),
+        ))]),
+    );
+    for _ in 0..8 {
+        w.fake.advance(11 * MIN);
+        w.step(&t).await;
+    }
+    assert_ne!(w.status_of(&w.new).await, Status::Bad);
+    assert_eq!(w.fake.on(&w.slug(1)), w.new);
+    w.done().await;
+}
+
+/// Engine S3: an agent is never assigned the image a Roll back left, by a
+/// step that read the row before the Roll back.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_assignment_is_never_written_after_a_roll_back_committed() {
+    let w = std::sync::Arc::new(World::new("asgrace", 1).await);
+    let t = std::sync::Arc::new(tuning());
+    let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    *w.fake.busy_hold.lock().unwrap() = Some((w.slug(0), reached.clone(), release.clone()));
+    let (w2, t2) = (w.clone(), t.clone());
+    let stepping = tokio::spawn(async move { w2.step(&t2).await });
+    reached.notified().await;
+    talaria_hermes_channel::roll_back_with(&w.engine(&t), "admin@test")
+        .await
+        .unwrap();
+    // The rollback cannot move it in this step (its image left the host), so
+    // what the stale step wrote is what the render would read.
+    w.fake.vanish.lock().unwrap().insert(w.old.clone());
+    release.notify_one();
+    stepping.await.unwrap();
+    assert_ne!(
+        w.assigned(0).await.as_deref(),
+        Some(w.new.as_str()),
+        "the stale step assigned the banned image"
+    );
+    std::sync::Arc::try_unwrap(w).ok().unwrap().done().await;
+}
+
+/// Engine S5: an agent left behind window after window is said to a person.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_agent_left_behind_window_after_window_is_said_once() {
+    let w = World::new("leftbehind", 2).await;
+    let t = tuning();
+    w.fake.busy.lock().unwrap().insert(
+        w.slug(1),
+        "its scheduled job \"sweep\" is due in 2 min".into(),
+    );
+    for _ in 0..4 {
+        // A night: the window opens, the step runs, the window closes.
+        w.fake.window.store(true, Ordering::SeqCst);
+        for _ in 0..3 {
+            w.step(&t).await;
+            w.fake.advance(11 * MIN);
+        }
+        w.fake.window.store(false, Ordering::SeqCst);
+        for _ in 0..3 {
+            w.step(&t).await;
+            w.fake.advance(16 * MIN);
+        }
+        w.fake.advance(20 * 60 * MIN);
+    }
+    assert_eq!(
+        w.fake.on(&w.slug(1)),
+        w.old,
+        "never restarted under its job"
+    );
+    assert_eq!(
+        w.fake.notes_like("left behind"),
+        1,
+        "{:?}",
+        w.fake.notes.lock().unwrap()
+    );
+    w.done().await;
+}
+
+/// Engine S8: a rollback moves only the agents on the image it leaves.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_rollback_moves_only_the_agents_on_the_image_it_leaves() {
+    let w = World::new("rbonly", 2).await;
+    let t = tuning();
+    w.on_new().await;
+    // Agent 1 never left an older good image (busy at every rollout since).
+    let older = w.extra(2, "v9.0.0", true).await;
+    w.put(1, &older).await;
+    w.fake
+        .busy
+        .lock()
+        .unwrap()
+        .insert(w.slug(1), "it has a work session in progress".into());
+    talaria_hermes_channel::roll_back_with(&w.engine(&t), "admin@test")
+        .await
+        .unwrap();
+    for _ in 0..4 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    let s = w.state().await;
+    assert!(
+        s.events
+            .iter()
+            .any(|e| e.text.contains("every agent is back on")),
+        "the rollback finished without waiting on agent 1: {:?}",
+        s.events
+    );
+    assert_eq!(w.fake.on(&w.slug(0)), w.old);
+    assert_eq!(w.fake.on(&w.slug(1)), older, "never touched");
+    assert!(
+        !w.fake.rolled().iter().any(|(slug, _)| slug == &w.slug(1)),
+        "never restarted"
+    );
+    // What is left is an ordinary catch-up, which waits for it to be free.
+    let r = s.rollout.unwrap();
+    assert_eq!(r.kind, RolloutKind::Catchup);
+    w.done().await;
+}
+
+/// The not-verified list: two steps at once — one runs, the other stands
+/// aside.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn two_steps_at_once_take_turns() {
+    let w = std::sync::Arc::new(World::new("twosteps", 1).await);
+    let t = std::sync::Arc::new(tuning());
+    let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    *w.fake.hold.lock().unwrap() = Some((w.slug(0), reached.clone(), release.clone()));
+    let (w2, t2) = (w.clone(), t.clone());
+    let first = tokio::spawn(async move { w2.step(&t2).await });
+    reached.notified().await;
+    let second = talaria_hermes_channel::step_with(&w.pg, &w.key, &w.fake, &t)
+        .await
+        .unwrap();
+    assert_eq!(second, None, "the second step stood aside");
+    release.notify_one();
+    first.await.unwrap();
+    assert_eq!(w.fake.rolled().len(), 1);
+    std::sync::Arc::try_unwrap(w).ok().unwrap().done().await;
+}
+
+/// The not-verified list: the prune, on a fake clock — the previous image
+/// once the current one has been good three days, and a candidate nobody
+/// rolled out after a week; never the current, an agent's, or one this
+/// instance did not pull.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn the_prune_removes_the_previous_and_the_abandoned_and_keeps_the_rest() {
+    let w = World::new("prune", 1).await;
+    let t = tuning();
+    let mine = w.extra(2, "v9.0.3", true).await;
+    let abandoned = w.extra(3, "v9.0.4", false).await;
+    // old: current, good four days; new: previous; `mine`: agent 0's; the
+    // abandoned candidate first seen eight days ago. All pulled here.
+    for (d, sql) in [
+        (
+            &w.old,
+            "update hermes_images set pulled_here = true, good_since = now() - interval '4 days' where digest = $1",
+        ),
+        (
+            &w.new,
+            "update hermes_images set pulled_here = true, status = 'good', good_since = now() - interval '9 days' where digest = $1",
+        ),
+        (
+            &mine,
+            "update hermes_images set pulled_here = true where digest = $1",
+        ),
+        (
+            &abandoned,
+            "update hermes_images set pulled_here = true, first_seen = now() - interval '8 days' where digest = $1",
+        ),
+    ] {
+        sqlx::query(sql).bind(d).execute(&w.pg).await.unwrap();
+    }
+    w.put(0, &mine).await;
+    for d in [&w.old, &w.new, &mine, &abandoned] {
+        w.fake.removable.lock().unwrap().insert(d.to_string());
+    }
+    let (old, new) = (w.old.clone(), w.new.clone());
+    let (state, _) = w
+        .engine(&t)
+        .patch(move |s| {
+            s.current = Some(old);
+            s.previous = Some(new);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let said = talaria_hermes_channel::prune(&w.engine(&t), &state).await;
+    let mut removed = w.fake.removed.lock().unwrap().clone();
+    removed.sort();
+    let mut want = vec![w.new.clone(), abandoned.clone()];
+    want.sort();
+    assert_eq!(removed, want, "{said:?}");
+    for d in [&w.new, &abandoned] {
+        let r = images::record(&w.pg, d).await.unwrap().unwrap();
+        assert!(!r.pulled_here && !r.runnable(), "no longer on the host");
+    }
+    assert!(
+        images::record(&w.pg, &w.old)
+            .await
+            .unwrap()
+            .unwrap()
+            .runnable()
+    );
+    w.done().await;
+}
+
+/// Engine S4: a step whose lock went with its database connection (a
+/// failover, a terminated backend) stops at its next write, before it moves
+/// anything else — while the process lives on.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_step_that_lost_its_lock_stops_before_it_moves_anything_else() {
+    let w = std::sync::Arc::new(World::new("fence", 2).await);
+    let t = std::sync::Arc::new(tuning());
+    let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    *w.fake.hold.lock().unwrap() = Some((w.slug(0), reached.clone(), release.clone()));
+    let (w2, t2) = (w.clone(), t.clone());
+    let first = tokio::spawn(async move {
+        talaria_hermes_channel::step_with(&w2.pg, &w2.key, &w2.fake, &t2).await
+    });
+    reached.notified().await;
+    // The lock's backend goes away while the step is mid-roll.
+    let killed: Vec<bool> = sqlx::query_scalar(
+        "select pg_terminate_backend(pid) from pg_locks where locktype = 'advisory' \
+         and granted and objid = (hashtext($1)::bigint & 4294967295)::oid",
+    )
+    .bind(format!("talaria:hermes-channel:{}", w.key))
+    .fetch_all(&w.pg)
+    .await
+    .unwrap();
+    assert_eq!(killed, vec![true], "the step's lock connection");
+    release.notify_one();
+    let out = first.await.unwrap();
+    assert!(
+        out.as_ref().is_err_and(|e| e.contains("lock was lost")),
+        "{out:?}"
+    );
+    assert_eq!(w.fake.rolled().len(), 1, "nothing moved after the loss");
+    // The next step takes the lock afresh and carries on.
+    w.fake.advance(11 * MIN);
+    w.step(&t).await;
+    assert_eq!(w.fake.on(&w.slug(0)), w.new);
+    std::sync::Arc::try_unwrap(w).ok().unwrap().done().await;
+}
+
+/// Engine S3's "current at once", without stranding anyone: a Roll back
+/// with nothing open moves the agents that follow `current` with no
+/// assignment of their own, too.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_roll_back_moves_the_agents_that_only_follow_current() {
+    let w = World::new("rbfollow", 2).await;
+    let t = tuning();
+    w.on_new().await;
+    // Neither agent has an assignment of its own: both follow `current`.
+    sqlx::query("delete from hermes_agent_images where agent_id = any($1::uuid[])")
+        .bind(
+            w.fake
+                .agents
+                .iter()
+                .map(|a| a.id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .execute(&w.pg)
+        .await
+        .unwrap();
+    talaria_hermes_channel::roll_back_with(&w.engine(&t), "admin@test")
+        .await
+        .unwrap();
+    assert_eq!(
+        w.state().await.current.as_deref(),
+        Some(w.old.as_str()),
+        "current moved at once"
+    );
+    for _ in 0..3 {
+        w.step(&t).await;
+        w.fake.advance(16 * MIN);
+    }
+    assert_eq!(w.fake.on(&w.slug(0)), w.old);
+    assert_eq!(w.fake.on(&w.slug(1)), w.old);
     w.done().await;
 }

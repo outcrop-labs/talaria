@@ -82,6 +82,19 @@ impl CanaryFiles {
 /// or a minimal one, with what could reach anything taken out and the
 /// candidate's own schema version stamped.
 pub fn canary_config(base: Option<&str>, config_version: u64) -> String {
+    let routed = canary_routed(base, config_version);
+    let body = yaml11_emit(&Value::Object(routed));
+    format!(
+        "{RENDERED_HEADER}{CANARY_MODEL_NAME} v0{RENDERED_HEADER_TAIL}\n{}{}...\n",
+        body,
+        if body.ends_with('\n') { "" } else { "\n" }
+    )
+}
+
+/// The canary's config as data: what [`canary_config`] writes. The channel's
+/// inspection hands it to a candidate's own config migration, so the keys
+/// Talaria writes are the ones checked.
+pub fn canary_routed(base: Option<&str>, config_version: u64) -> Map<String, Value> {
     let mut routed: Map<String, Value> = base
         .and_then(|text| {
             // A rendered config is two YAML documents at worst (the `...`
@@ -109,12 +122,7 @@ pub fn canary_config(base: Option<&str>, config_version: u64) -> String {
         platforms.retain(|name, _| name == "api_server");
     }
     fleet_config_version(&mut routed, config_version);
-    let body = yaml11_emit(&Value::Object(routed));
-    format!(
-        "{RENDERED_HEADER}{CANARY_MODEL_NAME} v0{RENDERED_HEADER_TAIL}\n{}{}...\n",
-        body,
-        if body.ends_with('\n') { "" } else { "\n" }
-    )
+    routed
 }
 
 /// The canary's service block, from the chassis service.

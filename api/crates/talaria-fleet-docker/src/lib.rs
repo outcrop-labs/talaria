@@ -1259,6 +1259,11 @@ pub fn pulls_running() -> usize {
     pull::running()
 }
 
+/// Whether this process is running the pull keyed `key` now.
+pub fn pull_running(key: &str) -> bool {
+    pull::running_key(key)
+}
+
 /// Whether the named container exists and is running.
 pub async fn container_running(name: &str) -> bool {
     docker(

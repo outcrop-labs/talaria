@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 reqwest = { workspace = true }
@@ -16,13 +17,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
-talaria-agent-crons = { workspace = true }
 talaria-agent-secrets = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-fleet-reconcile = { workspace = true }
 talaria-fleet-render = { workspace = true }
+talaria-host-metrics = { workspace = true }
 talaria-hermes-images = { workspace = true }
+talaria-daily-brief-config = { workspace = true }
 talaria-notify = { workspace = true }
 talaria-scheduler = { workspace = true }
 talaria-secretbox = { workspace = true }

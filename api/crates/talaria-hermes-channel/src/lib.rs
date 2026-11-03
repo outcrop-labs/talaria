@@ -8,15 +8,21 @@
 //             anonymous manifest HEAD — not a pull on Docker Hub's limit
 //             (check.rs). A new digest is recorded as a candidate, with the
 //             `vX.Y.Z` tag that shares it.
+//   wait      until stable has named it for 48 h (counted from the first
+//             check that saw it there, and started again whenever stable
+//             moves), before it is even downloaded: a release Hermes pulls
+//             off stable in that time is never rolled out — the waiting
+//             rollout gives way to whatever stable names now.
 //   prepare   pull it in the background through the agents' shared pull,
-//             giving way to any other download, and read the image with
-//             networking off for its own `_config_version`, the env names
-//             its Hermes strips, and its drain tools (prepare.rs).
-//   wait      until it has been on stable for 48 h (from this instance's
-//             first sight of it), so a release the community finds broken
-//             is usually replaced before any instance runs it; then until the
-//             maintenance window (02:00–05:00 in the instance's zone), or Roll
-//             now.
+//             giving way to any other download and never past the disk's
+//             room, and read the image with networking off for its own
+//             `_config_version`, the env names its Hermes strips, and its
+//             drain tools — and check the Hermes internals Talaria relies
+//             on (its config migration leaves Talaria's keys as they are;
+//             sealed CONFIG_* credentials stay out of commands), holding a
+//             release that changed one for an admin (prepare.rs). Then wait
+//             for the maintenance window (02:00–05:00 in the workspace's
+//             time zone), or Roll now.
 //   canary    boot it as a throwaway agent with a rendered config and nothing
 //             to reach, ask it only non-model questions, and keep it up and
 //             ask again for a soak (probe.rs).
@@ -40,11 +46,12 @@
 // channel off; so does an admin's Pin, which holds every agent on one
 // version until it is lifted.
 //
-// One step at a time across every api instance (a Postgres advisory lock),
-// a step a minute from the scheduler. The admin actions do not wait for a
-// step: they change the state row under its row lock, and every write the
-// step makes names its rollout, so a step that finds its rollout replaced
-// stops and re-reads (engine.rs).
+// One step at a time across every api instance (a Postgres advisory lock,
+// asked again before every write), a step a minute from the scheduler — the
+// only runner. The admin actions do not run a step: they change the state
+// row under its row lock and the next step (within a minute) carries them
+// out; every write a step makes names its rollout, so a step that finds its
+// rollout replaced stops and re-reads (engine.rs).
 
 pub mod busy;
 pub mod check;
@@ -53,6 +60,7 @@ pub mod ops;
 pub mod prepare;
 pub mod probe;
 
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -69,7 +77,7 @@ use talaria_scheduler::{JobName, JobSpec};
 use talaria_secretbox::SecretBox;
 
 pub use check::{STABLE_REF_DEFAULT, stable_ref};
-pub use engine::{Engine, Tuning};
+pub use engine::{Engine, Tuning, backoff, watching};
 pub use ops::{ChannelAgent, DockerOps, Fault, FleetOps, Snapshot, channel_agents, on_channel};
 
 /// How often the channel is checked, before jitter.
@@ -86,6 +94,8 @@ pub const STEP_EVERY_MS: u64 = 60_000;
 pub const KEEP_PREVIOUS_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 /// Prune at most this often.
 const PRUNE_EVERY_MS: i64 = 6 * 60 * 60 * 1000;
+/// A candidate no rollout names is pruned once it is this old.
+pub const ABANDONED_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// Where the notification opens: the Manage overview carries the panel.
 pub(crate) const HREF: &str = "/manage";
 const LOG: &str = "[hermes]";
@@ -116,12 +126,6 @@ pub(crate) fn jitter(lo: i64, hi: i64) -> i64 {
 pub fn compiled_pin() -> (String, String, String) {
     let (digest, tag, repo) = talaria_fleet_render::compiled_pin_parts();
     (digest.into(), tag.into(), repo.into())
-}
-
-/// A rollout runs the canary unless its image is already good here (a pin
-/// to a known-good version, a rollback, a catch-up).
-pub(crate) fn needs_canary(rollout: &Rollout, record: &ImageRecord) -> bool {
-    rollout.kind == RolloutKind::Upgrade || record.status != Status::Good
 }
 
 /// Why the channel stands aside for the operator's own image, or None.
@@ -184,14 +188,17 @@ impl ChannelDeps {
 
 /// The step's session-level advisory lock, held on its own connection. The
 /// key follows the state row's, so a test's engine never contends with the
-/// channel's.
-struct EngineLock {
-    conn: sqlx::pool::PoolConnection<sqlx::Postgres>,
+/// channel's. Asked again before every write the step makes ([`Fence::held`]):
+/// a lock that went with its connection (a database restart, a failover, a
+/// terminated backend) while this process lives would let another step in,
+/// so this one stops before it moves anything else.
+pub struct Fence {
+    conn: tokio::sync::Mutex<sqlx::pool::PoolConnection<sqlx::Postgres>>,
     key: String,
 }
 
-impl EngineLock {
-    async fn take(pg: &PgPool, state_key: &str) -> Result<Option<EngineLock>, String> {
+impl Fence {
+    async fn take(pg: &PgPool, state_key: &str) -> Result<Option<Fence>, String> {
         let key = format!("talaria:hermes-channel:{state_key}");
         let mut conn = pg
             .acquire()
@@ -202,17 +209,33 @@ impl EngineLock {
             .fetch_one(&mut *conn)
             .await
             .map_err(|e| format!("the channel lock could not be asked for: {e}"))?;
-        Ok(locked.then_some(EngineLock { conn, key }))
+        Ok(locked.then(|| Fence {
+            conn: tokio::sync::Mutex::new(conn),
+            key,
+        }))
     }
 
-    async fn release(mut self) {
+    /// Whether this connection still holds the lock.
+    pub async fn held(&self) -> bool {
+        let mut conn = self.conn.lock().await;
+        sqlx::query_scalar::<_, bool>(
+            "select exists (select 1 from pg_locks where locktype = 'advisory' \
+               and pid = pg_backend_pid() and granted)",
+        )
+        .fetch_one(&mut **conn)
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn release(self) {
+        let mut conn = self.conn.into_inner();
         let unlocked = sqlx::query("select pg_advisory_unlock(hashtext($1))")
             .bind(&self.key)
-            .execute(&mut *self.conn)
+            .execute(&mut *conn)
             .await;
         if let Err(e) = unlocked {
             tracing::warn!("{LOG} the channel lock could not be released: {e}");
-            let _ = self.conn.close().await;
+            let _ = conn.close().await;
         }
     }
 }
@@ -225,7 +248,7 @@ pub async fn step_with(
     ops: &dyn FleetOps,
     tuning: &Tuning,
 ) -> Result<Option<Vec<String>>, String> {
-    let Some(lock) = EngineLock::take(pg, key).await? else {
+    let Some(fence) = Fence::take(pg, key).await? else {
         return Ok(None);
     };
     let engine = Engine {
@@ -233,6 +256,7 @@ pub async fn step_with(
         key,
         ops,
         tuning,
+        fence: Some(&fence),
     };
     let ran = AssertUnwindSafe(async {
         seed_compiled(pg).await?;
@@ -246,7 +270,7 @@ pub async fn step_with(
     })
     .catch_unwind()
     .await;
-    lock.release().await;
+    fence.release().await;
     match ran {
         Ok(r) => r.map(Some),
         Err(panic) => std::panic::resume_unwind(panic),
@@ -273,10 +297,9 @@ pub async fn step(deps: &ChannelDeps) -> Result<Option<String>, String> {
                     ops.notify(
                         KIND_CHANNEL_STUCK,
                         "state-unreadable",
-                        "Agent image updates are stopped: their state is unreadable",
+                        "Agent image updates are paused: their state is unreadable",
                         &format!(
-                            "{e}. Nothing was changed. Fix or delete the app_settings row '{}' (deleting it starts the channel over on the release's own pin).",
-                            images::STATE_KEY
+                            "{e}. Agents keep running on their images, and hiring, starting and editing agents all work; only automatic image updates wait. To resume them, press Reset on Manage → Agent image updates: it sets the unreadable state aside (kept as it was) and keeps every agent on the image it runs. To hold every agent on one image instead, set HERMES_IMAGE in fleet/.env."
                         ),
                     )
                     .await;
@@ -287,60 +310,77 @@ pub async fn step(deps: &ChannelDeps) -> Result<Option<String>, String> {
     }
 }
 
-/// Run a step on a task of its own (an admin action's kick): the request
-/// answers at once, and a step already running picks the change up when it
-/// next reads the row.
-pub fn kick(deps: &ChannelDeps) {
-    let deps = deps.clone();
-    tokio::spawn(async move {
-        match step(&deps).await {
-            Ok(Some(s)) => tracing::info!("{LOG} {s}"),
-            Ok(None) => {}
-            Err(e) => tracing::warn!("{LOG} {e}"),
-        }
-    });
-}
-
 // ── Pruning ─────────────────────────────────────────────────────────────────
 
 static PRUNED_AT: AtomicI64 = AtomicI64::new(0);
 
-/// Remove the images this instance pulled and no longer needs: everything
-/// but the current image, the pinned one, any assigned one, the compiled
-/// pin, and the previous image until the current one has been good for
-/// [`KEEP_PREVIOUS_MS`]. An image a container still uses is refused by
-/// docker and kept. An image this instance did not pull is never touched.
-async fn prune_if_due(engine: &Engine<'_>) -> Option<String> {
-    let pg = engine.pg;
-    let state = engine.load().await.ok()?;
-    if state.rollout.as_ref().is_some_and(Rollout::open) {
-        return None;
-    }
-    let now = engine.ops.now_ms();
-    if now - PRUNED_AT.load(Ordering::Relaxed) < PRUNE_EVERY_MS {
-        return None;
-    }
-    PRUNED_AT.store(now, Ordering::Relaxed);
-    let records = images::records(pg).await.ok()?;
-    let current = state.current.clone();
-    let current_good_since = current
+/// The images to remove: every one this instance pulled but the compiled
+/// pin, the current image, the pinned one, any agent's, an open rollout's
+/// two, the previous image until the current one has been good for
+/// [`KEEP_PREVIOUS_MS`] — and a candidate only once it is
+/// [`ABANDONED_AFTER_MS`] old (one a Pin replaced, a release that left
+/// stable). An image this instance did not pull is never touched.
+pub fn prune_plan(
+    state: &ChannelState,
+    records: &[ImageRecord],
+    assigned: &HashMap<String, String>,
+    compiled: &str,
+    now: i64,
+) -> Vec<String> {
+    let current_good_since = state
+        .current
         .as_ref()
         .and_then(|c| records.iter().find(|r| &r.digest == c))
         .and_then(|r| r.good_since);
     let keep_previous = current_good_since.is_none_or(|t| now - t < KEEP_PREVIOUS_MS);
-    let mut keep: Vec<String> = vec![compiled_pin().0];
-    keep.extend(current);
-    keep.extend(state.pinned.clone());
-    if keep_previous {
-        keep.extend(state.previous.clone());
+    let mut keep: Vec<&str> = vec![compiled];
+    keep.extend(state.current.as_deref());
+    keep.extend(state.pinned.as_deref());
+    if let Some(r) = state.rollout.as_ref().filter(|r| r.open()) {
+        keep.push(&r.digest);
+        keep.extend(r.from.as_deref());
     }
-    let assigned = images::assignments(pg).await.unwrap_or_default();
-    keep.extend(assigned.into_values());
-    let mut pruned = Vec::new();
-    for r in records
+    if keep_previous {
+        keep.extend(state.previous.as_deref());
+    }
+    keep.extend(assigned.values().map(String::as_str));
+    records
         .iter()
-        .filter(|r| r.pulled_here && r.status != Status::Candidate && !keep.contains(&r.digest))
-    {
+        .filter(|r| r.pulled_here && !keep.contains(&r.digest.as_str()))
+        .filter(|r| r.status != Status::Candidate || now - r.first_seen > ABANDONED_AFTER_MS)
+        .map(|r| r.digest.clone())
+        .collect()
+}
+
+/// Prune what [`prune_plan`] names, at most every six hours, never while a
+/// rollout is open and never on a read that failed (an assignment it could
+/// not read is one it would prune). Docker refuses an image a container
+/// still uses, and it is kept.
+async fn prune_if_due(engine: &Engine<'_>) -> Option<String> {
+    let now = engine.ops.now_ms();
+    if now - PRUNED_AT.load(Ordering::Relaxed) < PRUNE_EVERY_MS {
+        return None;
+    }
+    let state = engine.load().await.ok()?;
+    if state.rollout.as_ref().is_some_and(Rollout::open) {
+        return None;
+    }
+    PRUNED_AT.store(now, Ordering::Relaxed);
+    prune(engine, &state).await
+}
+
+/// Remove [`prune_plan`]'s images now: None when there was nothing to
+/// remove, or a read failed.
+pub async fn prune(engine: &Engine<'_>, state: &ChannelState) -> Option<String> {
+    let pg = engine.pg;
+    let now = engine.ops.now_ms();
+    let records = images::records(pg).await.ok()?;
+    let assigned = images::assignments(pg).await.ok()?;
+    let mut pruned = Vec::new();
+    for digest in prune_plan(state, &records, &assigned, &compiled_pin().0, now) {
+        let Some(r) = records.iter().find(|r| r.digest == digest) else {
+            continue;
+        };
         match engine.ops.remove_image(&r.image_ref()).await {
             Ok(()) => {
                 let _ = images::note_pruned(pg, &r.digest).await;
@@ -366,9 +406,11 @@ async fn prune_if_due(engine: &Engine<'_>) -> Option<String> {
 // ── Admin actions ───────────────────────────────────────────────────────────
 //
 // Each is one transactional write of the state row (its row lock serializes
-// it with the step's writes), then a kick. None waits for a running step:
-// replacing the rollout is enough, because every write the step makes names
-// its rollout and is refused once it is replaced.
+// it with the step's writes), with what belongs with it — a ban, an allow —
+// in the same transaction. None runs a step: the scheduler's next one, within
+// a minute, carries it out, and a step already running stops at its next
+// write, because every write the step makes names its rollout and is refused
+// once it is replaced.
 
 fn label_or(record: Option<&ImageRecord>, digest: &str) -> String {
     record
@@ -412,6 +454,9 @@ pub async fn roll_now_with(e: &Engine<'_>) -> Result<String, String> {
                 Some(r) => {
                     r.forced = true;
                     r.retry_at = None;
+                    // A person is watching: the host gets its first chance
+                    // again.
+                    r.infra_failures = 0;
                     true
                 }
                 None => false,
@@ -424,44 +469,64 @@ pub async fn roll_now_with(e: &Engine<'_>) -> Result<String, String> {
     };
     let rec = images::record(e.pg, &r.digest).await.ok().flatten();
     Ok(format!(
-        "rolling out {} now",
+        "rolling out {} now: the next step, within a minute, moves it",
         label_or(rec.as_ref(), &r.digest)
     ))
 }
 
-/// Roll back.
+/// Roll back. Every agent on the version being left goes back now, mid-turn
+/// included — a person has said that version is bad.
 /// - An open Upgrade is abandoned: its image is marked bad (an admin can
-///   allow it again) and every agent it reached moves back.
-/// - An open Pin (or catch-up) is cancelled: nothing is marked bad, the pin
-///   is lifted, and agents go back to what the fleet ran.
-/// - With nothing open, the fleet moves to the previous version: the version
-///   it leaves is marked bad if it came from stable (so stable does not roll
-///   it forward again), and if a Pin put it there, the pin moves to the
-///   previous version instead — a known-good version is never banned for
-///   being pinned away from.
+///   allow it again) and every agent on it moves back.
+/// - An open Pin is cancelled: nothing is marked bad, the pin is lifted, and
+///   its agents go back to what the fleet ran.
+/// - With nothing open (or a catch-up), the fleet moves to the previous
+///   version, which becomes current at once (a hire meanwhile renders it):
+///   the version it leaves is marked bad if it came from stable (so stable
+///   does not roll it forward again), and if a Pin put it there, the pin
+///   moves to the previous version instead — a known-good version is never
+///   banned for being pinned away from.
+///
+/// The ban is written with the rollback, in one transaction.
 pub async fn roll_back_with(e: &Engine<'_>, by: &str) -> Result<String, String> {
     seed_compiled(e.pg).await?;
     let now = e.ops.now_ms();
     let compiled = compiled_pin().0;
     let who = by.to_string();
+    // The agents that follow `current` with no assignment of their own: when
+    // the rollback moves `current` back, they are assigned the version being
+    // left in the same write, so the rollback moves them too (a hire after
+    // this read follows the new `current`, which is what it should run).
+    let assigned = images::assignments(e.pg)
+        .await
+        .map_err(|x| format!("the agents' images could not be read: {x}"))?;
+    let following: Vec<String> = e
+        .ops
+        .agents()
+        .await?
+        .into_iter()
+        .filter(|a| on_channel(a) && !assigned.contains_key(&a.id))
+        .map(|a| a.id)
+        .collect();
     let (_, (ban, target, left)) = e
-        .patch(move |s| {
+        .patch_fx(move |s, fx| {
             let current = s.current.clone().unwrap_or_else(|| compiled.clone());
-            let (ban, target, left, reached) = match s.rollout.clone().filter(|r| r.open()) {
+            let open = s
+                .rollout
+                .clone()
+                .filter(|r| r.open() && r.kind != RolloutKind::Catchup);
+            let (ban, target, left) = match open {
                 Some(r) if r.kind == RolloutKind::Rollback => {
                     return Err(StateError::Store(
                         "a rollback is already in progress".into(),
                     ));
                 }
                 Some(r) => {
-                    let mut reached = r.moved.clone();
-                    reached.extend(r.agent.clone());
                     let target = r.from.clone().unwrap_or_else(|| current.clone());
                     if r.kind == RolloutKind::Pin {
                         s.pinned = None;
                     }
-                    let ban = (r.kind == RolloutKind::Upgrade).then(|| r.digest.clone());
-                    (ban, target, r.digest.clone(), reached)
+                    (r.kind == RolloutKind::Upgrade, target, r.digest.clone())
                 }
                 None => {
                     let target = s.previous.clone().unwrap_or_else(|| compiled.clone());
@@ -472,13 +537,21 @@ pub async fn roll_back_with(e: &Engine<'_>, by: &str) -> Result<String, String> 
                     }
                     let ban = if s.pinned.as_deref() == Some(current.as_str()) {
                         s.pinned = Some(target.clone());
-                        None
+                        false
                     } else {
-                        Some(current.clone())
+                        true
                     };
-                    (ban, target, current, Vec::new())
+                    for agent in &following {
+                        fx.assign(agent, &current);
+                    }
+                    s.current = Some(target.clone());
+                    s.previous = None;
+                    (ban, target, current)
                 }
             };
+            if ban {
+                fx.mark_bad(&left, &format!("rolled back by {who}"));
+            }
             s.rollout = Some(Rollout {
                 id: images::new_rollout_id(now),
                 digest: target.clone(),
@@ -488,7 +561,6 @@ pub async fn roll_back_with(e: &Engine<'_>, by: &str) -> Result<String, String> 
                 started_at: now,
                 updated_at: now,
                 forced: true,
-                reached,
                 detail: Some(format!("rolled back by {who}")),
                 ..Default::default()
             });
@@ -499,20 +571,15 @@ pub async fn roll_back_with(e: &Engine<'_>, by: &str) -> Result<String, String> 
     let left_rec = images::record(e.pg, &left).await.ok().flatten();
     let target_rec = images::record(e.pg, &target).await.ok().flatten();
     let mut text = format!(
-        "moving every agent from {} to {}",
+        "moving every agent from {} to {} on the next step, within a minute",
         label_or(left_rec.as_ref(), &left),
         label_or(target_rec.as_ref(), &target)
     );
-    if let Some(bad) = ban {
-        match images::mark_bad(e.pg, &bad, &format!("rolled back by {by}")).await {
-            Ok(()) => text.push_str(&format!(
-                "; {} is marked bad until an admin allows it again",
-                label_or(left_rec.as_ref(), &bad)
-            )),
-            Err(x) => text.push_str(&format!(
-                "; it could NOT be marked bad ({x}), so stable may roll it forward again — pin to hold the fleet"
-            )),
-        }
+    if ban {
+        text.push_str(&format!(
+            "; {} is marked bad until an admin allows it again",
+            label_or(left_rec.as_ref(), &left)
+        ));
     }
     let note = text.clone();
     let _ = e
@@ -527,7 +594,9 @@ pub async fn roll_back_with(e: &Engine<'_>, by: &str) -> Result<String, String> 
 /// Pin every agent to a version (a digest on record, or a `vX.Y.Z` tag
 /// resolved now): any version not marked bad. One that never ran here is
 /// prepared and canaried first; a cancelled rollout's agents come back with
-/// the rest. Neither a digest nor a version lifts the pin.
+/// the rest (every agent not on the pinned version is moved; one a person
+/// stopped is reassigned, never started). Neither a digest nor a version
+/// lifts the pin.
 pub async fn pin_with(
     e: &Engine<'_>,
     digest: Option<&str>,
@@ -580,8 +649,6 @@ pub async fn pin_with(
             .as_ref()
             .is_none_or(|r| !(r.kind == RolloutKind::Pin && r.digest == digest))
         {
-            let mut reached = open.as_ref().map(|r| r.moved.clone()).unwrap_or_default();
-            reached.extend(open.as_ref().and_then(|r| r.agent.clone()));
             s.rollout = Some(Rollout {
                 id: images::new_rollout_id(now),
                 digest: digest.clone(),
@@ -591,7 +658,6 @@ pub async fn pin_with(
                 started_at: now,
                 updated_at: now,
                 forced: true,
-                reached,
                 ..Default::default()
             });
         }
@@ -603,7 +669,8 @@ pub async fn pin_with(
     Ok(format!("pinned to {label}"))
 }
 
-/// Lift a ban: the version may be rolled out (or pinned) again.
+/// Lift a ban: the version may be rolled out (or pinned) again. The lift
+/// and its note are one write: an unreadable state refuses both.
 pub async fn allow_with(e: &Engine<'_>, digest: &str, by: &str) -> Result<String, String> {
     if !images::is_digest(digest) {
         return Err("that is not an image digest".into());
@@ -612,14 +679,47 @@ pub async fn allow_with(e: &Engine<'_>, digest: &str, by: &str) -> Result<String
         .await
         .map_err(|x| format!("the image record could not be read: {x}"))?
         .ok_or_else(|| "this instance has no record of that image".to_string())?;
-    if !images::allow_again(e.pg, digest)
-        .await
-        .map_err(|x| format!("the ban could not be lifted: {x}"))?
-    {
+    if record.status != Status::Bad {
         return Err(format!("{} is not marked bad", record.label()));
     }
     let now = e.ops.now_ms();
     let text = format!("{by} allowed {} again", record.label());
+    let note = text.clone();
+    let d = digest.to_string();
+    e.patch_fx(move |s, fx| {
+        fx.allow_again(&d);
+        s.note(now, note);
+        Ok(())
+    })
+    .await
+    .map_err(|x| x.to_string())?;
+    Ok(text)
+}
+
+/// Accept a release the contract checks held: it rolls out anyway (the
+/// admin has read what changed).
+pub async fn accept_with(e: &Engine<'_>, digest: &str, by: &str) -> Result<String, String> {
+    if !images::is_digest(digest) {
+        return Err("that is not an image digest".into());
+    }
+    let record = images::record(e.pg, digest)
+        .await
+        .map_err(|x| format!("the image record could not be read: {x}"))?
+        .ok_or_else(|| "this instance has no record of that image".to_string())?;
+    let now = e.ops.now_ms();
+    // A state this build cannot read accepts nothing either.
+    e.load().await.map_err(|x| x.to_string())?;
+    if !images::accept_contract(e.pg, digest, by, now)
+        .await
+        .map_err(|x| format!("the acceptance could not be recorded: {x}"))?
+    {
+        return Err(format!("{} is not held", record.label()));
+    }
+    let text = format!(
+        "{by} accepted {} despite: {}",
+        record.label(),
+        record.contract_problems().join("; ")
+    );
     let note = text.clone();
     e.patch(move |s| {
         s.note(now, note);
@@ -628,6 +728,17 @@ pub async fn allow_with(e: &Engine<'_>, digest: &str, by: &str) -> Result<String
     .await
     .map_err(|x| x.to_string())?;
     Ok(text)
+}
+
+/// Set an unreadable state aside (kept, exactly as it was) and start a
+/// fresh one on the image the fleet runs.
+pub async fn reset_with(e: &Engine<'_>, by: &str) -> Result<String, String> {
+    let archive = images::reset_state_at(e.pg, e.key, e.ops.now_ms(), by)
+        .await
+        .map_err(refusal)?;
+    Ok(format!(
+        "the unreadable state is set aside as app_settings '{archive}'; agents stay on their images and updates resume"
+    ))
 }
 
 /// Set the maintenance window.
@@ -645,6 +756,7 @@ pub async fn set_window_with(
     let window = images::Window {
         start: start.trim().into(),
         end: end.trim().into(),
+        ..Default::default()
     };
     let set = window.clone();
     e.patch(move |st| {
@@ -667,27 +779,22 @@ macro_rules! on_real_fleet {
             key: images::STATE_KEY,
             ops: &ops,
             tuning: &tuning,
+            fence: None,
         };
         $body
     }};
 }
 
 pub async fn check_now(deps: &ChannelDeps) -> Result<images::CheckRecord, String> {
-    let out = on_real_fleet!(deps, |e| check_now_with(&e).await);
-    kick(deps);
-    out
+    on_real_fleet!(deps, |e| check_now_with(&e).await)
 }
 
 pub async fn roll_now(deps: &ChannelDeps) -> Result<String, String> {
-    let out = on_real_fleet!(deps, |e| roll_now_with(&e).await);
-    kick(deps);
-    out
+    on_real_fleet!(deps, |e| roll_now_with(&e).await)
 }
 
 pub async fn roll_back(deps: &ChannelDeps, by: &str) -> Result<String, String> {
-    let out = on_real_fleet!(deps, |e| roll_back_with(&e, by).await);
-    kick(deps);
-    out
+    on_real_fleet!(deps, |e| roll_back_with(&e, by).await)
 }
 
 pub async fn pin(
@@ -696,15 +803,19 @@ pub async fn pin(
     version: Option<&str>,
     by: &str,
 ) -> Result<String, String> {
-    let out = on_real_fleet!(deps, |e| pin_with(&e, digest, version, by).await);
-    kick(deps);
-    out
+    on_real_fleet!(deps, |e| pin_with(&e, digest, version, by).await)
 }
 
 pub async fn allow(deps: &ChannelDeps, digest: &str, by: &str) -> Result<String, String> {
-    let out = on_real_fleet!(deps, |e| allow_with(&e, digest, by).await);
-    kick(deps);
-    out
+    on_real_fleet!(deps, |e| allow_with(&e, digest, by).await)
+}
+
+pub async fn accept(deps: &ChannelDeps, digest: &str, by: &str) -> Result<String, String> {
+    on_real_fleet!(deps, |e| accept_with(&e, digest, by).await)
+}
+
+pub async fn reset(deps: &ChannelDeps, by: &str) -> Result<String, String> {
+    on_real_fleet!(deps, |e| reset_with(&e, by).await)
 }
 
 pub async fn set_window(
@@ -713,6 +824,126 @@ pub async fn set_window(
     end: &str,
 ) -> Result<images::Window, String> {
     on_real_fleet!(deps, |e| set_window_with(&e, start, end).await)
+}
+
+// ── The window's time zone ──────────────────────────────────────────────────
+
+/// Where the maintenance window's zone came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneSource {
+    /// The workspace's own (the daily brief's time zone, in Settings).
+    Workspace,
+    /// The api's `TZ`.
+    Server,
+    /// The zone most admins set on their profiles.
+    Admins,
+    /// Nothing set anywhere: UTC.
+    Unset,
+}
+
+/// The window's zone and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowZone {
+    pub zone: String,
+    pub source: ZoneSource,
+}
+
+impl WindowZone {
+    /// The zone as the panel and the Waiting detail say it.
+    pub fn said(&self) -> String {
+        match self.source {
+            ZoneSource::Workspace => self.zone.clone(),
+            ZoneSource::Server => format!("{} (the server's TZ)", self.zone),
+            ZoneSource::Admins => format!("{} (the admins' profile zone)", self.zone),
+            ZoneSource::Unset => {
+                "UTC — no time zone is set; set the workspace's in Settings".into()
+            }
+        }
+    }
+}
+
+/// The zone, from what is set: the workspace's, else the server's `TZ`, else
+/// the zone most admins chose for themselves (a tie: the oldest admin's),
+/// else UTC — and the panel says which, so a window that lands in someone's
+/// evening is visible.
+pub fn pick_zone(workspace: Option<&str>, tz_env: Option<&str>, admins: &[String]) -> WindowZone {
+    let set = |z: Option<&str>| {
+        z.map(str::trim)
+            .filter(|z| !z.is_empty())
+            .map(str::to_string)
+    };
+    if let Some(zone) = set(workspace) {
+        return WindowZone {
+            zone,
+            source: ZoneSource::Workspace,
+        };
+    }
+    if let Some(zone) = set(tz_env) {
+        return WindowZone {
+            zone,
+            source: ZoneSource::Server,
+        };
+    }
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for z in admins.iter().filter_map(|z| set(Some(z))) {
+        match counts.iter_mut().find(|(k, _)| *k == z) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((z, 1)),
+        }
+    }
+    let mut best: Option<&(String, usize)> = None;
+    for c in &counts {
+        if best.is_none_or(|b| c.1 > b.1) {
+            best = Some(c);
+        }
+    }
+    match best {
+        Some((zone, _)) => WindowZone {
+            zone: zone.clone(),
+            source: ZoneSource::Admins,
+        },
+        None => WindowZone {
+            zone: "UTC".into(),
+            source: ZoneSource::Unset,
+        },
+    }
+}
+
+/// The maintenance window's zone on this instance.
+pub async fn window_zone(pg: &PgPool) -> WindowZone {
+    let workspace: Option<String> =
+        sqlx::query_scalar("select value->>'timeZone' from app_settings where key = $1")
+            .bind(talaria_daily_brief_config::BRIEF_CONFIG_KEY)
+            .fetch_optional(pg)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+    let admins: Vec<String> = sqlx::query_scalar(
+        "select timezone from users where role = 'admin' and coalesce(trim(timezone), '') <> '' \
+         order by created_at, id",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    pick_zone(
+        workspace.as_deref(),
+        std::env::var("TZ").ok().as_deref(),
+        &admins,
+    )
+}
+
+/// At boot: the env names the good images strip are in force before the
+/// first render, so a secret saved before it is judged by them too.
+pub async fn boot(pg: &PgPool) {
+    match images::stripped_env_of_good(pg).await {
+        Ok(names) => {
+            talaria_agent_secrets::set_image_stripped(names);
+        }
+        Err(e) => tracing::warn!(
+            "{LOG} the good images' stripped env could not be read at boot ({e}); the first render reads it"
+        ),
+    }
 }
 
 // ── What the panel reads ────────────────────────────────────────────────────
@@ -730,6 +961,9 @@ fn record_json(r: &ImageRecord) -> Value {
         "goodSince": r.good_since,
         "canaryOkAt": r.canary_ok_at(),
         "pinnable": r.pinnable(),
+        "held": r.held(),
+        "contractProblems": r.contract_problems(),
+        "contractAccepted": r.contract_accepted().map(|(by, at)| json!({ "by": by, "at": at })),
     })
 }
 
@@ -762,8 +996,8 @@ pub async fn status(pg: &PgPool) -> Result<Value, String> {
             })
     };
     let current = state.current.clone().unwrap_or_else(|| pin_digest.clone());
-    let zone = talaria_notify::prefs::workspace_zone(pg).await;
-    let m = talaria_tz::local_moment(&zone, talaria_agent_auth::now_ms());
+    let zone = window_zone(pg).await;
+    let m = talaria_tz::local_moment(&zone.zone, talaria_agent_auth::now_ms());
     let open = state.window.contains(m.hour * 60 + m.minute);
     let standing = match (&off, &state.pinned) {
         (Some(_), _) => "off",
@@ -810,6 +1044,8 @@ pub async fn status(pg: &PgPool) -> Result<Value, String> {
             "skipped": r.skipped,
             "deferred": r.deferred,
             "strikes": r.strikes,
+            "strikeOn": r.strike_on,
+            "hostFailures": r.infra_failures,
             "retryAt": r.retry_at,
             "soakUntil": r.soak_until,
             "detail": r.detail,
@@ -831,7 +1067,14 @@ pub async fn status(pg: &PgPool) -> Result<Value, String> {
             "error": c.error,
         })),
         "nextCheckAt": state.next_check_at,
-        "window": { "start": state.window.start, "end": state.window.end, "zone": m.zone, "open": open },
+        "window": {
+            "start": state.window.start,
+            "end": state.window.end,
+            "zone": m.zone,
+            "zoneSaid": zone.said(),
+            "zoneSet": zone.source != ZoneSource::Unset,
+            "open": open,
+        },
         "minStableHours": tuning.min_stable_ms / 3_600_000,
         "rollout": rollout,
         "agents": agents_json,
@@ -880,29 +1123,91 @@ mod tests {
     }
 
     #[test]
-    fn a_rollout_canaries_anything_not_already_good_here() {
-        let mut r = Rollout {
-            kind: RolloutKind::Upgrade,
-            ..Default::default()
-        };
-        let mut rec = ImageRecord {
-            digest: "sha256:00".into(),
+    fn the_window_zone_is_the_workspaces_then_the_servers_then_the_admins() {
+        let admins = vec![
+            "America/Chicago".to_string(),
+            "Europe/Paris".into(),
+            "Europe/Paris".into(),
+        ];
+        let z = pick_zone(Some("America/New_York"), Some("Asia/Tokyo"), &admins);
+        assert_eq!(
+            (z.zone.as_str(), z.source),
+            ("America/New_York", ZoneSource::Workspace)
+        );
+        let z = pick_zone(Some("  "), Some("Asia/Tokyo"), &admins);
+        assert_eq!(z.source, ZoneSource::Server);
+        let z = pick_zone(None, None, &admins);
+        assert_eq!(
+            (z.zone.as_str(), z.source),
+            ("Europe/Paris", ZoneSource::Admins)
+        );
+        let z = pick_zone(
+            None,
+            None,
+            &["America/Chicago".to_string(), "Europe/Paris".into()],
+        );
+        assert_eq!(z.zone, "America/Chicago", "a tie goes to the oldest admin");
+        let z = pick_zone(None, Some(""), &[]);
+        assert_eq!(z.source, ZoneSource::Unset);
+        assert!(z.said().contains("no time zone is set"));
+    }
+
+    fn rec(digest: &str, status: Status, pulled: bool, first_seen: i64) -> ImageRecord {
+        ImageRecord {
+            digest: digest.into(),
             repository: "r".into(),
             version: None,
-            config_version: Some(51),
-            status: Status::Good,
+            config_version: Some(52),
+            status,
             reason: None,
             inspect: json!({}),
-            pulled_here: false,
-            first_seen: 0,
+            pulled_here: pulled,
+            first_seen,
             prepared_at: Some(1),
-            good_since: Some(1),
+            good_since: Some(first_seen),
+        }
+    }
+
+    #[test]
+    fn the_prune_keeps_what_runs_or_may_and_drops_the_previous_and_the_abandoned() {
+        const DAY: i64 = 24 * 3_600_000;
+        let now = 100 * DAY;
+        let d = |n: u8| format!("sha256:{}", format!("{n:02x}").repeat(32));
+        let records = vec![
+            rec(&d(1), Status::Good, true, now - 4 * DAY), // current, good 4 days
+            rec(&d(2), Status::Good, true, now - 9 * DAY), // previous
+            rec(&d(3), Status::Good, true, now - 20 * DAY), // an agent's
+            rec(&d(4), Status::Candidate, true, now - 8 * DAY), // abandoned
+            rec(&d(5), Status::Candidate, true, now - DAY), // a fresh candidate
+            rec(&d(6), Status::Bad, true, now - 2 * DAY),  // banned
+            rec(&d(7), Status::Good, false, now - 30 * DAY), // not ours
+            rec(&d(8), Status::Good, true, now - 30 * DAY), // the compiled pin
+        ];
+        let state = ChannelState {
+            current: Some(d(1)),
+            previous: Some(d(2)),
+            ..Default::default()
         };
-        assert!(needs_canary(&r, &rec), "an upgrade always canaries");
-        r.kind = RolloutKind::Rollback;
-        assert!(!needs_canary(&r, &rec), "back to a known good does not");
-        rec.status = Status::Candidate;
-        assert!(needs_canary(&r, &rec));
+        let assigned = HashMap::from([("a".to_string(), d(3))]);
+        let mut plan = prune_plan(&state, &records, &assigned, &d(8), now);
+        plan.sort();
+        assert_eq!(plan, vec![d(2), d(4), d(6)]);
+        // The current one good for under three days keeps the previous.
+        let mut fresh = records.clone();
+        fresh[0].good_since = Some(now - DAY);
+        assert!(!prune_plan(&state, &fresh, &assigned, &d(8), now).contains(&d(2)));
+        // An open rollout's image and the one it leaves stay.
+        let open = ChannelState {
+            rollout: Some(Rollout {
+                digest: d(4),
+                from: Some(d(6)),
+                phase: Phase::Rolling,
+                ..Default::default()
+            }),
+            ..state.clone()
+        };
+        let plan = prune_plan(&open, &records, &assigned, &d(8), now);
+        assert!(!plan.contains(&d(4)) && !plan.contains(&d(6)));
     }
 
     #[test]
