@@ -97,8 +97,12 @@ on:
     # Paths are safe here (chassis.yml's argument: nothing in this file is a
     # required check) and they keep the trunk build meaningful — a desktop push
     # rebuilds the installers, anything else leaves the last artifacts alone.
+    # The launcher also bundles one file from ui/: the dither field, imported
+    # as `@dither` (desktop/vite.config.ts), so an edit to it changes what the
+    # installers ship as surely as a desktop/ edit does.
     paths:
       - 'desktop/**'
+      - 'ui/src/lib/dither-engine.ts'
       - '.github/workflows/desktop-package.yml'
       - '.github/actions/**'
   workflow_dispatch:
