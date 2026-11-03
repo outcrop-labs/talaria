@@ -641,7 +641,7 @@ themed min/max/close off-screen). The minimum is 760×480, also shrunk to fit.
 A stable GitHub Release carries `latest.json` plus minisign signatures of the AppImage,
 the universal `.app.tar.gz`, and the NSIS installer. The running app fetches
 `/releases/latest/download/latest.json` (on its own, below, or when someone checks in
-Settings → Desktop or on the launcher), verifies the payload against the pubkey in
+Settings → Profile or on the launcher), verifies the payload against the pubkey in
 `tauri.conf.json`, replaces itself, and relaunches. The check is bounded at 10 s (the
 plugin's default is no bound); the install is not, because the plugin applies one timeout
 to the check and to the whole download.
@@ -695,7 +695,7 @@ read-only, and an `.msi` install would get a second, per-user NSIS copy beside i
 Start-menu entry kept the old one. So Update is offered only to an AppImage (`$APPIMAGE`,
 as the updater itself reads it), the NSIS install, and the macOS app (not one running from
 its disk image or a quarantine copy, which it cannot replace). Everywhere else the chip, the
-launcher's Check for updates and Settings → Desktop say how to update instead — the new
+launcher's Check for updates and Settings → Profile say how to update instead — the new
 package or `.msi` from the Releases page — and the chip offers Later only; `install_update`
 refuses with the same sentence, for an older instance UI that still shows Install.
 

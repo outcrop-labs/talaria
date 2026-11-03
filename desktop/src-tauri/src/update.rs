@@ -393,7 +393,7 @@ pub async fn check(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
     }))
 }
 
-/// The launcher's and Settings → Desktop's "Check for updates": the same
+/// The launcher's and Settings → Profile's "Check for updates": the same
 /// check, and what it found becomes the offer too.
 pub async fn check_now(app: &AppHandle) -> Result<Option<UpdateInfo>, String> {
     let found = check(app).await?;
