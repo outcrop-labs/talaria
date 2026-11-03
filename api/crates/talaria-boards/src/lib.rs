@@ -23,6 +23,53 @@ pub fn board_visibility_sql(user_1: &str, user_2: &str, include_archived: bool) 
     }
 }
 
+/// A ticket an agent is working, as the tab bar names it.
+#[derive(Debug)]
+pub struct WorkingTicket {
+    pub id: String,
+    pub board_id: String,
+    pub title: String,
+    /// The live session's last write, epoch ms.
+    pub updated_ms: i64,
+}
+
+/// Tickets on boards viewer `user_id` can see with a work session an agent
+/// has in hand (`queued` or `running`), freshest first. The same join the
+/// board's own work-sessions read makes, over every board the viewer sees.
+/// `awaiting` is out: parked on a person is not working. The `t.id::text`
+/// join keeps a non-uuid `subject_id` from raising a cast error.
+pub async fn working_tickets(
+    pg: &PgPool,
+    user_id: &str,
+) -> Result<Vec<WorkingTicket>, sqlx::Error> {
+    let sql = format!(
+        "select t.id::text, t.board_id::text, t.title, \
+                (trunc(extract(epoch from max(r.updated_at)) * 1000))::bigint as at \
+         from runs r \
+         join tasks t on t.id::text = r.subject_id \
+         join boards b on b.id = t.board_id \
+         where r.kind = 'work-session' and r.state in ('queued', 'running') \
+           and {} \
+         group by t.id, t.board_id, t.title \
+         order by at desc",
+        board_visibility_sql("$1", "$1", false)
+    );
+    let rows: Vec<(String, String, String, i64)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(user_id)
+            .fetch_all(pg)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, board_id, title, updated_ms)| WorkingTicket {
+            id,
+            board_id,
+            title,
+            updated_ms,
+        })
+        .collect())
+}
+
 /// Which of two roles wins when both queries answer —
 /// descending by rank,
 /// first wins.

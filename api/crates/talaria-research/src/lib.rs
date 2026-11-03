@@ -593,6 +593,17 @@ pub async fn active_research_on(
     Ok(row.map(|(id,)| id))
 }
 
+/// The runs viewer `$1` follows: their own, and ones shared with them by name
+/// or by team. Narrower than `list_research_runs`, which adds org and
+/// ownerless runs to browse: this is the audience that gets told, so an org
+/// agent's research does not ring everyone.
+const VIEWER_AUDIENCE: &str = "(research_runs.owner_user_id = $1::uuid \
+    or exists(select 1 from research_members rm \
+              where rm.run_id = research_runs.id and rm.user_id = $1::uuid) \
+    or exists(select 1 from research_teams rt \
+              join team_members tm on tm.team_id = rt.team_id \
+              where rt.run_id = research_runs.id and tm.user_id = $1::uuid))";
+
 /// Research this person should be told about in an ambient briefing: what is
 /// in flight, plus anything that failed in the last week. It exists so the
 /// projection is spelled once — reading `research_runs` directly would let a
@@ -609,12 +620,7 @@ pub async fn briefable_research(
                   {STATUS} as status, \
                   research_runs.created_at \
            {FROM} \
-           where research_runs.owner_user_id = $1::uuid \
-              or exists(select 1 from research_members rm \
-                        where rm.run_id = research_runs.id and rm.user_id = $1::uuid) \
-              or exists(select 1 from research_teams rt \
-                        join team_members tm on tm.team_id = rt.team_id \
-                        where rt.run_id = research_runs.id and tm.user_id = $1::uuid) \
+           where {VIEWER_AUDIENCE} \
          ) s \
          where s.status in ('queued', 'running', 'awaiting') \
             or (s.status = 'error' and s.created_at > now() - interval '7 days') \
@@ -626,6 +632,50 @@ pub async fn briefable_research(
         .fetch_all(pg)
         .await?;
     Ok(rows)
+}
+
+/// A research run an agent is working on, as the tab bar names it.
+#[derive(Debug)]
+pub struct WorkingResearch {
+    pub id: String,
+    pub title: String,
+    /// The run's discussion thread, if it has one. A streaming reply in that
+    /// thread is the same work, not a second item.
+    pub conversation_id: Option<String>,
+    pub updated_ms: i64,
+}
+
+/// Runs viewer `user_id` follows that an agent has in hand: `queued` or
+/// `running` by the one status projection. `awaiting` is out: a run parked on
+/// a question is waiting on a person, not working.
+pub async fn working_research(
+    pg: &PgPool,
+    user_id: &str,
+) -> Result<Vec<WorkingResearch>, sqlx::Error> {
+    let sql = format!(
+        "select research_runs.id::text, \
+                coalesce(research_runs.title, research_runs.question), \
+                research_runs.conversation_id::text, \
+                (trunc(extract(epoch from greatest(research_runs.updated_at, \
+                    coalesce(r.updated_at, research_runs.updated_at))) * 1000))::bigint as at \
+         {FROM} \
+         where ({STATUS}) in ('queued', 'running') and {VIEWER_AUDIENCE} \
+         order by at desc"
+    );
+    let rows: Vec<(String, String, Option<String>, i64)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(user_id)
+            .fetch_all(pg)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, title, conversation_id, updated_ms)| WorkingResearch {
+            id,
+            title,
+            conversation_id,
+            updated_ms,
+        })
+        .collect())
 }
 
 /// Throw the run away: STOP IT FIRST, then delete the record.
