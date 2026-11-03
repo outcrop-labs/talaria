@@ -20,6 +20,11 @@ async fn cleanup(pg: &PgPool, tag: &str) {
         .execute(pg)
         .await
         .unwrap();
+    sqlx::query("delete from agent_defs where model like $1 || '-%'")
+        .bind(format!("working-live-{tag}"))
+        .execute(pg)
+        .await
+        .unwrap();
     sqlx::query("delete from research_runs where requested_by = $1")
         .bind(format!("working-live-{tag}"))
         .execute(pg)
@@ -293,4 +298,58 @@ async fn working_live_a_runs_streaming_thread_keeps_the_run_the_freshest() {
         "the run and its streaming thread are one item, as fresh as the thread"
     );
     cleanup(&pg, "research").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn working_live_a_dm_of_only_agents_is_named_after_them() {
+    let (pg, user) = setup("agents").await;
+    sqlx::query(
+        "insert into agent_defs (slug, department, model, display_name) values \
+           ('working-live-agents-a', 'live', 'working-live-agents-a', 'Ada'), \
+           ('working-live-agents-b', 'live', 'working-live-agents-b', 'Bo')",
+    )
+    .execute(&pg)
+    .await
+    .unwrap();
+    let (room,): (String,) = sqlx::query_as(
+        "insert into channels (name, kind, dm_key) values ('', 'dm', 'working-live-agents') \
+         returning id::text",
+    )
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    sqlx::query("insert into channel_members (channel_id, user_id) values ($1::uuid, $2::uuid)")
+        .bind(&room)
+        .bind(&user)
+        .execute(&pg)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into channel_agents (channel_id, agent_model) \
+         values ($1::uuid, 'working-live-agents-a'), ($1::uuid, 'working-live-agents-b')",
+    )
+    .bind(&room)
+    .execute(&pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into channel_messages (channel_id, seq, author_type, author, status) \
+         values ($1::uuid, 1, 'agent', 'working-live-agents-a', 'streaming')",
+    )
+    .bind(&room)
+    .execute(&pg)
+    .await
+    .unwrap();
+
+    let comms = read(&pg, &user)
+        .await
+        .unwrap()
+        .comms
+        .expect("the DM is working");
+    assert_eq!(
+        comms.label, "Ada, Bo",
+        "a DM with no other person is named after its agents"
+    );
+    cleanup(&pg, "agents").await;
 }

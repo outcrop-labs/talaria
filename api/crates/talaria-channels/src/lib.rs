@@ -219,7 +219,8 @@ macro_rules! rail_room_sql {
 
 /// The name a room shows viewer `$1`: a channel's name, or for a DM the other
 /// person, or the other members by name when the DM is a group or holds an
-/// agent and has no name of its own.
+/// agent and has no name of its own, or its agents by name when no other
+/// person is in it.
 macro_rules! room_title_sql {
     () => {
         "case when c.kind = 'dm' then coalesce( \
@@ -228,7 +229,11 @@ macro_rules! room_title_sql {
                      else coalesce(nullif(c.name, ''), string_agg(coalesce(nullif(pu.name, ''), pu.email), ', ' \
                        order by coalesce(nullif(pu.name, ''), pu.email))) end \
               from channel_members p join users pu on pu.id = p.user_id \
-             where p.channel_id = c.id and p.user_id <> $1::uuid), c.name) \
+             where p.channel_id = c.id and p.user_id <> $1::uuid), \
+           (select string_agg(coalesce(nullif(ad.display_name, ''), ca.agent_model), ', ' \
+                     order by coalesce(nullif(ad.display_name, ''), ca.agent_model)) \
+              from channel_agents ca left join agent_defs ad on ad.model = ca.agent_model \
+             where ca.channel_id = c.id), c.name) \
          else c.name end"
     };
 }
