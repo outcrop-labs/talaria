@@ -34,8 +34,9 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::require_agent;
 use talaria_body::truncate_utf16;
+use talaria_conversations::fan_conversation_event;
 use talaria_error::house_error;
-use talaria_notify::{NotifyDeps, fan_conversation_event};
+use talaria_notify::NotifyDeps;
 use talaria_state::AppState;
 
 const MAX_FIELD: usize = 2_000;
