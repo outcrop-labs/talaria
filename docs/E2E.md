@@ -162,8 +162,10 @@ cd ui && E2E_BASE_URL=http://localhost:<app port> \
 ## In CI
 
 The `e2e` job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs when its
-surface moves: `ui/`, `scripts/e2e/`, the `talaria-mcp*` crates, `talaria-routes-fleet`,
-`api/Cargo.lock`, or the workflow itself. It:
+surface moves: `ui/`, `scripts/e2e/`, anything that goes into the api binary it boots
+(every crate under `api/crates/`, since the binary depends on all of them, plus `api/src/`,
+the workspace manifest and lockfile, `api/.cargo/` and the toolchain pin), the chassis
+template, or the workflow itself. It:
 
 1. writes the run's directories under `$RUNNER_TEMP` into `$GITHUB_ENV` (job-level `env:`
    cannot use the `runner` context) and seeds the fleet tree (`chassis.yml` from

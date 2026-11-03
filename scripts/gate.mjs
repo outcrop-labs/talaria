@@ -95,6 +95,63 @@ function isMobileSource(file) {
 }
 
 /**
+ * The files the ui suite reads, imports or compiles in, ui/ and apps/
+ * included: the SDK docs' examples and every file `talaria app new` writes
+ * (ui/src/sdk/client-docs.test.ts, server.test.ts), the fixtures it shares
+ * with the api, the Rust sources its tests hold their tables to, the chassis
+ * template and workbench image files, check-invariants.mjs and the secretbox
+ * vector generator. An edit to one of them alone can turn the ui suite red,
+ * so it runs the suite. This IS ci.yml's `surface ui` list, minus the workflow
+ * file and the composite actions (they pick CI jobs, not a local compile);
+ * ci.yml's `x/*` is the prefix `x/` here. --self-test reads ci.yml and fails
+ * when the two differ, so a file added there and not here is caught.
+ * Exact paths match exactly; a trailing `/` is a prefix.
+ */
+const UI_SURFACE = [
+  'ui/',
+  'apps/',
+  'docs/sdk/',
+  'cli/src/cmd/app/',
+  'api/tests/it/fixtures/',
+  'api/crates/talaria-harness-defs/src/registry.rs',
+  'api/crates/talaria-gateway/src/guard.rs',
+  'api/crates/talaria-platform-agents/src/lib.rs',
+  'scripts/chassis.template.yml',
+  'scripts/workbench.Dockerfile',
+  'scripts/build-workbench-image.sh',
+  'scripts/check-invariants.mjs',
+  'scripts/gen-secretbox-vectors.mjs',
+]
+
+/** @param {string} file */
+function onUiSurface(file) {
+  return UI_SURFACE.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p))
+}
+
+/** The launcher bundles this one ui file as `@dither` (desktop/vite.config.ts,
+ *  tsconfig.json), so the desktop typecheck reads it, as ci.yml's desktop
+ *  surface says. */
+const DESKTOP_READS_FROM_UI = 'ui/src/lib/dither-engine.ts'
+
+/**
+ * ci.yml's `surface ui` globs, as UI_SURFACE spells them, or null when the
+ * line is gone. A glob this cannot turn into a prefix or an exact path stays
+ * as it is, so the comparison fails on it.
+ * @param {string} text  .github/workflows/ci.yml
+ */
+function ciUiSurface(text) {
+  const lines = text.split('\n')
+  let i = lines.findIndex((l) => /^\s*surface ui\s/.test(l))
+  if (i === -1) return null
+  let joined = lines[i]
+  while (/\\\s*$/.test(lines[i]) && i + 1 < lines.length) joined = joined.replace(/\\\s*$/, ' ') + lines[++i]
+  return [...joined.matchAll(/'([^']+)'/g)]
+    .map((m) => m[1])
+    .filter((g) => !g.startsWith('.github/'))
+    .map((g) => (g.endsWith('/*') ? g.slice(0, -1) : g))
+}
+
+/**
  * @param {string[]} files
  * @param {(rel: string) => string | null} readPkg
  */
@@ -112,11 +169,11 @@ function classify(files, readPkg) {
   }
   const pkgs = new Set()
   for (const file of files) {
-    // The ui suite compiles the SDK docs' examples and every file `talaria app
-    // new` writes (ui/src/sdk/client-docs.test.ts, server.test.ts), so an edit
-    // to either runs it — the same list as ci.yml's ui surface. A scaffolder
-    // file is also cli source, which the chain below still selects.
-    if (file.startsWith('docs/sdk/') || file.startsWith('cli/src/cmd/app/')) plan.ui = true
+    // A file the ui suite reads from outside ui/ runs it (UI_SURFACE). It is
+    // also whatever the chain below makes of it: a scaffolder file is cli
+    // source, a Rust file compiles its package.
+    if (onUiSurface(file)) plan.ui = true
+    if (file === DESKTOP_READS_FROM_UI) plan.desktopTypecheck = true
     if (file.startsWith('ui/') || file.startsWith('apps/')) {
       plan.ui = true
     } else if (file.startsWith('mcp/')) {
@@ -247,6 +304,33 @@ function selfTest() {
 
   const cliOnly = classify(['cli/src/ports.ts'], stub)
   assert(cliOnly.cli && !cliOnly.ui, 'other cli source does not run the ui suite')
+
+  // What the ui suite reads from outside ui/ runs it, as ci.yml's ui surface does.
+  for (const f of [
+    'scripts/check-invariants.mjs',
+    'scripts/gen-secretbox-vectors.mjs',
+    'scripts/chassis.template.yml',
+    'api/tests/it/fixtures/app-grants.json',
+    'api/crates/talaria-gateway/src/guard.rs',
+  ]) {
+    assert(classify([f], stub).ui, `${f} runs the ui suite (ci.yml's ui surface lists it)`)
+  }
+  const guard = classify(['api/crates/talaria-error/src/lib.rs', 'scripts/check-docs.mjs'], stub)
+  assert(!guard.ui, 'a crate or script the ui suite does not read leaves it alone')
+  const dither = classify(['ui/src/lib/dither-engine.ts'], stub)
+  assert(dither.ui && dither.desktopTypecheck, 'the dither engine runs the ui suite and the desktop typecheck')
+
+  // The list is ci.yml's, read from ci.yml: one edited without the other fails here.
+  const ci = ciUiSurface(readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8'))
+  if (ci === null) {
+    assert(false, "ci.yml has no `surface ui` line to hold UI_SURFACE to")
+  } else {
+    const want = [...ci].sort().join(' ')
+    const have = [...UI_SURFACE].sort().join(' ')
+    assert(want === have, `UI_SURFACE differs from ci.yml's ui surface\n  ci.yml: ${want}\n  gate:   ${have}`)
+  }
+  const sample = ["          surface ui      'ui/*' 'docs/sdk/*' \\", "                          'scripts/x.mjs' '.github/actions/**'"].join('\n')
+  assert(ciUiSurface(sample)?.join() === 'ui/,docs/sdk/,scripts/x.mjs', 'the ci.yml reader joins continuation lines and drops the workflow globs')
 
   const mobileDocs = classify(['mobile/README.md', 'mobile/tools/devbox-install.sh'], stub)
   assert(!mobileDocs.mobile, 'a mobile readme or provisioner script is not a gradle build')

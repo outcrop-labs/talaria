@@ -37,8 +37,10 @@ grep -n '^## 0.2.0-rc.1' CHANGELOG.md            # the section is in the tree yo
 git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 ```
 
-Roll the changelog BEFORE tagging — the tagged tree must carry the section (the release's
-notes link points at CHANGELOG.md as of the tag). **Never push the roll commit to rc
+Roll the changelog BEFORE tagging — the tagged tree must carry the section, so the tag says
+what it holds and the promotion carries it to main. (The release's notes link is
+`blob/main/CHANGELOG.md`, not the tag: an RC's section shows there only after rc is
+promoted.) **Never push the roll commit to rc
 yourself:** `scripts/flow-guard.mjs` refuses an rc tip that is not a merge (the pre-push
 hook locally, `flow.yml` in CI), so the roll lands the way everything does — a pull request
 against rc. Hold other merges to rc between the roll's merge and the tag: a PR that lands in
@@ -71,13 +73,25 @@ git tag v0.2.0 && git push origin v0.2.0
 ```
 
 A stable's notes come from the same roll. If entries landed on rc after the last RC's roll,
-roll them the same way — a pull request against rc — before step 1. A roll can never go to
-main directly: main takes rc's content and nothing else (flow-guard).
+roll them the same way — a pull request against rc — before step 1, under the stable's own
+version (`bun scripts/changelog-roll.mjs 0.2.0`, a `## 0.2.0` section above the RC ones). If
+the roll refuses because `changelog/` is empty (the usual case right after an RC), nothing
+landed since the RC's roll and the RC sections already cover the stable: skip the roll and
+go to step 1. A roll can never go to main directly: main takes rc's content and nothing else
+(flow-guard).
 
-Publishes `0.2.0` + (moving) `latest` and a regular GitHub Release. `latest` moves on
-nothing else — only a suffix-free `vX.Y.Z` tag. A stable desktop release also attaches
-`latest.json` and `.sig`; that needs the `TAURI_SIGNING_PRIVATE_KEY` Actions secret. An RC
-does not publish `latest.json`.
+Publishes `0.2.0` + (moving) `latest` and a regular GitHub Release. `latest`, the image
+tag, moves on nothing else — only a suffix-free `vX.Y.Z` tag.
+
+**The GitHub Release is never "Latest"** — that flag is the desktop updater feed. The shell
+reads `/releases/latest/download/latest.json`, which must resolve to the newest `desktop-v*`
+release (desktop-package.yml marks each mint Latest once its `latest.json` is up). A stable
+`v*` release would take the flag by default before its installers are attached, and every
+update check would 404, so `release.yml` creates and edits it `--latest=false` and
+`check-invariants.mjs` (`release-latest-is-the-desktop-feed`) fails a workflow that drops a
+flag. Do not mark it Latest in the Releases page either. Its desktop installers still carry
+`latest.json` and `.sig` (the `TAURI_SIGNING_PRIVATE_KEY` Actions secret); nothing serves
+that file. An RC does not publish `latest.json`.
 
 ## Nightlies
 
