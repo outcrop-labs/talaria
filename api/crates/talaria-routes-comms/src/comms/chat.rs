@@ -24,12 +24,12 @@ use talaria_body::{
 };
 use talaria_chat_persist::{
     OpeningTurn, PersistMeta, PlanMeta, TurnMeta, answer_after_orphan, continue_conversation,
-    persist_assistant_stream, pinned_turn, send_turn, turn_sent,
+    open_streaming_reply, persist_assistant_stream, pinned_turn, send_turn, turn_sent,
 };
 use talaria_conversations::{
     ReplyWriter, accessible_conversation, active_streaming_assistant, create_conversation,
-    insert_streaming_assistant, insert_user_message, is_seq_collision, list_plan_members, next_seq,
-    prior_messages, title_from, touch_conversation,
+    insert_user_message, is_seq_collision, list_plan_members, next_seq, prior_messages, title_from,
+    touch_conversation,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{NotifyDeps, fan_conversation_event};
@@ -552,10 +552,11 @@ pub async fn post(
             plan_title.as_deref(),
         );
         // And the rail: a teammate's turn in a shared plan is unread to every
-        // OTHER reader — the sender is here, looking at it, but a collaborator
-        // elsewhere sees their pill move now, not on the next poll. Chat turns
-        // skip this: the only reader is the sender, who is present by
-        // definition. (The agent's reply fans from chat_persist on complete.)
+        // OTHER reader, and their pill moves now, not on the next poll. The
+        // reply announces its own start below (open_streaming_reply), so a
+        // plan turn rings its readers twice. This one stays: it is for the
+        // message, which lands even when no reply opens, and it fires before
+        // the reply's row exists, so it cannot light the tab bar's glyph.
         fan_conversation_event(
             NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
             conv_id.clone(),
@@ -792,11 +793,18 @@ pub async fn post(
     // fresh conversation that row would otherwise be the one assistant row
     // with no run id, and the conversation would read as legacy forever.
     let pinned = pinned_turn(&state.pg, &agent_model, &conv_id, None).await;
-    let assistant_id =
-        match insert_streaming_assistant(&state.pg, &conv_id, user_seq + 1, &json!({})).await {
-            Ok(id) => id,
-            Err(e) => return Ok(internal("[chat] assistant row create failed", e)),
-        };
+    let assistant_id = match open_streaming_reply(
+        &state.pg,
+        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+        &conv_id,
+        user_seq + 1,
+        &json!({}),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => return Ok(internal("[chat] assistant row create failed", e)),
+    };
     // This process writes the row from here, the wait for the agent's
     // response headers included: the hold rides into the persist below
     // (talaria-conversations, "Who is writing a reply").
