@@ -50,6 +50,21 @@ pub fn open(dir: &Path) {
     }
 }
 
+/// A panic, for the panic hook (lib.rs): the file only — the default hook
+/// that runs next prints it to stderr — and never waiting on the lock, which
+/// the panicking thread may be holding.
+pub fn panic_line(args: std::fmt::Arguments<'_>) {
+    let text = args.to_string();
+    let mut sink = match SINK.try_lock() {
+        Ok(sink) => sink,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    if let Some(open) = sink.as_mut() {
+        let _ = open.write(SystemTime::now(), &text);
+    }
+}
+
 /// One line: stderr, then the file if it is open.
 pub fn line(args: std::fmt::Arguments<'_>) {
     let text = args.to_string();
@@ -94,14 +109,31 @@ impl Sink {
         let line = format!("{} {text}\n", stamp(now));
         let size = line.len() as u64;
         if self.len > 0 && self.len + size > self.max {
-            // Renaming an open file is fine on Windows too: std opens files
-            // with FILE_SHARE_DELETE. If it fails anyway (another process
-            // holds the old one), start this file over rather than stop.
-            match rotate(&self.path) {
-                Ok(()) => self.file = append(&self.path)?,
-                Err(_) => self.file.set_len(0)?,
+            // A second Talaria process (Windows has no single-instance guard
+            // yet) may have rotated the file already, leaving this handle on
+            // the old one: then follow it to the new file.
+            let on_disk = fs::metadata(&self.path).map(|m| m.len()).ok();
+            match on_disk {
+                Some(n) if n < self.len && n + size <= self.max => {
+                    self.file = append(&self.path)?;
+                    self.len = n;
+                }
+                _ => {
+                    // Renaming an open file is fine on Windows too: std opens
+                    // files with FILE_SHARE_DELETE. If it fails anyway, start
+                    // this file over rather than stop. A fresh handle, because
+                    // an append-only one cannot truncate on Windows.
+                    self.file = match rotate(&self.path) {
+                        Ok(()) => append(&self.path)?,
+                        Err(_) => OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .truncate(true)
+                            .open(&self.path)?,
+                    };
+                    self.len = 0;
+                }
             }
-            self.len = 0;
         }
         self.file.write_all(line.as_bytes())?;
         self.len += size;
@@ -220,6 +252,38 @@ mod tests {
         );
         assert!(!dir.join(format!("{FILE_NAME}.2")).exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_another_process_rotated_is_followed() {
+        let dir = scratch("follow");
+        let mut sink = Sink::open(&dir, 200).unwrap();
+        for n in 0..3 {
+            sink.write(at(n), &format!("talaria-desktop: line {n:02}"))
+                .unwrap();
+        }
+        // The other process rotates: our file becomes .1, a new one starts.
+        let path = dir.join(FILE_NAME);
+        rotate(&path).unwrap();
+        fs::write(&path, b"").unwrap();
+        // The next line that would not fit follows the new file instead of
+        // rotating it away.
+        for n in 3..5 {
+            sink.write(at(n), &format!("talaria-desktop: line {n:02}"))
+                .unwrap();
+        }
+        let current = fs::read_to_string(&path).unwrap();
+        assert!(current.ends_with("talaria-desktop: line 04\n"), "{current}");
+        let previous = fs::read_to_string(dir.join(format!("{FILE_NAME}.1"))).unwrap();
+        assert!(previous.contains("line 00"), "{previous}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panic_line_never_waits_on_the_lock() {
+        let held = SINK.lock().unwrap_or_else(PoisonError::into_inner);
+        panic_line(format_args!("talaria-desktop: panicked at a test"));
+        drop(held);
     }
 
     #[test]

@@ -292,6 +292,14 @@ fn http_client() -> reqwest::Client {
 }
 
 pub fn run() {
+    // A panic is the one thing `eprintln!` never says: the default hook writes
+    // it to stderr, which a release build on Windows does not have. Into the
+    // log file too, once setup has opened it.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        logfile::panic_line(format_args!("talaria-desktop: {info}"));
+        default_hook(info);
+    }));
     // `--notify-selftest[=<path>]`: the notification backend's report, with
     // no window (desktop-package.yml runs it on every platform's build).
     if let Some(path) = notify::selftest_arg(std::env::args().skip(1)) {

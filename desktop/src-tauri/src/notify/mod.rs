@@ -756,6 +756,7 @@ fn attention(app: &AppHandle, label: &str) {
 }
 
 /// The OS said a banner with this server id was clicked (Linux).
+// webview-threading: callback (the bus's signal stream; scripts/desktop-threading.mjs)
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn clicked_server_id(id: u32, token: Option<String>) {
     let Some(app) = app() else {
@@ -775,6 +776,8 @@ pub(crate) fn clicked_server_id(id: u32, token: Option<String>) {
 
 /// The OS said this (label, tag)'s banner was clicked (macOS, Windows). A
 /// pair the map no longer holds still opens its instance.
+// webview-threading: callback (the macOS delegate on the main thread, the
+// Windows toast waiter; scripts/desktop-threading.mjs)
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) fn clicked_tag(label: &str, tag: &str) {
     let Some(app) = app() else {

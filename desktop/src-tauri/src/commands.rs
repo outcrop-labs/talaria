@@ -24,7 +24,7 @@
 
 use std::{
     collections::BTreeMap,
-    sync::atomic::Ordering,
+    sync::{PoisonError, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -82,7 +82,11 @@ fn instance_label(id: &str) -> String {
 /// (an IPC callback, or a window event a sync command's window operation
 /// raised synchronously), where creating a webview deadlocks on Windows. Sent
 /// from a tokio worker instead, it is always queued, and the event loop runs
-/// it with no WebView2 handler on the stack.
+/// it from its own message loop, not from inside a WebView2 handler — as long
+/// as no sync command runs a nested message pump of its own inside a WebView2
+/// callback (none does: tao buffers queued turns only while its own handler is
+/// busy). Two queued turns are two tokio tasks, so they are not strictly
+/// first-in, first-out; nothing here depends on their order.
 pub(crate) fn queue_main_turn(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -128,7 +132,7 @@ impl<'a> Creating<'a> {
         state
             .creating
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(id.to_string())
             .then(|| Self {
                 state,
@@ -139,7 +143,12 @@ impl<'a> Creating<'a> {
 
 impl Drop for Creating<'_> {
     fn drop(&mut self) {
-        self.state.creating.lock().unwrap().remove(&self.id);
+        // Never unwrap here: a poisoned lock would panic during an unwind.
+        self.state
+            .creating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
     }
 }
 
@@ -164,6 +173,43 @@ const ESCAPE_HATCH: &str = r#"
     }, true);
   }
 "#;
+
+/// Injected into every instance webview: a drag the page itself does not take
+/// is no drop at all. Instance webviews have no Tauri drag-drop handler (see
+/// `create_instance_webview`), so each engine's browser-tab default applies,
+/// and that default loads whatever was dropped: a file released on a message
+/// list replaced the instance page with the file, and a dropped link with
+/// another site, leaving no titlebar and no switcher in the themed mode.
+/// Registered on the window, it sees a drag after every drop zone in the page
+/// has: a zone that called `preventDefault` keeps the drop, and anything else
+/// gets "no drop here" instead of a navigation.
+const DROP_GUARD: &str = r#"
+  window.addEventListener('dragover', (e) => {
+    if (!e.defaultPrevented) {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+    }
+  });
+  window.addEventListener('drop', (e) => {
+    if (!e.defaultPrevented) e.preventDefault();
+  });
+"#;
+
+/// The floor under `DROP_GUARD`, for a page where it did not take (a page that
+/// stops a drag's propagation, an engine error page): an instance webview never
+/// navigates to a local file. Only `file:` is refused. Pages and their frames
+/// use `about:`, `blob:` and `data:`; `mailto:` and app links are handed to
+/// the OS by WebView2 and WKWebView without leaving the page; a sign-in goes
+/// to other https origins and back. An allow-list would break those, and a
+/// dropped link cannot be told from a clicked one by its URL: that is the
+/// guard's job, in the page.
+fn allowed_navigation(label: &str, url: &tauri::Url) -> bool {
+    if url.scheme() == "file" {
+        eprintln!("talaria-desktop: {label}: refused a navigation to a local file");
+        return false;
+    }
+    true
+}
 
 /// Everything the launcher renders, in one read. The launcher asks for it at
 /// boot and whenever it becomes visible, and Rust pushes it on every change
@@ -707,12 +753,17 @@ fn create_instance_webview(
     // No drag-drop handler: Tauri's takes every drop for its own file-drop
     // events, which the shell never listens to, and on Windows it stops
     // HTML5 drag and drop altogether — boards, the Gantt, file drops into a
-    // composer. Without it the page gets drops as a browser tab does.
+    // composer. Without it the page gets drops as a browser tab does;
+    // DROP_GUARD and allowed_navigation keep a drop the page does not take
+    // from navigating it away.
+    let nav_label = label.clone();
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
         .data_directory(dir)
         .disable_drag_drop_handler()
+        .on_navigation(move |url| allowed_navigation(&nav_label, url))
         .background_color(GROUND)
         .initialization_script(ESCAPE_HATCH)
+        .initialization_script(DROP_GUARD)
         .on_page_load(move |webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 page_loaded(webview.app_handle(), &loaded_id);
@@ -1751,6 +1802,11 @@ pub(crate) fn reveal_notice(
             opened = activate(app, instance, href.as_deref(), pending).unwrap_or(Opened::AtHref);
         }
         crate::background::present_main(app, token);
+        // Created now (it opens at the href, or runs `pending` once up), or
+        // Pending: another activation is creating it and shows it, and this
+        // click's route is not handed over. Pending needs a re-entry inside a
+        // creation, which nothing does (the threading note); if it ever
+        // happens, the person lands on the instance instead of the row.
         if opened != Opened::Live {
             return;
         }
@@ -1988,4 +2044,41 @@ fn page_loaded(app: &AppHandle, id: &str) {
             let _ = webview.eval(suspend::report_js(nonce));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_instance_never_navigates_to_a_local_file() {
+        let url = |s: &str| s.parse::<tauri::Url>().unwrap();
+        assert!(!allowed_navigation(
+            "instance-x",
+            &url("file:///home/me/report.pdf")
+        ));
+        assert!(!allowed_navigation(
+            "instance-x",
+            &url("file:///C:/Users/me/report.pdf")
+        ));
+        for ok in [
+            "https://talaria.example/home",
+            "http://127.0.0.1:5302/comms",
+            "https://accounts.google.com/o/oauth2/auth",
+            "mailto:someone@example.com",
+            "about:blank",
+            "blob:https://talaria.example/1b2c",
+            "data:text/html,hi",
+        ] {
+            assert!(allowed_navigation("instance-x", &url(ok)), "{ok}");
+        }
+    }
+
+    #[test]
+    fn the_drop_guard_yields_to_a_drop_zone() {
+        // A zone's own preventDefault runs first; the guard only fills in.
+        assert_eq!(DROP_GUARD.matches("if (!e.defaultPrevented)").count(), 2);
+        assert!(DROP_GUARD.contains("dropEffect = 'none'"));
+        assert!(!DROP_GUARD.contains("stopPropagation"));
+    }
 }
