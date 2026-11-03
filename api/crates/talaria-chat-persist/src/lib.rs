@@ -21,11 +21,13 @@ use sqlx::PgPool;
 use talaria_agent_auth::now_ms;
 use talaria_agent_defs::pinned_sessions_for_model;
 use talaria_conversations::{
-    active_streaming_assistant, fold_tool_failures, hermes_epoch, insert_streaming_assistant,
-    last_user_message_effort, mark_message_resumed, mark_message_stopped, message_run_id,
-    message_still_errored, move_hermes_epoch, next_seq, pinned_history_fits, prior_messages,
-    resurrect_streaming_assistant, set_message_guard, set_message_run_id, touch_conversation,
-    unanswered_user_after, update_assistant,
+    ReplyFate, ReplyWriter, WRITER_BEAT, WRITER_LEASE, active_streaming_assistant, beat_replies,
+    fold_tool_failures, hermes_epoch, insert_streaming_assistant, last_user_message_effort,
+    mark_message_resumed, mark_message_stopped, message_run_id, message_still_errored,
+    move_hermes_epoch, next_seq, pinned_history_fits, prior_messages, replies_written_here,
+    reply_fate, resurrect_streaming_assistant, set_message_guard, set_message_run_id,
+    sweep_orphaned_replies, touch_conversation, unanswered_user_after, update_assistant,
+    written_here,
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
@@ -223,9 +225,10 @@ static CONTINUING: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
 /// turn may stream for however long the work takes; only this much SILENCE
 /// ends it. This replaces the total 600s request timeout that killed every
 /// turn longer than ten minutes mid-flight, API hanging up on agents that
-/// were still working (the "interrupted" knowledgebase turns). The sweep in
-/// conversations::active_streaming_assistant keys off the same liveness and
-/// waits past this ceiling for the writer's own end-state.
+/// were still working (the "interrupted" knowledgebase turns). This ceiling
+/// is the drain's own: while the drain reads, its row is held and beaten
+/// ([`keep_replies`]), so the orphan sweep never takes a quiet row from a
+/// drain that is still waiting on it.
 fn stream_idle() -> Duration {
     Duration::from_secs(idle_secs(std::env::var("TALARIA_AGENT_IDLE_SECS").ok()))
 }
@@ -648,6 +651,9 @@ async fn continue_inner(
             id
         }
     };
+    // This process writes the row from here, the wait for the agent's
+    // response headers included: the hold rides into the persist below.
+    let writer = ReplyWriter::hold(&assistant_id);
     // THE QUEUED MESSAGE'S OWN EFFORT, not the completed turn's: the message
     // this chain exists to cover picked its level when it was sent (stamped
     // on its row by /api/chat), and the model it will run on is only known
@@ -723,10 +729,12 @@ async fn continue_inner(
         conversation_id.to_string(),
         usage_meta,
         opening,
+        writer,
     );
 }
 
 /// The detached persist kick, as its own function (see the call site for why).
+/// `writer` is the drive's hold on the row, kept until the persist returns.
 fn spawn_persist(
     state: AppState,
     body: talaria_gateway::fleet_chat::ByteStream,
@@ -734,8 +742,10 @@ fn spawn_persist(
     conversation_id: String,
     usage_meta: PersistMeta,
     opening: OpeningTurn,
+    writer: ReplyWriter,
 ) {
     tokio::spawn(async move {
+        let _writer = writer;
         persist_assistant_stream(
             state,
             body,
@@ -1089,6 +1099,38 @@ pub fn hold_stop(conversation_id: &str) -> HeldStop {
 /// Hermes has not bound yet is placed with the headers window's patience
 /// (`stop_completion_held`), not a waiting caller's control window.
 fn send_held_stop(agent_model: String, conversation_id: String, handle: TurnHandle) {
+    send_stop_patiently(
+        agent_model,
+        conversation_id,
+        handle,
+        "held until the agent opened the turn",
+    );
+}
+
+/// A person's stop on a completions turn that the agent could not place
+/// within the stop route's control window, while this process's drain still
+/// reads the turn. Hermes answers `409 not_found` until it binds the turn's
+/// completion id to its admission, and on a starved store that has taken
+/// minutes. The route's caller cannot wait that long, and the turn runs on
+/// (and spends) until the stop lands. So the stop is handed to the same
+/// patient sender a held stop gets, and the route says the stop is held.
+pub fn send_unplaced_stop(agent_model: &str, conversation_id: &str, message_id: &str) {
+    send_stop_patiently(
+        agent_model.to_string(),
+        conversation_id.to_string(),
+        TurnHandle::Completion {
+            message_id: message_id.to_string(),
+        },
+        "not placed within the control window",
+    );
+}
+
+fn send_stop_patiently(
+    agent_model: String,
+    conversation_id: String,
+    handle: TurnHandle,
+    how: &'static str,
+) {
     tokio::spawn(async move {
         let done = match &handle {
             TurnHandle::Completion { message_id } => {
@@ -1107,10 +1149,10 @@ fn send_held_stop(agent_model: String, conversation_id: String, handle: TurnHand
         };
         match done {
             Ok(done) => tracing::info!(
-                "[chat_persist] {conversation_id}: a person's stop, held until the agent opened the turn: the turn was {done}"
+                "[chat_persist] {conversation_id}: a person's stop, {how}: the turn was {done}"
             ),
             Err(why) => tracing::warn!(
-                "[chat_persist] {conversation_id}: a person's stop, held until the agent opened the turn, was refused: {why}"
+                "[chat_persist] {conversation_id}: a person's stop, {how}, was refused: {why}"
             ),
         }
     });
@@ -1164,6 +1206,9 @@ pub async fn persist_assistant_stream(
     forward: Option<mpsc::Sender<Result<Bytes, std::io::Error>>>,
     opening: OpeningTurn,
 ) {
+    // This drain writes the row until it returns: it is never an orphan of
+    // this process's sweep, and the beat keeps it alive for every other's.
+    let _writer = ReplyWriter::hold(&message_id);
     let mut content = String::new();
     let mut reasoning = String::new();
     let mut tools: Vec<ToolCall> = Vec::new();
@@ -1418,8 +1463,19 @@ pub async fn persist_assistant_stream(
     // status would put a retry affordance on a turn nobody wants retried,
     // and the death path's auto-resume would re-drive the very run that was
     // just stopped. Everything the completed path does — the guard over the
-    // words, the rail's event, the reply notification, the chain — applies to
-    // the words a stopped turn managed to say, with two exceptions below.
+    // words, the rail's event, the chain — applies to the words a stopped
+    // turn managed to say, with three exceptions below.
+    //
+    // A STOP BEFORE THE MODEL SPOKE SAID NOTHING. Hermes ends a turn it
+    // interrupted before any delta went out by sending the turn's final
+    // response as one chunk, and for an interrupted turn that is its own
+    // cancellation notice ("Operation interrupted: waiting for model
+    // response (0.3s elapsed)."), not the agent's words. Hermes' own
+    // gateways drop it. Kept, it read as the agent's reply on reload, was
+    // sent back to the model as its earlier answer, and rang as "replied".
+    if stopped && is_interruption_notice(&content) {
+        content.clear();
+    }
     land!("complete");
     if stopped {
         let _ = mark_message_stopped(&state.pg, &message_id).await;
@@ -1507,7 +1563,13 @@ pub async fn persist_assistant_stream(
     // purpose — the helper reads the reply as saved, so strict mode's scrub
     // has reached the row before any copy of it files into an inbox. Same
     // detached rule as the fan beside it.
-    {
+    //
+    // NOT FOR A STOPPED TURN. A person in the thread cut it short, and the
+    // stop's own paths (held for a turn not yet opened, sent from a page
+    // that has since closed) are the ones no open tab covers, so the person
+    // who pressed Stop was told the agent "replied". The words stay in the
+    // thread, and the rail's event above still moves its unread pill.
+    if !stopped {
         let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
         let conversation_id = conversation_id.clone();
         let message_id = message_id.clone();
@@ -1645,9 +1707,189 @@ fn maybe_resume(
     });
 }
 
+/// Hermes' own notices for a turn it interrupted before the model said
+/// anything, as v0.22.4 writes them: `INTERRUPT_WAITING_FOR_MODEL_PREFIX`
+/// (agent/conversation_loop.py) and the other `interrupt_text`s of
+/// agent/turn_*.py all begin "Operation interrupted", and a turn stopped
+/// before it took its session's lease ends with one of the two sentences of
+/// agent/turn_facade_lease.py.
+const INTERRUPTION_PREFIX: &str = "Operation interrupted";
+const NOT_STARTED_NOTICES: &[&str] = &[
+    "Stopped before this turn started. Your message was not processed.",
+    "Stopped waiting for another Hermes process on this session. Your message was not processed.",
+];
+
+/// Whether a stopped turn's whole content is Hermes' cancellation notice
+/// rather than anything the agent said. Read only for a turn that ended
+/// stopped: Hermes sends the notice as the turn's content only when no word
+/// had gone out before the interrupt.
+fn is_interruption_notice(content: &str) -> bool {
+    let said = content.trim();
+    said.starts_with(INTERRUPTION_PREFIX) || NOT_STARTED_NOTICES.contains(&said)
+}
+
+/// THE REPLIES THIS PROCESS WRITES, KEPT ALIVE, AND THE ONES NOBODY WRITES,
+/// CLOSED (talaria-conversations, "Who is writing a reply"). Spawned once at
+/// boot. The first pass is the boot sweep: the replies a restart left
+/// `streaming` with no writer, once their lease has run out. Every
+/// [`WRITER_BEAT`] after it, the rows this process holds are stamped alive and
+/// the sweep runs again, so a reply whose writer went with another process
+/// (the old container of a deploy's overlap, or this one before a restart
+/// that came back inside the lease) is closed one lease after its last beat.
+/// A database that is not up yet is waited out on the same beat.
+pub async fn keep_replies(state: AppState) {
+    let mut beat = tokio::time::interval(WRITER_BEAT);
+    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut swept = false;
+    let mut failing = false;
+    loop {
+        beat.tick().await;
+        let stamped = beat_replies(&state.pg, &replies_written_here()).await;
+        let closed = match (stamped, sweep_orphaned_replies(&state.pg).await) {
+            (Ok(_), Ok(closed)) => {
+                if failing {
+                    tracing::info!("[chat_persist] the reply beat and the orphan sweep run again");
+                }
+                failing = false;
+                closed
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                if !failing {
+                    tracing::warn!(
+                        "[chat_persist] the reply beat or the orphan sweep failed (tried again every {}s): {e}",
+                        WRITER_BEAT.as_secs()
+                    );
+                }
+                failing = true;
+                continue;
+            }
+        };
+        if !swept {
+            tracing::info!(
+                "[chat_persist] boot sweep: {} orphaned repl{} closed",
+                closed.len(),
+                if closed.len() == 1 { "y" } else { "ies" }
+            );
+            swept = true;
+        }
+        for (message_id, conversation_id) in closed {
+            tracing::warn!(
+                "[chat_persist] {conversation_id}: reply {message_id} had no writer for {}s; closed as an orphan",
+                WRITER_LEASE.as_secs()
+            );
+            fan_conversation_event(
+                NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+                conversation_id,
+            );
+        }
+    }
+}
+
+/// The reply rows a queued send is watching ([`answer_after_orphan`]): one
+/// watch per row, however many sends queue behind it.
+static WATCHED: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// One watch's claim on its row in [`WATCHED`], let go when the watch ends.
+struct Watching(String);
+
+impl Watching {
+    fn claim(reply_id: &str) -> Option<Self> {
+        let key = reply_id.trim().to_ascii_lowercase();
+        WATCHED
+            .lock()
+            .ok()
+            .filter(|mut watched| watched.insert(key.clone()))
+            .map(|_| Watching(key))
+    }
+}
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        if let Ok(mut watched) = WATCHED.lock() {
+            watched.remove(&self.0);
+        }
+    }
+}
+
+/// A SEND QUEUED BEHIND A REPLY THIS PROCESS IS NOT WRITING. What queues
+/// behind a reply is answered by the tail of that reply's drain, and when the
+/// drain is in another process (a deploy's overlap) or in none (a restart
+/// took it, and came back inside the lease, so the row still looks written),
+/// nothing here would ever answer it. So the queued send watches the row, a
+/// beat at a time, and answers the queue itself once the row turns out to
+/// be an orphan. A row that lands is its writer's to follow up, and one this
+/// process picks up again (a resume) is its own drain's.
+pub fn answer_after_orphan(
+    state: &AppState,
+    conversation_id: &str,
+    reply_id: &str,
+    meta: TurnMeta,
+) {
+    if written_here(reply_id) {
+        return;
+    }
+    let Some(watch) = Watching::claim(reply_id) else {
+        return;
+    };
+    let state = state.clone();
+    let conversation_id = conversation_id.to_string();
+    let reply_id = reply_id.to_string();
+    tokio::spawn(async move {
+        let _watch = watch;
+        loop {
+            tokio::time::sleep(WRITER_BEAT).await;
+            if written_here(&reply_id) {
+                return;
+            }
+            match reply_fate(&state.pg, &reply_id).await {
+                // A database that did not answer is asked again next beat.
+                Ok(ReplyFate::Writing) | Err(_) => {}
+                Ok(ReplyFate::Landed) => return,
+                Ok(ReplyFate::Orphaned) => {
+                    tracing::info!(
+                        "[chat_persist] {conversation_id}: the reply a message queued behind had no writer; answering the queue"
+                    );
+                    continue_conversation(&state, &conversation_id, &meta).await;
+                    return;
+                }
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod stop_landing_live;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hermes' cancellation notices read as nothing said; the agent's own
+    /// words never do, even when they talk about an interruption.
+    #[test]
+    fn only_hermes_cancellation_notices_read_as_nothing_said() {
+        for notice in [
+            "Operation interrupted: waiting for model response (0.3s elapsed).",
+            "Operation interrupted: handling API error (RateLimitError: slow down).",
+            "Operation interrupted: retrying empty response from model (retry 1/2).",
+            "Operation interrupted during retry (timeout, attempt 2/3).",
+            "Operation interrupted.",
+            "  Stopped before this turn started. Your message was not processed.\n",
+            "Stopped waiting for another Hermes process on this session. Your message was not processed.",
+        ] {
+            assert!(is_interruption_notice(notice), "{notice}");
+        }
+        for said in [
+            "",
+            "The lamp at Garrick Point",
+            "I was interrupted by a phone call, but here it is.",
+            "Stopped before this turn started, the server had already rebooted.",
+            "Operation complete.",
+        ] {
+            assert!(!is_interruption_notice(said), "{said}");
+        }
+    }
 
     /// A drain's open completion is what a stop reads while the drain reads
     /// the stream: the newest one the stream named, and nothing once the

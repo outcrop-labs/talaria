@@ -23,11 +23,11 @@ use talaria_body::{
     optional_uuid_member, string_member, string_msg, uuid_member, zod_type_name,
 };
 use talaria_chat_persist::{
-    OpeningTurn, PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream,
-    pinned_turn, send_turn, turn_sent,
+    OpeningTurn, PersistMeta, PlanMeta, TurnMeta, answer_after_orphan, continue_conversation,
+    persist_assistant_stream, pinned_turn, send_turn, turn_sent,
 };
 use talaria_conversations::{
-    accessible_conversation, active_streaming_assistant, create_conversation,
+    ReplyWriter, accessible_conversation, active_streaming_assistant, create_conversation,
     insert_streaming_assistant, insert_user_message, is_seq_collision, list_plan_members, next_seq,
     prior_messages, title_from, touch_conversation,
 };
@@ -646,22 +646,30 @@ pub async fn post(
         // Not this send's turn to open: let go first, so the chained turn
         // below can claim the thread for its own.
         drop(opening);
-        // If the stream ended between the client's view and this landing,
-        // nothing would pick the message up — chain the next turn ourselves.
-        if in_flight.is_none() {
-            let state = state.clone();
-            let conv_id = conv_id.clone();
-            let meta = TurnMeta {
-                agent_model: agent_model.clone(),
-                tier: body.tier.clone(),
-                plan: plan_meta.clone(),
-                research_prompt,
-                work_prompts: work_prompts.clone(),
-                sender: Some(identity.clone()),
-            };
-            tokio::spawn(async move {
-                continue_conversation(&state, &conv_id, &meta).await;
-            });
+        let meta = TurnMeta {
+            agent_model: agent_model.clone(),
+            tier: body.tier.clone(),
+            plan: plan_meta.clone(),
+            research_prompt,
+            work_prompts: work_prompts.clone(),
+            sender: Some(identity.clone()),
+        };
+        match &in_flight {
+            // If the stream ended between the client's view and this
+            // landing, nothing would pick the message up — chain the next
+            // turn ourselves.
+            None => {
+                let state = state.clone();
+                let conv_id = conv_id.clone();
+                tokio::spawn(async move {
+                    continue_conversation(&state, &conv_id, &meta).await;
+                });
+            }
+            // The reply's drain answers this message when it lands. A reply
+            // this process is not writing may have no drain at all (a restart
+            // came back inside its lease), so the send watches it and answers
+            // the queue if it turns out to be an orphan.
+            Some(reply) => answer_after_orphan(&state, &conv_id, reply, meta),
         }
         return Ok((
             StatusCode::ACCEPTED,
@@ -789,6 +797,10 @@ pub async fn post(
             Ok(id) => id,
             Err(e) => return Ok(internal("[chat] assistant row create failed", e)),
         };
+    // This process writes the row from here, the wait for the agent's
+    // response headers included: the hold rides into the persist below
+    // (talaria-conversations, "Who is writing a reply").
+    let writer = ReplyWriter::hold(&assistant_id);
 
     // WHERE THIS AGENT IS ANSWERING, recorded before the turn leaves for the
     // container and not after — work the agent starts from inside this turn
@@ -834,6 +846,7 @@ pub async fn post(
     let assistant_id_header = assistant_id.clone();
     let persist_conv_id = conv_id.clone();
     tokio::spawn(async move {
+        let _writer = writer;
         persist_assistant_stream(
             state,
             upstream.body,
