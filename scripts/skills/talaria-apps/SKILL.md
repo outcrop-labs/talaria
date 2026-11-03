@@ -53,9 +53,10 @@ Every argument, answer and refusal of these steps:
 
 **Import only what the host shares.** A surface (`app.ts`, `*.svelte`): `svelte`,
 `@talaria/sdk`, `@lucide/svelte`, `@tanstack/svelte-query`. Server code (`server.ts`, `mcp.ts`,
-`harnesses/*.ts`): `@talaria/sdk/server` and node's builtins. `z` comes from
-`@talaria/sdk/server`. Tests (`*.test.ts`) add `@talaria/sdk/testing` and `vitest`. Anything
-else fails, by name: `"zod" is not shared with apps: …`.
+`harnesses/*.ts`): `@talaria/sdk/server`, `zod` (bare, the same copy the SDK re-exports as `z`)
+and node's builtins; a surface takes a type from a zod module by `import type`. Tests
+(`*.test.ts`) add `@talaria/sdk/testing` and `vitest`. Anything else fails, by name:
+`"clsx" is not shared with apps: …`.
 
 **No `package.json`.** The one `package.json` is the kit's own, which `prepare_env` installs
 outside your repo. `scaffold` writes none, and nothing in one would reach the app: the host

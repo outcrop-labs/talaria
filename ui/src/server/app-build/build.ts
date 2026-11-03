@@ -19,6 +19,7 @@ import {
   hostBuildStamp,
   isClientSpecifier,
   isServerSpecifier,
+  serverRuntimeFile,
   shimFileName,
 } from '@/app-runtime/specifiers'
 import { sourceKey } from './key'
@@ -44,18 +45,26 @@ function externalsGuard(): Plugin {
  *  or null when it may. An app has no node_modules of its own where it is
  *  installed (a git checkout, built in place), so a bare import resolves only
  *  if the host shares it: the client specifiers in a surface, the server
- *  specifiers and node's builtins in server, mcp and harness code. Anything
- *  else used to fail as Rollup's "failed to resolve import" — or, in a tree
- *  that happened to sit under some node_modules (a plugin repo checked out
- *  for development, the SDK kit's sandbox), to bundle a copy and pass, then
- *  fail on the host. One rule, said the same way wherever the recipe runs. */
+ *  specifiers (the SDK's server entry and zod) and node's builtins in server,
+ *  mcp and harness code. Anything else used to fail as Rollup's "failed to
+ *  resolve import" — or, in a tree that happened to sit under some
+ *  node_modules (a plugin repo checked out for development, the SDK kit's
+ *  sandbox), to bundle a copy and pass, then fail on the host. One rule, said
+ *  the same way wherever the recipe runs. */
 export function unsharedImport(source: string, kind: 'client' | 'server'): string | null {
   // A path (relative, absolute, a bundler's own `\0` virtual id) or a URL
   // scheme (`node:`, `data:`) is not a package lookup.
   if (/^[./\0]/.test(source) || /^[a-z][a-z0-9+.-]*:/i.test(source)) return null
   if (kind === 'client' ? isClientSpecifier(source) : isServerSpecifier(source)) return null
   if (kind === 'server' && builtinModules.includes(source)) return null
-  const shared = kind === 'client' ? 'svelte, @talaria/sdk, @lucide/svelte and @tanstack/svelte-query' : "@talaria/sdk/server (which re-exports zod as z) and node's builtins"
+  const client = 'svelte, @talaria/sdk, @lucide/svelte and @tanstack/svelte-query'
+  // zod in a surface: shared, but with the server side only. The usual way
+  // here is a value import from a module that imports zod (lib/schema.ts),
+  // where `import type` was meant — that one the build erases.
+  if (kind === 'client' && isServerSpecifier(source)) {
+    return `"${source}" is shared with server-side modules only (server.ts, mcp.ts, harnesses/): a surface may import only ${client}, and takes a type from a module that imports ${source} by \`import type\`, which the build erases`
+  }
+  const shared = kind === 'client' ? client : "@talaria/sdk/server, zod and node's builtins"
   return `"${source}" is not shared with apps: an app has no node_modules of its own where it is installed, so a ${kind === 'client' ? 'surface' : 'server-side module'} may import only ${shared}`
 }
 
@@ -100,20 +109,20 @@ function hostId(): string {
   return hostBuildStamp()
 }
 
-let shimOverride: string | null | undefined
+let shimsOverride: string | null | undefined
 
-/** Test seam: the `@talaria/sdk/server` shim server-side chunks link to. The
- *  host build writes the real one (dist/server/runtime), and without it the
- *  server, mcp and harness builds are skipped; a test with no host build
+/** Test seam: the directory of runtime shims server-side chunks link to, one
+ *  `rt-*.js` per server specifier (`@talaria/sdk/server`, `zod`). The host
+ *  build writes the real ones (dist/server/runtime), and without the SDK's
+ *  the server, mcp and harness builds are skipped; a test with no host build
  *  hands in its own. `undefined` restores the real lookup. */
-export function setServerShim(path: string | null | undefined): void {
-  shimOverride = path
+export function setServerShims(dir: string | null | undefined): void {
+  shimsOverride = dir
 }
 
-function sdkServerShim(): string | null {
-  if (shimOverride !== undefined) return shimOverride
-  const p = join(uiRoot(), 'dist/server/runtime', `${shimFileName('@talaria/sdk/server')}.js`)
-  return existsSync(p) ? p : null
+function serverShimDir(): string | null {
+  const dir = shimsOverride !== undefined ? shimsOverride : join(uiRoot(), 'dist/server/runtime')
+  return dir !== null && existsSync(join(dir, `${shimFileName('@talaria/sdk/server')}.js`)) ? dir : null
 }
 
 async function buildClient(appDir: string, outDir: string): Promise<void> {
@@ -288,9 +297,13 @@ export async function buildHarnesses(dir: string, files: readonly string[], outD
   return { built: [], skipped }
 }
 
+/** server.ts, mcp.ts or the harnesses entry → one ES module whose shared
+ *  imports name the host's runtime files: `@talaria/sdk/server` its
+ *  rt-talaria-sdk-server.js, `zod` its rt-zod.js. Both re-export from the
+ *  host's one zod, so `z` from the SDK and `zod` itself are the same module. */
 async function buildServerish(entry: string, outFile: string, appRoot: string): Promise<void> {
-  const shim = sdkServerShim()
-  if (!shim) return
+  const shims = serverShimDir()
+  if (!shims) return
   const outDir = join(outFile, '..')
   await viteBuild({
     configFile: false,
@@ -309,7 +322,7 @@ async function buildServerish(entry: string, outFile: string, appRoot: string): 
         output: {
           format: 'es',
           ...serverishFileNames(outFile),
-          paths: (id) => (isServerSpecifier(id) ? pathToFileURL(shim).href : id),
+          paths: (id) => (isServerSpecifier(id) ? pathToFileURL(join(shims, serverRuntimeFile(id))).href : id),
         },
       },
     },

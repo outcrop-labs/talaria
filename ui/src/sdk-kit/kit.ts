@@ -101,10 +101,12 @@ export const KIT_PATHS = {
     server: 'types/src/sdk/server.d.ts',
     testing: 'types/src/sdk/testing.d.ts',
   },
+  /** Where the shims an app's server, mcp and harness chunks link to sit,
+   *  one `rt-*.js` per server specifier — the host build's own
+   *  `dist/server/runtime`, where its build recipe looks for them. */
+  serverShims: 'dist/server/runtime',
   runtime: {
-    /** The `@talaria/sdk/server` shim an app's server, mcp and harness
-     *  chunks link to — where the host's build recipe looks for it
-     *  (`dist/server/runtime/rt-talaria-sdk-server.js` under its root). */
+    /** The `@talaria/sdk/server` shim, in `serverShims`. */
     server: 'dist/server/runtime/rt-talaria-sdk-server.js',
     testing: 'lib/sdk-testing.js',
     /** What a test that imports the client SDK gets: a module that says the

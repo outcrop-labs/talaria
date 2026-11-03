@@ -250,9 +250,11 @@ describe('check', () => {
     expect(cfg.compilerOptions.paths['@talaria/sdk']).toEqual([`/kit/${KIT_PATHS.types.client}`])
     expect(cfg.compilerOptions.paths['@talaria/sdk/server']).toEqual([`/kit/${KIT_PATHS.types.server}`])
     expect(cfg.compilerOptions.paths['svelte/*']).toEqual(['/kit/node_modules/svelte/*'])
-    // zod is not an app's to import (z comes from @talaria/sdk/server), and
-    // there is no `@/`: a host internal must not typecheck here and fail there.
-    expect(Object.keys(cfg.compilerOptions.paths)).not.toContain('zod')
+    // zod is shared with an app's server-side code, by its bare entry only —
+    // the copy @talaria/sdk/server re-exports as z — and there is no `@/`: a
+    // host internal must not typecheck here and fail there.
+    expect(cfg.compilerOptions.paths.zod).toEqual(['/kit/node_modules/zod'])
+    expect(Object.keys(cfg.compilerOptions.paths)).not.toContain('zod/*')
     expect(Object.keys(cfg.compilerOptions.paths).some((k) => k.startsWith('@/'))).toBe(false)
     expect(Object.keys(cfg.compilerOptions.paths)).not.toContain('*')
     expect(cfg.include).toEqual(['/app/**/*.ts', '/app/**/*.svelte'])
@@ -262,6 +264,9 @@ describe('check', () => {
     const src = kitVitestConfig('/kit', '/app', '/work')
     expect(src).toContain(`{ find: /^\\@talaria\\/sdk\\/server$/, replacement: "/kit/${KIT_PATHS.runtime.server}" }`)
     expect(src).toContain(`{ find: /^\\@talaria\\/sdk$/, replacement: "/kit/${KIT_PATHS.runtime.client}" }`)
+    // An app's lib/schema.ts imports zod; its tests get the shim a built
+    // server links to, so the SDK's z and theirs are one module here too.
+    expect(src).toContain(`{ find: /^zod$/, replacement: "/kit/${KIT_PATHS.serverShims}/rt-zod.js" }`)
     expect(src).toContain('"passWithNoTests":true')
   })
 })
@@ -477,8 +482,8 @@ describe('the build report', () => {
   })
 
   it('says a failed build or probe is what the host would refuse', () => {
-    expect(formatBuildReport({ ...base, build: { ...base.build, status: 'failed', error: '"zod" is not shared with apps' }, ok: false })).toContain(
-      'build      FAILED — "zod" is not shared with apps',
+    expect(formatBuildReport({ ...base, build: { ...base.build, status: 'failed', error: '"clsx" is not shared with apps' }, ok: false })).toContain(
+      'build      FAILED — "clsx" is not shared with apps',
     )
     expect(formatBuildReport({ ...base, probe: { ok: false, error: 'server.ts must default-export defineAppServer({ fetch })' }, ok: false })).toContain(
       'probe      FAILED — server.ts must default-export',

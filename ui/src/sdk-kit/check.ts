@@ -2,14 +2,16 @@
 // typecheck against the kit's declarations, and the app's own tests.
 //
 // The typecheck resolves exactly what an app may import: @talaria/sdk and its
-// /server and /testing entries (the kit's declarations), and the shared
-// client packages (svelte, @lucide/svelte, @tanstack/svelte-query). Anything
-// else — zod, a package the app's author has locally — does not resolve,
-// because it does not resolve on the host either: an app has no node_modules
-// of its own there. (`z` comes from '@talaria/sdk/server'.)
+// /server and /testing entries (the kit's declarations), the shared client
+// packages (svelte, @lucide/svelte, @tanstack/svelte-query) and the shared
+// server packages by their bare entry (zod, the one `@talaria/sdk/server`
+// re-exports as `z`). Anything else — a package the app's author has locally,
+// a subpath like `zod/mini` — does not resolve, because it does not resolve
+// on the host either: an app has no node_modules of its own there.
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
+import { SHARED_SERVER_PACKAGES, shimFileName } from '@/app-runtime/specifiers'
 import { KIT_PATHS, SHARED_TYPE_PACKAGES } from './kit'
 
 export interface CheckStep {
@@ -34,6 +36,8 @@ export function kitTsconfig(kit: string, app: string): Record<string, unknown> {
     paths[pkg] = [join(nm, pkg)]
     paths[`${pkg}/*`] = [join(nm, pkg, '*')]
   }
+  // Whole only: the host shares no subpath of these.
+  for (const pkg of SHARED_SERVER_PACKAGES) paths[pkg] = [join(nm, pkg)]
   return {
     compilerOptions: {
       target: 'ES2022',
@@ -60,7 +64,8 @@ export function kitTsconfig(kit: string, app: string): Record<string, unknown> {
 
 /** The vitest config an app's tests run under: the app's own `*.test.ts`,
  *  with the SDK entries a test may import mapped to the kit's runtime — the
- *  same `@talaria/sdk/testing` the host's own app tests use. */
+ *  same `@talaria/sdk/testing` the host's own app tests use — and each shared
+ *  server package to its shim, which names the copy the SDK re-exports. */
 export function kitVitestConfig(kit: string, app: string, work: string): string {
   const config = {
     root: app,
@@ -70,6 +75,7 @@ export function kitVitestConfig(kit: string, app: string, work: string): string 
         { find: '@talaria/sdk/server', replacement: join(kit, KIT_PATHS.runtime.server) },
         { find: '@talaria/sdk/testing', replacement: join(kit, KIT_PATHS.runtime.testing) },
         { find: '@talaria/sdk', replacement: join(kit, KIT_PATHS.runtime.client) },
+        ...SHARED_SERVER_PACKAGES.map((pkg) => ({ find: pkg, replacement: join(kit, KIT_PATHS.serverShims, `${shimFileName(pkg)}.js`) })),
         { find: 'vitest', replacement: join(kit, 'node_modules', 'vitest', 'dist', 'index.js') },
       ],
     },

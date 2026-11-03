@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
-import { clientSpecifiers, hostBuildStamp, serverSpecifiers, shimFileName } from './specifiers'
+import { clientSpecifiers, hostBuildStamp, serverSpecifiers, shimFileName, shimSource } from './specifiers'
 import { appsDir, slugOk } from '../server/app-build/paths'
 
 const VIRTUAL = '\0talaria-rt:'
@@ -35,8 +35,7 @@ export function appRuntimeHost(opts: { ssr: boolean }): Plugin {
     },
     load(id) {
       if (!id.startsWith(VIRTUAL)) return null
-      const spec = id.slice(VIRTUAL.length)
-      return `export * from ${JSON.stringify(spec)};\nimport ${JSON.stringify(spec)};\n`
+      return shimSource(id.slice(VIRTUAL.length))
     },
     closeBundle() {
       if (opts.ssr) return

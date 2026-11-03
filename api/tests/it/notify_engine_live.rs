@@ -481,6 +481,11 @@ async fn engine(pg: &PgPool) {
     .execute(&pg)
     .await
     .unwrap();
+    // The capture server is on loopback, which the push edge refuses (the
+    // safe-fetch policy) unless the operator admits it — the same setting the
+    // e2e stack runs with. SAFETY: set once, before the plane's first POST,
+    // to the one value every reader in this binary may see.
+    unsafe { std::env::set_var("TALARIA_FETCH_ALLOW_HOSTS", "127.0.0.1") };
     talaria_api::push::install_push_plane(pg.clone(), test_box());
     let mut conn = redis_conn().await;
     presence::install_presence_redis(conn.clone());

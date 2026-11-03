@@ -32,11 +32,12 @@
 // stopped with nothing logged (seen live under heavy IO, where the render
 // ahead of it took minutes); one that gave up during that render left the
 // agent down without compose ever running. The app's own proxy gives up on a
-// response with no headers after 300 s, the same way. Now the verb runs to its
+// response with no headers after 300 s, the same way, and Cloudflare's edge in
+// front of a real instance after 100 s, with a 524. Now the verb runs to its
 // end whoever is still listening. The route answers with what the verb came
-// to when it settles within `ANSWER_WITHIN` (210 s); past that it answers 202
-// with the container as it is so far (`pending`), and the roster shows the
-// rest.
+// to when it settles within `ANSWER_WITHIN` (75 s); past that it answers 202
+// with the container as it is so far (`pending`, read within `CLOSING_READ`),
+// and the roster shows the rest — the whole answer inside the edge's cutoff.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -47,8 +48,8 @@ use talaria_agent_defs::AgentDefRow;
 use talaria_agent_defs::agent_def_by_id;
 use talaria_api_facades::fleet::create::delete_agent_forever;
 use talaria_api_facades::fleet::docker::{
-    ANSWER_WITHIN, Detached, Observed, fleet_remove, fleet_restart, fleet_stop, fleet_up,
-    is_timeout, observe, remove_stopped, run_detached, settle, up_landed,
+    ANSWER_WITHIN, CLOSING_READ, Detached, Observed, fleet_remove, fleet_restart, fleet_stop,
+    fleet_up, is_timeout, observe, observe_within, remove_stopped, run_detached, settle, up_landed,
 };
 use talaria_api_facades::fleet::reconcile::{RollOutcome, roll_running_agent_outcome};
 use talaria_api_facades::fleet::render::render_fleet;
@@ -227,15 +228,16 @@ const NOT_RUNNING: &str =
     "this agent is not running — start it instead; its start reads the current render";
 
 /// The answer once [`ANSWER_WITHIN`] has passed with the verb still running:
-/// 202, and the container as docker describes it now. The verb goes on, and
-/// logs its own outcome.
+/// 202, and the container as docker describes it now — read within
+/// [`CLOSING_READ`], so a slow daemon makes it "unknown" rather than push the
+/// answer past Cloudflare's 100 s. The verb goes on, and logs its own outcome.
 async fn still_working(
     state: &AppState,
     action: &str,
     display_name: &str,
     department: &str,
 ) -> Response {
-    let now = observe(&state.pg, department).await;
+    let now = observe_within(&state.pg, department, CLOSING_READ).await;
     tracing::warn!(
         "[fleet] {action} of {display_name} ({department}) is still running after {}s — answering 202 with the container as it is now ({}); the {action} goes on",
         ANSWER_WITHIN.as_secs(),

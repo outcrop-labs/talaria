@@ -103,11 +103,12 @@ An import the host does not share fails by name, even where a `node_modules` nea
 resolve it:
 
 ```
-build      FAILED — … "zod" is not shared with apps: an app has no node_modules of its own where it is installed, so a server-side module may import only @talaria/sdk/server (which re-exports zod as z) and node's builtins
+build      FAILED — … "clsx" is not shared with apps: an app has no node_modules of its own where it is installed, so a server-side module may import only @talaria/sdk/server, zod and node's builtins
 ```
 
 In a surface the sentence ends `a surface may import only svelte, @talaria/sdk, @lucide/svelte
-and @tanstack/svelte-query`.
+and @tanstack/svelte-query`. zod in a surface (a value import from the module that uses it) is
+named as shared with server-side modules only: take its types by `import type`.
 
 ### eval
 
