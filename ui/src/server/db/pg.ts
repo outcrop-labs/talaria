@@ -4668,6 +4668,21 @@ alter table tasks drop column if exists conversation_id`,
      after insert or update on app_settings
      for each row when (new.key = 'github_config')
      execute function talaria_github_setting_to_host()`,
+  // Per-thread read cursors — the thread-panel twin of channel_members'
+  // last_read_seq. Reading a thread is not reading the channel: replies share
+  // the channel's own seq counter (insert_channel_message draws every seq
+  // from channels.msg_seq), but the channel cursor advances only on the main
+  // feed the panel is opened from. This row says "this person has read this
+  // thread this far": monotonic by contract (greatest, never backwards —
+  // mark_channel_thread_read), and a missing row means no thread cursor, so
+  // the reply counts unread the way it always did.
+  `create table if not exists channel_thread_reads (
+     thread_root_id uuid not null references channel_messages(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     last_read_seq integer not null default 0,
+     updated_at timestamptz not null default now(),
+     primary key (thread_root_id, user_id)
+   )`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

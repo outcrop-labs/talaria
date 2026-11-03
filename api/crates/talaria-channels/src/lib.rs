@@ -324,7 +324,11 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
                where msg.channel_id = c.id and msg.seq > coalesce(m.last_read_seq, 0) \
                  and msg.status = 'complete' \
                  and not (msg.author_type = 'user' \
-                   and msg.author = coalesce(self.email, self.name, 'user'))), \
+                   and msg.author = coalesce(self.email, self.name, 'user')) \
+                 and not (msg.thread_root_id is not null and exists ( \
+                   select 1 from channel_thread_reads tr \
+                   where tr.thread_root_id = msg.thread_root_id \
+                     and tr.user_id = $1::uuid and msg.seq <= tr.last_read_seq))), \
              case when c.kind = 'dm' then ( \
                select coalesce(json_agg(json_build_object( \
                    'userId', ou.id::text, 'name', ou.name, 'email', ou.email) \
@@ -417,7 +421,11 @@ pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sql
         rail_room_sql!(),
         " and msg.seq > coalesce(m.last_read_seq, 0) and msg.status = 'complete' \
            and not (msg.author_type = 'user' \
-             and msg.author = coalesce(self.email, self.name, 'user'))"
+             and msg.author = coalesce(self.email, self.name, 'user')) \
+           and not (msg.thread_root_id is not null and exists ( \
+             select 1 from channel_thread_reads tr \
+             where tr.thread_root_id = msg.thread_root_id \
+               and tr.user_id = $1::uuid and msg.seq <= tr.last_read_seq))"
     ))
     .bind(user_id)
     .fetch_one(pg)
@@ -480,6 +488,34 @@ pub async fn mark_channel_read(
          where channel_id = $1::uuid and user_id = $2::uuid",
     )
     .bind(channel_id)
+    .bind(user_id)
+    .bind(seq)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Advance the reader's cursor on ONE thread (`channel_thread_reads`) — the
+/// thread-panel twin of `mark_channel_read`. Replies share the channel's own
+/// seq counter, but the channel cursor advances only on the main feed, so a
+/// thread read needs its own row: monotonic by the same contract (`greatest`,
+/// never backwards) and one row per (thread, person) upserted on first read.
+/// The caller owns uuid-gating — the route validates the root before it gets
+/// here, so `thread_root_id` is cast unchecked.
+pub async fn mark_channel_thread_read(
+    pg: &PgPool,
+    thread_root_id: &str,
+    user_id: &str,
+    seq: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into channel_thread_reads (thread_root_id, user_id, last_read_seq) \
+         values ($1::uuid, $2::uuid, $3) \
+         on conflict (thread_root_id, user_id) \
+         do update set last_read_seq = greatest(channel_thread_reads.last_read_seq, excluded.last_read_seq), \
+           updated_at = now()",
+    )
+    .bind(thread_root_id)
     .bind(user_id)
     .bind(seq)
     .execute(pg)
@@ -1759,7 +1795,11 @@ macro_rules! shared_rooms_sql {
                (select count(*)::int from channel_messages msg \
                  where msg.channel_id = c.id and msg.seq > coalesce(m.last_read_seq, 0) \
                    and msg.status = 'complete' \
-                   and not (msg.author_type = 'user' and msg.author = (select who from me))) \
+                   and not (msg.author_type = 'user' and msg.author = (select who from me)) \
+                   and not (msg.thread_root_id is not null and exists ( \
+                     select 1 from channel_thread_reads tr \
+                     where tr.thread_root_id = msg.thread_root_id \
+                       and tr.user_id = $1::uuid and msg.seq <= tr.last_read_seq))) \
              from channels c \
              left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
              where c.archived_at is null and c.task_id is null \

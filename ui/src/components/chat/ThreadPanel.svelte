@@ -12,7 +12,9 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { slide, GROW_X } from '@/lib/motion'
-  import { sendChannelMessage, useThreadMessages } from '@/lib/channels.svelte'
+  import { markChannelThreadRead, sendChannelMessage, useThreadMessages } from '@/lib/channels.svelte'
+  import { lookingNow, watchLooking } from '@/lib/looking'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
   import type { MessageCtx } from './channel-view'
@@ -73,6 +75,29 @@
     const { attachmentIds, refs } = splitAttachments(atts)
     await sendChannelMessage(channelId, text, attachmentIds, refs, rootId)
   }
+
+  // Reading the thread = having read its replies: advance the thread's OWN
+  // read cursor as replies land, so the channel's unread badge drops (the
+  // server excludes replies a thread cursor covers from the count — the main
+  // feed's cursor never advances on reply seqs). Same looking rule as
+  // ChannelView: only while the person is looking (lib/looking.ts), because
+  // a thread read also clears the thread's bell rows — a panel nobody looks
+  // at would mark a reply read before it ever alerted.
+  let looking = $state(lookingNow())
+  $effect(() => watchLooking((v) => (looking = v)))
+  const qc = useQueryClient()
+  let lastReadPosted = $state(0)
+  $effect(() => {
+    // Oldest first, root first: the last row is the newest reply (or the
+    // root itself in a thread with no replies — covered by the channel
+    // cursor, and a no-op here).
+    const latest = messages[messages.length - 1]?.seq ?? 0
+    if (!looking || latest <= lastReadPosted) return
+    lastReadPosted = latest
+    void markChannelThreadRead(channelId, rootId, latest)
+      .then(() => qc.invalidateQueries({ queryKey: ['channels'] }))
+      .catch(() => {})
+  })
 </script>
 
 <!-- Thread side panel — a proper panel surface (spec §8) beside the feed.

@@ -548,6 +548,12 @@ CREATE TABLE public.channel_teams (
     team_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.channel_thread_reads (
+    thread_root_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    last_read_seq integer DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.channels (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     name text NOT NULL,
@@ -1849,6 +1855,8 @@ ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.channel_teams
     ADD CONSTRAINT channel_teams_pkey PRIMARY KEY (channel_id, team_id);
+ALTER TABLE ONLY public.channel_thread_reads
+    ADD CONSTRAINT channel_thread_reads_pkey PRIMARY KEY (thread_root_id, user_id);
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.chat_approvals
@@ -2327,6 +2335,10 @@ ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.channel_messages(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.channel_thread_reads
+    ADD CONSTRAINT channel_thread_reads_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.channel_messages(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.channel_thread_reads
+    ADD CONSTRAINT channel_thread_reads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channel_teams
     ADD CONSTRAINT channel_teams_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channel_teams
