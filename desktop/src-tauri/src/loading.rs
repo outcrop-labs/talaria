@@ -1,35 +1,41 @@
 //! A way back when an instance page does not come up (W3).
 //!
 //! The window has no chrome of its own in the default (themed) titlebar mode:
-//! until the instance's UI draws its titlebar and switcher, there is no close,
-//! no minimize, no drag and no way back to the launcher. So a page that never
+//! the instance's UI draws the titlebar and the switcher. So a page that never
 //! loads (a request Cloudflare holds for 100 s while the instance restarts), or
-//! that loads an error (Cloudflare's 502 or 524, WebView2's network error page,
-//! where even the shell's escape keys do not run), left a person in a window
-//! they could only kill. The shell watches every instance page's load instead:
+//! that loads something other than Talaria (Cloudflare's 502, 524 or 403,
+//! WebView2's network error page, a mis-routed 404), left a person in a window
+//! they could only kill. Three rules, the same on every OS:
 //!
-//! - **The watchdog**, every OS. `arm` when a webview is created, and when a
-//!   new document commits after a load that settled (a reload, a link to a new
-//!   page). `settle` on the page-load Finished event. A load still unsettled
-//!   `LOAD_WAIT` later, whose page has not installed the UI's shell hook
-//!   (`window.__TALARIA_DESKTOP__`: a page whose `load` waits on a slow image
-//!   is up), is `stalled`: on screen, it is the launcher's card "<instance> is
-//!   not answering" with Retry, Keep waiting and Back to instances; off screen,
-//!   the page is closed and logged. Keep waiting shows it again and waits
-//!   `KEEP_WAIT` more.
-//! - **A failed load**: a network error, or an HTTP 5xx main-frame answer,
-//!   where the platform says so (`page_failure`). Linux: WebKitGTK's
-//!   `load-failed` and the main resource's status at commit. Windows:
-//!   WebView2's `NavigationCompleted` (`webview2`). macOS: WKWebView tells
-//!   only its navigation delegate, which is wry's, and WebKit's Navigation
-//!   Timing has no `responseStatus`; so a page that finished without the
-//!   Talaria UI in it (an error page, Cloudflare's 502) is asked of the server
-//!   again by the shell (`page_status`). A load that fails before it commits
-//!   never finishes there, and the watchdog takes it. Each closes the page and
-//!   shows the same card, with Retry and Back to instances. Every one is
-//!   queued: nothing is done inside the platform's callback.
+//! 1. **A page with the Talaria UI up is never interrupted.** Up is the UI's
+//!    shell hook (`window.__TALARIA_DESKTOP__`), or, for a Talaria from before
+//!    the hook, the page's titlebar asking the shell for its settings
+//!    (`get_desktop_settings`, which every UI's titlebar does as it mounts:
+//!    `ui_seen`). A failed download, an aborted navigation or a 5xx that does
+//!    not replace the page changes nothing.
+//! 2. **A page on the instance's own origin that is not Talaria is the card.**
+//!    A main-frame page there that finished without the UI coming up
+//!    `UI_GRACE` later — an HTML page, an engine's error page, or anything the
+//!    platform said failed — is the launcher's card, with the platform's
+//!    words when it had any (`note`: a 5xx, a 4xx, a network failure). A page
+//!    that never finishes is the watchdog's: `LOAD_WAIT` after a webview is
+//!    made or a document commits, a page still loading without the UI is
+//!    "<instance> is not answering". A file the person opened (an image, a
+//!    PDF, JSON: not HTML, and nothing failed) is left alone.
+//! 3. **Pages on other origins are never judged.** A sign-in provider, a
+//!    Cloudflare Access login: not Talaria, and not the shell's to call
+//!    broken.
+//!
+//! The platform's words: Linux, WebKitGTK's `load-failed` and the main
+//! resource's status at commit; Windows, WebView2's `NavigationCompleted`
+//! (`webview2`); macOS has none outside wry's navigation delegate, and rule
+//! 2 needs none. Each callback only records; the decision is a main-thread
+//! turn of its own.
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 /// How long a page may take to load before the shell offers a way back.
 /// Cloudflare holds a request to a restarting origin for about 100 s; a
@@ -37,135 +43,267 @@ use std::{collections::HashMap, time::Duration};
 pub const LOAD_WAIT: Duration = Duration::from_secs(25);
 /// Keep waiting: how much longer, before the card comes back.
 pub const KEEP_WAIT: Duration = Duration::from_secs(60);
-/// How long the page may take to say whether its UI is up.
+/// How long the page may take to answer `PAGE_JS`.
 pub const HOOK_WAIT: Duration = Duration::from_secs(3);
+/// After a page finished, how long its UI has to come up before it is
+/// judged. Both of the UI's signals come before `load` in every version (the
+/// hook is set before the app mounts, the titlebar asks as it mounts).
+pub const UI_GRACE: Duration = Duration::from_secs(3);
 
-/// Asked of a page whose load has not finished: has the Talaria UI booted in
-/// it? `true` only for a page whose document committed and ran the UI.
-pub const HOOK_JS: &str =
-    "typeof window.__TALARIA_DESKTOP__ === 'object' && window.__TALARIA_DESKTOP__ !== null";
+/// Asked of a page: what is it? `ui` (the Talaria UI's hook), `html` (an
+/// HTML page without it: an error page, a gate, another app), `other` (a
+/// file shown in the window). One expression, so eval answers its value.
+pub const PAGE_JS: &str = "(() => { try { const d = window.__TALARIA_DESKTOP__; if (typeof d === 'object' && d !== null) return 'ui'; return document.contentType === 'text/html' ? 'html' : 'other'; } catch (e) { return 'html'; } })()";
 
-/// How long the shell's own look at a page's status may take (macOS,
-/// `page_status`).
-#[cfg(any(target_os = "macos", test))]
-pub const STATUS_WAIT: Duration = Duration::from_secs(10);
-
-/// Where an instance page's load stands.
+/// What a page is, from `PAGE_JS` (or the titlebar's call).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Load {
+pub enum Page {
+    Ui,
+    Html,
+    Other,
+    /// No answer: an engine error page where scripts do not run, a page
+    /// too busy to answer in `HOOK_WAIT`.
+    Silent,
+}
+
+/// `PAGE_JS`'s answer as the engine hands it back: a JSON string, or None.
+pub fn page_kind(answer: Option<&str>) -> Page {
+    match answer.map(|a| a.trim().trim_matches('"')) {
+        Some("ui") => Page::Ui,
+        Some("html") => Page::Html,
+        Some("other") => Page::Other,
+        _ => Page::Silent,
+    }
+}
+
+/// What the shell does with a page on the instance's own origin that
+/// finished (rule 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// The Talaria UI is up.
+    Up,
+    /// A file the person opened: not the shell's business.
+    Leave,
+    /// Not Talaria: the card, with these words after the instance's name.
+    Fail(String),
+}
+
+/// The words when the platform had none: a page answered, and it is not
+/// Talaria.
+pub const NOT_TALARIA: &str = "answered with a page that is not Talaria: it may be restarting, or something in front of it (a sign-in gate, a firewall) answered instead";
+
+pub fn verdict(ui_seen: bool, page: Page, noted: Option<&str>) -> Verdict {
+    if ui_seen || page == Page::Ui {
+        return Verdict::Up;
+    }
+    if page == Page::Other && noted.is_none() {
+        return Verdict::Leave;
+    }
+    Verdict::Fail(noted.unwrap_or(NOT_TALARIA).to_string())
+}
+
+/// Where an instance page's load stands, for the watchdog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Watch {
     /// Loading, with the watchdog's generation.
     Armed(u64),
-    /// Past its wait and on the card (or closed); a Finished now settles it.
+    /// Past its wait and on the card; a Finished now is judged for a reopen.
     Stalled(u64),
-    /// It failed (`page_failure`): whatever finishes after this changes nothing.
-    Failed,
 }
 
 /// Every instance page's load, by local id (ShellState.loads).
 #[derive(Debug, Default)]
 pub struct Loads {
     next: u64,
-    pages: HashMap<String, Load>,
+    watch: HashMap<String, Watch>,
+    /// Each webview's document, counted at every commit: a judgement made
+    /// for one document is dropped if another has committed since.
+    docs: HashMap<String, u64>,
+    /// The current document's UI asked the shell for something (rule 1).
+    ui: HashSet<String>,
+    /// The platform's words on the current document's load (rule 2).
+    noted: HashMap<String, String>,
+    /// Failed loads in a row of a page loaded hidden at launch.
+    prewarm: HashMap<String, u32>,
 }
 
-/// What a Finished did.
+/// What a Finished did to the watch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Settled {
-    /// Nothing was waiting (a load that settled already, or a page that failed).
+    /// Nothing was watching it.
     Nothing,
     /// A load the watchdog was waiting on.
     InTime,
-    /// A load that had already stalled: its card may be up.
+    /// A load that had stalled: its card may be up.
     AfterStall,
 }
 
 impl Loads {
-    /// A load starts (a document committed after a load that settled): the
-    /// generation the watchdog waits on. A load still being watched keeps its
-    /// state: an armed one its deadline, so the commit does not push it back,
-    /// and a stalled one its stall, so its Finished still reopens it from the
-    /// card.
-    pub fn arm(&mut self, id: &str) -> Option<u64> {
-        if self.pages.contains_key(id) {
-            return None;
-        }
-        Some(self.rearm(id))
+    fn arm_new(&mut self, id: &str) -> u64 {
+        self.next += 1;
+        self.watch.insert(id.to_string(), Watch::Armed(self.next));
+        self.next
     }
 
-    /// A new deadline whatever came before (a new webview; Keep waiting).
+    fn new_document(&mut self, id: &str) {
+        *self.docs.entry(id.to_string()).or_default() += 1;
+        self.ui.remove(id);
+        self.noted.remove(id);
+    }
+
+    /// A webview is made for the instance: a new document, watched.
+    pub fn created(&mut self, id: &str) -> u64 {
+        self.new_document(id);
+        self.arm_new(id)
+    }
+
+    /// A document committed. On the instance's own origin it is watched,
+    /// unless a load is still being watched (the webview's first, which keeps
+    /// its deadline; a stalled one, which keeps its stall). On another origin
+    /// it is not watched at all (rule 3). The generation to wait on, if armed.
+    pub fn committed(&mut self, id: &str, own_origin: bool) -> Option<u64> {
+        self.new_document(id);
+        if !own_origin {
+            self.watch.remove(id);
+            return None;
+        }
+        if self.watch.contains_key(id) {
+            return None;
+        }
+        Some(self.arm_new(id))
+    }
+
+    /// Keep waiting: a new deadline for a page on the card.
     pub fn rearm(&mut self, id: &str) -> u64 {
-        self.next += 1;
-        self.pages.insert(id.to_string(), Load::Armed(self.next));
-        self.next
+        self.arm_new(id)
+    }
+
+    pub fn doc(&self, id: &str) -> u64 {
+        self.docs.get(id).copied().unwrap_or(0)
+    }
+
+    /// The page's UI asked the shell for something (rule 1).
+    pub fn ui_seen(&mut self, id: &str) {
+        self.ui.insert(id.to_string());
+    }
+
+    pub fn ui(&self, id: &str) -> bool {
+        self.ui.contains(id)
+    }
+
+    /// The platform's words on the current document (a status, a network
+    /// failure), for the card if it comes to one.
+    pub fn note(&mut self, id: &str, what: String) {
+        self.noted.insert(id.to_string(), what);
+    }
+
+    pub fn noted(&self, id: &str) -> Option<&str> {
+        self.noted.get(id).map(String::as_str)
     }
 
     /// The page finished loading.
     pub fn settle(&mut self, id: &str) -> Settled {
-        match self.pages.get(id) {
-            Some(Load::Armed(_)) => {
-                self.pages.remove(id);
-                Settled::InTime
-            }
-            Some(Load::Stalled(_)) => {
-                self.pages.remove(id);
-                Settled::AfterStall
-            }
-            Some(Load::Failed) | None => Settled::Nothing,
+        match self.watch.remove(id) {
+            Some(Watch::Armed(_)) => Settled::InTime,
+            Some(Watch::Stalled(_)) => Settled::AfterStall,
+            None => Settled::Nothing,
         }
     }
 
-    /// The watchdog's turn: is `generation` still the load it armed for? If
-    /// so it has stalled now, and true.
+    /// The watchdog woke: is `generation` still the unsettled load it armed for?
+    pub fn armed(&self, id: &str, generation: u64) -> bool {
+        self.watch.get(id) == Some(&Watch::Armed(generation))
+    }
+
+    /// The watchdog's turn: if `generation` is still armed, it has stalled now.
     pub fn stall(&mut self, id: &str, generation: u64) -> bool {
-        if self.pages.get(id) == Some(&Load::Armed(generation)) {
-            self.pages.insert(id.to_string(), Load::Stalled(generation));
+        if self.armed(id, generation) {
+            self.watch
+                .insert(id.to_string(), Watch::Stalled(generation));
             true
         } else {
             false
         }
     }
 
-    /// The watchdog woke: is `generation` still the unsettled load it armed for?
-    pub fn armed(&self, id: &str, generation: u64) -> bool {
-        self.pages.get(id) == Some(&Load::Armed(generation))
+    /// A stalled page finished as something that is neither Talaria nor a
+    /// failure (a file): it stays on the card, and Keep waiting still re-arms.
+    pub fn restall(&mut self, id: &str) {
+        self.next += 1;
+        self.watch.insert(id.to_string(), Watch::Stalled(self.next));
     }
 
-    /// The page is up after all (its UI hook answered): nothing to wait for.
+    /// The page's UI is up after all: nothing to wait for.
     pub fn up(&mut self, id: &str, generation: u64) {
-        if self.pages.get(id) == Some(&Load::Armed(generation)) {
-            self.pages.remove(id);
+        if self.armed(id, generation) {
+            self.watch.remove(id);
         }
     }
 
-    /// Is this page on the stall card (Keep waiting re-arms it)?
     pub fn stalled(&self, id: &str) -> bool {
-        matches!(self.pages.get(id), Some(Load::Stalled(_)))
+        matches!(self.watch.get(id), Some(Watch::Stalled(_)))
     }
 
-    /// The page failed. Synchronous in the platform's callback, before the
-    /// work is queued, so a Finished that the same navigation raised first
-    /// cannot read as a page that came up.
-    pub fn fail(&mut self, id: &str) {
-        self.pages.insert(id.to_string(), Load::Failed);
+    /// The pages on the card, still loading behind it.
+    pub fn stalled_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .watch
+            .iter()
+            .filter(|(_, w)| matches!(w, Watch::Stalled(_)))
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
     }
 
-    pub fn failed(&self, id: &str) -> bool {
-        self.pages.get(id) == Some(&Load::Failed)
-    }
-
-    /// The webview is gone (closed, suspended, removed): nothing to watch.
+    /// The webview is gone (closed, suspended, removed). Its prewarm count
+    /// stays: it is about the instance, not the page.
     pub fn forget(&mut self, id: &str) {
-        self.pages.remove(id);
+        self.watch.remove(id);
+        self.ui.remove(id);
+        self.noted.remove(id);
+    }
+
+    /// A page loaded hidden at launch did not come up: the number of times
+    /// in a row now (`prewarm_backoff`).
+    pub fn prewarm_failed(&mut self, id: &str) -> u32 {
+        let tries = self.prewarm.entry(id.to_string()).or_default();
+        *tries += 1;
+        *tries
+    }
+
+    /// It came up: the next failure starts the backoff over.
+    pub fn prewarm_ok(&mut self, id: &str) {
+        self.prewarm.remove(id);
     }
 }
 
-/// A main-frame load that failed, in the words the card shows after the
-/// instance's name: an HTTP status of 500 or more (`status`), or a network
-/// failure the platform named (`network`). None: the page is the page (a
-/// 404 is the instance's own answer, and its UI shows it).
-pub fn page_failure(status: Option<u16>, network: Option<&str>) -> Option<String> {
-    if let Some(code) = status.filter(|c| *c >= 500) {
+/// How long after the `tries`th failure in a row a page loaded hidden at
+/// launch is loaded again, so its instance's notifications are not lost for
+/// the session. After the fifth, it waits for the person, or the next launch.
+pub fn prewarm_backoff(tries: u32) -> Option<Duration> {
+    let minutes = match tries {
+        1 => 1,
+        2 => 2,
+        3 => 5,
+        4 => 15,
+        5 => 30,
+        _ => return None,
+    };
+    Some(Duration::from_secs(minutes * 60))
+}
+
+/// The platform's words for a main-frame load: an HTTP status of 400 or
+/// more (`status`), or a network failure it named (`network`). None: nothing
+/// to say (a 2xx or 3xx answer).
+pub fn page_reason(status: Option<u16>, network: Option<&str>) -> Option<String> {
+    if let Some(code) = status.filter(|c| *c >= 400) {
         let what = match code {
+            400 => " (Bad request)",
+            401 => " (Unauthorized)",
+            403 => " (Forbidden)",
+            404 => " (Not found)",
+            429 => " (Too many requests)",
             500 => " (Internal server error)",
             502 => " (Bad gateway)",
             503 => " (Service unavailable)",
@@ -178,7 +316,12 @@ pub fn page_failure(status: Option<u16>, network: Option<&str>) -> Option<String
             530 => " (Cloudflare: the tunnel is down)",
             _ => "",
         };
-        return Some(format!("answered {code}{what}: it may be restarting"));
+        let after = if code >= 500 {
+            ": it may be restarting"
+        } else {
+            ""
+        };
+        return Some(format!("answered {code}{what}{after}"));
     }
     network.map(|why| format!("did not load: {why}"))
 }
@@ -191,36 +334,38 @@ pub fn stalled_message(instance: &str) -> String {
     )
 }
 
-/// What the server answers for `url` now, by the shell's own HEAD request
-/// (macOS, for a page that finished without the Talaria UI in it). No
-/// cookies, the shell's own proxy and trust, like the launcher's probe: an
-/// instance root answers 200 to anyone, and Cloudflare's 502 is everyone's.
-/// None: no answer within `STATUS_WAIT`.
-#[cfg(any(target_os = "macos", test))]
-pub async fn page_status(client: &reqwest::Client, url: &str) -> Option<u16> {
-    let response = tokio::time::timeout(STATUS_WAIT, client.head(url).send())
-        .await
-        .ok()?
-        .ok()?;
-    Some(response.status().as_u16())
+/// Is `page` on the same origin as `instance` (rule 3)? Only http(s).
+pub fn own_origin(instance: &str, page: &str) -> bool {
+    match (url::Url::parse(instance), url::Url::parse(page)) {
+        (Ok(base), Ok(page)) => {
+            matches!(page.scheme(), "http" | "https") && base.origin() == page.origin()
+        }
+        _ => false,
+    }
 }
 
-/// WebView2's `NavigationCompleted`, judged (`windows::navigation_completed`
-/// reads the three facts). `http` is `HttpStatusCode`, 0 when the load got no
-/// HTTP answer. A navigation another one replaced, or the page stopped, is
-/// cancelled, not failed. WebView2 also calls a 4xx unsuccessful, but that is
-/// a page the instance answered: only a 5xx, or no answer at all, is a
-/// failure (the network error page, where no init script runs).
+/// Is `page` an http(s) page on another origin than `instance`'s (rule 3)?
+/// A webview whose first load failed shows no http(s) page at all
+/// (`about:blank`, nothing): that is still the instance's load.
+pub fn elsewhere(instance: &str, page: &str) -> bool {
+    (page.starts_with("http://") || page.starts_with("https://")) && !own_origin(instance, page)
+}
+
+/// WebView2's `NavigationCompleted`, in words (`webview2::judge` reads the
+/// facts). `http` is `HttpStatusCode`, 0 when the load got no HTTP answer. A
+/// navigation another one replaced, the page stopped, or one that became a
+/// download (`ended`: OPERATION_CANCELED, CONNECTION_ABORTED) says nothing,
+/// and neither does a success.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn webview2_failure(success: bool, cancelled: bool, error: &str, http: i32) -> Option<String> {
+pub fn webview2_reason(success: bool, ended: bool, error: &str, http: i32) -> Option<String> {
     let status = u16::try_from(http).ok().filter(|c| *c > 0);
-    if status.is_some_and(|c| c >= 500) {
-        return page_failure(status, None);
+    if status.is_some_and(|c| c >= 400) {
+        return page_reason(status, None);
     }
-    if success || cancelled || status.is_some() {
+    if success || ended || status.is_some() {
         return None;
     }
-    page_failure(None, Some(error))
+    page_reason(None, Some(error))
 }
 
 /// WebView2's error status, in words (COREWEBVIEW2_WEB_ERROR_STATUS; the
@@ -236,7 +381,6 @@ pub fn webview2_error_words(status: i32) -> &'static str {
         6 => "the server is unreachable",
         7 => "it did not answer in time",
         8 => "its answer was not valid HTTP",
-        9 => "the connection was aborted",
         10 => "the connection was reset",
         11 => "the network is disconnected",
         12 => "nothing is accepting connections there",
@@ -249,60 +393,82 @@ pub fn webview2_error_words(status: i32) -> &'static str {
     }
 }
 
-/// COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED: a navigation another
-/// one replaced, or the page stopped.
+/// COREWEBVIEW2_WEB_ERROR_STATUS values the judge names (asserted against
+/// webview2-com on Windows): replaced or stopped, a navigation that became a
+/// download, and two for the tests.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const WEBVIEW2_CANCELLED: i32 = 14;
-/// COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT and _HOST_NAME_NOT_RESOLVED,
-/// for the Windows build's assert.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const WEBVIEW2_ABORTED: i32 = 9;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const WEBVIEW2_CANNOT_CONNECT: i32 = 12;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const WEBVIEW2_NOT_RESOLVED: i32 = 13;
 
-/// WebView2's main-frame `NavigationCompleted`, read for `webview2_failure`
-/// (W3). wry hands the same event to the page-load handler as Finished and
-/// keeps the rest; this is a second subscription, on the same CoreWebView2.
+/// WebView2's main-frame `NavigationCompleted`, read for `webview2_reason`
+/// (W3). wry hands the same event to the page-load handler as Finished; this
+/// is a second subscription, on the same CoreWebView2, that only records.
 #[cfg(windows)]
 pub mod webview2 {
     use webview2_com::{
         Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_WEB_ERROR_STATUS, COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT,
+            COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED,
             COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED,
             COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED, ICoreWebView2,
             ICoreWebView2NavigationCompletedEventArgs, ICoreWebView2NavigationCompletedEventArgs2,
         },
-        NavigationCompletedEventHandler,
+        NavigationCompletedEventHandler, take_pwstr,
     };
-    use windows_core::{BOOL, Interface};
+    use windows_core::{BOOL, Interface, PWSTR};
 
     // The words table above is by number: hold it to webview2-com's own.
     const _: () =
         assert!(COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED.0 == super::WEBVIEW2_CANCELLED);
+    const _: () =
+        assert!(COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED.0 == super::WEBVIEW2_ABORTED);
     const _: () =
         assert!(COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT.0 == super::WEBVIEW2_CANNOT_CONNECT);
     const _: () = assert!(
         COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED.0 == super::WEBVIEW2_NOT_RESOLVED
     );
 
-    /// Hand `failed` the failure of every main-frame navigation of `core` that
-    /// failed, in words. It is called inside WebView2's event handler, so it
-    /// must only record and queue (commands::navigation_failed).
+    /// Hand `noted` the URL and the words of every http(s) main-frame
+    /// navigation of `core` that the platform has words for. It is called
+    /// inside WebView2's event handler, so it must only record
+    /// (commands::navigation_noted).
     pub fn on_navigation_completed(
         core: &ICoreWebView2,
-        failed: impl Fn(String) + 'static,
+        noted: impl Fn(String, String) + 'static,
     ) -> windows_core::Result<()> {
-        let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-            if let Some(why) = args.as_ref().and_then(judge) {
-                failed(why);
+        let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+            let (Some(sender), Some(args)) = (sender, args) else {
+                return Ok(());
+            };
+            let Some(url) = source(&sender) else {
+                return Ok(());
+            };
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Ok(());
+            }
+            if let Some(what) = judge(&args) {
+                noted(url, what);
             }
             Ok(())
         }));
         let mut token = 0i64;
         // SAFETY: a live CoreWebView2 (wry's own, alive as long as the
         // webview), a handler COM object it now holds a reference to, and a
-        // token to write.
+        // token to write. The handler is released with the CoreWebView2.
         unsafe { core.add_NavigationCompleted(&handler, &mut token) }
+    }
+
+    fn source(core: &ICoreWebView2) -> Option<String> {
+        let mut uri = PWSTR::null();
+        // SAFETY: the sender of the event, read during the handler; the
+        // string is ours to free, which take_pwstr does.
+        unsafe { core.Source(&mut uri) }.ok()?;
+        Some(take_pwstr(uri))
     }
 
     fn judge(args: &ICoreWebView2NavigationCompletedEventArgs) -> Option<String> {
@@ -324,9 +490,11 @@ pub mod webview2 {
                 unsafe { args.HttpStatusCode(&mut code) }.ok().map(|_| code)
             })
             .unwrap_or(0);
-        super::webview2_failure(
+        let ended = status == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED
+            || status == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED;
+        super::webview2_reason(
             success.as_bool(),
-            status == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED,
+            ended,
             super::webview2_error_words(status.0),
             http,
         )
@@ -337,138 +505,270 @@ pub mod webview2 {
 mod tests {
     use super::*;
 
+    // Rule 1: a page with the UI up is never interrupted.
+    #[test]
+    fn a_page_with_the_ui_up_is_never_interrupted() {
+        // Whatever the platform said about the load (a download's 5xx, an
+        // aborted navigation), the UI being up wins.
+        for noted in [
+            None,
+            Some("answered 500 (Internal server error): it may be restarting"),
+        ] {
+            assert_eq!(verdict(false, Page::Ui, noted), Verdict::Up);
+            // A Talaria from before the hook: its titlebar asked the shell.
+            assert_eq!(verdict(true, Page::Html, noted), Verdict::Up);
+            assert_eq!(verdict(true, Page::Silent, noted), Verdict::Up);
+        }
+    }
+
+    // Rule 2: a page on the instance's own origin that is not Talaria.
+    #[test]
+    fn a_page_on_its_own_origin_that_is_not_talaria_is_the_card() {
+        let cf524 = "answered 524 (Cloudflare: a timeout occurred): it may be restarting";
+        // Cloudflare's 524 after a stall, its 403, a 404: HTML, no UI.
+        assert_eq!(
+            verdict(false, Page::Html, Some(cf524)),
+            Verdict::Fail(cf524.into())
+        );
+        assert_eq!(
+            verdict(false, Page::Html, None),
+            Verdict::Fail(NOT_TALARIA.into())
+        );
+        // An engine's error page, where no script answers.
+        assert_eq!(
+            verdict(false, Page::Silent, Some("did not load: refused")),
+            Verdict::Fail("did not load: refused".into())
+        );
+        assert_eq!(
+            verdict(false, Page::Silent, None),
+            Verdict::Fail(NOT_TALARIA.into())
+        );
+        // A failed answer that is not HTML (a 502 in plain text) is a failure.
+        assert!(matches!(
+            verdict(
+                false,
+                Page::Other,
+                Some("answered 502 (Bad gateway): it may be restarting")
+            ),
+            Verdict::Fail(_)
+        ));
+        // A file the person opened, that nothing said failed: left alone.
+        assert_eq!(verdict(false, Page::Other, None), Verdict::Leave);
+    }
+
+    // Rule 3: pages on other origins are never judged.
+    #[test]
+    fn only_the_instances_own_origin_is_judged() {
+        let base = "https://acme.talaria.example";
+        assert!(own_origin(base, "https://acme.talaria.example/comms?x=1"));
+        assert!(own_origin(
+            "http://127.0.0.1:47393",
+            "http://127.0.0.1:47393/"
+        ));
+        for other in [
+            "https://accounts.google.com/o/oauth2/auth?client_id=x",
+            "https://github.com/login/oauth/authorize",
+            "https://acme.cloudflareaccess.com/cdn-cgi/access/login",
+            "http://acme.talaria.example/",
+            "http://127.0.0.1:47394/",
+            "about:blank",
+            "chrome-error://chromewebdata/",
+            "file:///home/me/x.pdf",
+        ] {
+            assert!(!own_origin(base, other), "{other}");
+        }
+        // The watchdog skips only a real page elsewhere: a webview whose first
+        // load failed (no http(s) page) is still the instance's.
+        assert!(loading_elsewhere_cases(base));
+        // A commit on another origin is not watched, and drops a watch.
+        let mut loads = Loads::default();
+        loads.created("a");
+        assert_eq!(loads.committed("a", false), None);
+        assert_eq!(loads.settle("a"), Settled::Nothing);
+    }
+
+    fn loading_elsewhere_cases(base: &str) -> bool {
+        elsewhere(base, "https://accounts.google.com/x")
+            && elsewhere(base, "http://acme.talaria.example/")
+            && !elsewhere(base, "https://acme.talaria.example/home")
+            && !elsewhere(base, "about:blank")
+            && !elsewhere(base, "")
+            && !elsewhere(base, "chrome-error://chromewebdata/")
+    }
+
+    #[test]
+    fn the_page_answers_are_read_as_the_engines_hand_them_back() {
+        assert_eq!(page_kind(Some("\"ui\"")), Page::Ui);
+        assert_eq!(page_kind(Some("\"html\"")), Page::Html);
+        assert_eq!(page_kind(Some(" \"other\" ")), Page::Other);
+        assert_eq!(page_kind(Some("null")), Page::Silent);
+        assert_eq!(page_kind(Some("")), Page::Silent);
+        assert_eq!(page_kind(None), Page::Silent);
+        assert!(PAGE_JS.contains("__TALARIA_DESKTOP__") && PAGE_JS.contains("try"));
+        assert!(!PAGE_JS.trim_end().ends_with(';'));
+    }
+
     #[test]
     fn a_load_that_finishes_in_time_never_stalls() {
         let mut loads = Loads::default();
-        let generation = loads.arm("a").unwrap();
+        let generation = loads.created("a");
         assert_eq!(loads.settle("a"), Settled::InTime);
         assert!(!loads.stall("a", generation));
-        // A second Finished (a frame, a repeat) changes nothing.
         assert_eq!(loads.settle("a"), Settled::Nothing);
     }
 
     #[test]
     fn a_load_that_does_not_finish_stalls_once() {
         let mut loads = Loads::default();
-        let generation = loads.arm("a").unwrap();
+        let generation = loads.created("a");
         assert!(loads.stall("a", generation));
         assert!(loads.stalled("a"));
         assert!(!loads.stall("a", generation));
-        // It finishes while the card is up.
+        assert_eq!(loads.stalled_ids(), vec!["a".to_string()]);
         assert_eq!(loads.settle("a"), Settled::AfterStall);
         assert!(!loads.stalled("a"));
     }
 
     #[test]
-    fn a_commit_does_not_push_the_deadline_back_and_keep_waiting_does() {
+    fn a_commit_keeps_the_watch_it_finds() {
         let mut loads = Loads::default();
-        let first = loads.arm("a").unwrap();
-        // The document commits: still the first deadline.
-        assert_eq!(loads.arm("a"), None);
+        let first = loads.created("a");
+        // The first document commits: still the first deadline.
+        assert_eq!(loads.committed("a", true), None);
         assert!(loads.stall("a", first));
-        // Keep waiting: a new deadline, and the old one's timer is stale.
-        let second = loads.rearm("a");
-        assert_ne!(first, second);
-        assert!(!loads.stall("a", first));
-        assert!(loads.stall("a", second));
+        // The held request is answered while the card is up: the commit
+        // leaves it stalled, so its Finished is judged for a reopen.
+        assert_eq!(loads.committed("a", true), None);
+        assert_eq!(loads.settle("a"), Settled::AfterStall);
+        // A later navigation, after a settled load, is watched anew.
+        assert!(loads.committed("a", true).is_some());
     }
 
     #[test]
-    fn the_commit_of_a_stalled_load_leaves_it_stalled() {
-        // The held request is answered while the card is up: the document
-        // commits (Started), then finishes. The Finished must read as "after
-        // the stall", or the shell never opens it from the card.
+    fn keep_waiting_gives_a_new_deadline_and_a_file_after_a_stall_stays_on_the_card() {
         let mut loads = Loads::default();
-        let generation = loads.rearm("a");
-        assert!(loads.stall("a", generation));
-        assert_eq!(loads.arm("a"), None);
-        assert!(loads.stalled("a"));
+        let first = loads.created("a");
+        assert!(loads.stall("a", first));
+        let second = loads.rearm("a");
+        assert!(!loads.stall("a", first));
+        assert!(loads.stall("a", second));
         assert_eq!(loads.settle("a"), Settled::AfterStall);
-        // And a commit after the page failed leaves it failed.
-        loads.rearm("b");
-        loads.fail("b");
-        assert_eq!(loads.arm("b"), None);
-        assert!(loads.failed("b"));
+        loads.restall("a");
+        assert!(loads.stalled("a"));
+    }
+
+    #[test]
+    fn every_commit_is_a_new_document_with_nothing_said_about_it() {
+        let mut loads = Loads::default();
+        loads.created("a");
+        let doc = loads.doc("a");
+        loads.ui_seen("a");
+        loads.note(
+            "a",
+            "answered 502 (Bad gateway): it may be restarting".into(),
+        );
+        assert!(loads.ui("a") && loads.noted("a").is_some());
+        loads.committed("a", true);
+        assert_eq!(loads.doc("a"), doc + 1);
+        assert!(!loads.ui("a"));
+        assert_eq!(loads.noted("a"), None);
+        // And a closed webview forgets its page, not its prewarm count.
+        loads.ui_seen("a");
+        assert_eq!(loads.prewarm_failed("a"), 1);
+        loads.forget("a");
+        assert!(!loads.ui("a"));
+        assert_eq!(loads.prewarm_failed("a"), 2);
     }
 
     #[test]
     fn a_page_whose_ui_is_up_is_not_a_stall() {
         let mut loads = Loads::default();
-        let generation = loads.arm("a").unwrap();
+        let generation = loads.created("a");
         loads.up("a", generation);
         assert!(!loads.stall("a", generation));
-        // A stale answer about an older load leaves a newer one armed.
-        let newer = loads.arm("a").unwrap();
+        let newer = loads.created("a");
         loads.up("a", generation);
         assert!(loads.stall("a", newer));
     }
 
     #[test]
-    fn a_failed_page_is_not_brought_back_by_its_own_finished() {
+    fn a_page_loaded_hidden_at_launch_is_retried_with_backoff() {
         let mut loads = Loads::default();
-        let generation = loads.arm("a").unwrap();
-        loads.fail("a");
-        assert!(loads.failed("a"));
-        assert_eq!(loads.settle("a"), Settled::Nothing);
-        assert!(!loads.stall("a", generation));
-        // A new webview starts over.
-        loads.forget("a");
-        assert!(loads.arm("a").is_some());
-        assert!(!loads.failed("a"));
-    }
-
-    #[test]
-    fn each_page_is_watched_on_its_own() {
-        let mut loads = Loads::default();
-        let a = loads.arm("a").unwrap();
-        let b = loads.arm("b").unwrap();
-        assert_eq!(loads.settle("a"), Settled::InTime);
-        assert!(!loads.stall("a", a));
-        assert!(loads.stall("b", b));
-    }
-
-    #[test]
-    fn a_5xx_or_no_answer_is_a_failure_and_a_4xx_is_not() {
+        let waits: Vec<_> = (1..=6)
+            .map(|_| prewarm_backoff(loads.prewarm_failed("b")))
+            .collect();
         assert_eq!(
-            page_failure(Some(502), None).unwrap(),
+            waits,
+            vec![
+                Some(Duration::from_secs(60)),
+                Some(Duration::from_secs(120)),
+                Some(Duration::from_secs(300)),
+                Some(Duration::from_secs(900)),
+                Some(Duration::from_secs(1800)),
+                None,
+            ]
+        );
+        // It came up: the next failure starts over.
+        loads.prewarm_ok("b");
+        assert_eq!(
+            prewarm_backoff(loads.prewarm_failed("b")),
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn the_platforms_words_for_a_load() {
+        assert_eq!(
+            page_reason(Some(502), None).unwrap(),
             "answered 502 (Bad gateway): it may be restarting"
         );
         assert_eq!(
-            page_failure(Some(524), None).unwrap(),
+            page_reason(Some(524), None).unwrap(),
             "answered 524 (Cloudflare: a timeout occurred): it may be restarting"
         );
         assert_eq!(
-            page_failure(Some(599), None).unwrap(),
+            page_reason(Some(403), None).unwrap(),
+            "answered 403 (Forbidden)"
+        );
+        assert_eq!(
+            page_reason(Some(404), None).unwrap(),
+            "answered 404 (Not found)"
+        );
+        assert_eq!(
+            page_reason(Some(599), None).unwrap(),
             "answered 599: it may be restarting"
         );
-        assert_eq!(page_failure(Some(200), None), None);
-        assert_eq!(page_failure(Some(404), None), None);
-        assert_eq!(page_failure(None, None), None);
+        assert_eq!(page_reason(Some(200), None), None);
+        assert_eq!(page_reason(Some(302), None), None);
+        assert_eq!(page_reason(None, None), None);
         assert_eq!(
-            page_failure(Some(200), Some("refused")).unwrap(),
+            page_reason(None, Some("refused")).unwrap(),
             "did not load: refused"
         );
     }
 
     #[test]
-    fn webview2_navigation_completed_is_judged_like_the_other_engines() {
-        // Cloudflare's 502 and 524 pages: unsuccessful, with a status.
+    fn webview2_navigation_completed_says_only_what_failed() {
+        // Cloudflare's pages: a status.
         assert!(
-            webview2_failure(false, false, "x", 502)
+            webview2_reason(false, false, "x", 502)
                 .unwrap()
                 .contains("502 (Bad gateway)")
         );
         assert!(
-            webview2_failure(true, false, "x", 524)
+            webview2_reason(true, false, "x", 524)
                 .unwrap()
                 .contains("524")
         );
-        // A 404 the instance answered, a page that loaded: not failures.
-        assert_eq!(webview2_failure(false, false, "x", 404), None);
-        assert_eq!(webview2_failure(true, false, "x", 200), None);
+        assert_eq!(
+            webview2_reason(false, false, "x", 403).unwrap(),
+            "answered 403 (Forbidden)"
+        );
+        // A page that loaded: nothing.
+        assert_eq!(webview2_reason(true, false, "x", 200), None);
         // The network error page: no HTTP answer at all.
         assert_eq!(
-            webview2_failure(
+            webview2_reason(
                 false,
                 false,
                 webview2_error_words(WEBVIEW2_CANNOT_CONNECT),
@@ -477,13 +777,14 @@ mod tests {
             .unwrap(),
             "did not load: nothing is accepting connections there"
         );
-        // Replaced by another navigation, or stopped: not a failure.
-        assert_eq!(
-            webview2_failure(false, true, webview2_error_words(WEBVIEW2_CANCELLED), 0),
-            None
-        );
-        // A negative or zero status is no status.
-        assert!(webview2_failure(false, false, "x", -1).is_some());
+        // Replaced, stopped, or turned into a download: nothing.
+        for ended in [WEBVIEW2_CANCELLED, WEBVIEW2_ABORTED] {
+            assert_eq!(
+                webview2_reason(false, true, webview2_error_words(ended), 0),
+                None
+            );
+        }
+        assert!(webview2_reason(false, false, "x", -1).is_some());
         assert_eq!(
             webview2_error_words(WEBVIEW2_NOT_RESOLVED),
             "the name does not resolve to an address"
@@ -499,54 +800,6 @@ mod tests {
         );
         assert!(LOAD_WAIT >= Duration::from_secs(20) && LOAD_WAIT <= Duration::from_secs(30));
         assert!(KEEP_WAIT > LOAD_WAIT);
-    }
-
-    #[test]
-    fn the_hook_question_names_the_ui_hook() {
-        assert!(HOOK_JS.contains("__TALARIA_DESKTOP__"));
-        assert!(
-            !HOOK_JS.contains(';'),
-            "one expression, so eval answers its value"
-        );
-    }
-
-    /// One HTTP answer on a local port, for `page_status`.
-    fn answering(status_line: &'static str) -> String {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/", listener.local_addr().unwrap());
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 1024];
-                let _ = stream.read(&mut buf);
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 {status_line}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                );
-            }
-        });
-        url
-    }
-
-    #[tokio::test]
-    async fn the_shell_reads_the_status_a_server_answers_now() {
-        let client = reqwest::Client::new();
-        assert_eq!(
-            page_status(&client, &answering("502 Bad Gateway")).await,
-            Some(502)
-        );
-        assert_eq!(page_status(&client, &answering("200 OK")).await, Some(200));
-        let said = page_failure(
-            page_status(&client, &answering("524 Origin Time-out")).await,
-            None,
-        );
-        assert!(said.unwrap().contains("524"));
-        // Nothing there: no status, so no card from this (the watchdog and the
-        // engine have the other cases).
-        let closed = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            format!("http://{}/", l.local_addr().unwrap())
-        };
-        assert_eq!(page_status(&client, &closed).await, None);
+        assert!(UI_GRACE + HOOK_WAIT < LOAD_WAIT);
     }
 }
