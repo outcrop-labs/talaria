@@ -933,4 +933,30 @@ mod tests {
         assert_eq!(got.image_version, None);
         assert!(!got.s6, "an absent s6 answer is a no");
     }
+
+    /// The shipped inspection, run on a real image against real rendered
+    /// configs: `TALARIA_INSPECT_IMAGE` (an image ref), `TALARIA_INSPECT_CONFIGS`
+    /// (`name=path` pairs, comma-separated), and `TALARIA_INSPECT_EXPECT`
+    /// (`held` or `clear`). Needs docker; run by hand.
+    #[tokio::test]
+    #[ignore = "needs docker and a Hermes image (TALARIA_INSPECT_IMAGE)"]
+    async fn the_inspection_on_a_real_image() {
+        let image = std::env::var("TALARIA_INSPECT_IMAGE").unwrap();
+        let configs: Vec<(String, String)> = std::env::var("TALARIA_INSPECT_CONFIGS")
+            .unwrap()
+            .split(',')
+            .map(|pair| {
+                let (name, path) = pair.split_once('=').unwrap();
+                (name.to_string(), std::fs::read_to_string(path).unwrap())
+            })
+            .collect();
+        let got = inspect(&image, "sha256:0123456789abcdef", &configs)
+            .await
+            .unwrap();
+        println!("{}", serde_json::to_string_pretty(&got.to_json()).unwrap());
+        match std::env::var("TALARIA_INSPECT_EXPECT").unwrap().as_str() {
+            "held" => assert!(!got.problems.is_empty(), "held"),
+            _ => assert!(got.problems.is_empty(), "clear: {:?}", got.problems),
+        }
+    }
 }
