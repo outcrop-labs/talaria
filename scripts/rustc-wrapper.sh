@@ -1,5 +1,12 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # RUSTC_WRAPPER, pointed at by the root mise.toml.
+#
+# BASH, NOT /bin/sh. Cargo hands an integration test CARGO_BIN_EXE_<bin>,
+# named after the bin with its hyphens (CARGO_BIN_EXE_talaria-api). Dash,
+# /bin/sh on Debian and Ubuntu, drops every variable whose name is not a
+# shell identifier before it execs, so rustc never saw it and
+# `env!("CARGO_BIN_EXE_talaria-api")` failed every local build of
+# api/tests/it. Bash passes such names through.
 #
 # Cargo calls a wrapper as `<wrapper> <path-to-rustc> <args...>`, including
 # for the `rustc -vV` probe it runs before anything else. So a wrapper that

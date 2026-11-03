@@ -28,6 +28,7 @@
     "allow-set-close-to-background",
     "allow-desktop-notify-close",
     "allow-desktop-os-idle",
-    "allow-set-instance-muted"
+    "allow-set-instance-muted",
+    "allow-desktop-reload"
   ]
 }
