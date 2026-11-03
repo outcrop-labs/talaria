@@ -1,10 +1,10 @@
 // The sweep's dangerous edges: what it will delete, what it must not, and
 // when the stop gate has to say no. A wrong answer here fills the disk or
 // removes someone else's checkout. Run by `bun run check`.
-import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   POLICY,
@@ -26,6 +26,7 @@ import {
   parseLabels,
   projectVouchedBy,
   removalAllowed,
+  removeArtifact,
   selectRemoval,
   verdict,
   worktreeName,
@@ -670,6 +671,123 @@ check('at the moment of removal, a checkout, a box.env or a .talaria-keep still 
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ── removeArtifact asks again at the moment of removal (#654) ───────────────
+// The scan and the removal are not one instant: the gate sizes every
+// candidate between them, and a `talaria worktree` or a `.talaria-keep` can
+// land in that gap. These drive removeArtifact itself, with the checkout or
+// the keep appearing after the scan. `docker` and `git` are stand-ins on PATH
+// that only log their arguments, and a probe proves they are the ones that
+// answer before anything else runs, so even a regression here reaches no real
+// daemon and no real repository. Each refusal is paired with the same row and
+// nothing in the way, which does reach the stand-ins: the log shows that the
+// re-check, not a dead PATH, is what stopped the first call.
+
+function withStandIns(fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'talaria-sweep-remove-'))
+  const bin = join(dir, 'bin')
+  const log = join(dir, 'calls.log')
+  mkdirSync(bin)
+  for (const tool of ['docker', 'git']) {
+    writeFileSync(join(bin, tool), `#!/bin/sh\necho "${tool} $*" >> '${log}'\n`)
+    chmodSync(join(bin, tool), 0o755)
+  }
+  const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [])
+  const path = process.env.PATH
+  process.env.PATH = `${bin}${delimiter}${path}`
+  try {
+    execFileSync('docker', ['probe'], { stdio: 'ignore' })
+    execFileSync('git', ['probe'], { stdio: 'ignore' })
+    if (calls().join() !== 'docker probe,git probe') throw new Error(`the stand-ins did not answer: ${calls().join(' | ')}`)
+    writeFileSync(log, '')
+    const roots = { primary: join(dir, 'primary'), siblingParent: join(dir, 'dev'), devboxHome: join(dir, 'devboxes'), tmp: join(dir, 'tmp') }
+    mkdirSync(roots.siblingParent)
+    mkdirSync(roots.devboxHome)
+    fn({ roots, calls })
+  } finally {
+    process.env.PATH = path
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+function refuses(fn, pattern) {
+  try {
+    fn()
+  } catch (e) {
+    if (!pattern.test(String(e?.message))) throw new Error(`refused, but for another reason: ${e?.message}`)
+    return
+  }
+  throw new Error('removeArtifact went ahead')
+}
+
+const POSIX = process.platform !== 'win32' // the stand-ins are sh scripts
+
+check('removeArtifact leaves an orphan project whose checkout or .talaria-keep appeared after the scan', () => {
+  if (!POSIX) return
+  withStandIns(({ roots, calls }) => {
+    const checkout = join(roots.siblingParent, 'talaria-zz-late')
+    const box = join(roots.devboxHome, 'zz-late')
+    mkdirSync(box) // a box directory with no box.env: not live
+    const [wt, bx] = orphanProjects({
+      projects: [{ Name: 'talaria-wt-zz-late' }, { Name: 'devbox-zz-late' }],
+      liveWorktree: (n) => existsSync(join(roots.siblingParent, `talaria-${n}`)),
+      liveBox: (n) => boxStands(roots.devboxHome, n),
+    })
+    eq(`${wt?.id} ${bx?.id}`, 'talaria-wt-zz-late devbox-zz-late')
+    eq(removalAllowed(wt, roots) && removalAllowed(bx, roots), true)
+    // After the scan: `talaria worktree zz-late` makes the checkout, and a
+    // human holds the box with a .talaria-keep.
+    mkdirSync(checkout)
+    writeFileSync(join(box, '.talaria-keep'), '')
+    refuses(() => removeArtifact(wt, roots), /talaria-zz-late vouches for talaria-wt-zz-late/)
+    refuses(() => removeArtifact(bx, roots), /\.talaria-keep vouches for devbox-zz-late/)
+    eq(calls().length, 0)
+    // The same rows with nothing in the way go to docker.
+    rmSync(checkout, { recursive: true })
+    rmSync(join(box, '.talaria-keep'))
+    removeArtifact(wt, roots)
+    removeArtifact(bx, roots)
+    const log = calls().join('\n')
+    if (!log.includes('label=com.docker.compose.project=talaria-wt-zz-late')) throw new Error(log)
+    if (!log.includes('label=com.docker.compose.project=devbox-zz-late')) throw new Error(log)
+  })
+})
+
+check('removeArtifact leaves a stack, worktree or box a .talaria-keep was touched in after the scan', () => {
+  if (!POSIX) return
+  withStandIns(({ roots, calls }) => {
+    const checkout = join(roots.siblingParent, 'talaria-zz-done')
+    const box = join(roots.devboxHome, 'zz-done')
+    mkdirSync(checkout)
+    mkdirSync(box)
+    writeFileSync(join(box, 'box.env'), '')
+    // The scan's rows: nothing kept them when it looked.
+    const stack = { ...stale({ kind: 'stack', id: 'zz-done', path: '', running: true }), checkout }
+    const worktree = stale({ kind: 'worktree', id: 'zz-done', path: checkout })
+    const devbox = stale({ kind: 'devbox', id: 'zz-done', path: box })
+    for (const row of [stack, worktree, devbox]) {
+      eq(classify(row), 'remove')
+      eq(removalAllowed(row, roots), true)
+    }
+    writeFileSync(join(checkout, '.talaria-keep'), '')
+    writeFileSync(join(box, '.talaria-keep'), '')
+    for (const row of [stack, worktree, devbox]) refuses(() => removeArtifact(row, roots), /\.talaria-keep holds it/)
+    eq(calls().length, 0)
+    eq(existsSync(checkout) && existsSync(box), true)
+    // With the keeps gone, each goes ahead: the stack is downed, the
+    // worktree removed through git, the box downed and its directory gone.
+    rmSync(join(checkout, '.talaria-keep'))
+    rmSync(join(box, '.talaria-keep'))
+    removeArtifact(stack, roots)
+    if (!calls().some((c) => c.startsWith('docker compose -p talaria-wt-zz-done ') && c.endsWith(' down -v'))) throw new Error(calls().join('\n'))
+    removeArtifact(worktree, roots)
+    if (!calls().includes(`git -C ${roots.primary} worktree remove --force ${checkout}`)) throw new Error(calls().join('\n'))
+    eq(existsSync(checkout), false)
+    removeArtifact(devbox, roots)
+    if (!calls().some((c) => c.startsWith('docker compose -p devbox-zz-done ') && c.endsWith(' down -v --remove-orphans'))) throw new Error(calls().join('\n'))
+    eq(existsSync(box), false)
+  })
 })
 
 check('a box whose box.env is gone but which holds a .talaria-keep keeps its networks', () => {
