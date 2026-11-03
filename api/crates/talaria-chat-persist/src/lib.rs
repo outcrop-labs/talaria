@@ -752,6 +752,7 @@ async fn continue_inner(
             None => String::new(),
         };
         let _ = update_assistant(&state.pg, &assistant_id, &content, "", &[], "error").await;
+        ring_reply_landed(state, conversation_id).await;
         return;
     }
     let usage_meta = PersistMeta {

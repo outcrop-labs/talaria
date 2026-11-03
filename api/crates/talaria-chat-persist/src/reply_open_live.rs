@@ -318,3 +318,83 @@ async fn reply_open_live_a_dead_stream_rings_its_end() {
     ];
     failed_reply_rings_its_end("dead-stream", Box::pin(futures_util::stream::iter(items))).await;
 }
+
+/// A queued turn whose agent answers non-2xx opens its reply, then lands it
+/// as an error: its readers hear both, so the glyph its start lit goes dark.
+#[tokio::test]
+#[ignore]
+async fn reply_open_live_a_queued_turn_refused_by_its_agent_rings_its_end() {
+    use futures_util::StreamExt;
+    let (state, redis_url) = wired_state().await;
+    let pg = state.pg.clone();
+    cleanup(&pg, "refused").await;
+    let owner = person(&pg, "refused", "owner").await;
+    let conv = create_conversation(&pg, &owner, "reply-open-refuser", "chat", "chat", None)
+        .await
+        .unwrap();
+    talaria_conversations::insert_user_message(
+        &pg,
+        &conv,
+        1,
+        "hi",
+        &json!([]),
+        Some(&owner),
+        &json!({}),
+    )
+    .await
+    .unwrap();
+
+    let refuser = axum::Router::new()
+        .fallback(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "refused") });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, refuser).await.unwrap() });
+    let fleet = std::env::temp_dir().join(format!("reply-open-fleet-{}", std::process::id()));
+    std::fs::create_dir_all(&fleet).unwrap();
+    std::fs::write(
+        fleet.join("fleet.json"),
+        format!(r#"[{{"model":"reply-open-refuser","url":"{url}","key":null}}]"#),
+    )
+    .unwrap();
+    // SAFETY: the only test in this binary that reads or writes this variable.
+    unsafe { std::env::set_var("TALARIA_FLEET_DIR", &fleet) };
+
+    let mut sub = redis::Client::open(redis_url.as_str())
+        .unwrap()
+        .get_async_pubsub()
+        .await
+        .expect("redis for the live test (REDIS_URL)");
+    sub.subscribe(format!("user:{owner}")).await.unwrap();
+    let meta = super::TurnMeta {
+        agent_model: "reply-open-refuser".into(),
+        tier: None,
+        plan: None,
+        research_prompt: None,
+        work_prompts: vec![],
+        sender: None,
+    };
+    super::continue_conversation(&state, &conv, &meta).await;
+
+    let (status,): (String,) = sqlx::query_as(
+        "select status from messages where conversation_id = $1::uuid and role = 'assistant'",
+    )
+    .bind(&conv)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(status, "error");
+    let mut messages = sub.on_message();
+    let mut heard = 0;
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(m) = messages.next().await {
+            let payload: String = m.get_payload().unwrap();
+            if payload.contains(&conv) {
+                heard += 1;
+            }
+        }
+    })
+    .await;
+    let _ = std::fs::remove_dir_all(&fleet);
+    cleanup(&pg, "refused").await;
+    assert_eq!(heard, 2, "the start and the end");
+}
