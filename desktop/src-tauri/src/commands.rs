@@ -437,6 +437,18 @@ fn set_header_title(window: &Window, title: &str) {
 /// instance) changes nothing: the last page of the instance itself stands.
 fn remember_page(app: &AppHandle, id: &str, webview: &Webview) -> bool {
     let state = app.state::<ShellState>();
+    // A page kept behind its card, or shown as it is, is not the instance's
+    // page: its last page stays forgotten, so Retry and the next launch open
+    // its root (instance_not_talaria).
+    let carded = state
+        .failure
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|f| f.id == id && f.kind == FailureKind::Blocked);
+    if carded || state.loads.lock().unwrap().shown(id).is_some() {
+        return false;
+    }
     let Ok(instance) = state.find(id) else {
         return false;
     };
@@ -653,14 +665,22 @@ fn activate(
             let _ = other.hide();
         }
     }
-    // A page left behind on the card, still loading hidden, while the person
-    // opens another instance: nobody is waiting for it now.
+    // A page left behind on the card (still loading, or not Talaria), hidden,
+    // while the person opens another instance: nobody is waiting for it now.
+    let blocked = state
+        .failure
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|f| f.kind == FailureKind::Blocked)
+        .map(|f| f.id.clone());
     let abandoned: Vec<String> = state
         .loads
         .lock()
         .unwrap()
         .stalled_ids()
         .into_iter()
+        .chain(blocked)
         .filter(|other| *other != instance.id)
         .collect();
     for other in abandoned {
@@ -671,15 +691,20 @@ fn activate(
         state.loads.lock().unwrap().forget(&other);
         state.activity.lock().unwrap().forget(&other);
     }
-    // Keep waiting, on the card for a page that has not loaded: show it again
-    // and give it longer (loading.rs).
+    // Keep waiting, on the card for a page that has not loaded: show it again,
+    // with the way back on it, and give it longer (loading.rs). A page that has
+    // finished since (a file) has nothing more to wait for.
     if live && state.loads.lock().unwrap().stalled(&instance.id) {
-        let generation = state.loads.lock().unwrap().rearm(&instance.id);
-        eprintln!(
-            "talaria-desktop: {label}: waiting {} s more for its page",
-            loading::KEEP_WAIT.as_secs()
-        );
-        watch_load(app, &instance.id, generation, loading::KEEP_WAIT);
+        let finished = state.loads.lock().unwrap().finished(&instance.id);
+        state.loads.lock().unwrap().show(&instance.id, false, None);
+        if !finished {
+            let generation = state.loads.lock().unwrap().rearm(&instance.id);
+            eprintln!(
+                "talaria-desktop: {label}: waiting {} s more for its page",
+                loading::KEEP_WAIT.as_secs()
+            );
+            watch_load(app, &instance.id, generation, loading::KEEP_WAIT);
+        }
     }
     let mut opened = Opened::Live;
     if !live {
@@ -835,17 +860,24 @@ fn create_instance_webview(
 }
 
 /// A document committed in an instance webview: a new page, with nothing
-/// said about it yet (loading.rs). On the instance's own origin it is
-/// watched until it loads; on another origin (a sign-in provider) not at all.
-/// Inside the page-load callback: a lock and a timer, nothing more.
+/// said about it yet (loading.rs). Unless it is on another origin (a sign-in
+/// provider, rule 3) or the person chose to see the page as it is (Show the
+/// page), it is watched until it loads. A page carrying the way-back pill
+/// gets it again. Inside the page-load callback: locks, a timer and an eval.
 fn load_started(app: &AppHandle, id: &str, url: &str) {
     let state = app.state::<ShellState>();
     let own = state
         .find(id)
-        .is_ok_and(|i| loading::own_origin(&i.url, url));
-    let generation = state.loads.lock().unwrap().committed(id, own);
+        .is_ok_and(|i| !loading::elsewhere(&i.url, url));
+    let (generation, pill) = {
+        let mut loads = state.loads.lock().unwrap();
+        (loads.committed(id, own), loads.shown(id).is_some())
+    };
     if let Some(generation) = generation {
         watch_load(app, id, generation, loading::LOAD_WAIT);
+    }
+    if pill {
+        set_pill(app, id, true);
     }
 }
 
@@ -920,28 +952,84 @@ async fn page_answer(app: &AppHandle, id: &str) -> loading::Page {
 
 /// The page's titlebar asked the shell for something (`get_desktop_settings`,
 /// `list_instances`): the Talaria UI is up in this document, whatever its
-/// version (loading.rs, rule 1).
+/// version (loading.rs, rule 1). If a card stands for it (it stalled, or it
+/// was judged before its UI came up), or it carries the way-back pill, a turn
+/// of its own takes the person back to it. Inside a sync command: a lock and
+/// a queued turn.
 pub(crate) fn ui_called(app: &AppHandle, webview: &Webview) {
-    if let Some(id) = webview.label().strip_prefix("instance-") {
-        app.state::<ShellState>().loads.lock().unwrap().ui_seen(id);
+    let Some(id) = webview.label().strip_prefix("instance-") else {
+        return;
+    };
+    let state = app.state::<ShellState>();
+    let pill = {
+        let mut loads = state.loads.lock().unwrap();
+        loads.ui_seen(id);
+        loads.shown(id).is_some()
+    };
+    let carded = state
+        .failure
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|f| f.id == id && f.kind != FailureKind::Failed);
+    if pill || carded {
+        let id = id.to_string();
+        queue_main_turn(app, move |app| ui_is_back(app, &id));
+    }
+}
+
+/// Its UI is up: the way-back pill comes down, and its card, if one stands
+/// and the person is still on the launcher, opens it.
+fn ui_is_back(app: &AppHandle, id: &str) {
+    let state = app.state::<ShellState>();
+    let pill = {
+        let mut loads = state.loads.lock().unwrap();
+        loads.prewarm_ok(id);
+        loads.unshow(id)
+    };
+    if pill {
+        set_pill(app, id, false);
+    }
+    reopen_from_card(app, id);
+}
+
+/// Put the way-back pill on this instance's page, or take it down.
+fn set_pill(app: &AppHandle, id: &str, on: bool) {
+    if let Some(webview) = app.get_webview(&instance_label(id)) {
+        let _ = webview.eval(if on {
+            loading::PILL_JS
+        } else {
+            loading::PILL_OFF_JS
+        });
     }
 }
 
 /// A page finished loading (loading.rs, rule 2). On the instance's own
 /// origin, or one the platform said failed there, it is judged `UI_GRACE`
-/// later: the UI up is the page (and a page that stalled is opened from its
-/// card); a page that is not Talaria is the card. A newer document by then
-/// is judged on its own Finished. Inside the page-load callback: a lock and
-/// a timer.
+/// later, and again after `BOOT_LOOKS` while it is Talaria's shell still
+/// starting (`after_finish`). A newer document by then is judged on its own
+/// Finished. A page the person chose to see is never carded again: only its
+/// UI coming up changes anything, here or through its titlebar's call
+/// (`ui_called`). Inside the page-load callback (or WebKitGTK's
+/// `load-failed`): locks, a timer and an eval.
 fn page_finished(app: &AppHandle, id: &str, url: &str) {
     let state = app.state::<ShellState>();
     let own = state
         .find(id)
-        .is_ok_and(|i| loading::own_origin(&i.url, url));
-    let (settled, doc, noted) = {
+        .is_ok_and(|i| !loading::elsewhere(&i.url, url));
+    let (settled, doc, noted, shown) = {
         let mut loads = state.loads.lock().unwrap();
-        (loads.settle(id), loads.doc(id), loads.noted(id).is_some())
+        (
+            loads.settle(id),
+            loads.doc(id),
+            loads.noted(id).is_some(),
+            loads.shown(id).cloned(),
+        )
     };
+    if shown.is_some() {
+        set_pill(app, id, true);
+    }
+    let exempt = shown.is_some_and(|s| s.exempt);
     if !own && !noted {
         return;
     }
@@ -949,48 +1037,59 @@ fn page_finished(app: &AppHandle, id: &str, url: &str) {
     let id = id.to_string();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(loading::UI_GRACE).await;
-        if app.state::<ShellState>().loads.lock().unwrap().doc(&id) != doc {
+        let mut attempt = 0;
+        loop {
+            if app.state::<ShellState>().loads.lock().unwrap().doc(&id) != doc {
+                return;
+            }
+            let page = page_answer(&app, &id).await;
+            let action = {
+                let state = app.state::<ShellState>();
+                let loads = state.loads.lock().unwrap();
+                let verdict = loading::verdict(loads.ui(&id), page, loads.noted(&id));
+                loading::after_finish(settled, verdict, attempt)
+            };
+            if let loading::Action::Look(wait) = action {
+                eprintln!(
+                    "talaria-desktop: instance-{id}: Talaria's page is still starting; looking again in {} s",
+                    wait.as_secs()
+                );
+                attempt += 1;
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            // Shown as it is: the way back comes down when Talaria is up;
+            // nothing else is said about it.
+            if exempt && action != loading::Action::Reopen {
+                return;
+            }
+            queue_main_turn(&app, move |app| judge_page(app, &id, doc, action));
             return;
         }
-        let page = page_answer(&app, &id).await;
-        queue_main_turn(&app, move |app| judge_page(app, &id, doc, settled, page));
     });
 }
 
 /// The judgement of a finished page (`page_finished`), on the main thread.
-fn judge_page(app: &AppHandle, id: &str, doc: u64, settled: loading::Settled, page: loading::Page) {
+fn judge_page(app: &AppHandle, id: &str, doc: u64, action: loading::Action) {
     let state = app.state::<ShellState>();
-    let verdict = {
-        let loads = state.loads.lock().unwrap();
-        if loads.doc(id) != doc || app.get_webview(&instance_label(id)).is_none() {
-            return;
-        }
-        loading::verdict(loads.ui(id), page, loads.noted(id))
-    };
-    match verdict {
-        loading::Verdict::Up => {
-            state.loads.lock().unwrap().prewarm_ok(id);
-            if settled == loading::Settled::AfterStall {
-                reopen_after_stall(app, id);
-            }
-        }
-        loading::Verdict::Leave => {
-            // A file, after a stall: still on the card, and Keep waiting
-            // still waits.
-            if settled == loading::Settled::AfterStall {
-                state.loads.lock().unwrap().restall(id);
-            }
-        }
-        loading::Verdict::Fail(what) => instance_load_failed(app, id, &what),
+    if state.loads.lock().unwrap().doc(id) != doc || app.get_webview(&instance_label(id)).is_none()
+    {
+        return;
+    }
+    match action {
+        loading::Action::Reopen => ui_is_back(app, id),
+        loading::Action::Restall => state.loads.lock().unwrap().restall(id),
+        loading::Action::Look(_) | loading::Action::Nothing => {}
+        loading::Action::Card { words, keep } => instance_not_talaria(app, id, &words, keep),
     }
 }
 
 /// A page that has not loaded in `waited`, its UI not up. On screen, it is
 /// the launcher's card, "<instance> is not answering", with Retry, Keep
 /// waiting and Back to instances; the page keeps loading behind it, and is
-/// judged when it finishes (opened if it is Talaria, the card for what it is
-/// if not). Off screen: closed; one loaded hidden at launch is loaded again
-/// later (`retry_prewarm`), so its notifications are not lost for the session.
+/// judged when it finishes (opened if it is Talaria, its own card if not).
+/// Off screen: closed; one loaded hidden at launch is loaded again later
+/// (`retry_prewarm`), so its notifications are not lost for the session.
 fn load_stalled(app: &AppHandle, id: &str, generation: u64, waited: Duration) {
     let state = app.state::<ShellState>();
     if !state.loads.lock().unwrap().stall(id, generation) {
@@ -1039,26 +1138,42 @@ fn load_stalled(app: &AppHandle, id: &str, generation: u64, waited: Duration) {
         waited.as_secs(),
         registry::now_ms()
     );
+    post_card(
+        app,
+        id,
+        &instance.label,
+        loading::stalled_message(&instance.label),
+        FailureKind::Stalled,
+    );
+}
+
+/// The launcher's card for `id`, and the person back on the launcher if they
+/// were looking at it.
+fn post_card(app: &AppHandle, id: &str, label: &str, message: String, kind: FailureKind) {
+    let state = app.state::<ShellState>();
     let seq = state.failure_seq.fetch_add(1, Ordering::Relaxed) + 1;
     *state.failure.lock().unwrap() = Some(LoadFailure {
         seq,
         id: id.to_string(),
-        label: instance.label.clone(),
-        message: loading::stalled_message(&instance.label),
-        kind: FailureKind::Stalled,
+        label: label.to_string(),
+        message,
+        kind,
     });
-    *state.active.lock().unwrap() = None;
-    if let Err(e) = state.persist() {
-        eprintln!("talaria-desktop: {e}");
+    let was_active = state.active.lock().unwrap().as_deref() == Some(id);
+    if was_active {
+        *state.active.lock().unwrap() = None;
+        if let Err(e) = state.persist() {
+            eprintln!("talaria-desktop: {e}");
+        }
+        let _ = set_view(app, View::Welcome);
     }
-    let _ = set_view(app, View::Welcome);
     emit_state(app);
 }
 
-/// A stalled page came up as Talaria while its card was up (`judge_page`
-/// confirmed the UI): the person asked to open it, and has not moved on, so
-/// open it. Queued: it may create nothing inline.
-fn reopen_after_stall(app: &AppHandle, id: &str) {
+/// Its UI came up while its card stood (a stall that answered, a challenge
+/// it passed, a slow start): the person asked to open it and has not moved
+/// on, so open it. Queued: it may create nothing inline.
+fn reopen_from_card(app: &AppHandle, id: &str) {
     let id = id.to_string();
     queue_main_turn(app, move |app| {
         let state = app.state::<ShellState>();
@@ -1067,13 +1182,13 @@ fn reopen_after_stall(app: &AppHandle, id: &str) {
             .lock()
             .unwrap()
             .as_ref()
-            .is_some_and(|f| f.id == id && f.kind == FailureKind::Stalled);
+            .is_some_and(|f| f.id == id && f.kind != FailureKind::Failed);
         let on_launcher =
             *state.view.lock().unwrap() == View::Welcome && state.active.lock().unwrap().is_none();
-        if !carded || !on_launcher {
+        if !carded || !on_launcher || app.get_webview(&instance_label(&id)).is_none() {
             return;
         }
-        eprintln!("talaria-desktop: instance-{id}: answered after all; opening it");
+        eprintln!("talaria-desktop: instance-{id}: its Talaria is up after all; opening it");
         if let Err(e) = activate(app, &id, None, None) {
             eprintln!("talaria-desktop: opening instance-{id}: {e}");
         }
@@ -1110,16 +1225,17 @@ fn retry_prewarm(app: &AppHandle, id: &str) {
 }
 
 /// The platform's words on a page's load (loading.rs): kept for the card,
-/// and only for a page on the instance's own origin. The judgement is
-/// `page_finished`'s, when the page finishes. macOS has no words to keep.
+/// and only for a page on the instance's own origin. `answered`: an HTTP
+/// status, or nothing answered at all. The judgement is `page_finished`'s.
+/// macOS has no words to keep.
 #[cfg(any(target_os = "linux", windows))]
-fn note_load(app: &AppHandle, id: &str, url: &str, what: String) {
+fn note_load(app: &AppHandle, id: &str, url: &str, what: String, answered: bool) {
     let state = app.state::<ShellState>();
     if state
         .find(id)
         .is_ok_and(|i| loading::own_origin(&i.url, url))
     {
-        state.loads.lock().unwrap().note(id, what);
+        state.loads.lock().unwrap().note(id, what, answered);
     }
 }
 
@@ -1127,9 +1243,9 @@ fn note_load(app: &AppHandle, id: &str, url: &str, what: String) {
 /// such as Cloudflare's 403, 502 and 524, or no answer at all (the network
 /// error page, where no init script runs) — kept for the card.
 /// `NavigationCompleted` is read through webview2-com (loading::webview2).
-/// Registered from a later main-thread turn (`with_webview`): a first load
-/// that fails before then has no words, and is judged as a page that is not
-/// Talaria.
+/// `with_webview` runs its closure inline on the main thread, so the
+/// subscription is in place in the same turn as the webview's creation,
+/// before its first navigation can complete.
 #[cfg(windows)]
 fn watch_navigation(app: &AppHandle, webview: &Webview, id: &str) {
     let app = app.clone();
@@ -1146,9 +1262,11 @@ fn watch_navigation(app: &AppHandle, webview: &Webview, id: &str) {
         // This closure runs inside WebView2's handler too: it is part of the
         // `with_webview` root the threading check reads, so it may only record.
         let watched = id.clone();
-        if let Err(e) = loading::webview2::on_navigation_completed(&core, move |url, what| {
-            navigation_noted(&app, &watched, &url, what)
-        }) {
+        if let Err(e) =
+            loading::webview2::on_navigation_completed(&core, move |url, what, answered| {
+                navigation_noted(&app, &watched, &url, what, answered)
+            })
+        {
             eprintln!("talaria-desktop: instance-{id}: not watching its navigations: {e}");
         }
     });
@@ -1157,8 +1275,8 @@ fn watch_navigation(app: &AppHandle, webview: &Webview, id: &str) {
 /// Inside WebView2's `NavigationCompleted` handler: record, nothing more.
 // webview-threading: callback
 #[cfg(windows)]
-fn navigation_noted(app: &AppHandle, id: &str, url: &str, what: String) {
-    note_load(app, id, url, what);
+fn navigation_noted(app: &AppHandle, id: &str, url: &str, what: String, answered: bool) {
+    note_load(app, id, url, what, answered);
 }
 
 /// WebKitGTK: an instance page whose load failed (refused, unreachable, timed
@@ -1193,7 +1311,7 @@ fn watch_load_failures(app: &AppHandle, webview: &Webview, id: &str) {
                 .map(|r| r.status_code())
                 .and_then(|c| u16::try_from(c).ok());
             if let Some(what) = loading::page_reason(status, None) {
-                note_load(&committed_app, &committed_id, &uri, what);
+                note_load(&committed_app, &committed_id, &uri, what, true);
             }
         });
         view.connect_load_failed(move |_view, _event, uri, error| {
@@ -1212,7 +1330,7 @@ fn watch_load_failures(app: &AppHandle, webview: &Webview, id: &str) {
                 && !error.matches(webkit2gtk::PolicyError::CannotShowUri)
                 && let Some(what) = loading::page_reason(None, Some(error.message()))
             {
-                note_load(&app, &id, uri, what);
+                note_load(&app, &id, uri, what, false);
                 // Answered "handled", WebKit loads no error page and raises no
                 // Finished: the load ends here, and is judged as one that
                 // finished (a page that was up is still up, rule 1).
@@ -1223,55 +1341,60 @@ fn watch_load_failures(app: &AppHandle, webview: &Webview, id: &str) {
     });
 }
 
-/// An instance page that is not Talaria (`what`: loading.rs's words), on
-/// every OS: the page is closed, and the person, if they were looking at
-/// it, is back on the launcher with the card (Retry, Back to instances). One
-/// loaded hidden at launch is loaded again later.
-fn instance_load_failed(app: &AppHandle, id: &str, what: &str) {
+/// A page on the instance's own origin that is not Talaria (`words`:
+/// loading.rs's), on every OS: the person, if they were looking at it, is
+/// back on the launcher with the card. A page that answered (an error page,
+/// a challenge, a sign-in gate) is kept behind the card — it may be working,
+/// or need the person: Show the page, Retry, Back to instances — and if its
+/// UI comes up meanwhile the shell opens it (`ui_called`). A load that got
+/// no answer is closed: Retry, Back to instances. Either way the instance's
+/// last page is forgotten, so Retry opens its root, not this page again. One
+/// loaded hidden at launch is closed, and loaded again later.
+fn instance_not_talaria(app: &AppHandle, id: &str, words: &str, keep: bool) {
     let state = app.state::<ShellState>();
-    state.loads.lock().unwrap().forget(id);
     let Ok(instance) = state.find(id) else {
         return;
     };
-    // The failed page holds nothing worth keeping; the next open starts over.
-    // Already gone (Back to instances): nothing is on screen to take back.
     let Some(webview) = app
         .get_window("main")
         .and_then(|w| w.get_webview(&instance_label(id)))
     else {
         return;
     };
-    let _ = webview.close();
+    if state.last_urls.lock().unwrap().remove(id).is_some()
+        && let Err(e) = state.persist()
+    {
+        eprintln!("talaria-desktop: {e}");
+    }
     let prewarming = state.activity.lock().unwrap().prewarming(id);
-    state.activity.lock().unwrap().forget(id);
+    if prewarming || !keep {
+        let _ = webview.close();
+        state.loads.lock().unwrap().forget(id);
+        state.activity.lock().unwrap().forget(id);
+    }
     // Loaded hidden at launch (D8) and nobody asked to see it: no card on
     // the launcher, the log, and another try later.
     if prewarming {
-        eprintln!("talaria-desktop: instance-{id} (loaded at launch) {what}");
+        eprintln!("talaria-desktop: instance-{id} (loaded at launch) {words}");
         retry_prewarm(app, id);
         return;
     }
     eprintln!(
-        "talaria-desktop: instance-{id} {what}; back to the launcher (t={} ms)",
+        "talaria-desktop: instance-{id} {words}; back to the launcher{} (t={} ms)",
+        if keep { ", its page kept" } else { "" },
         registry::now_ms()
     );
-    let seq = state.failure_seq.fetch_add(1, Ordering::Relaxed) + 1;
-    *state.failure.lock().unwrap() = Some(LoadFailure {
-        seq,
-        id: id.to_string(),
-        label: instance.label.clone(),
-        message: format!("{} {what}.", instance.label),
-        kind: FailureKind::Failed,
-    });
-    let was_active = state.active.lock().unwrap().as_deref() == Some(id);
-    if was_active {
-        *state.active.lock().unwrap() = None;
-        if let Err(e) = state.persist() {
-            eprintln!("talaria-desktop: {e}");
-        }
-        let _ = set_view(app, View::Welcome);
-    }
-    emit_state(app);
+    post_card(
+        app,
+        id,
+        &instance.label,
+        format!("{} {words}.", instance.label),
+        if keep {
+            FailureKind::Blocked
+        } else {
+            FailureKind::Failed
+        },
+    );
 }
 
 /// Back to the launcher: every instance webview hidden (they stay loaded —
@@ -1280,6 +1403,27 @@ fn instance_load_failed(app: &AppHandle, id: &str, what: &str) {
 #[tauri::command]
 pub fn show_welcome(app: AppHandle) -> Result<(), String> {
     let state = app.state::<ShellState>();
+    // Back from a page shown without its UI (the way-back pill, the escape
+    // keys): its card, so Retry and Show the page are there again.
+    let left = state.active.lock().unwrap().clone();
+    if let Some(id) = left {
+        let words = state
+            .loads
+            .lock()
+            .unwrap()
+            .shown(&id)
+            .and_then(|s| s.words.clone());
+        if let (Some(words), Ok(instance)) = (words, state.find(&id)) {
+            let seq = state.failure_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            *state.failure.lock().unwrap() = Some(LoadFailure {
+                seq,
+                id: id.clone(),
+                label: instance.label.clone(),
+                message: words,
+                kind: FailureKind::Blocked,
+            });
+        }
+    }
     *state.active.lock().unwrap() = None;
     *state.reopen.lock().unwrap() = None;
     // A relaunch lands where the person left: here.
@@ -1291,10 +1435,10 @@ pub fn show_welcome(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The card's Back to instances and Retry, for a page that has not loaded and
-/// is still loading behind the card: close it (the instance stays
-/// registered) and take the card down. Retry then opens it again from the
-/// launcher, probe first. Launcher only.
+/// The card's Back to instances and Retry, for a page kept behind the card
+/// (still loading, or not Talaria): close it (the instance stays registered)
+/// and take the card down. Retry then opens it again from the launcher,
+/// probe first. Launcher only.
 #[tauri::command]
 pub fn close_instance_page(app: AppHandle, id: String) -> Result<(), String> {
     let state = app.state::<ShellState>();
@@ -1313,8 +1457,40 @@ pub fn close_instance_page(app: AppHandle, id: String) -> Result<(), String> {
             *failure = None;
         }
     }
+    // Retry opens the instance's root: the page that was not Talaria may
+    // never be (S9).
+    if state.last_urls.lock().unwrap().remove(&id).is_some()
+        && let Err(e) = state.persist()
+    {
+        eprintln!("talaria-desktop: {e}");
+    }
     emit_state(&app);
     Ok(())
+}
+
+/// The card's Show the page, for a page that answered but is not Talaria (a
+/// challenge, a sign-in gate): show it as it is, with the shell's way-back
+/// pill on it, and judge it no more until its UI comes up. Async, and one
+/// main-thread turn, like any activation. Launcher only.
+#[tauri::command]
+pub async fn show_instance_page(app: AppHandle, id: String) -> Result<(), String> {
+    on_main_turn(&app, move |app| {
+        let state = app.state::<ShellState>();
+        let words = state
+            .failure
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|f| f.id == id)
+            .map(|f| f.message.clone());
+        state.loads.lock().unwrap().show(&id, true, words);
+        eprintln!("talaria-desktop: instance-{id}: its page is shown as it is, with the way back");
+        let opened = activate(app, &id, None, None);
+        set_pill(app, &id, true);
+        opened
+    })
+    .await?
+    .map(|_| ())
 }
 
 /// Remove an instance: close its webview, delete its data dir (the saved

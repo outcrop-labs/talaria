@@ -22,6 +22,7 @@
     setSuspend,
     setTitlebar,
     shell,
+    showPage,
   } from '../lib/state.svelte'
 
   // The signature ambient field, wearing the same shape the nav rail wears in
@@ -200,7 +201,7 @@
         <div
           class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-left text-xs"
           role="alert"
-          data-load-problem={problem.stalled ? 'stalled' : problem.probe ? 'probe' : 'failed'}
+          data-load-problem={problem.stalled ? 'stalled' : problem.blocked ? 'blocked' : problem.probe ? 'probe' : 'failed'}
         >
           <p class="text-danger break-words">{problem.message}</p>
           <div class="mt-2 flex flex-wrap justify-end gap-2">
@@ -227,6 +228,17 @@
                 onclick={() => void keepWaiting(problem)}
               >
                 Keep waiting
+              </button>
+            {/if}
+            {#if problem.blocked}
+              <!-- A challenge or a sign-in gate may need the person: the page
+                   as it is, with the shell's way back on it. -->
+              <button
+                type="button"
+                class="rounded px-2 py-0.5 text-muted hover:bg-hover hover:text-readout"
+                onclick={() => void showPage(problem)}
+              >
+                Show the page
               </button>
             {/if}
             {#if problem.probe}

@@ -117,25 +117,45 @@ restart. So the shell judges every instance page itself (`src-tauri/src/loading.
 three rules, the same on every OS:
 
 1. **A page with the Talaria UI up is never interrupted.** Up is the UI's shell hook
-   (`window.__TALARIA_DESKTOP__`), or the page's titlebar asking the shell for its settings
-   (`get_desktop_settings`, which every UI's titlebar does as it mounts, on the sign-in page
-   too). The second is what keeps an instance on an older Talaria, from before the hook,
-   from being judged broken. A failed download, an aborted navigation or a 5xx that does not
-   replace the page changes nothing.
+   (`window.__TALARIA_DESKTOP__`), or the page's titlebar asking the shell for something
+   (`get_desktop_settings`, `list_instances`), which every UI's titlebar does once it has
+   mounted, on the sign-in page too. The second is what keeps an instance on an older
+   Talaria, from before the hook, from being judged broken. It comes late: the titlebar is
+   in a chunk of its own, loaded after the main bundle and after its own import of the
+   Tauri API, so a slow instance can finish its page several seconds before it asks. A
+   page that is Talaria's shell still starting (its `#root` and module script, no UI yet) is
+   looked at again about 8 s and 20 s after it finished before anything is said. A failed download, an
+   aborted navigation or a 5xx that does not replace the page changes nothing.
 2. **A page on the instance's own origin that is not Talaria is the card.** A main-frame
-   page there that finished, and still has no UI 3 s later — an HTML page (Cloudflare's 502,
-   524 or 403, a mis-routed 404), an engine's error page, anything the platform said failed
-   — closes, and the person is back on the launcher with the card, saying what answered when
-   the platform said (Retry, Back to instances). A page that never finishes is the
-   watchdog's: 25 s after a webview is made, or after a document commits, a page still
-   loading without its UI is "<instance> is not answering", with **Retry** (close the page,
-   open it again, probe first), **Keep waiting** (show the page again, 60 s more) and **Back
-   to instances** (close the page). The page keeps loading behind that card and is judged
-   when it finishes: Talaria opens it; anything else (Cloudflare's 524 after holding the
-   request) is the card for what it is. A file the person opened in the window (an image,
-   a PDF, JSON: not HTML, and nothing failed) is left alone.
+   page there that finished, and still has no UI 3 s later (and after those looks, if it
+   was starting), puts the person back on the launcher with the card, saying what answered
+   when the platform said. The card takes nothing away:
+   - A page that answered — Cloudflare's 502, 524 or 403 challenge, a sign-in gate, a
+     mis-routed 404, a page with no Talaria in it — is **kept** behind the card, which
+     offers **Retry** and **Back to instances** (both close the page first) and **Show the
+     page**: the page as it is, with the shell's own **← Instances** on it (text, styled
+     through the CSSOM in a shadow root, so a strict CSP cannot strip it) as the way back,
+     which brings the card back. A page shown that way is judged no more.
+   - A load that got no answer at all (refused, dropped, an engine's network error page)
+     is closed: Retry, Back to instances.
+   - Whichever it was, if the instance's UI comes up while the card is up (a challenge
+     that solves itself, a slow start), the shell opens it; if it comes up on a page shown
+     as it is, the way back comes down.
+   - The instance's remembered page is forgotten, so Retry and the next launch open its
+     root, not the page that failed.
+
+   A page that never finishes is the watchdog's: 25 s after a webview is made, or after a
+   document commits, a page still loading without its UI is "<instance> is not
+   answering", with **Retry**, **Keep waiting** (show the page again, with the way back on
+   it, and wait 60 s more) and **Back to instances**. The page keeps loading behind that
+   card and is judged when it finishes: Talaria opens it; anything else (Cloudflare's 524
+   after holding the request) is the card for what it is. A file the person opened in the
+   window (an image, a PDF, JSON: not HTML, and nothing failed) is left alone, and Keep
+   waiting on one that has finished waits for nothing.
 3. **Pages on other origins are never judged.** A sign-in provider, a Cloudflare Access
-   login: not Talaria, and not the shell's to call broken.
+   login: not Talaria, and not the shell's to call broken. A document that commits there
+   starts no watchdog and is judged when it finishes only if the platform said its load
+   failed on the instance's own origin.
 
 Off screen, a page that does not come up is closed. One loaded hidden at launch (D8) is
 loaded again 1, 2, 5, 15 and 30 minutes later, so its instance's notifications are not lost

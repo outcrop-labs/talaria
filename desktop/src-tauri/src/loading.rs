@@ -45,20 +45,31 @@ pub const LOAD_WAIT: Duration = Duration::from_secs(25);
 pub const KEEP_WAIT: Duration = Duration::from_secs(60);
 /// How long the page may take to answer `PAGE_JS`.
 pub const HOOK_WAIT: Duration = Duration::from_secs(3);
-/// After a page finished, how long its UI has to come up before it is
-/// judged. Both of the UI's signals come before `load` in every version (the
-/// hook is set before the app mounts, the titlebar asks as it mounts).
+/// After a page finished, how long before it is first judged. The hook is set
+/// before the app mounts, in the entry chunk, so it is there before `load`. A
+/// Talaria from before the hook has only its titlebar's `get_desktop_settings`
+/// call, which comes after the lazy Login or AppLayout chunk mounts and a
+/// lazy `import('@tauri-apps/api/core')` — after `load`, and on a cold cache
+/// or a slow link well after it. So a page that is Talaria's own shell
+/// (`boot`) is looked at again, `BOOT_LOOKS` later, before anything happens.
 pub const UI_GRACE: Duration = Duration::from_secs(3);
+/// The further looks at a page that is Talaria's shell but has not said its
+/// UI is up, after `UI_GRACE`: at about +8 s and +20 s from Finished, still
+/// inside `LOAD_WAIT` of the first.
+pub const BOOT_LOOKS: [Duration; 2] = [Duration::from_secs(5), Duration::from_secs(12)];
 
-/// Asked of a page: what is it? `ui` (the Talaria UI's hook), `html` (an
-/// HTML page without it: an error page, a gate, another app), `other` (a
-/// file shown in the window). One expression, so eval answers its value.
-pub const PAGE_JS: &str = "(() => { try { const d = window.__TALARIA_DESKTOP__; if (typeof d === 'object' && d !== null) return 'ui'; return document.contentType === 'text/html' ? 'html' : 'other'; } catch (e) { return 'html'; } })()";
+/// Asked of a page: what is it? `ui` (the Talaria UI's hook), `boot`
+/// (Talaria's own shell — `#root` and a module script, which no error page
+/// has — whose UI has not said it is up yet), `html` (an HTML page without
+/// either: an error page, a challenge, a gate, another app), `other` (a file
+/// shown in the window). One expression, so eval answers its value.
+pub const PAGE_JS: &str = "(() => { try { const d = window.__TALARIA_DESKTOP__; if (typeof d === 'object' && d !== null) return 'ui'; if (document.contentType !== 'text/html') return 'other'; return document.getElementById('root') && document.querySelector('script[type=module][src]') ? 'boot' : 'html'; } catch (e) { return 'html'; } })()";
 
 /// What a page is, from `PAGE_JS` (or the titlebar's call).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Ui,
+    Boot,
     Html,
     Other,
     /// No answer: an engine error page where scripts do not run, a page
@@ -70,36 +81,90 @@ pub enum Page {
 pub fn page_kind(answer: Option<&str>) -> Page {
     match answer.map(|a| a.trim().trim_matches('"')) {
         Some("ui") => Page::Ui,
+        Some("boot") => Page::Boot,
         Some("html") => Page::Html,
         Some("other") => Page::Other,
         _ => Page::Silent,
     }
 }
 
-/// What the shell does with a page on the instance's own origin that
-/// finished (rule 2).
+/// The platform's words on a document's load, and whether anything answered
+/// at all (an HTTP status) or the load failed before an answer (the network).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Noted {
+    pub words: String,
+    pub answered: bool,
+}
+
+/// What a page on the instance's own origin that finished is (rule 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// The Talaria UI is up.
     Up,
+    /// Talaria's own shell, still starting: look again.
+    Boot,
     /// A file the person opened: not the shell's business.
     Leave,
-    /// Not Talaria: the card, with these words after the instance's name.
-    Fail(String),
+    /// Something answered that is not Talaria — an error page, a challenge, a
+    /// sign-in gate: the card, with the page kept behind it, since it may be
+    /// working or need the person.
+    Blocked(String),
+    /// Nothing answered (the network): the card, and there is nothing to keep.
+    Failed(String),
 }
 
 /// The words when the platform had none: a page answered, and it is not
 /// Talaria.
-pub const NOT_TALARIA: &str = "answered with a page that is not Talaria: it may be restarting, or something in front of it (a sign-in gate, a firewall) answered instead";
+pub const NOT_TALARIA: &str = "answered with a page that is not Talaria: it may be restarting, or something in front of it (a sign-in gate, a challenge) is waiting for you";
+/// The words for Talaria's shell that never said its UI was up.
+pub const NOT_STARTED: &str = "has not finished starting: its page may be slow to load, or it is a page the desktop app does not show";
 
-pub fn verdict(ui_seen: bool, page: Page, noted: Option<&str>) -> Verdict {
+pub fn verdict(ui_seen: bool, page: Page, noted: Option<&Noted>) -> Verdict {
     if ui_seen || page == Page::Ui {
         return Verdict::Up;
     }
-    if page == Page::Other && noted.is_none() {
-        return Verdict::Leave;
+    match noted {
+        Some(n) if !n.answered => Verdict::Failed(n.words.clone()),
+        Some(n) => Verdict::Blocked(n.words.clone()),
+        None if page == Page::Boot => Verdict::Boot,
+        None if page == Page::Other => Verdict::Leave,
+        None => Verdict::Blocked(NOT_TALARIA.into()),
     }
-    Verdict::Fail(noted.unwrap_or(NOT_TALARIA).to_string())
+}
+
+/// What the shell does after judging a page that finished, the `attempt`th
+/// look at it (0 is the first, `UI_GRACE` after Finished).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// The UI is up: open it if its card is up (a stall, a challenge it
+    /// passed), and take the way-back pill down.
+    Reopen,
+    /// Look again after this long.
+    Look(Duration),
+    /// A file after a stall: it stays on the card.
+    Restall,
+    /// Nothing to do.
+    Nothing,
+    /// The card, with these words. `keep`: the page stays alive behind it
+    /// (Show the page); otherwise it is closed.
+    Card { words: String, keep: bool },
+}
+
+pub fn after_finish(settled: Settled, verdict: Verdict, attempt: usize) -> Action {
+    match verdict {
+        Verdict::Up => Action::Reopen,
+        Verdict::Boot => match BOOT_LOOKS.get(attempt) {
+            Some(wait) => Action::Look(*wait),
+            None => Action::Card {
+                words: NOT_STARTED.into(),
+                keep: true,
+            },
+        },
+        Verdict::Leave if settled == Settled::AfterStall => Action::Restall,
+        Verdict::Leave => Action::Nothing,
+        Verdict::Blocked(words) => Action::Card { words, keep: true },
+        Verdict::Failed(words) => Action::Card { words, keep: false },
+    }
 }
 
 /// Where an instance page's load stands, for the watchdog.
@@ -122,9 +187,25 @@ pub struct Loads {
     /// The current document's UI asked the shell for something (rule 1).
     ui: HashSet<String>,
     /// The platform's words on the current document's load (rule 2).
-    noted: HashMap<String, String>,
+    noted: HashMap<String, Noted>,
+    /// The current document finished loading.
+    finished: HashSet<String>,
+    /// Pages shown without their UI (Show the page, Keep waiting): they carry
+    /// the way-back pill, and the card's words to put back if the person goes
+    /// back to the launcher with the page still not Talaria.
+    shown: HashMap<String, Shown>,
     /// Failed loads in a row of a page loaded hidden at launch.
     prewarm: HashMap<String, u32>,
+}
+
+/// A page the person chose to see without its UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shown {
+    /// Show the page: judged no more until its UI comes up. (Keep waiting
+    /// still waits, and is judged.)
+    pub exempt: bool,
+    /// The card it came from, put back when the person goes back.
+    pub words: Option<String>,
 }
 
 /// What a Finished did to the watch.
@@ -149,6 +230,7 @@ impl Loads {
         *self.docs.entry(id.to_string()).or_default() += 1;
         self.ui.remove(id);
         self.noted.remove(id);
+        self.finished.remove(id);
     }
 
     /// A webview is made for the instance: a new document, watched.
@@ -163,7 +245,7 @@ impl Loads {
     /// it is not watched at all (rule 3). The generation to wait on, if armed.
     pub fn committed(&mut self, id: &str, own_origin: bool) -> Option<u64> {
         self.new_document(id);
-        if !own_origin {
+        if !own_origin || self.shown.get(id).is_some_and(|s| s.exempt) {
             self.watch.remove(id);
             return None;
         }
@@ -191,19 +273,39 @@ impl Loads {
         self.ui.contains(id)
     }
 
-    /// The platform's words on the current document (a status, a network
-    /// failure), for the card if it comes to one. macOS has none to give.
+    /// The platform's words on the current document: `answered` an HTTP
+    /// status, or not (the network). macOS has none to give.
     #[cfg_attr(target_os = "macos", allow(dead_code))]
-    pub fn note(&mut self, id: &str, what: String) {
-        self.noted.insert(id.to_string(), what);
+    pub fn note(&mut self, id: &str, words: String, answered: bool) {
+        self.noted.insert(id.to_string(), Noted { words, answered });
     }
 
-    pub fn noted(&self, id: &str) -> Option<&str> {
-        self.noted.get(id).map(String::as_str)
+    pub fn noted(&self, id: &str) -> Option<&Noted> {
+        self.noted.get(id)
+    }
+
+    /// Has the current document finished loading?
+    pub fn finished(&self, id: &str) -> bool {
+        self.finished.contains(id)
+    }
+
+    /// The person chose to see the page without its UI.
+    pub fn show(&mut self, id: &str, exempt: bool, words: Option<String>) {
+        self.shown.insert(id.to_string(), Shown { exempt, words });
+    }
+
+    pub fn shown(&self, id: &str) -> Option<&Shown> {
+        self.shown.get(id)
+    }
+
+    /// Its UI is up, or it is gone: no pill, judged again.
+    pub fn unshow(&mut self, id: &str) -> bool {
+        self.shown.remove(id).is_some()
     }
 
     /// The page finished loading.
     pub fn settle(&mut self, id: &str) -> Settled {
+        self.finished.insert(id.to_string());
         match self.watch.remove(id) {
             Some(Watch::Armed(_)) => Settled::InTime,
             Some(Watch::Stalled(_)) => Settled::AfterStall,
@@ -263,6 +365,8 @@ impl Loads {
         self.watch.remove(id);
         self.ui.remove(id);
         self.noted.remove(id);
+        self.finished.remove(id);
+        self.shown.remove(id);
     }
 
     /// A page loaded hidden at launch did not come up: the number of times
@@ -327,6 +431,36 @@ pub fn page_reason(status: Option<u16>, network: Option<&str>) -> Option<String>
     network.map(|why| format!("did not load: {why}"))
 }
 
+/// The way back from a page shown without its UI (Show the page, Keep
+/// waiting): a small "← Instances" button, top left, that opens the launcher.
+/// Built from text nodes, styled through CSSOM, in a shadow root — nothing a
+/// page CSP refuses — and evaluated by the shell, so the page needs no help.
+/// Ctrl/Cmd+Shift+H does the same (the escape hatch).
+pub const PILL_JS: &str = r#"(() => {
+  const ID = 'talaria-desktop-back';
+  const root = document.documentElement;
+  if (!root || document.getElementById(ID)) return;
+  const host = document.createElement('div');
+  host.id = ID;
+  host.style.cssText = 'all:initial;position:fixed;top:6px;left:8px;z-index:2147483647;display:block;';
+  const shadow = host.attachShadow({ mode: 'open' });
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = '← Instances';
+  b.title = 'Back to your instances (Ctrl+Shift+H)';
+  b.style.cssText = 'font-family:"IBM Plex Sans",ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;font-weight:600;font-size:12px;line-height:1.4;padding:4px 10px;border-radius:6px;border:1px solid #4a4640;background:#141312;color:#e7e2db;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.45);';
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (window.__TAURI_INTERNALS__) window.__TAURI_INTERNALS__.invoke('show_welcome', {}).catch(() => {});
+  });
+  shadow.append(b);
+  root.appendChild(host);
+})()"#;
+
+/// Takes the way-back pill down (the UI came up).
+pub const PILL_OFF_JS: &str =
+    "(() => { const h = document.getElementById('talaria-desktop-back'); if (h) h.remove(); })()";
+
 /// The card's sentence for a load that stalled.
 pub fn stalled_message(instance: &str) -> String {
     format!(
@@ -357,16 +491,22 @@ pub fn elsewhere(instance: &str, page: &str) -> bool {
 /// navigation another one replaced, the page stopped, or one that became a
 /// download (`ended`: OPERATION_CANCELED, CONNECTION_ABORTED) says nothing,
 /// and neither does a success.
+/// The second value: did anything answer (an HTTP status), or not.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn webview2_reason(success: bool, ended: bool, error: &str, http: i32) -> Option<String> {
+pub fn webview2_reason(
+    success: bool,
+    ended: bool,
+    error: &str,
+    http: i32,
+) -> Option<(String, bool)> {
     let status = u16::try_from(http).ok().filter(|c| *c > 0);
     if status.is_some_and(|c| c >= 400) {
-        return page_reason(status, None);
+        return page_reason(status, None).map(|w| (w, true));
     }
     if success || ended || status.is_some() {
         return None;
     }
-    page_reason(None, Some(error))
+    page_reason(None, Some(error)).map(|w| (w, false))
 }
 
 /// WebView2's error status, in words (COREWEBVIEW2_WEB_ERROR_STATUS; the
@@ -434,13 +574,14 @@ pub mod webview2 {
         COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED.0 == super::WEBVIEW2_NOT_RESOLVED
     );
 
-    /// Hand `noted` the URL and the words of every http(s) main-frame
-    /// navigation of `core` that the platform has words for. It is called
+    /// Hand `noted` the URL, the words and whether anything answered, for
+    /// every http(s) main-frame navigation of `core` that the platform has
+    /// words for. It is called
     /// inside WebView2's event handler, so it must only record
     /// (commands::navigation_noted).
     pub fn on_navigation_completed(
         core: &ICoreWebView2,
-        noted: impl Fn(String, String) + 'static,
+        noted: impl Fn(String, String, bool) + 'static,
     ) -> windows_core::Result<()> {
         let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
             let (Some(sender), Some(args)) = (sender, args) else {
@@ -452,8 +593,8 @@ pub mod webview2 {
             if !(url.starts_with("http://") || url.starts_with("https://")) {
                 return Ok(());
             }
-            if let Some(what) = judge(&args) {
-                noted(url, what);
+            if let Some((what, answered)) = judge(&args) {
+                noted(url, what, answered);
             }
             Ok(())
         }));
@@ -472,7 +613,7 @@ pub mod webview2 {
         Some(take_pwstr(uri))
     }
 
-    fn judge(args: &ICoreWebView2NavigationCompletedEventArgs) -> Option<String> {
+    fn judge(args: &ICoreWebView2NavigationCompletedEventArgs) -> Option<(String, bool)> {
         let mut success = BOOL::default();
         let mut status = COREWEBVIEW2_WEB_ERROR_STATUS::default();
         // SAFETY: the event's own args, read for the duration of the handler.
@@ -506,55 +647,204 @@ pub mod webview2 {
 mod tests {
     use super::*;
 
+    fn status(words: &str) -> Noted {
+        Noted {
+            words: words.into(),
+            answered: true,
+        }
+    }
+    fn network(words: &str) -> Noted {
+        Noted {
+            words: words.into(),
+            answered: false,
+        }
+    }
+
     // Rule 1: a page with the UI up is never interrupted.
     #[test]
     fn a_page_with_the_ui_up_is_never_interrupted() {
         // Whatever the platform said about the load (a download's 5xx, an
         // aborted navigation), the UI being up wins.
-        for noted in [
-            None,
-            Some("answered 500 (Internal server error): it may be restarting"),
-        ] {
+        let five = status("answered 500 (Internal server error): it may be restarting");
+        let gone = network("did not load: refused");
+        for noted in [None, Some(&five), Some(&gone)] {
             assert_eq!(verdict(false, Page::Ui, noted), Verdict::Up);
             // A Talaria from before the hook: its titlebar asked the shell.
-            assert_eq!(verdict(true, Page::Html, noted), Verdict::Up);
-            assert_eq!(verdict(true, Page::Silent, noted), Verdict::Up);
+            for page in [Page::Boot, Page::Html, Page::Silent, Page::Other] {
+                assert_eq!(verdict(true, page, noted), Verdict::Up, "{page:?}");
+            }
         }
     }
 
     // Rule 2: a page on the instance's own origin that is not Talaria.
     #[test]
-    fn a_page_on_its_own_origin_that_is_not_talaria_is_the_card() {
-        let cf524 = "answered 524 (Cloudflare: a timeout occurred): it may be restarting";
-        // Cloudflare's 524 after a stall, its 403, a 404: HTML, no UI.
+    fn a_page_that_answered_is_kept_behind_its_card_and_no_answer_is_closed() {
+        let cf524 = status("answered 524 (Cloudflare: a timeout occurred): it may be restarting");
+        // Cloudflare's 524 after a stall, its 403 challenge, a 404: kept.
         assert_eq!(
-            verdict(false, Page::Html, Some(cf524)),
-            Verdict::Fail(cf524.into())
+            verdict(false, Page::Html, Some(&cf524)),
+            Verdict::Blocked(cf524.words.clone())
         );
         assert_eq!(
             verdict(false, Page::Html, None),
-            Verdict::Fail(NOT_TALARIA.into())
-        );
-        // An engine's error page, where no script answers.
-        assert_eq!(
-            verdict(false, Page::Silent, Some("did not load: refused")),
-            Verdict::Fail("did not load: refused".into())
+            Verdict::Blocked(NOT_TALARIA.into())
         );
         assert_eq!(
             verdict(false, Page::Silent, None),
-            Verdict::Fail(NOT_TALARIA.into())
+            Verdict::Blocked(NOT_TALARIA.into())
         );
-        // A failed answer that is not HTML (a 502 in plain text) is a failure.
+        // A failed answer that is not HTML (a 502 in plain text): kept too.
         assert!(matches!(
             verdict(
                 false,
                 Page::Other,
-                Some("answered 502 (Bad gateway): it may be restarting")
+                Some(&status("answered 502 (Bad gateway)"))
             ),
-            Verdict::Fail(_)
+            Verdict::Blocked(_)
         ));
+        // Nothing answered (refused, the network error page): closed.
+        assert_eq!(
+            verdict(false, Page::Silent, Some(&network("did not load: refused"))),
+            Verdict::Failed("did not load: refused".into())
+        );
         // A file the person opened, that nothing said failed: left alone.
         assert_eq!(verdict(false, Page::Other, None), Verdict::Leave);
+        // Talaria's own shell, still starting: looked at again.
+        assert_eq!(verdict(false, Page::Boot, None), Verdict::Boot);
+    }
+
+    // The decision after a judgement, the glue round 1's bug lived in.
+    #[test]
+    fn after_finish_opens_only_a_page_whose_ui_is_up() {
+        let cf524 = "answered 524 (Cloudflare: a timeout occurred): it may be restarting";
+        // B1: held, the stall card, then Cloudflare's 524: the card, kept,
+        // never a reopen.
+        assert_eq!(
+            after_finish(
+                Settled::AfterStall,
+                verdict(false, Page::Html, Some(&status(cf524))),
+                0
+            ),
+            Action::Card {
+                words: cf524.into(),
+                keep: true
+            }
+        );
+        // macOS, where nothing is said: still the card, kept.
+        assert_eq!(
+            after_finish(Settled::AfterStall, verdict(false, Page::Html, None), 0),
+            Action::Card {
+                words: NOT_TALARIA.into(),
+                keep: true
+            }
+        );
+        // A slow start of an older UI: looked at again at +5 s and +12 s,
+        // and only then the card (kept: it may still come up).
+        let boot = || verdict(false, Page::Boot, None);
+        assert_eq!(
+            after_finish(Settled::InTime, boot(), 0),
+            Action::Look(BOOT_LOOKS[0])
+        );
+        assert_eq!(
+            after_finish(Settled::InTime, boot(), 1),
+            Action::Look(BOOT_LOOKS[1])
+        );
+        assert_eq!(
+            after_finish(Settled::InTime, boot(), 2),
+            Action::Card {
+                words: NOT_STARTED.into(),
+                keep: true
+            }
+        );
+        // The UI arriving late, on any look: open it (from its card if one
+        // stands).
+        for attempt in 0..3 {
+            assert_eq!(
+                after_finish(Settled::InTime, verdict(true, Page::Boot, None), attempt),
+                Action::Reopen
+            );
+            assert_eq!(
+                after_finish(Settled::AfterStall, verdict(false, Page::Ui, None), attempt),
+                Action::Reopen
+            );
+        }
+        // A Cloudflare challenge (a 403 that solves itself or wants a click):
+        // the card with the page kept, so Show the page can reach it.
+        assert_eq!(
+            after_finish(
+                Settled::InTime,
+                verdict(false, Page::Html, Some(&status("answered 403 (Forbidden)"))),
+                0
+            ),
+            Action::Card {
+                words: "answered 403 (Forbidden)".into(),
+                keep: true
+            }
+        );
+        // A refused load: the card, the page closed.
+        assert_eq!(
+            after_finish(
+                Settled::InTime,
+                verdict(false, Page::Silent, Some(&network("did not load: refused"))),
+                0
+            ),
+            Action::Card {
+                words: "did not load: refused".into(),
+                keep: false
+            }
+        );
+        // A file: nothing, or back on the card after a stall.
+        assert_eq!(
+            after_finish(Settled::InTime, Verdict::Leave, 0),
+            Action::Nothing
+        );
+        assert_eq!(
+            after_finish(Settled::AfterStall, Verdict::Leave, 0),
+            Action::Restall
+        );
+        // The looks stay inside the watchdog's wait.
+        let total: Duration = BOOT_LOOKS.iter().sum::<Duration>() + UI_GRACE;
+        assert!(total < LOAD_WAIT, "{total:?}");
+    }
+
+    #[test]
+    fn a_page_shown_as_it_is_is_not_watched_and_carries_its_card() {
+        let mut loads = Loads::default();
+        loads.created("a");
+        loads.show("a", true, Some("Fake A answered 403 (Forbidden).".into()));
+        // Its next document (a challenge that reloads) is not watched.
+        assert_eq!(loads.committed("a", true), None);
+        assert_eq!(
+            loads.shown("a").and_then(|s| s.words.as_deref()),
+            Some("Fake A answered 403 (Forbidden).")
+        );
+        // Keep waiting shows without exempting: still watched.
+        let mut loads = Loads::default();
+        loads.created("b");
+        assert_eq!(loads.settle("b"), Settled::InTime);
+        loads.show("b", false, None);
+        assert!(loads.committed("b", true).is_some());
+        // The UI came up: no more pill.
+        assert!(loads.unshow("b"));
+        assert!(!loads.unshow("b"));
+        // A finished page knows it, until its next document.
+        let mut loads = Loads::default();
+        loads.created("c");
+        assert!(!loads.finished("c"));
+        loads.settle("c");
+        assert!(loads.finished("c"));
+        loads.committed("c", true);
+        assert!(!loads.finished("c"));
+    }
+
+    #[test]
+    fn the_way_back_is_text_and_cssom_only() {
+        assert!(PILL_JS.contains("textContent = '← Instances'"));
+        assert!(PILL_JS.contains("invoke('show_welcome'"));
+        assert!(!PILL_JS.contains("innerHTML"));
+        assert!(!PILL_JS.contains("<style"));
+        assert!(PILL_JS.contains("attachShadow"));
+        assert!(PILL_OFF_JS.contains("talaria-desktop-back"));
     }
 
     // Rule 3: pages on other origins are never judged.
@@ -600,6 +890,9 @@ mod tests {
     #[test]
     fn the_page_answers_are_read_as_the_engines_hand_them_back() {
         assert_eq!(page_kind(Some("\"ui\"")), Page::Ui);
+        assert_eq!(page_kind(Some("\"boot\"")), Page::Boot);
+        assert!(PAGE_JS.contains("getElementById('root')"));
+        assert!(PAGE_JS.contains("script[type=module][src]"));
         assert_eq!(page_kind(Some("\"html\"")), Page::Html);
         assert_eq!(page_kind(Some(" \"other\" ")), Page::Other);
         assert_eq!(page_kind(Some("null")), Page::Silent);
@@ -667,6 +960,7 @@ mod tests {
         loads.note(
             "a",
             "answered 502 (Bad gateway): it may be restarting".into(),
+            true,
         );
         assert!(loads.ui("a") && loads.noted("a").is_some());
         loads.committed("a", true);
@@ -754,16 +1048,18 @@ mod tests {
         assert!(
             webview2_reason(false, false, "x", 502)
                 .unwrap()
+                .0
                 .contains("502 (Bad gateway)")
         );
         assert!(
             webview2_reason(true, false, "x", 524)
                 .unwrap()
+                .0
                 .contains("524")
         );
         assert_eq!(
             webview2_reason(false, false, "x", 403).unwrap(),
-            "answered 403 (Forbidden)"
+            ("answered 403 (Forbidden)".to_string(), true)
         );
         // A page that loaded: nothing.
         assert_eq!(webview2_reason(true, false, "x", 200), None);
@@ -776,7 +1072,10 @@ mod tests {
                 0
             )
             .unwrap(),
-            "did not load: nothing is accepting connections there"
+            (
+                "did not load: nothing is accepting connections there".to_string(),
+                false
+            )
         );
         // Replaced, stopped, or turned into a download: nothing.
         for ended in [WEBVIEW2_CANCELLED, WEBVIEW2_ABORTED] {

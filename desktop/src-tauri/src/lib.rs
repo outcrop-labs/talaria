@@ -108,13 +108,18 @@ pub struct LoadFailure {
     pub kind: FailureKind,
 }
 
-/// What the card offers: a page that failed is closed (Retry, Back to
-/// instances); one that stalled is still loading (Keep waiting too).
+/// What the card offers (loading.rs). Every card has Retry and Back to
+/// instances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FailureKind {
+    /// Nothing answered (the network): the page is closed.
     Failed,
+    /// Still loading behind the card: Keep waiting.
     Stalled,
+    /// Something answered that is not Talaria (an error page, a challenge, a
+    /// sign-in gate), kept behind the card: Show the page.
+    Blocked,
 }
 
 /// The add in flight: Cancel aborts its probe, so a cancelled add can never
@@ -489,6 +494,7 @@ pub fn run() {
             commands::activate_instance,
             commands::show_welcome,
             commands::close_instance_page,
+            commands::show_instance_page,
             commands::remove_instance,
             commands::get_desktop_settings,
             commands::set_titlebar_mode,
