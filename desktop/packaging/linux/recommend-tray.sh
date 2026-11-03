@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The deb and the rpm RECOMMEND the tray library instead of requiring it.
+# The deb and the rpm RECOMMEND the tray library instead of requiring it, and
+# a pre-release's Version sorts below its release.
 #
 #   recommend-tray.sh <talaria.deb> <talaria.rpm>     (both rewritten in place)
 #
@@ -18,13 +19,21 @@
 # the same files, the same md5sums. The rpm: its header cannot be edited in
 # place (the signature header covers it), so it is rebuilt with rpmbuild from
 # its own payload and its own header's fields, with AutoReqProv off so the
-# requirement set is exactly the old one minus the library. A pre-release
-# Version (`0.0.0-sha…`, `0.2.0-rc.1`) carries a `-`, which tauri's rpm crate
-# writes and rpmbuild refuses; it becomes `_`, and since rpm's version compare
-# treats every non-alphanumeric character as the same separator, the new
-# Version orders exactly as the old one did. Both packages are then checked:
-# the library is gone from the hard dependencies and present as a
-# recommendation, and the rpm carries the same files as before.
+# requirement set is exactly the old one minus the library.
+#
+# THE VERSION. Tauri writes the stamped version verbatim into both, and a
+# pre-release's (`0.2.0-rc.1`, a trunk `0.0.0-sha…`) sorts ABOVE its release
+# there: dpkg reads `0.2.0-rc.1` as upstream 0.2.0 with Debian revision rc.1,
+# newer than a bare 0.2.0, and rpm compares `0.2.0-rc.1` (which rpmbuild
+# refuses anyway) or `0.2.0_rc.1` segment by segment, where the extra `rc`
+# makes it newer too. So the stable release would not install over its RC —
+# a downgrade. Both formats sort `~` below everything, the end of the string
+# included, so the pre-release `-` becomes `~` (`0.2.0~rc.1` < `0.2.0`, and
+# rc.1 < rc.2 < rc.10 still); any later `-` becomes `.`. The file names keep
+# the tag's spelling. Both packages are then checked: the library is gone
+# from the hard dependencies and present as a recommendation, the Version
+# carries no `-` and a pre-release sorts below its release, and the rpm
+# carries the same files as before.
 set -euo pipefail
 
 deb=$(realpath "$1")
@@ -42,7 +51,15 @@ path, lib = sys.argv[1], sys.argv[2]
 lines = open(path).read().rstrip('\n').split('\n')
 out, recommends = [], None
 for line in lines:
-    if line.startswith('Depends:'):
+    if line.startswith('Version:'):
+        # The pre-release `-` is `~`, so an RC sorts below its release (the
+        # header comment); a stable version has none and is left as it is.
+        version = line[len('Version:'):].strip()
+        spelled = version.replace('-', '~', 1).replace('-', '.')
+        if spelled != version:
+            print(f'deb version: {version} is written {spelled} (a pre-release sorts below its release)', file=sys.stderr)
+        out.append('Version: ' + spelled)
+    elif line.startswith('Depends:'):
         deps = [d.strip() for d in line[len('Depends:'):].split(',') if d.strip()]
         deps = [d for d in deps if re.split(r'[\s(]', d, maxsplit=1)[0] != lib]
         if deps:
@@ -97,21 +114,25 @@ for row in q('[%{FILEMODES}\t%{FILEUSERNAME}\t%{FILEGROUPNAME}\t%{FILENAMES}\n]'
 def field(tag, fallback=''):
     v = q('%{' + tag + '}')
     return fallback if v == '(none)' else v
-# rpmbuild refuses a '-' in Version or Release; rpmvercmp reads '-' and '_'
-# as the same separator, so the order is unchanged (the header comment).
-def evr(tag):
-    v = field(tag)
-    if '-' in v:
-        print(f'rpm {tag.lower()}: {v} is written {v.replace("-", "_")} (rpmbuild refuses "-"; same order)', file=sys.stderr)
-    return v.replace('-', '_')
+# rpmbuild refuses a '-' in Version or Release. Version's pre-release '-' is
+# '~', so an RC sorts below its release (the header comment). Release is
+# tauri's "1"; were it ever to carry a '-', '_' orders it as '-' would.
+def version():
+    v = field('VERSION')
+    spelled = v.replace('-', '~', 1).replace('-', '.')
+    if spelled != v:
+        print(f'rpm version: {v} is written {spelled} (a pre-release sorts below its release)', file=sys.stderr)
+    return spelled
+def release():
+    return field('RELEASE').replace('-', '_')
 body = [
     '%define _build_id_links none',
     '%define __os_install_post %{nil}',
     '%define __strip /bin/true',
     '%define debug_package %{nil}',
     f'Name: {name}',
-    f'Version: {evr("VERSION")}',
-    f'Release: {evr("RELEASE")}',
+    f'Version: {version()}',
+    f'Release: {release()}',
     f'Summary: {field("SUMMARY", name)}',
     f'License: {field("LICENSE", "unknown")}',
     *( [f'URL: {field("URL")}'] if field("URL") else [] ),
@@ -146,6 +167,23 @@ echo "deb Depends: $deps"
 echo "deb Recommends: $recs"
 case "$deps" in *"$lib_deb"*) echo "::error::the deb still depends on $lib_deb" >&2; exit 1 ;; esac
 case "$recs" in *"$lib_deb"*) ;; *) echo "::error::the deb does not recommend $lib_deb" >&2; exit 1 ;; esac
+# The Version: no '-' left (dpkg would read one as a Debian revision), and a
+# pre-release sorts below the release it precedes, by each format's own
+# compare — the order apt and dnf use when the release is installed over it.
+deb_version=$(dpkg-deb -f "$deb" Version)
+rpm_version=$(rpm -qp --qf '%{VERSION}' "$built")
+echo "deb Version: $deb_version"
+echo "rpm Version: $rpm_version"
+case "$deb_version$rpm_version" in *-*) echo "::error::a package Version still carries a '-'" >&2; exit 1 ;; esac
+if [ "${deb_version%%"~"*}" != "$deb_version" ]; then
+  dpkg --compare-versions "$deb_version" lt "${deb_version%%"~"*}" \
+    || { echo "::error::the deb's $deb_version does not sort below ${deb_version%%"~"*}" >&2; exit 1; }
+fi
+if [ "${rpm_version%%"~"*}" != "$rpm_version" ]; then
+  order=$(rpm --eval "%{lua: print(rpm.vercmp('$rpm_version', '${rpm_version%%"~"*}'))}")
+  [ "$order" = "-1" ] \
+    || { echo "::error::the rpm's $rpm_version does not sort below ${rpm_version%%"~"*} (vercmp $order)" >&2; exit 1; }
+fi
 if rpm -qpR "$built" | grep -qF "$lib_rpm"; then
   echo "::error::the rpm still requires $lib_rpm" >&2; exit 1
 fi

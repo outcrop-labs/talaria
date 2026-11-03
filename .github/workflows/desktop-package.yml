@@ -44,7 +44,11 @@
 # (RELEASING.md) and every version field in the repo still says 0.1.0
 # decoratively — so the tag arrives as `tauri build --config`, which merges the
 # version into the config for this build only. A release therefore stamps the
-# real version into every installer without a version-bump commit.
+# real version into every installer without a version-bump commit. The file
+# names carry it as the tag spells it; inside, the Linux packages spell a
+# pre-release so it sorts BELOW its release, or the release would not install
+# over its RC: the deb and rpm Version `0.2.0~rc.1` (recommend-tray.sh), the
+# pacman pkgver `0.2.0rc.1` (pack-pacman.sh).
 #
 # THE AUTO-MINOR CHANNEL. A push to main that touches desktop/ is a RELEASE:
 # `resolve` computes the next minor — the highest suffix-free X.Y.Z across BOTH
@@ -277,7 +281,10 @@ jobs:
       # bundler makes it a hard dependency of the deb and the rpm. The config
       # lists it under `recommends`; this takes it out of Depends and
       # Requires, and checks both packages afterwards (the script's header).
-      - name: The tray library is recommended, not required
+      # The same rewrite spells a pre-release Version with `~`, which dpkg and
+      # rpm sort below the release (tauri writes the tag's `-`, which both
+      # sort above it).
+      - name: The tray library is recommended, not required; an RC sorts below its release
         working-directory: desktop
         run: |
           set -eu
@@ -317,6 +324,14 @@ jobs:
             grep -qx 'StartupWMClass=app.talaria.desktop' "$RUNNER_TEMP/Talaria.desktop" \
               || { echo "::error::$pkg's Talaria.desktop does not name StartupWMClass=app.talaria.desktop"; exit 1; }
           done
+          # The stamped version, as the packages spell it: the pre-release `-`
+          # is `~` (recommend-tray.sh), so `0.2.0-rc.1` is `0.2.0~rc.1`.
+          want=$(printf '%s' "$VERSION" | sed 's/-/~/; s/-/./g')
+          deb_version=$(dpkg-deb -f deb/*.deb Version)
+          rpm_version=$(rpm -qp --qf '%{VERSION}' rpm/*.rpm)
+          echo "stamped $VERSION: deb Version $deb_version, rpm Version $rpm_version"
+          [ "$deb_version" = "$want" ] && [ "$rpm_version" = "$want" ] \
+            || { echo "::error::the deb and rpm should carry Version $want for $VERSION"; exit 1; }
           mkdir -p "$RUNNER_TEMP/assets"
           cp deb/*.deb rpm/*.rpm appimage/*.AppImage "$RUNNER_TEMP/assets/"
           ls -l "$RUNNER_TEMP/assets"
