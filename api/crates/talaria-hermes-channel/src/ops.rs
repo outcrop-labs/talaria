@@ -27,6 +27,21 @@ pub struct ChannelAgent {
     pub model: String,
     pub display_name: String,
     pub developer: bool,
+    /// A person stopped it through Talaria (Stop) and nobody has started it
+    /// since: the only stop the channel trusts. A container that is down
+    /// without this record was left down by something else, and is started.
+    pub stopped: bool,
+}
+
+/// What an agent's work comes to, asked before a roll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Busy {
+    Idle,
+    /// It is working or about to, and why.
+    Working(String),
+    /// Whether it is working cannot be read, and why: not restarted now —
+    /// unless the rollout is an admin's Roll now or Pin.
+    Unknown(String),
 }
 
 /// Why something failed, and whose fault it is: only an [`Fault::Image`]
@@ -67,21 +82,26 @@ pub struct Snapshot {
     pub container: String,
     /// The id of the image it was created from.
     pub image: String,
+    /// When its process last started (docker's `State.StartedAt`): a
+    /// restart by the daemon (a reboot, a docker restart) moves it without
+    /// moving the restart count.
+    pub started_at: String,
 }
 
 impl Snapshot {
-    /// A person stopped it (the agents run `restart: unless-stopped`, so an
-    /// exited container is one somebody stopped), or it was never created:
-    /// it is assigned and starts on the image next time, never started.
-    pub fn person_stopped(&self) -> bool {
-        !self.exists || matches!(self.status.as_str(), "exited" | "paused")
+    /// A person stopped it — Talaria recorded their Stop — and it is down or
+    /// gone: it is assigned and starts on the image when they start it,
+    /// never started by the channel.
+    pub fn person_stopped(&self, agent: &ChannelAgent) -> bool {
+        agent.stopped
+            && (!self.exists || matches!(self.status.as_str(), "exited" | "paused" | "created"))
     }
 
-    /// Meant to run and not running: crash-looping (docker restarting it),
-    /// or left created or dead by an interrupted recreate. It is recreated
-    /// whatever it is doing — it cannot be doing anything.
-    pub fn down_unwillingly(&self) -> bool {
-        self.exists && !self.running && !self.person_stopped()
+    /// Meant to run and not running: crash-looping, left exited or created
+    /// by a roll that failed, or gone — with no Stop recorded. It is
+    /// recreated whatever it is doing; it cannot be doing anything.
+    pub fn down_unwillingly(&self, agent: &ChannelAgent) -> bool {
+        !self.running && !self.person_stopped(agent) && self.status != "removing"
     }
 }
 
@@ -97,8 +117,12 @@ pub trait FleetOps: Send + Sync {
     fn check(&self) -> BoxFuture<'_, Result<check::Found, String>>;
     /// Resolve a `vX.Y.Z` tag of the channel's repository (Pin a version).
     fn resolve<'a>(&'a self, version: &'a str) -> BoxFuture<'a, Result<check::Found, String>>;
-    /// Pull and inspect.
-    fn prepare<'a>(&'a self, record: &'a ImageRecord) -> BoxFuture<'a, prepare::Prepared>;
+    /// Pull (with `need` for the disk's room) and inspect.
+    fn prepare<'a>(
+        &'a self,
+        record: &'a ImageRecord,
+        need: prepare::Room,
+    ) -> BoxFuture<'a, prepare::Prepared>;
     /// Boot the canary (its config shaped from the first agent's), soak it,
     /// take it down.
     fn canary<'a>(&'a self, record: &'a ImageRecord) -> BoxFuture<'a, Result<String, Fault>>;
@@ -122,9 +146,14 @@ pub trait FleetOps: Send + Sync {
     fn answers<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<(), Fault>>;
     /// The config or migration fault lines in its container's log, normalized.
     fn log_faults<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Vec<String>>;
-    /// Why the agent is in use, or None.
-    fn busy<'a>(&'a self, agent: &'a ChannelAgent)
-    -> BoxFuture<'a, Result<Option<String>, String>>;
+    /// What the agent's work comes to. `lenient`: it runs an image this
+    /// build never inspected (an older Hermes, an operator's), so a health
+    /// answer without the fields Talaria reads is judged by what it has.
+    fn busy<'a>(
+        &'a self,
+        agent: &'a ChannelAgent,
+        lenient: bool,
+    ) -> BoxFuture<'a, Result<Busy, String>>;
     /// Whether the window is open now, and the zone it is read in (with
     /// where the zone came from).
     fn window_open<'a>(&'a self, window: &'a Window) -> BoxFuture<'a, (bool, String)>;
@@ -160,13 +189,14 @@ pub fn on_channel(agent: &ChannelAgent) -> bool {
     talaria_fleet_render::runs_planned_image(agent.developer)
 }
 
-type AgentRow = (String, String, String, String, String, bool);
+type AgentRow = (String, String, String, String, String, bool, bool);
 
 /// Every managed, enabled agent that runs in its department's container
 /// (the render's runner), oldest first.
 pub async fn channel_agents(pg: &PgPool) -> Result<Vec<ChannelAgent>, sqlx::Error> {
     let rows: Vec<AgentRow> = sqlx::query_as(
-        "select id::text, slug, department, model, display_name, developer from ( \
+        "select id::text, slug, department, model, display_name, developer, \
+           stopped_at is not null from ( \
            select d.*, row_number() over (partition by d.department order by \
              exists (select 1 from agent_versions v \
                where v.agent_id = d.id and v.version = d.current_version) desc, \
@@ -179,13 +209,14 @@ pub async fn channel_agents(pg: &PgPool) -> Result<Vec<ChannelAgent>, sqlx::Erro
     Ok(rows
         .into_iter()
         .map(
-            |(id, slug, department, model, display_name, developer)| ChannelAgent {
+            |(id, slug, department, model, display_name, developer, stopped)| ChannelAgent {
                 id,
                 slug,
                 department,
                 model,
                 display_name,
                 developer,
+                stopped,
             },
         )
         .collect())
@@ -269,13 +300,22 @@ impl FleetOps for DockerOps {
         Box::pin(async move { check::resolve_version(&self.pg, version).await })
     }
 
-    fn prepare<'a>(&'a self, record: &'a ImageRecord) -> BoxFuture<'a, prepare::Prepared> {
+    fn prepare<'a>(
+        &'a self,
+        record: &'a ImageRecord,
+        need: prepare::Room,
+    ) -> BoxFuture<'a, prepare::Prepared> {
         Box::pin(async move {
-            let base = match self.first_agent().await {
-                Some(a) => base_config(&a).await,
-                None => None,
-            };
-            prepare::prepare(&self.pg, record, base.as_deref()).await
+            // Every agent's rendered config, for the contract's schema check.
+            let mut configs = Vec::new();
+            if let Ok(agents) = channel_agents(&self.pg).await {
+                for a in agents.iter().filter(|a| on_channel(a)) {
+                    if let Some(text) = base_config(a).await {
+                        configs.push((a.slug.clone(), text));
+                    }
+                }
+            }
+            prepare::prepare(&self.pg, record, &configs, need).await
         })
     }
 
@@ -385,12 +425,15 @@ impl FleetOps for DockerOps {
     fn busy<'a>(
         &'a self,
         agent: &'a ChannelAgent,
-    ) -> BoxFuture<'a, Result<Option<String>, String>> {
+        lenient: bool,
+    ) -> BoxFuture<'a, Result<Busy, String>> {
         Box::pin(async move {
             if talaria_fleet_reconcile::is_rolling(&agent.department) {
-                return Ok(Some("another roll of it is in progress".into()));
+                return Ok(Busy::Working("another roll of it is in progress".into()));
             }
-            busy::busy(&self.pg, agent).await.map_err(|e| e.to_string())
+            busy::busy(&self.pg, agent, lenient)
+                .await
+                .map_err(|e| e.to_string())
         })
     }
 

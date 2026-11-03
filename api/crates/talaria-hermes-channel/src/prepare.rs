@@ -106,19 +106,12 @@ except Exception as e:
     contract["sealedError"] = (type(e).__name__ + ": " + str(e))[:300]
 want = int(os.environ.get("TALARIA_SCHEMA", "0"))
 cv = out.get("configVersion")
-if isinstance(cv, int) and cv > want and os.environ.get("TALARIA_PROBE_CONFIG"):
+if isinstance(cv, int) and cv > want:
     try:
-        written = json.loads(base64.b64decode(os.environ["TALARIA_PROBE_CONFIG"]))
-        written["_config_version"] = want
-        with open(os.path.join(home, "config.yaml"), "w") as f:
-            json.dump(written, f)
+        with open("/probe/configs.json") as f:
+            agents = json.load(f)
         from hermes_cli.config import load_config, migrate_config
         import copy
-        # What Hermes would run on Talaria's config stamped as current (its
-        # migration skipped), against what it runs once it has migrated it.
-        skipped = copy.deepcopy(load_config())
-        migrate_config(interactive=False, quiet=True)
-        migrated = copy.deepcopy(load_config())
         missing = object()
         def at(d, path):
             for k in path:
@@ -127,16 +120,34 @@ if isinstance(cv, int) and cv > want and os.environ.get("TALARIA_PROBE_CONFIG"):
                 d = d[k]
             return d
         changed = []
-        def walk(path, w):
-            if isinstance(w, dict) and w:
-                for k, v in w.items():
-                    if not path and k == "_config_version":
-                        continue
-                    walk(path + [k], v)
-            elif at(skipped, path) != at(migrated, path):
-                changed.append(".".join(str(p) for p in path) or "(the whole config)")
-        walk([], written)
-        contract["migratedTo"] = migrated.get("_config_version") if isinstance(migrated, dict) else None
+        for agent in agents:
+            name, written = agent["name"], agent["config"]
+            written["_config_version"] = want
+            path = os.path.join(home, "config.yaml")
+            for stale in ("config.yaml", ".env"):
+                try:
+                    os.remove(os.path.join(home, stale))
+                except FileNotFoundError:
+                    pass
+            with open(path, "w") as f:
+                json.dump(written, f)
+            # What Hermes would run on Talaria's config stamped as current (its
+            # migration skipped), against what it runs once it has migrated it.
+            skipped = copy.deepcopy(load_config())
+            migrate_config(interactive=False, quiet=True)
+            migrated = copy.deepcopy(load_config())
+            def walk(keys, w):
+                if isinstance(w, dict) and w:
+                    for k, v in w.items():
+                        if not keys and k == "_config_version":
+                            continue
+                        walk(keys + [k], v)
+                elif at(skipped, keys) != at(migrated, keys):
+                    gone = " (removed)" if at(migrated, keys) is missing else ""
+                    changed.append(name + ": " + (".".join(str(p) for p in keys) or "(the whole config)") + gone)
+            walk([], written)
+            contract["migratedTo"] = migrated.get("_config_version") if isinstance(migrated, dict) else None
+        contract["migrationChecked"] = len(agents)
         contract["migrationChanged"] = changed[:40]
     except Exception as e:
         contract["migrationError"] = (type(e).__name__ + ": " + str(e))[:300]
@@ -231,8 +242,13 @@ pub fn contract_problems(
                     "the image did not report its config migration from schema {ours} to {image_schema}"
                 ));
             } else if changed.is_empty() {
+                let n = contract
+                    .get("migrationChecked")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 checked.push(format!(
-                    "its migration from schema {ours} to {image_schema} leaves every key Talaria writes as it is"
+                    "its migration from schema {ours} to {image_schema} leaves every key Talaria writes as it is, in the rendered config of {n} agent{}",
+                    if n == 1 { "" } else { "s" }
                 ));
             } else {
                 problems.push(format!(
@@ -320,24 +336,114 @@ pub async fn image_present(image: &str) -> bool {
     .is_ok()
 }
 
-/// What the inspection hands the image: the schema this release renders,
-/// Talaria's config as the canary has it (no tool servers, no platforms but
-/// the API server — no credential), and the sealed manifest declaring one
-/// probe name. Names and placeholders only, never a secret.
-fn probe_env(base: Option<&str>) -> Vec<String> {
-    let config = serde_json::Value::Object(talaria_fleet_render::canary::canary_routed(
-        base,
-        talaria_fleet_render::HERMES_CONFIG_VERSION,
-    ));
+/// The probe's stand-in for a literal credential in a rendered config.
+const REDACTED: &str = "${TALARIA_PROBE_REDACTED}";
+
+/// Whether a config key names a credential.
+fn credential_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    [
+        "key",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "auth",
+        "cookie",
+        "bearer",
+        "private",
+        "session",
+    ]
+    .iter()
+    .any(|w| k.contains(w))
+}
+
+/// Whether a string is only `${NAME}` handles (what Talaria writes for every
+/// sealed or gateway credential): nothing secret in it.
+fn only_handles(v: &str) -> bool {
+    let mut rest = v.trim();
+    if rest.is_empty() {
+        return true;
+    }
+    while let Some(i) = rest.find("${") {
+        if !rest[..i].trim().is_empty() && !rest[..i].trim().eq_ignore_ascii_case("bearer") {
+            return false;
+        }
+        let Some(j) = rest[i..].find('}') else {
+            return false;
+        };
+        rest = &rest[i + j + 1..];
+    }
+    rest.trim().is_empty()
+}
+
+/// An agent's config with every literal credential replaced by a stand-in:
+/// any string under a credential-shaped key that is not just `${…}`
+/// handles, and any `Bearer …` value. The shape — every key Talaria writes —
+/// is kept, which is what the schema check compares.
+pub fn redact(v: &Value) -> Value {
+    fn walk(v: &Value, under_secret: bool) -> Value {
+        match v {
+            Value::Object(m) => Value::Object(
+                m.iter()
+                    .map(|(k, v)| (k.clone(), walk(v, under_secret || credential_key(k))))
+                    .collect(),
+            ),
+            Value::Array(a) => Value::Array(a.iter().map(|x| walk(x, under_secret)).collect()),
+            Value::String(s)
+                if (under_secret && !only_handles(s))
+                    || (s.to_ascii_lowercase().starts_with("bearer ") && !only_handles(s)) =>
+            {
+                Value::String(REDACTED.into())
+            }
+            other => other.clone(),
+        }
+    }
+    walk(v, false)
+}
+
+/// The configs the schema check runs Hermes' migration on: every agent's
+/// rendered config as it is on disk, redacted, each once — or, with no
+/// agent yet, the default config the canary would run.
+pub fn probe_configs(configs: &[(String, String)]) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    let mut seen: Vec<Value> = Vec::new();
+    for (name, text) in configs {
+        let Some(config) = talaria_fleet_render::canary::rendered_config(text) else {
+            continue;
+        };
+        let config = redact(&Value::Object(config));
+        if seen.contains(&config) {
+            continue;
+        }
+        seen.push(config.clone());
+        out.push(json!({ "name": name, "config": config }));
+    }
+    if out.is_empty() {
+        out.push(json!({
+            "name": "the default config",
+            "config": Value::Object(talaria_fleet_render::canary::canary_routed(
+                None,
+                talaria_fleet_render::HERMES_CONFIG_VERSION,
+            )),
+        }));
+    }
+    Value::Array(out)
+}
+
+/// What the inspection hands the image in its environment: the schema this
+/// release renders and the sealed manifest declaring one probe name. Names
+/// only, never a secret; the configs go in a read-only file.
+fn probe_env() -> Vec<String> {
     let b64 = |s: &str| {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(s)
     };
-    let config = b64(&config.to_string());
     let manifest = b64(&talaria_agent_secrets::sealed_manifest(&[
         PROBE_SECRET.to_string()
     ]));
-    let mut env = vec![
+    vec![
         "HERMES_HOME=/tmp/talaria-probe-home".to_string(),
         format!(
             "TALARIA_SCHEMA={}",
@@ -345,21 +451,47 @@ fn probe_env(base: Option<&str>) -> Vec<String> {
         ),
         format!("TALARIA_PROBE_SECRET={PROBE_SECRET}"),
         format!("TALARIA_PROBE_MANIFEST={manifest}"),
-    ];
-    // An argument longer than the kernel takes is left out: the schema check
-    // then reports that it did not run, and the release is held.
-    if config.len() < 100_000 {
-        env.push(format!("TALARIA_PROBE_CONFIG={config}"));
-    }
-    env
+    ]
 }
 
-/// Run the inspection.
-pub async fn inspect(image: &str, base: Option<&str>) -> Result<Inspected, (String, bool)> {
-    let env = probe_env(base);
+/// Run the inspection: a named container (so one a timeout left behind is
+/// removed), no network, bounded memory, processes and CPU, a read-only root
+/// with a small tmpfs, every capability dropped, no privilege gain, as
+/// nobody — and the configs it checks mounted read-only.
+pub async fn inspect(
+    image: &str,
+    digest: &str,
+    configs: &[(String, String)],
+) -> Result<Inspected, (String, bool)> {
+    let host_err = |e: String| (e, false);
+    let name = format!(
+        "talaria-inspect-{}",
+        digest
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(12)
+            .collect::<String>()
+    );
+    let dir = talaria_fleet_render::canary::canary_dir();
+    let file = dir.join(format!("{name}.json"));
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| host_err(format!("{}: {e}", dir.display())))?;
+    tokio::fs::write(&file, probe_configs(configs).to_string())
+        .await
+        .map_err(|e| host_err(format!("{}: {e}", file.display())))?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = tokio::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).await;
+    }
+    let _ = docker(&["rm", "-f", &name], Duration::from_secs(60)).await;
+    let mount = format!("{}:/probe/configs.json:ro", file.display());
+    let env = probe_env();
     let mut args: Vec<&str> = vec![
         "run",
         "--rm",
+        "--name",
+        &name,
         "--network",
         "none",
         "--memory",
@@ -368,6 +500,17 @@ pub async fn inspect(image: &str, base: Option<&str>) -> Result<Inspected, (Stri
         "256",
         "--cpus",
         "1",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,size=256m",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        "65534:65534",
+        "-v",
+        &mount,
         "--entrypoint",
         IMAGE_PYTHON,
         "-w",
@@ -379,6 +522,9 @@ pub async fn inspect(image: &str, base: Option<&str>) -> Result<Inspected, (Stri
     }
     args.extend([image, "-I", "-c", INSPECT_SCRIPT]);
     let ran = docker(&args, INSPECT_TIMEOUT).await;
+    // A timeout kills the CLI, not the container: it goes too.
+    let _ = docker(&["rm", "-f", &name], Duration::from_secs(60)).await;
+    let _ = tokio::fs::remove_file(&file).await;
     match ran {
         Ok((stdout, _)) => parse_inspection(&stdout).map_err(|e| (e, true)),
         Err(e) => {
@@ -398,9 +544,29 @@ pub async fn inspect(image: &str, base: Option<&str>) -> Result<Inspected, (Stri
     }
 }
 
+/// How much room a download must leave: an upgrade keeps a tenth of the
+/// disk free beside the image plus a quarter; a rollback — leaving something
+/// worse — needs only the image itself and a fiftieth. `forced` is an
+/// admin's Roll now or Pin: on a host whose disk cannot be read, it is the
+/// consent to download anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Room {
+    pub urgent: bool,
+    pub forced: bool,
+}
+
 /// Free bytes and size of the filesystem the docker root (and so every
-/// volume, Postgres's among them) lives on, or None when it cannot be read.
+/// volume, Postgres's among them) lives on, or None when it cannot be read:
+/// through the host root when the api has one (`/host`), the docker root
+/// itself on a host-run api, the container's own `/` when the api runs in a
+/// container on the same daemon (an overlay reports its upper directory's
+/// filesystem). A daemon elsewhere (`DOCKER_HOST` over tcp/ssh) cannot be
+/// read from here.
 async fn docker_disk() -> Option<(u64, u64, String)> {
+    if std::env::var("DOCKER_HOST").is_ok_and(|h| !h.trim().is_empty() && !h.starts_with("unix://"))
+    {
+        return None;
+    }
     let (root, _) = docker(
         &["info", "--format", "{{.DockerRootDir}}"],
         Duration::from_secs(30),
@@ -408,14 +574,28 @@ async fn docker_disk() -> Option<(u64, u64, String)> {
     .await
     .ok()?;
     let root = root.trim().to_string();
-    let (free, total) = talaria_host_metrics::mount_space(std::path::Path::new(&root))
-        .or_else(|| talaria_host_metrics::mount_space(std::path::Path::new("/")))?;
-    Some((free, total, root))
+    let path = std::path::Path::new(&root);
+    if let Some((free, total)) = talaria_host_metrics::mount_space(path) {
+        return Some((free, total, root));
+    }
+    if path.exists() {
+        return talaria_host_metrics::local_space(path).map(|(f, t)| (f, t, root));
+    }
+    if std::path::Path::new("/.dockerenv").exists() {
+        return talaria_host_metrics::local_space(std::path::Path::new("/")).map(|(f, t)| {
+            (
+                f,
+                t,
+                format!("{root}, read through this container's own root"),
+            )
+        });
+    }
+    None
 }
 
-/// The room a download needs: the image the fleet runs now, a quarter
-/// again (or a guess when that cannot be read).
-async fn room_needed(pg: &PgPool) -> u64 {
+/// The image's own size: the one the fleet runs now (or a guess when that
+/// cannot be read).
+async fn image_size(pg: &PgPool) -> u64 {
     let state = images::load_state(pg).await.ok();
     let current = state
         .and_then(|s| s.current)
@@ -431,13 +611,20 @@ async fn room_needed(pg: &PgPool) -> u64 {
     .await
     .ok()
     .and_then(|(out, _)| out.trim().parse::<u64>().ok())
-    .map(|size| size + size / 4)
     .unwrap_or(IMAGE_SIZE_GUESS)
 }
 
-/// Whether a pull of `need` bytes fits beside the share kept free.
-pub fn room_for(need: u64, free: u64, total: u64) -> bool {
-    let keep = (total as f64 * KEEP_FREE_SHARE) as u64;
+/// The room a download needs, and what is kept free beside it.
+pub fn room_rule(size: u64, total: u64, room: Room) -> (u64, u64) {
+    if room.urgent {
+        (size, total / 50)
+    } else {
+        (size + size / 4, (total as f64 * KEEP_FREE_SHARE) as u64)
+    }
+}
+
+/// Whether a pull of `need` bytes fits beside `keep` kept free.
+pub fn room_for(need: u64, keep: u64, free: u64) -> bool {
     free > need.saturating_add(keep)
 }
 
@@ -448,7 +635,12 @@ fn gib(n: u64) -> String {
 /// Bring a rollout's image to ready: on the host (pulled if it is not,
 /// giving way to other pulls and never past the disk's room), then — once —
 /// inspected, with what it said recorded.
-pub async fn prepare(pg: &PgPool, record: &ImageRecord, base: Option<&str>) -> Prepared {
+pub async fn prepare(
+    pg: &PgPool,
+    record: &ImageRecord,
+    configs: &[(String, String)],
+    room: Room,
+) -> Prepared {
     let image = record.image_ref();
     let key = format!("hermes-image:{}", record.digest);
     let ours = talaria_fleet_docker::pull_running(&key);
@@ -460,26 +652,39 @@ pub async fn prepare(pg: &PgPool, record: &ImageRecord, base: Option<&str>) -> P
                     "waits for another agent image download to finish first".into(),
                 );
             }
-            let need = room_needed(pg).await;
+            let size = image_size(pg).await;
             match docker_disk().await {
-                Some((free, total, root)) if !room_for(need, free, total) => {
-                    return Prepared::NoSpace(format!(
-                        "downloading {} needs about {} free on the docker disk ({root}) and a tenth of it kept free; it has {} of {}",
+                Some((free, total, root)) => {
+                    let (need, keep) = room_rule(size, total, room);
+                    if !room_for(need, keep, free) {
+                        return Prepared::NoSpace(format!(
+                            "downloading {} needs about {} free on the docker disk ({root}) and {} kept free; it has {} of {}",
+                            record.label(),
+                            gib(need),
+                            gib(keep),
+                            gib(free),
+                            gib(total)
+                        ));
+                    }
+                    tracing::info!(
+                        "[hermes] downloading {}: about {} needed on the docker disk ({root}), {} kept free, {} free of {}",
                         record.label(),
                         gib(need),
+                        gib(keep),
                         gib(free),
                         gib(total)
+                    );
+                }
+                // A disk this api cannot read is not one it may fill: held,
+                // unless an admin pressed Roll now (or Pin) for this rollout.
+                None if !room.forced => {
+                    return Prepared::NoSpace(format!(
+                        "the docker disk's free space cannot be read from this api (no /host mount, or a remote daemon), so {} is not downloaded on its own — Roll now downloads it anyway",
+                        record.label()
                     ));
                 }
-                Some((free, total, root)) => tracing::info!(
-                    "[hermes] downloading {}: about {} needed on the docker disk ({root}), {} free of {}",
-                    record.label(),
-                    gib(need),
-                    gib(free),
-                    gib(total)
-                ),
                 None => tracing::warn!(
-                    "[hermes] the docker disk's free space could not be read; downloading {} without the check",
+                    "[hermes] the docker disk's free space could not be read; downloading {} on Roll now",
                     record.label()
                 ),
             }
@@ -530,7 +735,7 @@ pub async fn prepare(pg: &PgPool, record: &ImageRecord, base: Option<&str>) -> P
     if record.runnable() {
         return Prepared::Ready;
     }
-    match inspect(&image, base).await {
+    match inspect(&image, &record.digest, configs).await {
         Ok(found) => {
             if !found.s6 {
                 return Prepared::Failed {
@@ -642,11 +847,83 @@ mod tests {
     }
 
     #[test]
-    fn a_pull_keeps_a_tenth_of_the_disk_free() {
+    fn a_pull_keeps_a_tenth_of_the_disk_free_and_a_rollback_needs_less() {
         let gb = 1_000_000_000u64;
-        assert!(room_for(6 * gb, 20 * gb, 100 * gb));
-        assert!(!room_for(6 * gb, 15 * gb, 100 * gb), "6 + 10 > 15");
-        assert!(!room_for(6 * gb, 5 * gb, 100 * gb));
+        let upgrade = Room::default();
+        let (need, keep) = room_rule(4 * gb, 100 * gb, upgrade);
+        assert_eq!((need, keep), (5 * gb, 10 * gb));
+        assert!(room_for(need, keep, 20 * gb));
+        assert!(!room_for(need, keep, 14 * gb), "5 + 10 > 14");
+        // A nearly full host can still roll back: the image and a fiftieth.
+        let rollback = Room {
+            urgent: true,
+            forced: true,
+        };
+        let (need, keep) = room_rule(4 * gb, 100 * gb, rollback);
+        assert_eq!((need, keep), (4 * gb, 2 * gb));
+        assert!(room_for(need, keep, 7 * gb));
+        assert!(!room_for(need, keep, 5 * gb));
+    }
+
+    #[test]
+    fn a_literal_credential_never_reaches_the_inspection_and_the_shape_does() {
+        let config = json!({
+            "model": { "api_key": "${LLM_API_KEY}", "base_url": "${LLM_BASE_URL}" },
+            "mcp_servers": {
+                "talaria": { "url": "http://x/mcp", "headers": { "X-Api-Key": "${TALARIA_AGENT_KEY}" } },
+                "vendor": { "headers": { "Authorization": "Bearer sk-live-123" }, "env": { "VENDOR_TOKEN": "tok-abc" } }
+            },
+            "platforms": { "slack": { "bot_token": "xoxb-1", "channel": "general" } },
+            "platform_toolsets": { "slack": ["web"] }
+        });
+        let r = redact(&config);
+        assert_eq!(r["model"]["api_key"], "${LLM_API_KEY}", "a handle stays");
+        assert_eq!(
+            r["mcp_servers"]["talaria"]["headers"]["X-Api-Key"],
+            "${TALARIA_AGENT_KEY}"
+        );
+        assert_eq!(
+            r["mcp_servers"]["vendor"]["headers"]["Authorization"],
+            REDACTED
+        );
+        assert_eq!(r["mcp_servers"]["vendor"]["env"]["VENDOR_TOKEN"], REDACTED);
+        assert_eq!(r["platforms"]["slack"]["bot_token"], REDACTED);
+        assert_eq!(
+            r["platforms"]["slack"]["channel"], "general",
+            "not a credential"
+        );
+        assert_eq!(r["platform_toolsets"], config["platform_toolsets"]);
+        assert_eq!(r["mcp_servers"]["talaria"]["url"], "http://x/mcp");
+        assert!(only_handles("Bearer ${X}") && !only_handles("${X}tail") && only_handles(""));
+    }
+
+    #[test]
+    fn every_agents_config_is_checked_once_and_the_default_when_there_are_none() {
+        let a =
+            "model:\n  model: a\nmcp_servers:\n  talaria:\n    url: http://x\n...\n".to_string();
+        let b = "model:\n  model: b\n".to_string();
+        let set = probe_configs(&[
+            ("ada".into(), a.clone()),
+            ("bo".into(), b),
+            ("cy".into(), a),
+        ]);
+        let names: Vec<&str> = set
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["ada", "bo"],
+            "an identical config is checked once"
+        );
+        assert_eq!(
+            set[0]["config"]["mcp_servers"]["talaria"]["url"],
+            "http://x"
+        );
+        let none = probe_configs(&[]);
+        assert_eq!(none[0]["name"], "the default config");
     }
 
     #[test]

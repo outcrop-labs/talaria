@@ -54,7 +54,7 @@ use talaria_hermes_images::{
     Status, Watched,
 };
 
-use crate::ops::{ChannelAgent, Fault, FleetOps, Snapshot, on_channel};
+use crate::ops::{Busy, ChannelAgent, Fault, FleetOps, Snapshot, on_channel};
 use crate::prepare::Prepared;
 
 /// The numbers the state machine runs on. [`Tuning::from_env`] is the real
@@ -156,6 +156,9 @@ enum Move {
     Skipped(String),
     /// The rollout's image is not on the host: prepare it again.
     Unprepared(String),
+    /// On a known-good image, recreated, and not healthy there: it is left
+    /// there (the best image there is), and an admin is told.
+    Left(String),
     /// It failed after the step recreated it.
     Failed(Fault),
 }
@@ -254,12 +257,24 @@ impl<'a> Engine<'a> {
         title: &str,
         body: &str,
     ) -> Result<(), StateError> {
+        self.alert_every(kind, topic, title, body, DAY).await
+    }
+
+    /// Tell every admin, at most once per `period` for `topic`.
+    async fn alert_every(
+        &self,
+        kind: &str,
+        topic: &str,
+        title: &str,
+        body: &str,
+        period: i64,
+    ) -> Result<(), StateError> {
         let now = self.now();
         let t = topic.to_string();
         let (_, due) = self
             .patch(move |s| {
-                s.alerted.retain(|_, at| now - *at < 7 * DAY);
-                if s.alerted.get(&t).is_some_and(|at| now - at < DAY) {
+                s.alerted.retain(|_, at| now - *at < 31 * DAY);
+                if s.alerted.get(&t).is_some_and(|at| now - at < period) {
                     return Ok(false);
                 }
                 s.alerted.insert(t, now);
@@ -490,13 +505,21 @@ impl<'a> Engine<'a> {
         }
         let agents = self.ops.agents().await?;
         let digests = self.effective(&state, &agents).await?;
+        // A catch-up that failed on this image is not opened again for it.
+        let behind = |slug: &str| state.catchup_failed.get(slug) != Some(&current);
         let mut next = match &state.pinned {
             Some(p) if p != &current || digests.iter().any(|(_, d)| d != p) => {
                 Some((p.clone(), RolloutKind::Pin))
             }
             Some(_) => None,
             None if stable_ok => Some((stable.clone().expect("stable_ok"), RolloutKind::Upgrade)),
-            None if digests.iter().any(|(_, d)| d != &current) => {
+            None if digests
+                .iter()
+                .any(|(a, d)| d != &current && behind(&a.slug)) =>
+            {
+                Some((current.clone(), RolloutKind::Catchup))
+            }
+            None if open.is_none() && self.drifted(&state, &digests).await? => {
                 Some((current.clone(), RolloutKind::Catchup))
             }
             None => None,
@@ -594,6 +617,61 @@ impl<'a> Engine<'a> {
             StateError::Superseded => Ok(None),
             e => Err(e.to_string()),
         })
+    }
+
+    /// Whether some agent's container is not what its assignment says — it
+    /// runs another image (the pre-pin `:latest` a host upgraded from main
+    /// still runs, a roll that failed) or is down with no Stop recorded — so
+    /// a catch-up onto the fleet's image is due. Asked at most every five
+    /// minutes (it asks docker about every agent).
+    async fn drifted(
+        &self,
+        state: &ChannelState,
+        digests: &[(ChannelAgent, String)],
+    ) -> Result<bool, String> {
+        let now = self.now();
+        let last = state
+            .extra
+            .get("driftCheckedAt")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if now - last < 5 * MINUTE && now >= last {
+            return Ok(false);
+        }
+        self.patch(move |s| {
+            s.extra
+                .insert("driftCheckedAt".into(), serde_json::json!(now));
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        let current = self.current(state);
+        let mut ids: std::collections::HashMap<String, Option<String>> = Default::default();
+        for (agent, d) in digests {
+            if state.catchup_failed.get(&agent.slug) == Some(&current) {
+                continue;
+            }
+            let Ok(snap) = self.ops.snapshot(agent).await else {
+                continue;
+            };
+            if snap.person_stopped(agent) || snap.status == "removing" {
+                continue;
+            }
+            if !snap.running {
+                return Ok(true);
+            }
+            if !ids.contains_key(d) {
+                let id = match self.record(d).await? {
+                    Some(rec) => self.ops.image_id(&rec.image_ref()).await.ok(),
+                    None => None,
+                };
+                ids.insert(d.clone(), id);
+            }
+            if ids[d].as_deref() != Some(snap.image.as_str()) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Advance the open rollout as far as its phase and the step's budget
@@ -695,7 +773,11 @@ impl<'a> Engine<'a> {
                 return Ok(false);
             }
         }
-        match self.ops.prepare(record).await {
+        let room = crate::prepare::Room {
+            urgent: r.kind == RolloutKind::Rollback,
+            forced: r.forced,
+        };
+        match self.ops.prepare(record, room).await {
             Prepared::Ready => {
                 let canary = watching(r, record) && r.canary_ok_at.is_none();
                 self.write(&r.id, move |r, _| {
@@ -820,9 +902,10 @@ impl<'a> Engine<'a> {
         match self.ops.canary(record).await {
             Ok(passed) => {
                 let now = self.now();
-                let _ = images::note_canary_ok(self.pg, &record.digest, now).await;
                 let text = format!("{label}: {passed}");
-                self.write(&r.id, |r, s| {
+                let digest = record.digest.clone();
+                self.write_fx(&r.id, move |r, s, fx| {
+                    fx.canary_ok(&digest, now);
                     r.phase = Phase::Rolling;
                     r.rolling_since = r.rolling_since.or(Some(now));
                     r.canary_ok_at = Some(now);
@@ -918,23 +1001,73 @@ impl<'a> Engine<'a> {
                 .await?;
             }
         }
+        if let Some(why) = r.halted.clone() {
+            self.detail(
+                &r.id,
+                &format!("stopped for an admin: {why} — Roll now goes on with the rest"),
+            )
+            .await?;
+            return Ok(false);
+        }
         let digests = self
             .effective(state, &agents)
             .await
             .map_err(StateError::Store)?;
-        // Still to move: every agent not yet on the image — for a rollback,
-        // every agent on the image it leaves, and no other.
-        let mut pending: Vec<&ChannelAgent> = digests
-            .iter()
-            .filter(|(a, d)| {
-                let to_move = match r.kind {
-                    RolloutKind::Rollback => r.from.as_deref() == Some(d.as_str()),
-                    _ => d != &r.digest,
-                };
-                to_move && !r.deferred.contains(&a.slug)
-            })
-            .map(|(a, _)| a)
-            .collect();
+        let target = match self.ops.image_id(&record.image_ref()).await {
+            Ok(t) => t,
+            Err(e) => {
+                let text = format!("{label} is not on the host ({e}): downloading it again");
+                self.write(&r.id, move |r, _| {
+                    r.phase = Phase::Preparing;
+                    r.detail = Some(text);
+                })
+                .await?;
+                return Ok(true);
+            }
+        };
+        let from_image = match r.from.as_deref() {
+            Some(d) if r.kind == RolloutKind::Rollback => match self.record(d).await {
+                Ok(Some(rec)) => self.ops.image_id(&rec.image_ref()).await.ok(),
+                _ => None,
+            },
+            _ => None,
+        };
+        // Still to move: every agent not settled on the image — assigned it
+        // AND its container running it (or stopped by a person) — so a roll
+        // that failed, a put-back that failed, or an agent left down is
+        // moved again, whatever the assignment says. For a rollback, only
+        // the agents on the image it leaves (or meant for its target).
+        let mut pending: Vec<&ChannelAgent> = Vec::new();
+        for (a, d) in &digests {
+            if r.deferred.contains(&a.slug)
+                || (r.kind == RolloutKind::Catchup
+                    && state.catchup_failed.get(&a.slug) == Some(&r.digest))
+            {
+                continue;
+            }
+            let snap = self.ops.snapshot(a).await.ok();
+            let settled = d == &r.digest
+                && snap
+                    .as_ref()
+                    .is_some_and(|s| s.person_stopped(a) || (s.running && s.image == target));
+            if settled {
+                continue;
+            }
+            let ours = match r.kind {
+                RolloutKind::Rollback => {
+                    r.from.as_deref() == Some(d.as_str())
+                        || d == &r.digest
+                        || snap
+                            .as_ref()
+                            .zip(from_image.as_ref())
+                            .is_some_and(|(s, f)| s.running && &s.image == f)
+                }
+                _ => true,
+            };
+            if ours {
+                pending.push(a);
+            }
+        }
         let (open, zone) = self.ops.window_open(&state.window).await;
         let gated = !(r.forced || r.kind == RolloutKind::Rollback) && !open;
         // Busy all window (or, for a forced rollout, for hours): left on the
@@ -962,15 +1095,15 @@ impl<'a> Engine<'a> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let s2 = skipped.clone();
-                let long: Vec<(String, String, String)> = self
+                let long: Vec<(String, String, String, String)> = self
                     .write(&r.id, move |r, s| {
                         let mut long = Vec::new();
                         for (slug, name, why) in s2 {
                             r.deferred.push(slug.clone());
-                            let n = s.deferrals.entry(slug).or_insert(0);
+                            let n = s.deferrals.entry(slug.clone()).or_insert(0);
                             *n += 1;
-                            if *n == DEFER_ALERT_AFTER {
-                                long.push((name, why, n.to_string()));
+                            if *n >= DEFER_ALERT_AFTER {
+                                long.push((slug, name, why, n.to_string()));
                             }
                         }
                         s.note(
@@ -980,14 +1113,22 @@ impl<'a> Engine<'a> {
                         long
                     })
                     .await?;
-                for (name, why, n) in long {
-                    self.alert_once(
+                for (slug, name, why, n) in long {
+                    let unknown = why.starts_with("whether it is working could not be read");
+                    let advice = if unknown {
+                        "Its Hermes does not say whether it is working, so the channel will not restart it on its own: Roll now (or Pin) restarts it anyway."
+                    } else {
+                        "It moves the first night it is free; Roll now moves it as soon as it is. A schedule that keeps it busy every night keeps it behind."
+                    };
+                    // Said again every week for as long as it lasts.
+                    self.alert_every(
                         crate::KIND_CHANNEL_STUCK,
-                        &format!("left-behind:{name}"),
+                        &format!("left-behind:{slug}"),
                         &format!("{name} has been left behind on an older Hermes image"),
                         &format!(
-                            "{name} was busy through {n} maintenance windows in a row ({why}), so it still runs an older agent image than the rest of the fleet. Roll now moves it when it is next free; a schedule that keeps it busy all night keeps it behind."
+                            "{name} was passed over through {n} maintenance windows in a row ({why}), so it does not run {label} like the rest of the fleet. {advice}"
                         ),
+                        7 * DAY,
                     )
                     .await?;
                 }
@@ -1060,6 +1201,12 @@ impl<'a> Engine<'a> {
                     .await?;
                     return Ok(true);
                 }
+                Move::Left(how) => {
+                    self.left(r, agent, how).await?;
+                    if r.kind == RolloutKind::Pin {
+                        return Ok(false);
+                    }
+                }
                 Move::Failed(fault) => {
                     said.push(
                         self.failed(r, record, &agent.slug, Some(agent), fault)
@@ -1070,6 +1217,28 @@ impl<'a> Engine<'a> {
             }
         }
         Ok(false)
+    }
+
+    /// Record an agent left unhealthy on a known-good image: out of this
+    /// rollout's way (it is where it should be), and — for a pin, an admin's
+    /// choice that may not suit today's config — the pin stops there.
+    async fn left(&self, r: &Rollout, agent: &ChannelAgent, how: String) -> Result<(), StateError> {
+        let slug = agent.slug.clone();
+        let halt = r.kind == RolloutKind::Pin;
+        self.write(&r.id, move |r, _| {
+            if !r.moved.contains(&slug) {
+                r.moved.push(slug.clone());
+            }
+            if !r.deferred.contains(&slug) {
+                r.deferred.push(slug);
+            }
+            r.agent = None;
+            if halt {
+                r.halted = Some(how.clone());
+            }
+            r.detail = Some(how);
+        })
+        .await
     }
 
     /// Record an agent that runs the rollout's image now.
@@ -1121,9 +1290,12 @@ impl<'a> Engine<'a> {
             }
         };
         let (id, digest) = (agent.id.clone(), r.digest.clone());
-        // Stopped by a person: assigned, and it starts on the image when a
-        // person starts it.
-        if snap.person_stopped() {
+        if snap.status == "removing" {
+            return Ok(Move::Skipped("docker is removing its container".into()));
+        }
+        // Stopped by a person (Talaria recorded their Stop): assigned, and
+        // it starts on the image when a person starts it.
+        if snap.person_stopped(agent) {
             self.write_fx(&r.id, move |_, _, fx| fx.assign(&id, &digest))
                 .await?;
             self.ops.render(agent).await;
@@ -1135,11 +1307,31 @@ impl<'a> Engine<'a> {
         // Down without being stopped (crash-looping, a recreate left half
         // done) is recreated whatever it is doing; so is every agent a
         // rollback moves — it is leaving something worse.
-        let down = snap.down_unwillingly();
+        let down = snap.down_unwillingly(agent);
         if !(down || r.kind == RolloutKind::Rollback) {
-            match self.ops.busy(agent).await {
-                Ok(Some(why)) => return Ok(Move::Skipped(why)),
-                Ok(None) => {}
+            // An image this build never inspected (the pre-pin `:latest` a
+            // host upgraded from main runs, an operator's) may predate the
+            // fields Talaria reads; its answer is read for what it has.
+            let lenient = !self
+                .record(&snap.image)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|rec| rec.contract_checked());
+            match self.ops.busy(agent, lenient).await {
+                Ok(Busy::Working(why)) => return Ok(Move::Skipped(why)),
+                // Not on its own; an admin's Roll now or Pin (whose confirm
+                // says so) restarts it anyway.
+                Ok(Busy::Unknown(why)) if !r.forced => {
+                    return Ok(Move::Skipped(format!(
+                        "{why}, so it is not restarted now (Roll now restarts it anyway)"
+                    )));
+                }
+                Ok(Busy::Unknown(why)) => tracing::info!(
+                    "[hermes] {}: {why} — restarted anyway, on an admin's Roll now or Pin",
+                    agent.display_name
+                ),
+                Ok(Busy::Idle) => {}
                 Err(e) => {
                     return Ok(Move::Skipped(format!(
                         "whether it is in use could not be read ({e})"
@@ -1193,8 +1385,13 @@ impl<'a> Engine<'a> {
                 format!("on {label}, and stopped by a person"),
             )),
             Err(Fault::Image(why)) if !watched && r.kind != RolloutKind::Catchup => {
+                let more = if r.kind == RolloutKind::Pin {
+                    " The pin stops here, before it moves anyone else onto it: Roll now goes on with the rest, or pin another version."
+                } else {
+                    ""
+                };
                 let text = format!(
-                    "{} is on {label}, but {why}. It stays there — {label} is the known good — so look at its logs.",
+                    "{} is on {label}, but {why}. It stays there — {label} is the known good — so look at its logs.{more}",
                     agent.display_name
                 );
                 self.alert_once(
@@ -1204,10 +1401,10 @@ impl<'a> Engine<'a> {
                     &text,
                 )
                 .await?;
-                Ok(Move::Moved(
-                    None,
-                    format!("on {label}, but {why} — left there, on the known good"),
-                ))
+                Ok(Move::Left(format!(
+                    "{}: on {label}, but {why} — left there, on the known good",
+                    agent.display_name
+                )))
             }
             Err(f) => Ok(Move::Failed(f)),
         }
@@ -1275,8 +1472,18 @@ impl<'a> Engine<'a> {
                 );
                 Ok(true)
             }
+            Move::Left(how) => {
+                self.left(r, agent, how).await?;
+                Ok(true)
+            }
             Move::Skipped(_) | Move::Unprepared(_) => Ok(false),
         }
+    }
+
+    /// Whether the container's process started in the last ten minutes.
+    fn started_lately(&self, snap: &Snapshot) -> bool {
+        chrono::DateTime::parse_from_rfc3339(&snap.started_at)
+            .is_ok_and(|t| self.now() - t.timestamp_millis() < 10 * MINUTE)
     }
 
     fn watch_of(&self, agent: &ChannelAgent, snap: &Snapshot, known: Vec<String>) -> Watched {
@@ -1286,6 +1493,7 @@ impl<'a> Engine<'a> {
             restart_count: snap.restart_count,
             moved_at: self.now(),
             known_faults: known,
+            started_at: snap.started_at.clone(),
             extra: Default::default(),
         }
     }
@@ -1315,11 +1523,17 @@ impl<'a> Engine<'a> {
             .map(|b| snap.restart_count - b.restart_count)
             .unwrap_or(0);
         if !snap.running {
-            if snap.down_unwillingly() || restarted > 0 {
-                return Err(Fault::Image(format!(
-                    "it keeps restarting ({} restarts since it came up)",
-                    restarted.max(1)
-                )));
+            if snap.down_unwillingly(agent) || restarted > 0 {
+                return Err(Fault::Image(
+                    if snap.status == "restarting" || restarted > 0 {
+                        format!(
+                            "it keeps restarting ({} restarts since it came up)",
+                            restarted.max(1)
+                        )
+                    } else {
+                        format!("it is down ({}) with no Stop recorded", snap.status)
+                    },
+                ));
             }
             return Ok(None);
         }
@@ -1330,6 +1544,20 @@ impl<'a> Engine<'a> {
             return Err(Fault::Infra(
                 "its container does not run the rollout's image after its roll — HERMES_IMAGE or a chassis override is in the way".into(),
             ));
+        }
+        // Started again with its restart count unchanged: the daemon did it
+        // (a reboot, a docker restart), not a crash — the host's, and it is
+        // watched from its new start.
+        if let Some(b) = baseline
+            && b.container == snap.container
+            && restarted == 0
+            && !b.started_at.is_empty()
+            && snap.started_at != b.started_at
+        {
+            return Ok(Some(Watched {
+                started_at: snap.started_at.clone(),
+                ..b.clone()
+            }));
         }
         if restarted > 0 {
             return Err(Fault::Image(format!(
@@ -1350,6 +1578,10 @@ impl<'a> Engine<'a> {
         }
         match snap.health.as_deref() {
             Some("unhealthy") => return Err(Fault::Image("its health check fails".into())),
+            // Just (re)started by the daemon: still in its start period.
+            Some("starting") if baseline.is_some() && self.started_lately(&snap) => {
+                return Ok(baseline.cloned());
+            }
             Some("starting") if baseline.is_some() => {
                 return Err(Fault::Image("it stopped reporting healthy".into()));
             }
@@ -1533,12 +1765,13 @@ impl<'a> Engine<'a> {
                 self.host_failed(r, record, touched.filter(|_| watched), &who, &why, masked)
                     .await
             }
+            // A catch-up's image already runs the fleet: never banned by an
+            // agent that fails on it, whether or not it has soaked here.
+            Fault::Image(why) if r.kind == RolloutKind::Catchup && touched.is_some() => {
+                let agent = touched.expect("checked");
+                self.catchup_failed(r, record, agent, &why).await
+            }
             Fault::Image(why) if !watched => {
-                if r.kind == RolloutKind::Catchup
-                    && let Some(agent) = touched
-                {
-                    return self.catchup_failed(r, record, agent, &why).await;
-                }
                 // A known-good image is never banned: asked again, and said.
                 self.host_failed(
                     r,
@@ -1553,7 +1786,11 @@ impl<'a> Engine<'a> {
                 .await
             }
             Fault::Image(why) => {
-                if r.strikes >= 1 && r.strike_on.as_deref() == Some(item) {
+                // The same thing twice is an answer; so are three failures
+                // of anything (an image that fails something new each time).
+                if (r.strikes >= 1 && r.strike_on.as_deref() == Some(item))
+                    || r.image_failures + 1 >= 3
+                {
                     return self.fail_candidate(r, record, &format!("{who}{why}")).await;
                 }
                 let back = touched.map(|a| (a.clone(), self.back_to(r, a)));
@@ -1570,6 +1807,7 @@ impl<'a> Engine<'a> {
                 let b = back.clone();
                 self.write_fx(&r.id, move |r, s, fx| {
                     r.strikes = 1;
+                    r.image_failures += 1;
                     r.strike_on = Some(item);
                     r.retry_at = Some(retry);
                     r.agent = None;
@@ -1686,26 +1924,48 @@ impl<'a> Engine<'a> {
         let now = self.now();
         let label = record.label();
         let back = self.back_to(r, agent);
+        // Something to go back to (the digest it ran): put back on it. An
+        // agent that was on no image of record (the pre-pin `:latest`) stays
+        // where the roll left it.
+        let put_back = back != r.digest;
         let text = format!(
-            "{}: failed on {label} ({why}) though the rest of the fleet runs it; it is back on what it ran and left for a person",
-            agent.display_name
+            "{}: failed on {label} ({why}) though the rest of the fleet runs it; {}. It is not moved onto {label} again until the fleet's image changes or an admin presses Roll now",
+            agent.display_name,
+            if put_back {
+                "it is back on what it ran"
+            } else {
+                "it is left where it is"
+            }
         );
         let t = text.clone();
-        let (slug, id, d) = (agent.slug.clone(), agent.id.clone(), back.clone());
+        let (slug, id, d, digest) = (
+            agent.slug.clone(),
+            agent.id.clone(),
+            back.clone(),
+            r.digest.clone(),
+        );
         self.write_fx(&r.id, move |r, s, fx| {
-            fx.assign(&id, &d);
+            if put_back {
+                fx.assign(&id, &d);
+            }
+            // Remembered past this catch-up: the next one leaves it alone.
+            s.catchup_failed.insert(slug.clone(), digest);
             r.deferred.push(slug);
             r.agent = None;
             s.note(now, t.clone());
             r.detail = Some(t);
         })
         .await?;
-        self.put_back(agent, &back).await;
-        self.alert_once(
+        if put_back {
+            self.put_back(agent, &back).await;
+        }
+        // Said once: it stays left until something changes.
+        self.alert_every(
             crate::KIND_UPDATE_FAILED,
             &format!("catchup:{}:{}", agent.slug, r.digest),
             &format!("{} failed on {label}", agent.display_name),
             &text,
+            30 * DAY,
         )
         .await?;
         Ok(text)
@@ -1816,7 +2076,12 @@ impl<'a> Engine<'a> {
             .filter(|(a, _)| !assigned.contains_key(&a.id))
             .map(|(a, d)| (a.id.clone(), d.clone()))
             .collect();
-        let becomes_good = watching(r, record);
+        // Good only once an agent ran it through the soak: an image nobody
+        // ran (every agent stopped or passed over) stays a candidate, so the
+        // next rollout to it still canaries and soaks it.
+        let ran = !r.watch.is_empty();
+        let becomes_good = watching(r, record) && ran;
+        let unproven = watching(r, record) && !ran;
         let left = r.deferred.len();
         let plural = |n: usize| if n == 1 { "" } else { "s" };
         let text = match r.kind {
@@ -1830,6 +2095,9 @@ impl<'a> Engine<'a> {
                 if left == 1 { "s" } else { "" }
             ),
             RolloutKind::Catchup => format!("the agents left behind run {label}"),
+            _ if unproven => format!(
+                "{label} is current, but no agent ran it through the soak ({left} passed over), so it is not called good: the next rollout to it is watched again"
+            ),
             _ if left > 0 => format!(
                 "{label} is good; {left} busy agent{} moves in a later window",
                 plural(left)
@@ -1853,6 +2121,9 @@ impl<'a> Engine<'a> {
                     _ => Some(before),
                 };
             }
+            // A catch-up failure is remembered against one image: once the
+            // fleet's image is another, the agent is tried again.
+            s.catchup_failed.retain(|_, d| d == &digest);
             s.current = Some(digest);
             r.phase = Phase::Done;
             r.agent = None;

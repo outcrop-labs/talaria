@@ -4699,6 +4699,11 @@ alter table tasks drop column if exists conversation_id`,
      digest text not null,
      updated_at timestamptz not null default now()
    )`,
+  // When a person last stopped the agent through Talaria's Stop (null once it
+  // is started again). The agent image channel trusts a stopped container as
+  // a person's choice only when this is set; one down without it was left
+  // down by something else (a roll that failed), and is started.
+  `alter table agent_defs add column if not exists stopped_at timestamptz`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

@@ -273,12 +273,35 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// started and was then stopped. And a stop asked while the image downloaded
 /// cancels the start ([`NOT_STARTED`]): the person's last word was stop.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
-    start_unless_stopped(department, pull_agent_image(pg, department), || async {
+    let up = start_unless_stopped(department, pull_agent_image(pg, department), || async {
         compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
             .await
             .map(UpOutcome::into_stderr)
     })
+    .await;
+    if up.is_ok() {
+        record_stop(pg, department, false).await;
+    }
+    up
+}
+
+/// Record (or clear) a person's Stop of the department's agent, in Postgres
+/// so every api process and every restart agrees: the agent image channel
+/// trusts a stopped container as a person's choice only when this says so —
+/// a container down without it was left down by something else, and is
+/// started. A failed write is logged; the stop itself already happened.
+async fn record_stop(pg: &PgPool, department: &str, stopped: bool) {
+    if let Err(e) = sqlx::query(
+        "update agent_defs set stopped_at = case when $2 then now() else null end \
+         where department = $1 and (stopped_at is null) = $2",
+    )
+    .bind(department)
+    .bind(stopped)
+    .execute(pg)
     .await
+    {
+        tracing::warn!("[fleet] {department}: the stop could not be recorded: {e}");
+    }
 }
 
 /// [`fleet_up`]'s order, apart from docker: read the department's stop mark,
@@ -321,7 +344,7 @@ pub const NOT_STARTED_SENTENCE: &str = "Not started: a stop was asked while the 
 /// recreate that fails or runs out its time cleans up after itself
 /// (`recover_failed_recreate`).
 pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, String> {
-    compose_up(
+    let up = compose_up(
         pg,
         department,
         &["up", "-d", "--force-recreate", "--no-deps"],
@@ -329,7 +352,12 @@ pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, Str
         false,
     )
     .await
-    .map(UpOutcome::into_stderr)
+    .map(UpOutcome::into_stderr);
+    // It is running again, whoever stopped it.
+    if up.is_ok() {
+        record_stop(pg, department, false).await;
+    }
+    up
 }
 
 /// [`fleet_recreate`] for a change being APPLIED, which must never start an
@@ -1768,6 +1796,7 @@ pub async fn fleet_stop(pg: &PgPool, department: &str) -> Result<String, String>
     // Before the move lock: a legacy agent's move home in progress reads it,
     // and leaves the agent in `-b` for this stop instead of starting it home.
     note_stop(department);
+    record_stop(pg, department, true).await;
     compose_verb(
         pg,
         department,

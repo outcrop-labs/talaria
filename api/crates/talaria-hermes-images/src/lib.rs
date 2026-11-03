@@ -156,9 +156,33 @@ impl ImageRecord {
         ))
     }
 
+    /// The problems the admin was shown when they accepted: only these are
+    /// accepted — one the canary finds later holds the release again.
+    pub fn accepted_problems(&self) -> Vec<String> {
+        self.inspect
+            .pointer("/contractAccepted/problems")
+            .and_then(|v| v.as_array())
+            .map(|ps| {
+                ps.iter()
+                    .filter_map(|p| p.as_str())
+                    .map(|p| p.chars().take(600).collect())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Held for an admin: a contract problem nobody accepted.
     pub fn held(&self) -> bool {
-        !self.contract_problems().is_empty() && self.contract_accepted().is_none()
+        let accepted = self.accepted_problems();
+        self.contract_problems()
+            .iter()
+            .any(|p| !accepted.contains(p))
+    }
+
+    /// Whether this build's inspection read the image (its contract was
+    /// checked): the answers it gives are the ones Talaria reads.
+    pub fn contract_checked(&self) -> bool {
+        self.inspect.get("contract").is_some()
     }
 
     /// Whether an admin may pin it: it ran well here, or it passed the
@@ -458,10 +482,12 @@ pub async fn note_contract(
     problems: &[String],
 ) -> Result<(), sqlx::Error> {
     let list = serde_json::json!(problems);
+    // Each problem once, however often the canary finds it.
     sqlx::query(
         "update hermes_images set inspect = jsonb_set(inspect, '{contract}', \
            coalesce(inspect->'contract', '{}'::jsonb) || jsonb_build_object('problems', \
-             coalesce(inspect#>'{contract,problems}', '[]'::jsonb) || $2::jsonb)), \
+             (select coalesce(jsonb_agg(distinct p), '[]'::jsonb) from jsonb_array_elements( \
+               coalesce(inspect#>'{contract,problems}', '[]'::jsonb) || $2::jsonb) p))), \
            updated_at = now() where digest = $1",
     )
     .bind(digest)
@@ -471,8 +497,9 @@ pub async fn note_contract(
     Ok(())
 }
 
-/// An admin accepts the contract problems: the image rolls out anyway.
-/// Answers whether the image had any.
+/// An admin accepts the contract problems listed now: the image rolls out
+/// anyway, and a problem found after this holds it again. Answers whether
+/// the image had any.
 pub async fn accept_contract(
     pg: &PgPool,
     digest: &str,
@@ -481,7 +508,8 @@ pub async fn accept_contract(
 ) -> Result<bool, sqlx::Error> {
     let changed = sqlx::query(
         "update hermes_images set inspect = inspect || jsonb_build_object('contractAccepted', \
-           jsonb_build_object('by', $2::text, 'at', $3::bigint)), updated_at = now() \
+           jsonb_build_object('by', $2::text, 'at', $3::bigint, \
+             'problems', coalesce(inspect#>'{contract,problems}', '[]'::jsonb))), updated_at = now() \
          where digest = $1 and jsonb_array_length(coalesce(inspect#>'{contract,problems}', '[]'::jsonb)) > 0",
     )
     .bind(digest)
@@ -675,6 +703,10 @@ pub struct Watched {
     /// image it left, normalized, so the soak counts only new ones.
     #[serde(default)]
     pub known_faults: Vec<String>,
+    /// docker's `State.StartedAt` for it when it came up: a restart by the
+    /// daemon (a reboot) moves this and not the restart count.
+    #[serde(default)]
+    pub started_at: String,
     /// Fields a later release wrote, kept as they are.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -734,6 +766,12 @@ pub struct Rollout {
     /// Image failures read as the host's because its disk was saturated
     /// (at most two; the next is judged as the image's).
     pub masked: u32,
+    /// Image failures of any kind this rollout has seen: the third bans,
+    /// whatever failed (an image that fails a different thing each time).
+    pub image_failures: u32,
+    /// A pin to a known-good version stopped at its first agent that would
+    /// not come up healthy, and why: it waits for an admin's Roll now.
+    pub halted: Option<String>,
     /// Not before this (epoch ms): a retry after a failure.
     pub retry_at: Option<i64>,
     /// When agents started moving.
@@ -807,6 +845,10 @@ pub struct ChannelState {
     pub alerted: std::collections::BTreeMap<String, i64>,
     /// How many windows in a row each agent (by slug) was left behind busy.
     pub deferrals: std::collections::BTreeMap<String, u32>,
+    /// Agents (by slug) that failed on the fleet's image in a catch-up, with
+    /// that image: never moved onto it again until the fleet's image changes
+    /// or an admin presses Roll now.
+    pub catchup_failed: std::collections::BTreeMap<String, String>,
     /// Fields a later release wrote, kept as they are.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -890,6 +932,7 @@ pub struct Effects {
     good: Vec<String>,
     bad: Vec<(String, String)>,
     allow: Vec<String>,
+    canary_ok: Vec<(String, i64)>,
 }
 
 impl Effects {
@@ -909,6 +952,10 @@ impl Effects {
     /// An admin lifts the digest's ban.
     pub fn allow_again(&mut self, digest: &str) {
         self.allow.push(digest.to_string());
+    }
+    /// The digest passed the canary here, at `at_ms`.
+    pub fn canary_ok(&mut self, digest: &str, at_ms: i64) {
+        self.canary_ok.push((digest.to_string(), at_ms));
     }
 }
 
@@ -993,6 +1040,17 @@ where
         )
         .bind(digest)
         .bind(reason)
+        .execute(&mut *tx)
+        .await
+        .map_err(store)?;
+    }
+    for (digest, at) in &fx.canary_ok {
+        sqlx::query(
+            "update hermes_images set inspect = inspect || jsonb_build_object('canaryOkAt', $2::bigint), \
+               updated_at = now() where digest = $1",
+        )
+        .bind(digest)
+        .bind(at)
         .execute(&mut *tx)
         .await
         .map_err(store)?;

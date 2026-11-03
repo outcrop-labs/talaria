@@ -362,7 +362,14 @@ async fn prune_if_due(engine: &Engine<'_>) -> Option<String> {
         return None;
     }
     let state = engine.load().await.ok()?;
-    if state.rollout.as_ref().is_some_and(Rollout::open) {
+    // Not while agents move; a rollout still preparing or waiting (one held
+    // for disk room among them) is no reason not to make room — the plan
+    // keeps its image and the one it leaves.
+    if state
+        .rollout
+        .as_ref()
+        .is_some_and(|r| r.open() && !matches!(r.phase, Phase::Preparing | Phase::Waiting))
+    {
         return None;
     }
     PRUNED_AT.store(now, Ordering::Relaxed);
@@ -445,6 +452,15 @@ pub async fn roll_now_with(e: &Engine<'_>) -> Result<String, String> {
         return Err(why);
     }
     let state = e.load().await.map_err(|x| x.to_string())?;
+    if !state.catchup_failed.is_empty() {
+        // An admin acting is the signal to try left-behind agents again.
+        e.patch(|s| {
+            s.catchup_failed.clear();
+            Ok(())
+        })
+        .await
+        .map_err(|x| x.to_string())?;
+    }
     if !state.rollout.as_ref().is_some_and(Rollout::open) {
         e.open_rollout().await?;
     }
@@ -455,8 +471,9 @@ pub async fn roll_now_with(e: &Engine<'_>) -> Result<String, String> {
                     r.forced = true;
                     r.retry_at = None;
                     // A person is watching: the host gets its first chance
-                    // again.
+                    // again, and a pin stopped at an unhealthy agent goes on.
                     r.infra_failures = 0;
+                    r.halted = None;
                     true
                 }
                 None => false,

@@ -188,7 +188,7 @@ pub async fn get_json(url: &str, bearer: Option<&str>) -> Result<(u16, serde_jso
 /// not exist is a snapshot with `exists: false`; docker failing to answer is
 /// an error.
 pub async fn snapshot(container: &str) -> Result<Snapshot, String> {
-    let format = "{{.Id}}|{{.Image}}|{{.State.Status}}|{{.State.Running}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}";
+    let format = "{{.Id}}|{{.Image}}|{{.State.Status}}|{{.State.Running}}|{{.RestartCount}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.State.StartedAt}}";
     match docker(
         &["inspect", "--format", format, container],
         Duration::from_secs(30),
@@ -205,8 +205,8 @@ pub async fn snapshot(container: &str) -> Result<Snapshot, String> {
 pub fn parse_snapshot(out: &str) -> Snapshot {
     let mut p = out.trim().split('|');
     let mut next = || p.next().unwrap_or("").trim().to_string();
-    let (container, image, status, running, restarts, health) =
-        (next(), next(), next(), next(), next(), next());
+    let (container, image, status, running, restarts, health, started_at) =
+        (next(), next(), next(), next(), next(), next(), next());
     Snapshot {
         exists: !container.is_empty(),
         running: running == "true",
@@ -215,6 +215,7 @@ pub fn parse_snapshot(out: &str) -> Snapshot {
         restart_count: restarts.parse().unwrap_or(0),
         container,
         image,
+        started_at,
     }
 }
 
@@ -331,7 +332,7 @@ pub async fn run_canary(
         .map_err(Fault::Infra)?;
     // A canary an interrupted step left behind goes first.
     canary_down(&files).await;
-    let verdict = canary_checks(&files, &image, known, record.contract_accepted().is_none()).await;
+    let verdict = canary_checks(&files, &image, known, &record.accepted_problems()).await;
     if verdict.is_err() {
         let tail = logs(&files.container, 40).await;
         tracing::warn!("[hermes] canary of {image} failed; its last log lines:\n{tail}");
@@ -362,16 +363,19 @@ fn new_fault(logs: &str, known: &[String]) -> Option<String> {
 /// The Hermes answers Talaria reads to tell whether an agent is working
 /// (busy.rs), asked of the canary: a shape Talaria cannot read holds the
 /// release for an admin.
-async fn contract_shapes(url: &str, key: &str) -> Vec<String> {
+async fn contract_shapes(url: &str, key: &str) -> Result<Vec<String>, String> {
+    // No answer at all (a refused connection, a timeout on a loaded host) is
+    // the host's to retry, never a changed contract; an answer of the wrong
+    // status or shape is the contract.
     let mut problems = Vec::new();
     match get_json(&format!("{url}/health/detailed"), Some(key)).await {
         Ok((200, body)) => {
-            if let Err(e) = crate::busy::hermes_busy(&body) {
+            if let Err(e) = crate::busy::hermes_busy(&body, false) {
                 problems.push(format!("/health/detailed: {e}"));
             }
         }
         Ok((status, _)) => problems.push(format!("/health/detailed answered {status}")),
-        Err(e) => problems.push(format!("/health/detailed: {e}")),
+        Err(e) => return Err(format!("the canary's /health/detailed: {e}")),
     }
     match get_json(&format!("{url}/api/jobs?include_disabled=true"), Some(key)).await {
         Ok((200, body)) => {
@@ -382,16 +386,16 @@ async fn contract_shapes(url: &str, key: &str) -> Vec<String> {
         Ok((status, _)) => problems.push(format!(
             "/api/jobs answered {status}: Talaria lists, adds and watches an agent's scheduled jobs through it"
         )),
-        Err(e) => problems.push(format!("/api/jobs: {e}")),
+        Err(e) => return Err(format!("the canary's /api/jobs: {e}")),
     }
-    problems
+    Ok(problems)
 }
 
 async fn canary_checks(
     files: &CanaryFiles,
     image: &str,
     known: &[String],
-    check_contract: bool,
+    accepted: &[String],
 ) -> Result<String, Fault> {
     // The image is on the host already (prepared), so compose's default pull
     // policy pulls nothing; no `--pull` flag, which an older compose refuses
@@ -459,11 +463,14 @@ async fn canary_checks(
         }
     };
     ask("at boot").await?;
-    if check_contract {
-        let problems = contract_shapes(&url, &files.api_key).await;
-        if !problems.is_empty() {
-            return Err(Fault::Held(problems));
-        }
+    // Always asked: an admin's Accept covers only the problems they were
+    // shown, and one found now that they were not holds the release again.
+    let mut problems = contract_shapes(&url, &files.api_key)
+        .await
+        .map_err(Fault::Infra)?;
+    problems.retain(|p| !accepted.contains(p));
+    if !problems.is_empty() {
+        return Err(Fault::Held(problems));
     }
     let runs = match (snapshot(&files.container).await, image_id(image).await) {
         (Ok(s), Ok(want)) => s.image == want,
@@ -561,8 +568,9 @@ mod tests {
             (s.status.as_str(), s.restart_count, s.health.as_deref()),
             ("restarting", 3, Some("starting"))
         );
-        let s = parse_snapshot("abc|sha256:img|running|true|0|\n");
+        let s = parse_snapshot("abc|sha256:img|running|true|0||2026-11-03T15:00:00.1Z\n");
         assert_eq!(s.health, None);
+        assert_eq!(s.started_at, "2026-11-03T15:00:00.1Z");
         assert!(!parse_snapshot("").exists);
     }
 }

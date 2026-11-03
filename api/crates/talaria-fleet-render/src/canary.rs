@@ -91,6 +91,15 @@ pub fn canary_config(base: Option<&str>, config_version: u64) -> String {
     )
 }
 
+/// An agent's rendered config.yaml as data (its first YAML document), or
+/// None when it does not parse to a mapping.
+pub fn rendered_config(text: &str) -> Option<Map<String, Value>> {
+    let first = text.split("\n...").next().unwrap_or(text);
+    serde_yaml_ng::from_str::<Value>(first)
+        .ok()
+        .and_then(|v| v.as_object().cloned())
+}
+
 /// The canary's config as data: what [`canary_config`] writes. The channel's
 /// inspection hands it to a candidate's own config migration, so the keys
 /// Talaria writes are the ones checked.

@@ -37,7 +37,7 @@
 
 use sqlx::PgPool;
 
-use crate::ops::ChannelAgent;
+use crate::ops::{Busy, ChannelAgent};
 
 /// A conversation with a message this recent is a person mid-conversation.
 pub const RECENT_CHAT_MINUTES: i32 = 10;
@@ -133,15 +133,37 @@ pub fn why_busy(s: DbSignals) -> Option<String> {
 
 /// What Hermes' `/health/detailed` says of the work in hand: `Ok(None)`
 /// idle, `Ok(Some)` busy and why, `Err` a shape Talaria cannot read.
-pub fn hermes_busy(body: &serde_json::Value) -> Result<Option<String>, String> {
-    let runs = body
+///
+/// `lenient`: the agent runs an image this build never inspected — the
+/// pre-pin `:latest` a host upgraded from main still runs (v0.21.4 here),
+/// or an operator's — which may predate the live counts. Its answer is
+/// read for what it has (`active_agents`, `gateway_busy`); its scheduled
+/// jobs and the database then judge the rest. An image this build did
+/// inspect had its answer checked by the canary, so a missing field there
+/// is a shape Talaria cannot read.
+pub fn hermes_busy(body: &serde_json::Value, lenient: bool) -> Result<Option<String>, String> {
+    if !body.is_object() {
+        return Err("it did not answer a JSON object".into());
+    }
+    let empty = serde_json::json!({});
+    let runs = match body
         .pointer("/api_server/active_runs")
         .and_then(|v| v.as_i64())
-        .ok_or("it has no api_server.active_runs, the count of turns in flight")?;
-    let queues = body
+    {
+        Some(n) => n,
+        None if lenient => 0,
+        None => {
+            return Err("it has no api_server.active_runs, the count of turns in flight".into());
+        }
+    };
+    let queues = match body
         .pointer("/readiness/checks/background_queues")
         .filter(|v| v.is_object())
-        .ok_or("it has no readiness.checks.background_queues")?;
+    {
+        Some(q) => q,
+        None if lenient => &empty,
+        None => return Err("it has no readiness.checks.background_queues".into()),
+    };
     let count = |v: Option<&serde_json::Value>| v.and_then(|v| v.as_i64()).unwrap_or(0);
     let queued = count(queues.get("active_api_runs"));
     let delegated = count(queues.get("active_delegations"));
@@ -190,9 +212,6 @@ pub fn cron_busy(body: &serde_json::Value, now_ms: i64) -> Result<Option<String>
         j.pointer(ptr).and_then(|v| v.as_str()).and_then(parse_when)
     };
     for job in jobs {
-        if job.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
-            continue;
-        }
         let name = job
             .get("name")
             .and_then(|v| v.as_str())
@@ -206,6 +225,10 @@ pub fn cron_busy(body: &serde_json::Value, now_ms: i64) -> Result<Option<String>
         let live = job.get("live_execution").is_some_and(|v| v.is_object());
         if claimed || live {
             return Ok(Some(format!("its scheduled job \"{name}\" is running")));
+        }
+        // A paused job runs nothing more (one paused mid-run is caught above).
+        if job.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+            continue;
         }
         if let Some(at) = when(job, "/next_run_at")
             && at >= now_ms - 60_000
@@ -221,16 +244,15 @@ pub fn cron_busy(body: &serde_json::Value, now_ms: i64) -> Result<Option<String>
     Ok(None)
 }
 
-/// Not restarted now: what it is doing cannot be read.
-fn unknown(why: impl std::fmt::Display) -> Option<String> {
-    Some(format!(
-        "whether it is working could not be read ({why}), so it is not restarted now"
-    ))
+/// Not restarted now (but by an admin's Roll now or Pin): what it is doing
+/// cannot be read.
+fn unknown(why: impl std::fmt::Display) -> Busy {
+    Busy::Unknown(format!("whether it is working could not be read ({why})"))
 }
 
-/// Why the agent is in use, or None. An answer that cannot be read is a
-/// reason too (`unknown`), never idle.
-pub async fn busy(pg: &PgPool, agent: &ChannelAgent) -> Result<Option<String>, sqlx::Error> {
+/// What the agent's work comes to. An answer that cannot be read is
+/// [`Busy::Unknown`], never idle; see [`hermes_busy`] for `lenient`.
+pub async fn busy(pg: &PgPool, agent: &ChannelAgent, lenient: bool) -> Result<Busy, sqlx::Error> {
     let Some(entry) = talaria_fleet_layout::read_manifest()
         .await
         .into_iter()
@@ -241,8 +263,8 @@ pub async fn busy(pg: &PgPool, agent: &ChannelAgent) -> Result<Option<String>, s
     let base = entry.url.trim_end_matches('/').to_string();
     let key = entry.key.as_deref();
     match crate::probe::get_json(&format!("{base}/health/detailed"), key).await {
-        Ok((200, body)) => match hermes_busy(&body) {
-            Ok(Some(why)) => return Ok(Some(why)),
+        Ok((200, body)) => match hermes_busy(&body, lenient) {
+            Ok(Some(why)) => return Ok(Busy::Working(why)),
             Ok(None) => {}
             Err(e) => return Ok(unknown(format!("/health/detailed: {e}"))),
         },
@@ -251,7 +273,7 @@ pub async fn busy(pg: &PgPool, agent: &ChannelAgent) -> Result<Option<String>, s
     }
     match crate::probe::get_json(&format!("{base}/api/jobs?include_disabled=true"), key).await {
         Ok((200, body)) => match cron_busy(&body, talaria_agent_auth::now_ms()) {
-            Ok(Some(why)) => return Ok(Some(why)),
+            Ok(Some(why)) => return Ok(Busy::Working(why)),
             Ok(None) => {}
             Err(e) => return Ok(unknown(format!("/api/jobs: {e}"))),
         },
@@ -260,7 +282,10 @@ pub async fn busy(pg: &PgPool, agent: &ChannelAgent) -> Result<Option<String>, s
         Ok((status, _)) => return Ok(unknown(format!("/api/jobs answered {status}"))),
         Err(e) => return Ok(unknown(format!("/api/jobs: {e}"))),
     }
-    Ok(why_busy(db_signals(pg, agent).await?))
+    Ok(match why_busy(db_signals(pg, agent).await?) {
+        Some(why) => Busy::Working(why),
+        None => Busy::Idle,
+    })
 }
 
 #[cfg(test)]
@@ -312,17 +337,17 @@ mod tests {
     fn both_images_health_reads_idle_and_a_turn_in_flight_reads_busy() {
         for body in [HEALTH_V0226, HEALTH_V0224] {
             let mut v = json(body);
-            assert_eq!(hermes_busy(&v), Ok(None), "idle as captured");
+            assert_eq!(hermes_busy(&v, false), Ok(None), "idle as captured");
             v["api_server"]["active_runs"] = serde_json::json!(1);
             assert_eq!(
-                hermes_busy(&v).unwrap().as_deref(),
+                hermes_busy(&v, false).unwrap().as_deref(),
                 Some("Hermes reports 1 turn in flight")
             );
             let mut v = json(body);
             v["readiness"]["checks"]["background_queues"]["active_delegations"] =
                 serde_json::json!(2);
             assert!(
-                hermes_busy(&v)
+                hermes_busy(&v, false)
                     .unwrap()
                     .unwrap()
                     .contains("2 delegated tasks")
@@ -338,7 +363,7 @@ mod tests {
             serde_json::json!({ "gateway_busy": false, "active_agents": 0, "readiness": { "active_api_runs": 0 } }),
             serde_json::json!({ "status": "ok" }),
         ] {
-            assert!(hermes_busy(&body).is_err(), "{body}");
+            assert!(hermes_busy(&body, false).is_err(), "{body}");
         }
     }
 
