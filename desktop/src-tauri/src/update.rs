@@ -342,12 +342,7 @@ pub fn push(app: &AppHandle) {
         if inner.pushed == offer {
             return;
         }
-        // The log says when the chip's state changes, not each percent.
-        let kind = |o: &Option<Offer>| {
-            o.as_ref()
-                .map(|o| (o.version.clone(), o.install, o.busy, o.error.is_some()))
-        };
-        let said = kind(&inner.pushed) != kind(&offer);
+        let said = worth_a_line(&inner.pushed, &offer);
         inner.pushed = offer.clone();
         said
     };
@@ -368,6 +363,16 @@ pub fn push(app: &AppHandle) {
     for webview in commands::instance_pages(app) {
         let _ = webview.eval(&js);
     }
+}
+
+/// The log says when the chip's state changes (a version, how it installs,
+/// installing or not, failed or not), not each percent of a download.
+fn worth_a_line(before: &Option<Offer>, now: &Option<Offer>) -> bool {
+    let kind = |o: &Option<Offer>| {
+        o.as_ref()
+            .map(|o| (o.version.clone(), o.install, o.busy, o.error.is_some()))
+    };
+    kind(before) != kind(now)
 }
 
 /// The window's titlebar mode: where the chip goes in a page.
@@ -1383,6 +1388,47 @@ mod tests {
         };
         assert!(!inner.end_install(false));
         assert!(inner.error.unwrap().contains("signature"));
+    }
+
+    #[test]
+    fn the_log_says_when_the_chip_changes_not_each_percent() {
+        let base = Offer {
+            version: "0.13.0".into(),
+            install: "updater",
+            busy: true,
+            progress: Some(4),
+            how: None,
+            error: None,
+        };
+        let at = |p| {
+            Some(Offer {
+                progress: Some(p),
+                ..base.clone()
+            })
+        };
+        // A download's progress: one line for the whole run.
+        assert!(!worth_a_line(&at(4), &at(14)));
+        assert!(!worth_a_line(&at(14), &at(99)));
+        // What changes the chip: each a line.
+        assert!(worth_a_line(&None, &at(4)));
+        assert!(worth_a_line(&at(99), &None));
+        let failed = Some(Offer {
+            busy: false,
+            error: Some("The download stopped.".into()),
+            ..base.clone()
+        });
+        assert!(worth_a_line(&at(40), &failed));
+        let newer = Some(Offer {
+            version: "0.13.1".into(),
+            ..base.clone()
+        });
+        assert!(worth_a_line(&at(40), &newer));
+        let idle = Some(Offer {
+            busy: false,
+            progress: None,
+            ..base.clone()
+        });
+        assert!(worth_a_line(&idle, &at(0)));
     }
 
     #[test]
