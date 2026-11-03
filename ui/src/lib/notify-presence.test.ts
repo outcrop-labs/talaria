@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ACK_MAX,
   CLIENT_KEY,
+  ackKey,
   clientId,
   clientState,
   createAckBatcher,
@@ -16,6 +17,7 @@ import {
   remintClientId,
   resetPresenceForTests,
   startHeartbeat,
+  type AckRow,
   type ClientSignals,
 } from './notify-presence'
 import type { PresenceBody } from './notify-wire'
@@ -208,19 +210,62 @@ describe('createAckBatcher (I-18)', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
   const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+  const row = (n: number, seq = 1): AckRow => ({ id: id(n), seq, createdAt: `2026-11-02T12:00:0${seq % 10}.000Z` })
 
-  it('batches for 500 ms, drops what is not a row id, and acks each id once', async () => {
+  it('batches for 500 ms, drops what is not a row id, and acks each version once', async () => {
     const post = vi.fn(async (_ids: string[]) => {})
     const b = createAckBatcher(post)
-    b.add([id(1), 'talaria-summary', ''])
-    b.add([id(2), id(1)])
+    b.add([row(1), { id: 'talaria-summary' }, { id: '' }])
+    b.add([row(2), row(1)])
     expect(post).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(500)
     expect(post).toHaveBeenCalledTimes(1)
     expect(post.mock.calls[0]?.[0]).toEqual([id(1), id(2)])
-    b.add([id(1)])
+    b.add([row(1)])
     await vi.advanceTimersByTimeAsync(1000)
     expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  // desktop-1: the second DM of a conversation folds into the SAME row (same
+  // id, a new seq and createdAt) and the server forgets the first version's
+  // ack and re-arms the deferred push. A batcher that acks an id only once
+  // drops the re-alert's ack, and the phone buzzes 60 s later.
+  it('acks a re-alert again: the same row id at a newer seq', async () => {
+    const post = vi.fn(async (_ids: string[]) => {})
+    const b = createAckBatcher(post)
+    b.add([row(1, 7)])
+    await vi.advanceTimersByTimeAsync(500)
+    b.add([row(1, 9)]) // the re-alert, toasted or bannered
+    expect(b.queued()).toEqual([id(1)])
+    await vi.advanceTimersByTimeAsync(500)
+    expect(post.mock.calls.map((c) => c[0])).toEqual([[id(1)], [id(1)]])
+    b.add([row(1, 9)]) // that version again (a second tab's echo): nothing
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(post).toHaveBeenCalledTimes(2)
+  })
+
+  it('keys a row with no seq (filed before the contract) by its createdAt', async () => {
+    const post = vi.fn(async (_ids: string[]) => {})
+    const b = createAckBatcher(post)
+    b.add([{ id: id(3), seq: null, createdAt: '2026-11-02T12:00:00.000Z' }])
+    await b.flush()
+    b.add([{ id: id(3), seq: null, createdAt: '2026-11-02T12:00:00.000Z' }])
+    expect(b.queued()).toEqual([])
+    b.add([{ id: id(3), seq: null, createdAt: '2026-11-02T12:00:08.000Z' }])
+    await b.flush()
+    expect(post.mock.calls.map((c) => c[0])).toEqual([[id(3)], [id(3)]])
+    expect(ackKey({ id: id(3), seq: 4, createdAt: 'x' })).not.toBe(ackKey({ id: id(3), seq: 5, createdAt: 'x' }))
+  })
+
+  it('sends one id when two versions of a row are queued in one batch', async () => {
+    const post = vi.fn(async (_ids: string[]) => {})
+    const b = createAckBatcher(post)
+    b.add([row(4, 1)])
+    b.add([row(4, 2)])
+    await vi.advanceTimersByTimeAsync(500)
+    expect(post.mock.calls.map((c) => c[0])).toEqual([[id(4)]])
+    b.add([row(4, 1), row(4, 2)]) // both versions were acked by that one call
+    expect(b.queued()).toEqual([])
   })
 
   it('splits at the route cap and survives a failed post', async () => {
@@ -228,7 +273,7 @@ describe('createAckBatcher (I-18)', () => {
       throw new Error('500')
     })
     const b = createAckBatcher(post)
-    b.add(Array.from({ length: ACK_MAX + 5 }, (_, i) => id(i)))
+    b.add(Array.from({ length: ACK_MAX + 5 }, (_, i) => row(i)))
     await b.flush()
     expect(post.mock.calls.map((c) => c[0].length)).toEqual([ACK_MAX, 5])
   })

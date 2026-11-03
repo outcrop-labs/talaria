@@ -37,6 +37,25 @@
 // the subscription, so a browser that keeps opening Talaria keeps its row,
 // tried at most hourly).
 //
+// AN ENDPOINT IS A URL THE PERSON CHOSE. Whatever a session posts to
+// /api/push/subscribe is where this server POSTs, so the subscribe door
+// and the edge both walk the talaria-safe-fetch policy like every other
+// user-supplied URL: a public address (loopback, RFC1918, link-local — the
+// 169.254.169.254 metadata service — CGNAT, multicast and reserved space are
+// refused by name and by address before the POST, and again at connect time
+// by the resolver the socket dials through), and no redirect followed: a
+// push service answers 201, so a 3xx is an answer, not a hop. (The door
+// also wants https, the push services' own contract.) A refusal is
+// `PushFailure::Refused` and its text says only that — never the address a
+// name resolved to — because the test push and the devices list read the
+// error back to the person, and a refusal that named the inside address
+// would be the very oracle the rule closes. The operator's
+// TALARIA_FETCH_ALLOW_HOSTS (safe-fetch's escape hatch, and how a live suite
+// reaches a capture server on loopback) admits a push service on their own
+// network. A person keeps at most `DEVICES_PER_PERSON` subscriptions: filing
+// one more retires the longest-unseen, and a delivery reads at most that
+// many rows.
+//
 // The VAPID keypair is unsealed once and cached, keyed by the sealed string
 // the row holds: the cheap SELECT stays on every delivery, so a re-mint, a
 // restore or a key rotation's re-seal is seen at once (SE-15).
@@ -555,6 +574,10 @@ pub enum PushFailure {
     Connect(String),
     /// Anything else the transport refused (a request that never left).
     Other(String),
+    /// The endpoint is not one this server may reach — not a public address
+    /// (see the header). Never retried, and its text never names what the
+    /// endpoint resolved to.
+    Refused(String),
 }
 
 impl std::fmt::Display for PushFailure {
@@ -563,6 +586,7 @@ impl std::fmt::Display for PushFailure {
             PushFailure::Timeout(e) => write!(f, "timeout: {e}"),
             PushFailure::Connect(e) => write!(f, "connect: {e}"),
             PushFailure::Other(e) => write!(f, "{e}"),
+            PushFailure::Refused(e) => write!(f, "refused: {e}"),
         }
     }
 }
@@ -571,75 +595,176 @@ pub type PushResult = Result<PushAnswer, PushFailure>;
 
 pub type PostPushFn = Arc<dyn Fn(PushPost) -> BoxFuture<'static, PushResult> + Send + Sync>;
 
-/// Connect bound for one POST.
+/// Connect bound for one POST — and for the pre-flight resolution of its
+/// endpoint, which runs before the client's own clock starts.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Whole-exchange bound for one POST (connect, send, answer, body).
 const POST_TIMEOUT: Duration = Duration::from_secs(15);
 /// How much of a refusal's body is kept — enough for a reason code.
 const ANSWER_BODY_CHARS: usize = 512;
+/// The most bytes of an answer's body read off the wire: 512 characters at
+/// four bytes apiece. A body past it is dropped unread, not buffered.
+const ANSWER_BODY_BYTES: usize = ANSWER_BODY_CHARS * 4;
 
-/// The production edge over reqwest (rustls — the no-OpenSSL invariant is
-/// the whole reason this module is hand-rolled). One client, built once, and
-/// BOUNDED: a push service that accepts the connection and never answers
-/// used to hold the delivery for as long as it liked.
-pub fn real_post_push() -> PostPushFn {
+/// What a refused endpoint says to the person — the test push's `error` and
+/// the devices list's `lastError`. One sentence for every refusal: which
+/// rule fired, and what the name resolved to, stay in the server log.
+pub const ENDPOINT_REFUSED: &str = "not a public push service address";
+
+/// What the endpoint policy says about one push endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndpointVerdict {
+    /// Every address it resolves to is public (or the operator allowlisted
+    /// it in TALARIA_FETCH_ALLOW_HOSTS).
+    Public,
+    /// Not a public address, an internal-only name, or not an http(s) URL.
+    /// The reason names the address: it is for the server log, never for
+    /// the person.
+    Refused(String),
+    /// Its name did not resolve, or not within `CONNECT_TIMEOUT` — a
+    /// transport failure, not a verdict on the endpoint.
+    Unresolved(String),
+}
+
+/// The push endpoint policy — talaria-safe-fetch's: literal addresses and
+/// internal-only names refused outright, a name resolved and EVERY address
+/// it answers checked against the blocked table. The subscribe door asks it
+/// before a row files; the edge asks it before every POST (a row filed
+/// before this rule, or a name that has moved since). Resolution is bounded
+/// by `CONNECT_TIMEOUT`.
+pub async fn check_endpoint(endpoint: &str) -> EndpointVerdict {
+    match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        talaria_safe_fetch::assert_fetchable_url(endpoint),
+    )
+    .await
+    {
+        Ok(Ok(_)) => EndpointVerdict::Public,
+        // safe-fetch's own sentence for a name with no answer; every other
+        // refusal is a verdict on the address.
+        Ok(Err(e)) if e.0.starts_with("could not resolve") => EndpointVerdict::Unresolved(e.0),
+        Ok(Err(e)) => EndpointVerdict::Refused(e.0),
+        Err(_) => EndpointVerdict::Unresolved(format!(
+            "resolving it took over {} s",
+            CONNECT_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// The client every push POST rides. BOUNDED (a push service that accepts
+/// the connection and never answers used to hold the delivery for as long
+/// as it liked), NEVER follows a redirect (a 3xx comes back as the answer),
+/// and dials through safe-fetch's validating resolver, so the address the
+/// socket actually uses is checked again at connect time — the pre-flight
+/// check alone leaves a name free to answer differently a moment later.
+fn push_client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    let client = CLIENT
+    CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(Arc::new(talaria_safe_fetch::ValidatingResolver))
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(POST_TIMEOUT)
                 .build()
-                .unwrap_or_else(|e| {
-                    tracing::error!("[push] could not build the bounded client ({e}); falling back to the default");
-                    reqwest::Client::new()
-                })
+                .expect("the push client builds")
         })
-        .clone();
+        .clone()
+}
+
+/// Whether a transport error is the validating resolver refusing the
+/// address at connect time — its sentence ("refusing <host> — …") rides
+/// somewhere down reqwest's source chain.
+fn refused_at_connect(e: &reqwest::Error) -> bool {
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(c) = cause {
+        if c.to_string().starts_with("refusing ") {
+            return true;
+        }
+        cause = c.source();
+    }
+    false
+}
+
+/// The POST itself, over `client`, with no pre-flight: the edge's second
+/// half, apart so a test can drive the client against a loopback listener.
+async fn send_push(client: &reqwest::Client, post: PushPost) -> PushResult {
+    let mut req = client
+        .post(&post.endpoint)
+        .header("Authorization", &post.authorization);
+    for (name, value) in post_headers(&post) {
+        req = req.header(name, value);
+    }
+    let mut resp = req
+        .header("Content-Encoding", "aes128gcm")
+        .header("Content-Type", "application/octet-stream")
+        .body(post.body)
+        .send()
+        .await
+        .map_err(|e| {
+            if refused_at_connect(&e) {
+                tracing::warn!(
+                    "[push] the resolver refused a push endpoint's address at connect time"
+                );
+                PushFailure::Refused(ENDPOINT_REFUSED.into())
+            } else if e.is_timeout() {
+                PushFailure::Timeout(e.to_string())
+            } else if e.is_connect() {
+                PushFailure::Connect(e.to_string())
+            } else {
+                PushFailure::Other(e.to_string())
+            }
+        })?;
+    let status = resp.status().as_u16();
+    let retry_after = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    // The body is read under the same 15 s bound and only as far as the
+    // reason code needs; a service that answers the status and stalls (or
+    // floods) the body still settles.
+    let mut raw: Vec<u8> = Vec::new();
+    while raw.len() < ANSWER_BODY_BYTES {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => raw.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    raw.truncate(ANSWER_BODY_BYTES);
+    let body: String = String::from_utf8_lossy(&raw)
+        .chars()
+        .take(ANSWER_BODY_CHARS)
+        .collect();
+    Ok(PushAnswer {
+        status,
+        retry_after,
+        body,
+    })
+}
+
+/// The production edge over reqwest (rustls — the no-OpenSSL invariant is
+/// the whole reason this module is hand-rolled): the endpoint policy first,
+/// then one POST over the guarded client. A refused endpoint is never
+/// dialled.
+pub fn real_post_push() -> PostPushFn {
+    let client = push_client();
     Arc::new(move |post: PushPost| {
         let client = client.clone();
         Box::pin(async move {
-            let mut req = client
-                .post(&post.endpoint)
-                .header("Authorization", &post.authorization);
-            for (name, value) in post_headers(&post) {
-                req = req.header(name, value);
+            match check_endpoint(&post.endpoint).await {
+                EndpointVerdict::Public => {}
+                EndpointVerdict::Refused(why) => {
+                    tracing::warn!("[push] not posting to a subscription endpoint: {why}");
+                    return Err(PushFailure::Refused(ENDPOINT_REFUSED.into()));
+                }
+                EndpointVerdict::Unresolved(why) => {
+                    return Err(PushFailure::Connect(format!(
+                        "the push service's name did not resolve ({why})"
+                    )));
+                }
             }
-            let resp = req
-                .header("Content-Encoding", "aes128gcm")
-                .header("Content-Type", "application/octet-stream")
-                .body(post.body)
-                .send()
-                .await
-                .map_err(|e| {
-                    if e.is_timeout() {
-                        PushFailure::Timeout(e.to_string())
-                    } else if e.is_connect() {
-                        PushFailure::Connect(e.to_string())
-                    } else {
-                        PushFailure::Other(e.to_string())
-                    }
-                })?;
-            let status = resp.status().as_u16();
-            let retry_after = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.trim().parse::<u64>().ok());
-            // The body is read under the same 15 s bound; a service that
-            // answers the status and stalls the body still settles.
-            let body: String = resp
-                .text()
-                .await
-                .unwrap_or_default()
-                .chars()
-                .take(ANSWER_BODY_CHARS)
-                .collect();
-            Ok(PushAnswer {
-                status,
-                retry_after,
-                body,
-            })
+            send_push(&client, post).await
         })
     })
 }
@@ -843,13 +968,18 @@ pub const SKIP_CAP_MIN: i32 = 60;
 /// backoff — it timed out last time (no status, a `timeout:` error) or has
 /// failed `FAILURES_TO_SKIP` times running, and its last attempt is within
 /// 2^failures minutes (`SKIP_CAP_MIN` at most). A 2xx resets `failures`, so
-/// the window closes itself; the per-device test ignores it.
+/// the window closes itself; the per-device test ignores it. At most
+/// `DEVICES_PER_PERSON` of them, the most recently seen: the filing cap keeps
+/// a person under it, and this keeps a person filed past it before the cap
+/// existed from fanning one notification out to every row.
 const DELIVERY_ROWS: &str = "select endpoint, p256dh, auth from push_subscriptions \
      where user_id = $1::uuid \
        and not (last_attempt_at is not null \
                 and (failures >= 3 or (last_status is null and last_error like 'timeout:%')) \
                 and last_attempt_at > now() \
-                    - least(power(2, greatest(failures, 1)), 60) * interval '1 minute')";
+                    - least(power(2, greatest(failures, 1)), 60) * interval '1 minute') \
+     order by last_seen_at desc, created_at desc, id \
+     limit 20";
 
 pub fn classify(result: &PushResult) -> Tend {
     match result {
@@ -1403,6 +1533,89 @@ pub async fn list_devices(
         .collect())
 }
 
+/// The most device browsers one person keeps. A real person has a handful
+/// (a laptop, a phone, a second browser); without a ceiling one session
+/// could file hundreds and turn every notification into as many POSTs.
+pub const DEVICES_PER_PERSON: i64 = 20;
+
+/// One device browser's subscription as the subscribe door files it.
+pub struct FiledSubscription<'a> {
+    pub user_id: &'a str,
+    pub endpoint: &'a str,
+    pub p256dh: &'a str,
+    pub auth: &'a str,
+    /// The filing session's hash, so signing out retires this row and no other.
+    pub session_hash: Option<&'a str>,
+    /// As `stored_user_agent` cleaned it.
+    pub user_agent: Option<&'a str>,
+}
+
+/// File (or re-file) one device browser, then hold its person to
+/// `DEVICES_PER_PERSON`: the row just filed always stays, and of the rest the
+/// most recently seen are kept — a browser that keeps opening Talaria
+/// re-files on every boot, so what goes is the device nobody has opened in
+/// longest. Upsert on the endpoint: a browser that re-subscribes overwrites
+/// its own row, and a row whose endpoint moved to another account is CLAIMED
+/// (one endpoint is one browser, whoever is signed into it now). A re-file
+/// of the same keys keeps its failure count (every boot re-files, and a row
+/// the service keeps refusing must still reach its prune); new keys are a
+/// new subscription and start clean; a re-file without a User-Agent keeps
+/// the name it had. Answers how many rows the cap retired. The retiring
+/// runs after the filing and on its own: a failed sweep is logged and the
+/// subscription still stands.
+pub async fn file_subscription(
+    pg: &PgPool,
+    sub: &FiledSubscription<'_>,
+) -> Result<u64, sqlx::Error> {
+    sqlx::query(
+        "insert into push_subscriptions (user_id, endpoint, p256dh, auth, session_hash, user_agent) \
+         values ($1::uuid, $2, $3, $4, $5, $6) \
+         on conflict (endpoint) do update \
+         set user_id = excluded.user_id, p256dh = excluded.p256dh, \
+             auth = excluded.auth, last_seen_at = now(), \
+             session_hash = excluded.session_hash, \
+             user_agent = coalesce(excluded.user_agent, push_subscriptions.user_agent), \
+             failures = case when push_subscriptions.p256dh = excluded.p256dh \
+                              and push_subscriptions.auth = excluded.auth \
+                             then push_subscriptions.failures else 0 end",
+    )
+    .bind(sub.user_id)
+    .bind(sub.endpoint)
+    .bind(sub.p256dh)
+    .bind(sub.auth)
+    .bind(sub.session_hash)
+    .bind(sub.user_agent)
+    .execute(pg)
+    .await?;
+    match sqlx::query(
+        "delete from push_subscriptions where id in ( \
+           select id from push_subscriptions \
+           where user_id = $1::uuid and endpoint <> $2 \
+           order by last_seen_at desc, created_at desc, id \
+           offset $3)",
+    )
+    .bind(sub.user_id)
+    .bind(sub.endpoint)
+    .bind(DEVICES_PER_PERSON - 1)
+    .execute(pg)
+    .await
+    {
+        Ok(r) => {
+            if r.rows_affected() > 0 {
+                tracing::info!(
+                    "[push] a person filed past {DEVICES_PER_PERSON} devices; retired the {} seen longest ago",
+                    r.rows_affected()
+                );
+            }
+            Ok(r.rows_affected())
+        }
+        Err(e) => {
+            tracing::warn!("[push] the per-person device cap did not run: {e}");
+            Ok(0)
+        }
+    }
+}
+
 /// Retire one of the caller's own device browsers; false when no row of
 /// theirs has that id (another person's id answers the same false).
 pub async fn delete_device(pg: &PgPool, user_id: &str, id: &str) -> Result<bool, sqlx::Error> {
@@ -1875,6 +2088,11 @@ mod tests {
             retry_delay(0, &Err(PushFailure::Other("o".into())), &p),
             None
         );
+        // A refused endpoint is a verdict, not a hiccup: never retried.
+        assert_eq!(
+            retry_delay(0, &Err(PushFailure::Refused(ENDPOINT_REFUSED.into())), &p),
+            None
+        );
         // Final answers are final.
         for code in [201, 400, 403, 404, 410, 413] {
             assert_eq!(retry_delay(0, &answer(code, None, ""), &p), None, "{code}");
@@ -1884,6 +2102,10 @@ mod tests {
     // The backoff window's numbers live in SQL; the consts name them.
     #[test]
     fn the_backoff_window_is_the_named_rule() {
+        // A delivery reads at most the per-person cap, newest-seen first.
+        assert!(DELIVERY_ROWS.ends_with(&format!(
+            "order by last_seen_at desc, created_at desc, id limit {DEVICES_PER_PERSON}"
+        )));
         assert!(DELIVERY_ROWS.contains(&format!("failures >= {FAILURES_TO_SKIP}")));
         assert!(DELIVERY_ROWS.contains(&format!(", {SKIP_CAP_MIN}) * interval '1 minute'")));
         assert!(DELIVERY_ROWS.contains("last_error like 'timeout:%'"));
@@ -1936,6 +2158,14 @@ mod tests {
         assert_eq!(classify(&answer(500, None, "")), Tend::Failed);
         assert_eq!(classify(&answer(413, None, "")), Tend::Failed);
         assert_eq!(classify(&answer(429, None, "")), Tend::Failed);
+        // A refusal is counted and kept like any failure; the error it
+        // stores says what happened and nothing about where.
+        let refused: PushResult = Err(PushFailure::Refused(ENDPOINT_REFUSED.into()));
+        assert_eq!(classify(&refused), Tend::Failed);
+        assert_eq!(
+            error_text(&refused).as_deref(),
+            Some("refused: not a public push service address")
+        );
         assert_eq!(
             classify(&Err(PushFailure::Timeout("t".into()))),
             Tend::Failed
@@ -2101,5 +2331,178 @@ mod tests {
         assert!(!e.chars().any(char::is_control));
         assert!(e.starts_with("500 alert(1) [31mxxx"), "{e}");
         assert_eq!(plain_error("410  Gone\n"), "410 Gone");
+    }
+
+    // ── The edge's endpoint policy (security-1) ─────────────────────────────
+
+    /// A loopback listener that answers every connection with `reply` and
+    /// counts them. Returns its port and the count.
+    async fn listener(
+        reply: impl Fn(u16) -> Vec<u8> + Send + Sync + 'static,
+    ) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback listener binds");
+        let port = l.local_addr().unwrap().port();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = l.accept().await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock.write_all(&reply(port)).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (port, hits)
+    }
+
+    fn post_to(endpoint: String) -> PushPost {
+        PushPost {
+            endpoint,
+            authorization: "vapid t=x, k=y".into(),
+            body: vec![0u8; 16],
+            ttl_secs: None,
+            urgency: None,
+            topic: None,
+        }
+    }
+
+    /// The SSRF the release sweep reproduced: a member files an endpoint
+    /// inside the server's network, fires the test push, and reads back what
+    /// answered. The production edge must refuse every such endpoint WITHOUT
+    /// dialling it — the loopback listener is never reached — and say the
+    /// same refusal for each, naming no address.
+    #[tokio::test]
+    async fn the_edge_never_dials_an_endpoint_inside_the_network() {
+        let (port, hits) =
+            listener(|_| b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n".to_vec()).await;
+        let edge = real_post_push();
+        for endpoint in [
+            format!("https://127.0.0.1:{port}/push"),
+            format!("https://localhost:{port}/push"),
+            format!("https://[::1]:{port}/push"),
+            format!("https://[::ffff:127.0.0.1]:{port}/push"),
+            format!("http://127.0.0.1:{port}/push"),
+            "https://169.254.169.254/latest/meta-data/".to_string(),
+            "https://10.255.255.1/x".to_string(),
+            "https://192.168.254.254/x".to_string(),
+            "https://box.internal/x".to_string(),
+        ] {
+            let got = edge(post_to(endpoint.clone())).await;
+            assert_eq!(
+                got.as_ref().err().map(ToString::to_string).as_deref(),
+                Some("refused: not a public push service address"),
+                "{endpoint} -> {got:?}"
+            );
+        }
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no inside endpoint was ever dialled"
+        );
+    }
+
+    /// No redirect is followed: a push service answers 201, so a 3xx comes
+    /// back as the answer and its Location is never dialled. (The client is
+    /// driven directly against a loopback LITERAL — dialled without the
+    /// resolver — because the policy in front of it refuses loopback.)
+    #[tokio::test]
+    async fn the_push_client_hands_a_redirect_back_instead_of_following_it() {
+        let (port, hits) = listener(|port| {
+            format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{port}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .into_bytes()
+        })
+        .await;
+        let got = send_push(
+            &push_client(),
+            post_to(format!("http://127.0.0.1:{port}/push")),
+        )
+        .await;
+        assert_eq!(got.map(|a| a.status), Ok(302), "the 302 is the answer");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the Location was never dialled"
+        );
+    }
+
+    /// The connect-time half: a NAME the pre-flight passed but that resolves
+    /// inside when the socket dials is refused by the validating resolver,
+    /// and reads as the same refusal. (`localhost` resolves to loopback on
+    /// every host; the client alone has no name rule, only the resolver.)
+    #[tokio::test]
+    async fn the_push_client_refuses_an_inside_address_at_connect_time() {
+        let (port, hits) =
+            listener(|_| b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n".to_vec()).await;
+        let got = send_push(
+            &push_client(),
+            post_to(format!("http://localhost:{port}/push")),
+        )
+        .await;
+        assert_eq!(got, Err(PushFailure::Refused(ENDPOINT_REFUSED.into())));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// An answer's body is read only as far as the reason code needs: a
+    /// service that answers a refusal with a megabyte is cut at 512
+    /// characters, not buffered whole.
+    #[tokio::test]
+    async fn an_answer_body_is_read_only_as_far_as_its_reason() {
+        let (port, _) = listener(|_| {
+            let mut r = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 1048576\r\n\r\n".to_vec();
+            r.extend(std::iter::repeat_n(b'x', 1 << 20));
+            r
+        })
+        .await;
+        let got = send_push(
+            &push_client(),
+            post_to(format!("http://127.0.0.1:{port}/push")),
+        )
+        .await
+        .expect("an answer");
+        assert_eq!(got.status, 400);
+        assert_eq!(got.body.chars().count(), ANSWER_BODY_CHARS);
+    }
+
+    /// The policy the subscribe door and the edge share: a public address.
+    /// Literals and internal names never touch DNS; a name nothing answers
+    /// for is a transport failure, not a verdict. (https is the door's own
+    /// rule, pinned in its validation test.)
+    #[tokio::test]
+    async fn the_endpoint_policy_wants_a_public_address() {
+        assert_eq!(
+            check_endpoint("https://8.8.8.8/fcm/send/x").await,
+            EndpointVerdict::Public
+        );
+        for refused in [
+            "ftp://8.8.8.8/x",
+            "not a url",
+            "https://127.0.0.1/x",
+            "https://[::1]/x",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://10.0.0.5/x",
+            "https://172.16.0.1/x",
+            "https://192.168.1.1/x",
+            "https://100.64.0.1/x",
+            "https://[fd00::1]/x",
+            "https://localhost/x",
+            "https://push.local/x",
+            "https://box.internal/x",
+        ] {
+            assert!(
+                matches!(check_endpoint(refused).await, EndpointVerdict::Refused(_)),
+                "{refused}"
+            );
+        }
+        // RFC 6761: .invalid never resolves.
+        assert!(matches!(
+            check_endpoint("https://push.invalid/x").await,
+            EndpointVerdict::Unresolved(_)
+        ));
     }
 }
