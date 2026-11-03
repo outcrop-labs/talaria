@@ -266,7 +266,7 @@ it, even when every row survives:
 | drop a primary key or unique constraint (a re-key) | its `ON CONFLICT (…)` names a target that is gone, and the write answers 500 |
 | delete an `app_settings` row (a setting moved elsewhere) | it reads the key and finds nothing |
 
-`bun run check` enforces this list on every statement appended after index 526
+`bun run check` enforces this list on every statement from index 526 on
 (the roll-safety guard in `scripts/check-invariants.mjs`). Such a statement
 must carry `-- contract: <what goes>, unread since <vX.Y.Z or #PR>` inside
 it, naming the release or pull request that stopped reading it. A
