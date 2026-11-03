@@ -11,8 +11,9 @@
 //
 // WHO. The same authority Start has over the agent (docs/PERMISSIONS.md,
 // "Agent managers"): its managers and admins. A failed hire whose def was
-// deleted since has no managers to ask; then the person who ran that hire
-// (the run's owner) or an admin. `agents.manage` alone does not reach an
+// deleted since has no managers to ask, and its retry CREATES the agent
+// again: then the person who ran that hire (the run's owner), if they still
+// hold `agents.manage`, or an admin. `agents.manage` alone does not reach an
 // agent somebody else manages.
 //
 // WHAT RUNS. A NEW agent-hire run with the failed run's own input, the
@@ -28,8 +29,8 @@
 //
 // REFUSED:
 // - 404: no such hire;
-// - 403: not this agent's manager (nor, for a deleted def, the hire's owner)
-//   and not an admin;
+// - 403: not this agent's manager (nor, for a deleted def, the hire's owner
+//   holding `agents.manage`) and not an admin;
 // - 409: a hire that did not fail; one that is not the NEWEST hire of its
 //   handle (a later hire, or this row's own retry, answered it — retrying a
 //   stale row would rewrite starter skills over an agent that moved on);
@@ -43,12 +44,13 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use talaria_api_facades::fleet::docker::has_run;
 use talaria_api_facades::runs::defs::agent_hire::agent_hire_run;
 use talaria_api_facades::runs::run::{EnqueueOptions, enqueue};
 use talaria_error::{house_error, internal};
 use talaria_realtime_watch::RealtimeDeps;
-use talaria_session::{SessionUser, require_user};
+use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_work_dispatch::dispatch_deps;
 
@@ -123,25 +125,158 @@ pub fn refusal_by_container(has_run: Option<bool>, name: &str) -> Option<(Status
     }
 }
 
-/// Whether the caller may act on the agent the failed hire was for.
-async fn may_act(
-    state: &AppState,
-    user: &SessionUser,
+/// Whether the caller may act on the agent the failed hire was for: an admin;
+/// the agent's managers while its def exists (Start's own rule,
+/// `manages_agent_slug`); and once the def is gone, the hire's owner — who
+/// must still hold `agents.manage`, because a retry then CREATES the agent
+/// again, and creating one is that permission's.
+pub async fn may_act(
+    pg: &PgPool,
+    user_id: &str,
+    role: &str,
     slug: &str,
     def_exists: bool,
     owner: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
-    if user.role == "admin" {
+    if role == "admin" {
         return Ok(true);
     }
     if def_exists {
-        talaria_agent_managers::manages_agent_slug(&state.pg, &user.id, &user.role, slug).await
-    } else {
-        Ok(owner == Some(user.id.as_str()))
+        return talaria_agent_managers::manages_agent_slug(pg, user_id, role, slug).await;
     }
+    if owner != Some(user_id) {
+        return Ok(false);
+    }
+    talaria_users::has_perm(pg, user_id, role, "agents.manage").await
 }
 
-type HireRow = (Value, String, Option<String>, bool, String, bool);
+/// The failed hire as the retry reads it, in one statement: its input, state
+/// and owner; whether it is the NEWEST hire of its handle (no other hire of
+/// the slug as new or newer); the retry's derived run id; and whether the
+/// agent's def still exists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HireRead {
+    pub input: Value,
+    pub state: String,
+    pub owner: Option<String>,
+    pub newest: bool,
+    pub retry_id: String,
+    pub def_exists: bool,
+}
+
+pub async fn read_hire(pg: &PgPool, id: &str) -> Result<Option<HireRead>, sqlx::Error> {
+    let row: Option<(Value, String, Option<String>, bool, String, bool)> = sqlx::query_as(
+        "select r.input, r.state::text, r.owner_user_id::text, \
+                not exists (select 1 from runs n where n.kind = 'agent-hire' and n.id <> r.id \
+                            and n.input->>'slug' = r.input->>'slug' \
+                            and n.created_at >= r.created_at) as newest, \
+                md5('agent-hire retry of ' || r.id::text)::uuid::text as retry_id, \
+                exists (select 1 from agent_defs d where d.slug = r.input->>'slug') as def_exists \
+         from runs r where r.id = $1::uuid and r.kind = 'agent-hire'",
+    )
+    .bind(id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(
+        |(input, state, owner, newest, retry_id, def_exists)| HireRead {
+            input,
+            state,
+            owner,
+            newest,
+            retry_id,
+            def_exists,
+        },
+    ))
+}
+
+/// What the retry will run, once every refusal that needs no docker passed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetryPlan {
+    pub input: Value,
+    pub retry_id: String,
+    pub slug: String,
+    pub department: String,
+    pub name: String,
+    pub def_exists: bool,
+}
+
+/// The retry up to docker: read the hire, decide who may act, and refuse —
+/// or answer the plan. `Err` is the status and sentence the route answers.
+pub async fn plan_retry(
+    pg: &PgPool,
+    user_id: &str,
+    role: &str,
+    actor: &str,
+    id: &str,
+) -> Result<RetryPlan, (StatusCode, String)> {
+    let store = |what: &str, e: sqlx::Error| {
+        tracing::error!("[fleet/hires/retry] {what}: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the hire could not be read — see server logs".to_string(),
+        )
+    };
+    let hire = read_hire(pg, id)
+        .await
+        .map_err(|e| store("hire read failed", e))?
+        .ok_or((StatusCode::NOT_FOUND, "not found".to_string()))?;
+    let input = retry_input(&hire.input, actor).ok_or((
+        StatusCode::CONFLICT,
+        "this hire's input does not name an agent, so it cannot be run again".to_string(),
+    ))?;
+    let slug = input["slug"].as_str().unwrap_or_default().to_string();
+    let allowed = may_act(
+        pg,
+        user_id,
+        role,
+        &slug,
+        hire.def_exists,
+        hire.owner.as_deref(),
+    )
+    .await
+    .map_err(|e| store("manager read failed", e))?;
+    if let Some(refused) = refusal(&RetryFacts {
+        state: hire.state,
+        newest: hire.newest,
+        may_act: allowed,
+    }) {
+        return Err(refused);
+    }
+    let department = input["department"].as_str().unwrap_or_default().to_string();
+    let name = input["displayName"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .unwrap_or(&slug)
+        .to_string();
+    Ok(RetryPlan {
+        input,
+        retry_id: hire.retry_id,
+        slug,
+        department,
+        name,
+        def_exists: hire.def_exists,
+    })
+}
+
+/// After an enqueue failed: a run with the derived id exists, so this hire
+/// was retried already (a second tab, a second admin, a double click past
+/// the button's guard) — the 409. Asked of the row rather than read off the
+/// error: the run store re-wraps the insert's error, and its
+/// unique-violation code does not survive that (measured: two Retries at
+/// once got a 200 and a 500).
+pub async fn retried_already(pg: &PgPool, retry_id: &str) -> Option<(StatusCode, String)> {
+    let taken: bool = sqlx::query_scalar("select exists (select 1 from runs where id = $1::uuid)")
+        .bind(retry_id)
+        .fetch_one(pg)
+        .await
+        .unwrap_or(false);
+    taken.then(|| {
+        (
+            StatusCode::CONFLICT,
+            "this hire was retried already — its retry is on the roster".to_string(),
+        )
+    })
+}
 
 pub async fn post(
     State(state): State<AppState>,
@@ -152,58 +287,18 @@ pub async fn post(
     if let Some(gate) = talaria_params::uuid_gate_404(&id) {
         return Ok(gate);
     }
-    let row: Option<HireRow> = match sqlx::query_as(
-        "select r.input, r.state::text, r.owner_user_id::text, \
-                not exists (select 1 from runs n where n.kind = 'agent-hire' and n.id <> r.id \
-                            and n.input->>'slug' = r.input->>'slug' \
-                            and n.created_at >= r.created_at) as newest, \
-                md5('agent-hire retry of ' || r.id::text)::uuid::text as retry_id, \
-                exists (select 1 from agent_defs d where d.slug = r.input->>'slug') as def_exists \
-         from runs r where r.id = $1::uuid and r.kind = 'agent-hire'",
-    )
-    .bind(&id)
-    .fetch_optional(&state.pg)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return Ok(internal("[fleet/hires/retry] hire read failed", e)),
-    };
-    let Some((original, run_state, owner, newest, retry_id, def_exists)) = row else {
-        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
-    };
     let actor = talaria_session::actor_of(&user);
-    let Some(input) = retry_input(&original, &actor) else {
-        return Ok(house_error(
-            StatusCode::CONFLICT,
-            "this hire's input does not name an agent, so it cannot be run again",
-        ));
+    let plan = match plan_retry(&state.pg, &user.id, &user.role, &actor, &id).await {
+        Ok(plan) => plan,
+        Err((status, why)) => return Ok(house_error(status, &why)),
     };
-    let slug = input["slug"].as_str().unwrap_or_default().to_string();
-    let department = input["department"].as_str().unwrap_or_default().to_string();
-    let name = input["displayName"]
-        .as_str()
-        .filter(|n| !n.is_empty())
-        .unwrap_or(&slug)
-        .to_string();
-    let allowed = match may_act(&state, &user, &slug, def_exists, owner.as_deref()).await {
-        Ok(a) => a,
-        Err(e) => return Ok(internal("[fleet/hires/retry] manager read failed", e)),
-    };
-    let facts = RetryFacts {
-        state: run_state,
-        newest,
-        may_act: allowed,
-    };
-    if let Some((status, why)) = refusal(&facts) {
-        return Ok(house_error(status, &why));
-    }
     // Only a def that exists has a container to have run.
-    let ran = if def_exists {
-        has_run(&state.pg, &department).await
+    let ran = if plan.def_exists {
+        has_run(&state.pg, &plan.department).await
     } else {
         Some(false)
     };
-    if let Some((status, why)) = refusal_by_container(ran, &name) {
+    if let Some((status, why)) = refusal_by_container(ran, &plan.name) {
         return Ok(house_error(status, &why));
     }
 
@@ -217,12 +312,12 @@ pub async fn post(
     let deps = dispatch_deps(state.pg.clone(), redis, realtime);
     let row = match enqueue(
         agent_hire_run(),
-        input,
+        plan.input,
         EnqueueOptions {
-            id: Some(retry_id.clone()),
+            id: Some(plan.retry_id.clone()),
             owner_user_id: Some(user.id.clone()),
             subject_type: Some("agent-hire".into()),
-            subject_id: Some(slug),
+            subject_id: Some(plan.slug),
             phase: Some("queued".into()),
             start: Some(true),
         },
@@ -232,23 +327,8 @@ pub async fn post(
     {
         Ok(row) => row,
         Err(e) => {
-            // The derived id is taken: this hire was retried already (a
-            // second tab, a second admin, a double click past the button's
-            // guard). Asked of the row rather than read off the error: the
-            // run store re-wraps the insert's error, and its unique-violation
-            // code does not survive that (measured: two Retries at once got a
-            // 200 and a 500).
-            let taken: bool =
-                sqlx::query_scalar("select exists (select 1 from runs where id = $1::uuid)")
-                    .bind(&retry_id)
-                    .fetch_one(&state.pg)
-                    .await
-                    .unwrap_or(false);
-            if taken {
-                return Ok(house_error(
-                    StatusCode::CONFLICT,
-                    "this hire was retried already — its retry is on the roster",
-                ));
+            if let Some((status, why)) = retried_already(&state.pg, &plan.retry_id).await {
+                return Ok(house_error(status, &why));
             }
             return Ok(internal("[fleet/hires/retry] hire enqueue failed", e));
         }

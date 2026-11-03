@@ -47,6 +47,36 @@ struct HiresBody {
     hires: Vec<AgentHireView>,
 }
 
+/// Which `runs` rows the roster lists, as a filter on `runs` (a live-DB test
+/// reads it on its own, without the list's ordering and limit): every live
+/// hire, any hire that ended in the last ten minutes, and an UNANSWERED
+/// failure however old — failed, the newest hire of its handle, its def still
+/// there.
+macro_rules! listed {
+    () => {
+        "kind = 'agent-hire' \
+         and (state in ('queued', 'running') \
+              or (state in ('done', 'error') and updated_at > now() - interval '10 minutes') \
+              or (state = 'error' \
+                  and exists (select 1 from agent_defs d where d.slug = runs.input->>'slug') \
+                  and not exists (select 1 from runs n where n.kind = 'agent-hire' \
+                                  and n.id <> runs.id \
+                                  and n.input->>'slug' = runs.input->>'slug' \
+                                  and n.created_at >= runs.created_at)))"
+    };
+}
+
+/// [`listed!`] as a constant, for the live-DB test.
+pub const HIRES_LISTED: &str = listed!();
+
+const HIRES_SQL: &str = concat!(
+    "select id::text, input, state::text, phase, error, \
+            (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms \
+     from runs where ",
+    listed!(),
+    " order by created_at desc limit 12"
+);
+
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     require_perm(&state, &headers, "agents.manage").await?;
 
@@ -55,24 +85,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     let _ = agent_hire_run();
 
     type HireRow = (String, Value, String, Option<String>, Option<String>, i64);
-    let rows: Result<Vec<HireRow>, sqlx::Error> = sqlx::query_as(
-        "select id::text, input, state::text, phase, error, \
-                (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms \
-         from runs \
-         where kind = 'agent-hire' \
-           and (state in ('queued', 'running') \
-                or (state in ('done', 'error') and updated_at > now() - interval '10 minutes') \
-                or (state = 'error' \
-                    and exists (select 1 from agent_defs d where d.slug = runs.input->>'slug') \
-                    and not exists (select 1 from runs n where n.kind = 'agent-hire' \
-                                    and n.id <> runs.id \
-                                    and n.input->>'slug' = runs.input->>'slug' \
-                                    and n.created_at >= runs.created_at))) \
-         order by created_at desc \
-         limit 12",
-    )
-    .fetch_all(&state.pg)
-    .await;
+    let rows: Result<Vec<HireRow>, sqlx::Error> =
+        sqlx::query_as(HIRES_SQL).fetch_all(&state.pg).await;
     let rows = match rows {
         Ok(r) => r,
         Err(e) => return Ok(internal("[fleet] hires query failed", e)),

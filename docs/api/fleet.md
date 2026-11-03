@@ -46,7 +46,7 @@
 | [`/api/fleet/endpoints/{id}/available`](#apifleetendpointsidavailable) | GET | `admin` |
 | [`/api/fleet/federate`](#apifleetfederate) | POST | `admin` |
 | [`/api/fleet/hires`](#apifleethires) | GET | `session` + `perm:agents.manage` |
-| [`/api/fleet/hires/{id}/retry`](#apifleethiresidretry) | POST | `session` |
+| [`/api/fleet/hires/{id}/retry`](#apifleethiresidretry) | POST | `session` + `perm:agents.manage` |
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
 | [`/api/fleet/render`](#apifleetrender) | POST | `admin` |
 | [`/api/fleet/resources`](#apifleetresources) | GET | `admin` |
@@ -521,7 +521,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hires_id_retry.rs`](..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | — | `{ok, hire}` | 200, 403, 404, 409, 500, 503 | — |
+| POST | `session` + `perm:agents.manage` | — | `{ok, hire}` | 200, 403, 404, 409, 500, 503 | — |
 
 ## `/api/fleet/reconcile`
 

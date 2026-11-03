@@ -23,39 +23,58 @@ use talaria_state::AppState;
 pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     let user = require_admin(&state, &headers).await?;
     let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
-    // The audit names the act, not its outcome: it is written once the
-    // reconcile answered, or once it is still going past the bound.
-    let audit = {
-        let pg = state.pg.clone();
-        let actor = actor_of(&user);
-        move || {
-            tokio::spawn(async move {
-                log_audit(
-                    &pg,
-                    AuditEntry {
-                        actor: &actor,
-                        action: "fleet.reconcile",
-                        target_type: "fleet",
-                        target_id: Some("fleet"),
-                        target_label: None,
-                        before: None,
-                        after: None,
-                    },
-                )
-                .await;
-            });
-        }
-    };
+    // The outcome is recorded INSIDE the detached task, so a reconcile that
+    // outlives the request's 75 s keeps it: each agent that would not start
+    // is a warning, and after the 202 nobody reads the answer. Logged, and
+    // the audit row carries it — there is no surface for the browser to
+    // read a finished background reconcile from, and the roster shows each
+    // agent's container as it comes up.
     let pg = state.pg.clone();
-    let reconciled = match run_detached(
-        async move { reconcile_fleet(&pg, &sb).await },
-        ANSWER_WITHIN,
-    )
-    .await
-    {
+    let actor = actor_of(&user);
+    let op = async move {
+        let r = reconcile_fleet(&pg, &sb).await;
+        let after = match &r {
+            Ok(res) => {
+                tracing::info!(
+                    "[fleet] reconcile: started {:?}, already running {:?}, {} warning(s)",
+                    res.started,
+                    res.already_running,
+                    res.warnings.len()
+                );
+                for w in &res.warnings {
+                    tracing::warn!("[fleet] reconcile: {w}");
+                }
+                json!({
+                    "started": res.started,
+                    "alreadyRunning": res.already_running,
+                    "warnings": res.warnings,
+                })
+            }
+            Err(e) => {
+                tracing::warn!("[fleet] reconcile failed: {e}");
+                json!({ "error": e })
+            }
+        };
+        tokio::spawn(async move {
+            log_audit(
+                &pg,
+                AuditEntry {
+                    actor: &actor,
+                    action: "fleet.reconcile",
+                    target_type: "fleet",
+                    target_id: Some("fleet"),
+                    target_label: None,
+                    before: None,
+                    after: Some(after),
+                },
+            )
+            .await;
+        });
+        r
+    };
+    let reconciled = match run_detached(op, ANSWER_WITHIN).await {
         Detached::Settled(r) => r,
         Detached::StillRunning => {
-            audit();
             return Ok((
                 StatusCode::ACCEPTED,
                 Json(json!({ "pending": true, "started": [], "alreadyRunning": [] })),
@@ -65,11 +84,8 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Result<R
         Detached::Lost(e) => Err(e),
     };
     Ok(match reconciled {
-        Ok(result) => {
-            audit();
-            // json(result) — UNwrapped (unlike /render).
-            Json(result).into_response()
-        }
+        // json(result) — UNwrapped (unlike /render).
+        Ok(result) => Json(result).into_response(),
         Err(_) => house_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "reconcile failed — see server logs",

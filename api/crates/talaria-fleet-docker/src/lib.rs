@@ -273,24 +273,44 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// started and was then stopped. And a stop asked while the image downloaded
 /// cancels the start ([`NOT_STARTED`]): the person's last word was stop.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
+    start_unless_stopped(department, pull_agent_image(pg, department), || async {
+        compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
+            .await
+            .map(UpOutcome::into_stderr)
+    })
+    .await
+}
+
+/// [`fleet_up`]'s order, apart from docker: read the department's stop mark,
+/// wait for `pull` (no lock held), take the move lock — not mid-way through a
+/// legacy agent's move home, so the `up` addresses wherever the agent is then
+/// — and run `up` only if no stop was asked of the department meanwhile.
+async fn start_unless_stopped<P, U, UF>(department: &str, pull: P, up: U) -> Result<String, String>
+where
+    P: std::future::Future<Output = Result<(), String>>,
+    U: FnOnce() -> UF,
+    UF: std::future::Future<Output = Result<String, String>>,
+{
     let mark = stop_mark(department);
-    pull_agent_image(pg, department).await?;
-    // Not mid-way through a legacy agent's move home: wait for one to end,
-    // so the `up` addresses wherever the agent is then.
+    pull.await?;
     let _moving = lock_move(department).await;
     if stopped_since(department, mark) {
         return Err(format!(
             "{NOT_STARTED} {department} was asked to stop while its image downloaded"
         ));
     }
-    compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
-        .await
-        .map(UpOutcome::into_stderr)
+    up().await
 }
 
 /// How [`fleet_up`]'s error starts when it started nothing because a stop was
 /// asked while the image downloaded — a person's choice, not a failure.
 pub const NOT_STARTED: &str = "not started:";
+
+/// What a person is told of a start [`fleet_up`] cancelled for a stop — the
+/// hire's row and the Start control say the same.
+pub const NOT_STARTED_SENTENCE: &str = "Not started: a stop was asked while the agent image \
+                                        downloaded. Press Start on the agent when you want it \
+                                        running.";
 
 /// Recreate a department's managed agent IN PLACE — the roll. Compose stops
 /// the running container (SIGTERM, then `stop_grace_period` before a KILL),
@@ -2350,6 +2370,53 @@ mod tests {
             w.see(Some(HealthWait::Healthy), s(90), true),
             Some(HealthWait::Healthy)
         );
+    }
+
+    #[tokio::test]
+    async fn a_stop_asked_while_the_image_downloads_cancels_the_start() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // The stop lands during the pull (no lock held), and the start that
+        // was waiting on the pull does not happen after it.
+        let started = Arc::new(AtomicBool::new(false));
+        let r = start_unless_stopped(
+            "cancel-ops",
+            async {
+                note_stop("cancel-ops");
+                Ok(())
+            },
+            || {
+                let started = started.clone();
+                async move {
+                    started.store(true, Ordering::SeqCst);
+                    Ok(String::new())
+                }
+            },
+        )
+        .await;
+        let e = r.unwrap_err();
+        assert!(e.starts_with(NOT_STARTED), "{e}");
+        assert!(
+            !started.load(Ordering::SeqCst),
+            "a stopped start must not run its up"
+        );
+
+        // No stop meanwhile: the up runs. A stop asked BEFORE the start read
+        // its mark is not this start's business.
+        note_stop("cancel-ops");
+        let r = start_unless_stopped("cancel-ops", async { Ok(()) }, || async {
+            Ok("up".to_string())
+        })
+        .await;
+        assert_eq!(r, Ok("up".to_string()));
+
+        // A failed pull is the answer, and nothing is started.
+        let r = start_unless_stopped(
+            "cancel-ops",
+            async { Err("no image".to_string()) },
+            || async { Err::<String, String>("the up ran after a failed pull".into()) },
+        )
+        .await;
+        assert_eq!(r, Err("no image".to_string()));
     }
 
     #[test]

@@ -293,9 +293,7 @@ where
 pub fn boot_failure_sentence(error: &str) -> String {
     if error.starts_with(talaria_fleet_docker::NOT_STARTED) {
         // A person stopped or retired the agent while its image downloaded.
-        return "Not started: a stop was asked while the agent image downloaded. Press Start on \
-                the agent when you want it running."
-            .to_string();
+        return talaria_fleet_docker::NOT_STARTED_SENTENCE.to_string();
     }
     if error.starts_with("could not pull the image") {
         // A row checkpointed at `boot` before the pull stage pulls in its up.
