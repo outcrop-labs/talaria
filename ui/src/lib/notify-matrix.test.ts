@@ -1,11 +1,17 @@
 // The matrix is the registry: these fixtures are the shape GET
 // /api/notifications serves (`classes[]`, trimmed to what the matrix reads).
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { decide, type DecideInput } from './notify-decide'
 import {
   atDefault,
   effectiveChannels,
   emailColumnNote,
   legacyRoute,
+  mailNote,
+  MATRIX_COLUMNS,
   matrixGroups,
   mergePatch,
   resetToDefault,
@@ -102,5 +108,86 @@ describe('the email column', () => {
   it('explains itself when the instance switch is off', () => {
     expect(emailColumnNote(true)).toBeNull()
     expect(emailColumnNote(false)).toMatch(/off for this instance/)
+  })
+})
+
+// The registry as classes.rs ships it (defaults and Needs you's 15-minute
+// mail), the labels included: the fine print below reads both.
+const real = (id: string, label: string, category: Category, d: [boolean, boolean, boolean], emailDelayMin = 0): ClassInfo => ({
+  ...cls(id, category, d),
+  label,
+  emailDelayMin,
+})
+const REGISTRY: ClassInfo[] = [
+  real('approval_pending', 'Approvals waiting on you', 'needs_you', [true, true, true], 15),
+  real('judge_escalation', 'Judge escalations', 'needs_you', [true, true, true], 15),
+  real('agent_blocked', 'Blocked agents', 'needs_you', [true, true, true], 15),
+  real('workchain_turn', 'Your turn in a workchain', 'needs_you', [true, true, true], 15),
+  real('mention', 'Mentions & shares', 'direct', [true, true, true]),
+  real('dm', 'Direct messages', 'direct', [true, true, true]),
+  real('participating', "Threads you're in", 'direct', [true, true, false]),
+  real('account', 'Your account', 'direct', [true, true, true]),
+  real('work_complete', 'Work finished', 'following', [false, false, false]),
+  real('workchain_paused', 'Workchains paused', 'following', [false, false, false]),
+  real('channel_activity', 'Channel activity', 'following', [true, true, true]),
+]
+
+describe('the missed-activity fine print (notify-web-4)', () => {
+  it('says what the registry mails: Channel activity is Following, and mailed by default', () => {
+    expect(mailNote(REGISTRY, undefined)).toBe('Needs you waits 15 minutes whatever you pick. Under Following, only Channel activity is mailed.')
+  })
+
+  it('follows the person’s own Email cells, not the defaults', () => {
+    const on = { work_complete: { inApp: true as const, desktop: false, push: false, email: true } }
+    expect(mailNote(REGISTRY, on)).toMatch(/Under Following, only Work finished and Channel activity are mailed\.$/)
+    const off = { channel_activity: { inApp: true as const, desktop: true, push: true, email: false } }
+    expect(mailNote(REGISTRY, off)).toMatch(/Nothing under Following is mailed\.$/)
+    const all = Object.fromEntries(
+      ['work_complete', 'workchain_paused', 'channel_activity'].map((id) => [id, { inApp: true as const, desktop: false, push: false, email: true }]),
+    )
+    expect(mailNote(REGISTRY, all)).toMatch(/Everything under Following is mailed too\.$/)
+  })
+
+  it('names a delay only where the registry has one, and no Following where none is served', () => {
+    expect(mailNote(REGISTRY.filter((c) => c.category === 'direct'), undefined)).toBe('')
+    expect(mailNote([real('approval_pending', 'A', 'needs_you', [true, true, true], 1)], undefined)).toBe('Needs you waits 1 minute whatever you pick.')
+  })
+
+  it('Settings reads its fine print from mailNote, not a sentence of its own', () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const section = readFileSync(join(here, '../routes/app/settings/NotificationsSection.svelte'), 'utf8')
+    expect(section).toMatch(/mailNote\(classes, data\?\.channels\)/)
+    expect(section).not.toMatch(/never mailed/i)
+  })
+})
+
+describe('the Desktop column says what Desktop does (notify-web-3)', () => {
+  // Desktop is the row's `alert` (I-15): on → `banner`, off → `feed`. The
+  // decider is the proof of what that means in a tab the person is looking at.
+  const looking: DecideInput = {
+    read: false,
+    self: { visible: true, focused: true, lastInputAt: 1_000_000 - 5_000 },
+    others: [],
+    isLeader: true,
+    now: 1_000_000,
+  }
+  const desktop = MATRIX_COLUMNS.find((c) => c.id === 'desktop')!
+
+  it('Desktop on is the pop-up where you look and the banner where you do not; off is neither', () => {
+    expect(decide({ ...looking, alert: 'banner' })).toBe('toast')
+    expect(decide({ ...looking, alert: 'banner', self: { visible: false, focused: false } })).toBe('banner')
+    expect(decide({ ...looking, alert: 'feed' })).toBe('none')
+    expect(decide({ ...looking, alert: 'feed', self: { visible: false, focused: false } })).toBe('none')
+    // …so the column names both, and never says it only acts while you are away.
+    expect(desktop.title).toMatch(/pop-up in Talaria while you are looking/)
+    expect(desktop.title).toMatch(/banner on this computer/)
+    expect(desktop.title).toMatch(/Off, neither shows/)
+    expect(desktop.title).not.toMatch(/while you are not looking at Talaria\.$/)
+  })
+
+  it('In-app does not claim the bell counts every notification: its badge is For you', () => {
+    const inApp = MATRIX_COLUMNS.find((c) => c.id === 'inApp')!
+    expect(inApp.title).not.toMatch(/counted on the bell/)
+    expect(inApp.title).toMatch(/badge counts Needs you and Direct/)
   })
 })

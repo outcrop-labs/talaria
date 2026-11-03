@@ -1625,18 +1625,13 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         routed.insert("plugins".into(), Value::Object(plugins));
         // The agent's own secrets, by name, so execute_code gets them too.
         let secret_names = talaria_agent_secrets::passthrough_names(pg, &def.id).await?;
-        fleet_env_passthrough(&mut routed, &secret_names);
-
-        fleet_approvals(&mut routed, def.developer);
-        fleet_nous_off(&mut routed);
-        fleet_delegation(&mut routed, def.max_children);
-        fleet_disabled_toolsets(&mut routed, &toolset_floor, &def.disabled_toolsets);
-        fleet_browser_local_close(&mut routed, &secret_names);
-        let browser_engine = fleet_browser_engine(&routed);
-        fleet_tool_loop_guardrails(&mut routed);
-        fleet_title_generation(&mut routed);
-        fleet_model_routes(&mut routed, &def.model);
-        fleet_config_version(&mut routed);
+        let browser_engine = fleet_owned_config(
+            &mut routed,
+            def,
+            &toolset_floor,
+            &secret_names,
+            &web_search.web,
+        );
         match talaria_model_efforts::EffortVoices::read(pg).await {
             Ok(voices) => {
                 let efforts = target_efforts(&voices, &version.config, &routed);
@@ -2587,6 +2582,41 @@ fn fleet_vision(
     }
 
     main.sees == Some(false) && reader.is_none() && !own_backend
+}
+
+/// The keys Talaria owns in every agent's config.yaml, applied over what the
+/// def authored, in this order: the secret passthrough, approvals, Nous off,
+/// delegation, the toolset floor, the org's Admin → Search choice, the
+/// local-browser close, the tool-loop guardrails, title generation, the model
+/// routes and the config version. The search choice is the `web:` keys of
+/// [`talaria_agent_web_search::render`], merged over the agent's own `web:`
+/// block. Returns whether the agent's department installs the browser engine
+/// ([`fleet_browser_engine`]), read once the toolsets are settled.
+///
+/// The steps live in one function so a test can run the same sequence the
+/// render runs. The `web:` merge was once dropped from that sequence by a
+/// branch merge (24ed46e2). After that no agent got the operator's search
+/// choice, while Admin → Search's preview still showed it.
+fn fleet_owned_config(
+    routed: &mut Map<String, Value>,
+    def: &RenderDef,
+    toolset_floor: &[String],
+    secret_names: &[String],
+    web: &[(&'static str, Value)],
+) -> bool {
+    fleet_env_passthrough(routed, secret_names);
+    fleet_approvals(routed, def.developer);
+    fleet_nous_off(routed);
+    fleet_delegation(routed, def.max_children);
+    fleet_disabled_toolsets(routed, toolset_floor, &def.disabled_toolsets);
+    talaria_agent_web_search::merge_into(routed, web);
+    fleet_browser_local_close(routed, secret_names);
+    let browser_engine = fleet_browser_engine(routed);
+    fleet_tool_loop_guardrails(routed);
+    fleet_title_generation(routed);
+    fleet_model_routes(routed, &def.model);
+    fleet_config_version(routed);
+    browser_engine
 }
 
 /// The approval policy, written whole every render: a def cannot author its
@@ -4928,6 +4958,72 @@ service:
             .iter()
             .map(|s| s.to_string())
             .collect()
+    }
+
+    /// Admin → Search as stored: SearXNG searches, Firecrawl reads pages,
+    /// and the public tiers are off. The workspace search URL is rendered.
+    fn searxng_and_firecrawl() -> talaria_agent_web_search::WebRender {
+        talaria_agent_web_search::render(
+            &talaria_agent_web_search::AgentWebSearch::from_stored(&json!({
+                "backend": "searxng",
+                "extractBackend": "firecrawl",
+                "keys": { "firecrawl": "v2:1:a:b:c" },
+                "allowKeylessPublicTiers": false,
+            })),
+            true,
+        )
+    }
+
+    /// The per-agent config the render writes, from `authored`, with `web`
+    /// as the render's search plan.
+    fn shaped(authored: Value, web: &[(&'static str, Value)]) -> Map<String, Value> {
+        let def = target("ada", "eng", 0).def;
+        let mut routed = authored.as_object().cloned().unwrap_or_default();
+        fleet_owned_config(&mut routed, &def, &mandatory(), &[], web);
+        routed
+    }
+
+    #[test]
+    fn the_admin_search_choice_is_written_into_the_agents_config() {
+        // The def's own `web:` block: a key the org choice does not own
+        // stays, and the backend it does own is replaced.
+        let routed = shaped(
+            json!({ "web": { "extract_char_limit": 9000, "search_backend": "ddgs" } }),
+            &searxng_and_firecrawl().web,
+        );
+        // Read back from the config.yaml text the render writes.
+        let written: Value =
+            serde_yaml_ng::from_str(&config_yaml_text("ada-eng", 1, &routed)).unwrap();
+        assert_eq!(
+            written["web"],
+            json!({
+                "extract_char_limit": 9000,
+                "search_backend": "searxng",
+                "extract_backend": "firecrawl",
+                "keyless_fallback": false,
+                "keyless_rescue": false,
+            })
+        );
+        // No choice adds no `web:` block, and leaves the def's own as it is.
+        let none = talaria_agent_web_search::render(&Default::default(), false);
+        assert!(none.web.is_empty());
+        assert!(!shaped(json!({}), &none.web).contains_key("web"));
+        assert_eq!(
+            shaped(json!({ "web": { "search_backend": "ddgs" } }), &none.web)["web"],
+            json!({ "search_backend": "ddgs" })
+        );
+    }
+
+    #[test]
+    fn a_new_admin_search_choice_moves_the_start_fingerprint() {
+        // `web:` is not one of LIVE_CONFIG_PATHS, so the render counts it as
+        // read at start: a changed choice recreates the container on the
+        // next roll.
+        let none = talaria_agent_web_search::render(&Default::default(), false);
+        assert_ne!(
+            start_config_fingerprint(&shaped(json!({}), &none.web)),
+            start_config_fingerprint(&shaped(json!({}), &searxng_and_firecrawl().web)),
+        );
     }
 
     #[test]

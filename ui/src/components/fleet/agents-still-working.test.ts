@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AgentContainers, AgentDef, FleetAction, FleetRollRow } from '@/lib/fleet-defs'
 
 // The note a control leaves when the route answers 202 (the verb outlived its
-// 210 s answer and goes on). The module's hooks pull svelte-query and the
+// 75 s answer and goes on). The module's hooks pull svelte-query and the
 // session; mocked away so the import resolves (see agents-roster-health.test.ts
 // for why this lives here and not beside routes/app/agents.svelte.ts).
 vi.mock('@tanstack/svelte-query', () => ({ useQueryClient: vi.fn() }))

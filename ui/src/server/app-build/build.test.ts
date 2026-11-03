@@ -2,12 +2,13 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { clientRuntimePath, clientSpecifiers } from '@/app-runtime/specifiers'
+import { clientRuntimePath, clientSpecifiers, shimSource } from '@/app-runtime/specifiers'
 import { clientArtifactOk, probeLoad } from '../app-health'
 import { checkAppHarnessesOf, listAppHarnesses } from '../app-harnesses'
-import { loadAppHarnesses, setSsrLoader } from '../app-load'
-import { buildApp, setServerShim, unsharedImport } from './build'
+import { loadAppHarnesses, loadAppMcp, loadAppServer, setSsrLoader } from '../app-load'
+import { buildApp, setServerShims, unsharedImport } from './build'
 import { BUILD_RECIPE, sourceKey } from './key'
 import { appBuildKeyDir, appSrc } from './paths'
 import { readCurrent, writeCurrent } from './status'
@@ -186,7 +187,8 @@ describe('buildApp (no client)', () => {
 // app build is a disabled app (reconcile → failHealth), and a harness is
 // something the app ships for model fitness, not something it needs to run.
 // The server-side builds link `@talaria/sdk/server` to the host build's shim;
-// with no host build here, a stand-in shim takes its place.
+// with no host build here, a stand-in shim in a directory of its own takes
+// its place.
 describe('buildApp (harnesses)', () => {
   let root = ''
   const prev = { apps: process.env.TALARIA_APPS_DIR, builds: process.env.TALARIA_APP_BUILDS_DIR }
@@ -217,9 +219,8 @@ export default defineHarness({
     root = mkdtempSync(join(tmpdir(), 'app-build-harnesses-'))
     process.env.TALARIA_APPS_DIR = join(root, 'apps')
     process.env.TALARIA_APP_BUILDS_DIR = join(root, 'app-builds')
-    const shim = join(root, 'rt-talaria-sdk-server.js')
-    writeFileSync(shim, 'export const defineHarness = (h) => h\n')
-    setServerShim(shim)
+    writeFileSync(join(root, 'rt-talaria-sdk-server.js'), 'export const defineHarness = (h) => h\n')
+    setServerShims(root)
     app('mixed', {
       'talaria.json': manifest,
       'server.ts': server,
@@ -231,7 +232,7 @@ export default defineHarness({
   })
 
   afterAll(() => {
-    setServerShim(undefined)
+    setServerShims(undefined)
     setSsrLoader(null)
     if (prev.apps === undefined) delete process.env.TALARIA_APPS_DIR
     else process.env.TALARIA_APPS_DIR = prev.apps
@@ -301,18 +302,24 @@ describe('unsharedImport', () => {
       expect(unsharedImport(ok, 'server'), ok).toBeNull()
     }
     for (const ok of ['svelte', 'svelte/transition', '@talaria/sdk', '@lucide/svelte', '@tanstack/svelte-query']) expect(unsharedImport(ok, 'client'), ok).toBeNull()
-    for (const ok of ['@talaria/sdk/server', 'fs', 'fs/promises', 'crypto']) expect(unsharedImport(ok, 'server'), ok).toBeNull()
+    for (const ok of ['@talaria/sdk/server', 'zod', 'fs', 'fs/promises', 'crypto']) expect(unsharedImport(ok, 'server'), ok).toBeNull()
   })
 
   it('names a package the host does not share', () => {
-    expect(unsharedImport('zod', 'server')).toBe(
-      '"zod" is not shared with apps: an app has no node_modules of its own where it is installed, so a server-side module may import only @talaria/sdk/server (which re-exports zod as z) and node\'s builtins',
+    expect(unsharedImport('clsx', 'server')).toBe(
+      '"clsx" is not shared with apps: an app has no node_modules of its own where it is installed, so a server-side module may import only @talaria/sdk/server, zod and node\'s builtins',
     )
     expect(unsharedImport('lodash', 'client')).toContain('so a surface may import only svelte, @talaria/sdk')
     // The client SDK is not the server's, nor the test entry anyone's.
     expect(unsharedImport('@talaria/sdk', 'server')).toContain('"@talaria/sdk" is not shared')
     expect(unsharedImport('@talaria/sdk/testing', 'server')).toContain('"@talaria/sdk/testing" is not shared')
     expect(unsharedImport('fs', 'client')).toContain('"fs" is not shared')
+  })
+
+  it('says a server-side package is the server side\'s, and how a surface takes its types', () => {
+    expect(unsharedImport('zod', 'client')).toBe(
+      '"zod" is shared with server-side modules only (server.ts, mcp.ts, harnesses/): a surface may import only svelte, @talaria/sdk, @lucide/svelte and @tanstack/svelte-query, and takes a type from a module that imports zod by `import type`, which the build erases',
+    )
   })
 })
 
@@ -325,25 +332,24 @@ describe('buildApp (a package the app does not get)', () => {
     root = mkdtempSync(join(tmpdir(), 'app-build-imports-'))
     process.env.TALARIA_APPS_DIR = join(root, 'apps')
     process.env.TALARIA_APP_BUILDS_DIR = join(root, 'app-builds')
-    const shim = join(root, 'rt-talaria-sdk-server.js')
-    writeFileSync(shim, 'export const defineHarness = (h) => h\nexport const z = {}\n')
-    setServerShim(shim)
-    // zod IS resolvable from the app's tree: a node_modules above it holds it.
+    writeFileSync(join(root, 'rt-talaria-sdk-server.js'), 'export const defineHarness = (h) => h\n')
+    setServerShims(root)
+    // clsx IS resolvable from the app's tree: a node_modules above it holds it.
     mkdirSync(join(root, 'node_modules'), { recursive: true })
-    symlinkSync(resolve('node_modules/zod'), join(root, 'node_modules', 'zod'))
-    const dir = join(root, 'apps', 'imports-zod')
+    symlinkSync(resolve('node_modules/clsx'), join(root, 'node_modules', 'clsx'))
+    const dir = join(root, 'apps', 'imports-clsx')
     mkdirSync(join(dir, 'harnesses'), { recursive: true })
     writeFileSync(join(dir, 'talaria.json'), manifest)
-    writeFileSync(join(dir, 'mcp.ts'), "import { z } from 'zod'\nexport default { tools: [{ name: 'x', description: String(z), handler: () => 1 }] }\n")
-    const harnessDir = join(root, 'apps', 'harness-zod')
+    writeFileSync(join(dir, 'mcp.ts'), "import { clsx } from 'clsx'\nexport default { tools: [{ name: 'x', description: clsx('a'), handler: () => 1 }] }\n")
+    const harnessDir = join(root, 'apps', 'harness-clsx')
     mkdirSync(join(harnessDir, 'harnesses'), { recursive: true })
     writeFileSync(join(harnessDir, 'talaria.json'), manifest)
     writeFileSync(join(harnessDir, 'server.ts'), 'export default { fetch: async () => new Response("ok") }\n')
-    writeFileSync(join(harnessDir, 'harnesses', 'z.ts'), "import { z } from 'zod'\nexport default { id: String(z) }\n")
+    writeFileSync(join(harnessDir, 'harnesses', 'c.ts'), "import { clsx } from 'clsx'\nexport default { id: clsx('c') }\n")
   })
 
   afterAll(() => {
-    setServerShim(undefined)
+    setServerShims(undefined)
     if (prev.apps === undefined) delete process.env.TALARIA_APPS_DIR
     else process.env.TALARIA_APPS_DIR = prev.apps
     if (prev.builds === undefined) delete process.env.TALARIA_APP_BUILDS_DIR
@@ -351,19 +357,131 @@ describe('buildApp (a package the app does not get)', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  it('refuses a server-side import of zod even where zod resolves, saying where z comes from', async () => {
-    const cur = await buildApp('imports-zod')
+  it('refuses a server-side import of a package the host does not share, even where it resolves', async () => {
+    const cur = await buildApp('imports-clsx')
     expect(cur.status).toBe('failed')
-    expect(cur.error).toContain('"zod" is not shared with apps')
-    expect(cur.error).toContain('@talaria/sdk/server (which re-exports zod as z)')
+    expect(cur.error).toContain('"clsx" is not shared with apps')
+    expect(cur.error).toContain("may import only @talaria/sdk/server, zod and node's builtins")
   }, 180_000)
 
-  it('skips a harness file that imports zod, with the same sentence, and still builds the app', async () => {
-    const cur = await buildApp('harness-zod')
+  it('skips a harness file that imports one, with the same sentence, and still builds the app', async () => {
+    const cur = await buildApp('harness-clsx')
     expect(cur.status).toBe('ready')
     setSsrLoader(null)
-    const files = await loadAppHarnesses('harness-zod')
-    expect(files.map((f) => f.file)).toEqual(['z.ts'])
-    expect(files[0]!.compileError).toContain('"zod" is not shared with apps')
+    const files = await loadAppHarnesses('harness-clsx')
+    expect(files.map((f) => f.file)).toEqual(['c.ts'])
+    expect(files[0]!.compileError).toContain('"clsx" is not shared with apps')
+  }, 180_000)
+})
+
+// zod IS shared with an app's server-side code, and it is the host's one
+// copy: the module `@talaria/sdk/server` re-exports as `z`. main's SDK said
+// so, and apps written then import it directly — a lib/schema.ts that
+// imports only zod, so the app's pure half runs under a plain `bun test`, and
+// that a surface takes types from by `import type`. Refused, every such app
+// was turned off at the first boot after an upgrade (release sweep apps-2).
+// The stand-in shims here re-export the zod a node_modules above them holds,
+// which is ui's own, as the host build's do.
+describe('buildApp (zod, shared with server-side code)', () => {
+  let root = ''
+  let shims = ''
+  const prev = { apps: process.env.TALARIA_APPS_DIR, builds: process.env.TALARIA_APP_BUILDS_DIR }
+  const files = {
+    'talaria.json': JSON.stringify({ name: 'Zod Check', icon: '⬡', version: '0.1.0', surfaces: { work: 'Zod Check' } }),
+    'lib/schema.ts': "import { z } from 'zod'\nexport const Note = z.object({ title: z.string().min(1) })\nexport type Note = z.infer<typeof Note>\n",
+    'server.ts': `import { z } from 'zod'
+import * as zns from 'zod'
+import zdef from 'zod'
+import { z as sdkZ } from '@talaria/sdk/server'
+import { Note } from './lib/schema'
+export default { fetch: async () => new Response('ok') }
+export const same = {
+  named: z === sdkZ,
+  namespace: zns.object === sdkZ.object,
+  default: zdef === sdkZ,
+  instance: Note instanceof sdkZ.ZodObject,
+  parsed: Note.safeParse({ title: 'x' }).success,
+  refused: Note.safeParse({ title: '' }).success,
+}
+`,
+    'mcp.ts': "import { z } from 'zod'\nconst Input = z.object({ title: z.string() })\nexport default { tools: [{ name: 'echo_title', description: 'Echo a title.', handler: (args: unknown) => Input.parse(args) }] }\n",
+    'harnesses/note.ts': "import { defineHarness } from '@talaria/sdk/server'\nimport { Note } from '../lib/schema'\nexport default defineHarness({ id: 'zod:note', parse: (v: unknown) => Note.parse(v) })\n",
+    'app.ts': "import { defineApp } from '@talaria/sdk'\nimport Work from './Work.svelte'\nexport default defineApp({ work: Work })\n",
+    // A type from the zod-importing module: erased, so the surface builds.
+    'Work.svelte': `<script lang="ts">\n  import type { Note } from './lib/schema'\n  const notes: Note[] = []\n</script>\n<p>{notes.length}</p>\n`,
+  }
+  const app = (slug: string, over: Record<string, string | null> = {}) => {
+    const dir = join(root, 'apps', slug)
+    for (const [name, body] of Object.entries({ ...files, ...over })) {
+      if (body === null) continue
+      mkdirSync(join(dir, name, '..'), { recursive: true })
+      writeFileSync(join(dir, name), body)
+    }
+  }
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'app-build-zod-'))
+    process.env.TALARIA_APPS_DIR = join(root, 'apps')
+    process.env.TALARIA_APP_BUILDS_DIR = join(root, 'app-builds')
+    shims = join(root, 'runtime')
+    mkdirSync(join(root, 'node_modules'), { recursive: true })
+    symlinkSync(resolve('node_modules/zod'), join(root, 'node_modules', 'zod'))
+    mkdirSync(shims, { recursive: true })
+    writeFileSync(join(shims, 'rt-talaria-sdk-server.js'), "export { z } from 'zod'\nexport const defineHarness = (h) => h\n")
+    writeFileSync(join(shims, 'rt-zod.js'), shimSource('zod'))
+    setServerShims(shims)
+    app('zod-check')
+    app('zod-subpath', { 'app.ts': null, 'Work.svelte': null, 'talaria.json': JSON.stringify({ name: 'Zod Subpath', version: '0.1.0' }), 'mcp.ts': "import { z } from 'zod/mini'\nexport default { tools: [{ name: 'x', description: String(z), handler: () => 1 }] }\n" })
+    app('zod-surface', { 'Work.svelte': `<script lang="ts">\n  import { Note } from './lib/schema'\n</script>\n<p>{String(Note)}</p>\n` })
+  })
+
+  afterAll(() => {
+    setServerShims(undefined)
+    setSsrLoader(null)
+    if (prev.apps === undefined) delete process.env.TALARIA_APPS_DIR
+    else process.env.TALARIA_APPS_DIR = prev.apps
+    if (prev.builds === undefined) delete process.env.TALARIA_APP_BUILDS_DIR
+    else process.env.TALARIA_APP_BUILDS_DIR = prev.builds
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('builds an app whose server, tools and harness import zod, linking it to the host runtime and bundling none', async () => {
+    const cur = await buildApp('zod-check')
+    expect(cur.error ?? null).toBeNull()
+    expect(cur.status).toBe('ready')
+    expect(cur.files).toEqual(['app.js', 'app.css', 'server.js', 'mcp.js', 'harnesses.js'])
+    const out = appBuildKeyDir('zod-check', cur.key)
+    const server = readFileSync(join(out, 'server.js'), 'utf8')
+    expect(server).toContain(pathToFileURL(join(shims, 'rt-zod.js')).href)
+    expect(server).toContain(pathToFileURL(join(shims, 'rt-talaria-sdk-server.js')).href)
+    expect(server).not.toMatch(/from\s*["']zod["']/)
+    // Not a copy: zod's own source would carry its classes.
+    expect(server).not.toContain('$ZodType')
+  }, 180_000)
+
+  it('loads the built server with one zod: z from the SDK and zod itself, named, whole and default, are one module', async () => {
+    setSsrLoader(null)
+    const mod = (await loadAppServer('zod-check')) as { same?: Record<string, boolean> } | null
+    expect(mod?.same).toEqual({ named: true, namespace: true, default: true, instance: true, parsed: true, refused: false })
+    const mcp = (await loadAppMcp('zod-check')) as { default: { tools: { handler: (a: unknown) => unknown }[] } }
+    expect(mcp.default.tools[0]!.handler({ title: 't' })).toEqual({ title: 't' })
+    const harnesses = await loadAppHarnesses('zod-check')
+    expect(harnesses.map((h) => [h.file, h.compileError ?? null])).toEqual([['note.ts', null]])
+    const note = (await harnesses[0]!.load()) as { default: { id: string; parse: (v: unknown) => unknown } }
+    expect(note.default.id).toBe('zod:note')
+    expect(note.default.parse({ title: 'a' })).toEqual({ title: 'a' })
+  }, 60_000)
+
+  it('refuses a subpath of zod, which the host does not share, naming it', async () => {
+    const cur = await buildApp('zod-subpath')
+    expect(cur.status).toBe('failed')
+    expect(cur.error).toContain('"zod/mini" is not shared with apps; the host shares "zod" and its listed subpaths only')
+  }, 180_000)
+
+  it('refuses zod in a surface — a value import from the module that uses it — saying a type comes in by `import type`', async () => {
+    const cur = await buildApp('zod-surface')
+    expect(cur.status).toBe('failed')
+    expect(cur.error).toContain('"zod" is shared with server-side modules only')
+    expect(cur.error).toContain('`import type`')
   }, 180_000)
 })

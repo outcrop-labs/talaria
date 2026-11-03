@@ -25,7 +25,9 @@
 // banner for it, tells the server it surfaced (`POST /api/notifications/ack`,
 // batched for 500 ms): the server's deferred push (W2-E) fires only for rows
 // still unread and un-acked, so the phone does not buzz for what the laptop
-// already showed.
+// already showed. Once per VERSION of the row, not once per id: a re-alert
+// (a second DM folded into the same row) re-arms that push, so it is acked
+// again (`AckRow`, below).
 //
 // Framework-free over injected edges: the state table, the schedule and the
 // batcher are unit tests (notify-presence.test.ts).
@@ -353,30 +355,52 @@ const ROW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export const ACK_MAX = 200
 export const ACK_DELAY_MS = 500
 
+/** One surfaced VERSION of a row: its id, and the seq (else createdAt) it
+ *  was surfaced at. A row the server folds again (a second DM into one
+ *  conversation, a Realert coalesce) keeps its id and takes a new seq and
+ *  createdAt — and the server forgets the old version's ack and arms a new
+ *  deferred push (talaria-notify write.rs). So an ack is owed per version,
+ *  not per id: the re-alert that toasted or bannered is acked again, or the
+ *  phone buzzes 60 s later for what the person is reading at their desk. */
+export interface AckRow {
+  id: string
+  seq?: number | null
+  createdAt?: string | null
+}
+
+/** The version key a row is acked under, once per page. */
+export function ackKey(r: AckRow): string {
+  const v = typeof r.seq === 'number' && Number.isFinite(r.seq) ? `s${r.seq}` : `c${r.createdAt ?? ''}`
+  return `${r.id}@${v}`
+}
+
 export interface AckBatcher {
-  /** Queue these row ids (anything that is not a row id is dropped). */
-  add(ids: readonly string[]): void
+  /** Queue these surfaced rows (anything whose id is not a row id is dropped). */
+  add(rows: readonly AckRow[]): void
   /** Send what is queued now. */
   flush(): Promise<void>
-  /** What is queued (tests). */
+  /** The row ids queued (tests). */
   queued(): string[]
 }
 
-/** Batch acks for `delayMs`; each id is acked once per page. */
+/** Batch acks for `delayMs`; each row VERSION is acked once per page. The
+ *  wire carries ids only (the server's ack is idempotent and stamps the row
+ *  as it is now), so two versions of one row queued together go as one id. */
 export function createAckBatcher(post: (ids: string[]) => Promise<unknown>, delayMs = ACK_DELAY_MS): AckBatcher {
-  const queue = new Set<string>()
+  /** Row id → the version keys queued for it. */
+  const queue = new Map<string, Set<string>>()
   const done = new Set<string>()
   let timer: ReturnType<typeof setTimeout> | null = null
   const flush = async () => {
     if (timer) clearTimeout(timer)
     timer = null
-    const ids = [...queue]
+    const entries = [...queue]
     queue.clear()
-    for (let i = 0; i < ids.length; i += ACK_MAX) {
-      const chunk = ids.slice(i, i + ACK_MAX)
-      for (const id of chunk) done.add(id)
+    for (let i = 0; i < entries.length; i += ACK_MAX) {
+      const chunk = entries.slice(i, i + ACK_MAX)
+      for (const [, keys] of chunk) for (const key of keys) done.add(key)
       try {
-        await post(chunk)
+        await post(chunk.map(([id]) => id))
       } catch {
         // An ack that did not land costs one push the person did not need;
         // retrying it would cost more than it saves.
@@ -385,11 +409,18 @@ export function createAckBatcher(post: (ids: string[]) => Promise<unknown>, dela
     if (done.size > 2000) done.clear()
   }
   return {
-    add: (ids) => {
-      for (const id of ids) if (ROW_ID.test(id) && !done.has(id)) queue.add(id)
+    add: (rows) => {
+      for (const r of rows) {
+        if (!ROW_ID.test(r.id)) continue
+        const key = ackKey(r)
+        if (done.has(key)) continue
+        const keys = queue.get(r.id)
+        if (keys) keys.add(key)
+        else queue.set(r.id, new Set([key]))
+      }
       if (queue.size && !timer) timer = setTimeout(() => void flush(), delayMs)
     },
     flush,
-    queued: () => [...queue],
+    queued: () => [...queue.keys()],
   }
 }

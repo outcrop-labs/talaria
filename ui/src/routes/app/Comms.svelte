@@ -55,7 +55,7 @@
   import StarButton from './comms/StarButton.svelte'
   import ChannelNotifyMenu from '@/components/chat/ChannelNotifyMenu.svelte'
   import NewMessagePane from './comms/NewMessagePane.svelte'
-  import { groupDmCount, groupDmLabel, isGroupDm } from '@/lib/comms-dm'
+  import { dmZeroState, groupDmCount, groupDmLabel, isGroupDm } from '@/lib/comms-dm'
   import { channelStarKey } from '@/lib/comms-stars'
   import ConversationsWithView from './comms/ConversationsWithView.svelte'
   import type { ProfileSubject } from '@/lib/comms-profile'
@@ -342,6 +342,8 @@
         : selected.name
       : '',
   )
+  // An empty DM's own words: ChannelView's default is a #channel's (ui-7).
+  const dmZero = $derived(selected?.kind === 'dm' ? dmZeroState(selected, title) : null)
   // A DM's header carries the other person's presence and status (R13).
   const peer = $derived(
     selected?.kind === 'dm' && selected.peer ? (users.find((u) => u.id === selected.peer?.userId) ?? null) : null,
@@ -531,6 +533,9 @@
               {fleet}
               onOpenProfile={openProfile}
               composerPlaceholder={selected.kind === 'dm' ? `Message ${groupDm ? title : title.split(' ')[0]}` : undefined}
+              zeroIcon={dmZero?.icon}
+              zeroTitle={dmZero?.title}
+              zeroHint={dmZero?.hint}
             />
           {/key}
         </div>

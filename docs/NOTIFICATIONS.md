@@ -15,25 +15,40 @@ The desktop shell's own half (its OS backends, tray and badge) is
         │
         ▼
  talaria_notify::add_notification            ← the ONE writer (api/crates/talaria-notify)
-   ├─ the row (notifications), unread, href validated to a same-origin path
-   ├─ SSE  {type:"notification", notificationId}   on user:<id>   → every open tab
+   ├─ the row (notifications), unread, href validated to a same-origin path, the next seq
+   ├─ the delivery decision, inside the write (deliver::decide): the class's Desktop,
+   │    Push and Email cells, Do Not Disturb, presence → the row's alert (banner | feed),
+   │    its push plan and when its mail is due
+   ├─ SSE  {type:"notification", notificationId, seq}   on user:<id>   → one stream per browser
    ├─ the brief nudge
-   ├─ Web Push (route ≠ email)                → every push_subscriptions row → service worker
-   └─ email (route email|both, instance switch on)
+   ├─ Web Push (Push on)       now when no client is in use, else in 60 s unless a client
+   │                           acks it or the person reads it → every subscription → worker
+   └─ missed-activity email    (Email on, instance switch on) due after 15 min for Needs
+                               you, else the person's frequency; the batcher mails it
 ```
 
-- **An open tab.** `/api/me/events` (user-events.svelte.ts) invalidates the inbox query; the
-  arrival record (notify-arrivals.ts) says which rows this browser has not surfaced; the
-  decider (notify-decide.ts) makes one call per browser: a toast in the tab the person is
-  looking at, else one OS banner from the leader tab, else nothing. When this browser cannot
-  post a banner (not granted, a plain-http origin, or switched off here), the visible tab
-  touched last toasts instead, so a Talaria window on another monitor still shows it. The
-  inbox query also polls every 30 s, hidden tabs included.
-- **Every Talaria tab closed.** Web Push: talaria-push encrypts the row (RFC 8291) under the
-  instance VAPID identity (RFC 8292) and posts it to every subscription; the service worker
-  (`ui/src/sw.ts`) shows it unless the person is looking at Talaria or the leader tab
-  already showed it. The browser itself must be running: on Linux and Windows closing its
-  last window quits it, and Settings says so on those systems.
+The decision and both deliveries are [delivery.md](./notifications/delivery.md).
+
+- **An open browser.** One tab holds the browser's only `/api/me/events` stream and relays
+  its frames to the others (user-events.svelte.ts, notify-hub.ts); the stream opens from
+  the seq this browser has read through, so a reopen replays what it missed. The arrival
+  record (notify-arrivals.ts) says which rows this browser has not surfaced, and the decider
+  (notify-decide.ts) makes one call per browser: nothing for a row whose alert is `feed`
+  (its class's Desktop is off, Do Not Disturb held it, or its producer filed it quietly),
+  nothing when another of the person's devices is the one they are on, else a toast in the
+  tab the person is looking at, else one OS banner from the leader tab, else nothing. When
+  this browser cannot post a banner (not granted, a plain-http origin, or switched off
+  here), the visible tab touched last toasts instead, so a Talaria window on another monitor
+  still shows it. The inbox query also polls every 30 s, hidden tabs included.
+- **Away from the screen.** Web Push, for a class with Push on: talaria-push encrypts the
+  row (RFC 8291) under the instance VAPID identity (RFC 8292) and posts it to every
+  subscription. It goes at once when none of the person's clients is in use. While one is
+  (input in the last two minutes), it waits 60 s and is dropped if a client toasted or
+  bannered the row (the ack) or the person read it. The service worker (`ui/src/sw.ts`)
+  shows it unless the person is looking at Talaria or the leader tab already showed it;
+  on WebKit it always shows (see Troubleshooting). The browser itself must be running: on
+  Linux and Windows closing its last window quits it, and Settings says so on those
+  systems.
 - **The desktop shell.** The page posts through `shellShowNotification` instead of the
   browser's API; see [`DESKTOP.md`](./DESKTOP.md).
 - **The click.** Every path (toast, OS banner via the worker, the shell's event, the
@@ -66,8 +81,10 @@ The center itself (the bell, the page, the settings, the status panel) is
   shown or selected, `z` undoes the last Done, `?` lists them).
 - **Settings → Notifications** is a matrix: one row per kind of notification, grouped as
   Needs you, Direct, Following and Workspace, and one column per channel. **In-app** is
-  always on: every notification is kept in your inbox. **Desktop** is a banner on this
-  computer from a Talaria tab or the desktop app. **Push** is a banner from your browser
+  always on: every notification is kept in your inbox. **Desktop** is the pop-up in Talaria
+  while you are looking at it and a banner on this computer (from a Talaria tab or the
+  desktop app) while you are not; with it off neither shows, and the notification waits in
+  your inbox. **Push** is a banner from your browser
   with every Talaria tab closed. **Email** is a missed-activity email, sent as often as you
   choose (every 15 minutes, hourly, daily or never); a conversation that stays unread is
   mailed again at that frequency. It is disabled, with the reason, while the instance's
@@ -134,8 +151,13 @@ turns an origin restart into a 502 or 524.
 - Clients reopen a CLOSED stream with backoff (1 s, 2 s, 4 s … 30 s, ±20 %), at once on
   `online` or when the tab becomes visible, and stop after five failures if the session is
   gone (`lib/sse.ts`).
-- On every reopen the user stream refetches every query it drives (the stream carries no
-  replay).
+- The user stream resumes by seq (I-19): it reopens with `?since=<the seq this browser has
+  read through>` (or `Last-Event-ID`), and the api replays every notification filed after
+  it before the live frames, then `resync` (more than 100 rows: `resync` alone, and the
+  client reads `GET /api/notifications?since=` itself). Its other events (channels,
+  conversations, runs, the brief) are not replayed, so on every reopen the page also
+  refetches every query the stream drives
+  ([live-and-inbox.md](./notifications/live-and-inbox.md)).
 - A subscriber is dropped the moment its client leaves, not on the topic's next publish.
 - On SIGTERM the api ends every open stream (`talaria_realtime::end_streams`) before its
   graceful drain, so the drain is not held open by connected browsers; each reconnects after
@@ -227,7 +249,8 @@ worker's per-row banners.
 - **Assignment.** A person assigned by a patch gets `task-assigned` only; the same patch's
   status move goes to every other watcher.
 - **Read-sync.** Any mark-read (the bell, a toast, a banner click, a channel read) publishes
-  `{type:"notifications", unread:N}`, and every tab's bell drops at once.
+  `{type:"notifications", unread, unreadForYou, readIds}` (`all: true` for a mark-all), and
+  every tab's bell drops at once.
 
 ## Contracts with the desktop shell
 
@@ -238,7 +261,7 @@ is older.
 |---|---|
 | **I-1** | The shell's banner click dispatches a cancelable `talaria:notification-open` `CustomEvent` with `detail {href, id}` in the instance page. The page cancels it and opens the notification in place. With no listener the shell falls back to `location.assign(href)`. |
 | **I-2** | The page passes `{title, body, tag, href, kind, renotify}` to `shellShowNotification` as a variable; a shell that does not know `kind` or `renotify` ignores them. |
-| **I-3** | The arrival record, `localStorage['talaria.notify.arrivals.v1']`: `{ "<userId>": { "hw": ISO, "seen": { "<rowId>": ISO, … ≤ 300 }, "at": ms } }`. A row is an arrival when it is unread, newer than `hw − 120 s`, and unseen or newer than its recorded `createdAt` (a re-alert). The shell's suspend handoff reads and merges it. |
+| **I-3** | The arrival record, `localStorage['talaria.notify.arrivals.v1']`: `{ "<userId>": { "hw": ISO, "seen": { "<rowId>": ISO, … ≤ 300 }, "at": ms, "v": 2, "seq": N } }`. Since I-20 a row with a `seq`, under a record with one, is an arrival when it is unread, its `seq` is past the record's, and it is unseen or newer than its recorded `createdAt` (a re-alert). A row without a seq, or a record without one, keeps the first rule: unread, newer than `hw − 120 s`, and unseen or re-alerted. The shell's suspend handoff reads and merges it, keeping `v` and `seq` ([web-runtime.md](./notifications/web-runtime.md)). |
 | **I-4** | `browserNotifyEnabled()` keeps its name and meaning. |
 | **I-5** | `useNotifications()` keeps its name and payload (additions are optional fields: `prompt`). |
 | **I-6** | The soft ask and the bell row never show in the shell; Settings → Notifications points to Settings → Desktop. |
@@ -284,9 +307,13 @@ things below live and says which one is in the way.
   running background apps" is on); on macOS, closing the windows leaves it running.
 - **Nothing pops, but the bell counts.** Do Not Disturb and Focus modes drop banners
   silently, on every OS.
-- **Safari shows a banner while Talaria is in front.** Expected for now: Safari revokes a
-  subscription after pushes that show nothing, so its worker never skips. Presence-gated push
-  on the server removes it (wave 2).
+- **Safari shows a banner while Talaria is in front.** Safari revokes a subscription after
+  pushes that show nothing, so its worker never skips one. Presence keeps most of these
+  pushes from being sent: while you are at a screen a push waits 60 s, and a row the tab
+  toasted or bannered is acked and its push dropped. Two still reach Safari while it is in
+  front: a row of a class with Push on and Desktop off (nothing toasts it, so nothing acks
+  it, and it goes after the minute), and every push when the api cannot read presence (it
+  then pushes at once).
 - **A dev stack on http.** Expected: see HTTPS above.
 - **A push row keeps failing.** `select endpoint, failures, last_status, last_error,
   last_attempt_at from push_subscriptions where user_id = …` shows the last answer per

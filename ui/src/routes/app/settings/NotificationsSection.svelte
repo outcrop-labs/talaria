@@ -22,7 +22,7 @@
     type NotifyRoute,
   } from '@/lib/notifications'
   import { featureSet, useNotifyPatch } from '@/lib/notify-center'
-  import { EMAIL_FREQUENCY_OPTIONS } from '@/lib/notify-matrix'
+  import { EMAIL_FREQUENCY_OPTIONS, mailNote } from '@/lib/notify-matrix'
   import type { EmailFrequency } from '@/lib/notify-wire'
 
   const DIGEST_OPTIONS: Array<{ id: DigestPref; label: string }> = [
@@ -259,7 +259,10 @@
             <div class="font-sans text-xs text-muted">
               How often to mail what you have not seen in the app, in one email.
               {#if features.has('email-batch')}
-                Needs you waits 15 minutes whatever you pick, and Following is never mailed.
+                <!-- Said from the registry and this person's matrix: a hand-kept
+                     sentence here told people Following is not mailed, while
+                     Channel activity mailed by default (notify-web-4). -->
+                {#if classes}{mailNote(classes, data?.channels)}{/if}
               {:else}
                 Saved now; this instance starts batching by it with its next delivery update.
               {/if}

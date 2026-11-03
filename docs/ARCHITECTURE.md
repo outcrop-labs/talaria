@@ -332,7 +332,8 @@ multiplexer.
   container on the same volume exits on start and never serves — which is why the blue/green
   roll this replaced never completed for a running agent. The agent is offline for the
   restart; the persona door (`talaria-gateway` `fleet_chat.rs`) re-reads the manifest per
-  attempt and holds a turn up to two minutes across it. An agent an old blue/green roll left in the `agent-<dept>-b` service
+  attempt and holds a turn up to two minutes across it — 80 s for a turn a person is reading
+  (`/api/chat`), whose headers wait on the hold and must beat Cloudflare's 100 s. An agent an old blue/green roll left in the `agent-<dept>-b` service
   (`agent_defs.active_slot = 'b'`) moves back to `agent-<dept>` on its next roll: the render
   names the home service, its image is pulled while `-b` still serves (a failed pull puts the
   agent back on `-b`), and only then is `-b` drained and removed. The move holds the
@@ -367,9 +368,11 @@ multiplexer.
   edits and of an assistant owner's edit. A client that goes away (a curl that gave up, a closed tab, or the app
   proxy's own fetch, which gives up on a response with no headers after 300 s) drops only the
   wait: the compose CLI used to die with the request's future, halfway through a recreate. The
-  route answers with the verb's own result when it settles within 210 s
+  route answers with the verb's own result when it settles within 75 s
   (`ANSWER_WITHIN`), and past that with 202 `{ok, pending, state}` — the container as it is so
-  far; the roster shows the rest. A failed `up` that
+  far, read within 10 s (`CLOSING_READ`); the roster shows the rest. The whole answer leaves
+  inside Cloudflare's 100 s (`EDGE_CUTOFF`), which answers 524 for a response with no headers
+  by then; a const assert keeps the bound there. A failed `up` that
   was replacing a running container waits out a stop it may have started, then answers by what
   is there: the old container still serving (the change did not land), a new one running (it
   did), or nothing — and then it starts the service on the current render. The control route
@@ -511,7 +514,9 @@ multiplexer.
   job due for the next tick (≤60s), and is refused on a paused job, which Hermes's `run`
   would resume for good. The admin frequency floor judges the schedule Hermes parsed — a job
   is written paused, checked, then started — and refuses any shape it cannot read (a 6-field
-  cron, an unreadable field).
+  cron, an unreadable field). A change the agent took and did not answer within 40 s is a 503
+  that says it may still land, not a refusal: Hermes's jobs-file write can stall on a slow
+  disk and apply later.
   Their spend is metered at the relay like every agent call — see **Agent spend** below; a
   fire's calls carry `cron_<job id>` and land as `unattended`, per job.
   A schedule made from a thread reports into it by two roads, both ending in

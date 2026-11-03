@@ -1,9 +1,21 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { compile, compileModule } from 'svelte/compiler'
 import { describe, expect, it } from 'vitest'
-import { bundledShared, clientRuntimePath, clientSpecifiers, shimFileName, svelteClientSpecifiers } from './specifiers'
+import * as zod from 'zod'
+import { z } from 'zod'
+import {
+  bundledShared,
+  clientRuntimePath,
+  clientSpecifiers,
+  serverRuntimeFile,
+  serverSpecifiers,
+  shimFileName,
+  shimSource,
+  svelteClientSpecifiers,
+} from './specifiers'
 
 describe('app-runtime specifiers', () => {
   it('includes svelte internals the compiler injects', () => {
@@ -44,6 +56,93 @@ describe('clientRuntimePath', () => {
     expect(() => clientRuntimePath('@lucide/svelte/icons/check')).toThrow(/"@lucide\/svelte\/icons\/check" is not shared/)
     expect(() => clientRuntimePath('svelte/server')).toThrow(/not shared/)
   })
+})
+
+// An app's server-side code shares the SDK's server entry and zod — the copy
+// that entry re-exports as `z` (release sweep apps-2: main's SDK shared zod,
+// and apps written then import it).
+describe('server specifiers', () => {
+  it('share zod beside the SDK, each with its own runtime file', () => {
+    expect(serverSpecifiers()).toEqual(['@talaria/sdk/server', 'zod'])
+    expect(serverRuntimeFile('@talaria/sdk/server')).toBe('rt-talaria-sdk-server.js')
+    expect(serverRuntimeFile('zod')).toBe('rt-zod.js')
+  })
+
+  it('share no subpath of zod, naming the import', () => {
+    expect(() => serverRuntimeFile('zod/mini')).toThrow('"zod/mini" is not shared with apps; the host shares "zod" and its listed subpaths only')
+    expect(() => serverRuntimeFile('zod/v4/core')).toThrow('the host shares "zod"')
+    expect(() => serverRuntimeFile('lodash')).toThrow('"lodash" is not shared with apps')
+  })
+
+  it('flag a bundled zod as a shared module leaked into an app chunk', () => {
+    expect(bundledShared(['/repo/ui/node_modules/zod/v4/classic/schemas.js'])).toHaveLength(1)
+    expect(bundledShared(['/repo/apps/demo/lib/schema.ts'])).toEqual([])
+  })
+})
+
+describe('shimSource', () => {
+  it('re-exports a module whole, as the host build always has', () => {
+    expect(shimSource('svelte')).toBe('export * from "svelte";\nimport "svelte";\n')
+    expect(shimSource('@talaria/sdk/server', '/ui/src/sdk/server.ts')).toBe('export * from "/ui/src/sdk/server.ts";\nimport "/ui/src/sdk/server.ts";\n')
+  })
+
+  it("carries zod's default too: `import z from 'zod'` is the same namespace as `{ z }`", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rt-zod-'))
+    try {
+      mkdirSync(join(dir, 'node_modules'))
+      symlinkSync(resolve('node_modules/zod'), join(dir, 'node_modules', 'zod'))
+      writeFileSync(join(dir, 'rt-zod.js'), shimSource('zod'))
+      const shim = (await import(/* @vite-ignore */ pathToFileURL(join(dir, 'rt-zod.js')).href)) as Record<string, unknown>
+      expect(shim.default).toBe(z)
+      expect(shim.z).toBe(z)
+      // Every export of zod, the very same value: one module, not a copy.
+      for (const [name, value] of Object.entries(zod)) expect(shim[name], name).toBe(value)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// Dev loads an app's server.ts, mcp.ts and harnesses/ from source, from apps/
+// outside ui/. Vite decides once, for every importer, that a bare `zod` is
+// external — the host's own code imports it long before any app — and then
+// node-resolves it from the importer's directory: from apps/ that found
+// nothing ("Cannot find module 'zod'", and an update adding one rolled back).
+// The dev config dedupes it, so it resolves from the root for an app too, to
+// the module the host imports. Here: the dev config's own `resolve`, a root
+// whose node_modules holds zod, a host module that imports zod first, then an
+// app's beside the root.
+describe("the dev server resolves an app's server-side zod to the host's", () => {
+  it('gives an app file imported after the host the same zod', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dev-zod-'))
+    const { createServer } = await import('vite')
+    const devConfig = (await import('../../vite.config')).default as { resolve: { dedupe: string[] } }
+    const root = join(dir, 'ui')
+    mkdirSync(join(root, 'node_modules'), { recursive: true })
+    symlinkSync(resolve('node_modules/zod'), join(root, 'node_modules', 'zod'))
+    writeFileSync(join(root, 'host.ts'), "export { z } from 'zod'\n")
+    mkdirSync(join(dir, 'apps', 'notes'), { recursive: true })
+    writeFileSync(join(dir, 'apps', 'notes', 'server.ts'), "import { z } from 'zod'\nimport zdef from 'zod'\nexport { z, zdef }\n")
+    const server = await createServer({
+      configFile: false,
+      root,
+      logLevel: 'silent',
+      appType: 'custom',
+      resolve: { dedupe: devConfig.resolve.dedupe },
+      optimizeDeps: { noDiscovery: true, entries: [] },
+      server: { middlewareMode: true, hmr: false, watch: null },
+    })
+    try {
+      const host = (await server.ssrLoadModule('/host.ts')) as { z: unknown }
+      const app = (await server.ssrLoadModule(`/@fs${join(dir, 'apps', 'notes', 'server.ts')}`)) as { z: unknown; zdef: unknown }
+      expect(app.z).toBe(host.z)
+      expect(app.zdef).toBe(host.z)
+      expect(devConfig.resolve.dedupe).toContain('zod')
+    } finally {
+      await server.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 60_000)
 })
 
 // The host's runtime/rt-<spec>.js entry is `export * from '<spec>'` built for
