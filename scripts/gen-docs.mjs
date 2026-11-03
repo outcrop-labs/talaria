@@ -79,7 +79,7 @@ const SKILL_SKELETON = 'scripts/skills/talaria-apps/references/skeleton.md'
 
 const GROUPS = {
   account: { segs: ['auth', 'me', 'join', 'users'], blurb: 'Sign-in, session, profile, members.' },
-  activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
+  activity: { segs: ['activity', 'history', 'notifications', 'unreads', 'working', 'push', 'alerts', 'home', 'cost', 'host'], blurb: 'What happened, what it cost, what the machine is doing, what needs you.' },
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
   agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'runs'], blurb: 'Agent CRUD, skills, runs.' },
   apps: { segs: ['apps', 'app-host', 'sdk'], blurb: 'The app platform surface, the app-server gateway, the host\'s own app routes, and the SDK kit.' },

@@ -201,6 +201,32 @@ pub struct ChannelPeer {
     pub email: Option<String>,
 }
 
+/// A channel `c` in the viewer-`$1` Comms rail: live, not a ticket's room, and
+/// theirs by membership or (outside DMs) by team. Needs
+/// `left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid`.
+/// The listing, the unread badge and the working read filter by this one
+/// spelling. A macro, not a const, so each query stays one `'static` literal.
+macro_rules! rail_room_sql {
+    () => {
+        "c.archived_at is null and c.task_id is null \
+         and (m.user_id is not null \
+           or (c.kind <> 'dm' and exists ( \
+             select 1 from channel_teams ct \
+             join team_members tm on tm.team_id = ct.team_id \
+             where ct.channel_id = c.id and tm.user_id = $1::uuid)))"
+    };
+}
+
+/// A `streaming` channel message is dead once its writer has been silent for
+/// fifteen minutes (`edited_at` is the flush heartbeat; a reply that never
+/// flushed has only `created_at`). Unqualified, so it reads the
+/// `channel_messages` row in scope.
+macro_rules! dead_stream_sql {
+    () => {
+        "coalesce(edited_at, created_at) < now() - interval '15 minutes'"
+    };
+}
+
 /// The member-listing row — `unreadCount` then `peer` last.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -289,7 +315,7 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
         Option<String>,
         Option<Vec<String>>,
     );
-    let rows: Vec<MemberRow> = sqlx::query_as(
+    let rows: Vec<MemberRow> = sqlx::query_as(concat!(
         "select c.id::text, c.name, c.topic, c.kind, coalesce(m.role, 'member'), \
              (trunc(extract(epoch from c.created_at) * 1000))::bigint, \
              (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
@@ -318,14 +344,10 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
              and not exists (select 1 from channel_agents xa where xa.channel_id = c.id) \
            limit 1) p on true \
          left join users pu on pu.id = p.user_id \
-         where c.archived_at is null and c.task_id is null \
-           and (m.user_id is not null \
-             or (c.kind <> 'dm' and exists ( \
-               select 1 from channel_teams ct \
-               join team_members tm on tm.team_id = ct.team_id \
-               where ct.channel_id = c.id and tm.user_id = $1::uuid))) \
-         order by c.updated_at desc",
-    )
+         where ",
+        rail_room_sql!(),
+        " order by c.updated_at desc"
+    ))
     .bind(user_id)
     .fetch_all(pg)
     .await?;
@@ -386,25 +408,64 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
 /// counted in one pass over all of them: a badge that disagreed with the sum
 /// of its own pills would be worse than no badge.
 pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sqlx::Error> {
-    let (n,): (i32,) = sqlx::query_as(
+    let (n,): (i32,) = sqlx::query_as(concat!(
         "select count(*)::int from channel_messages msg \
-         join channels c on c.id = msg.channel_id and c.archived_at is null \
+         join channels c on c.id = msg.channel_id \
          left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
          join users self on self.id = $1::uuid \
-         where c.task_id is null \
-           and (m.user_id is not null \
-             or (c.kind <> 'dm' and exists ( \
-               select 1 from channel_teams ct \
-               join team_members tm on tm.team_id = ct.team_id \
-               where ct.channel_id = c.id and tm.user_id = $1::uuid))) \
-           and msg.seq > coalesce(m.last_read_seq, 0) and msg.status = 'complete' \
+         where ",
+        rail_room_sql!(),
+        " and msg.seq > coalesce(m.last_read_seq, 0) and msg.status = 'complete' \
            and not (msg.author_type = 'user' \
-             and msg.author = coalesce(self.email, self.name, 'user'))",
-    )
+             and msg.author = coalesce(self.email, self.name, 'user'))"
+    ))
     .bind(user_id)
     .fetch_one(pg)
     .await?;
     Ok(n)
+}
+
+#[derive(Debug)]
+pub struct StreamingChannel {
+    pub id: String,
+    pub name: String,
+    pub streamed_ms: i64,
+}
+
+/// The viewer's rail rooms with an agent reply streaming right now, freshest
+/// first. A reply counts until the same silence `repair_dead_streams` closes
+/// it on, so a room stops reading as working when its open page would stop
+/// showing the stream. Thread replies count: they stream the same way.
+pub async fn streaming_channels(
+    pg: &PgPool,
+    user_id: &str,
+) -> Result<Vec<StreamingChannel>, sqlx::Error> {
+    let rows: Vec<(String, String, i64)> = sqlx::query_as(concat!(
+        "select c.id::text, c.name, s.streamed_ms \
+         from channels c \
+         left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
+         join lateral ( \
+           select (trunc(extract(epoch from max(coalesce(edited_at, created_at))) * 1000))::bigint \
+                    as streamed_ms \
+             from channel_messages \
+            where channel_id = c.id and status = 'streaming' and not ",
+        dead_stream_sql!(),
+        ") s on s.streamed_ms is not null \
+         where ",
+        rail_room_sql!(),
+        " order by s.streamed_ms desc"
+    ))
+    .bind(user_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, streamed_ms)| StreamingChannel {
+            id,
+            name,
+            streamed_ms,
+        })
+        .collect())
 }
 
 /// Advance the member's read cursor (never backwards).
@@ -1364,10 +1425,11 @@ async fn repair_dead_streams(pg: &PgPool, messages: &mut [ChannelMessageWire]) {
         if m.status != "streaming" {
             continue;
         }
-        let stale: Option<bool> = sqlx::query_scalar(
-            "select coalesce(edited_at, created_at) < now() - interval '15 minutes' \
-             from channel_messages where id = $1::uuid and status = 'streaming'",
-        )
+        let stale: Option<bool> = sqlx::query_scalar(concat!(
+            "select ",
+            dead_stream_sql!(),
+            " from channel_messages where id = $1::uuid and status = 'streaming'"
+        ))
         .bind(&m.id)
         .fetch_optional(pg)
         .await
