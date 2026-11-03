@@ -44,8 +44,12 @@ data so you still have realistic agents/boards/tickets to work against.
 
 1. `git worktree add ../talaria-<name> -b wt/<name>` off your current `HEAD`.
 2. Brings up an isolated Postgres + Redis under compose project `talaria-wt-<name>`
-   on **deterministic per-slot ports** (app `53xx`, api `54xx`, Postgres `56xx`,
-   Redis `65xx`), and reserves the slot's ports for what its api spawns and
+   on **its own slot's ports** (app `53xx`, api `54xx`, Postgres `56xx`,
+   Redis `65xx`). The slot is the first one that nothing listens on and no stopped
+   stack has recorded: no container, running or stopped, publishes any of its
+   ports, and no checkout's `ui/.env` names them. A stopped worktree's slot used to
+   read as free, and whichever of the two stacks started second could not bind.
+   The slot also holds the ports for what its api spawns and
    renders: the toolkit MCP (`57xx`), the omp auth bridge (`58xx`), and a
    hundred agent gateway ports from `20000 + slot·100`. Those three used to be
    one fixed number for every stack (`:5280`, `:5276`, and `:8770` upward), so
@@ -73,10 +77,14 @@ data so you still have realistic agents/boards/tickets to work against.
 3. Seeds the new DB with `pg_dump` of your main DB (a snapshot — later changes on
    main don't propagate), then clears the copied agents' gateway ports so this
    stack's first render assigns its own rather than publishing onto main's.
-   **Push state stays on main:** the dump copies no `push_subscriptions` rows (they
+   **Push and mail stay on main:** the dump copies no `push_subscriptions` rows (they
    are main's real browsers), and the copied VAPID key (`app_settings.push_vapid`)
    is deleted from the copy, so a worktree can never sign as main and push a test
    notification to a real person's browser; it mints its own key on first use.
+   Main's mail provider (`app_settings.email_config`) is deleted too. The copy keeps
+   every user's real address, so with main's provider in it a mention or digest
+   filed in a test was mailed to real people. A worktree sends no mail until you
+   configure a provider for it (Admin → Org → Email; point it at a local sink).
    `talaria box seed` does the same. It
    counts main's tables first and says what the copy carried: `seeded (… N
    tables)`, or, when main's database has no tables at all, that there was nothing

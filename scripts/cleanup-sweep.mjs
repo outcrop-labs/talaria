@@ -16,7 +16,10 @@
 //   - a side worktree's build dir untouched for POLICY.staleTargetMs
 //   - a devbox the same way (../devboxes/<name>, not the shared tools layer)
 //   - /tmp/talaria-* (or $TMPDIR) older than POLICY.tmpStaleMs
-//   - a compose project named talaria-wt-* or devbox-* whose directory is gone
+//   - a compose project named talaria-wt-* or devbox-* whose directory is gone.
+//     A `-fleet` name has two readings (a stack's agents, or the stack of a
+//     worktree or box named `<x>-fleet`), and either one with a checkout
+//     keeps it
 //   - (--apply only) a network a `talaria-*` or `devbox-*` compose project
 //     left behind: nothing attached, running or stopped; no container left in
 //     its project; no live worktree or box owning it; and older than
@@ -36,7 +39,11 @@
 //
 // WHAT IT WILL NOT:
 //   - the primary checkout, the checkout this process is running in
-//   - anything with a .talaria-keep file in its root
+//   - anything with a .talaria-keep file in its root, and the compose
+//     projects, volumes and networks of the worktree or box it sits in. A
+//     `../talaria-<name>` directory holding only a .talaria-keep holds that
+//     worktree's stack after the checkout is gone. Every removal reads the
+//     keep again at the moment it acts
 //   - a dirty tree, or commits no remote has
 //   - a worktree that is not the wt/<name> pair `talaria worktree` creates
 //     (a human's long-lived checkout is not this script's)
@@ -142,18 +149,26 @@ export function worktreeName(branch, dirBasename) {
  * flag = a human has to decide (dirty, unpushed, or an oversized warm cache).
  * remove = the safe set. The executor refuses a path the classifier did not.
  */
-/** The worktree a compose project belongs to, or null for a project that is
- *  not a worktree's. `talaria worktree <name>` names its stack
- *  `talaria-wt-<name>`; the agents that worktree runs live in a SECOND
- *  project, `talaria-wt-<name>-fleet` (the api's TALARIA_FLEET_PROJECT), so
- *  `-fleet` is the worktree's own suffix before it is part of a name. Read
- *  bare, that project parsed as the worktree `<name>-fleet`, no such checkout
- *  ever exists, and the gate removed a live agent container at every turn
- *  boundary. */
-export function worktreeProjectOwner(projectName) {
+/** The worktrees a `talaria-wt-*` compose project may belong to, or null for
+ *  a project that is not a worktree's. `talaria worktree <name>` names its
+ *  stack `talaria-wt-<name>`, and the agents that worktree runs live in a
+ *  SECOND project, `talaria-wt-<name>-fleet` (the api's
+ *  TALARIA_FLEET_PROJECT). But `talaria worktree` takes any kebab name, and a
+ *  worktree named `<x>-fleet` runs its own Postgres and Redis in
+ *  `talaria-wt-<x>-fleet` too. So both readings are candidates, and the
+ *  project is a live worktree's while EITHER one has a checkout, which is
+ *  boxProjectOwners' rule. Each single reading broke something. Read bare,
+ *  a worktree's agents parsed as the worktree `<name>-fleet`, and the gate
+ *  removed a live agent container at every turn boundary. Read stripped,
+ *  the infra of the live worktree `rel-fleet` parsed as the missing worktree
+ *  `rel`, and the gate removed its containers and volumes (2026-11-02: that
+ *  stack's database and redis were lost). */
+export function worktreeProjectOwners(projectName) {
   const wt = /^talaria-wt-([a-z0-9][a-z0-9-]*)$/.exec(projectName)
   if (!wt) return null
-  return wt[1].endsWith('-fleet') ? wt[1].slice(0, -'-fleet'.length) : wt[1]
+  const raw = wt[1]
+  const stripped = raw.endsWith('-fleet') ? raw.slice(0, -'-fleet'.length) : null
+  return [raw, stripped].filter(Boolean)
 }
 
 /** The boxes a `devbox-*` compose project may belong to, or null for a
@@ -168,6 +183,74 @@ export function boxProjectOwners(projectName) {
   const raw = box[1]
   const stripped = raw.endsWith('-fleet') ? raw.slice(0, -'-fleet'.length) : null
   return [raw, stripped].filter((n) => n && n !== 'shared')
+}
+
+/**
+ * Compose projects whose worktree or box is gone, as sweep rows. Pure: the
+ * inventory hands it `docker compose ls` and two predicates.
+ *
+ *   projects        [{ Name }] — every compose project, running or stopped
+ *   liveWorktree(n) — worktree `n` has a checkout
+ *   liveBox(n)      — box `n` has a checkout
+ *
+ * A project is an orphan only when NO worktree or box it could belong to is
+ * live (worktreeProjectOwners, boxProjectOwners). A project that is neither
+ * kind is not the sweep's, and neither is the box tools layer. Both
+ * predicates default to "live", so a caller that cannot say removes nothing.
+ * The inventory's predicates count a `.talaria-keep` as a checkout: a human
+ * who touches one in `../talaria-<n>` or `<devboxes>/<n>` keeps the stack,
+ * even after its checkout is gone. That is how a stack is held while its
+ * evidence is still needed.
+ */
+export function orphanProjects({ projects, liveWorktree = () => true, liveBox = () => true }) {
+  const rows = []
+  for (const row of projects ?? []) {
+    const name = row?.Name ?? ''
+    const worktrees = worktreeProjectOwners(name)
+    const owners = worktrees ?? boxProjectOwners(name)
+    if (!owners || owners.length === 0) continue
+    const live = worktrees ? liveWorktree : liveBox
+    if (owners.some((n) => live(n))) continue
+    rows.push(orphan(name))
+  }
+  return rows
+}
+
+/**
+ * What still vouches for a compose project, read from disk at the moment of
+ * removal: the path of a checkout, a box.env or a `.talaria-keep`, or null
+ * when nothing does. The scan and the removal are not one instant. The gate
+ * sizes every candidate between them, and a `talaria worktree` or a
+ * `.talaria-keep` can land in that gap. Nothing is removed on the scan's
+ * word alone. A `devbox-*` name with no box it could be (the tools layer)
+ * always vouches for itself. `exists` is injectable for the test.
+ */
+export function projectVouchedBy(projectName, { siblingParent, devboxHome }, exists = existsSync) {
+  const worktrees = worktreeProjectOwners(projectName)
+  if (worktrees) {
+    for (const n of worktrees) {
+      // A `.talaria-keep` lives inside the directory, so a directory that
+      // exists covers both: a checkout, or a placeholder holding only the keep.
+      const dir = join(siblingParent, `talaria-${n}`)
+      if (exists(dir)) return dir
+    }
+    return null
+  }
+  const boxes = boxProjectOwners(projectName)
+  if (!boxes) return null
+  if (boxes.length === 0) return 'the box tools layer'
+  for (const n of boxes) {
+    for (const f of ['box.env', '.talaria-keep']) {
+      const p = join(devboxHome, n, f)
+      if (exists(p)) return p
+    }
+  }
+  return null
+}
+
+/** Is box `name` live? Its box.env exists, or a `.talaria-keep` holds it. */
+export function boxStands(devboxHome, name, exists = existsSync) {
+  return exists(join(devboxHome, name, 'box.env')) || exists(join(devboxHome, name, '.talaria-keep'))
 }
 
 /** `k=v,k=v` — how `docker network ls --format '{{json .}}'` spells Labels. */
@@ -198,7 +281,8 @@ export function parseDockerTime(text) {
  *   containers  [{ project, networks: [name] }] — EVERY container, running
  *               or stopped: a stopped one still names its network, and
  *               removing that network would leave it unable to start
- *   liveWorktree(owner) — does that worktree's checkout exist
+ *   liveWorktree(name) — does that worktree's checkout exist. Asked for
+ *               each name the project could belong to (worktreeProjectOwners)
  *   liveBox(name)       — does that box's checkout (its box.env) exist.
  *               Defaults to yes, so a caller that cannot say never
  *               removes a box's network
@@ -225,8 +309,9 @@ export function orphanNetworks({ networks, containers, liveWorktree, liveBox = (
       if (!net.name.startsWith('devbox-')) continue
       if (boxes.length === 0 || boxes.some((n) => liveBox(n))) continue
     } else if (!probe) {
-      const owner = worktreeProjectOwner(project)
-      if (owner && liveWorktree(owner)) continue
+      // Either reading of a `-fleet` name keeps it (worktreeProjectOwners).
+      const owners = worktreeProjectOwners(project)
+      if (owners && owners.some((n) => liveWorktree(n))) continue
     }
     const used = containers.some(
       (c) => (c.networks ?? []).includes(net.name) || (project !== '' && c.project === project),
@@ -839,21 +924,38 @@ function devboxHome(root) {
  * base is obviously unfinished, so it never reaches `gh`. Everything fails
  * OPEN — no `gh`, no auth, no network, no PR all read as "not merged", so a
  * tree is never reclaimed on a guess.
+ *
+ * The PR is the one whose head is THIS checkout's HEAD (mergedAtHead), not
+ * any PR of the branch's name. `talaria worktree r6-ui` cut fresh from rc
+ * reuses `wt/r6-ui`, and so does every recut. The fresh tree has 0 commits
+ * ahead of rc, and `gh pr view wt/r6-ui` answered MERGED (#629, merged a week
+ * earlier), so a stack minutes old was read as finished and torn down.
  */
 function isMerged(dir, branch) {
   const ahead = tryGit(['rev-list', '--count', 'origin/rc..HEAD'], dir)
   if (ahead === null || Number(ahead) > 0) return false
+  const head = tryGit(['rev-parse', 'HEAD'], dir)
+  if (!head) return false
   try {
-    const out = execFileSync('gh', ['pr', 'view', branch, '--json', 'state', '-q', '.state'], {
-      cwd: dir,
-      encoding: 'utf8',
-      timeout: 5_000,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    return out.trim() === 'MERGED'
+    const out = execFileSync(
+      'gh',
+      ['pr', 'list', '--head', branch, '--state', 'all', '--limit', '100', '--json', 'number,state,headRefOid'],
+      { cwd: dir, encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    return mergedAtHead(JSON.parse(out), head)
   } catch {
     return false
   }
+}
+
+/** Did a pull request whose head is `head` merge? `prs` is `gh pr list
+ *  --head <branch> --state all --json number,state,headRefOid`: every PR the
+ *  branch name ever had. Only a MERGED one at this exact commit counts. An
+ *  older PR of the same name is another piece of work: its head is not a
+ *  commit a recut branch sits on. */
+export function mergedAtHead(prs, head) {
+  if (!head || !Array.isArray(prs)) return false
+  return prs.some((p) => p?.state === 'MERGED' && p.headRefOid === head)
 }
 
 /** A build directory. Always inventoried, whatever the disk reading — an
@@ -878,11 +980,14 @@ function targetRow(path, rel, now, flags) {
 }
 
 /** A running stack whose worktree is finished or stale. Stopping it frees
- *  RAM and CPU; the checkout is a separate row and a separate decision. */
-function stackRow(name, ageMs, merged, current) {
+ *  RAM and CPU; the checkout is a separate row and a separate decision.
+ *  `checkout` is never acted on (a stack has no path): the removal reads it
+ *  for a `.talaria-keep` touched since the scan. */
+function stackRow(name, ageMs, merged, current, checkout) {
   return {
     kind: 'stack',
     id: name,
+    checkout,
     path: '',
     bytes: 0,
     ageMs,
@@ -944,7 +1049,7 @@ export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) 
       primary: isPrimary,
     })
     if (running && (merged || ageMs >= POLICY.staleMs) && !kept) {
-      artifacts.push(stackRow(name, ageMs, merged, isCurrent))
+      artifacts.push(stackRow(name, ageMs, merged, isCurrent, path))
     }
     for (const rel of TARGET_RELS) {
       const tp = join(path, rel)
@@ -1009,37 +1114,29 @@ export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) 
     }
   }
 
+  // A worktree is live while git lists it or its sibling directory exists. A
+  // directory holding only a `.talaria-keep` counts: it is how a human holds
+  // a stack whose checkout is gone. A box is live while its box.env or a
+  // `.talaria-keep` in its directory exists.
+  const sibling = dirname(primary)
+  const worktreeStands = (n) => seenWorktree.has(n) || existsSync(join(sibling, `talaria-${n}`))
+  const boxLive = (n) => boxStands(home, n)
+
   if (projects) {
-    const sibling = dirname(primary)
-    for (const row of projects) {
-      const name = row.Name ?? ''
-      const owner = worktreeProjectOwner(name)
-      if (owner) {
-        if (!existsSync(join(sibling, `talaria-${owner}`)) && !seenWorktree.has(owner)) {
-          artifacts.push(orphan(name))
-        }
-        continue
-      }
-      // A project ending in -fleet is that box's fleet network, or a box whose
-      // own name ends in -fleet. Orphan only when neither checkout exists.
-      const candidates = boxProjectOwners(name)
-      if (!candidates || candidates.length === 0) continue
-      if (candidates.every((n) => !existsSync(join(home, n, 'box.env')))) artifacts.push(orphan(name))
-    }
+    artifacts.push(...orphanProjects({ projects, liveWorktree: worktreeStands, liveBox: boxLive }))
   }
 
   // Not from the stop gate: orphan networks are --apply's alone and weigh
   // nothing on disk, so the gate would only pay three more docker reads —
   // and a daemon busy with other stacks can hold a network read for a minute.
   if (projects && scanNetworks) {
-    const sibling = dirname(primary)
     const scan = networkFacts()
     if (scan) {
       artifacts.push(
         ...orphanNetworks({
           ...scan,
-          liveWorktree: (owner) => seenWorktree.has(owner) || existsSync(join(sibling, `talaria-${owner}`)),
-          liveBox: (name) => existsSync(join(home, name, 'box.env')),
+          liveWorktree: worktreeStands,
+          liveBox: boxLive,
           now,
         }),
       )
@@ -1058,7 +1155,7 @@ export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) 
           dbs,
           roots: { siblingParent: physical(dirname(primary)), devboxHome: physical(home) },
           liveCheckout: checkoutStands,
-          liveBox: (name) => existsSync(join(home, name, 'box.env')),
+          liveBox: boxLive,
           now,
         }),
       )
@@ -1075,7 +1172,7 @@ export function inventory(root, now = Date.now(), { scanNetworks = true } = {}) 
         ...pkgs,
         roots: { siblingParent: physical(dirname(primary)) },
         liveCheckout: checkoutStands,
-        liveBox: (name) => existsSync(join(home, name, 'box.env')),
+        liveBox: boxLive,
         now,
       })
       artifacts.push(...rows)
@@ -1352,13 +1449,27 @@ function downWorktreeStack(name, roots) {
   dockerByLabel(project)
 }
 
+/** A `.talaria-keep` in the checkout a stack, worktree or box row names. */
+function keptNow(artifact) {
+  const dir = artifact.checkout || artifact.path
+  return Boolean(dir) && existsSync(join(dir, '.talaria-keep'))
+}
+
 export function removeArtifact(artifact, roots) {
   if (!removalAllowed(artifact, roots)) {
     throw new Error(`refusing to remove ${artifact.kind} ${artifact.id}: path is outside the sweep`)
   }
+  // Every row below that takes containers and volumes asks again, at the
+  // moment of removal, whether a checkout or a `.talaria-keep` vouches for
+  // it. The scan's answer is seconds or minutes old by now.
   if (artifact.kind === 'orphan-compose') {
+    const vouched = projectVouchedBy(artifact.id, roots)
+    if (vouched) throw new Error(`${vouched} vouches for ${artifact.id} — left in place`)
     dockerByLabel(artifact.id)
     return
+  }
+  if ((artifact.kind === 'stack' || artifact.kind === 'worktree' || artifact.kind === 'devbox') && keptNow(artifact)) {
+    throw new Error(`${join(artifact.checkout || artifact.path, '.talaria-keep')} holds it — left in place`)
   }
   if (artifact.kind === 'orphan-network') {
     // Asked again at the moment of removal: a stack may have come up on it

@@ -56,11 +56,25 @@ export function slotPorts(c: number): WorktreeSlot {
   }
 }
 
+/** A slot is claimed when any port in `claimed` is one of its ports, or
+ *  falls in its hundred agent gateway ports. */
+export function slotClaimed(slot: WorktreeSlot, claimed: ReadonlySet<number>): boolean {
+  const points = new Set([slot.app, slot.api, slot.pg, slot.redis, slot.mcp, slot.ompAuth])
+  for (const p of claimed) {
+    if (points.has(p) || (p >= slot.gatewayBase && p < slot.gatewayBase + 100)) return true
+  }
+  return false
+}
+
+/** The first slot that is neither live (`taken`, a connect probe) nor
+ *  `claimed` by a stack that is stopped right now (claimedPorts). */
 export async function worktreeSlot(
   taken: (port: number) => Promise<boolean> = (p) => portTaken(p),
+  claimed: ReadonlySet<number> = new Set(),
 ): Promise<WorktreeSlot | null> {
   for (let c = 1; c <= 89; c++) {
     const slot = slotPorts(c)
+    if (slotClaimed(slot, claimed)) continue
     let free = true
     for (const port of Object.values(slot)) {
       if (await taken(port)) {
@@ -71,6 +85,90 @@ export async function worktreeSlot(
     if (free) return slot
   }
   return null
+}
+
+/** The host ports in `docker inspect --format '{{json .HostConfig.PortBindings}}'`
+ *  output, one JSON object (or `null`) per container. Pure. */
+export function hostPortsOf(inspectOut: string): number[] {
+  const out: number[] = []
+  for (const line of inspectOut.split('\n')) {
+    const t = line.trim()
+    if (!t || t === 'null') continue
+    let bindings: unknown
+    try {
+      bindings = JSON.parse(t)
+    } catch {
+      continue
+    }
+    if (!bindings || typeof bindings !== 'object') continue
+    for (const list of Object.values(bindings as Record<string, unknown>)) {
+      if (!Array.isArray(list)) continue
+      for (const b of list) {
+        const port = Number((b as { HostPort?: unknown })?.HostPort)
+        if (Number.isInteger(port) && port > 0) out.push(port)
+      }
+    }
+  }
+  return out
+}
+
+/** The ports a checkout's ui/.env gives its stack — the block runWorktree
+ *  writes, and the url lines that carry a port. Pure. */
+export function envPorts(uiEnv: string): number[] {
+  const out: number[] = []
+  for (const key of ['PORT', 'TALARIA_API_PORT', 'TALARIA_MCP_PORT', 'TALARIA_OMP_AUTH_PORT', 'TALARIA_GATEWAY_PORT_BASE']) {
+    const n = Number(envValue(uiEnv, key))
+    if (Number.isInteger(n) && n > 0) out.push(n)
+  }
+  for (const key of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_RUST_API_URL']) {
+    const m = /:\/\/(?:[^@/]*@)?[^:/]+:(\d+)/.exec(envValue(uiEnv, key) ?? '')
+    if (m) out.push(Number(m[1]))
+  }
+  return out
+}
+
+/**
+ * The ports a stack already holds, whether or not anything listens on them
+ * right now. worktreeSlot used to probe live listeners only, so a STOPPED
+ * worktree's slot read as free: `talaria-work-view`, its postgres and redis
+ * Exited, had its slot 3 handed to the next worktree. Neither stack was
+ * cross-wired (compose refuses the second bind). But whichever started
+ * second died with "worktree infra failed to start", and the only fix was
+ * editing ui/.env by hand.
+ *
+ * Two records outlive a stopped stack, and both are read:
+ *   - every container docker knows, running or stopped: the host ports it
+ *     publishes (HostConfig.PortBindings). That covers a stopped worktree's
+ *     postgres and redis, and a stopped box's app port too;
+ *   - every checkout `git worktree list` names: the ports its ui/.env gives
+ *     its stack. That covers a worktree whose containers are gone (the stop
+ *     gate's `stack` row takes them) but whose `talaria dev` would bring them
+ *     back on those ports.
+ * A read that fails adds nothing: the live probe still stands, as before.
+ */
+export async function claimedPorts(ctx: Ctx, root: string): Promise<Set<number>> {
+  const claimed = new Set<number>()
+  try {
+    const ids = (await ctx.exec('docker', ['ps', '-aq'])).stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+    if (ids.length) {
+      const out = await ctx.exec('docker', ['inspect', '--format', '{{json .HostConfig.PortBindings}}', ...ids], { timeoutMs: 60_000 })
+      for (const p of hostPortsOf(out.stdout)) claimed.add(p)
+    }
+  } catch {
+    // docker did not answer: the live probe is all there is
+  }
+  try {
+    const listed = (await ctx.exec('git', ['worktree', 'list', '--porcelain'], { cwd: root })).stdout
+    for (const line of listed.split('\n')) {
+      if (!line.startsWith('worktree ')) continue
+      const env = join(line.slice('worktree '.length), 'ui/.env')
+      if (!existsSync(env)) continue
+      for (const p of envPorts(readFileSync(env, 'utf8'))) claimed.add(p)
+    }
+  } catch {
+    // no git answer: the containers and the live probe still stand
+  }
+  return claimed
 }
 
 /** Every key the generated block below writes. The copy of main's ui/.env is
@@ -223,13 +321,24 @@ export const SEED_DUMP_ARGS = [
   '--exclude-table-data=push_subscriptions',
 ]
 
-/** Run on the copy right after the restore: the instance's VAPID keypair is
- *  main's identity to every push service, and a dev stack mints its own on
- *  first use. Guarded so a main database with no app_settings seeds
- *  cleanly. */
-export const SCRUB_SEEDED_PUSH_STATE =
+/** Run on the copy right after the restore: what would let the copy reach a
+ *  real person as main.
+ *
+ *  `push_vapid` is the instance's VAPID keypair, main's identity to every
+ *  push service. A dev stack mints its own on first use.
+ *
+ *  `email_config` is main's mail provider, its SMTP password or Resend key
+ *  sealed under the TALARIA_SECRET_KEY the seed keeps on purpose. The dump
+ *  also carries every user's real address. So a notification filed in a test
+ *  (a mention, a "tell participants", a batched digest) was mailed to real
+ *  people through main's provider. With the row gone, the copy has no
+ *  provider, and a send fails with "no email provider configured" until
+ *  someone sets one up for this stack (Admin → Org → Email; a local sink).
+ *
+ *  Guarded so a main database with no app_settings seeds cleanly. */
+export const SCRUB_SEEDED_OUTBOUND_STATE =
   "do $$ begin if to_regclass('public.app_settings') is not null then " +
-  "delete from app_settings where key = 'push_vapid'; end if; end $$;"
+  "delete from app_settings where key in ('push_vapid', 'email_config'); end if; end $$;"
 
 /** Clears the gateway ports a seed copied from main (see the seed step). */
 export const CLEAR_SEEDED_GATEWAY_PORTS =
@@ -239,8 +348,6 @@ export const CLEAR_SEEDED_GATEWAY_PORTS =
 export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promise<number> {
   const root = ctx.root
   if (!NAME_RE.test(name)) ctx.log.die('name must be lowercase-kebab')
-  const slot = await worktreeSlot()
-  if (!slot) ctx.log.die('no free port slot — tear down some worktrees (docker compose -p talaria-wt-<n> down -v)')
   const wt = join(root, '..', `talaria-${name}`)
   // One definition of the stack's docker names, shared with every command
   // that acts on this stack later (stack.ts: reset, dev).
@@ -286,6 +393,11 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
     )
   }
   if (existsSync(wt)) ctx.log.die(`${wt} already exists`)
+  // The slot last, right before anything is made: a slot nothing listens on
+  // can still be a stopped stack's (claimedPorts), and the later the read,
+  // the smaller the window for another `talaria worktree` to take it.
+  const slot = await worktreeSlot(undefined, await claimedPorts(ctx, root))
+  if (!slot) ctx.log.die('no free port slot — tear down some worktrees (docker compose -p talaria-wt-<n> down -v)')
 
   ctx.log.say(`Git worktree (${wt}, branch wt/${name})`)
   try {
@@ -388,17 +500,19 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
         : `seeded (a point-in-time copy of main: ${mainTables} tables)`,
     )
   }
-  // Main's VAPID key does not stay either (SEED_DUMP_ARGS says why). A scrub
-  // that fails is fatal: a copy that can sign as main is the one outcome this
-  // step exists to prevent, so the half-made stack is torn down instead.
+  // Main's VAPID key and mail provider do not stay either
+  // (SCRUB_SEEDED_OUTBOUND_STATE says why). A scrub that fails is fatal: a
+  // copy that can push or mail as main is the one outcome this step exists
+  // to prevent, so the half-made stack is torn down instead.
   try {
-    await ctx.exec('docker', ['exec', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-qc', SCRUB_SEEDED_PUSH_STATE])
+    await ctx.exec('docker', ['exec', pgc, 'psql', '-U', 'talaria', '-d', 'talaria', '-qc', SCRUB_SEEDED_OUTBOUND_STATE])
   } catch (e) {
     ctx.log.die(
-      `could not drop main's push key from the seeded copy (${e instanceof Error ? e.message : String(e)}). ` +
+      `could not drop main's push key and mail config from the seeded copy (${e instanceof Error ? e.message : String(e)}). ` +
         `Tear the half-made stack down with: ${teardown}`,
     )
   }
+  ctx.log.ok("main's push key and mail config dropped — this stack sends no push or mail until you configure its own")
   // The copied agent rows carry MAIN's gateway ports. This stack renders its
   // own fleet from its own base (TALARIA_GATEWAY_PORT_BASE below), so a copied
   // port would publish onto one of main's live agents. Clear them: the first

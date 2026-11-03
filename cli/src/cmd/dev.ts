@@ -116,6 +116,7 @@ const API_ENV_VARS = [
   'TALARIA_OMP_AUTH_PORT',
   'TALARIA_GATEWAY_PORT_BASE',
   'TALARIA_APPS_LOCAL_SOURCES',
+  'TALARIA_FETCH_ALLOW_HOSTS',
 ] as const
 
 /** A devbox's own block (box/new.ts boxBlock): every line of it the api
@@ -185,6 +186,14 @@ const BOX_API_ENV_VARS = [
  *  repository on this machine (file://, or http:// to loopback) — a dev
  *  stack's way to exercise the git install and update path without a
  *  remote. The api is the one that reads it, so ui/.env has to reach it.
+ *
+ *  TALARIA_FETCH_ALLOW_HOSTS is the SSRF guard's escape hatch (hosts,
+ *  *.suffix, IPs or CIDRs it may reach even though they are private or
+ *  loopback). ui/.env.example offers it and docs/APPS.md tells a local app
+ *  catalog to set it there. The guard moved from the app's TS process, which
+ *  loads ui/.env, to the api (talaria-safe-fetch), so a key left out of this
+ *  list stopped working: a loopback catalog was refused unless the key was
+ *  exported in the shell that ran `talaria dev`.
  *
  *  A devbox's block rides for the reason every line here does: the api has
  *  no .env loader, and in a box nothing else hands those lines over. The box

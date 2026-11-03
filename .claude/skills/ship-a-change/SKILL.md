@@ -110,8 +110,8 @@ that no longer contains the HEAD you pushed (the branch moved on GitHub without 
 | Exit | First line | What you do |
 |---|---|---|
 | 0 | `pr-watch: green` | Checks passed and GitHub reports the PR mergeable (no conflict with `rc`). You may claim done only after the local workspace this task created is gone (cleanup skill). Cite the proof line. A required review is not this gate — exit 0 does not mean a human approved, and you still do not merge. |
-| 2 | `pr-watch: red` | Read the log tail and the job URL. Diagnose. Fix. Re-run `bun run gate`. If the log names a crate this diff did not touch, `cargo test -p <that crate>` (clippy the same way) — never `api:check`, never a workspace cargo. Push to this same branch. Run the watcher again. |
-| 2 | `pr-watch: conflict` | `git fetch origin rc && git merge origin/rc`. Resolve. Re-run `bun run gate`. Push to this same branch. Run the watcher again. |
+| 2 | `pr-watch: red` | Read the log tail and the job URL. Diagnose. Fix. Re-run `bun run gate`. If the log names a crate this diff did not touch, `cargo test -p <that crate>` (clippy the same way) — never `api:check`, never a workspace cargo. Push to this same branch. Run the watcher again. On the promotion, the fix is its own branch from `origin/rc` and a pull request against `rc`. |
+| 2 | `pr-watch: conflict` | `git fetch origin rc && git merge origin/rc`. Resolve. Re-run `bun run gate`. Push to this same branch. Run the watcher again. On the promotion (`rc` → `main`) nobody pushes `rc`: bring `main` into `rc` through a pull request against `rc`, as the body says. |
 | 2 | `pr-watch: timeout` | Still pending when the wall clock ran out. Not done, and not a pass. Report the PR URL. Do not claim done. |
 | 2 | `pr-watch: pending` | With `--once`, or at once when waiting cannot change the head (not pushed, or dropped from the PR). Not done. Do what the reason says (push, or reconcile with `origin/<branch>`), or re-run without `--once` to wait. |
 | 1 | `pr-watch: could not run` | Not a pass. Say so. Do not claim done. |

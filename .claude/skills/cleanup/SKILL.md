@@ -57,7 +57,9 @@ flag it once it is stale.
 - another session's checkout. A worktree is ours only when it is the `wt/<name>` +
   `../talaria-<name>` pair `talaria worktree` creates. A long-lived checkout on another
   branch is not yours to remove
-- anything with a `.talaria-keep` file in its root
+- anything with a `.talaria-keep` file in its root, and the compose projects and volumes of
+  the worktree or box it sits in. A `../talaria-<name>` directory that holds only a
+  `.talaria-keep` keeps that worktree's stack after its checkout is gone
 
 A dirty tree or commits no remote has are flagged, not removed. Read the flag. Do not
 `--force` someone else's uncommitted work.
@@ -70,7 +72,9 @@ bun talaria cleanup --apply    # remove the safe set, then report what remains
 ```
 
 `--apply` removes stale clean worktrees, stopped clean boxes, old `/tmp/talaria-*`,
-compose projects whose directory is already gone, and **orphan networks**: a
+compose projects whose directory is already gone (a `talaria-wt-<x>-fleet` project is
+worktree `<x>`'s agents or worktree `<x>-fleet`'s own stack, and either checkout keeps it),
+and **orphan networks**: a
 `talaria-*` or `devbox-*` compose project's network with nothing attached (running or
 stopped), no container left in its project, no live worktree or box owning it (a box
 lives while its `../devboxes/<name>/box.env` does), and at least ten minutes old.

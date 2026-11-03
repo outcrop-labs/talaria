@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { boxUiEnv, overrideYaml, parseEnvFlags, composeEnvTpl, runNew, snapshotSource } from './new'
 import { repointChassis, seedFleetEnv, runSeed } from './seed'
-import { SCRUB_SEEDED_PUSH_STATE, SEED_DUMP_ARGS } from '../worktree'
+import { SCRUB_SEEDED_OUTBOUND_STATE, SEED_DUMP_ARGS } from '../worktree'
 import { runEnter } from './enter'
 import { runInstall } from './install'
 import { runRm, runStart } from './lifecycle'
@@ -433,16 +433,18 @@ describe('box seed — run', () => {
     const piped = ctx.calls.filter((c) => c.cmd === 'docker' && c.args[0] === 'exec' && c.args[1] === '-i')
     expect(piped).toHaveLength(1) // the psql side of the pipe
     expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args.includes('pg_dump') && c.args.includes('--clean'))).toBe(true)
-    // Push state stays on the primary: the dump skips push_subscriptions'
-    // rows, and the primary's VAPID key is dropped from the BOX's copy after
-    // the restore.
+    // Push and mail stay on the primary: the dump skips push_subscriptions'
+    // rows, and the primary's VAPID key and mail provider are dropped from the
+    // BOX's copy after the restore.
     const dump = ctx.calls.find((c) => c.args.includes('pg_dump'))!
     expect(dump.args).toEqual(['exec', 'talaria-postgres-dev', ...SEED_DUMP_ARGS])
     expect(dump.args).toContain('--exclude-table-data=push_subscriptions')
     const restoreAt = ctx.calls.findIndex((c) => c.cmd === 'docker' && c.args[0] === 'exec' && c.args[1] === '-i')
-    const scrubAt = ctx.calls.findIndex((c) => c.args.includes(SCRUB_SEEDED_PUSH_STATE))
+    const scrubAt = ctx.calls.findIndex((c) => c.args.includes(SCRUB_SEEDED_OUTBOUND_STATE))
     expect(scrubAt).toBeGreaterThan(restoreAt)
     expect(ctx.calls[scrubAt].args.slice(0, 2)).toEqual(['exec', 'devbox-demo-postgres'])
+    // ...and the primary's mail provider goes with the push key (cli-6).
+    expect(SCRUB_SEEDED_OUTBOUND_STATE).toContain("'email_config'")
     const state = join(root, '..', 'devboxes', 'demo', 'state')
     expect(readFileSync(join(state, 'fleet/chassis.yml'), 'utf8')).toContain('name: devbox-demo-fleet')
     const envPath = join(state, 'fleet/.env')
