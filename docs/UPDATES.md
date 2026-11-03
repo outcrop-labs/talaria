@@ -205,6 +205,51 @@ run is in flight — rolls. A migrated install with no pinned digest is corrupt
 state, and the engine refuses to act on it unattended. A registry that moved is
 never, by itself, a reason anything changed on a host.
 
+## The agent image — Hermes stable, on by default
+
+The agents' Hermes image updates itself, separately from Talaria's own image and
+**on by default** (Talaria's own updates above stay off until adopted): every instance
+follows `nousresearch/hermes-agent:stable` and keeps its agents on Hermes' stable
+releases, with no Talaria release, pull request or repository change per Hermes
+release. `talaria-hermes-channel` drives it; the records live in Postgres
+(`hermes_images`, `hermes_agent_images`, and the `hermes_channel` settings row). The
+whole mechanism is in [ARCHITECTURE.md, "The fleet"](./ARCHITECTURE.md#the-fleet); in short:
+
+- **Check**, every ~6 h with ±30 min of jitter (the first within 10 min of boot):
+  one anonymous manifest HEAD for `stable`'s digest, and for a new digest a tag list
+  and a HEAD per recent `vX.Y.Z` tag to name it. On Docker Hub none of these counts
+  against the anonymous pull limit, which counts manifest GETs.
+- **Prepare**: the new digest is pulled in the background through the agents' own
+  shared pull, waiting while any other download runs, then read with networking off
+  for its `_config_version`, the env names its Hermes strips, and its s6 drain tools.
+- **Canary, then one agent at a time**, in the maintenance window (02:00–05:00 in the
+  workspace time zone — the daily brief's `timeZone`, else `TZ`, else UTC — and
+  configurable on the panel) or on **Roll now**. An agent in a turn or a conversation is passed over and tried again a
+  minute later.
+- **Any failure stops it**: that agent goes back to the last known good, the digest is
+  marked bad and never rolled out again, every agent it reached moves back, and every
+  admin is notified (`hermes_update_failed`).
+
+The panel is **Manage → Agent image** (admins): the version each agent runs, the
+channel, the last check, the rollout, and Check now, Roll now, Roll back and Pin.
+`GET/POST /api/fleet/hermes` is the same surface.
+
+**Opting out, or holding a version.** Any one of these stops the channel moving agents:
+
+- **Pin** on the panel (`POST /api/fleet/hermes {"action":"pin","digest":…}`) holds every
+  agent on a version that has run well here, until **Unpin**.
+- `HERMES_IMAGE=<image>` in `fleet/.env` (or the api's environment) runs every agent on
+  that image, as it always did; the channel says it is off and why.
+- A chassis whose `image:` is not a stock `${HERMES_IMAGE:-…}` default is the operator's,
+  and the channel leaves it alone.
+
+**A host that cannot reach Docker Hub** keeps every agent where it is: the failed check
+is recorded (the panel shows it) and retried at the next check. A fresh install, and a
+host upgraded from a release before the channel, renders the compiled pin first (the
+last entry of `HERMES_IMAGE_DEFAULTS`), so the pin is still the floor and still worth
+pre-pulling before an upgrade: `docker pull <the pin>`. Such a host moves to `stable`
+in its next maintenance window, through the canary.
+
 ## The local proof — the devbox E2E
 
 The whole engine, adoption included, proves out on one docker host with a

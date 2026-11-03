@@ -32,6 +32,7 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | A ticket comment | `task-comment` | `task_comments(task)` | Realert | `task` | the commenter | assigned humans, the creator, watchers and earlier commenters, minus the author and anyone the comment @mentions, access re-checked |
 | Assignment, workchain turn and pause | `task-assigned`, `workchain_*` | none | — | `task` | the assigner, or the chain | as in wave 1 |
 | An MCP server going down (`talaria-mcp`) | `mcp_server_down` | `mcp_down(server)` | Realert | `mcp_server` | the health pass | every admin |
+| A Hermes agent image that failed its rollout (`talaria-hermes-channel`) | `hermes_update_failed` | `hermes_update(digest)` | Realert | `hermes_image` | the stable channel | every admin |
 | An approval waiting (`talaria-approvals`), and its SLA nag, escalation and stall report (`talaria-digest`) | `approval_pending` | `approval(key)` | Realert | `approval` (the approval's stable key) | the approvals system | the authority (content) and the fact audience |
 | Research ready, research and plan shares, KB comments, gaps, agent problems, the Google principal, the board-access outcome | as in wave 1 | none | — | `research_run`, `plan`, `kb_doc` or `task` where one exists | the person or agent who caused it | as in wave 1 |
 

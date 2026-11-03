@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-28 routes.
+29 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -45,6 +45,8 @@
 | [`/api/fleet/endpoints/{id}`](#apifleetendpointsid) | DELETE | `admin` |
 | [`/api/fleet/endpoints/{id}/available`](#apifleetendpointsidavailable) | GET | `admin` |
 | [`/api/fleet/federate`](#apifleetfederate) | POST | `admin` |
+| [`/api/fleet/hermes`](#apifleethermes) | GET | `admin` |
+| [`/api/fleet/hermes`](#apifleethermes) | POST | `admin` |
 | [`/api/fleet/hires`](#apifleethires) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/hires/{id}/retry`](#apifleethiresidretry) | POST | `session` + `perm:agents.manage` |
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
@@ -494,6 +496,30 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_federate.rs`](../../ap
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `dir` | `string trimmed(1, 500)` | trim, 1..500 — a server-side path to a Hermes-format directory (admin trust model). |
+
+## `/api/fleet/hermes`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hermes.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_hermes.rs)
+
+> /api/fleet/hermes — the agent image's Hermes stable channel. Admin.
+>   GET   where the channel stands: following stable, pinned to a version,
+>         or off because the operator chose the image (HERMES_IMAGE, or a
+>         chassis image of their own) and why; the Hermes version each agent
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{ok, status}` | 200 | — |
+| POST | `admin` | [body](#post-apifleethermes-body) | `{ok, message, status}` | 200, 400, 409 | audit |
+
+### POST `/api/fleet/hermes` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `enum(check|roll|rollback|pin|unpin|window)?` |  |
+| `digest` | `string?(80)` |  |
+| `start` | `string?(5)` |  |
+| `end` | `string?(5)` |  |
 
 ## `/api/fleet/hires`
 
