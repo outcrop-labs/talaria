@@ -32,8 +32,8 @@
     digest: string
     label: string
     fromLabel: string | null
-    kind: 'upgrade' | 'rollback' | 'pin'
-    phase: 'preparing' | 'waiting' | 'canary' | 'rolling' | 'done' | 'failed'
+    kind: 'upgrade' | 'rollback' | 'pin' | 'catchup'
+    phase: 'preparing' | 'waiting' | 'canary' | 'rolling' | 'soaking' | 'done' | 'failed'
     open: boolean
     forced: boolean
     startedAt: number
@@ -41,6 +41,8 @@
     agent: string | null
     moved: string[]
     skipped: Skipped[]
+    deferred: string[]
+    strikes: number
     detail: string | null
   }
   interface ImageView {
@@ -50,6 +52,7 @@
     status: 'candidate' | 'good' | 'bad'
     reason: string | null
     goodSince: number | null
+    pinnable: boolean
   }
   interface AgentView {
     slug: string
@@ -68,6 +71,7 @@
     lastCheck: { at: number; digest: string | null; label: string | null; error: string | null } | null
     nextCheckAt: number | null
     window: { start: string; end: string; zone: string; open: boolean }
+    minStableHours: number
     rollout: RolloutView | null
     agents: AgentView[]
     images: ImageView[]
@@ -93,9 +97,10 @@
 
   const PHASE: Record<RolloutView['phase'], string> = {
     preparing: 'Downloading and inspecting',
-    waiting: 'Ready, waiting for the window',
+    waiting: 'Ready, waiting',
     canary: 'Testing in a canary',
     rolling: 'Moving agents one at a time',
+    soaking: 'Watching every moved agent before calling it good',
     done: 'Done',
     failed: 'Stopped',
   }
@@ -105,6 +110,7 @@
     upgrade: { open: 'Updating to', done: 'Updated to', failed: 'Stopped the update to' },
     rollback: { open: 'Rolling back to', done: 'Rolled back to', failed: 'Stopped the rollback to' },
     pin: { open: 'Pinning to', done: 'Pinned to', failed: 'Stopped pinning to' },
+    catchup: { open: 'Catching up to', done: 'Caught up to', failed: 'Stopped catching up to' },
   }
   const heading = (r: RolloutView) =>
     r.phase === 'failed' ? KIND[r.kind].failed : r.open ? KIND[r.kind].open : KIND[r.kind].done
@@ -116,8 +122,14 @@
     if (!s || s.standing !== 'following' || !d || d === s.current.digest) return false
     return s.images.find((i) => i.digest === d)?.status !== 'bad'
   })
-  const pinnable = $derived((s?.images ?? []).filter((i) => i.status === 'good'))
+  // Any version this instance has inspected and not banned; one that never
+  // ran here is canaried first. A version tag that was never seen can be
+  // typed instead (it is resolved, pulled and canaried).
+  const pinnable = $derived((s?.images ?? []).filter((i) => i.pinnable))
+  const banned = $derived((s?.images ?? []).filter((i) => i.status === 'bad'))
   let pinChoice = $state('')
+  let pinVersion = $state('')
+  let showHistory = $state(false)
   $effect(() => {
     if (!pinChoice && s) pinChoice = s.pinned?.digest ?? s.current.digest
   })
@@ -149,7 +161,7 @@
     const to = rollout?.open && rollout.kind !== 'rollback' ? rollout.fromLabel : (s?.previous?.label ?? s?.compiled.label)
     const ok = await confirm({
       title: 'Roll back the agent image?',
-      message: `Every agent moves to ${to ?? 'the previous version'}, one at a time, and the version they leave is marked bad and never rolled out again. Each agent is offline for its restart.`,
+      message: `Every agent moves to ${to ?? 'the previous version'}, one at a time, each offline for its restart. A version that came from stable is marked bad so it is not rolled forward again (Allow again lifts that); a pinned version is not.`,
       confirmLabel: 'Roll back',
     })
     if (ok) await act('rollback')
@@ -162,11 +174,28 @@
     })
     if (ok) await act('roll')
   }
+  const pinTo = async (body: { digest?: string; version?: string }, label: string) => {
+    const ok = await confirm({
+      title: `Pin every agent to ${label}?`,
+      message: `Every agent restarts onto ${label} now, one at a time, and stays there until you unpin. A version that never ran here is tested in a canary first.`,
+      confirmLabel: 'Pin',
+    })
+    if (ok) await act('pin', body)
+  }
+  const allowAgain = async (i: ImageView) => {
+    const ok = await confirm({
+      title: `Allow ${i.label} again?`,
+      message: `It was marked bad: ${i.reason ?? 'no reason recorded'}. Once allowed, it can be pinned, and stable can roll it out again in a maintenance window, through the canary.`,
+      confirmLabel: 'Allow again',
+    })
+    if (ok) await act('allow', { digest: i.digest })
+  }
 
   const TONE = { ok: 'text-fg', danger: 'text-danger' } as const
   const agentNote = (a: AgentView) => {
     if (!rollout?.open) return null
     if (rollout.agent === a.slug) return 'moving now'
+    if (rollout.deferred.includes(a.slug)) return 'busy all window: moves in a later one'
     const skip = rollout.skipped.find((k) => k.slug === a.slug)
     if (skip) return `waiting: ${skip.why}`
     if (rollout.phase === 'rolling' && !rollout.moved.includes(a.slug)) return 'queued'
@@ -208,6 +237,7 @@
             {/if}
             {#if until(s.nextCheckAt)}Next check {until(s.nextCheckAt)}.{/if}
             Maintenance window {s.window.start}–{s.window.end} {s.window.zone}{s.window.open ? ' (open now)' : ''}.
+            A new release waits {s.minStableHours} h on stable first.
           </div>
           {#if s.lastCheck?.error}
             <div class="font-sans text-xs text-danger">The last check failed: {s.lastCheck.error}</div>
@@ -283,12 +313,42 @@
                 <option value={i.digest}>{i.label}</option>
               {/each}
             </Select>
-            <Button variant="ghost" size="sm" disabled={busy !== null || !pinChoice} onclick={() => act('pin', { digest: pinChoice })}>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy !== null || !pinChoice}
+              onclick={() => pinTo({ digest: pinChoice }, pinnable.find((i) => i.digest === pinChoice)?.label ?? 'that version')}
+            >
               <Pin size={14} />
               Pin
             </Button>
+            <Input size="sm" class="w-24 font-[var(--font-mono)]" bind:value={pinVersion} placeholder="v0.22.5" aria-label="Or pin a version tag" />
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy !== null || !/^v\d+\.\d+\.\d+$/.test(pinVersion.trim())}
+              onclick={() => pinTo({ version: pinVersion.trim() }, pinVersion.trim())}
+            >
+              Pin version
+            </Button>
           {/if}
         </div>
+        {#if banned.length > 0}
+          <div>
+            <div class="font-sans text-xs text-muted">Marked bad here — never rolled out, never pinned, until allowed again:</div>
+            <ul class="divide-y divide-line-subtle">
+              {#each banned as i (i.digest)}
+                <li class="flex items-baseline justify-between gap-3 py-1.5">
+                  <span class="min-w-0 font-sans text-xs">
+                    <span class="font-mono text-fg">{i.label}</span>
+                    <span class="text-muted"> — {i.reason ?? 'no reason recorded'}</span>
+                  </span>
+                  <Button variant="ghost" size="sm" disabled={busy !== null} onclick={() => allowAgain(i)}>Allow again</Button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
         <div class="flex flex-wrap items-center gap-2">
           <span class="font-sans text-xs text-muted">Window</span>
           <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowStart} aria-label="Window start (HH:MM)" />
@@ -302,6 +362,20 @@
           >
             Save
           </Button>
+        </div>
+      {/if}
+      {#if s.events.length > 0}
+        <div class="border-t border-line pt-2">
+          <Button variant="ghost" size="sm" onclick={() => (showHistory = !showHistory)}>
+            {showHistory ? 'Hide history' : `History (${s.events.length})`}
+          </Button>
+          {#if showHistory}
+            <ul transition:slide={{ duration: 150 }} class="mt-1 space-y-1">
+              {#each s.events as ev, n (n)}
+                <li class="font-sans text-xs text-muted"><span class="text-fg">{ago(ev.at)}</span> — {ev.text}</li>
+              {/each}
+            </ul>
+          {/if}
         </div>
       {/if}
       {#if line}
