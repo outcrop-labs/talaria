@@ -223,7 +223,10 @@ pub async fn run_canary(record: &ImageRecord, base: Option<&str>) -> Result<Stri
 }
 
 async fn canary_checks(files: &CanaryFiles, image: &str) -> Result<String, String> {
-    let up = files.compose_args(&["up", "-d", "--no-build", "--pull", "never"]);
+    // The image is on the host already (prepared), so compose's default pull
+    // policy pulls nothing; no `--pull` flag, which an older compose refuses
+    // (and a refusal here would mark a good image bad).
+    let up = files.compose_args(&["up", "-d"]);
     let refs: Vec<&str> = up.iter().map(String::as_str).collect();
     docker(&refs, CANARY_UP).await.map_err(|e| {
         format!(
