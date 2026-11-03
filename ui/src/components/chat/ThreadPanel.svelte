@@ -13,7 +13,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { slide, GROW_X } from '@/lib/motion'
   import { markChannelThreadRead, sendChannelMessage, useThreadMessages } from '@/lib/channels.svelte'
-  import { lookingNow, watchLooking } from '@/lib/looking'
+  import { lookingNow, readCursorToPost, watchLooking } from '@/lib/looking'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
@@ -86,15 +86,21 @@
   let looking = $state(lookingNow())
   $effect(() => watchLooking((v) => (looking = v)))
   const qc = useQueryClient()
-  let lastReadPosted = $state(0)
+  // What was posted is keyed by the ROOT, as ChannelView keys its own by the
+  // channel: ChannelView swaps rootId without remounting this panel, and seqs
+  // are channel-wide, so a second thread whose newest reply is older than the
+  // first's sat below a bare high-water mark and never posted its read.
+  let lastReadPosted: { id: string; seq: number } = { id: '', seq: 0 }
   $effect(() => {
     // Oldest first, root first: the last row is the newest reply (or the
     // root itself in a thread with no replies — covered by the channel
     // cursor, and a no-op here).
     const latest = messages[messages.length - 1]?.seq ?? 0
-    if (!looking || latest <= lastReadPosted) return
-    lastReadPosted = latest
-    void markChannelThreadRead(channelId, rootId, latest)
+    const root = rootId
+    const seq = readCursorToPost({ channelId: root, latest, posted: lastReadPosted, looking })
+    if (seq === null) return
+    lastReadPosted = { id: root, seq }
+    void markChannelThreadRead(channelId, root, seq)
       .then(() => qc.invalidateQueries({ queryKey: ['channels'] }))
       .catch(() => {})
   })
