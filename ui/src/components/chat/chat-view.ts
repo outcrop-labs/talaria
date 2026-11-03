@@ -104,6 +104,18 @@ export const toDisplay = (m: StoredMessage): DisplayMessage => ({
   reactions: m.reactions,
 })
 
+/** A reply the stream said has failed (`ChatEvent` `error`), shown the way the
+ *  server lands it: the reason as the row's last line, `(agent error: …)`,
+ *  and the row an error. The server keeps the first failure and ends the
+ *  reply there (talaria-chat-persist `with_error_line`), so the live row and
+ *  the one the post-turn sync brings back read the same, and the error mark
+ *  (AssistantTurn) shows at once instead of an empty bubble. */
+export function withAgentError(m: DisplayMessage, message: string): DisplayMessage {
+  const line = `(agent error: ${message})`
+  const body = m.content.trimEnd()
+  return { ...m, content: body.trim() ? `${body}\n\n${line}` : line, status: 'error' }
+}
+
 /** What the composer meant by this submit: Enter (or the send tile), or the
  *  explicit mid-turn send — ⌘/Ctrl+⏎ and the "Send now" control. */
 export type SendIntent = 'enter' | 'send-now'

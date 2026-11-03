@@ -8,6 +8,7 @@
 
 mod turn_stop;
 pub use turn_stop::{HELD_FOR, SentTurn, TurnAwaited, await_sent_turn, turn_sent};
+pub mod edge;
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -371,6 +372,49 @@ pub fn session_turn_parts(messages: &[Value]) -> (Option<String>, Value) {
 /// (`conversations.hermes_epoch`), so a conversation whose derived session
 /// lost a turn in a restart stays on the fresh session its repair moved it
 /// to (talaria-gateway `fleet_chat::Thread`).
+/// Open an assistant reply: insert its streaming row, then ring everyone who
+/// can read the thread. The tab bar refetches `/api/working` on this event,
+/// and a reply that announced only its end could stream and finish under the
+/// bar's idle poll with no glyph. The audience is the completion event's own,
+/// and nothing rings when the insert fails.
+pub async fn open_streaming_reply(
+    pg: &PgPool,
+    notify: NotifyDeps,
+    conversation_id: &str,
+    seq: i32,
+    metadata: &Value,
+) -> Result<String, sqlx::Error> {
+    let id = insert_streaming_assistant(pg, conversation_id, seq, metadata).await?;
+    fan_conversation_event(notify, conversation_id.to_string());
+    Ok(id)
+}
+
+/// Reopen a reply the resume path picked back up: its row streams again, so
+/// its readers hear it start again, exactly as `open_streaming_reply` rings.
+pub async fn reopen_streaming_reply(
+    pg: &PgPool,
+    notify: NotifyDeps,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<(), sqlx::Error> {
+    resurrect_streaming_assistant(pg, message_id).await?;
+    fan_conversation_event(notify, conversation_id.to_string());
+    Ok(())
+}
+
+/// The rail's signal, on every reply that lands, finished or failed: this
+/// thread's unread pill moves for everyone who can read it, and a tab bar lit
+/// by the reply's start goes dark. The row is landed before this, so a client
+/// that refetches on the event sees the landing; the event is id-shaped, so it
+/// carries nothing the refetch doesn't re-read through the ordinary ACL.
+/// Detached — the persist path never waits on a fan-out.
+async fn ring_reply_landed(state: &AppState, conversation_id: &str) {
+    fan_conversation_event(
+        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+        conversation_id.to_string(),
+    );
+}
+
 pub async fn send_turn(
     pg: &PgPool,
     pinned: bool,
@@ -635,16 +679,20 @@ async fn continue_inner(
     // itself rather than missing it (`OpeningTurn`).
     let opening = OpeningTurn::take(conversation_id);
     let assistant_id = match resume {
-        Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
-            Ok(()) => row.to_string(),
-            Err(_) => return,
-        },
+        Some(row) => {
+            let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+            match reopen_streaming_reply(&state.pg, notify, conversation_id, row).await {
+                Ok(()) => row.to_string(),
+                Err(_) => return,
+            }
+        }
         None => {
             let Ok(seq) = next_seq(&state.pg, conversation_id).await else {
                 return;
             };
+            let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
             let Ok(id) =
-                insert_streaming_assistant(&state.pg, conversation_id, seq, &json!({})).await
+                open_streaming_reply(&state.pg, notify, conversation_id, seq, &json!({})).await
             else {
                 return;
             };
@@ -705,6 +753,7 @@ async fn continue_inner(
             None => String::new(),
         };
         let _ = update_assistant(&state.pg, &assistant_id, &content, "", &[], "error").await;
+        ring_reply_landed(state, conversation_id).await;
         return;
     }
     let usage_meta = PersistMeta {
@@ -1458,6 +1507,7 @@ pub async fn persist_assistant_stream(
     if let Some(message) = frame_error {
         content = with_error_line(&content, &format!("(agent error: {message})"));
         land!("error");
+        ring_reply_landed(&state, &conversation_id).await;
         return;
     }
     // A stream that DIED (as opposed to the agent refusing above) ends the
@@ -1469,6 +1519,7 @@ pub async fn persist_assistant_stream(
     if let Some(died) = death {
         content = with_error_line(&content, &format!("(agent error: {})", died.reason()));
         land!("error");
+        ring_reply_landed(&state, &conversation_id).await;
         if let Some(meta) = usage_meta.filter(|m| !m.resumed) {
             maybe_resume(&state, &conversation_id, &message_id, &meta, heard_at_ms);
         }
@@ -1566,16 +1617,7 @@ pub async fn persist_assistant_stream(
         };
         let _ = guard.await;
     }
-    // The rail's signal, on every completed reply: this thread's unread pill
-    // moves for everyone who can read it, wherever in the app they are. The
-    // row is landed complete above, so a client that refetches on the event
-    // sees the finished turn; the event is id-shaped, so it carries nothing
-    // the refetch doesn't re-read through the ordinary ACL. Detached — the
-    // persist path never waits on a fan-out.
-    fan_conversation_event(
-        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
-        conversation_id.clone(),
-    );
+    ring_reply_landed(&state, &conversation_id).await;
     // And the reply that landed while its readers were away rings once: one
     // agent-reply row per audience member whose read cursor doesn't cover it,
     // deduped while one sits unread per thread. AFTER the guard block on
@@ -1959,6 +2001,9 @@ pub fn answer_after_orphan(
 
 #[cfg(test)]
 mod stop_landing_live;
+
+#[cfg(test)]
+mod reply_open_live;
 
 #[cfg(test)]
 mod tests {

@@ -4484,6 +4484,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
+ "redis",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",

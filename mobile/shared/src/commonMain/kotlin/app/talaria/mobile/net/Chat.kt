@@ -18,6 +18,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * `POST /api/chat` — the controller's command line: tell an agent to do
@@ -110,10 +113,24 @@ private const val TOOL_PROGRESS_CLAUDE = "claude.tool.progress"
 private data class Chunk(
     val choices: List<Choice> = emptyList(),
     val usage: UsageWire? = null,
+    // A failure frame's members (see `failureOf`). Elements, not strings: an
+    // agent's error can be an object or a bare string, and a shape this does
+    // not expect must not drop the whole frame.
+    val error: JsonElement? = null,
+    val hermes: HermesWire? = null,
 )
 
 @Serializable
-private data class Choice(val delta: Delta? = null)
+private data class Choice(
+    val delta: Delta? = null,
+    @SerialName("finish_reason") val finishReason: String? = null,
+)
+
+@Serializable
+private data class HermesWire(
+    val failed: Boolean? = null,
+    val error: JsonElement? = null,
+)
 
 @Serializable
 private data class Delta(
@@ -159,6 +176,9 @@ fun parseChatFrame(
     return try {
         val chunk = chatJson.decodeFromString<Chunk>(data)
         val out = mutableListOf<ChatEvent>()
+        // The failure first, as the gateway reads it: the turn is over the
+        // moment it lands, whatever else the chunk carries.
+        failureOf(chunk)?.let { out += ChatEvent.Failed(it) }
         val delta = chunk.choices.firstOrNull()?.delta
         val reasoning = delta?.reasoning?.takeIf { it.isNotEmpty() } ?: delta?.reasoningContent
         val text = delta?.content
@@ -178,6 +198,32 @@ fun parseChatFrame(
         emptyList()
     }
 }
+
+/**
+ * A failure frame's sentence, or null for a frame that is not one.
+ *
+ * The gateway's own reading (`error_message_of`, talaria-gateway
+ * `fleet_chat.rs`), as `ui/src/lib/sse-parse.ts` `failureMessageOf` reads it:
+ * an `error` member, a `finish_reason` of `error`, or Hermes' `hermes.failed`;
+ * the sentence is `error.message`, else `hermes.error`. It is also how an
+ * error status reaches the phone once the server has opened the answer
+ * itself, for an agent slow to open its turn (talaria-chat-persist `edge`):
+ * that status rides the stream as `{"error":{"message":…}}`.
+ */
+private fun failureOf(chunk: Chunk): String? {
+    val failed =
+        chunk.error != null ||
+            chunk.choices.firstOrNull()?.finishReason == "error" ||
+            chunk.hermes?.failed == true
+    if (!failed) return null
+    return textOf((chunk.error as? JsonObject)?.get("message"))
+        ?: textOf(chunk.hermes?.error)
+        ?: "the agent reported an error"
+}
+
+/** A JSON string's text, or null for anything else (or an empty one). */
+private fun textOf(element: JsonElement?): String? =
+    (element as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotEmpty() }
 
 private fun parseToolProgress(payload: String): ChatEvent.Tool? =
     try {

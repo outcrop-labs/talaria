@@ -310,7 +310,7 @@
              so the live DOM appeared in one jump when the animation ended. See
              the note in styles.css. Content entrance is animated by Materialize
              and listStagger instead, which fire when the data actually lands. -->
-        <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div data-tab-page class="min-h-0 min-w-0 flex-1 overflow-hidden">
           {#if !routeDenied}
             {@render children()}
           {/if}

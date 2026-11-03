@@ -45,6 +45,7 @@
   import { manageArea, MANAGE_HOME } from '@/lib/manage-area'
   import { edgeFade, revealCurrent } from '@/lib/tab-strip'
   import { windowDrag } from '@/lib/desktop-titlebar'
+  import { tabLift } from '@/lib/tab-motion'
   import { cn } from '@/lib/cn'
   import { p, route } from '@/router'
 
@@ -105,7 +106,7 @@
     <DesktopSwitcher collapsed />
   </div>
 
-  <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade use:revealCurrent>
+  <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade use:revealCurrent use:tabLift={route.pathname}>
     {#each row as section, si (section.id)}
       {#if si > 0}<div class="mb-3 h-5 w-px shrink-0 bg-line"></div>{/if}
       {#each section.items as item (item.to)}
@@ -113,6 +114,7 @@
         {#if item.to === activePath}
           <a
             href={item.to}
+            aria-label={item.label}
             aria-current="page"
             class="ears-bottom flex h-11 min-w-0 max-w-[15rem] shrink-0 items-center gap-2 rounded-t-[10px] border border-b-0 border-line bg-surface pl-3 pr-4 text-fg focus-visible:outline-offset-[-2px]"
           >
@@ -125,7 +127,7 @@
             <a
               href={item.to}
               aria-label={item.label}
-              class="relative mb-1.5 grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
+              class="tab-tile relative mb-1.5 grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted dither-fill hover:text-fg"
             >
               {@render face(item, 16)}
               {#if badge !== undefined && (badge === null || badge > 0)}{@render badgeMark(badge, 'absolute right-0 top-0')}{/if}

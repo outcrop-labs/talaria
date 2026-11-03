@@ -16,6 +16,7 @@ import {
   toDisplay,
   toggleReactionLocal,
   turnTime,
+  withAgentError,
   type DisplayMessage,
 } from './chat-view'
 
@@ -370,5 +371,22 @@ describe('foldToolVerdicts', () => {
     expect(foldToolVerdicts(local, [stored({ id: 'a1', tools: [rm, echo] })])).toBe(local)
     expect(foldToolVerdicts(local, [stored({ id: 'a1', tools: [failed, echo] })])).toBe(local)
     expect(foldToolVerdicts(local, [])).toBe(local)
+  })
+})
+
+describe('withAgentError', () => {
+  const reply = (content: string): DisplayMessage => ({ role: 'assistant', content, status: 'streaming' })
+
+  it('an empty reply becomes the error line alone, which the bubble shows as its error mark', () => {
+    expect(withAgentError(reply(''), 'the model provider refused the turn')).toEqual({
+      role: 'assistant',
+      content: '(agent error: the model provider refused the turn)',
+      status: 'error',
+    })
+  })
+
+  it('words that arrived first stay, with the reason as the last line, as the server lands it', () => {
+    expect(withAgentError(reply('Half an answer  \n'), 'cut off').content).toBe('Half an answer\n\n(agent error: cut off)')
+    expect(withAgentError(reply('   '), 'cut off').content).toBe('(agent error: cut off)')
   })
 })
