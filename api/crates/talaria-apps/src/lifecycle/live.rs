@@ -429,7 +429,13 @@ async fn an_update_lands_or_rolls_back_and_the_record_follows_the_trees() {
         assert!(!dir.exists(), "{} was left", dir.display());
     }
     assert_eq!(recorded(&pg, &slug).await, None);
-    assert!(!app_data_dir().join(&slug).exists());
+    // It stored nothing: only the record of its repository is left.
+    let left: Vec<_> = std::fs::read_dir(app_data_dir().join(&slug))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(left, [DATA_SOURCE_FILE]);
 }
 
 /// Kept data goes back only to the repository it was kept from. Another
@@ -635,14 +641,15 @@ impl Grantees {
 }
 
 /// An app's grants belong to the repository installed under its slug, and go
-/// back only to it. Uninstall keeps them with the data it keeps, and drops
-/// them when it keeps none (wiped, or nothing was stored); an install keeps
-/// them only when the data's record names its own repository — another
-/// repository's install starts with no grants, whatever it does with the
-/// data, and so does any install of a slug whose grants nothing vouches for
-/// (an orphan an uninstall left before uninstall dropped them). Other apps'
-/// views, one whose slug begins with this one's included, and core views are
-/// never touched; each list keeps its order.
+/// back only to it. Uninstall keeps the record of that repository short of a
+/// wipe — with the data, or alone when the app stored nothing — and the
+/// grants with it; a wipe takes both. An install keeps them only when the
+/// record names its own repository: another repository's install starts with
+/// no grants, whatever it does with the data, and so does any install of a
+/// slug whose grants nothing vouches for (an orphan an uninstall left before
+/// uninstall dropped them). Other apps' views, one whose slug begins with
+/// this one's included, and core views are never touched; each list keeps
+/// its order.
 #[tokio::test]
 #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
 async fn grants_go_back_only_to_their_own_repository() {
@@ -660,6 +667,20 @@ async fn grants_go_back_only_to_their_own_repository() {
     // What the app host does on the app's first store call.
     let store = || std::fs::create_dir_all(data.join("pg")).unwrap();
     let people = Grantees::new(&pg, &slug).await;
+    let a_url = parse_source(&a.url, true).unwrap().url;
+    let b_url = parse_source(&b.url, true).unwrap().url;
+    let owner = || read_data_source(&data).map(|d| d.url);
+    let entries = || {
+        let mut names: Vec<String> = std::fs::read_dir(&data)
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
     let views = |l: &[&str]| {
         l.iter()
             .map(|s| s.replace("<s>", &slug))
@@ -767,25 +788,44 @@ async fn grants_go_back_only_to_their_own_repository() {
         assert_eq!(rewiped.grants_removed, 0);
         assert_eq!(people.held(&pg).await, granted, "its own, wiped");
 
-        // An uninstall that keeps no data keeps no grants: nothing is left
-        // to say whose they were.
+        // An app that stored nothing: the record stays alone in its data
+        // directory, and the grants with it — a repair (uninstall, then the
+        // same repository again) finds them.
         let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
             .await
             .unwrap();
-        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 2));
-        assert_eq!(people.held(&pg).await, none_of_its, "nothing kept");
-
-        // Grants an uninstall left behind before it dropped them (the
-        // upgrade): nothing vouches for them, and an install drops them.
-        people.set(&pg, &granted).await;
-        let fresh = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
+        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 0));
+        assert_eq!(people.held(&pg).await, granted, "nothing stored");
+        assert_eq!(entries(), [DATA_SOURCE_FILE], "the record alone");
+        assert_eq!(owner(), Some(a_url.clone()));
+        let repaired = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
             .await
             .unwrap();
-        assert!(!fresh.kept_data && !fresh.wiped_data);
-        assert_eq!(fresh.grants_removed, 2);
-        assert_eq!(people.held(&pg).await, none_of_its, "an orphan");
+        assert!(!repaired.kept_data && !repaired.wiped_data);
+        assert_eq!(repaired.grants_removed, 0);
+        assert_eq!(people.held(&pg).await, granted, "a repair");
 
-        // A wipe takes them with the data.
+        // An app installed before install wrote the record, that stored
+        // nothing: uninstall writes the record from the source record.
+        std::fs::remove_file(data.join(DATA_SOURCE_FILE)).unwrap();
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 0));
+        assert_eq!(owner(), Some(a_url.clone()), "written from app_sources");
+        assert_eq!(people.held(&pg).await, granted, "an unrecorded install");
+
+        // A record alone is not kept data: another repository installs
+        // fresh, without asking, and none of the grants go with the slug.
+        let other = install_app(&pg, &NoCreds, Some(&host), request(&b.url, &slug, None))
+            .await
+            .unwrap();
+        assert!(!other.kept_data && !other.wiped_data);
+        assert_eq!(other.grants_removed, 2);
+        assert_eq!(people.held(&pg).await, none_of_its, "a record alone");
+        assert_eq!(owner(), Some(b_url.clone()));
+
+        // A wipe takes them with the data, and the record with it.
         people.set(&pg, &granted).await;
         store();
         let left = uninstall_app(&pg, &sb, Some(&host), &slug, true)
@@ -793,6 +833,17 @@ async fn grants_go_back_only_to_their_own_repository() {
             .unwrap();
         assert_eq!((left.data, left.grants_removed), (DataLeft::Wiped, 2));
         assert_eq!(people.held(&pg).await, none_of_its, "wiped");
+        assert!(!data.exists());
+
+        // Grants an uninstall left behind before it dropped them (the
+        // upgrade): no record vouches for them, and an install drops them.
+        people.set(&pg, &granted).await;
+        let fresh = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
+            .await
+            .unwrap();
+        assert!(!fresh.kept_data && !fresh.wiped_data);
+        assert_eq!(fresh.grants_removed, 2);
+        assert_eq!(people.held(&pg).await, none_of_its, "an orphan");
         // Nothing left to remove: a second sweep changes no row.
         assert_eq!(forget_app_grants(&pg, &slug).await, Ok(0));
     };

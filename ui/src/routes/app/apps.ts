@@ -250,6 +250,9 @@ export interface InstallAnswer {
   keptData?: boolean
   sha?: string
   wipedData?: boolean
+  /** People and teams whose grants on the slug were dropped: another
+   *  repository's, or ones no record vouched for. */
+  grantsRemoved?: number
   build?: { ok: boolean; error?: string } | null
   buildError?: string
 }

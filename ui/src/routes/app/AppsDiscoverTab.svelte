@@ -59,7 +59,13 @@
           : r.wipedData
             ? ' The data a previous install kept was deleted first.'
             : ''
-        notice = `Installed apps/${r.slug} at ${shortSha(r.sha)}. ${built}${kept}`
+        // Grants on a slug follow the repository: those the slug held for
+        // another repository, or for none on record, are gone.
+        const n = r.grantsRemoved ?? 0
+        const grants = n
+          ? ` ${n === 1 ? 'One person or team' : `${n} people and teams`} lost the grants they held on /x/${r.slug}, which were not this repository's. Grant it in Admin → People or Manage → Teams.`
+          : ''
+        notice = `Installed apps/${r.slug} at ${shortSha(r.sha)}. ${built}${kept}${grants}`
         gitUrl = ''
         gitRef = ''
         gitSecret = ''

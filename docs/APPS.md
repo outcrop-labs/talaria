@@ -146,7 +146,13 @@ credential, and the host runs the handler. The api never loads app code.
    over only to a reinstall of the repository the data's record names, even one that wipes its
    own data. Another repository starts with none, whether it adopts the data or wipes it, and so
    does any install of a slug whose grants no record vouches for. The install answers how many
-   people and teams lost one (`grantsRemoved`), and the audit row says so too.
+   people and teams lost one (`grantsRemoved`, shown in Manage → Apps), and the audit row says so
+   too. A renamed or transferred repository has a new URL, so it is another repository by this
+   rule. Where data was kept, its install asks first (409), and `keptData: "adopt"` hands the data
+   over but not the grants. Either way, grant the app again. An install never cleans up a grant that an earlier release let
+   another repository inherit, because that repository's own record now vouches for it. Where a
+   slug was reused for another repository before this rule, review who holds `/x/<slug>` and
+   `/x/<slug>/manage`.
 
    **Private repositories.** A repository on one of the instance's registered git hosts
    (Admin → Git hosts, [WORKBENCH.md](./WORKBENCH.md#git-hosts-the-operators-choice)) is
@@ -194,10 +200,12 @@ credential, and the host runs the handler. The api never loads app code.
    its build output, its compose file and its source record. Its **data is kept** — the
    Postgres files, `db.env`, the sealed password and the record of the repository they belong
    to — so reinstalling the same repository under the same slug reattaches it (the install says
-   so; another repository has to choose, see Install). The people's and teams' grants on the app
-   stay with kept data, for that reinstall; an uninstall that keeps no data (wiped, or the app
-   never stored anything) removes them, since nothing is left to say whose they were. The answer
-   and the audit row carry `grantsRemoved`. With `wipeData: true` the app's store is
+   so; another repository has to choose, see Install). Short of a wipe, the record of the
+   repository stays, alone in the data directory when the app stored nothing. The people's and
+   teams' grants on the app stay with it, so uninstalling and reinstalling the same repository
+   leaves who may use it as it was. A wipe removes the grants along with the data, and so does
+   uninstalling an app nothing records (one placed by hand). The answer and the audit row carry
+   `grantsRemoved`. With `wipeData: true` the app's store is
    emptied while its database still runs, the database is stopped, and the whole data directory
    is deleted (through a throwaway container when its files belong to the database container's
    user), along with the password. Manage → Apps asks which. Audited, like

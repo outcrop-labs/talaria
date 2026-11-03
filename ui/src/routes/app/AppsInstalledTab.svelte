@@ -109,17 +109,18 @@
       danger: true,
     })
     if (!ok) return
-    // Data is kept unless the admin says otherwise: a reinstall reattaches it.
+    // Data is kept unless the admin says otherwise: a reinstall of the same
+    // repository reattaches it, and the grants on the app stay with it.
     const wipeData = await confirm({
       title: `Delete the data ${a.name} stored?`,
-      message: 'Keep it, and reinstalling the app picks it up again. Delete it, and every record the app stored is gone for good.',
+      message: 'Keep it, and reinstalling the same repository picks it up again, with everyone it was granted to. Delete it, and every record the app stored, and every grant on it, is gone for good.',
       confirmLabel: 'Delete data',
       cancelLabel: 'Keep data',
       danger: true,
     })
     busy = a.slug
     try {
-      await delJson<{ ok: true; data: 'wiped' | 'kept' | 'none' }>('/api/admin/apps', { app: a.slug, wipeData }).catch((e) => {
+      await delJson<{ ok: true; data: 'wiped' | 'kept' | 'none'; grantsRemoved: number }>('/api/admin/apps', { app: a.slug, wipeData }).catch((e) => {
         void alert({ title: 'Could not uninstall', message: errorMessage(e) })
       })
       await refresh()

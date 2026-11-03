@@ -297,8 +297,12 @@ declares: the `slot` step resolves ahead of `role` in any chain, `[]` included. 
 names a model that no longer routes, your spec carries on as written. The run records `step: 'slot'`
 when the setting answered.
 
-You don't declare it. The host sets `model.slot` from your slug and the harness id on every run,
-and overwrites anything your spec put there, so a harness can never borrow another app's setting.
+You don't declare it. The host sets `model.slot` from your slug and the harness id on every run of
+`ctx.harness`, and overwrites anything your spec put there. Wherever app code names a slot itself,
+in the free probe below or the free `runHarness`, the host keeps it only when it is your own app's
+(`app:<your slug>/…`, your slug as the host knows which app is running, not as you say it). Another
+app's slot is dropped with a warning in the host's log, so no app can read or run on another app's
+setting.
 
 **The free probe is not bound.** `resolveHarnessModel(spec)` resolves the spec you hand it, and
 your harness's `model` spec carries no slot. Probed bare, it never sees this setting: where the
@@ -394,12 +398,14 @@ must scrub what you relay, scrub it there.
 
 `runHarness(harness, input, ctx)` is still exported for apps written before `ctx.harness`. It runs
 what you hand it: the `caller`, the pin and the `ledger` are your word, and nothing is checked
-(the gateway still keeps the `caller` inside your app's namespace, below). Two things changed:
+(the gateway still keeps the `caller` inside your app's namespace, below). Three things changed:
 
 - **`deps` is gone.** It is no longer part of `RunContext`, and if you pass it anyway it is dropped
   with a warning. Test with `runHarnessOffline` instead.
 - **Pinning an agent logs a warning**, because nothing here checks that the caller may use that
   agent.
+- **A slot counts only when it is your own app's.** A `model.slot` naming another app's harness is
+  dropped with a warning, and the chain runs without it.
 
 Move to `ctx.harness.run`. It needs no `caller` and no `ledger.source`.
 

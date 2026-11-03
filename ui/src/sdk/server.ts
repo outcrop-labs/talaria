@@ -377,7 +377,8 @@ export { defineHarness } from '@/server/harness/define'
 // `ctx.harness.run` checks; prefer it.
 export { runHarnessForApp as runHarness } from '@/server/app-harness-runner'
 export type { AppRunContext as RunContext } from '@/server/app-harness-runner'
-export { resolveHarnessModel } from '@/server/harness/model'
+// The probe holds a slot to the calling app's own, as the free runner does.
+export { resolveHarnessModelForApp as resolveHarnessModel } from '@/server/app-harness-runner'
 
 // ── The bound runner ────────────────────────────────────────────────────────
 // `ctx.harness` on the request and MCP tool contexts: the host builds it bound

@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { appHarnessRunner, runHarnessForApp, type AppHarnessBinding, type RunnerEdges } from './app-harness-runner'
+import { appHarnessRunner, resolveHarnessModelForApp, runHarnessForApp, type AppHarnessBinding, type RunnerEdges } from './app-harness-runner'
 import { appInScope, withApp } from './app-scope'
 import { defineHarness, type HarnessDefinition } from './harness/define'
 import type { HarnessResult, RunContext } from './harness/run'
+import type { ModelSpec } from './harness/model'
 import type { GatewayModel } from './llm-gateway'
 
 // THE BOUND RUNNER'S PROMISE, case by case: the host — not the app — decides
@@ -315,6 +316,65 @@ describe('the free runHarness', () => {
     })
     expect(seen[0]!.model).toBe('pa-alice')
     expect(warnings.join('\n')).toMatch(/pins agent "pa-alice" with no check .* ctx\.harness\.run/)
+  })
+})
+
+describe("a slot named from app code is the calling app's own, or nothing", () => {
+  // The bound runner stamps the slot. The free probe and the free runner take
+  // a spec as the app wrote it, so they hold its slot to the app in scope:
+  // another app's model setting is not this one's to read or to run on.
+  const probe = async (spec: ModelSpec) => {
+    const asked: ModelSpec[] = []
+    const warnings: string[] = []
+    await resolveHarnessModelForApp(spec, {
+      resolve: async (s) => {
+        asked.push(s)
+        return null
+      },
+      warn: (m) => warnings.push(m),
+    })
+    return { asked: asked[0], warnings }
+  }
+
+  it("the free probe keeps the app's own slot", async () => {
+    const own = { role: 'utility' as const, slot: 'app:helpdesk/helpdesk:triage' }
+    const r = await withApp('helpdesk', () => probe(own))
+    expect(r.asked).toEqual(own)
+    expect(r.warnings).toEqual([])
+    // Another harness of the same app is still its own.
+    expect((await withApp('helpdesk', () => probe({ slot: 'app:helpdesk/helpdesk:other' }))).asked).toEqual({ slot: 'app:helpdesk/helpdesk:other' })
+  })
+
+  it("the free probe drops another app's slot, one whose slug begins with this one's included, and says so", async () => {
+    for (const slot of ['app:billing/billing:triage', 'app:helpdesk-two/x', 'role:utility']) {
+      const r = await withApp('helpdesk', () => probe({ role: 'utility', slot }))
+      expect(r.asked).toEqual({ role: 'utility' })
+      expect(r.warnings.join('\n')).toContain(`named the slot "${slot}", which is not app "helpdesk"'s own`)
+    }
+  })
+
+  it('outside every app scope no slot is anyone’s', async () => {
+    const r = await probe({ slot: 'app:helpdesk/helpdesk:triage' })
+    expect(r.asked).toEqual({})
+    expect(r.warnings.join('\n')).toMatch(/no app is running here/)
+  })
+
+  it("the free runner runs on its own slot, never another app's", async () => {
+    const seen: ModelSpec[] = []
+    const warnings: string[] = []
+    const edges = {
+      run: (async (d: HarnessDefinition<unknown, unknown>) => {
+        seen.push(d.model)
+        return ok(null)
+      }) as unknown as RunnerEdges['run'],
+      warn: (m: string) => warnings.push(m),
+      fleetAgentOf: async () => null,
+    }
+    const named = (slot: string) => ({ ...triage, model: { role: 'utility' as const, slot } })
+    await withApp('helpdesk', () => runHarnessForApp(named('app:helpdesk/helpdesk:triage'), { text: 'x' }, { caller: 'app:helpdesk' }, edges))
+    await withApp('helpdesk', () => runHarnessForApp(named('app:billing/billing:triage'), { text: 'x' }, { caller: 'app:helpdesk' }, edges))
+    expect(seen).toEqual([{ role: 'utility', slot: 'app:helpdesk/helpdesk:triage' }, { role: 'utility' }])
+    expect(warnings.join('\n')).toContain('runHarness("helpdesk:triage") named the slot "app:billing/billing:triage"')
   })
 })
 
