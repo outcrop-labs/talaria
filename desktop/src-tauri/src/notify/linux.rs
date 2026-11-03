@@ -24,9 +24,11 @@
 //!
 //! What a post carries (D10): app name "Talaria"; the icon and the
 //! `desktop-entry` hint of the desktop file this install actually has
-//! (detected, never assumed — deb/rpm ship `Talaria.desktop`, flatpak,
-//! AppImage and pacman `app.talaria.desktop`, and renaming either would break
-//! every pinned launcher); the instance's label in front of the body, escaped
+//! (detected, never assumed — deb/rpm ship `Talaria.desktop`, flatpak and
+//! pacman `app.talaria.desktop`, and renaming either would break every pinned
+//! launcher; an AppImage carries its own `Talaria.desktop` and icon inside its
+//! mount, which nothing installs, so its banner names the icon by path); the
+//! instance's label in front of the body, escaped
 //! when the server parses markup; a category and an urgency from the kind;
 //! and the server's own id from the last post of the same (instance, tag) as
 //! `replaces_id`, never an invented one — except for a re-alert, which closes
@@ -77,24 +79,49 @@ pub struct DesktopEntry {
     pub icon: String,
 }
 
-/// The id every package but deb/rpm uses, and the fallback.
+/// The id the flatpak and pacman packages use, and the fallback.
 pub const APP_ID: &str = "app.talaria.desktop";
-/// What Tauri's deb and rpm bundlers install.
+/// The name a person reads: the banner's app name, and GLib's application
+/// name (lib.rs), which the tray item's title is.
+pub const APP_NAME: &str = "Talaria";
+/// What Tauri's deb, rpm and AppImage bundlers write.
 const PRODUCT_DESKTOP: &str = "Talaria";
 
-/// Which desktop file is installed, in order: a Flatpak (`$FLATPAK_ID`) or an
-/// AppImage (`$APPIMAGE`) is `app.talaria.desktop`; otherwise the first
-/// `applications/app.talaria.desktop.desktop`, then `applications/Talaria.desktop`,
-/// across `$XDG_DATA_HOME` and `$XDG_DATA_DIRS`; otherwise
-/// `app.talaria.desktop`. The path, when a file was found.
+/// Where a running AppImage is mounted: `$APPDIR`, which the AppImage runtime
+/// sets beside `$APPIMAGE` (and `--appimage-extract-and-run` sets to the
+/// extracted tree). None outside an AppImage.
+pub fn appimage_root(appimage: Option<&str>, appdir: Option<&str>) -> Option<PathBuf> {
+    appimage.filter(|v| !v.is_empty())?;
+    appdir.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// Which desktop file this install carries, in order:
+/// - a Flatpak (`$FLATPAK_ID`): `app.talaria.desktop`, the one flatpak exports;
+/// - an AppImage (`appimage_root`): the desktop file at the root of its mount,
+///   `Talaria.desktop` (the bundler names it after the product), read where it
+///   is, since nothing installs it;
+/// - otherwise the first `applications/app.talaria.desktop.desktop`, then
+///   `applications/Talaria.desktop`, across `$XDG_DATA_HOME` and
+///   `$XDG_DATA_DIRS`;
+/// - otherwise `app.talaria.desktop`.
+///
+/// The path, when a file was found.
 pub fn detect_desktop_id(
     flatpak_id: Option<&str>,
-    appimage: Option<&str>,
+    appimage_root: Option<&Path>,
     data_dirs: &[PathBuf],
     exists: impl Fn(&Path) -> bool,
 ) -> (String, Option<PathBuf>) {
-    if flatpak_id.is_some_and(|v| !v.is_empty()) || appimage.is_some_and(|v| !v.is_empty()) {
+    if flatpak_id.is_some_and(|v| !v.is_empty()) {
         return (APP_ID.to_string(), None);
+    }
+    if let Some(root) = appimage_root {
+        for id in [PRODUCT_DESKTOP, APP_ID] {
+            let path = root.join(format!("{id}.desktop"));
+            if exists(&path) {
+                return (id.to_string(), Some(path));
+            }
+        }
     }
     for id in [APP_ID, PRODUCT_DESKTOP] {
         for dir in data_dirs {
@@ -144,6 +171,30 @@ pub fn icon_of(contents: &str) -> Option<String> {
     None
 }
 
+/// The banner's icon. A notification server looks an icon NAME up in its own
+/// icon theme, and an AppImage's icons are inside its mount, where no theme
+/// looks: there the icon is the file itself, by path — `<root>/<Icon>.png` (or
+/// `.svg`), which the AppImage spec puts at the mount's root (Tauri's bundle
+/// carries `talaria-desktop.png` there), else the root's `.DirIcon`. Elsewhere
+/// the name as written, and `app.talaria.desktop` when there is none.
+pub fn banner_icon(
+    name: Option<&str>,
+    appimage_root: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+) -> String {
+    let name = name.filter(|n| !n.is_empty());
+    if let Some(root) = appimage_root {
+        let named = name
+            .filter(|n| !n.contains('/'))
+            .into_iter()
+            .flat_map(|n| ["png", "svg"].map(|ext| root.join(format!("{n}.{ext}"))));
+        if let Some(path) = named.chain([root.join(".DirIcon")]).find(|p| exists(p)) {
+            return path.to_string_lossy().into_owned();
+        }
+    }
+    name.map_or_else(|| APP_ID.to_string(), str::to_string)
+}
+
 /// The detected desktop file, read once per process.
 pub fn desktop_entry() -> &'static DesktopEntry {
     static ENTRY: OnceLock<DesktopEntry> = OnceLock::new();
@@ -154,16 +205,15 @@ pub fn desktop_entry() -> &'static DesktopEntry {
             env("XDG_DATA_HOME").as_deref(),
             env("XDG_DATA_DIRS").as_deref(),
         );
-        let (id, path) = detect_desktop_id(
-            env("FLATPAK_ID").as_deref(),
-            env("APPIMAGE").as_deref(),
-            &dirs,
-            |p| p.is_file(),
-        );
-        let icon = path
+        let root = appimage_root(env("APPIMAGE").as_deref(), env("APPDIR").as_deref());
+        let (id, path) =
+            detect_desktop_id(env("FLATPAK_ID").as_deref(), root.as_deref(), &dirs, |p| {
+                p.is_file()
+            });
+        let name = path
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|c| icon_of(&c))
-            .unwrap_or_else(|| APP_ID.to_string());
+            .and_then(|c| icon_of(&c));
+        let icon = banner_icon(name.as_deref(), root.as_deref(), |p| p.is_file());
         eprintln!("talaria-desktop: desktop entry {id} (icon {icon})");
         DesktopEntry { id, icon }
     })
@@ -321,7 +371,7 @@ pub async fn post(post: &Post, previous: Option<u32>) -> Result<u32, String> {
     }
     let actions = vec!["default", "Open"];
     let args = (
-        "Talaria",
+        APP_NAME,
         previous.unwrap_or(0),
         entry.icon.as_str(),
         post.title.as_str(),
@@ -814,6 +864,7 @@ pub fn selftest() -> serde_json::Value {
         serde_json::json!({
             "backend": status.backend,
             "bundleId": desktop_entry().id,
+            "icon": desktop_entry().icon,
             "authorization": status.permission,
             "detail": status.detail,
             "post": posted,
@@ -837,16 +888,102 @@ mod tests {
     }
 
     #[test]
-    fn a_sandboxed_or_appimage_run_is_the_app_id() {
+    fn a_sandboxed_run_is_the_app_id() {
         let none = |_: &Path| false;
         assert_eq!(
             detect_desktop_id(Some("app.talaria.desktop"), None, &dirs(), none).0,
             APP_ID
         );
+    }
+
+    /// What a release AppImage's root holds (desktop-package.yml's bundle at
+    /// b85b0339, `7z l` and its live mount): `Talaria.desktop` with
+    /// `Icon=talaria-desktop`, `talaria-desktop.png` (a link to the 128x128
+    /// hicolor icon under usr/share, which no icon theme of the host reads),
+    /// `Talaria.png` and `.DirIcon` -> `Talaria.png`. Nothing of it is
+    /// installed on the host.
+    const MOUNT: &str = "/tmp/.mount_TalariAbC123";
+
+    fn in_the_appimage(p: &Path) -> bool {
+        [
+            "/tmp/.mount_TalariAbC123/Talaria.desktop",
+            "/tmp/.mount_TalariAbC123/talaria-desktop.png",
+            "/tmp/.mount_TalariAbC123/Talaria.png",
+            "/tmp/.mount_TalariAbC123/.DirIcon",
+        ]
+        .iter()
+        .any(|f| p == Path::new(f))
+    }
+
+    #[test]
+    fn an_appimage_names_the_desktop_file_and_icon_it_carries() {
+        let root = appimage_root(Some("/home/u/Apps/Talaria.AppImage"), Some(MOUNT));
+        assert_eq!(root.as_deref(), Some(Path::new(MOUNT)));
+        let (id, path) = detect_desktop_id(None, root.as_deref(), &dirs(), in_the_appimage);
+        assert_eq!(id, "Talaria");
         assert_eq!(
-            detect_desktop_id(None, Some("/opt/Talaria.AppImage"), &dirs(), |_| true).0,
-            APP_ID
+            path.as_deref(),
+            Some(Path::new("/tmp/.mount_TalariAbC123/Talaria.desktop"))
         );
+        // The icon is a path into the mount: no icon theme carries the name.
+        assert_eq!(
+            banner_icon(Some("talaria-desktop"), root.as_deref(), in_the_appimage),
+            "/tmp/.mount_TalariAbC123/talaria-desktop.png"
+        );
+        let svg = |p: &Path| p == Path::new("/tmp/.mount_TalariAbC123/talaria-desktop.svg");
+        assert_eq!(
+            banner_icon(Some("talaria-desktop"), root.as_deref(), svg),
+            "/tmp/.mount_TalariAbC123/talaria-desktop.svg"
+        );
+        // A root without the Icon= name: its .DirIcon.
+        let dir_icon = |p: &Path| p == Path::new("/tmp/.mount_TalariAbC123/.DirIcon");
+        assert_eq!(
+            banner_icon(Some("talaria-desktop"), root.as_deref(), dir_icon),
+            "/tmp/.mount_TalariAbC123/.DirIcon"
+        );
+        assert_eq!(
+            banner_icon(None, root.as_deref(), in_the_appimage),
+            "/tmp/.mount_TalariAbC123/.DirIcon"
+        );
+    }
+
+    #[test]
+    fn an_appimage_without_its_mount_falls_back_to_the_installed_file() {
+        // No $APPDIR (or no $APPIMAGE): not read as an AppImage at all.
+        assert_eq!(appimage_root(Some("/home/u/Talaria.AppImage"), None), None);
+        assert_eq!(
+            appimage_root(Some("/home/u/Talaria.AppImage"), Some("")),
+            None
+        );
+        assert_eq!(appimage_root(None, Some(MOUNT)), None);
+        assert_eq!(appimage_root(Some(""), Some(MOUNT)), None);
+        // A mount with no desktop file at its root: the installed one, as for
+        // any other install.
+        let root = PathBuf::from(MOUNT);
+        let deb = |p: &Path| p == Path::new("/usr/share/applications/Talaria.desktop");
+        assert_eq!(
+            detect_desktop_id(None, Some(&root), &dirs(), deb).1,
+            Some(PathBuf::from("/usr/share/applications/Talaria.desktop"))
+        );
+        assert_eq!(
+            detect_desktop_id(None, Some(&root), &dirs(), |_| false),
+            (APP_ID.to_string(), None)
+        );
+        // An icon the mount does not have at all: the name as written.
+        assert_eq!(
+            banner_icon(Some("talaria-desktop"), Some(&root), |_| false),
+            "talaria-desktop"
+        );
+    }
+
+    #[test]
+    fn outside_an_appimage_the_icon_is_the_name() {
+        assert_eq!(
+            banner_icon(Some("talaria-desktop"), None, |_| true),
+            "talaria-desktop"
+        );
+        assert_eq!(banner_icon(Some(""), None, |_| true), APP_ID);
+        assert_eq!(banner_icon(None, None, |_| true), APP_ID);
     }
 
     #[test]
@@ -886,9 +1023,16 @@ mod tests {
             detect_desktop_id(None, None, &dirs(), |_| false),
             (APP_ID.to_string(), None)
         );
+        // An empty $FLATPAK_ID is no flatpak: the search, as above.
         assert_eq!(
-            detect_desktop_id(Some(""), Some(""), &dirs(), |_| false).0,
-            APP_ID
+            detect_desktop_id(
+                Some(""),
+                None,
+                &dirs(),
+                only("/usr/share/applications/Talaria.desktop")
+            )
+            .0,
+            "Talaria"
         );
     }
 
