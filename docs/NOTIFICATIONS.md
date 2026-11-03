@@ -224,7 +224,9 @@ worker's per-row banners.
   else a mailto placeholder.
 - **Dev safety.** `bun talaria worktree` and `talaria box seed` copy no `push_subscriptions`
   rows and drop the copied `push_vapid` key, so a dev stack cannot push to the real browsers
-  of the database it was seeded from.
+  of the database it was seeded from. They drop the copied `email_config` too, so it cannot
+  mail that database's real users through its mail provider; a dev stack sends no mail until
+  one is configured for it.
 
 ## Server rules
 

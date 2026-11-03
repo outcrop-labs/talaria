@@ -14,11 +14,12 @@ removing or rewriting entries, and says so at each case.
 | `pr-607-t4.json`, `runs-607-t4.json` | both commands, 4 s after `gh pr create` for #607 | Two runs queued (`judge`, `CI`), and no check in the rollup yet. |
 | `pr-607-t17.json`, `runs-607-t17.json` | the same, 17 s after | CI's skipped surface jobs registered; `judge (standards)` and `invariants (no deps)` in progress; the CI run in progress. |
 | `pr-607-t21.json`, `runs-607-t21.json` | the same, 21 s after | Every run finished on the head: a real open, mergeable green. |
+| `pr-597.json`, `runs-597.json` | both commands, for the promotion #597 (`rc` → `main`) on 2026-11-02 | The promotion of `rc` at `678dd627`: open, MERGEABLE, BLOCKED on review, and every check finished. CI and flow ran for both the push to `rc` and the pull request, so their jobs are listed twice, several as SKIPPED beside SUCCESS. |
 
 `<FIELDS>` and `<RUN_FIELDS>` are the constants in [`../pr-watch.mjs`](../pr-watch.mjs). #599
 and #575 are merged, so GitHub now reports them `mergeable: UNKNOWN`; the test's `asOpen` puts
-them back in the open, mergeable state they were in while CI ran. The #607 recordings were taken
-while it was open and are used as recorded.
+them back in the open, mergeable state they were in while CI ran. The #607 and #597 recordings were
+taken while they were open and are used as recorded.
 
 To record another: run the two commands above for the pull request and its `headRefOid`, save
 them here, and name the case in the test after what the recording shows.

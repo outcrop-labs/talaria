@@ -227,7 +227,8 @@ remove. Reads are open to anyone with the Apps view; every change is an admin's 
   code ever re-adds it: an operator who removes every catalog gets an empty Discover tab that says
   no catalog is configured, and install from Git keeps working.
 - A dev stack can list a catalog served from this machine: `TALARIA_APPS_LOCAL_SOURCES=1` admits an
-  `http://` URL to loopback, and the SSRF guard needs that host in `TALARIA_FETCH_ALLOW_HOSTS`.
+  `http://` URL to loopback, and the SSRF guard needs that host in `TALARIA_FETCH_ALLOW_HOSTS`. Both
+  go in `ui/.env`; `talaria dev` hands them to the api, which is what reads them.
 
 Official apps are maintained by Outcrop Labs and labeled as such; community apps list their author
 and repo.

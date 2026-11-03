@@ -2,7 +2,7 @@
 // when the stop gate has to say no. A wrong answer here fills the disk or
 // removes someone else's checkout. Run by `bun run check`.
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,21 +11,25 @@ import {
   ageDays,
   appDbOwner,
   boxProjectOwners,
+  boxStands,
   checkoutStands,
   classify,
   formatReport,
   mcpPkgOwner,
+  mergedAtHead,
   orphanAppDbs,
   orphanMcpPackages,
   ownerKey,
   orphanNetworks,
+  orphanProjects,
   parseDockerTime,
   parseLabels,
+  projectVouchedBy,
   removalAllowed,
   selectRemoval,
   verdict,
   worktreeName,
-  worktreeProjectOwner,
+  worktreeProjectOwners,
 } from './cleanup-sweep.mjs'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -90,11 +94,14 @@ check('old scratch is removable; yesterday is not', () => {
   eq(classify(stale({ kind: 'tmp', ageMs: POLICY.tmpStaleMs - 1 })), 'keep')
 })
 
-check("a worktree's fleet project belongs to the worktree, not to a worktree named -fleet", () => {
-  eq(worktreeProjectOwner('talaria-wt-agent-todo'), 'agent-todo')
-  eq(worktreeProjectOwner('talaria-wt-agent-todo-fleet'), 'agent-todo')
-  eq(worktreeProjectOwner('talaria-dogfood-fleet'), null)
-  eq(worktreeProjectOwner('talaria'), null)
+check("a -fleet project has two readings: a worktree's agents, or the stack of a worktree named -fleet", () => {
+  eq(JSON.stringify(worktreeProjectOwners('talaria-wt-agent-todo')), '["agent-todo"]')
+  eq(JSON.stringify(worktreeProjectOwners('talaria-wt-agent-todo-fleet')), '["agent-todo-fleet","agent-todo"]')
+  eq(JSON.stringify(worktreeProjectOwners('talaria-wt-rel-fleet')), '["rel-fleet","rel"]')
+  eq(JSON.stringify(worktreeProjectOwners('talaria-wt-fleet')), '["fleet"]')
+  eq(worktreeProjectOwners('talaria-dogfood-fleet'), null)
+  eq(worktreeProjectOwners('devbox-x'), null)
+  eq(worktreeProjectOwners('talaria'), null)
 })
 
 check('an orphan compose project is removable even if it looks live', () => {
@@ -594,6 +601,129 @@ check('the executor removes a package only by its name and a docker id, never a 
   eq(n({ id: 'talaria' }), false)
   eq(n({ id: 'talaria-dev_default' }), false)
   eq(n({ networkId: 'x; rm -rf /' }), false)
+})
+
+// ── Compose projects whose worktree or box is gone (cli-1 / fleet-6) ────────
+// 2026-11-02: the gate read `talaria-wt-rel-fleet` (the Postgres and Redis of
+// the live worktree `rel-fleet`) as worktree `rel`'s agents, found no
+// ../talaria-rel, and removed the stack's containers and volumes at a turn
+// boundary. The project names are the ones `docker compose ls` showed.
+
+const live = (names) => (n) => names.includes(n)
+const orphans = (names, worktrees, boxes = []) =>
+  orphanProjects({ projects: names.map((Name) => ({ Name })), liveWorktree: live(worktrees), liveBox: live(boxes) }).map((r) => r.id)
+
+check('the stack of a live worktree named <x>-fleet is not an orphan (the rel-fleet data loss)', () => {
+  eq(orphans(['talaria-wt-rel-fleet'], ['rel-fleet']).join(), '')
+  // ...and its own agents' project, one more -fleet out, stays with it.
+  eq(orphans(['talaria-wt-rel-fleet-fleet'], ['rel-fleet']).join(), '')
+})
+
+check("a worktree's agents stay while the worktree lives; either checkout keeps a -fleet project", () => {
+  eq(orphans(['talaria-wt-agent-todo', 'talaria-wt-agent-todo-fleet'], ['agent-todo']).join(), '')
+  eq(orphans(['talaria-wt-rel-fleet'], ['rel']).join(), '')
+})
+
+check('a talaria-wt-* project is an orphan only when no worktree it could be is live', () => {
+  eq(orphans(['talaria-wt-rel-fleet', 'talaria-wt-gone', 'talaria-wt-rel'], ['rel-fleet']).join(), 'talaria-wt-gone,talaria-wt-rel')
+  const [row] = orphanProjects({ projects: [{ Name: 'talaria-wt-gone-fleet' }], liveWorktree: () => false, liveBox: () => false })
+  eq(row.kind, 'orphan-compose')
+  eq(classify(row), 'remove')
+  eq(removalAllowed(row, roots), true)
+})
+
+check('box projects keep their rule, the tools layer is never an orphan, and other projects are not ours', () => {
+  eq(orphans(['devbox-gone', 'devbox-gone-fleet', 'devbox-ops-fleet', 'devbox-shared'], [], ['ops-fleet']).join(), 'devbox-gone,devbox-gone-fleet')
+  eq(orphans(['talaria-dogfood', 'talaria-dev', 'supabase_x', 'talaria-fleet'], [], []).join(), '')
+})
+
+check('a caller that cannot say whether a worktree or box lives removes nothing', () => {
+  eq(orphanProjects({ projects: [{ Name: 'talaria-wt-gone' }, { Name: 'devbox-gone' }] }).length, 0)
+})
+
+check('at the moment of removal, a checkout, a box.env or a .talaria-keep still vouches for a project', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'talaria-sweep-vouch-'))
+  try {
+    const where = { siblingParent: join(dir, 'dev'), devboxHome: join(dir, 'devboxes') }
+    mkdirSync(join(dir, 'dev', 'talaria-rel-fleet'), { recursive: true })
+    // The stack of worktree rel-fleet, by its own checkout.
+    eq(projectVouchedBy('talaria-wt-rel-fleet', where), join(dir, 'dev', 'talaria-rel-fleet'))
+    // Nothing on disk for this one: removable.
+    eq(projectVouchedBy('talaria-wt-gone', where), null)
+    eq(projectVouchedBy('talaria-wt-gone-fleet', where), null)
+    // A placeholder directory that holds only a .talaria-keep holds the stack
+    // whose checkout is gone: the shield that kept rel-fleet's stack alive.
+    mkdirSync(join(dir, 'dev', 'talaria-held'))
+    writeFileSync(join(dir, 'dev', 'talaria-held', '.talaria-keep'), '')
+    eq(projectVouchedBy('talaria-wt-held-fleet', where), join(dir, 'dev', 'talaria-held'))
+    // A box directory whose box.env is gone but which holds a .talaria-keep.
+    mkdirSync(join(dir, 'devboxes', 'ops'), { recursive: true })
+    eq(projectVouchedBy('devbox-ops', where), null)
+    eq(boxStands(where.devboxHome, 'ops'), false)
+    writeFileSync(join(dir, 'devboxes', 'ops', '.talaria-keep'), '')
+    eq(projectVouchedBy('devbox-ops-fleet', where), join(dir, 'devboxes', 'ops', '.talaria-keep'))
+    eq(boxStands(where.devboxHome, 'ops'), true)
+    mkdirSync(join(dir, 'devboxes', 'mobile'))
+    writeFileSync(join(dir, 'devboxes', 'mobile', 'box.env'), '')
+    eq(projectVouchedBy('devbox-mobile', where), join(dir, 'devboxes', 'mobile', 'box.env'))
+    eq(projectVouchedBy('devbox-shared', where), 'the box tools layer')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('a box whose box.env is gone but which holds a .talaria-keep keeps its networks', () => {
+  const gone = net('devbox-ops_default', 'devbox-ops')
+  eq(scanNets([gone], [], [], []).join(), 'devbox-ops_default')
+  const dir = mkdtempSync(join(tmpdir(), 'talaria-sweep-keep-'))
+  try {
+    mkdirSync(join(dir, 'ops'))
+    writeFileSync(join(dir, 'ops', '.talaria-keep'), '')
+    const rows = orphanNetworks({ networks: [gone], containers: [], liveWorktree: () => false, liveBox: (n) => boxStands(dir, n), now: NOW })
+    eq(rows.length, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check("a live worktree named <x>-fleet keeps its stack's network too", () => {
+  eq(scanNets([net('talaria-wt-rel-fleet_default', 'talaria-wt-rel-fleet')], [], ['rel-fleet']).length, 0)
+  eq(scanNets([net('talaria-wt-rel-fleet_default', 'talaria-wt-rel-fleet')], [], ['rel']).length, 0)
+  eq(scanNets([net('talaria-wt-rel-fleet_default', 'talaria-wt-rel-fleet')], [], []).join(), 'talaria-wt-rel-fleet_default')
+})
+
+// ── Merged means THIS commit's PR merged (cli-4) ────────────────────────────
+// `gh pr list --head <branch> --state all --json number,state,headRefOid`,
+// as GitHub answered on 2026-11-02. wt/r6-ui merged as #629; a recut of
+// wt/r6-ui from rc sits on rc's tip with 0 commits ahead, and reading the
+// branch name alone called it finished. wt/work-view was cut twice and merged
+// twice (#495, #501).
+
+const RC_TIP = '678dd627166123da1f47523acd21a2c0ebc7844b'
+const R6_UI = [{ headRefOid: '48aa4af1613494d5e08fbde75ad924df46e69ee6', number: 629, state: 'MERGED' }]
+const WORK_VIEW = [
+  { headRefOid: 'b3b4167bc552e4bb37cc5a33c043423622928fef', number: 501, state: 'MERGED' },
+  { headRefOid: '4b7aa325918317163fe61e2023a3725572c7fb11', number: 495, state: 'MERGED' },
+]
+
+check('a recut wt/<name> is not merged because an older PR of that name merged', () => {
+  eq(mergedAtHead(R6_UI, RC_TIP), false)
+  eq(mergedAtHead(WORK_VIEW, RC_TIP), false)
+})
+
+check('the tree a merged PR was pushed from is merged — whichever of its PRs that was', () => {
+  eq(mergedAtHead(R6_UI, '48aa4af1613494d5e08fbde75ad924df46e69ee6'), true)
+  eq(mergedAtHead(WORK_VIEW, '4b7aa325918317163fe61e2023a3725572c7fb11'), true)
+  eq(mergedAtHead(WORK_VIEW, 'b3b4167bc552e4bb37cc5a33c043423622928fef'), true)
+})
+
+check('an open or closed PR at the head, no PR, or no answer is not merged', () => {
+  const head = '48aa4af1613494d5e08fbde75ad924df46e69ee6'
+  eq(mergedAtHead([{ ...R6_UI[0], state: 'OPEN' }], head), false)
+  eq(mergedAtHead([{ ...R6_UI[0], state: 'CLOSED' }], head), false)
+  eq(mergedAtHead([], head), false)
+  eq(mergedAtHead(null, head), false)
+  eq(mergedAtHead(R6_UI, ''), false)
 })
 
 check('build caches are reported at any disk reading', () => {

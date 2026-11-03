@@ -726,6 +726,14 @@ describe('talaria dev — the env the rust api gets', () => {
     expect(apiEnv({}, `${uiEnv}\nTALARIA_APPS_LOCAL_SOURCES=1`).TALARIA_APPS_LOCAL_SOURCES).toBe('1')
     expect('TALARIA_APPS_LOCAL_SOURCES' in apiEnv({}, uiEnv)).toBe(false)
   })
+
+  test("ui/.env's SSRF allow-list reaches the api, which owns the guard now (apps-10)", () => {
+    // docs/APPS.md: a local app catalog on loopback needs this line in ui/.env.
+    const env = apiEnv({}, `${uiEnv}\nTALARIA_FETCH_ALLOW_HOSTS=127.0.0.1, *.corp.example\n`)
+    expect(env.TALARIA_FETCH_ALLOW_HOSTS).toBe('127.0.0.1, *.corp.example')
+    expect(apiEnv({ TALARIA_FETCH_ALLOW_HOSTS: '10.0.0.0/8' }, `${uiEnv}\nTALARIA_FETCH_ALLOW_HOSTS=127.0.0.1\n`).TALARIA_FETCH_ALLOW_HOSTS).toBe('10.0.0.0/8')
+    expect('TALARIA_FETCH_ALLOW_HOSTS' in apiEnv({}, uiEnv)).toBe(false)
+  })
 })
 
 describe('talaria dev — a worktree gives back its old project network', () => {

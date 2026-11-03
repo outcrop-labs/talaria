@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import {
   classify,
   headCheck,
+  isPromotion,
   latestChecks,
   latestRuns,
   normalize,
@@ -701,6 +702,78 @@ check('merged needs no head or run read; closed and a non-rc base keep their tok
   eq([merged.kind, merged.merged], ['green', true])
   eq(classify({ ...PR599, state: 'CLOSED' }, {}).kind, 'closed')
   eq(classify(asOpen(PR599, { baseRefName: 'main' }), { head: HEAD_OK, runs: RUNS599 }).kind, 'base')
+})
+
+// ── the promotion (cli-3) ──────────────────────────────────────────────────
+// #597 is `rc` → `main`, recorded open on 2026-11-02. The watcher refused it
+// as `base` before it read a check, so the one PR the release waits on could
+// not be watched at all.
+const PR597 = fixture('pr-597.json')
+const RUNS597 = fixture('runs-597.json')
+
+check('the #597 fixture really is the promotion: rc into main, same repository, open', () => {
+  eq([PR597.headRefName, PR597.baseRefName, PR597.isCrossRepository, PR597.state], ['rc', 'main', false, 'OPEN'])
+  eq(isPromotion(PR597), true)
+})
+
+check('the promotion is watched like any PR: its recorded state is green, not base', () => {
+  const r = classify(PR597, { head: HEAD_OK, runs: RUNS597, ciWorkflow: 'CI' })
+  eq([r.kind, r.promotion, r.mergeable], ['green', true, 'MERGEABLE'])
+  // The push to rc and the pull request each ran ci.yml and flow.yml: two
+  // verdicts per job, neither superseding the other.
+  eq([r.checks, r.superseded, r.failing.length], [PR597.statusCheckRollup.length, 0, 0])
+})
+
+check("a job skipped in the pull request's run does not hide the push run's failure of it", () => {
+  // Recorded: `branch push (main takes rc content only)` ran SUCCESS for the
+  // push to rc (job 125663705704) and SKIPPED for the pull request, whose job
+  // id is the larger. Keyed by workflow and name alone, the SKIPPED copy won.
+  const pr = structuredClone(PR597)
+  const pushed = pr.statusCheckRollup.find((c) => c.name === 'branch push (main takes rc content only)' && c.conclusion === 'SUCCESS')
+  ok(pushed && pushed.detailsUrl.includes('/job/125663705704'), 'the recorded push-run check')
+  pushed.conclusion = 'FAILURE'
+  const r = classify(pr, { head: HEAD_OK, runs: RUNS597, ciWorkflow: 'CI' })
+  eq([r.kind, names(r.failing)], ['red', ['branch push (main takes rc content only)']])
+  // Without the runs to place it, a check is still deduped by workflow and name.
+  eq(latestChecks(pr.statusCheckRollup.map(normalize)).length < pr.statusCheckRollup.length, true)
+})
+
+check('the promotion still goes red, conflicted and pending', () => {
+  const failed = structuredClone(PR597)
+  const e2e = failed.statusCheckRollup.filter((c) => c.name === 'mcp end-to-end (playwright)')
+  for (const c of e2e) c.conclusion = 'FAILURE'
+  eq(classify(failed, { head: HEAD_OK, runs: RUNS597 }).kind, 'red')
+  eq(classify({ ...PR597, mergeable: 'CONFLICTING' }, { head: HEAD_OK, runs: RUNS597 }).kind, 'conflict')
+  eq(classify({ ...PR597, mergeable: 'UNKNOWN' }, { head: HEAD_OK, runs: RUNS597 }).kind, 'pending')
+  eq(classify(PR597, { head: HEAD_OK, runs: RUNS597.filter((r) => r.workflowName !== 'CI') }).kind, 'pending')
+})
+
+check('main still takes nothing else: another branch, or a fork\'s rc, into main is base', () => {
+  eq(classify({ ...PR597, headRefName: 'wt/x' }, { head: HEAD_OK, runs: RUNS597 }).kind, 'base')
+  eq(classify({ ...PR597, isCrossRepository: true }, { head: HEAD_OK, runs: RUNS597 }).kind, 'base')
+  eq(isPromotion({ ...PR597, baseRefName: 'rc' }), false)
+  eq(isPromotion({ ...PR597, headRefName: 'main', baseRefName: 'rc' }), false)
+})
+
+check("a promotion's head is rc on GitHub, even from a checkout on a local rc", () => {
+  const calls = []
+  const io = {
+    branch: 'rc',
+    git: (args) => {
+      calls.push(`git ${args.join(' ')}`)
+      return { ok: true, out: 'f00dfeedf00dfeedf00dfeedf00dfeedf00dfeed', status: 0 }
+    },
+    gh: (args) => {
+      calls.push(`gh ${args.join(' ')}`)
+      return { status: 0, stdout: `${PR597.headRefOid}\n` }
+    },
+  }
+  const facts = readHeadFacts(PR597, targetRepoOf(PR597), io)
+  eq([facts.onBranch, facts.remote], [false, PR597.headRefOid])
+  eq(headCheck(PR597, facts), { ok: true })
+  // never "push it": nothing asked the local rc
+  eq(calls.filter((c) => c.startsWith('git ')), [])
+  ok(calls.some((c) => c.includes('repos/outcrop-labs/talaria/git/ref/heads/rc')), calls.join('\n'))
 })
 
 check('latestRuns: one per workflow and event, the newest id, only for the head', () => {

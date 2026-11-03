@@ -8,14 +8,18 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   CLEAR_SEEDED_GATEWAY_PORTS,
-  SCRUB_SEEDED_PUSH_STATE,
+  SCRUB_SEEDED_OUTBOUND_STATE,
   SEED_DUMP_ARGS,
   COUNT_TABLES,
   WORKTREE_ENV_KEYS,
+  claimedPorts,
+  envPorts,
+  hostPortsOf,
   runWorktree,
   seedFleetPlane,
   setupDiffers,
   sharedUiNodeModules,
+  slotClaimed,
   slotPorts,
   stripOwnKeys,
   worktreeSlot,
@@ -93,6 +97,72 @@ describe('worktreeSlot', () => {
 
   test('null when the range is exhausted', async () => {
     expect(await worktreeSlot(async () => true)).toBeNull()
+  })
+
+  // cli-2. Recorded 2026-11-02 from the stopped stack of worktree rel-chat
+  // (slot 8): `docker inspect --format '{{json .HostConfig.PortBindings}}'`
+  // on its Exited postgres and redis, and the ports its ui/.env gives it.
+  // Nothing listens on any of them, so the live probe alone handed slot 8 out.
+  const STOPPED_PG = '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5608"}]}'
+  const STOPPED_REDIS = '{"6379/tcp":[{"HostIp":"127.0.0.1","HostPort":"6508"}]}'
+  const REL_CHAT_ENV = [
+    'TALARIA_WORKTREE=rel-chat',
+    'DATABASE_URL=postgres://talaria:talaria@127.0.0.1:5608/talaria',
+    'REDIS_URL=redis://127.0.0.1:6508',
+    'PORT=5308',
+    'TALARIA_API_PORT=5408',
+    'TALARIA_RUST_API_URL=http://127.0.0.1:5408',
+    'TALARIA_MCP_PORT=5708',
+    'TALARIA_OMP_AUTH_PORT=5808',
+    'TALARIA_GATEWAY_PORT_BASE=20800',
+  ].join('\n')
+
+  test("a stopped stack's slot is not free: its containers' published ports claim it", async () => {
+    expect(hostPortsOf(`${STOPPED_PG}\n${STOPPED_REDIS}\nnull\n{}\n`)).toEqual([5608, 6508])
+    // slots 1-7 live, 8 stopped: the live probe alone said 8
+    const live = async (p: number) => slotPorts(1).app <= p && p <= slotPorts(7).app
+    expect(await worktreeSlot(live)).toEqual(slotPorts(8))
+    expect(await worktreeSlot(live, new Set(hostPortsOf(STOPPED_PG)))).toEqual(slotPorts(9))
+  })
+
+  test("a checkout's ui/.env claims its slot even with its containers gone", async () => {
+    expect(envPorts(REL_CHAT_ENV).sort()).toEqual([5308, 5408, 5408, 5608, 5708, 5808, 6508, 20800].sort())
+    expect(await worktreeSlot(async () => false, new Set(envPorts('PORT=5301\n')))).toEqual(slotPorts(2))
+    // the primary's own ports are outside every slot
+    expect(envPorts('PORT=5273\nDATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nREDIS_URL=redis://127.0.0.1:6399\n')).toEqual([5273, 5544, 6399])
+    expect(await worktreeSlot(async () => false, new Set([5273, 5274, 5544, 6399]))).toEqual(slotPorts(1))
+  })
+
+  test("a stopped agent's gateway port claims the slot whose hundred ports it is in", () => {
+    expect(slotClaimed(slotPorts(8), new Set([20857]))).toBe(true)
+    expect(slotClaimed(slotPorts(8), new Set([20900]))).toBe(false)
+    expect(slotClaimed(slotPorts(9), new Set([20900]))).toBe(true)
+  })
+
+  test('claimedPorts reads every container, running or stopped, and every checkout git lists', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'talaria-wt-claims-'))
+    try {
+      const other = join(dir, 'talaria-rel-chat')
+      mkdirSync(join(other, 'ui'), { recursive: true })
+      writeFileSync(join(other, 'ui/.env'), REL_CHAT_ENV)
+      const ctx = fakeCtx()
+      ctx.plant(['docker', ['ps', '-aq']], 'aaa111\nbbb222\n')
+      ctx.plant(['docker', ['inspect', '--format', '{{json .HostConfig.PortBindings}}', 'aaa111', 'bbb222']], `${STOPPED_PG}\n${STOPPED_REDIS}\n`)
+      ctx.plant(['git', ['worktree', 'list', '--porcelain']], `worktree ${dir}/talaria\nbranch refs/heads/main\n\nworktree ${other}\nHEAD abc\ndetached\n`)
+      const claimed = await claimedPorts(ctx, join(dir, 'talaria'))
+      for (const p of [5308, 5408, 5608, 6508, 5708, 5808, 20800]) expect(claimed.has(p)).toBe(true)
+      // -a: a stopped container's ports count
+      expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args.join(' ') === 'ps -aq')).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('claimedPorts adds nothing when docker or git does not answer', async () => {
+    const ctx = fakeCtx()
+    ctx.plant(['docker', ['ps', '-aq']], new Error('Cannot connect to the Docker daemon'))
+    ctx.plant(['git', ['worktree', 'list', '--porcelain']], new Error('not a git repository'))
+    expect((await claimedPorts(ctx, '/nowhere')).size).toBe(0)
   })
 })
 
@@ -182,6 +252,13 @@ describe('runWorktree — happy path', () => {
     // were passed against the entrypoint's temporary init server, and the
     // seed then died with "the database system is shutting down".
     const at = (args: string[]) => ctx.calls.findIndex((c) => JSON.stringify(c.args) === JSON.stringify(args))
+    // The slot is read against every container (stopped ones too) and every
+    // checkout's ui/.env before the checkout is made (claimedPorts, cli-2).
+    const added = ctx.calls.findIndex((c) => c.args[0] === 'worktree' && c.args[1] === 'add')
+    expect(at(['ps', '-aq'])).toBeGreaterThanOrEqual(0)
+    expect(at(['ps', '-aq'])).toBeLessThan(added)
+    expect(at(['worktree', 'list', '--porcelain'])).toBeGreaterThanOrEqual(0)
+    expect(at(['worktree', 'list', '--porcelain'])).toBeLessThan(added)
     const mainReady = at(pgReadyArgs('talaria-postgres-dev'))
     const ownReady = at(pgReadyArgs('talaria-pg-demo'))
     const upAt = ctx.calls.indexOf(up)
@@ -246,18 +323,20 @@ describe('runWorktree — happy path', () => {
     )
     expect(clear).toBeGreaterThan(restore)
     expect(ctx.calls.some((c) => c.args.includes(CLEAR_SEEDED_GATEWAY_PORTS) && c.args.includes('talaria-postgres-dev'))).toBe(false)
-    // PUSH STATE STAYS ON MAIN: the dump leaves push_subscriptions' rows
-    // behind (main's real browsers), and main's VAPID key is deleted from
-    // THIS copy after the restore — never from main.
+    // PUSH AND MAIL STAY ON MAIN: the dump leaves push_subscriptions' rows
+    // behind (main's real browsers), and main's VAPID key and mail provider
+    // are deleted from THIS copy after the restore — never from main. The
+    // copy keeps every user's real address, so main's provider in it mailed
+    // real people from notifications filed in a test (cli-6).
     const dumpCall = ctx.calls.find((c) => c.args.includes('pg_dump'))!
     expect(dumpCall.args).toEqual(['exec', 'talaria-postgres-dev', ...SEED_DUMP_ARGS])
     expect(dumpCall.args).toContain('--exclude-table-data=push_subscriptions')
     const scrub = ctx.calls.findIndex(
-      (c) => c.args.includes('talaria-pg-demo') && c.args.includes(SCRUB_SEEDED_PUSH_STATE),
+      (c) => c.args.includes('talaria-pg-demo') && c.args.includes(SCRUB_SEEDED_OUTBOUND_STATE),
     )
     expect(scrub).toBeGreaterThan(restore)
-    expect(SCRUB_SEEDED_PUSH_STATE).toContain("delete from app_settings where key = 'push_vapid'")
-    expect(ctx.calls.some((c) => c.args.includes(SCRUB_SEEDED_PUSH_STATE) && c.args.includes('talaria-postgres-dev'))).toBe(false)
+    expect(SCRUB_SEEDED_OUTBOUND_STATE).toContain("delete from app_settings where key in ('push_vapid', 'email_config')")
+    expect(ctx.calls.some((c) => c.args.includes(SCRUB_SEEDED_OUTBOUND_STATE) && c.args.includes('talaria-postgres-dev'))).toBe(false)
     // ...and the fleet plane exists for the renderer to write into — a hire
     // against a missing fleet/.env fails rather than inventing one.
     expect(existsSync(join(wt, 'fleet/agents'))).toBe(true)

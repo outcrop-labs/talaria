@@ -17,8 +17,9 @@
 //
 // THE CONTRACT (scripts/hooks/README.md). stdin is tolerated and never read.
 //   exit 0 — checks green AND GitHub reports the PR mergeable (no conflict
-//            with its base, which must be `rc`). One proof line on stdout,
-//            the only state an agent may cite. Nothing on stderr.
+//            with its base, which must be `rc` — or `main` for the promotion
+//            of `rc` itself, below). One proof line on stdout, the only state
+//            an agent may cite. Nothing on stderr.
 //   exit 2 — block. The first stderr line is exactly one of:
 //            `pr-watch: red`, `pr-watch: conflict`, `pr-watch: pending`,
 //            `pr-watch: timeout`, `pr-watch: closed`, `pr-watch: base`.
@@ -41,9 +42,15 @@
 // returns lists every check run on the head commit, superseded ones included:
 // judge.yml re-runs on a body edit with cancel-in-progress, so editing the body
 // right after `gh pr create` leaves a CANCELLED `judge (standards)` beside the
-// newer green one. Checks are grouped by workflow and name and the latest wins
-// (job id, then start time); a CANCELLED run that is itself the latest is
-// still red. Green also needs (1) the PR's head to be the pushed commit — this
+// newer green one. Checks are grouped by workflow, event and name, and the
+// latest wins (job id, then start time); a CANCELLED run that is itself the
+// latest is still red. The event comes from the head's workflow runs (the run
+// id in a check's URL), because one head can carry two runs of a workflow that
+// do not supersede each other: the promotion's head is `rc`, so ci.yml and
+// flow.yml run for the push to `rc` AND for the pull request, and a job skipped
+// in one run had the newer job id beside the same job's verdict in the other.
+// Keyed by name alone, that SKIPPED copy would hide a FAILURE. Green also
+// needs (1) the PR's head to be the pushed commit — this
 // checkout's HEAD when it is on the PR's branch (and pushed: `origin/<branch>`
 // is what `git push` sent), or a PR head that contains it; the branch's head on
 // GitHub from anywhere else. This script never fetches, so a PR head pushed
@@ -77,6 +84,16 @@
 // GH_HOST or gh's one logged-in host, not the PR's. `gh run list` and
 // `gh run view` get `--repo HOST/OWNER/REPO` for the same reason: gh reads a
 // bare `OWNER/REPO` against GH_HOST too.
+//
+// THE PROMOTION IS WATCHED TOO. Work targets `rc`; the one pull request into
+// `main` is `rc` itself (docs/BRANCHES.md), and its checks and mergeability
+// are what the release waits on. Refusing it as `base` hid them: `--pr 597`
+// exited before it read a check. A same-repository `rc` → `main` PR is
+// therefore read like any other, with two differences. Its head is `rc` on
+// GitHub, never this checkout's (nobody pushes `rc`). And the red and conflict
+// advice points at a pull request into `rc`, because pushing to `rc` is the
+// one fix flow-guard refuses. Any other base, a fork's `rc` included, is
+// still `base`.
 //
 // BOUNDS. First poll is immediate. Then exponential backoff from 20s, capped
 // at 2min, until a 45-minute wall clock. The skill quotes these numbers; they
@@ -153,6 +170,7 @@ const FIELDS = [
   'headRefOid',
   'headRepository',
   'headRepositoryOwner',
+  'isCrossRepository',
   'statusCheckRollup',
   'title',
 ].join(',')
@@ -168,7 +186,8 @@ function printHelp() {
   console.log(`pr-watch — poll a pull request's checks and mergeable state.
 
 exit 0   checks green (the latest run of each) on the pushed head, the CI workflow's
-         run for that head finished, and the PR mergeable against rc. Proof line on stdout.
+         run for that head finished, and the PR mergeable against rc (or, for the
+         promotion of rc, against main). Proof line on stdout.
 exit 2   red | conflict | pending (--once, or a head that waiting cannot fix) | timeout |
          closed | base. Reason on stderr.
 exit 1   could not run. Not a pass.
@@ -275,16 +294,37 @@ function newer(a, b) {
   return a.index > b.index
 }
 
-/** One entry per workflow + check name: the latest. The rollup also carries
- *  the runs that a newer one superseded (a cancelled judge beside the re-run
+/** Each check's event (`push`, `pull_request`, …), from the workflow run its
+ *  URL names in `runs` (`gh run list --commit <head>`), or null when the run
+ *  is not there or the check has no URL yet. */
+export function withEvents(checks, runs) {
+  const events = new Map()
+  for (const r of runs || []) if (r?.databaseId && r.event) events.set(String(r.databaseId), String(r.event))
+  return checks.map((c) => {
+    const run = /\/actions\/runs\/(\d+)/.exec(c.url)?.[1]
+    return { ...c, event: (run && events.get(run)) || null }
+  })
+}
+
+/** One entry per workflow + check name, per event it ran for: the latest.
+ *  The rollup also carries the runs that a newer one superseded (a cancelled judge beside the re-run
  *  a body edit started); `gh pr checks` drops those, and so does this. */
 export function latestChecks(checks) {
-  const latest = new Map()
+  const groups = new Map()
   for (const c of checks) {
-    const seen = latest.get(c.key)
-    if (!seen || newer(c, seen)) latest.set(c.key, c)
+    if (!groups.has(c.key)) groups.set(c.key, [])
+    groups.get(c.key).push(c)
   }
-  return [...latest.values()].sort((a, b) => a.index - b.index)
+  const latest = new Set()
+  for (const group of groups.values()) {
+    // Runs for different events never supersede each other (withEvents). A
+    // check whose event is unknown — a queued re-run has no job URL yet — may
+    // be the newer run of any of them, so it competes in each.
+    const events = [...new Set(group.map((c) => c.event).filter(Boolean))]
+    const lanes = events.length ? events.map((e) => group.filter((c) => !c.event || c.event === e)) : [group]
+    for (const lane of lanes) latest.add(lane.reduce((a, b) => (newer(b, a) ? b : a)))
+  }
+  return [...latest].sort((a, b) => a.index - b.index)
 }
 
 /** `gh run list --commit <head>` rows → the latest run per workflow and event,
@@ -312,6 +352,12 @@ export function latestRuns(rows, headSha) {
       url: r.url || '',
     }
   })
+}
+
+/** The promotion: `rc` itself, from this repository, into `main`
+ *  (docs/BRANCHES.md). The one PR whose base may be other than `rc`. */
+export function isPromotion(pr) {
+  return pr?.baseRefName === 'main' && pr?.headRefName === 'rc' && pr?.isCrossRepository !== true
 }
 
 /** Is the PR's head the commit that was pushed? `facts` is readHeadFacts():
@@ -381,7 +427,7 @@ export function headCheck(pr, facts) {
  *  `ctx.ciWorkflow` the CI workflow's name. Merged and closed PRs skip the
  *  head and run checks: there is no push left to wait for. */
 export function classify(pr, ctx = {}) {
-  const all = (pr.statusCheckRollup || []).map(normalize)
+  const all = withEvents((pr.statusCheckRollup || []).map(normalize), ctx.runs)
   const checks = latestChecks(all)
   const failing = checks.filter((c) => c.verdict === 'fail')
   const pending = checks.filter((c) => c.verdict === 'pending')
@@ -409,7 +455,8 @@ export function classify(pr, ctx = {}) {
   }
 
   if (pr.state === 'CLOSED') return { kind: 'closed', ...base }
-  if (pr.baseRefName !== 'rc') return { kind: 'base', ...base }
+  if (pr.baseRefName !== 'rc' && !isPromotion(pr)) return { kind: 'base', ...base }
+  if (isPromotion(pr)) base.promotion = true
 
   if (pr.state !== 'MERGED') {
     // Before red and conflict: both are about a head this push may have replaced.
@@ -598,7 +645,9 @@ function relationOf(pr, local, want, target, io) {
  *  the real git reads against a scratch repository. */
 export function readHeadFacts(pr, target, io = { branch: currentBranch(), git, gh }) {
   const want = String(pr.headRefOid)
-  if (io.branch !== pr.headRefName) return { onBranch: false, ...readRemoteHead(pr, target, io) }
+  // A promotion's head is `rc` as GitHub has it. A local `rc` is not what
+  // anybody pushed, and "push it" is the one advice flow-guard refuses.
+  if (io.branch !== pr.headRefName || isPromotion(pr)) return { onBranch: false, ...readRemoteHead(pr, target, io) }
   const local = io.git(['rev-parse', 'HEAD']).out
   const tracking = io.git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${pr.headRefName}`])
   const facts = { onBranch: true, local, tracking: tracking.ok ? tracking.out : null }
@@ -674,6 +723,7 @@ function payloadOf(pr, result, ci) {
     baseRefName: pr.baseRefName,
     headRefName: pr.headRefName,
     headRefOid: pr.headRefOid,
+    promotion: Boolean(result.promotion),
     mergeable: result.mergeable,
     mergeStateStatus: result.mergeState,
     failing: result.failing.map((c) => ({ name: c.name, conclusion: c.conclusion, url: c.url })),
@@ -700,12 +750,20 @@ function emit(code, line, body, payload) {
 
 function branchNote(pr) {
   const here = currentBranch()
+  if (isPromotion(pr)) {
+    return `#${pr.number} is the promotion of \`rc\` into \`main\`. Reading only — nobody pushes \`rc\` or \`main\`; a fix reaches \`rc\` through its own pull request.\n`
+  }
   if (!here || here === pr.headRefName) return ''
   return (
     `This checkout is on \`${here}\`; #${pr.number} is \`${pr.headRefName}\`. ` +
     'Reading only — a self-fix push belongs on the PR branch, not here.\n'
   )
 }
+
+/** A promotion's head is `rc`, which nobody pushes: its fix is a branch of
+ *  its own and a pull request into `rc`. */
+const PROMOTION_FIX =
+  'This is the promotion of `rc`, and nobody pushes `rc`. The fix lands on `rc` through its own pull request (`git fetch origin && git switch -c fix/<name> origin/rc`, then a PR against `rc`); once it merges, `rc` moves and this promotion with it.\n\n'
 
 function redBody(pr, result) {
   const repoFlag = repoArgOf(targetRepoOf(pr, repo))
@@ -723,7 +781,7 @@ head ${pr.headRefName} @ ${String(pr.headRefOid).slice(0, 12)}
 
 ${result.failing.map(checkLine).join('\n')}
 
-Diagnose from the log, fix, re-run \`bun run gate\` (it compiles only what this diff touches; if the log names a crate the diff did not, \`cargo test -p <that crate>\` — never a workspace cargo, never \`api:check\`), and push to \`${pr.headRefName}\` only. Never \`main\`, never \`rc\`, never \`--force\`. Then run this watcher again.
+${result.promotion ? PROMOTION_FIX : ''}Diagnose from the log, fix, re-run \`bun run gate\` (it compiles only what this diff touches; if the log names a crate the diff did not, \`cargo test -p <that crate>\` — never a workspace cargo, never \`api:check\`), and push to ${result.promotion ? 'that fix branch' : `\`${pr.headRefName}\``} only. Never \`main\`, never \`rc\`, never \`--force\`. Then run this watcher again.
 
 The same check still red after a push that was supposed to fix it is not self-fixable. A product decision, a review request, or infra you cannot fix from this branch (runner, registry, a secret) is not self-fixable either. Report the job link. Do not claim done.
 ${more}
@@ -734,6 +792,20 @@ function conflictBody(pr, result) {
   const also = result.failing.length
     ? `\nAlso failing (the merge will replace this head — fix the conflict first):\n${result.failing.map(checkLine).join('\n')}\n`
     : ''
+  if (result.promotion) {
+    // `rc` contains everything `main` has by construction, so a conflict here
+    // means `main` took something `rc` lacks. It comes back into `rc` the way
+    // everything does: through a pull request against `rc`.
+    return `${branchNote(pr)}#${pr.number} conflicts with \`main\` (mergeable=${result.mergeable}, mergeStateStatus=${result.mergeState}). Do not claim done.
+${pr.url}
+head ${pr.headRefName} @ ${String(pr.headRefOid).slice(0, 12)}
+${also}
+\`main\` has something \`rc\` lacks. Bring it into \`rc\` through a pull request against \`rc\` (never a push to \`rc\` or \`main\`, never \`--force\`), then run this watcher again once it merges:
+
+  git fetch origin && git switch -c sync/main-into-rc origin/rc && git merge origin/main
+
+A resolution you cannot make honestly is not self-fixable. Report this state instead of pushing a guess.`
+  }
   return `${branchNote(pr)}#${pr.number} conflicts with \`${pr.baseRefName}\` (mergeable=${result.mergeable}, mergeStateStatus=${result.mergeState}). Do not claim done.
 ${pr.url}
 head ${pr.headRefName} @ ${String(pr.headRefOid).slice(0, 12)}

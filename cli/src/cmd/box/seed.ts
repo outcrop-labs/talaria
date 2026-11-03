@@ -32,7 +32,7 @@ import { readEnvFile, writeSecret } from '../../envfile'
 import { rcloneImage } from '../../backup/lib'
 import { primaryContainer, refuseSideStackContainers, type PrimaryContainerVar } from '../../stack'
 import { boxFleetNetwork, boxHost, boxProject, boxSvc, boxState } from './shared'
-import { SCRUB_SEEDED_PUSH_STATE, SEED_DUMP_ARGS } from '../worktree'
+import { SCRUB_SEEDED_OUTBOUND_STATE, SEED_DUMP_ARGS } from '../worktree'
 
 /** Repoint the chassis's fleet network at THIS box's own — the template
  *  ships the primary install's default name. Range-scoped to the network:
@@ -113,15 +113,17 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
     } catch (e) {
       ctx.log.die(`seed dump/restore failed: ${e instanceof Error ? e.message : String(e)}`)
     }
-    // Push state stays on the primary: the dump left push_subscriptions'
-    // rows behind, and the copied VAPID key goes here (SEED_DUMP_ARGS says
-    // why — a box that can sign as the primary can push to its browsers).
+    // Push and mail stay on the primary: the dump left push_subscriptions'
+    // rows behind, and the copied VAPID key and mail provider go here
+    // (SEED_DUMP_ARGS, SCRUB_SEEDED_OUTBOUND_STATE say why — a box that can
+    // sign as the primary can push to its browsers, and one holding its mail
+    // provider mails its users from any notification filed in a test).
     try {
-      await ctx.exec('docker', ['exec', PGC, 'psql', '-U', 'talaria', '-d', 'talaria', '-qc', SCRUB_SEEDED_PUSH_STATE])
+      await ctx.exec('docker', ['exec', PGC, 'psql', '-U', 'talaria', '-d', 'talaria', '-qc', SCRUB_SEEDED_OUTBOUND_STATE])
     } catch (e) {
-      ctx.log.die(`could not drop the primary's push key from the box copy: ${e instanceof Error ? e.message : String(e)}`)
+      ctx.log.die(`could not drop the primary's push key and mail config from the box copy: ${e instanceof Error ? e.message : String(e)}`)
     }
-    ctx.log.ok('seeded')
+    ctx.log.ok("seeded (the primary's push key and mail config dropped — the box sends no push or mail until you configure its own)")
   }
 
   // ── Object storage ─────────────────────────────────────────────────────────
