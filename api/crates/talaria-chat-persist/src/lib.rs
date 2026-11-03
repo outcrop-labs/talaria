@@ -401,6 +401,19 @@ pub async fn reopen_streaming_reply(
     Ok(())
 }
 
+/// The rail's signal, on every reply that lands, finished or failed: this
+/// thread's unread pill moves for everyone who can read it, and a tab bar lit
+/// by the reply's start goes dark. The row is landed before this, so a client
+/// that refetches on the event sees the landing; the event is id-shaped, so it
+/// carries nothing the refetch doesn't re-read through the ordinary ACL.
+/// Detached — the persist path never waits on a fan-out.
+async fn ring_reply_landed(state: &AppState, conversation_id: &str) {
+    fan_conversation_event(
+        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+        conversation_id.to_string(),
+    );
+}
+
 pub async fn send_turn(
     pg: &PgPool,
     pinned: bool,
@@ -1492,6 +1505,7 @@ pub async fn persist_assistant_stream(
     if let Some(message) = frame_error {
         content = with_error_line(&content, &format!("(agent error: {message})"));
         land!("error");
+        ring_reply_landed(&state, &conversation_id).await;
         return;
     }
     // A stream that DIED (as opposed to the agent refusing above) ends the
@@ -1503,6 +1517,7 @@ pub async fn persist_assistant_stream(
     if let Some(died) = death {
         content = with_error_line(&content, &format!("(agent error: {})", died.reason()));
         land!("error");
+        ring_reply_landed(&state, &conversation_id).await;
         if let Some(meta) = usage_meta.filter(|m| !m.resumed) {
             maybe_resume(&state, &conversation_id, &message_id, &meta, heard_at_ms);
         }
@@ -1600,16 +1615,7 @@ pub async fn persist_assistant_stream(
         };
         let _ = guard.await;
     }
-    // The rail's signal, on every completed reply: this thread's unread pill
-    // moves for everyone who can read it, wherever in the app they are. The
-    // row is landed complete above, so a client that refetches on the event
-    // sees the finished turn; the event is id-shaped, so it carries nothing
-    // the refetch doesn't re-read through the ordinary ACL. Detached — the
-    // persist path never waits on a fan-out.
-    fan_conversation_event(
-        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
-        conversation_id.clone(),
-    );
+    ring_reply_landed(&state, &conversation_id).await;
     // And the reply that landed while its readers were away rings once: one
     // agent-reply row per audience member whose read cursor doesn't cover it,
     // deduped while one sits unread per thread. AFTER the guard block on

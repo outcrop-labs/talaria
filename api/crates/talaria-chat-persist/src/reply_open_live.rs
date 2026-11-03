@@ -208,3 +208,113 @@ async fn reply_open_live_a_resumed_reply_rings_its_readers_again() {
     assert_eq!(status, "streaming");
     cleanup(&pg, "resume").await;
 }
+
+/// The app's state with a real Redis, from REDIS_URL (CI's live-tests job sets
+/// it), so the end event can be heard on the wire.
+async fn wired_state() -> (talaria_state::AppState, String) {
+    let url =
+        std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the ignored live tests");
+    let redis = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6399".into());
+    let cfg = talaria_config::Config::from_parts(
+        url.clone(),
+        redis.clone(),
+        "reply-open-live-root".into(),
+        String::new(),
+        String::new(),
+        String::new(),
+    )
+    .expect("test config assembles");
+    let pg = PgPool::connect(&url).await.expect("connect");
+    (talaria_state::AppState::new(pg, Arc::new(cfg)), redis)
+}
+
+fn frames(frames: Vec<String>) -> talaria_gateway::fleet_chat::ByteStream {
+    Box::pin(futures_util::stream::iter(
+        frames.into_iter().map(|f| Ok(axum::body::Bytes::from(f))),
+    ))
+}
+
+/// A reply that fails still rings its end, so the tab bar its start lit goes
+/// dark at once instead of on its next poll.
+async fn failed_reply_rings_its_end(tag: &str, stream: talaria_gateway::fleet_chat::ByteStream) {
+    use futures_util::StreamExt;
+    let (state, redis_url) = wired_state().await;
+    let pg = state.pg.clone();
+    cleanup(&pg, tag).await;
+    let owner = person(&pg, tag, "owner").await;
+    let conv = create_conversation(&pg, &owner, "reply-open-agent", "chat", "chat", None)
+        .await
+        .unwrap();
+    let (deps, _) = recording(&pg);
+    let reply = open_streaming_reply(&pg, deps, &conv, 1, &json!({}))
+        .await
+        .unwrap();
+
+    let mut sub = redis::Client::open(redis_url.as_str())
+        .unwrap()
+        .get_async_pubsub()
+        .await
+        .expect("redis for the live test (REDIS_URL)");
+    sub.subscribe(format!("user:{owner}")).await.unwrap();
+
+    super::persist_assistant_stream(
+        state.clone(),
+        stream,
+        reply.clone(),
+        conv.clone(),
+        None,
+        None,
+        super::OpeningTurn::take(&conv),
+    )
+    .await;
+
+    let (status,): (String,) = sqlx::query_as("select status from messages where id = $1::uuid")
+        .bind(&reply)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(status, "error");
+    let mut messages = sub.on_message();
+    let heard = tokio::time::timeout(Duration::from_secs(3), async {
+        while let Some(m) = messages.next().await {
+            let payload: String = m.get_payload().unwrap();
+            if payload.contains(&conv) {
+                return payload;
+            }
+        }
+        String::new()
+    })
+    .await
+    .expect("the failed reply's end was never heard");
+    let payload: Value = serde_json::from_str(&heard).unwrap();
+    assert_eq!(
+        payload,
+        json!({ "type": "conversation", "conversationId": conv })
+    );
+    cleanup(&pg, tag).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn reply_open_live_an_agent_error_rings_its_end() {
+    let refused = r#"data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"error":{"message":"provider refused"}}"#;
+    failed_reply_rings_its_end(
+        "agent-error",
+        frames(vec![format!("{refused}\n\n"), "data: [DONE]\n\n".into()]),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn reply_open_live_a_dead_stream_rings_its_end() {
+    let role = r#"data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Once"},"finish_reason":null}]}"#;
+    let reset = reqwest::get("http://127.0.0.1:1/")
+        .await
+        .expect_err("nothing listens on port 1");
+    let items: Vec<reqwest::Result<axum::body::Bytes>> = vec![
+        Ok(axum::body::Bytes::from(format!("{role}\n\n"))),
+        Err(reset),
+    ];
+    failed_reply_rings_its_end("dead-stream", Box::pin(futures_util::stream::iter(items))).await;
+}
