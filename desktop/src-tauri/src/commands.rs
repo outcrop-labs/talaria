@@ -182,16 +182,25 @@ const ESCAPE_HATCH: &str = r#"
 /// another site, leaving no titlebar and no switcher in the themed mode.
 /// Registered on the window, it sees a drag after every drop zone in the page
 /// has: a zone that called `preventDefault` keeps the drop, and anything else
-/// gets "no drop here" instead of a navigation.
+/// gets "no drop here" instead of a navigation. Native fields take drops by the
+/// engine's own default, with nobody calling `preventDefault` — text into an
+/// `<input>`, a selection moved inside a `<textarea>`, a file onto an
+/// `<input type=file>`, anything `contenteditable` — so a drag over one is left
+/// to the engine (`allowed_navigation` still refuses a file it would load).
+/// scripts/desktop-drop-guard.mjs runs this script against each of those cases.
 const DROP_GUARD: &str = r#"
+  const editable = (e) => {
+    const t = e.target;
+    const el = t instanceof Element ? t : t && t.parentElement;
+    return !!el && (el.isContentEditable || !!el.closest('input, textarea, select'));
+  };
   window.addEventListener('dragover', (e) => {
-    if (!e.defaultPrevented) {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
-    }
+    if (e.defaultPrevented || editable(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
   });
   window.addEventListener('drop', (e) => {
-    if (!e.defaultPrevented) e.preventDefault();
+    if (!e.defaultPrevented && !editable(e)) e.preventDefault();
   });
 "#;
 
@@ -2074,10 +2083,15 @@ mod tests {
         }
     }
 
+    /// The shape only: the behaviour (zones, fields, contenteditable, a
+    /// stray drop) is run against a stub DOM by scripts/desktop-drop-guard.mjs
+    /// in `bun run check`, and against WebKitGTK with real drags on the rig.
     #[test]
-    fn the_drop_guard_yields_to_a_drop_zone() {
-        // A zone's own preventDefault runs first; the guard only fills in.
-        assert_eq!(DROP_GUARD.matches("if (!e.defaultPrevented)").count(), 2);
+    fn the_drop_guard_yields_to_drop_zones_and_fields() {
+        assert!(DROP_GUARD.contains("e.defaultPrevented || editable(e)"));
+        assert!(DROP_GUARD.contains("!e.defaultPrevented && !editable(e)"));
+        assert!(DROP_GUARD.contains("closest('input, textarea, select')"));
+        assert!(DROP_GUARD.contains("isContentEditable"));
         assert!(DROP_GUARD.contains("dropEffect = 'none'"));
         assert!(!DROP_GUARD.contains("stopPropagation"));
     }
