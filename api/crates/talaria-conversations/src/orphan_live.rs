@@ -17,7 +17,7 @@ use sqlx::PgPool;
 
 use super::*;
 
-async fn pg() -> PgPool {
+pub(super) async fn pg() -> PgPool {
     let url =
         std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the ignored live tests");
     PgPool::connect(&url).await.expect("connect")

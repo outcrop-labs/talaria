@@ -258,7 +258,8 @@
 {/snippet}
 
 <div class="flex h-screen flex-col">
-  <DesktopTitlebar />
+  <!-- The tab bar carries the window controls once it mounts. -->
+  {#if !user}<DesktopTitlebar />{/if}
   <div class="min-h-0 flex-1 overflow-hidden">
 {#if session.isError && !user}
   <!-- The session read FAILED (not "signed out" — that is a 200 with a null user).

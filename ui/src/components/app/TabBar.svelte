@@ -33,6 +33,7 @@
   import TabFace from './TabFace.svelte'
   import RailTooltip from './RailTooltip.svelte'
   import DesktopSwitcher from './DesktopSwitcher.svelte'
+  import DesktopWindowControls from './DesktopWindowControls.svelte'
   import SidebarAssistant from './SidebarAssistant.svelte'
   import BoardsSearch from './BoardsSearch.svelte'
   import NotificationBell from './NotificationBell.svelte'
@@ -47,6 +48,7 @@
   import { tabMarkOnScreen } from '@/lib/tab-mark-on-screen'
   import { useWorking } from '@/lib/working.svelte'
   import { swap } from '@/lib/motion'
+  import { windowDrag } from '@/lib/desktop-titlebar'
   import { tabLift } from '@/lib/tab-motion'
   import { cn } from '@/lib/cn'
   import { p, route } from '@/router'
@@ -94,11 +96,12 @@
 
 <!-- h-14 is shell chrome, not a stage header, so it does not join the h-12
      stage-header line (UI-CONVENTIONS). -->
-<nav aria-label="Primary" class="@container relative z-40 flex h-14 shrink-0 items-stretch gap-2 bg-sidebar px-2">
+<nav aria-label="Primary" class="@container relative z-40 flex h-14 shrink-0 items-stretch gap-2 bg-sidebar px-2" use:windowDrag>
   <!-- A border on the nav would paint over the open tab. -->
   <div class="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-line" aria-hidden="true"></div>
 
   <div class="flex shrink-0 items-center gap-2">
+    <DesktopWindowControls at="left" />
     <div class="flex h-9 shrink-0 items-center gap-2.5 pl-1" aria-label="Talaria">
       <WingMark size={28} />
       <span
@@ -198,5 +201,6 @@
     {/if}
     <NotificationBell />
     <UserMenu {user} {onLogout} active={onSettingsOrAdmin} hasManage={manage.items.length > 0} />
+    <DesktopWindowControls at="right" />
   </div>
 </nav>

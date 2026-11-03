@@ -17,10 +17,11 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::string_member;
 use talaria_conversations::{
-    conversation_accessible, conversation_has_message, reaction_actor, toggle_message_reaction,
+    conversation_accessible, conversation_has_message, fan_conversation_event, reaction_actor,
+    toggle_message_reaction,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_notify::{NotifyDeps, fan_conversation_event};
+use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
