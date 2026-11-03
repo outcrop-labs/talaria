@@ -801,6 +801,13 @@ pub async fn post(
     // response headers included: the hold rides into the persist below
     // (talaria-conversations, "Who is writing a reply").
     let writer = ReplyWriter::hold(&assistant_id);
+    // The reply is streaming from here, and every reader's tab bar shows that
+    // (/api/working). The sender's other tabs and views learn it from this
+    // event; chat_persist fans the end.
+    fan_conversation_event(
+        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+        conv_id.clone(),
+    );
 
     // WHERE THIS AGENT IS ANSWERING, recorded before the turn leaves for the
     // container and not after — work the agent starts from inside this turn

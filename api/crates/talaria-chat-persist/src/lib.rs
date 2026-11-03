@@ -654,6 +654,12 @@ async fn continue_inner(
     // This process writes the row from here, the wait for the agent's
     // response headers included: the hold rides into the persist below.
     let writer = ReplyWriter::hold(&assistant_id);
+    // A queued turn starts streaming here with nobody's send behind it, so
+    // the tab bar (/api/working) hears of it only from this event.
+    fan_conversation_event(
+        NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok()),
+        conversation_id.to_string(),
+    );
     // THE QUEUED MESSAGE'S OWN EFFORT, not the completed turn's: the message
     // this chain exists to cover picked its level when it was sent (stamped
     // on its row by /api/chat), and the model it will run on is only known
