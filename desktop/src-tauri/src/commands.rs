@@ -158,17 +158,21 @@ impl Drop for Creating<'_> {
 /// be a one-way door — the shell itself provides the floor. Ctrl+Q (Cmd+Q on
 /// macOS, where the app menu also has it) quits the shell from any page, for
 /// the same reason: with Close keeping Talaria in the background, Quit must
-/// never depend on the instance's UI version.
+/// never depend on the instance's UI version. On another origin (a sign-in
+/// provider) the shell refuses the page's call, so each key falls back to a
+/// reserved navigation (`loading::WAY_BACK`, `WAY_OUT`) that the navigation
+/// hook turns into the same thing (`take_reserved`).
 const ESCAPE_HATCH: &str = r#"
   if (window.__TAURI_INTERNALS__) {
     const mac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+    const ask = (cmd, url) => window.__TAURI_INTERNALS__.invoke(cmd).catch(() => location.assign(url));
     window.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'h') {
         e.preventDefault();
-        window.__TAURI_INTERNALS__.invoke('show_welcome').catch(() => {});
+        ask('show_welcome', 'https://talaria-desktop.invalid/back');
       } else if ((mac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'q') {
         e.preventDefault();
-        window.__TAURI_INTERNALS__.invoke('desktop_quit').catch(() => {});
+        ask('desktop_quit', 'https://talaria-desktop.invalid/quit');
       }
     }, true);
   }
@@ -218,6 +222,21 @@ fn allowed_navigation(label: &str, url: &tauri::Url) -> bool {
         return false;
     }
     true
+}
+
+/// A reserved navigation from a page that may not call the shell (the
+/// way-back pill or the escape keys on another origin): refused by the
+/// navigation hook, and done here, a main-thread turn of its own.
+fn take_reserved(app: &AppHandle, what: loading::Reserved) {
+    match what {
+        loading::Reserved::Back => {
+            eprintln!("talaria-desktop: the way back, from a page that may not call the shell");
+            if let Err(e) = show_welcome(app.clone()) {
+                eprintln!("talaria-desktop: back to the launcher: {e}");
+            }
+        }
+        loading::Reserved::Quit => crate::background::quit(app),
+    }
 }
 
 /// Everything the launcher renders, in one read. The launcher asks for it at
@@ -648,6 +667,18 @@ fn activate(
     let instance = state.find(id)?;
     let window = main_window(app)?;
     let label = instance_label(&instance.id);
+    // A page kept behind its card that is not Talaria (Cloudflare's 524, a
+    // challenge) is shown as it is only by the card's Show the page, with its
+    // way back on it. Any other open of it — its row on the launcher, the
+    // tray, a notification, another instance's switcher — loads the
+    // instance fresh instead, at its root: Retry without the probe (B2).
+    let fresh = state.loads.lock().unwrap().open_fresh(&instance.id);
+    if fresh && let Some(kept) = window.get_webview(&label) {
+        eprintln!("talaria-desktop: {label}: its page was kept behind its card; loading it fresh");
+        let _ = kept.close();
+        state.loads.lock().unwrap().forget(&instance.id);
+        state.activity.lock().unwrap().forget(&instance.id);
+    }
     let live = window.get_webview(&label).is_some();
     // Before anything changes: a second activation during the creation
     // leaves the first to finish what it started.
@@ -694,7 +725,8 @@ fn activate(
     // Keep waiting, on the card for a page that has not loaded: show it again,
     // with the way back on it, and give it longer (loading.rs). A page that has
     // finished since (a file) has nothing more to wait for.
-    if live && state.loads.lock().unwrap().stalled(&instance.id) {
+    let waiting = live && state.loads.lock().unwrap().stalled(&instance.id);
+    if waiting {
         let finished = state.loads.lock().unwrap().finished(&instance.id);
         state.loads.lock().unwrap().show(&instance.id, false, None);
         if !finished {
@@ -791,6 +823,10 @@ fn activate(
     *state.reopen.lock().unwrap() = None;
     *state.failure.lock().unwrap() = None;
     set_view(app, View::Active)?;
+    // The way back on a held page now, not at its next document.
+    if waiting {
+        set_pill(app, &instance.id, true);
+    }
     emit_state(app);
     Ok(opened)
 }
@@ -822,10 +858,17 @@ fn create_instance_webview(
     // DROP_GUARD and allowed_navigation keep a drop the page does not take
     // from navigating it away.
     let nav_label = label.clone();
+    let nav_app = app.clone();
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
         .data_directory(dir)
         .disable_drag_drop_handler()
-        .on_navigation(move |url| allowed_navigation(&nav_label, url))
+        .on_navigation(move |url| match loading::reserved(url.as_str()) {
+            Some(what) => {
+                queue_main_turn(&nav_app, move |app| take_reserved(app, what));
+                false
+            }
+            None => allowed_navigation(&nav_label, url),
+        })
         .background_color(GROUND)
         .initialization_script(ESCAPE_HATCH)
         .initialization_script(DROP_GUARD)
@@ -1039,7 +1082,11 @@ fn page_finished(app: &AppHandle, id: &str, url: &str) {
         tokio::time::sleep(loading::UI_GRACE).await;
         let mut attempt = 0;
         loop {
-            if app.state::<ShellState>().loads.lock().unwrap().doc(&id) != doc {
+            // A newer document is judged on its own; a closed page (Back, a
+            // suspend, a fresh load) is not judged at all.
+            if app.state::<ShellState>().loads.lock().unwrap().doc(&id) != doc
+                || app.get_webview(&instance_label(&id)).is_none()
+            {
                 return;
             }
             let page = page_answer(&app, &id).await;
@@ -1047,21 +1094,16 @@ fn page_finished(app: &AppHandle, id: &str, url: &str) {
                 let state = app.state::<ShellState>();
                 let loads = state.loads.lock().unwrap();
                 let verdict = loading::verdict(loads.ui(&id), page, loads.noted(&id));
-                loading::after_finish(settled, verdict, attempt)
+                loading::after_finish(settled, verdict, attempt, exempt)
             };
             if let loading::Action::Look(wait) = action {
                 eprintln!(
-                    "talaria-desktop: instance-{id}: Talaria's page is still starting; looking again in {} s",
+                    "talaria-desktop: instance-{id}: its page has not said its UI is up ({page:?}); looking again in {} s",
                     wait.as_secs()
                 );
                 attempt += 1;
                 tokio::time::sleep(wait).await;
                 continue;
-            }
-            // Shown as it is: the way back comes down when Talaria is up;
-            // nothing else is said about it.
-            if exempt && action != loading::Action::Reopen {
-                return;
             }
             queue_main_turn(&app, move |app| judge_page(app, &id, doc, action));
             return;
@@ -1346,10 +1388,13 @@ fn watch_load_failures(app: &AppHandle, webview: &Webview, id: &str) {
 /// back on the launcher with the card. A page that answered (an error page,
 /// a challenge, a sign-in gate) is kept behind the card — it may be working,
 /// or need the person: Show the page, Retry, Back to instances — and if its
-/// UI comes up meanwhile the shell opens it (`ui_called`). A load that got
-/// no answer is closed: Retry, Back to instances. Either way the instance's
-/// last page is forgotten, so Retry opens its root, not this page again. One
-/// loaded hidden at launch is closed, and loaded again later.
+/// UI comes up meanwhile the shell opens it (`ui_called`); any other open of
+/// it loads it fresh (`Loads::open_fresh`). A load that got no answer, or a
+/// page the shell's script cannot reach, is closed: Retry, Back to
+/// instances. A page kept because it answered is not the instance's page,
+/// so its last page is forgotten and Retry opens its root; a network failure
+/// says nothing about the page, and keeps it. One loaded hidden at launch is
+/// closed, loaded again later, and keeps its last page.
 fn instance_not_talaria(app: &AppHandle, id: &str, words: &str, keep: bool) {
     let state = app.state::<ShellState>();
     let Ok(instance) = state.find(id) else {
@@ -1361,16 +1406,24 @@ fn instance_not_talaria(app: &AppHandle, id: &str, words: &str, keep: bool) {
     else {
         return;
     };
-    if state.last_urls.lock().unwrap().remove(id).is_some()
+    let prewarming = state.activity.lock().unwrap().prewarming(id);
+    if keep
+        && !prewarming
+        && state.last_urls.lock().unwrap().remove(id).is_some()
         && let Err(e) = state.persist()
     {
         eprintln!("talaria-desktop: {e}");
     }
-    let prewarming = state.activity.lock().unwrap().prewarming(id);
     if prewarming || !keep {
         let _ = webview.close();
         state.loads.lock().unwrap().forget(id);
         state.activity.lock().unwrap().forget(id);
+    } else {
+        // Kept, and no longer shown (a Keep waiting page that ended as
+        // this): only Show the page shows it as it is again.
+        let mut loads = state.loads.lock().unwrap();
+        loads.unshow(id);
+        loads.keep(id);
     }
     // Loaded hidden at launch (D8) and nobody asked to see it: no card on
     // the launcher, the log, and another try later.
@@ -1457,13 +1510,9 @@ pub fn close_instance_page(app: AppHandle, id: String) -> Result<(), String> {
             *failure = None;
         }
     }
-    // Retry opens the instance's root: the page that was not Talaria may
-    // never be (S9).
-    if state.last_urls.lock().unwrap().remove(&id).is_some()
-        && let Err(e) = state.persist()
-    {
-        eprintln!("talaria-desktop: {e}");
-    }
+    // Its last page stands: a page kept because it was not Talaria had it
+    // forgotten when its card went up (instance_not_talaria), and one that
+    // only stalled says nothing against it.
     emit_state(&app);
     Ok(())
 }
@@ -1748,6 +1797,16 @@ pub fn suspend_tick(app: &AppHandle) {
     }
     if changed && let Err(e) = state.persist() {
         eprintln!("talaria-desktop: {e}");
+    }
+    // The page on screen shown without its UI keeps its way back, even if
+    // the page took it down since its last document (idempotent).
+    let on_screen = (*state.view.lock().unwrap() == View::Active)
+        .then(|| state.active.lock().unwrap().clone())
+        .flatten();
+    if let Some(id) = on_screen
+        && state.loads.lock().unwrap().shown(&id).is_some()
+    {
+        set_pill(app, &id, true);
     }
     let Some(timeout) = state.settings.lock().unwrap().suspend_after() else {
         return;
@@ -2693,6 +2752,20 @@ mod tests {
     /// The shape only: the behaviour (zones, fields, contenteditable, a
     /// stray drop) is run against a stub DOM by scripts/desktop-drop-guard.mjs
     /// in `bun run check`, and against WebKitGTK with real drags on the rig.
+    #[test]
+    fn the_escape_keys_fall_back_to_the_reserved_navigations() {
+        // On another origin the shell refuses the page's call: each key then
+        // navigates where the navigation hook takes it (S11).
+        assert!(ESCAPE_HATCH.contains(&format!("ask('show_welcome', '{}')", loading::WAY_BACK)));
+        assert!(ESCAPE_HATCH.contains(&format!("ask('desktop_quit', '{}')", loading::WAY_OUT)));
+        assert!(ESCAPE_HATCH.contains(".catch(() => location.assign(url))"));
+        // And the hook does not let them load: they are not file:, but
+        // `reserved` answers first.
+        for url in [loading::WAY_BACK, loading::WAY_OUT] {
+            assert!(loading::reserved(url).is_some(), "{url}");
+        }
+    }
+
     #[test]
     fn the_drop_guard_yields_to_drop_zones_and_fields() {
         assert!(DROP_GUARD.contains("e.defaultPrevented || editable(e)"));

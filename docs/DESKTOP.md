@@ -133,21 +133,29 @@ three rules, the same on every OS:
    - A page that answered — Cloudflare's 502, 524 or 403 challenge, a sign-in gate, a
      mis-routed 404, a page with no Talaria in it — is **kept** behind the card, which
      offers **Retry** and **Back to instances** (both close the page first) and **Show the
-     page**: the page as it is, with the shell's own **← Instances** on it (text, styled
-     through the CSSOM in a shadow root, so a strict CSP cannot strip it) as the way back,
-     which brings the card back. A page shown that way is judged no more.
-   - A load that got no answer at all (refused, dropped, an engine's network error page)
-     is closed: Retry, Back to instances.
+     page**: the page as it is, with the shell's own **← Instances** on it, bottom left
+     (text, styled through the CSSOM in a shadow root, so a strict CSP cannot strip it), as
+     the way back, which brings the card back. A page shown that way is judged no more,
+     unless a later document is one the way back cannot reach (below). Show the page is the
+     only way a kept page is shown as it is: opening the instance any other way — its row,
+     the tray, a notification, another instance's switcher — closes the kept page and loads
+     the instance fresh (Retry without the probe).
+   - A load that got no answer at all (refused, dropped, an engine's network error page),
+     and a page that never answers the shell's script (WebView2's own page for an error
+     with no body, where no script runs; a page too busy to answer, looked at again 5 s and
+     12 s later first), is closed: Retry, Back to instances. Neither offers Show the page:
+     the way back could not land there.
    - Whichever it was, if the instance's UI comes up while the card is up (a challenge
      that solves itself, a slow start), the shell opens it; if it comes up on a page shown
      as it is, the way back comes down.
-   - The instance's remembered page is forgotten, so Retry and the next launch open its
-     root, not the page that failed.
+   - A kept page is not the instance's page: the instance's remembered page is forgotten,
+     so Retry and the next launch open its root. A network failure, a stall and a page
+     loaded hidden at launch say nothing against the page, and keep it.
 
    A page that never finishes is the watchdog's: 25 s after a webview is made, or after a
    document commits, a page still loading without its UI is "<instance> is not
    answering", with **Retry**, **Keep waiting** (show the page again, with the way back on
-   it, and wait 60 s more) and **Back to instances**. The page keeps loading behind that
+   it at once, and wait 60 s more) and **Back to instances**. The page keeps loading behind that
    card and is judged when it finishes: Talaria opens it; anything else (Cloudflare's 524
    after holding the request) is the card for what it is. A file the person opened in the
    window (an image, a PDF, JSON: not HTML, and nothing failed) is left alone, and Keep
@@ -155,7 +163,10 @@ three rules, the same on every OS:
 3. **Pages on other origins are never judged.** A sign-in provider, a Cloudflare Access
    login: not Talaria, and not the shell's to call broken. A document that commits there
    starts no watchdog and is judged when it finishes only if the platform said its load
-   failed on the instance's own origin.
+   failed on the instance's own origin. The shell refuses such a page's calls, so the way
+   back, `Ctrl/Cmd+Shift+H` and `Ctrl+Q` there fall back to a reserved navigation
+   (`https://talaria-desktop.invalid/back`, `/quit`) that the shell's navigation hook
+   refuses and turns into the launcher, or Quit.
 
 Off screen, a page that does not come up is closed. One loaded hidden at launch (D8) is
 loaded again 1, 2, 5, 15 and 30 minutes later, so its instance's notifications are not lost

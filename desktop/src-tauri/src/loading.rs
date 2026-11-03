@@ -54,8 +54,10 @@ pub const HOOK_WAIT: Duration = Duration::from_secs(3);
 /// (`boot`) is looked at again, `BOOT_LOOKS` later, before anything happens.
 pub const UI_GRACE: Duration = Duration::from_secs(3);
 /// The further looks at a page that is Talaria's shell but has not said its
-/// UI is up, after `UI_GRACE`: at about +8 s and +20 s from Finished, still
-/// inside `LOAD_WAIT` of the first.
+/// UI is up (or that did not answer at all), after `UI_GRACE`: at about +8 s
+/// and +20 s from Finished, about +29 s at worst with each look's
+/// `HOOK_WAIT`. They cannot race the watchdog: Finished settles the watch
+/// before the first look, and a newer document drops them.
 pub const BOOT_LOOKS: [Duration; 2] = [Duration::from_secs(5), Duration::from_secs(12)];
 
 /// Asked of a page: what is it? `ui` (the Talaria UI's hook), `boot`
@@ -103,6 +105,10 @@ pub enum Verdict {
     Up,
     /// Talaria's own shell, still starting: look again.
     Boot,
+    /// The page gave the shell's script no answer, and nothing said why: a
+    /// page too busy to answer, or one where no script runs. Looked at again;
+    /// never kept, since the way back cannot land on it.
+    Silent,
     /// A file the person opened: not the shell's business.
     Leave,
     /// Something answered that is not Talaria — an error page, a challenge, a
@@ -118,6 +124,8 @@ pub enum Verdict {
 pub const NOT_TALARIA: &str = "answered with a page that is not Talaria: it may be restarting, or something in front of it (a sign-in gate, a challenge) is waiting for you";
 /// The words for Talaria's shell that never said its UI was up.
 pub const NOT_STARTED: &str = "has not finished starting: its page may be slow to load, or it is a page the desktop app does not show";
+/// The words for a page that never answered the shell's script.
+pub const NO_ANSWER: &str = "showed a page the desktop app cannot reach into: it may be restarting";
 
 pub fn verdict(ui_seen: bool, page: Page, noted: Option<&Noted>) -> Verdict {
     if ui_seen || page == Page::Ui {
@@ -125,15 +133,22 @@ pub fn verdict(ui_seen: bool, page: Page, noted: Option<&Noted>) -> Verdict {
     }
     match noted {
         Some(n) if !n.answered => Verdict::Failed(n.words.clone()),
+        // An error page the shell's script cannot run in (WebView2's own
+        // page for an empty 5xx): nothing to keep, no pill can land (S10).
+        Some(n) if page == Page::Silent => Verdict::Failed(n.words.clone()),
         Some(n) => Verdict::Blocked(n.words.clone()),
         None if page == Page::Boot => Verdict::Boot,
         None if page == Page::Other => Verdict::Leave,
+        None if page == Page::Silent => Verdict::Silent,
         None => Verdict::Blocked(NOT_TALARIA.into()),
     }
 }
 
 /// What the shell does after judging a page that finished, the `attempt`th
-/// look at it (0 is the first, `UI_GRACE` after Finished).
+/// look at it (0 is the first, `UI_GRACE` after Finished). `exempt`: the
+/// person chose to see it as it is (Show the page), so it is never carded
+/// and kept again; only its UI coming up, or a page that cannot be kept,
+/// changes anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// The UI is up: open it if its card is up (a stall, a challenge it
@@ -150,8 +165,8 @@ pub enum Action {
     Card { words: String, keep: bool },
 }
 
-pub fn after_finish(settled: Settled, verdict: Verdict, attempt: usize) -> Action {
-    match verdict {
+pub fn after_finish(settled: Settled, verdict: Verdict, attempt: usize, exempt: bool) -> Action {
+    let action = match verdict {
         Verdict::Up => Action::Reopen,
         Verdict::Boot => match BOOT_LOOKS.get(attempt) {
             Some(wait) => Action::Look(*wait),
@@ -160,10 +175,21 @@ pub fn after_finish(settled: Settled, verdict: Verdict, attempt: usize) -> Actio
                 keep: true,
             },
         },
+        Verdict::Silent => match BOOT_LOOKS.get(attempt) {
+            Some(wait) => Action::Look(*wait),
+            None => Action::Card {
+                words: NO_ANSWER.into(),
+                keep: false,
+            },
+        },
         Verdict::Leave if settled == Settled::AfterStall => Action::Restall,
         Verdict::Leave => Action::Nothing,
         Verdict::Blocked(words) => Action::Card { words, keep: true },
         Verdict::Failed(words) => Action::Card { words, keep: false },
+    };
+    match action {
+        Action::Card { keep: true, .. } | Action::Restall if exempt => Action::Nothing,
+        action => action,
     }
 }
 
@@ -194,6 +220,9 @@ pub struct Loads {
     /// the way-back pill, and the card's words to put back if the person goes
     /// back to the launcher with the page still not Talaria.
     shown: HashMap<String, Shown>,
+    /// Pages kept behind a card that are not Talaria. Only Show the page
+    /// shows one as it is; any other open loads it fresh (`open_fresh`).
+    kept: HashSet<String>,
     /// Failed loads in a row of a page loaded hidden at launch.
     prewarm: HashMap<String, u32>,
 }
@@ -231,6 +260,7 @@ impl Loads {
         self.ui.remove(id);
         self.noted.remove(id);
         self.finished.remove(id);
+        self.kept.remove(id);
     }
 
     /// A webview is made for the instance: a new document, watched.
@@ -267,6 +297,20 @@ impl Loads {
     /// The page's UI asked the shell for something (rule 1).
     pub fn ui_seen(&mut self, id: &str) {
         self.ui.insert(id.to_string());
+        self.kept.remove(id);
+    }
+
+    /// The page is kept behind its card: it answered, and it is not Talaria.
+    pub fn keep(&mut self, id: &str) {
+        self.kept.insert(id.to_string());
+    }
+
+    /// An open that is not Show the page, of a page kept behind its card and
+    /// not already shown as it is: close it and load the instance fresh,
+    /// never show the page that was not Talaria without its card or its way
+    /// back (B2).
+    pub fn open_fresh(&self, id: &str) -> bool {
+        self.kept.contains(id) && !self.shown.contains_key(id)
     }
 
     pub fn ui(&self, id: &str) -> bool {
@@ -367,6 +411,7 @@ impl Loads {
         self.noted.remove(id);
         self.finished.remove(id);
         self.shown.remove(id);
+        self.kept.remove(id);
     }
 
     /// A page loaded hidden at launch did not come up: the number of times
@@ -432,17 +477,21 @@ pub fn page_reason(status: Option<u16>, network: Option<&str>) -> Option<String>
 }
 
 /// The way back from a page shown without its UI (Show the page, Keep
-/// waiting): a small "← Instances" button, top left, that opens the launcher.
-/// Built from text nodes, styled through CSSOM, in a shadow root — nothing a
-/// page CSP refuses — and evaluated by the shell, so the page needs no help.
-/// Ctrl/Cmd+Shift+H does the same (the escape hatch).
+/// waiting): a small "← Instances" button, bottom left (clear of a themed
+/// titlebar the page may grow: macOS's controls, the wing mark), that opens
+/// the launcher. Built from text nodes, styled through CSSOM, in a shadow
+/// root — nothing a page CSP refuses — and evaluated by the shell, so the
+/// page needs no help. On another origin (a sign-in provider the gate sent
+/// it to) the shell refuses the page's call, so it falls back to the
+/// reserved `WAY_BACK` navigation, which the shell's navigation hook turns
+/// into the launcher. Ctrl/Cmd+Shift+H does the same (the escape hatch).
 pub const PILL_JS: &str = r#"(() => {
   const ID = 'talaria-desktop-back';
   const root = document.documentElement;
   if (!root || document.getElementById(ID)) return;
   const host = document.createElement('div');
   host.id = ID;
-  host.style.cssText = 'all:initial;position:fixed;top:6px;left:8px;z-index:2147483647;display:block;';
+  host.style.cssText = 'all:initial;position:fixed;bottom:12px;left:12px;z-index:2147483647;display:block;';
   const shadow = host.attachShadow({ mode: 'open' });
   const b = document.createElement('button');
   b.type = 'button';
@@ -451,7 +500,9 @@ pub const PILL_JS: &str = r#"(() => {
   b.style.cssText = 'font-family:"IBM Plex Sans",ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;font-weight:600;font-size:12px;line-height:1.4;padding:4px 10px;border-radius:6px;border:1px solid #4a4640;background:#141312;color:#e7e2db;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.45);';
   b.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (window.__TAURI_INTERNALS__) window.__TAURI_INTERNALS__.invoke('show_welcome', {}).catch(() => {});
+    const back = () => location.assign('https://talaria-desktop.invalid/back');
+    const ipc = window.__TAURI_INTERNALS__;
+    if (ipc) ipc.invoke('show_welcome', {}).catch(back); else back();
   });
   shadow.append(b);
   root.appendChild(host);
@@ -460,6 +511,38 @@ pub const PILL_JS: &str = r#"(() => {
 /// Takes the way-back pill down (the UI came up).
 pub const PILL_OFF_JS: &str =
     "(() => { const h = document.getElementById('talaria-desktop-back'); if (h) h.remove(); })()";
+
+/// Reserved navigations, for a page that may not call the shell (another
+/// origin): the shell's navigation hook refuses them and does what they
+/// name. `.invalid` never resolves (RFC 2606), so no engine that missed the
+/// hook could load anything there.
+pub const WAY_BACK: &str = "https://talaria-desktop.invalid/back";
+pub const WAY_OUT: &str = "https://talaria-desktop.invalid/quit";
+
+/// What a reserved navigation asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reserved {
+    /// The launcher (`show_welcome`).
+    Back,
+    /// Quit (`desktop_quit`).
+    Quit,
+}
+
+/// Is `url` one of the shell's reserved navigations?
+pub fn reserved(url: &str) -> Option<Reserved> {
+    let url = url::Url::parse(url).ok()?;
+    let is = |reserved: &str| {
+        url::Url::parse(reserved)
+            .is_ok_and(|r| r.origin() == url.origin() && r.path() == url.path())
+    };
+    if is(WAY_BACK) {
+        Some(Reserved::Back)
+    } else if is(WAY_OUT) {
+        Some(Reserved::Quit)
+    } else {
+        None
+    }
+}
 
 /// The card's sentence for a load that stalled.
 pub fn stalled_message(instance: &str) -> String {
@@ -689,9 +772,18 @@ mod tests {
             verdict(false, Page::Html, None),
             Verdict::Blocked(NOT_TALARIA.into())
         );
+        // No answer to the shell's script, and nothing said: looked at
+        // again, never kept (S10).
+        assert_eq!(verdict(false, Page::Silent, None), Verdict::Silent);
+        // WebView2's own page for an empty 502: it answered, but no script
+        // runs there, so no way back can land on it: closed (S10).
         assert_eq!(
-            verdict(false, Page::Silent, None),
-            Verdict::Blocked(NOT_TALARIA.into())
+            verdict(
+                false,
+                Page::Silent,
+                Some(&status("answered 502 (Bad gateway): it may be restarting"))
+            ),
+            Verdict::Failed("answered 502 (Bad gateway): it may be restarting".into())
         );
         // A failed answer that is not HTML (a 502 in plain text): kept too.
         assert!(matches!(
@@ -723,7 +815,8 @@ mod tests {
             after_finish(
                 Settled::AfterStall,
                 verdict(false, Page::Html, Some(&status(cf524))),
-                0
+                0,
+                false
             ),
             Action::Card {
                 words: cf524.into(),
@@ -732,7 +825,12 @@ mod tests {
         );
         // macOS, where nothing is said: still the card, kept.
         assert_eq!(
-            after_finish(Settled::AfterStall, verdict(false, Page::Html, None), 0),
+            after_finish(
+                Settled::AfterStall,
+                verdict(false, Page::Html, None),
+                0,
+                false
+            ),
             Action::Card {
                 words: NOT_TALARIA.into(),
                 keep: true
@@ -742,15 +840,15 @@ mod tests {
         // and only then the card (kept: it may still come up).
         let boot = || verdict(false, Page::Boot, None);
         assert_eq!(
-            after_finish(Settled::InTime, boot(), 0),
+            after_finish(Settled::InTime, boot(), 0, false),
             Action::Look(BOOT_LOOKS[0])
         );
         assert_eq!(
-            after_finish(Settled::InTime, boot(), 1),
+            after_finish(Settled::InTime, boot(), 1, false),
             Action::Look(BOOT_LOOKS[1])
         );
         assert_eq!(
-            after_finish(Settled::InTime, boot(), 2),
+            after_finish(Settled::InTime, boot(), 2, false),
             Action::Card {
                 words: NOT_STARTED.into(),
                 keep: true
@@ -760,11 +858,21 @@ mod tests {
         // stands).
         for attempt in 0..3 {
             assert_eq!(
-                after_finish(Settled::InTime, verdict(true, Page::Boot, None), attempt),
+                after_finish(
+                    Settled::InTime,
+                    verdict(true, Page::Boot, None),
+                    attempt,
+                    false
+                ),
                 Action::Reopen
             );
             assert_eq!(
-                after_finish(Settled::AfterStall, verdict(false, Page::Ui, None), attempt),
+                after_finish(
+                    Settled::AfterStall,
+                    verdict(false, Page::Ui, None),
+                    attempt,
+                    false
+                ),
                 Action::Reopen
             );
         }
@@ -774,7 +882,8 @@ mod tests {
             after_finish(
                 Settled::InTime,
                 verdict(false, Page::Html, Some(&status("answered 403 (Forbidden)"))),
-                0
+                0,
+                false
             ),
             Action::Card {
                 words: "answered 403 (Forbidden)".into(),
@@ -786,7 +895,8 @@ mod tests {
             after_finish(
                 Settled::InTime,
                 verdict(false, Page::Silent, Some(&network("did not load: refused"))),
-                0
+                0,
+                false
             ),
             Action::Card {
                 words: "did not load: refused".into(),
@@ -795,16 +905,146 @@ mod tests {
         );
         // A file: nothing, or back on the card after a stall.
         assert_eq!(
-            after_finish(Settled::InTime, Verdict::Leave, 0),
+            after_finish(Settled::InTime, Verdict::Leave, 0, false),
             Action::Nothing
         );
         assert_eq!(
-            after_finish(Settled::AfterStall, Verdict::Leave, 0),
+            after_finish(Settled::AfterStall, Verdict::Leave, 0, false),
             Action::Restall
         );
-        // The looks stay inside the watchdog's wait.
-        let total: Duration = BOOT_LOOKS.iter().sum::<Duration>() + UI_GRACE;
-        assert!(total < LOAD_WAIT, "{total:?}");
+        // A page that never answers the shell's script: looked at again,
+        // then closed with its card, never kept (S10).
+        let silent = || verdict(false, Page::Silent, None);
+        assert_eq!(
+            after_finish(Settled::InTime, silent(), 0, false),
+            Action::Look(BOOT_LOOKS[0])
+        );
+        assert_eq!(
+            after_finish(Settled::InTime, silent(), 2, false),
+            Action::Card {
+                words: NO_ANSWER.into(),
+                keep: false
+            }
+        );
+        // Each look's eval can take HOOK_WAIT: the worst case.
+        let worst: Duration = UI_GRACE
+            + BOOT_LOOKS.iter().sum::<Duration>()
+            + HOOK_WAIT * (BOOT_LOOKS.len() as u32 + 1);
+        assert_eq!(worst, Duration::from_secs(29));
+    }
+
+    // A page the person chose to see as it is (Show the page).
+    #[test]
+    fn a_page_shown_as_it_is_is_only_opened_or_closed() {
+        let blocked = || verdict(false, Page::Html, Some(&status("answered 403 (Forbidden)")));
+        // Not carded and kept again: it may be the challenge they are solving.
+        assert_eq!(
+            after_finish(Settled::Nothing, blocked(), 0, true),
+            Action::Nothing
+        );
+        assert_eq!(
+            after_finish(Settled::Nothing, verdict(false, Page::Boot, None), 2, true),
+            Action::Nothing
+        );
+        // Its UI came up: the way back comes down.
+        assert_eq!(
+            after_finish(Settled::Nothing, verdict(true, Page::Html, None), 0, true),
+            Action::Reopen
+        );
+        // A later document the way back cannot land on, or that never
+        // answered at all: back to the card, closed (S10).
+        assert_eq!(
+            after_finish(
+                Settled::Nothing,
+                verdict(
+                    false,
+                    Page::Silent,
+                    Some(&status("answered 502 (Bad gateway)"))
+                ),
+                0,
+                true
+            ),
+            Action::Card {
+                words: "answered 502 (Bad gateway)".into(),
+                keep: false
+            }
+        );
+        assert_eq!(
+            after_finish(
+                Settled::Nothing,
+                verdict(false, Page::Silent, Some(&network("did not load: offline"))),
+                0,
+                true
+            ),
+            Action::Card {
+                words: "did not load: offline".into(),
+                keep: false
+            }
+        );
+        assert_eq!(
+            after_finish(Settled::Nothing, Verdict::Silent, 0, true),
+            Action::Look(BOOT_LOOKS[0])
+        );
+        assert_eq!(
+            after_finish(Settled::Nothing, Verdict::Silent, 2, true),
+            Action::Card {
+                words: NO_ANSWER.into(),
+                keep: false
+            }
+        );
+    }
+
+    // B2: a kept page is shown as it is only by Show the page.
+    #[test]
+    fn a_kept_page_opened_any_other_way_is_loaded_fresh() {
+        let mut loads = Loads::default();
+        loads.created("a");
+        assert!(!loads.open_fresh("a"));
+        loads.settle("a");
+        loads.keep("a");
+        // Its row, the tray, a notification, a switcher: fresh.
+        assert!(loads.open_fresh("a"));
+        // Show the page: shown as it is, with its way back.
+        loads.show("a", true, Some("Fake A answered 524.".into()));
+        assert!(!loads.open_fresh("a"));
+        // Its next document is judged on its own.
+        let mut loads = Loads::default();
+        loads.created("b");
+        loads.keep("b");
+        loads.committed("b", true);
+        assert!(!loads.open_fresh("b"));
+        // Its UI came up behind the card: it is Talaria now.
+        loads.keep("b");
+        loads.ui_seen("b");
+        assert!(!loads.open_fresh("b"));
+        // Closed.
+        loads.keep("b");
+        loads.forget("b");
+        assert!(!loads.open_fresh("b"));
+    }
+
+    #[test]
+    fn the_reserved_navigations_are_exact() {
+        assert_eq!(reserved(WAY_BACK), Some(Reserved::Back));
+        assert_eq!(reserved(WAY_OUT), Some(Reserved::Quit));
+        assert_eq!(
+            reserved("https://talaria-desktop.invalid/back?x=1#y"),
+            Some(Reserved::Back)
+        );
+        for not in [
+            "http://talaria-desktop.invalid/back",
+            "https://talaria-desktop.invalid/",
+            "https://talaria-desktop.invalid/backdoor",
+            "https://talaria-desktop.invalid.evil.example/back",
+            "https://evil.example/talaria-desktop.invalid/back",
+            "https://acme.talaria.example/back",
+            "about:blank",
+            "not a url",
+        ] {
+            assert_eq!(reserved(not), None, "{not}");
+        }
+        // The pill's fallback is the reserved way back.
+        assert!(PILL_JS.contains(&format!("location.assign('{WAY_BACK}')")));
     }
 
     #[test]
@@ -840,6 +1080,8 @@ mod tests {
     #[test]
     fn the_way_back_is_text_and_cssom_only() {
         assert!(PILL_JS.contains("textContent = '← Instances'"));
+        // Bottom left: clear of a themed titlebar the page may grow.
+        assert!(PILL_JS.contains("bottom:12px;left:12px"));
         assert!(PILL_JS.contains("invoke('show_welcome'"));
         assert!(!PILL_JS.contains("innerHTML"));
         assert!(!PILL_JS.contains("<style"));
