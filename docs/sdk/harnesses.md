@@ -297,8 +297,20 @@ declares: the `slot` step resolves ahead of `role` in any chain, `[]` included. 
 names a model that no longer routes, your spec carries on as written. The run records `step: 'slot'`
 when the setting answered.
 
-You don't declare it. The host sets `model.slot` from your slug and the harness id on every run,
-and overwrites anything your spec put there, so a harness can never borrow another app's setting.
+You don't declare it. The host sets `model.slot` from your slug and the harness id on every run of
+`ctx.harness`, and overwrites anything your spec put there. Wherever app code names a slot itself,
+in the free probe below or the free `runHarness`, the host keeps it only when it is your own app's
+(`app:<your slug>/…`, your slug as the host knows which app is running, not as you say it). Another
+app's slot is dropped with a warning in the host's log, so an app cannot read or run on another
+app's setting through the SDK. The check reads your spec once, so a getter or a Proxy cannot show
+it one slot and the chain another.
+
+**The free probe is not bound.** `resolveHarnessModel(spec)` resolves the spec you hand it, and
+your harness's `model` spec carries no slot. Probed bare, it never sees this setting: where the
+admin's assignment is the only model that routes, it answers null while `ctx.harness.run` would
+run on that model, and a route that guards on it falls back every time. Probe with the slot the run
+gets, `` `app:${ctx.app}/${def.id}` `` (`ctx.app` is your slug), as the example below does. The
+probe only reads; the run still stamps its own slot, whatever you pass.
 
 ## Running one — `ctx.harness`
 
@@ -318,7 +330,9 @@ export default defineAppServer({
     const { ticketId, subject, body } = await request.json()
 
     // Free probe — no model call: nothing routable means answer it yourself.
-    if (!(await resolveHarnessModel(triage.model)))
+    // Give it the slot the run gets, or it misses this harness's model setting.
+    const slot = `app:${ctx.app}/${triage.id}`
+    if (!(await resolveHarnessModel({ ...triage.model, slot })))
       return json({ severity: null, reason: '', source: 'fallback' })
 
     const run = await ctx.harness.run(triage, { subject, body }, {
@@ -376,7 +390,7 @@ must scrub what you relay, scrub it there.
 | :--- | :--- |
 | `ctx.harness.run(harness, input, options?)` | The one runner, bound to the caller: resolve, floor, render, call, parse, repair, guard, meter, `harness_runs` row |
 | `ctx.harness.stream(harness, input, options?)` | The same run, streamed through `onDelta` |
-| `resolveHarnessModel(spec)` | The free probe: `{ model, step }` or null. Labels the run without spending a turn |
+| `resolveHarnessModel(spec)` | The free probe: `{ model, step }` or null. Labels the run without spending a turn. Not bound to your app: give it the slot (`app:<slug>/<harness id>`) or it misses the harness's model setting ([above](#its-model-setting)) |
 | `HarnessResult` | What comes back: `value`, `model`, `step`, `answered`, `refused`, `repairs`, `escalate` |
 | `ModelChainStep` | `'pin' \| 'slot' \| 'role' \| 'utility' \| 'env' \| 'preferred' \| 'first-routable'`: which step answered |
 | `ResolvedHarnessModel` | `{ model, step }`: what the probe returns |
@@ -385,12 +399,14 @@ must scrub what you relay, scrub it there.
 
 `runHarness(harness, input, ctx)` is still exported for apps written before `ctx.harness`. It runs
 what you hand it: the `caller`, the pin and the `ledger` are your word, and nothing is checked
-(the gateway still keeps the `caller` inside your app's namespace, below). Two things changed:
+(the gateway still keeps the `caller` inside your app's namespace, below). Three things changed:
 
 - **`deps` is gone.** It is no longer part of `RunContext`, and if you pass it anyway it is dropped
   with a warning. Test with `runHarnessOffline` instead.
 - **Pinning an agent logs a warning**, because nothing here checks that the caller may use that
   agent.
+- **A slot counts only when it is your own app's.** A `model.slot` naming another app's harness is
+  dropped with a warning, and the chain runs without it.
 
 Move to `ctx.harness.run`. It needs no `caller` and no `ledger.source`.
 

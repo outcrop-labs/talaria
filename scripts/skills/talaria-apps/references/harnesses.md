@@ -61,7 +61,7 @@ chain tries each step until one routes:
 
 - **The harness's own setting comes first.** Every app harness has one, `app:<slug>/<harness id>`,
   which an admin assigns beside its column in Admin → Models → Fitness. The host stamps it on
-  every run; you never write it.
+  every run; you never write it for a run (the probe below is the one place you name it).
 - **`role`** is the class of work: `utility`, `vision`, `research-brief`, `code-light`, and the
   others Admin → Models lists. The org's model for that role answers next.
 - **`pin`** names a **platform agent** (`titler`, `summarizer`, `judge`, …): the model an admin
@@ -70,7 +70,14 @@ chain tries each step until one routes:
   `first-routable`). Leave it out unless you mean it.
 
 A run reports which step answered (`step`). `resolveHarnessModel(spec)` asks the chain without
-spending a turn, so a route can answer without the model when nothing routes.
+spending a turn, so a route can answer without the model when nothing routes. It is not bound to
+your app: give it the slot the run gets, or it misses the admin's setting and falls back every
+time.
+
+```ts
+const slot = `app:${ctx.app}/${triage.id}`
+if (!(await resolveHarnessModel({ ...triage.model, slot }))) return fallback()
+```
 
 ## Run one — `ctx.harness`
 

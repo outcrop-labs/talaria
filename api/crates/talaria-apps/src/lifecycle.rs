@@ -20,6 +20,12 @@
 //              while its database still runs, and the directory (owned by the
 //              database container's user) is removed through a throwaway
 //              container when this process cannot remove it itself
+//
+// People's and teams' grants on an app (`/x/<slug>`, `/x/<slug>/manage`)
+// belong to the repository installed under the slug, the one the record in
+// its data directory names: uninstall keeps the record, and the grants, short
+// of a wipe; an install keeps them only when the record names its own
+// repository (`forget_app_grants`).
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -506,6 +512,98 @@ pub fn write_data_source(dir: &Path, source: &DataSource) -> Result<(), String> 
         .map_err(|e| format!("could not record whose data {} holds: {e}", dir.display()))
 }
 
+// ── The app's grants and the repository they belong to ──────────────────────
+
+/// Drop every person's and team's grants and denials on the app installed as
+/// `slug`: `/x/<slug>`, `/x/<slug>/manage` (`talaria_users::app_grant_views`)
+/// and any route below them, from `allowed_manage_views` and `denied_views`.
+/// Other apps' views — one whose slug begins with this one's included — and
+/// core views are left alone, each list in its order. Both tables change in
+/// one transaction. Answers how many people and teams held one.
+///
+/// Grants are rows on the person and the team, named by slug alone, so
+/// nothing in them says which app they were given for. They belong to the
+/// repository installed under the slug, the one the data's record names
+/// (`DATA_SOURCE_FILE`): uninstall keeps them only with the data it keeps,
+/// and an install keeps them only when that record names its own repository
+/// (`install_app`, `uninstall_app`). Anything else would hand another app
+/// permissions nobody gave it — "enabling one gives members nothing"
+/// (docs/APPS.md) — and denials no admin set for it.
+pub async fn forget_app_grants(pg: &PgPool, slug: &str) -> Result<u64, String> {
+    // `$1` is the work view, `$2` the prefix of everything below it. Matched
+    // without case, as `talaria_users::app_view_for` reads a path; a denial
+    // is stored as typed.
+    const USERS: &str = "update users set \
+        allowed_manage_views = array(select v from unnest(allowed_manage_views) with ordinality as t(v, i) \
+            where not (lower(v) = $1 or starts_with(lower(v), $2)) order by i), \
+        denied_views = array(select v from unnest(denied_views) with ordinality as t(v, i) \
+            where not (lower(v) = $1 or starts_with(lower(v), $2)) order by i) \
+        where exists (select 1 from unnest(allowed_manage_views || denied_views) as g(v) \
+            where lower(v) = $1 or starts_with(lower(v), $2))";
+    const TEAMS: &str = "update teams set \
+        allowed_manage_views = array(select v from unnest(allowed_manage_views) with ordinality as t(v, i) \
+            where not (lower(v) = $1 or starts_with(lower(v), $2)) order by i), \
+        denied_views = array(select v from unnest(denied_views) with ordinality as t(v, i) \
+            where not (lower(v) = $1 or starts_with(lower(v), $2)) order by i) \
+        where exists (select 1 from unnest(allowed_manage_views || denied_views) as g(v) \
+            where lower(v) = $1 or starts_with(lower(v), $2))";
+    let view = format!("/x/{}", slug.to_ascii_lowercase());
+    let below = format!("{view}/");
+    let fail = |e: sqlx::Error| format!("could not remove the grants on {slug}: {e}");
+    let mut tx = pg.begin().await.map_err(fail)?;
+    let mut held = 0;
+    for sql in [USERS, TEAMS] {
+        held += sqlx::query(sql)
+            .bind(&view)
+            .bind(&below)
+            .execute(&mut *tx)
+            .await
+            .map_err(fail)?
+            .rows_affected();
+    }
+    tx.commit().await.map_err(fail)?;
+    Ok(held)
+}
+
+/// Whether the grants on `slug` belong to `src`: the record in the slug's
+/// data directory names this same repository (`DataSource::same_repo`).
+/// Grants nothing records — kept data from an install that wrote no record,
+/// or grants an uninstall left behind with no data — belong to nobody.
+pub fn grants_belong_to(data: &Path, src: &GitSource) -> bool {
+    read_data_source(data).is_some_and(|r| r.same_repo(src))
+}
+
+/// Tests only: the next record an install writes fails, as a full or
+/// read-only disk would — the one failure that shows whether another
+/// repository's record was removed first (`lifecycle/live.rs`).
+#[cfg(test)]
+static FAIL_NEXT_INSTALL_RECORD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The record an install writes once the app is placed.
+fn write_install_record(dir: &Path, source: &DataSource) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_NEXT_INSTALL_RECORD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err(format!(
+            "could not record whose data {} holds: injected by a test",
+            dir.display()
+        ));
+    }
+    write_data_source(dir, source)
+}
+
+/// Remove `dir`'s record of whose it is. Nothing to remove is no error.
+fn forget_data_source(dir: &Path) -> Result<(), String> {
+    match std::fs::remove_file(dir.join(DATA_SOURCE_FILE)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "could not remove the record of whose {} is: {e}",
+            dir.display()
+        )),
+    }
+}
+
 /// What an install does with data an earlier install of its slug kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeptDataChoice {
@@ -630,6 +728,11 @@ pub struct Installed {
     /// A previous install's data was kept, and this install deleted it first,
     /// as asked.
     pub wiped_data: bool,
+    /// How many people and teams lost a grant or denial on the slug: ones an
+    /// earlier install of another repository left, or that nothing recorded
+    /// a repository for (`grants_belong_to`). A reinstall of the same
+    /// repository keeps its own, and answers 0.
+    pub grants_removed: u64,
     /// The host's build of the new app: `{ ok, build, error? }`, or None when
     /// the host could not be asked (`build_error` says why).
     pub build: Option<Value>,
@@ -671,7 +774,25 @@ pub async fn install_app(
             return Err(format!("apps/{slug} already exists").into());
         }
         let data = app_data_dir().join(&slug);
+        // Read before a wipe removes the record that says whose they are.
+        let grants_kept = grants_belong_to(&data, &src);
         let plan = kept_data_plan(&slug, &data, &src, req.kept_data)?;
+        // The grants follow the repository; the data follows the choice. So
+        // another repository starts with no grants whether it adopts the data
+        // or wipes it, and this one keeps its own even when it wipes its data.
+        // Before the app is placed: a failure later fails the install with
+        // the grants already gone, never with them handed over.
+        let grants_removed = if grants_kept {
+            0
+        } else {
+            let n = forget_app_grants(pg, &slug).await?;
+            // Nor may the previous repository's record outlive this install:
+            // were writing this one's to fail below, it would go on vouching
+            // for the grants given to this app, and a reinstall of that
+            // repository would take them. With no record, nobody's are kept.
+            forget_data_source(&data)?;
+            n
+        };
         if plan == KeptDataPlan::Wipe {
             crate::stop_app_db(&slug).await;
             remove_data_dir(&data).await?;
@@ -683,10 +804,10 @@ pub async fn install_app(
             }
             _ => format!("could not place apps/{slug}: {e}"),
         })?;
-        Ok::<_, InstallError>((slug, lock, data, plan))
+        Ok::<_, InstallError>((slug, lock, data, plan, grants_removed))
     }
     .await;
-    let (slug, _lock, data, plan) = match placed {
+    let (slug, _lock, data, plan, grants_removed) = match placed {
         Ok(p) => p,
         Err(e) => {
             let _ = remove_tree(&tmp).await;
@@ -694,8 +815,10 @@ pub async fn install_app(
         }
     };
     // The data is this repository's from now on. A failed write only costs
-    // a later reinstall a question (no record: it asks before it adopts).
-    if let Err(e) = write_data_source(&data, &DataSource::of(&src)) {
+    // a later reinstall a question (no record: it asks before it adopts),
+    // and vouches for nothing: another repository's record went before the
+    // app was placed (`forget_data_source`).
+    if let Err(e) = write_install_record(&data, &DataSource::of(&src)) {
         tracing::warn!("[apps] {slug}: {e}");
     }
     write_source(pg, &slug, &src, req.git_ref, &sha, req.secret, req.actor).await?;
@@ -713,6 +836,7 @@ pub async fn install_app(
         sha,
         kept_data: plan == KeptDataPlan::Adopt,
         wiped_data: plan == KeptDataPlan::Wipe,
+        grants_removed,
         build,
         build_error,
     })
@@ -1070,6 +1194,18 @@ pub enum DataLeft {
     None,
 }
 
+/// What an uninstall left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Uninstalled {
+    pub data: DataLeft,
+    /// How many people and teams lost their grants and denials on the app.
+    /// Short of a wipe the record of the slug's repository stays, and so do
+    /// they (0): they go back only to a reinstall of that repository. A wipe
+    /// takes them, and so does an uninstall of an app nothing records.
+    pub grants_removed: u64,
+}
+
 fn db_image() -> String {
     std::env::var("TALARIA_APP_DB_IMAGE")
         .or_else(|_| std::env::var("TALARIA_PG_IMAGE"))
@@ -1181,21 +1317,58 @@ pub async fn remove_data_dir(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("could not delete {}: {e}", dir.display()))
 }
 
+/// The record an uninstall that does not wipe leaves in the slug's data
+/// directory (`keep_record`, with the app's `app_sources` row).
+async fn record_to_keep(pg: &PgPool, slug: &str, data: &Path) -> Option<DataSource> {
+    let row = source_record(pg, slug).await.map(|rec| DataSource {
+        url: rec.url,
+        host: rec.host,
+        repo: rec.repo,
+    });
+    keep_record(slug, data, row)
+}
+
+/// The record `data` keeps from now on, given the app's source row. The row
+/// wins whenever there is one: install and update write it, and only the
+/// host can, while a running app can write files in its own data directory —
+/// a record it forged would otherwise vouch, after the uninstall, for a
+/// repository it never was. The file is rewritten from the row when they
+/// differ, and stands alone only for an app with no row (one placed by hand).
+/// None when there is neither, or the rewrite failed: nothing then says whose
+/// the slug's grants are.
+fn keep_record(slug: &str, data: &Path, row: Option<DataSource>) -> Option<DataSource> {
+    let Some(r) = row else {
+        return read_data_source(data);
+    };
+    if read_data_source(data).as_ref() == Some(&r) {
+        return Some(r);
+    }
+    match write_data_source(data, &r) {
+        Ok(()) => Some(r),
+        Err(e) => {
+            tracing::warn!("[apps] {slug}: {e}");
+            None
+        }
+    }
+}
+
 /// Remove an app: its enablement, its MCP server row (and every grant on it),
 /// its database container, its code (with any update staging trees), its
 /// build output and its source record. Its data is kept unless `wipe`: then
 /// the store is emptied while the database still runs, the database is
 /// stopped, and the whole data directory is removed with the sealed password.
-/// Kept data keeps the record of the repository it belongs to
-/// (`DATA_SOURCE_FILE`), written now from the source record for an app
-/// installed before install wrote one.
+/// Short of a wipe, the record of the repository the slug belongs to
+/// (`DATA_SOURCE_FILE`) stays, with the data or alone when the app stored
+/// nothing, and people's and teams' grants on the app stay with it; written
+/// now from the source record for an app installed before install wrote one.
+/// A wipe, or an app nothing records, takes the grants (`forget_app_grants`).
 pub async fn uninstall_app(
     pg: &PgPool,
     sb: &SecretBox,
     host: Option<&AppHost>,
     slug: &str,
     wipe: bool,
-) -> Result<DataLeft, String> {
+) -> Result<Uninstalled, String> {
     if !slug_ok(slug) {
         return Err("bad slug".into());
     }
@@ -1205,6 +1378,23 @@ pub async fn uninstall_app(
         .await
         .map_err(|e| format!("could not remove the app's MCP server: {e}"))?;
     let data = app_data_dir().join(slug);
+    // Nothing below touches the database files or db.env unless `wipe`.
+    let keeps_data = !wipe && has_kept_data(&data);
+    // The record of whose the slug is survives every uninstall but a wipe,
+    // data or no data, so a reinstall of the same repository finds its
+    // grants again; grants no record vouches for go. Settled before anything
+    // is deleted, so a failure here leaves the app installed (disabled) and
+    // a retry finishes the job.
+    let record = if wipe {
+        None
+    } else {
+        record_to_keep(pg, slug, &data).await
+    };
+    let mut grants_removed = if record.is_some() {
+        0
+    } else {
+        forget_app_grants(pg, slug).await?
+    };
     let _ = tokio::fs::remove_file(crate::mcp_catalog_path(slug)).await;
     if wipe && let Err(e) = truncate_store(slug).await {
         tracing::warn!("[apps] {slug}: emptying the store before stopping it failed: {e}");
@@ -1226,32 +1416,34 @@ pub async fn uninstall_app(
     {
         tracing::warn!("[apps] {slug}: the app host was not told it is gone: {e}");
     }
-    if !wipe
-        && has_kept_data(&data)
-        && read_data_source(&data).is_none()
-        && let Some(rec) = source_record(pg, slug).await
-    {
-        let kept = DataSource {
-            url: rec.url,
-            host: rec.host,
-            repo: rec.repo,
-        };
-        if let Err(e) = write_data_source(&data, &kept) {
-            tracing::warn!("[apps] {slug}: {e}");
-        }
-    }
     forget_source(pg, slug).await?;
     let left = if wipe {
         remove_data_dir(&data).await?;
         crate::forget_app_db_password(pg, slug).await;
         DataLeft::Wiped
-    } else if has_kept_data(&data) {
+    } else if keeps_data {
         DataLeft::Kept
     } else {
+        // Nothing stored: the directory goes, all but the record. A record
+        // alone is not kept data (`has_kept_data`), so another repository's
+        // install is a fresh one, and drops these grants (`install_app`).
         let _ = remove_tree(&data).await;
+        if let Some(r) = &record
+            && let Err(e) = write_data_source(&data, r)
+        {
+            // Nothing vouches for the grants now: they go too.
+            tracing::warn!("[apps] {slug}: {e}");
+            match forget_app_grants(pg, slug).await {
+                Ok(n) => grants_removed += n,
+                Err(e) => tracing::warn!("[apps] {slug}: {e}"),
+            }
+        }
         DataLeft::None
     };
-    Ok(left)
+    Ok(Uninstalled {
+        data: left,
+        grants_removed,
+    })
 }
 
 /// The install, update and uninstall sequences end to end, against a live
@@ -1426,6 +1618,81 @@ mod tests {
             err.error
         );
         assert_eq!(err.kept_data.unwrap().kept_from, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A slug's grants are its recorded repository's: the same repository
+    /// (whatever its capitals) keeps them, and another one, or a slug whose
+    /// data recorded none, does not. Kept data or not makes no difference —
+    /// the record decides.
+    #[test]
+    fn grants_belong_only_to_the_recorded_repository() {
+        let a = parse_source("https://github.com/acme/crm", false).unwrap();
+        let a_caps = parse_source("https://GitHub.com/Acme/CRM.git", false).unwrap();
+        let fork = parse_source("https://github.com/other/crm", false).unwrap();
+        let elsewhere = parse_source("https://gitlab.example.com/acme/crm", false).unwrap();
+        let dir = scratch("grants");
+        assert!(!grants_belong_to(&dir, &a), "nothing recorded");
+        write_data_source(&dir, &DataSource::of(&a)).unwrap();
+        assert!(grants_belong_to(&dir, &a));
+        assert!(grants_belong_to(&dir, &a_caps));
+        assert!(!grants_belong_to(&dir, &fork), "another owner");
+        assert!(!grants_belong_to(&dir, &elsewhere), "another host");
+        std::fs::create_dir_all(dir.join("pg")).unwrap();
+        assert!(grants_belong_to(&dir, &a));
+        assert!(!grants_belong_to(&dir, &fork));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Uninstall keeps the host's record over the file: a running app can
+    /// write its own data directory, and a record it forged must not outlive
+    /// it. The file alone counts only when there is no row, and a rewrite
+    /// that fails leaves nothing vouching.
+    #[test]
+    fn the_host_row_wins_over_a_record_the_app_could_write() {
+        let mine = DataSource::of(&parse_source("https://github.com/acme/crm", false).unwrap());
+        let forged = DataSource::of(&parse_source("https://github.com/evil/crm", false).unwrap());
+        let dir = scratch("keep");
+        // A forged file and the host's row: the row, and the file follows it.
+        write_data_source(&dir, &forged).unwrap();
+        assert_eq!(
+            keep_record("crm", &dir, Some(mine.clone())),
+            Some(mine.clone())
+        );
+        assert_eq!(read_data_source(&dir), Some(mine.clone()));
+        // The same record already: kept as it is.
+        assert_eq!(
+            keep_record("crm", &dir, Some(mine.clone())),
+            Some(mine.clone())
+        );
+        // No row (an app placed by hand): the file is all there is.
+        write_data_source(&dir, &forged).unwrap();
+        assert_eq!(keep_record("crm", &dir, None), Some(forged.clone()));
+        // Neither: nothing vouches.
+        std::fs::remove_file(dir.join(DATA_SOURCE_FILE)).unwrap();
+        assert_eq!(keep_record("crm", &dir, None), None);
+        // A row whose record cannot be written: nothing vouches either.
+        let blocked = dir.join("a-file");
+        std::fs::write(&blocked, "").unwrap();
+        assert_eq!(keep_record("crm", &blocked.join("crm"), Some(mine)), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn forgetting_a_record_that_is_not_there_is_no_error() {
+        let dir = scratch("forget");
+        assert_eq!(forget_data_source(&dir), Ok(()));
+        write_data_source(
+            &dir,
+            &DataSource::of(&parse_source("https://github.com/acme/crm", false).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(forget_data_source(&dir), Ok(()));
+        assert_eq!(read_data_source(&dir), None);
+        // A record that cannot be removed is an error (here: a directory in
+        // its place), which stops the install before anything is placed.
+        std::fs::create_dir(dir.join(DATA_SOURCE_FILE)).unwrap();
+        assert!(forget_data_source(&dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

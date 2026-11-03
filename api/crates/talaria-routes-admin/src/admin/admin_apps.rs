@@ -468,11 +468,14 @@ pub async fn post(
                         target_id: Some(&installed.slug),
                         target_label: Some(&install_url),
                         before: None,
+                        // grantsRemoved: people and teams whose grants on
+                        // the slug were another repository's, or nobody's.
                         after: Some(json!({
                             "sha": installed.sha,
                             "ref": git_ref,
                             "keptData": installed.kept_data,
                             "wipedData": installed.wiped_data,
+                            "grantsRemoved": installed.grants_removed,
                         })),
                     },
                 )
@@ -482,6 +485,7 @@ pub async fn post(
                     "sha": installed.sha,
                     "keptData": installed.kept_data,
                     "wipedData": installed.wiped_data,
+                    "grantsRemoved": installed.grants_removed,
                     "build": installed.build,
                     "buildError": installed.build_error,
                 }))
@@ -524,8 +528,10 @@ pub async fn delete(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let host = app_host(&state);
-    let data = match uninstall_app(&state.pg, &sb, Some(&host), &app, wipe_data).await {
-        Ok(d) => d,
+    // People's and teams' grants on the app stay with kept data, for a
+    // reinstall of the same repository, and go otherwise (grantsRemoved).
+    let left = match uninstall_app(&state.pg, &sb, Some(&host), &app, wipe_data).await {
+        Ok(left) => left,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     refresh_harness_reports(&state).await;
@@ -538,9 +544,18 @@ pub async fn delete(
             target_id: Some(&app),
             target_label: None,
             before: None,
-            after: Some(json!({ "wipeData": wipe_data, "data": data })),
+            after: Some(json!({
+                "wipeData": wipe_data,
+                "data": left.data,
+                "grantsRemoved": left.grants_removed,
+            })),
         },
     )
     .await;
-    Ok(Json(json!({ "ok": true, "data": data })).into_response())
+    Ok(Json(json!({
+        "ok": true,
+        "data": left.data,
+        "grantsRemoved": left.grants_removed,
+    }))
+    .into_response())
 }

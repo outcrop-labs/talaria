@@ -423,13 +423,19 @@ async fn an_update_lands_or_rolls_back_and_the_record_follows_the_trees() {
     let left = uninstall_app(&pg, &SecretBox::default(), Some(&host), &slug, false)
         .await
         .unwrap();
-    assert_eq!(left, DataLeft::None);
+    assert_eq!(left.data, DataLeft::None);
     assert_eq!(asked(&script), ["removed"]);
     for dir in [&live, &next, &prev] {
         assert!(!dir.exists(), "{} was left", dir.display());
     }
     assert_eq!(recorded(&pg, &slug).await, None);
-    assert!(!app_data_dir().join(&slug).exists());
+    // It stored nothing: only the record of its repository is left.
+    let left: Vec<_> = std::fs::read_dir(app_data_dir().join(&slug))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(left, [DATA_SOURCE_FILE]);
 }
 
 /// Kept data goes back only to the repository it was kept from. Another
@@ -464,7 +470,8 @@ async fn kept_data_goes_back_only_to_its_own_repository() {
     assert_eq!(
         uninstall_app(&pg, &sb, Some(&host), &slug, false)
             .await
-            .unwrap(),
+            .unwrap()
+            .data,
         DataLeft::Kept
     );
     assert_eq!(
@@ -544,10 +551,345 @@ async fn kept_data_goes_back_only_to_its_own_repository() {
     assert_eq!(
         uninstall_app(&pg, &sb, Some(&host), &slug, true)
             .await
-            .unwrap(),
+            .unwrap()
+            .data,
         DataLeft::Wiped
     );
     assert!(!data.exists());
+}
+
+/// A member and a team, each holding view grants and denials, removed when
+/// the test is done with them (`drop_rows`).
+struct Grantees {
+    user: String,
+    team: String,
+}
+
+/// What the member and the team hold: (the member's allowed views, the
+/// member's denied views, the team's allowed views, the team's denied views).
+type Held = (Vec<String>, Vec<String>, Vec<String>, Vec<String>);
+
+impl Grantees {
+    async fn new(pg: &PgPool, slug: &str) -> Self {
+        let user: String = sqlx::query_scalar(
+            "insert into users (sub, email, name, role) values ($1, $1, 'live', 'member') returning id::text",
+        )
+        .bind(format!("lifecycle-live:{slug}"))
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        let team: String =
+            sqlx::query_scalar("insert into teams (name) values ($1) returning id::text")
+                .bind(format!("lifecycle-live {slug}"))
+                .fetch_one(pg)
+                .await
+                .unwrap();
+        Self { user, team }
+    }
+
+    async fn set(&self, pg: &PgPool, held: &Held) {
+        sqlx::query(
+            "update users set allowed_manage_views = $1, denied_views = $2 where id = $3::uuid",
+        )
+        .bind(&held.0)
+        .bind(&held.1)
+        .bind(&self.user)
+        .execute(pg)
+        .await
+        .unwrap();
+        sqlx::query(
+            "update teams set allowed_manage_views = $1, denied_views = $2 where id = $3::uuid",
+        )
+        .bind(&held.2)
+        .bind(&held.3)
+        .bind(&self.team)
+        .execute(pg)
+        .await
+        .unwrap();
+    }
+
+    async fn held(&self, pg: &PgPool) -> Held {
+        let (ua, ud): (Vec<String>, Vec<String>) = sqlx::query_as(
+            "select allowed_manage_views, denied_views from users where id = $1::uuid",
+        )
+        .bind(&self.user)
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        let (ta, td): (Vec<String>, Vec<String>) = sqlx::query_as(
+            "select allowed_manage_views, denied_views from teams where id = $1::uuid",
+        )
+        .bind(&self.team)
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        (ua, ud, ta, td)
+    }
+
+    async fn drop_rows(&self, pg: &PgPool) {
+        sqlx::query("delete from users where id = $1::uuid")
+            .bind(&self.user)
+            .execute(pg)
+            .await
+            .unwrap();
+        sqlx::query("delete from teams where id = $1::uuid")
+            .bind(&self.team)
+            .execute(pg)
+            .await
+            .unwrap();
+    }
+}
+
+/// An app's grants belong to the repository installed under its slug, and go
+/// back only to it. Uninstall keeps the record of that repository short of a
+/// wipe — with the data, or alone when the app stored nothing — and the
+/// grants with it; a wipe takes both. An install keeps them only when the
+/// record names its own repository: another repository's install starts with
+/// no grants, whatever it does with the data, and so does any install of a
+/// slug whose grants nothing vouches for (an orphan an uninstall left before
+/// uninstall dropped them). Other apps' views, one whose slug begins with
+/// this one's included, and core views are never touched; each list keeps
+/// its order. The host's `app_sources` row outranks a record the app could
+/// have forged, and another repository's record never outlives an install
+/// whose own record failed to write.
+#[tokio::test]
+#[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+async fn grants_go_back_only_to_their_own_repository() {
+    use futures_util::FutureExt;
+    let _serial = serial().await;
+    let pg = pg().await;
+    let sb = SecretBox::default();
+    let slug = slug("grants");
+    let (a, b) = (Repo::new("grants-a"), Repo::new("grants-b"));
+    a.commit("a1");
+    b.commit("b1");
+    let script: Shared = Arc::default();
+    let host = mock_host(script.clone()).await;
+    let data = app_data_dir().join(&slug);
+    // What the app host does on the app's first store call.
+    let store = || std::fs::create_dir_all(data.join("pg")).unwrap();
+    let people = Grantees::new(&pg, &slug).await;
+    let a_url = parse_source(&a.url, true).unwrap().url;
+    let b_url = parse_source(&b.url, true).unwrap().url;
+    let owner = || read_data_source(&data).map(|d| d.url);
+    let entries = || {
+        let mut names: Vec<String> = std::fs::read_dir(&data)
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
+    let views = |l: &[&str]| {
+        l.iter()
+            .map(|s| s.replace("<s>", &slug))
+            .collect::<Vec<_>>()
+    };
+    // The member holds both of the app's views and is denied its manage view
+    // over a team grant (once as the console stores it, once typed in other
+    // capitals, which `denies` reads the same); the team holds the work view
+    // and denies a route under the manage view. Beside them: another app
+    // whose slug begins with this one's, and core views.
+    let granted: Held = (
+        views(&["/apps", "/x/<s>", "/x/<s>-two", "/x/<s>/manage"]),
+        views(&[
+            "/x/<s>-two/manage",
+            "/x/<s>/manage",
+            "/teams",
+            "/X/<s>/Manage",
+        ]),
+        views(&["/x/<s>", "/x/<s>-two"]),
+        views(&["/teams", "/x/<s>/manage/fields"]),
+    );
+    let none_of_its: Held = (
+        views(&["/apps", "/x/<s>-two"]),
+        views(&["/x/<s>-two/manage", "/teams"]),
+        views(&["/x/<s>-two"]),
+        views(&["/teams"]),
+    );
+
+    let run = async {
+        let first = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
+            .await
+            .unwrap();
+        assert_eq!(first.grants_removed, 0, "nobody held one");
+        people.set(&pg, &granted).await;
+        store();
+
+        // Kept with the data, and the same repository finds them again.
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::Kept, 0));
+        assert_eq!(people.held(&pg).await, granted, "kept with the data");
+        let again = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
+            .await
+            .unwrap();
+        assert!(again.kept_data);
+        assert_eq!(again.grants_removed, 0);
+        assert_eq!(people.held(&pg).await, granted, "the same repository");
+
+        // Another repository: refused, and the refusal touches no grant.
+        uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        install_app(&pg, &NoCreds, Some(&host), request(&b.url, &slug, None))
+            .await
+            .unwrap_err();
+        assert_eq!(people.held(&pg).await, granted, "a refusal");
+        // Told to wipe the data: installed, and none of A's grants with it.
+        let wiped = install_app(
+            &pg,
+            &NoCreds,
+            Some(&host),
+            request(&b.url, &slug, Some(KeptDataChoice::Wipe)),
+        )
+        .await
+        .unwrap();
+        assert!(wiped.wiped_data);
+        assert_eq!(wiped.grants_removed, 2, "the member and the team");
+        assert_eq!(people.held(&pg).await, none_of_its, "another repository");
+
+        // Told to adopt another repository's data: the data goes over, the
+        // grants do not.
+        people.set(&pg, &granted).await;
+        store();
+        uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        let adopted = install_app(
+            &pg,
+            &NoCreds,
+            Some(&host),
+            request(&a.url, &slug, Some(KeptDataChoice::Adopt)),
+        )
+        .await
+        .unwrap();
+        assert!(adopted.kept_data);
+        assert_eq!(adopted.grants_removed, 2);
+        assert_eq!(people.held(&pg).await, none_of_its, "adopted data");
+
+        // The same repository told to wipe its own data: the data goes, the
+        // grants are its own and stay.
+        people.set(&pg, &granted).await;
+        uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        let rewiped = install_app(
+            &pg,
+            &NoCreds,
+            Some(&host),
+            request(&a.url, &slug, Some(KeptDataChoice::Wipe)),
+        )
+        .await
+        .unwrap();
+        assert!(rewiped.wiped_data);
+        assert_eq!(rewiped.grants_removed, 0);
+        assert_eq!(people.held(&pg).await, granted, "its own, wiped");
+
+        // An app that stored nothing: the record stays alone in its data
+        // directory, and the grants with it — a repair (uninstall, then the
+        // same repository again) finds them.
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 0));
+        assert_eq!(people.held(&pg).await, granted, "nothing stored");
+        assert_eq!(entries(), [DATA_SOURCE_FILE], "the record alone");
+        assert_eq!(owner(), Some(a_url.clone()));
+        let repaired = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
+            .await
+            .unwrap();
+        assert!(!repaired.kept_data && !repaired.wiped_data);
+        assert_eq!(repaired.grants_removed, 0);
+        assert_eq!(people.held(&pg).await, granted, "a repair");
+
+        // A record the running app forged (it can write its own data
+        // directory) names another repository: uninstall keeps the host's
+        // row, so the forgery cannot vouch for B later.
+        let b_src = parse_source(&b.url, true).unwrap();
+        write_data_source(&data, &DataSource::of(&b_src)).unwrap();
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 0));
+        assert_eq!(owner(), Some(a_url.clone()), "the host's row, not the file");
+        let back = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
+            .await
+            .unwrap();
+        assert_eq!(back.grants_removed, 0);
+        assert_eq!(people.held(&pg).await, granted, "after a forged record");
+
+        // An app installed before install wrote the record, that stored
+        // nothing: uninstall writes the record from the source record.
+        std::fs::remove_file(data.join(DATA_SOURCE_FILE)).unwrap();
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 0));
+        assert_eq!(owner(), Some(a_url.clone()), "written from app_sources");
+        assert_eq!(people.held(&pg).await, granted, "an unrecorded install");
+
+        // A record alone is not kept data: another repository installs
+        // fresh, without asking, and none of the grants go with the slug.
+        // Its own record fails to write here (a full disk, say): A's was
+        // removed before the app was placed, so no record is left vouching
+        // for the grants B is given, rather than A's.
+        FAIL_NEXT_INSTALL_RECORD.store(true, std::sync::atomic::Ordering::SeqCst);
+        let other = install_app(&pg, &NoCreds, Some(&host), request(&b.url, &slug, None))
+            .await
+            .unwrap();
+        assert!(!other.kept_data && !other.wiped_data);
+        assert_eq!(other.grants_removed, 2);
+        assert_eq!(people.held(&pg).await, none_of_its, "a record alone");
+        assert_eq!(owner(), None, "no record, rather than A's");
+        // B is granted; uninstalling writes B's record from its row, and B
+        // finds its grants again.
+        people.set(&pg, &granted).await;
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, false)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::None, 0));
+        assert_eq!(owner(), Some(b_url.clone()));
+        let b_again = install_app(&pg, &NoCreds, Some(&host), request(&b.url, &slug, None))
+            .await
+            .unwrap();
+        assert_eq!(b_again.grants_removed, 0);
+        assert_eq!(people.held(&pg).await, granted, "B's own");
+
+        // A wipe takes them with the data, and the record with it.
+        people.set(&pg, &granted).await;
+        store();
+        let left = uninstall_app(&pg, &sb, Some(&host), &slug, true)
+            .await
+            .unwrap();
+        assert_eq!((left.data, left.grants_removed), (DataLeft::Wiped, 2));
+        assert_eq!(people.held(&pg).await, none_of_its, "wiped");
+        assert!(!data.exists());
+
+        // Grants an uninstall left behind before it dropped them (the
+        // upgrade): no record vouches for them, and an install drops them.
+        people.set(&pg, &granted).await;
+        let fresh = install_app(&pg, &NoCreds, Some(&host), request(&a.url, &slug, None))
+            .await
+            .unwrap();
+        assert!(!fresh.kept_data && !fresh.wiped_data);
+        assert_eq!(fresh.grants_removed, 2);
+        assert_eq!(people.held(&pg).await, none_of_its, "an orphan");
+        // Nothing left to remove: a second sweep changes no row.
+        assert_eq!(forget_app_grants(&pg, &slug).await, Ok(0));
+    };
+    let outcome = std::panic::AssertUnwindSafe(run).catch_unwind().await;
+    FAIL_NEXT_INSTALL_RECORD.store(false, std::sync::atomic::Ordering::SeqCst);
+    people.drop_rows(&pg).await;
+    let _ = uninstall_app(&pg, &sb, Some(&host), &slug, true).await;
+    forget(&pg, &slug).await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 /// An install holds its slug like an update and an uninstall do: one racing

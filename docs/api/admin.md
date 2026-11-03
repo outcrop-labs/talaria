@@ -123,9 +123,9 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `view:/apps` | — | `{apps, catalog, updates}` | 200, 403 | — |
-| POST | `admin` | [body](#post-apiadminapps-body) | `{slug, sha, keptData, wipedData, build, buildError}` | 200, 400, 409 | audit |
+| POST | `admin` | [body](#post-apiadminapps-body) | `{slug, sha, keptData, wipedData, grantsRemoved, build, buildError}` | 200, 400, 409 | audit |
 | PUT | `admin` | [body](#put-apiadminapps-body) | `{ok}` | 200, 400, 404 | audit |
-| DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok, data}` | 200, 400 | audit |
+| DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok, data, grantsRemoved}` | 200, 400 | audit |
 
 ### POST `/api/admin/apps` body
 

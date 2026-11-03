@@ -42,7 +42,8 @@ import type { StreamingTransport } from './harness/transport'
 import type { LoopEdges, ToolOutcome } from './harness/run'
 import type { OrgToolCall } from './app-org-tools'
 import type { AppMcpCallFacts } from './app-mcp'
-import { withApp } from './app-scope'
+import type { ModelSpec, ResolvedHarnessModel } from './harness/model'
+import { appInScope, withApp } from './app-scope'
 
 /** What an app may say about one run. Everything else — who is calling, where
  *  the spend goes, the guard, the recorders — the host decides. */
@@ -329,6 +330,46 @@ export function appHarnessRunner(binding: AppHarnessBinding): AppHarnessRunner {
   }
 }
 
+// ── A slot named from app code ──────────────────────────────────────────────
+
+/** `spec`, keeping its `slot` only when it is the calling app's own:
+ *  `app:<slug>/…`, the app in scope being the host's answer (`appInScope`),
+ *  never the app's. The bound runner stamps the slot itself; the free probe
+ *  and the free runner take a spec from app code as written, and a slot is
+ *  the model an admin set for one app's harness — another app's is not this
+ *  one's to run on, or to read. Outside every app scope no slot is anyone's.
+ *  A slot dropped here is said once, in the host's log.
+ *
+ *  ONE READ, INTO AN OBJECT THE HOST BUILT. The spec is the app's object: a
+ *  getter or a Proxy could show its own slot to this check and another app's
+ *  to the resolver that reads it afterwards. Every field is read once, here,
+ *  into a plain copy (the chain into a fresh array), and only the copy goes
+ *  on — never `spec` itself. */
+export function ownSlotOnly(spec: ModelSpec, warn: (message: string) => void, who: string): ModelSpec {
+  if (!spec || typeof spec !== 'object') return spec
+  const { slot, chain, ...fields } = { ...spec }
+  const copy: ModelSpec = { ...fields }
+  if (chain !== undefined) copy.chain = Array.isArray(chain) ? [...chain] : chain
+  if (slot === undefined) return copy
+  const app = appInScope()
+  if (app !== null && typeof slot === 'string' && slot.startsWith(`app:${app}/`)) return { ...copy, slot }
+  warn(
+    `[sdk] ${who} named the slot ${JSON.stringify(slot)}, which is not ${app ? `app "${app}"'s own (app:${app}/<harness id>)` : 'an app\'s: no app is running here'}; it is ignored`,
+  )
+  return copy
+}
+
+/** THE FREE PROBE, as the SDK exports it (`resolveHarnessModel`): the chain
+ *  with no model call, the slot held to the calling app's own
+ *  (`ownSlotOnly`). Edges are injected for tests. */
+export async function resolveHarnessModelForApp(
+  spec: ModelSpec,
+  edges: { resolve?: (spec: ModelSpec) => Promise<ResolvedHarnessModel | null>; warn?: (message: string) => void } = {},
+): Promise<ResolvedHarnessModel | null> {
+  const resolve = edges.resolve ?? (await import('./harness/model')).resolveHarnessModel
+  return resolve(ownSlotOnly(spec, edges.warn ?? warnOnce, 'resolveHarnessModel'))
+}
+
 // ── The free runner, as the SDK exports it ──────────────────────────────────
 
 /** `RunContext` without `deps` or `loop` — what the SDK's free `runHarness`
@@ -343,7 +384,9 @@ export type AppRunContext = Omit<RunContext, 'deps' | 'loop'>
  *     an app hands over replaces the guard, the transport or the recorders
  *     (`@talaria/sdk/testing` runs a harness against scripted replies);
  *   - pinning a fleet agent logs a warning, because nothing here checks the
- *     caller may use that agent — `ctx.harness.run` does. */
+ *     caller may use that agent — `ctx.harness.run` does;
+ *   - a `model.slot` that is not the calling app's own is dropped
+ *     (`ownSlotOnly`): no app runs on another app's model setting. */
 export async function runHarnessForApp<I, O>(
   def: HarnessDefinition<I, O>,
   input: I,
@@ -366,5 +409,9 @@ export async function runHarnessForApp<I, O>(
       )
     }
   }
-  return e.run(def, input, rest)
+  // A slot the definition names counts only when it is this app's own.
+  // `def.model` is read once, and the host's copy replaces it.
+  const model = def?.model
+  const owned = model ? { ...def, model: ownSlotOnly(model, e.warn, `runHarness("${def.id}")`) } : def
+  return e.run(owned, input, rest)
 }
