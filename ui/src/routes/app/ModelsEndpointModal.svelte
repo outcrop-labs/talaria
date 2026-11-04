@@ -1,6 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Generating from '@/components/ui/Generating.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
@@ -15,6 +16,9 @@
   import ModelsModelAdder from './ModelsModelAdder.svelte'
   import ModelsEffortRow from './ModelsEffortRow.svelte'
   import ModelsPrivacyRow from './ModelsPrivacyRow.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import { PRICING_QUERY_KEYS, UNPRICED_ANCHOR, clearPrice, includedBody, setPrice, settingLabel } from '@/components/observability/pricing'
+  import { toastError } from '@/lib/toast.svelte'
   import { describeAffected } from './models'
 
   // The provider's full surface: models (add/remove with catalog search), pricing,
@@ -34,6 +38,26 @@
       qc.invalidateQueries({ queryKey: ['fleet-endpoints'] }),
       qc.invalidateQueries({ queryKey: ['gateway-models'] }),
     ])
+
+  // A FLAT-RATE PLAN (a coding plan, a subscription) is not a per-token
+  // bill, and a public catalog cannot know the account is on one — a Z.ai
+  // Coding Plan's GLM ids all match OpenRouter's pay-as-you-go entries. Ticking
+  // a model here prices its calls at $0, labelled "included" (the cost page's
+  // unpriced panel sets the same thing for usage nothing priced).
+  const included = $derived(new Set((ep.adminPrices ?? []).filter((p) => p.mode === 'included').map((p) => p.model)))
+  let planBusy = $state<string | null>(null)
+  const setIncluded = async (model: string, on: boolean) => {
+    planBusy = model
+    try {
+      if (on) await setPrice(includedBody({ endpoint: ep.name, model }, ''))
+      else await clearPrice({ endpoint: ep.name, model })
+      await Promise.all([refresh(), ...PRICING_QUERY_KEYS.map((queryKey) => qc.invalidateQueries({ queryKey: [...queryKey] }))])
+    } catch (e) {
+      toastError('Could not change plan pricing', e)
+    } finally {
+      planBusy = null
+    }
+  }
 
   const saveKey = async (value: string | null) => {
     savingKey = true
@@ -207,14 +231,52 @@
             {#each ep.providerPrices ?? [] as row (`${row.model}:${row.variant}`)}
               <div class="flex items-baseline gap-2 font-mono text-xs">
                 <span class="min-w-0 flex-1 truncate text-fg">{row.model}{row.variant ? ` · ${row.variant}` : ''}</span>
-                <span class="shrink-0 text-muted">{row.in ?? '—'} / {row.out ?? '—'}</span>
+                <span class="shrink-0 text-muted" title="in / out{row.cacheRead != null ? ' · cache read' : ''}">
+                  {row.in ?? '—'} / {row.out ?? '—'}{row.cacheRead != null ? ` · ${row.cacheRead}` : ''}
+                </span>
                 <span class="shrink-0 text-muted">{row.source}</span>
                 <span class="shrink-0 text-muted">{row.fetchedAt}</span>
               </div>
             {/each}
           </div>
         {/if}
-        <p class="mt-1 text-xs text-muted">Read-only. OpenRouter prices differ by the endpoint that served the call, so spend uses the provider's reported charge, not a single rate.</p>
+        {#if (ep.adminPrices ?? []).some((p) => p.mode === 'manual')}
+          <div class="mt-3 space-y-1.5" data-testid="endpoint-admin-prices">
+            {#each (ep.adminPrices ?? []).filter((p) => p.mode === 'manual') as row (row.model)}
+              <div class="flex items-baseline gap-2 font-mono text-xs">
+                <span class="min-w-0 flex-1 truncate text-fg">{row.model}</span>
+                <Chip>manual</Chip>
+                <span class="shrink-0 text-muted">{settingLabel(row)}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+        {#if ep.models.length > 0}
+          <div class="mt-3" data-testid="endpoint-plan-models">
+            <div class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+              Included in a plan
+              <InfoTip text="For a flat-rate plan or a free tier: calls to a ticked model are priced at $0 and labelled included, even where a pay-as-you-go price is published. The provider's own charge, when it sends one, still wins." />
+            </div>
+            <div class="flex flex-wrap gap-x-4 gap-y-1">
+              {#each ep.models as model (model)}
+                <Checkbox
+                  checked={included.has(model)}
+                  disabled={planBusy !== null}
+                  label={model}
+                  class="font-mono"
+                  onChange={(on) => void setIncluded(model, on)}
+                />
+              {/each}
+            </div>
+          </div>
+        {/if}
+        <p class="mt-1 text-xs text-muted">
+          Published prices are read-only: spend uses the provider's reported charge first, then the published price
+          (OpenRouter's per-endpoint price when the call names the endpoint that served it). Usage nothing prices is
+          listed, with the reason, under
+          <a href={`/observability/cost#${UNPRICED_ANCHOR}`} class="text-accent underline-offset-2 hover:underline">Observability · Cost</a>,
+          where an admin can set a price or mark a model included in a plan.
+        </p>
       </section>
     {/if}
 

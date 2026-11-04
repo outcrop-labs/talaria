@@ -98,55 +98,92 @@ pub struct SpendWindow {
     pub unpriced_tokens: i64,
 }
 
-// The priced view. Local rows are $0. A provider-reported dollar amount on the
-// row wins — that is the charge, including whichever upstream endpoint served
-// an OpenRouter call. Otherwise a cloud row is derived from `provider_prices`
-// (the provider's published rate, stored with source and fetched-at). Editable
-// `model_prices` / `price_in_per_mtok` / `auto_prices` are not read.
+// The priced view — THE PRICE DECISION, one CASE, first match wins:
 //
-// OpenRouter publishes a different price per endpoint and that price moves.
-// A derived fallback there requires the variant that served the call. A
-// model-level published price (variant '') is a fallback only for providers
-// that do not route across priced endpoints.
+//   1. local                         $0                          'local'
+//   2. the provider's own charge     provider_cost               'provider'
+//   3. an admin's "included"         $0, labelled                'included'
+//   4. a published price             provider_prices             'derived'
+//   5. an admin's manual rate        model_price_overrides       'manual'
+//   6. nothing                       null — unpriced, and the alert counts it
+//
+// 2 is the charge itself (OpenRouter's `usage.cost`, or a `/generation`
+// backfill), so nothing an admin types can contradict it. 3 beats 4 because
+// a public catalog cannot know the account pays a flat plan: a Z.ai Coding
+// Plan's GLM ids all match OpenRouter's pay-as-you-go GLM entries, and
+// pricing them there overstates a subscription. 4 beats 5 because a manual
+// rate is the fallback for what no source publishes, never a second card
+// that drifts from the provider's own number (the reason ef2948a9 stopped
+// reading the editable `model_prices` / `price_in_per_mtok` / `auto_prices`,
+// which this view still does not read).
+//
+// A published price is the serving variant's when the row names one (an
+// OpenRouter endpoint), else the model-level price (variant '') — for EVERY
+// provider, OpenRouter included. That last clause used to exclude OpenRouter
+// ("its catalog price is not the endpoint that served the call"), which left
+// every OpenRouter row without a variant unpriced for good: main's per-turn
+// agent rows never carry one, nor does a streamed call cut off before its
+// usage chunk. OpenRouter's own `/models` price for the model is the
+// provider's published number; it is the best known price for a call whose
+// serving endpoint nobody recorded, and the exact variant still wins when
+// there is one.
+//
+// Cache tokens bill at the price's own cache rates when it carries them
+// (OpenRouter publishes `input_cache_write` / `input_cache_read`), else at
+// the input rate times the multipliers. The admin row joins on the ledger's
+// own endpoint text ('' for a row booked with none), so it prices history
+// whose endpoint was deleted or never recorded.
 //
 // Multipliers per input KIND are VALUES interpolated into this text, not
 // binds: the view is spliced into larger statements whose callers bind their
 // own $1/$2.
 static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let rate = |input: &str, output: &str, write: &str, read: &str| {
+        format!(
+            "(u.prompt_tokens * {input} \
+             + u.cache_write_tokens * coalesce({write}, {input} * {CACHE_WRITE_MULTIPLIER}) \
+             + u.cache_read_tokens * coalesce({read}, {input} * {CACHE_READ_MULTIPLIER}) \
+             + u.completion_tokens * {output}) / 1e6"
+        )
+    };
+    let published = rate("pp.in_tok", "pp.out_tok", "pp.cw_tok", "pp.cr_tok");
+    let manual = rate(
+        "o.price_in_per_mtok",
+        "o.price_out_per_mtok",
+        "o.price_cache_write_per_mtok",
+        "o.price_cache_read_per_mtok",
+    );
     format!(
         "select u.*, \
         case \
           when u.endpoint_class = 'local' then 0 \
           when u.provider_cost is not null then u.provider_cost \
-          when u.endpoint_class = 'cloud' \
-               and pp.in_tok is not null and pp.out_tok is not null then \
-            ((u.prompt_tokens + u.cache_write_tokens * {CACHE_WRITE_MULTIPLIER} + u.cache_read_tokens * {CACHE_READ_MULTIPLIER}) \
-           * pp.in_tok + u.completion_tokens * pp.out_tok) / 1e6 \
+          when u.endpoint_class = 'cloud' and o.mode = 'included' then 0 \
+          when u.endpoint_class = 'cloud' and pp.in_tok is not null then {published} \
+          when u.endpoint_class = 'cloud' and o.mode = 'manual' then {manual} \
           else null \
         end as cost, \
         case \
           when u.endpoint_class = 'local' then 'local' \
           when u.provider_cost is not null then 'provider' \
-          when u.endpoint_class = 'cloud' \
-               and pp.in_tok is not null and pp.out_tok is not null then 'derived' \
+          when u.endpoint_class = 'cloud' and o.mode = 'included' then 'included' \
+          when u.endpoint_class = 'cloud' and pp.in_tok is not null then 'derived' \
+          when u.endpoint_class = 'cloud' and o.mode = 'manual' then 'manual' \
           else null \
         end as cost_basis \
       from usage_events u \
       left join llm_endpoints e on e.name = u.endpoint \
+      left join model_price_overrides o \
+        on o.endpoint = coalesce(u.endpoint, '') and o.model = u.llm_model \
       left join lateral ( \
-        select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok \
+        select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok, \
+               p.price_cache_write_per_mtok as cw_tok, p.price_cache_read_per_mtok as cr_tok \
         from provider_prices p \
         where p.endpoint_id = e.id \
           and p.model = u.llm_model \
-          and ( \
-            (coalesce(u.cost_variant, '') <> '' and p.variant = u.cost_variant) \
-            or ( \
-              coalesce(u.cost_variant, '') = '' \
-              and p.variant = '' \
-              and e.provider is distinct from 'openrouter' \
-            ) \
-          ) \
-        order by p.fetched_at desc \
+          and (p.variant = '' or p.variant = coalesce(u.cost_variant, '')) \
+          and p.price_in_per_mtok is not null and p.price_out_per_mtok is not null \
+        order by (p.variant <> '') desc, p.fetched_at desc \
         limit 1 \
       ) pp on true"
     )
@@ -154,6 +191,14 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 
 /// The priced view as &str, for format! interpolation.
 fn priced() -> &'static str {
+    priced_view()
+}
+
+/// The priced view's SQL — every usage_events column plus `cost` and
+/// `cost_basis` — for a caller that wraps it in its own statement (the
+/// unpriced list, the live tests). One text, so nothing re-derives the price
+/// decision.
+pub fn priced_view() -> &'static str {
     &PRICED_STR
 }
 
@@ -297,6 +342,9 @@ pub struct CostTotals {
     pub estimated_share: serde_json::Number,
     pub split: CostSplit,
     pub unpriced_cloud_tokens: i64,
+    /// Cloud tokens priced at $0 because an admin marked the model included
+    /// in a plan — counted as priced, and labelled where spend is shown.
+    pub included_cloud_tokens: i64,
     /// Provider activity/cost-report total for the last 30 days, when a
     /// provider returned one. The month tile uses this number.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -332,6 +380,9 @@ pub struct CostPerModel {
     endpoint_class: Option<String>,
     tokens: i64,
     cost: Option<serde_json::Number>,
+    /// Tokens an admin marked included in a plan — priced at $0, and said so
+    /// beside the figure, never a silent zero.
+    included_tokens: i64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -411,18 +462,21 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
     let unpriced = async {
         let sql = format!(
             "with priced as ({priced}) \
-             select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens \
+             select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
+                             filter (where cost is null), 0)::bigint as tokens, \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
+                             filter (where cost_basis = 'included'), 0)::bigint as included \
              from priced where created_at > now() - make_interval(days => $1) \
-               and endpoint_class = 'cloud' and cost is null"
+               and endpoint_class = 'cloud'"
         );
-        let row: (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        let row: (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(30)
             .fetch_one(pg)
             .await?;
         Ok::<_, sqlx::Error>(row)
     };
-    // (llmModel, endpointClass, tokens, cost)
-    type PerModelRow = (Option<String>, Option<String>, i64, Option<f64>);
+    // (llmModel, endpointClass, tokens, cost, includedTokens)
+    type PerModelRow = (Option<String>, Option<String>, i64, Option<f64>, i64);
     // (agentModel, prompt, completion, generations, last_ms, cost, localShare)
     type PerAgentRow = (Option<String>, i32, i32, i32, Option<i64>, f64, Option<f64>);
 
@@ -431,7 +485,9 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
             "with priced as ({priced}) \
              select llm_model as \"llmModel\", endpoint_class as \"endpointClass\", \
                     coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens, \
-                    sum(cost)::float8 as cost \
+                    sum(cost)::float8 as cost, \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
+                             filter (where cost_basis = 'included'), 0)::bigint as included \
              from priced where created_at > now() - make_interval(days => $1) \
              group by llm_model, endpoint_class \
              order by (endpoint_class = 'local') desc nulls last, tokens desc"
@@ -442,12 +498,15 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
             .await?;
         Ok::<_, sqlx::Error>(
             rows.into_iter()
-                .map(|(llm_model, endpoint_class, tokens, cost)| CostPerModel {
-                    llm_model,
-                    endpoint_class,
-                    tokens,
-                    cost: cost.map(js_num),
-                })
+                .map(
+                    |(llm_model, endpoint_class, tokens, cost, included_tokens)| CostPerModel {
+                        llm_model,
+                        endpoint_class,
+                        tokens,
+                        cost: cost.map(js_num),
+                        included_tokens,
+                    },
+                )
                 .collect(),
         )
     };
@@ -532,7 +591,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
         per_day
     );
     let (today, week, month) = (today?, week?, month?);
-    let (est, split, (unpriced,), per_model, per_agent, per_day) =
+    let (est, split, (unpriced, included), per_model, per_agent, per_day) =
         (est?, split?, unpriced?, per_model?, per_agent?, per_day?);
     let activity: (i32, f64, Option<String>, Option<String>, Option<f64>) = sqlx::query_as(
         "select count(*)::int, coalesce(sum(cost_usd), 0)::float8, max(source), \
@@ -583,6 +642,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
                 other: split.2,
             },
             unpriced_cloud_tokens: unpriced,
+            included_cloud_tokens: included,
             provider_reported,
         },
         per_model,
@@ -731,19 +791,81 @@ fn json_f64(v: Option<&Value>) -> Option<f64> {
     }
 }
 
-/// Whether a published price row may price this call. A known serving variant
-/// matches only that row. With no variant, a model-level published price is a
-/// derived fallback — except OpenRouter, whose catalog price is not the
-/// endpoint that served the call.
-pub fn published_price_applies(
-    provider: &str,
-    served_variant: Option<&str>,
-    price_variant: &str,
-) -> bool {
-    if let Some(served) = served_variant.filter(|v| !v.is_empty()) {
-        return price_variant == served;
+/// Whether a published price row may price this call: the serving variant's
+/// own row when the call names one, and the model-level row (variant '') for
+/// any call — for every provider, OpenRouter included (the priced view's
+/// comment says why). The view's lateral join is this predicate, ordered so
+/// the exact variant wins.
+pub fn published_price_applies(served_variant: Option<&str>, price_variant: &str) -> bool {
+    price_variant.is_empty() || served_variant.is_some_and(|v| !v.is_empty() && v == price_variant)
+}
+
+/// Where a row's dollars came from — `cost_basis` in the priced view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostBasis {
+    Local,
+    Provider,
+    Included,
+    Derived,
+    Manual,
+}
+
+impl CostBasis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CostBasis::Local => "local",
+            CostBasis::Provider => "provider",
+            CostBasis::Included => "included",
+            CostBasis::Derived => "derived",
+            CostBasis::Manual => "manual",
+        }
     }
-    price_variant.is_empty() && provider != "openrouter"
+}
+
+/// An admin's pricing decision for one (endpoint, model) — the
+/// `model_price_overrides.mode` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminPricing {
+    Manual,
+    Included,
+}
+
+/// The facts the price decision reads off one row and its joins.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PriceFacts<'a> {
+    /// `endpoint_class`: Some("local"), Some("cloud"), or None (unattributed).
+    pub class: Option<&'a str>,
+    pub provider_cost: bool,
+    pub admin: Option<AdminPricing>,
+    /// The row's `cost_variant`.
+    pub served_variant: Option<&'a str>,
+    /// The variants with a complete published price for this endpoint+model.
+    pub published_variants: &'a [&'a str],
+}
+
+/// THE PRICE DECISION as a value — the CASE in the priced view, first match
+/// wins. None is an unpriced row. The live test in talaria-price-oracle runs
+/// the SQL over the same cases and holds the two to one answer.
+pub fn price_basis(f: &PriceFacts<'_>) -> Option<CostBasis> {
+    if f.class == Some("local") {
+        return Some(CostBasis::Local);
+    }
+    if f.provider_cost {
+        return Some(CostBasis::Provider);
+    }
+    if f.class != Some("cloud") {
+        return None;
+    }
+    if f.admin == Some(AdminPricing::Included) {
+        return Some(CostBasis::Included);
+    }
+    if f.published_variants
+        .iter()
+        .any(|v| published_price_applies(f.served_variant, v))
+    {
+        return Some(CostBasis::Derived);
+    }
+    (f.admin == Some(AdminPricing::Manual)).then_some(CostBasis::Manual)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -907,11 +1029,16 @@ fn nudge_if_unpriced(pg: &PgPool, endpoint: &str, model: &str) {
     }
     let (pg, endpoint, model) = (pg.clone(), endpoint.to_string(), model.to_string());
     tokio::spawn(async move {
+        // Any published price the view would use (it falls back to the
+        // model-level row for every provider now), or an admin's decision.
         let priced = sqlx::query(
             "select 1 as ok from provider_prices p \
              join llm_endpoints e on e.id = p.endpoint_id \
              where e.name = $1 and p.model = $2 \
-               and (p.variant <> '' or e.provider is distinct from 'openrouter')",
+               and p.price_in_per_mtok is not null and p.price_out_per_mtok is not null \
+             union all \
+             select 1 from model_price_overrides o where o.endpoint = $1 and o.model = $2 \
+             limit 1",
         )
         .bind(&endpoint)
         .bind(&model)
@@ -1210,19 +1337,89 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_without_a_serving_variant_does_not_take_a_model_level_price() {
-        assert!(!published_price_applies("openrouter", None, ""));
-        assert!(published_price_applies(
-            "openrouter",
-            Some("Infermatic"),
-            "Infermatic"
-        ));
-        assert!(!published_price_applies(
-            "openrouter",
-            Some("Infermatic"),
-            "OpenAI"
-        ));
-        assert!(published_price_applies("openai", None, ""));
+    fn a_model_level_price_applies_to_any_call_and_a_variant_only_to_its_own() {
+        // No serving variant: the model-level row, OpenRouter's included —
+        // main's per-turn rows and a cut-off stream never carry one.
+        assert!(published_price_applies(None, ""));
+        assert!(published_price_applies(Some(""), ""));
+        assert!(!published_price_applies(None, "Infermatic"));
+        // A served variant: its own row, and the model-level fallback.
+        assert!(published_price_applies(Some("Infermatic"), "Infermatic"));
+        assert!(published_price_applies(Some("Infermatic"), ""));
+        assert!(!published_price_applies(Some("Infermatic"), "OpenAI"));
+    }
+
+    #[test]
+    fn the_price_decision_runs_provider_included_published_manual_in_that_order() {
+        let cloud = |admin, published: &'static [&'static str]| PriceFacts {
+            class: Some("cloud"),
+            admin,
+            published_variants: published,
+            ..PriceFacts::default()
+        };
+        // Local is $0 whatever else is true.
+        let local = PriceFacts {
+            class: Some("local"),
+            provider_cost: true,
+            ..PriceFacts::default()
+        };
+        assert_eq!(price_basis(&local), Some(CostBasis::Local));
+        // The provider's charge beats every admin decision.
+        let charged = PriceFacts {
+            provider_cost: true,
+            ..cloud(Some(AdminPricing::Included), &[""])
+        };
+        assert_eq!(price_basis(&charged), Some(CostBasis::Provider));
+        // Included beats a published price: a catalog cannot know the plan.
+        assert_eq!(
+            price_basis(&cloud(Some(AdminPricing::Included), &[""])),
+            Some(CostBasis::Included)
+        );
+        // A published price beats a manual rate: manual is the fallback.
+        assert_eq!(
+            price_basis(&cloud(Some(AdminPricing::Manual), &[""])),
+            Some(CostBasis::Derived)
+        );
+        assert_eq!(
+            price_basis(&cloud(Some(AdminPricing::Manual), &[])),
+            Some(CostBasis::Manual)
+        );
+        // Nothing at all: unpriced.
+        assert_eq!(price_basis(&cloud(None, &[])), None);
+        // A variant-only price does not cover a call that names another.
+        let other_variant = PriceFacts {
+            served_variant: Some("OpenAI"),
+            ..cloud(None, &["Infermatic"])
+        };
+        assert_eq!(price_basis(&other_variant), None);
+        // An unattributed row (no class) is never priced or counted.
+        let unattributed = PriceFacts {
+            class: None,
+            published_variants: &[""],
+            ..PriceFacts::default()
+        };
+        assert_eq!(price_basis(&unattributed), None);
+    }
+
+    #[test]
+    fn the_priced_view_text_carries_the_decision_in_order() {
+        let sql = priced_view();
+        let at = |needle: &str| {
+            sql.find(needle)
+                .unwrap_or_else(|| panic!("the view lost `{needle}`"))
+        };
+        // The cost CASE: provider, included, published, manual — in order.
+        let provider = at("when u.provider_cost is not null then u.provider_cost");
+        let included = at("o.mode = 'included' then 0");
+        let published = at("pp.in_tok is not null then (");
+        let manual = at("o.mode = 'manual' then (");
+        assert!(provider < included && included < published && published < manual);
+        // The OpenRouter exclusion is gone; the exact variant sorts first.
+        assert!(!sql.contains("is distinct from 'openrouter'"));
+        assert!(sql.contains("order by (p.variant <> '') desc, p.fetched_at desc"));
+        // Cache tokens bill at the published cache rates before the multipliers.
+        assert!(sql.contains("coalesce(pp.cw_tok, pp.in_tok * 1.25)"));
+        assert!(sql.contains("coalesce(pp.cr_tok, pp.in_tok * 0.1)"));
     }
 
     #[test]

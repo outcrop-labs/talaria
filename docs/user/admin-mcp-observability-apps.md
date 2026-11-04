@@ -51,7 +51,7 @@ spend today, the host (CPU and the fullest mount), the audit pulse, and any aler
 | :--- | :--- |
 | **Compute** | Self-hosted usage: tokens today and over 30 days, generations, which backends served them |
 | **Host** | The machine: CPU and load, memory, swap, disk per mount (fullest first), and the processes using them. Refreshes every few seconds. A container deploy shows the host, not the container, once the host mounts are in place |
-| **Cost** | Tokens per day (last 14), spend by agent (30 days), and the self-hosted vs cloud split |
+| **Cost** | Tokens per day (last 14), spend by agent (30 days), the self-hosted vs cloud split, and — for admins — the unpriced models and their fixes ([When usage has no price](./admin-models.md#when-usage-has-no-price)) |
 | **Audit** | The record, filterable by kind |
 | **Alerts** | What needs a person: agents down, gateway trouble, unpriced ledger, stuck work, a filling disk or a box out of memory |
 

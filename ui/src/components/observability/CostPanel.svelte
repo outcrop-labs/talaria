@@ -12,11 +12,17 @@
   import { fade, slide } from '@/lib/motion'
   import { agentLabel, formatCost, formatTokens, useCost, type CostTotals } from '@/lib/cost.svelte'
   import SplitPanel from './SplitPanel.svelte'
+  import UnpricedPanel from './UnpricedPanel.svelte'
+  import { useSession } from '@/lib/session'
   import DailyBars from './DailyBars.svelte'
 
   // The token ledger: every agent generation (1:1 chat + channel replies) lands in
   // usage_events — real gateway-reported counts, or char-based estimates (~).
   const costQuery = useCost()
+  // Admins get the unpriced panel (the fix is theirs to make); everyone else
+  // keeps the one-line note.
+  const session = useSession()
+  const isAdmin = $derived(session.data?.role === 'admin')
   const data = $derived(costQuery.data)
   const t = $derived(data?.totals)
   const perAgent = $derived(data?.perAgent ?? [])
@@ -126,18 +132,21 @@
         <StatCard
           label="Cloud spend · 30 days"
           value={formatCost(t?.month.cost ?? 0)}
-          sub={t?.providerReported
+          sub={(t?.providerReported
             ? `${t.providerReported.source}${t.providerReported.stale ? ' (stale)' : ''}${t.providerReported.fetchedAt ? ` · ${t.providerReported.fetchedAt}` : ''}`
-            : `today ${formatCost(t?.today.cost ?? 0)} · ${t?.month.generations ?? 0} generations`}
+            : `today ${formatCost(t?.today.cost ?? 0)} · ${t?.month.generations ?? 0} generations`) +
+            ((t?.includedCloudTokens ?? 0) > 0 ? ` · ${formatTokens(t!.includedCloudTokens!)} included in a plan` : '')}
         />
       </div>
 
       <!-- Missing pricing is attention (gold), not failure — orange stays
            reserved for real failures (spec §1 semantics). -->
-      {#if (t?.unpricedCloudTokens ?? 0) > 0}
+      {#if isAdmin}
+        <UnpricedPanel />
+      {:else if (t?.unpricedCloudTokens ?? 0) > 0}
         <p transition:slide={{ duration: 150 }} class="text-xs text-warning">
-          {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no provider-reported charge and no published
-          price for the endpoint that served them.
+          {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no provider-reported charge, no published
+          price and no price an admin set.
         </p>
       {/if}
 
@@ -197,9 +206,9 @@
         </p>
       {/if}
       <p class="text-xs text-muted">
-        Dollars are the provider's reported charge when they send one. Otherwise they are derived from that
-        provider's published price and labeled as such — never an editable rate. OpenRouter's charge follows the
-        endpoint that served the call.
+        Dollars are the provider's reported charge when they send one. Otherwise they come from the provider's
+        published price — the serving endpoint's own on OpenRouter when the call names it — and, where nothing is
+        published, from a price an admin set or their note that the model is included in a plan ($0, labelled).
       </p>
     {/if}
     </Materialize>
