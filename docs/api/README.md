@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-363 routes across 24 groups.
+364 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -31,7 +31,7 @@
 | [`research`](./research.md) | Cited research reports and their conversations. | 6 |
 | [`secrets`](./secrets.md) | The sealed-secrets vault: folders, shares, reveal, relay. | 7 |
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
-| [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 12 |
+| [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 13 |
 | [`teams`](./teams.md) | Teams and their members. | 6 |
 | [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 20 |
 

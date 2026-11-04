@@ -77,6 +77,7 @@ mod sender_identity_live;
 mod session_overview_live;
 mod streamed_at_liveness;
 mod subagent_events_live;
+mod task_move_live;
 mod task_refs_live;
 mod teams_move_live;
 mod ticket_threads_live;

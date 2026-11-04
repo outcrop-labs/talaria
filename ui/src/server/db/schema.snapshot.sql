@@ -1442,6 +1442,12 @@ CREATE TABLE public.task_dependencies (
     depends_on_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.task_ref_aliases (
+    board_id uuid NOT NULL,
+    ticket_no integer NOT NULL,
+    task_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.task_watchers (
     task_id uuid NOT NULL,
     watcher text NOT NULL,
@@ -2068,6 +2074,8 @@ ALTER TABLE ONLY public.task_coding_pins
     ADD CONSTRAINT task_coding_pins_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
+ALTER TABLE ONLY public.task_ref_aliases
+    ADD CONSTRAINT task_ref_aliases_pkey PRIMARY KEY (board_id, ticket_no);
 ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_pkey PRIMARY KEY (task_id, watcher);
 ALTER TABLE ONLY public.task_workchain_edges
@@ -2230,6 +2238,7 @@ CREATE INDEX skills_index_entries_rank_idx ON public.skills_index_entries USING 
 CREATE INDEX skills_index_entries_search_idx ON public.skills_index_entries USING gin (search);
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
 CREATE INDEX task_coding_pins_account_idx ON public.task_coding_pins USING btree (account_id);
+CREATE INDEX task_ref_aliases_task_idx ON public.task_ref_aliases USING btree (task_id);
 CREATE INDEX task_workchain_edges_from ON public.task_workchain_edges USING btree (workchain_id, from_step);
 CREATE INDEX task_workchain_edges_to ON public.task_workchain_edges USING btree (workchain_id, to_step);
 CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_steps USING btree (task_id);
@@ -2575,6 +2584,10 @@ ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_depends_on_id_fkey FOREIGN KEY (depends_on_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_ref_aliases
+    ADD CONSTRAINT task_ref_aliases_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_ref_aliases
+    ADD CONSTRAINT task_ref_aliases_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_workchain_edges
