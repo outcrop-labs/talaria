@@ -3,11 +3,16 @@
   import Modal from '@/components/ui/Modal.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { Square } from '@lucide/svelte'
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import type { TabItem } from '@/components/ui/tabs'
+  import { fromLedger, runIsLive, type LedgerRow } from '@/lib/agent-checkpoints'
   import { getJson } from '@/lib/fetch-json'
-  import { useStopWorkSession, useWorkSession } from '@/lib/work-session.svelte'
+  import { useStopWorkSession, useWorkSession, useWorkSessionHistory } from '@/lib/work-session.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { framesFromTranscript, splitWatch, type WatchFrame } from '@/lib/work-watch'
+  import AgentCheckpoints from './AgentCheckpoints.svelte'
   import WorkWatch from './WorkWatch.svelte'
 
   // The run-detail modal: the full-insight view of a work session, one pane
@@ -39,7 +44,7 @@
     focus?: 'agent' | 'turns'
   } = $props()
 
-  type Tab = 'agent' | 'turns' | 'resources'
+  type Tab = 'agent' | 'turns' | 'checkpoints' | 'resources'
   // svelte-ignore state_referenced_locally -- reason: seeded from the opener; the effect below re-seeds when the run changes
   let tab = $state<Tab>(focus)
   // A new run opens where the caller asked. Tab switches stay until the run
@@ -124,6 +129,36 @@
     liveFrames = []
   })
 
+  const qc = useQueryClient()
+  const history = useWorkSessionHistory(() => taskId)
+  const runState = $derived(history.data?.sessions.find((s) => s.runId === runId)?.state)
+  const ledger = createQuery(() => ({
+    queryKey: ['run-checkpoints', runId],
+    enabled: open && tab === 'checkpoints',
+    refetchInterval: 5_000,
+    queryFn: () => getJson<{ checkpoints: LedgerRow[] }>(`/api/runs/${runId}/checkpoints`),
+  }))
+  // A refetch of a query with no data resets it to pending and clears its
+  // error, so the poll would swap the failure for the skeleton every 5 seconds.
+  let lastLedgerError = $state<unknown>(null)
+  $effect(() => {
+    void runId
+    lastLedgerError = null
+  })
+  $effect(() => {
+    if (ledger.isError) lastLedgerError = ledger.error
+    else if (ledger.isSuccess) lastLedgerError = null
+  })
+  const ledgerError = $derived(ledger.data === undefined ? (ledger.isError ? ledger.error : lastLedgerError) : null)
+  const retryLedger = () => {
+    lastLedgerError = null
+    void ledger.refetch()
+  }
+  const refreshLedger = () => {
+    void qc.invalidateQueries({ queryKey: ['run-checkpoints', runId] })
+    void qc.invalidateQueries({ queryKey: ['work-sessions-history', taskId] })
+  }
+
   // ── Resources: the sampler's series for this agent. ─────────────────────
   type Sample = { t: number; cpu: number; mem: number; pids: number }
   let samples = $state<Sample[]>([])
@@ -176,14 +211,15 @@
   const tabs = $derived<TabItem<Tab>[]>([
     { id: 'agent', label: 'Agent' },
     { id: 'turns', label: harnessTurns.length ? `Turns (${harnessTurns.length})` : 'Turns' },
+    { id: 'checkpoints', label: 'Checkpoints' },
     { id: 'resources', label: 'Resources' },
   ])
 </script>
 
 <Modal {open} {onClose} title="Run detail" takeover>
   <div class="flex h-full min-h-0 flex-col">
-    <div class="flex items-center gap-1 border-b border-line-subtle pb-3">
-      <Tabs items={tabs} value={tab} onChange={(id) => (tab = id)} />
+    <div class="flex flex-wrap items-center gap-x-1 gap-y-2 border-b border-line-subtle pb-3">
+      <Tabs class="min-w-0 flex-wrap" items={tabs} value={tab} onChange={(id) => (tab = id)} />
       {#if agentModel || live}
         <span class="ml-auto flex min-w-0 items-center gap-2">
           {#if agentModel}<span class="truncate text-xs text-muted">{agentModel}</span>{/if}
@@ -212,6 +248,7 @@
           history={retained.agent}
           resetKey={transcript?.length ?? 0}
           onFrame={noteFrame}
+          onRunEvent={refreshLedger}
         />
       </div>
       {#if tab === 'turns'}
@@ -254,6 +291,28 @@
               </div>
             {/each}
           </div>
+        {/if}
+      {/if}
+      {#if tab === 'checkpoints'}
+        {#if ledgerError}
+          <QueryError
+            variant="inline"
+            error={ledgerError}
+            title="Could not load the checkpoints"
+            onRetry={retryLedger}
+          />
+        {:else}
+          <QueryState query={ledger}>
+            {#snippet skeleton()}
+              <SkeletonRows rows={3} />
+            {/snippet}
+            {#snippet children(data)}
+              <AgentCheckpoints
+                checkpoints={fromLedger(data.checkpoints, runState)}
+                live={!history.isSuccess || runIsLive(runState)}
+              />
+            {/snippet}
+          </QueryState>
         {/if}
       {/if}
       {#if tab === 'resources'}
