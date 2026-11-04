@@ -4417,6 +4417,122 @@ mod tests {
             assert!(why.contains("no job allocated"), "{why}");
         }
 
+        /// J1 retired for J2, and a revise round then moved J2 to the ordinary
+        /// run `moved`. Answers (ticket, root run, J1, J2, moved).
+        async fn a_job_a_revise_round_moved(
+            deps: &WorkbenchDeps,
+            me: &AgentSubject,
+            agent_id: &str,
+            board_id: &str,
+            title: &str,
+        ) -> (String, String, String, String, String) {
+            let pg = &deps.pg;
+            let task_id = ticket(pg, board_id, title).await;
+            let root = session(pg, &task_id, "cancelled", None).await;
+            let first = owned_job(pg, agent_id, &task_id, &root, BRANCH).await;
+            let rewound = Rewound {
+                root: &root,
+                attempt_no: 2,
+            };
+            let second_run = session(pg, &task_id, "running", Some(rewound)).await;
+            let second =
+                owned_job(pg, agent_id, &task_id, &second_run, &format!("{BRANCH}-a2")).await;
+            let start = args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" }));
+            ok(call_tool(deps, me, "start_job", &start).await);
+            set_state(pg, &second_run, "done").await;
+            let moved = session(pg, &task_id, "done", None).await;
+            sqlx::query(
+                "update workbench_jobs set status = 'pr_open', run_id = $2::uuid where id = $1::uuid",
+            )
+            .bind(&second)
+            .bind(&moved)
+            .execute(pg)
+            .await
+            .unwrap();
+            (task_id, root, first, second, moved)
+        }
+
+        /// Rewinding the faded attempt reaches the job a revise round took out
+        /// of its lineage.
+        async fn rewinding_the_faded_attempt_reaches_the_moved_job(
+            deps: &WorkbenchDeps,
+            me: &AgentSubject,
+            agent_id: &str,
+            board_id: &str,
+        ) {
+            let pg = &deps.pg;
+            let (task_id, root, first, second, _) =
+                a_job_a_revise_round_moved(deps, me, agent_id, board_id, "Rewind the faded").await;
+            let start = args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" }));
+            let rewound = Rewound {
+                root: &root,
+                attempt_no: 3,
+            };
+            let third_run = session(pg, &task_id, "running", Some(rewound)).await;
+            let third =
+                owned_job(pg, agent_id, &task_id, &third_run, &format!("{BRANCH}-a3")).await;
+            ok(call_tool(deps, me, "start_job", &start).await);
+            for retired in [&first, &second] {
+                let (status, current, _) = lineage_row(pg, retired).await;
+                assert_eq!(
+                    (status.as_str(), current),
+                    ("superseded", Some(third.clone()))
+                );
+            }
+        }
+
+        /// Rewinding the run that took the job leaves no retired job naming it.
+        async fn rewinding_the_moved_run_repoints_earlier_jobs(
+            deps: &WorkbenchDeps,
+            me: &AgentSubject,
+            agent_id: &str,
+            board_id: &str,
+        ) {
+            let pg = &deps.pg;
+            let (task_id, _, first, second, moved) =
+                a_job_a_revise_round_moved(deps, me, agent_id, board_id, "Rewind the mover").await;
+            let start = args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" }));
+            let rewound = Rewound {
+                root: &moved,
+                attempt_no: 2,
+            };
+            let run = session(pg, &task_id, "running", Some(rewound)).await;
+            let latest = owned_job(pg, agent_id, &task_id, &run, &format!("{BRANCH}-b2")).await;
+            let unrelated_ticket = ticket(pg, board_id, "Unrelated").await;
+            let unrelated_run = session(pg, &unrelated_ticket, "running", None).await;
+            let unrelated = owned_job(
+                pg,
+                agent_id,
+                &unrelated_ticket,
+                &unrelated_run,
+                "talaria/other",
+            )
+            .await;
+            let colleague: String = sqlx::query_scalar(
+                "insert into agent_defs (slug, department, model, display_name) \
+                 values ('wbrevise-colleague', $1, 'wbrevise-colleague', 'Colleague') \
+                 returning id::text",
+            )
+            .bind(DEPT)
+            .fetch_one(pg)
+            .await
+            .unwrap();
+            let colleagues = owned_job(pg, &colleague, &task_id, &moved, "talaria/theirs").await;
+
+            ok(call_tool(deps, me, "start_job", &start).await);
+            for retired in [&first, &second] {
+                let (status, current, _) = lineage_row(pg, retired).await;
+                assert_eq!(
+                    (status.as_str(), current),
+                    ("superseded", Some(latest.clone()))
+                );
+            }
+            assert_eq!(lineage_row(pg, &unrelated).await.0, "started");
+            assert_eq!(lineage_row(pg, &colleagues).await.0, "started");
+            set_state(pg, &unrelated_run, "cancelled").await;
+            set_state(pg, &run, "cancelled").await;
+        }
+
         fn ok(outcome: CallOutcome) -> Value {
             match outcome {
                 CallOutcome::Ok(v) => v,
@@ -4647,6 +4763,9 @@ mod tests {
                     .unwrap();
                 a_revise_round_moves_its_job_to_the_new_run(&deps, &me, &agent_id, &board_id).await;
                 a_rewind_attempt_gets_its_own_job(&deps, &me, &agent_id, &board_id, &seen).await;
+                rewinding_the_moved_run_repoints_earlier_jobs(&deps, &me, &agent_id, &board_id).await;
+                rewinding_the_faded_attempt_reaches_the_moved_job(&deps, &me, &agent_id, &board_id)
+                    .await;
 
                 // 6. request_repo. In PAT mode it is refused up front: the
                 //    approval could never create the repo.
