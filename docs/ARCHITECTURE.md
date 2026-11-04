@@ -615,9 +615,20 @@ multiplexer.
      first step adopts the fleet as found** (once, `fleetAdoptedAt`): every agent down then has
      its stop recorded, and every running agent with no assignment whose container runs
      another image than the fleet's (main's `:latest`) is assigned that image — recorded as
-     found (`images::adopt`, runnable at the render's stamp, this install's to prune) and
-     inspected one a step for its version — so every recreate (the deploy's fleet roll, which
-     waits for this, at most 30 min; an apply; a Start) keeps it on its Hermes. With no
+     found (`images::adopt`: by its registry digest, else by its image id; runnable at the
+     render's stamp; found, not pulled here, so never pruned) and inspected one a step for
+     its version — so every recreate (an apply, a Start, the deploy's fleet roll, which waits
+     for this at most 30 min and then still skips any agent not adopted,
+     `unadopted_departments`) keeps it on its Hermes. Adoption is per agent
+     (`adoptedAgents`): one docker will not describe is asked again each step, holds up no
+     other, and is said to the admins after ten steps. Only an adopted image whose release
+     is known to be older than the fleet's is moved up; an unknown version (a nightly tag, a
+     failed inspection) stays, shown as "version unknown". Text from a container (its log,
+     its last word, a fault line) is scrubbed where it is read (`probe::logs`, by
+     `talaria_agent_secrets::scrub_text`: every secret the agents were given — the fleet
+     `.env`'s credential values and each `secrets.env` — exactly and URL-encoded and
+     base64, and every credential-shaped token), and every fault text again before it is
+     stored, notified or logged. With no
      rollout open, an agent off its image (down unwillingly, or running another image id than
      its digest's), or one on an adopted image older than the fleet's, opens a **drift
      catch-up** onto the fleet's image (checked every 5 min; pinned, the pin reopens for it) —
@@ -685,9 +696,11 @@ multiplexer.
      **Allow again**. The one before the current image stays on the host three days, a
      candidate nobody rolled out a week; then images this instance pulled itself and no longer
      runs are removed (never the compiled pin, never an image another stack pulled, never on
-     an assignments read that failed; an adopted `:latest` counts as this install's, so it goes
-     a week after it was found once no agent is assigned it, and `docker image rm` is never
-     forced, so an image any container on the host uses stays).
+     an assignments read that failed, never an adopted `:latest`, which was found here, not
+     pulled; `docker image rm` is never forced, so an image any container on the host uses
+     stays). An image counts as pruned only once its id is gone after the remove: on the
+     classic image store, removing a digest reference while a tag remains only untags it,
+     which is recorded as untagged and not tried again.
 
   **One runner.** The scheduler's step is the only thing that moves an agent; the admin
   actions only write the state row, and the next step (within a minute) carries them out. The

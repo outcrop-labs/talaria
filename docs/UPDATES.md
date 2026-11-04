@@ -374,42 +374,65 @@ the compiled pin first (the last entry of `HERMES_IMAGE_DEFAULTS`).
 
 **Release day — upgrading from a release before the channel.** The channel is the one
 thing that changes an agent's Hermes, and it keeps what it finds. With the defaults
-(48 h on stable, the 02:00–05:00 window), minute by minute:
+(48 h on stable, the 02:00–05:00 window), in order:
 
 - **The upgrade (T0).** The migrations add `hermes_images`, `hermes_agent_images` and
   `agent_defs.stopped_at`. Nothing restarts yet.
 - **T0 + 1½ min — the channel's first step.** Every agent found down (stopped on the
   older release, by hand, or by `compose down`) has its stop recorded and stays stopped.
-  Every running agent is assigned the image it runs (main's `:latest`, recorded as
-  found), so every recreate from here on keeps it on that Hermes. Each such image is
-  inspected, one a minute, with nothing downloaded, for its Hermes version.
+  Every running agent is assigned the image it runs (main's `:latest`, recorded as found
+  — by its registry digest, or by its image id if it was built or loaded on the host), so
+  every recreate from here on keeps it on that Hermes. An agent docker will not describe
+  is asked again every minute, holds up no other, and is said to the admins after ten
+  tries. Each image found is inspected, one a minute, with nothing downloaded, for its
+  Hermes version.
 - **T0 + 5 min — image installs only.** The deploy's own fleet roll recreates every
-  running agent on the new Talaria render, each on the Hermes it runs (it waits for the
-  step above, at most 30 min). Agents a person stopped stay stopped. A checkout install
+  running agent on the new Talaria render, each on the Hermes it runs. It waits for the
+  step above, at most 30 min; past that it still leaves any agent the channel has not
+  recorded exactly as it is. Agents a person stopped stay stopped. A checkout install
   has no such roll.
 - **T0 + up to 10 min — the first stable check.** It records today's `stable`, and its
   48 h start.
-- **Night 1 (the first window).** Agents on a Hermes older than the compiled pin (main's
-  `:latest` was v0.21.4 on most hosts) move onto the pin. The pin is downloaded first if
-  the host lacks it (about 1.1 GB, within the disk's room) and inspected. Its canary
-  soaks 5 min, then the agents move one at a time, the first watched 10 min and each
-  other 3 min. The move stops at the first agent that will not come up on the pin: that
-  agent goes back on the image it ran, the admins are told, and the rest stay where they
-  are until stable takes them on. Agents at or above the pin don't move.
-- **Night 3, typically (the first window after stable's 48 h).** Stable's release is
-  downloaded and inspected, canaried, and rolled one agent at a time onto every agent,
-  watched, and then called good.
-- **Restarts per agent:** on an image install, one at T0 + 5 min on the same Hermes;
-  then night 1 for an agent below the pin; then night 3 onto stable. On a checkout
-  install, night 1 (below the pin only) and night 3.
-- **Disk:** the old `:latest` (about 3.9 GB) is pruned once no agent runs it and no
-  rollout can go back to it, a week after it was found. The compiled pin is never
-  pruned. A stable release before the current one stays 3 days after the new one is
-  good. An image any container uses, on any stack, is never removed (`docker image rm`
-  is not forced) — so an agent stopped on the older release keeps the old `:latest` on
-  the host until someone starts it (it then starts on the fleet's image).
+- **Day 1, within hours of T0 — the pin's download.** Agents on a Hermes known to be
+  older than the compiled pin (main's `:latest` was v0.21.4 on most hosts) are to move
+  onto it, so the pin is downloaded (about 1.1 GB compressed, about 4.5 GB on disk) and
+  inspected as soon as the found images' versions are read — in the day, not the night.
+  Only the canary and the moves wait for the window. An image whose version cannot be
+  read (a nightly-style tag, an inspection that failed) is kept and shown on the panel as
+  "version unknown"; it is never moved down, and stable takes it on like any other.
+- **Night 1 (the first window).** The pin's canary soaks 5 min, then the agents below it
+  move one at a time: the first watched 10 min, each other 3 min. The move stops at the
+  first agent that will not come up on the pin: it goes back on the image it ran, the
+  admins are told, and the rest stay where they are until stable takes them on. Agents at
+  or above the pin don't move.
+- **Day 3, typically — stable's download,** the moment its release has been on stable 48
+  h (another ~1.1 GB compressed), and its inspection. **Night 3 (the first window after):**
+  its canary, then every agent onto it one at a time, watched, then good.
+- **Fleet size.** One window is 180 min, and a watched move costs about 6 min of canary,
+  12 min for the first agent, 5 min for each other (the roll and its 3-min watch) and a
+  15-min soak: about `1 + (180 − 6 − 12 − 15) / 5`, so **25–30 agents a night**. A larger
+  fleet pauses at the window's end and goes on the next night, and the move onto stable
+  waits until the move onto the pin is done, by as many nights.
+- **Restarts per agent,** for a fleet that fits in one window: on an image install, one
+  at T0 + 5 min on the same Hermes; then night 1 for an agent below the pin; then night 3
+  onto stable. On a checkout install, night 1 (below the pin only) and night 3. Larger
+  fleets spread each move over more nights. An agent stopped before the upgrade, when a
+  person starts it, starts straight on the fleet's image (not watched: it was stopped).
+- **Disk.** Until the old `:latest` goes, the docker disk holds it (about 3.9 GB), the pin
+  (about 4.5 GB, never pruned) and stable's release (about 4.6 GB): **about 13 GB of
+  Hermes images** at the peak, less where layers are shared. Have **about 15 GB free on
+  the docker disk, with 10 % of it kept free** — the channel checks before each download
+  (the fleet's current image's size plus a quarter — 6 GB when that image is not on the
+  host — with a tenth of the disk kept free) and holds the download, telling the admins,
+  when there is not room.
+- **The old `:latest` is not removed by the channel:** it was found, not pulled by this
+  install, and another stack on the host may use it. Once no stack uses it, remove it:
+  `docker image rm nousresearch/hermes-agent:latest`. (The channel prunes only images it
+  pulled itself, and counts one pruned only once its id is gone from the host: on
+  docker's classic image store, removing a digest reference while a tag remains only
+  untags, and that is recorded as "untagged, still present".)
 
-Pre-pulling the pin before an upgrade (`docker pull <the pin>`) still saves night 1 its
+Pre-pulling the pin before an upgrade (`docker pull <the pin>`) still saves day 1 its
 download.
 
 **Rolling Talaria back to a release before the channel** leaves agents on the newer
