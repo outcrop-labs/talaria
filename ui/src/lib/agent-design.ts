@@ -14,7 +14,7 @@
 // clock for the elapsed count. Opening New agent after a reload, in a second
 // tab or on another device resumes exactly where the design stands.
 import { createQuery, type QueryClient } from '@tanstack/svelte-query'
-import { delJsonGone, getJson, patchJson, postJson } from '@/lib/fetch-json'
+import { delJsonGone, getJson, HttpError, patchJson, postJson } from '@/lib/fetch-json'
 import { appliedFields, summarizeSoul, type AppliedField, type SoulSummary } from '@/lib/agent-onboard-refine'
 import type { AgentDraft } from '@/lib/muse.svelte'
 
@@ -39,7 +39,8 @@ export interface AgentDesign {
   /** The first describe: what the splash and the roster row name. */
   purpose: string
   instruction: string
-  chat: Array<{ role: 'user' | 'assistant'; content: string }>
+  /** How many chat turns the server holds (the chat itself stays there). */
+  chatLength: number
   /** Null until a describe lands. */
   draft: DraftFields | null
   /** The draft a refine started from, for the "Refine applied" receipt. */
@@ -49,6 +50,10 @@ export interface AgentDesign {
   startedAt: number | null
   finishedAt: number | null
   updatedAt: number
+  /** The hire this design is spent on, while it runs. The design is gone
+   *  for the modal meanwhile; it comes back (with the hire's sentence in
+   *  `error`) if the hire fails. */
+  hireRunId: string | null
 }
 
 /** One read: the record, and how far the server's clock is from this one. */
@@ -116,16 +121,26 @@ export async function startDesign(qc: QueryClient, purpose: string): Promise<Age
   return settle(qc, r.design) as AgentDesign
 }
 
-/** A refine of the form as the person sees it, hand edits included. */
-export async function refineDesign(qc: QueryClient, instruction: string, current: DraftFields): Promise<AgentDesign> {
-  const r = await postJson<{ design: AgentDesign }>(URL, { instruction: instruction.trim(), refine: true, current })
+/** A refine of the form as the person sees it, hand edits included. Names
+ *  the design it revises: a stale tab gets a 409 (`isStale`). */
+export async function refineDesign(qc: QueryClient, id: string, instruction: string, current: DraftFields): Promise<AgentDesign> {
+  const r = await postJson<{ design: AgentDesign }>(URL, { instruction: instruction.trim(), refine: true, id, current })
   return settle(qc, r.design) as AgentDesign
 }
 
-/** The person's own draft: review-step edits, a role template, a manual start. */
-export async function saveDesign(qc: QueryClient, fields: DraftFields): Promise<AgentDesign> {
-  const r = await patchJson<{ design: AgentDesign }>(URL, fields)
+/** The person's own draft: review-step edits, a role template, a manual
+ *  start. Names the design it edits (none only for a manual start), so a
+ *  tab that missed a discard elsewhere gets a 409, never a write over the
+ *  newer design. `init` carries `keepalive` for the save on the way out. */
+export async function saveDesign(qc: QueryClient, fields: DraftFields, id?: string, init?: RequestInit): Promise<AgentDesign> {
+  const r = await patchJson<{ design: AgentDesign }>(URL, id ? { ...fields, id } : fields, init)
   return settle(qc, r.design) as AgentDesign
+}
+
+/** The server refused a write because the design it named is not the one
+ *  held (another tab or device replaced it), or a run or hire holds it. */
+export function isConflict(e: unknown): boolean {
+  return e instanceof HttpError && e.status === 409
 }
 
 /** Discard the design (and cancel its run). Gone already is done. */
@@ -135,6 +150,13 @@ export async function discardDesign(qc: QueryClient, id?: string): Promise<void>
 }
 
 // ── Pure helpers over the record ─────────────────────────────────────────────
+
+/** The design the modal, the roster row and the + mark offer: the record,
+ *  unless a hire is spending it right now (the hiring strip tells that
+ *  story; the record returns here if the hire fails). */
+export function pendingDesign(design: AgentDesign | null | undefined): AgentDesign | null {
+  return design && !design.hireRunId ? design : null
+}
 
 /** Where New agent opens. A design that landed, or a refine that failed
  *  over a draft, opens on review; a describe in flight or a describe that

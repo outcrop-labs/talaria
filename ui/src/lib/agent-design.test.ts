@@ -25,6 +25,8 @@ import {
   type AgentDesign,
   type DesignRead,
   type DraftFields,
+  isConflict,
+  pendingDesign,
 } from './agent-design'
 
 const DRAFT: DraftFields = {
@@ -44,13 +46,14 @@ function design(patch: Partial<AgentDesign> = {}): AgentDesign {
     refining: false,
     purpose: 'A release manager that tracks deploy trains',
     instruction: 'A release manager that tracks deploy trains',
-    chat: [],
+    chatLength: 0,
     draft: null,
     previous: null,
     error: null,
     startedAt: 1_000_000,
     finishedAt: null,
     updatedAt: 1_000_000,
+    hireRunId: null,
     ...patch,
   }
 }
@@ -60,10 +63,7 @@ const ready = (patch: Partial<AgentDesign> = {}) =>
     status: 'ready',
     draft: DRAFT,
     finishedAt: 1_020_000,
-    chat: [
-      { role: 'user', content: 'x' },
-      { role: 'assistant', content: JSON.stringify(DRAFT) },
-    ],
+    chatLength: 2,
     ...patch,
   })
 
@@ -172,20 +172,43 @@ describe('the verbs: one call each, the answer in the cache', () => {
     const c = qc()
     answer = () => ({ status: 200, body: { design: ready({ status: 'generating', refining: true }) } })
     const form = { ...DRAFT, role: 'Lead Analyst' }
-    await refineDesign(c, 'make it terse', form)
+    await refineDesign(c, 'd-1', 'make it terse', form)
     expect(calls[0]).toEqual({
       url: '/api/fleet/agent-design',
       method: 'POST',
-      body: { instruction: 'make it terse', refine: true, current: form },
+      body: { instruction: 'make it terse', refine: true, id: 'd-1', current: form },
     })
     expect(read(c)?.design?.refining).toBe(true)
   })
 
-  it('a hand edit is a PATCH of the whole draft', async () => {
+  it('a hand edit is a PATCH of the whole draft, naming the design it edits', async () => {
     const c = qc()
     answer = () => ({ status: 200, body: { design: ready() } })
+    await saveDesign(c, DRAFT, 'd-1')
+    expect(calls[0]).toEqual({ url: '/api/fleet/agent-design', method: 'PATCH', body: { ...DRAFT, id: 'd-1' } })
+    // A manual start names none: there is no design yet.
     await saveDesign(c, DRAFT)
-    expect(calls[0]).toEqual({ url: '/api/fleet/agent-design', method: 'PATCH', body: DRAFT })
+    expect(calls[1]?.body).toEqual(DRAFT)
+  })
+
+  it('the save on the way out survives the tab (keepalive)', async () => {
+    const c = qc()
+    let init: RequestInit | undefined
+    vi.stubGlobal('fetch', async (_url: string, i?: RequestInit) => {
+      init = i
+      return new Response(JSON.stringify({ design: ready() }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    await saveDesign(c, DRAFT, 'd-1', { keepalive: true })
+    expect(init?.keepalive).toBe(true)
+    expect(init?.method).toBe('PATCH')
+  })
+
+  it('a stale tab is told by a 409 it can tell apart', async () => {
+    const c = qc()
+    answer = () => ({ status: 409, body: { error: 'this agent design was replaced or discarded since it was opened — showing the current one' } })
+    const e = await saveDesign(c, DRAFT, 'd-old').catch((x: unknown) => x)
+    expect(isConflict(e)).toBe(true)
+    expect(isConflict(new Error('network'))).toBe(false)
   })
 
   it('a discard names the design, and one already gone is done', async () => {
@@ -203,6 +226,17 @@ describe('the verbs: one call each, the answer in the cache', () => {
     answer = () => ({ status: 409, body: { error: 'an agent design is still generating — wait for it, or discard it' } })
     await expect(saveDesign(c, DRAFT)).rejects.toThrow(/still generating/)
     expect(read(c)?.design?.status).toBe('generating')
+  })
+})
+
+describe('a design a hire is spending', () => {
+  it('is not offered to the modal, the row or the mark until the hire fails', () => {
+    expect(pendingDesign(ready({ hireRunId: 'h-1' }))).toBeNull()
+    expect(pendingDesign(ready())?.id).toBe('d-1')
+    expect(pendingDesign(null)).toBeNull()
+    // Handed back by a failed hire: offered again, on review, saying why.
+    const back = ready({ error: 'The hire did not finish: the department is taken. Check the fields and create it again.' })
+    expect(openingStep(pendingDesign(back), false)).toBe('review')
   })
 })
 

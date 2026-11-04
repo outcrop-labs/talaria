@@ -208,11 +208,27 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => return Ok(internal("[fleet] hire input serialize failed", e)),
     };
+    // THE DESIGN IS A GATE: spent on this hire before it is enqueued, so a
+    // second tab cannot hire a second agent from it (409). It is consumed
+    // when the hire finishes and handed back if the hire fails
+    // (talaria-agent-design settles both on read).
+    let hire_id = uuid::Uuid::new_v4().to_string();
+    if let Some(id) = design_id.as_deref() {
+        match talaria_agent_design::claim_for_hire(&state, &user.id, id, &hire_id).await {
+            Ok(()) => {}
+            Err(talaria_agent_design::DesignError::Refused(r)) => {
+                return Ok(house_error(StatusCode::CONFLICT, r.sentence()));
+            }
+            Err(talaria_agent_design::DesignError::Fault(e)) => {
+                return Ok(internal("[fleet] design claim failed", e));
+            }
+        }
+    }
     let row = match enqueue(
         def,
         input,
         EnqueueOptions {
-            id: Some(uuid::Uuid::new_v4().to_string()),
+            id: Some(hire_id.clone()),
             owner_user_id: Some(user.id.clone()),
             subject_type: Some("agent-hire".into()),
             subject_id: Some(body.slug),
@@ -226,13 +242,13 @@ pub async fn post(
     .await
     {
         Ok(row) => row,
-        Err(e) => return Ok(internal("[fleet] hire enqueue failed", e)),
+        Err(e) => {
+            if design_id.is_some() {
+                talaria_agent_design::release_hire(&state, &user.id, &hire_id).await;
+            }
+            return Ok(internal("[fleet] hire enqueue failed", e));
+        }
     };
-    // The design is spent: the hire's phases carry the story from here, and
-    // a reopened New agent starts fresh rather than offering it again.
-    if let Some(id) = design_id {
-        talaria_agent_design::consume_design(&state, &user.id, &id).await;
-    }
     Ok(Json(json!({
         "ok": true,
         "hire": { "id": row.id, "state": row.state, "phase": row.phase }

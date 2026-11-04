@@ -22,8 +22,15 @@
 //   notification that links back to the review step (`REVIEW_HREF`).
 //
 //   ONE AT A TIME. A describe while one generates returns the one generating;
-//   a describe over an idle design replaces it. Hiring or discarding removes
-//   it and reads its notification.
+//   a describe over an idle design replaces it. Every edit and refine names
+//   the design it edits, so a stale tab is refused (409), never written over
+//   a newer one. Discarding removes it and reads its notification.
+//
+//   THE HIRE IS A GATE. The hire route claims the design before it enqueues
+//   (`claim_for_hire`): a second hire from it is refused. The design is
+//   consumed when that hire finishes and handed back, with the hire's
+//   sentence, when it fails — so a hire that needs an edit (a department
+//   taken in a race) never loses it. Both are settled on read.
 //
 // The transitions are pure (record.rs); this file is the service the routes
 // call and the real edges the run is armed with.
@@ -54,7 +61,7 @@ use talaria_tasks_types::BUILD_DISPATCH;
 use uuid::Uuid;
 
 pub use record::{AgentDesign, DesignStatus, DraftFields, Refusal, SkillDraft};
-use record::{RunSeen, Start};
+use record::{HireSeen, RunSeen, Settled, Start};
 pub use run::{
     AGENT_DESIGN_KIND, AgentDesignDeps, AgentDesignInput, Landing, agent_design_run,
     arm_agent_design_step,
@@ -125,6 +132,9 @@ pub async fn current_design(
     let Some(stored) = store::read(&mut conn, user_id).await? else {
         return Ok(None);
     };
+    if let Some(hire) = stored.design.hire_run_id.clone() {
+        return settle_hire(state, &mut conn, user_id, &hire).await;
+    }
     if stored.design.status != DesignStatus::Generating {
         return Ok(Some(stored.design));
     }
@@ -143,25 +153,137 @@ pub async fn current_design(
     Ok(out)
 }
 
+/// A run row's state and error. Err is a failed read.
+async fn run_row(
+    state: &AppState,
+    run_id: &str,
+) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    sqlx::query_as("select state, error from runs where id = $1::uuid")
+        .bind(run_id)
+        .fetch_optional(&state.pg)
+        .await
+}
+
+fn live(state: &str) -> bool {
+    matches!(state, "queued" | "running" | "awaiting")
+}
+
 /// Where the run behind a generating record stands. A read that fails says
 /// Live: a database blip must not be the thing that declares a design dead.
 async fn run_seen(state: &AppState, run_id: Option<&str>) -> RunSeen {
     let Some(run_id) = run_id else {
         return RunSeen::Missing;
     };
-    let row: Result<Option<(String,)>, sqlx::Error> =
-        sqlx::query_as("select state from runs where id = $1::uuid")
-            .bind(run_id)
-            .fetch_optional(&state.pg)
-            .await;
-    match row {
+    match run_row(state, run_id).await {
         Ok(None) => RunSeen::Missing,
-        Ok(Some((s,))) if matches!(s.as_str(), "queued" | "running" | "awaiting") => RunSeen::Live,
+        Ok(Some((s, _))) if live(&s) => RunSeen::Live,
         Ok(Some(_)) => RunSeen::Ended,
         Err(e) => {
             tracing::warn!("[agent-design] run state read failed: {e}");
             RunSeen::Live
         }
+    }
+}
+
+/// Where the hire a design is spent on stands. A failed read says Live, for
+/// the same reason.
+async fn hire_seen(state: &AppState, hire_run_id: &str) -> HireSeen {
+    match run_row(state, hire_run_id).await {
+        Ok(None) => HireSeen::Missing,
+        Ok(Some((s, _))) if live(&s) => HireSeen::Live,
+        Ok(Some((s, _))) if s == "done" => HireSeen::Done,
+        Ok(Some((_, e))) => HireSeen::Failed(e),
+        Err(e) => {
+            tracing::warn!("[agent-design] hire state read failed: {e}");
+            HireSeen::Live
+        }
+    }
+}
+
+/// A design spent on a hire, as a read finds it: still spent (the hire runs;
+/// the modal treats it as gone), consumed (the hire finished), or handed
+/// back with the hire's sentence (it failed, and needs an edit or a retry).
+async fn settle_hire(
+    state: &AppState,
+    conn: &mut ConnectionManager,
+    user_id: &str,
+    hire_run_id: &str,
+) -> Result<Option<AgentDesign>, DesignError> {
+    let seen = hire_seen(state, hire_run_id).await;
+    let now = now_ms();
+    let (out, consumed) = store::update(conn, user_id, |d| match d {
+        Some(d) if d.hire_run_id.as_deref() == Some(hire_run_id) => {
+            match record::settle_hire(d, &seen, now) {
+                Settled::Unchanged => Write::Keep((Some(d.clone()), None)),
+                Settled::Consumed => Write::Delete((None, Some(d.id.clone()))),
+                Settled::Released(back) => Write::put((*back).clone(), (Some(*back), None)),
+            }
+        }
+        other => Write::Keep((other.cloned(), None)),
+    })
+    .await?;
+    if let Some(id) = consumed {
+        clear_notice(state, conn, user_id, &id).await;
+    }
+    Ok(out)
+}
+
+/// The hire route's gate: spend the design `design_id` on the hire
+/// `hire_run_id` before that hire is enqueued. Refused (409) when the design
+/// is not the person's current one, still generating, or already spent on a
+/// hire that may still finish — so two tabs cannot make two agents from one
+/// design. Its bell row is read: the person acted on it.
+pub async fn claim_for_hire(
+    state: &AppState,
+    user_id: &str,
+    design_id: &str,
+    hire_run_id: &str,
+) -> Result<(), DesignError> {
+    let mut conn = redis(state).await?;
+    // An earlier claim may be taken over only when its hire is seen ended.
+    let held = store::read(&mut conn, user_id)
+        .await?
+        .and_then(|s| s.design.hire_run_id);
+    let other = match held {
+        Some(h) => {
+            let alive = matches!(
+                hire_seen(state, &h).await,
+                HireSeen::Live | HireSeen::Missing
+            );
+            Some((h, alive))
+        }
+        None => None,
+    };
+    let now = now_ms();
+    store::update(&mut conn, user_id, |d| {
+        let seen = other.as_ref().map(|(h, alive)| (h.as_str(), *alive));
+        match record::claim(d, design_id, hire_run_id, seen, now) {
+            Ok(next) => Write::put(next, Ok(())),
+            Err(r) => Write::Keep(Err(r)),
+        }
+    })
+    .await?
+    .map_err(DesignError::Refused)?;
+    clear_notice(state, &conn, user_id, design_id).await;
+    Ok(())
+}
+
+/// The hire could not be enqueued: hand the design back at once.
+pub async fn release_hire(state: &AppState, user_id: &str, hire_run_id: &str) {
+    let now = now_ms();
+    let released = async {
+        let mut conn = redis(state).await?;
+        store::update(&mut conn, user_id, |d| match d {
+            Some(d) if d.hire_run_id.as_deref() == Some(hire_run_id) => {
+                Write::put(record::release(d, None, now), ())
+            }
+            _ => Write::Keep(()),
+        })
+        .await
+        .map_err(DesignError::from)
+    };
+    if let Err(e) = released.await {
+        tracing::warn!("[agent-design] releasing the design from {hire_run_id} failed: {e:?}");
     }
 }
 
@@ -173,10 +295,18 @@ pub async fn start_design(
     purpose: &str,
 ) -> Result<AgentDesign, DesignError> {
     let mut conn = redis(state).await?;
+    // A record still generating is followed only while its run can answer;
+    // one whose run died is replaced at once rather than on the next read.
+    let seen = match store::read(&mut conn, user_id).await? {
+        Some(s) if s.design.status == DesignStatus::Generating => {
+            run_seen(state, s.design.run_id.as_deref()).await
+        }
+        _ => RunSeen::Live,
+    };
     let now = now_ms();
     let (design_id, run_id) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
     let (design, fresh, replaced) = store::update(&mut conn, user_id, |d| {
-        match record::start(d, purpose, now, design_id.clone(), run_id.clone()) {
+        match record::start(d, purpose, now, (design_id.clone(), run_id.clone()), seen) {
             Start::Existing(e) => Write::Keep((e, false, None)),
             Start::Fresh(f) => Write::put(f.clone(), (f, true, d.map(|d| d.id.clone()))),
         }
@@ -211,6 +341,7 @@ pub async fn refine_design(
     state: &AppState,
     user_id: &str,
     caller: &str,
+    id: Option<&str>,
     instruction: &str,
     current: Option<DraftFields>,
 ) -> Result<AgentDesign, DesignError> {
@@ -218,7 +349,7 @@ pub async fn refine_design(
     let now = now_ms();
     let run_id = Uuid::new_v4().to_string();
     let refined = store::update(&mut conn, user_id, |d| {
-        match record::refine(d, instruction, current.clone(), now, run_id.clone()) {
+        match record::refine(d, id, instruction, current.clone(), now, run_id.clone()) {
             Ok(next) => Write::put(next.clone(), Ok(next)),
             Err(r) => Write::Keep(Err(r)),
         }
@@ -303,13 +434,14 @@ async fn launch(
 pub async fn edit_design(
     state: &AppState,
     user_id: &str,
+    want: Option<&str>,
     fields: DraftFields,
 ) -> Result<AgentDesign, DesignError> {
     let mut conn = redis(state).await?;
     let now = now_ms();
     let id = Uuid::new_v4().to_string();
     store::update(&mut conn, user_id, |d| {
-        match record::edit(d, fields.clone(), now, id.clone()) {
+        match record::edit(d, want, fields.clone(), now, id.clone()) {
             Ok(next) => Write::put(next.clone(), Ok(next)),
             Err(r) => Write::Keep(Err(r)),
         }
@@ -349,14 +481,6 @@ pub async fn discard_design(
     }
     clear_notice(state, &conn, user_id, &gone.id).await;
     Ok(true)
-}
-
-/// The hire went out with this design: it is spent. Best effort — a hire is
-/// never failed for a design that could not be cleared (it expires anyway).
-pub async fn consume_design(state: &AppState, user_id: &str, id: &str) {
-    if let Err(e) = discard_design(state, user_id, Some(id)).await {
-        tracing::warn!("[agent-design] consuming {id} failed: {e:?}");
-    }
 }
 
 /// Read the person's bell row about a design that is spent or replaced.

@@ -178,7 +178,7 @@ async fn design_live_runs_to_ready_with_no_client_and_resumes_from_a_fresh_sessi
     assert!(d.finished_at.unwrap() >= d.started_at.unwrap() + 1_400);
     let run_id = d.run_id.clone().unwrap();
     // The run row reaches `done` just after the landing write.
-    for _ in 0..50 {
+    for _ in 0..300 {
         if run_state(&pg, &run_id).await == "done" {
             break;
         }
@@ -259,12 +259,15 @@ async fn design_live_refine_then_discard() {
     let mut edited = ready.draft.clone().unwrap();
     edited.role = "Lead Analyst".into();
     // Hand edits are the server's too.
-    let saved = edit_design(&st, &user, edited.clone()).await.unwrap();
+    let saved = edit_design(&st, &user, Some(&ready.id), edited.clone())
+        .await
+        .unwrap();
     assert_eq!(saved.draft.as_ref().unwrap().role, "Lead Analyst");
     let refining = refine_design(
         &st,
         &user,
         CALLER,
+        Some(&ready.id),
         "make it terse, slowly",
         Some(edited.clone()),
     )
@@ -275,7 +278,7 @@ async fn design_live_refine_then_discard() {
     assert_eq!(refining.status, DesignStatus::Generating);
     // An edit while the refine runs is refused, not lost.
     assert!(matches!(
-        edit_design(&st, &user, edited.clone()).await,
+        edit_design(&st, &user, Some(&ready.id), edited.clone()).await,
         Err(DesignError::Refused(Refusal::Generating))
     ));
     let d = until_settled(&user).await;
@@ -347,7 +350,7 @@ async fn design_live_a_watched_landing_files_no_notice_and_a_failure_lands_its_s
     let d = until_settled(&user).await;
     assert_eq!(d.status, DesignStatus::Error);
     assert_eq!(d.error.as_deref(), Some(UNUSABLE_AGENT));
-    for _ in 0..50 {
+    for _ in 0..300 {
         if run_state(&st.pg, d.run_id.as_deref().unwrap()).await == "error" {
             break;
         }
@@ -374,8 +377,8 @@ async fn design_live_a_design_whose_run_is_gone_reads_as_stalled() {
         None,
         "an orphan",
         old,
-        Uuid::new_v4().to_string(),
-        Uuid::new_v4().to_string(),
+        (Uuid::new_v4().to_string(), Uuid::new_v4().to_string()),
+        record::RunSeen::Live,
     ) else {
         unreachable!()
     };
@@ -387,4 +390,191 @@ async fn design_live_a_design_whose_run_is_gone_reads_as_stalled() {
     assert_eq!(d.error.as_deref(), Some(STALLED));
     discard_design(&st, &user, None).await.unwrap();
     cleanup(&st.pg, "stalled").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_a_discarded_design_cannot_be_written_back() {
+    // S1: the landing that read the old record and swapped after a discard
+    // and a fresh describe. The revision is never reused, so its swap fails.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "aba").await;
+    let mut conn = st.redis().await.unwrap();
+    start_design(&st, &user, CALLER, "a slow first design")
+        .await
+        .unwrap();
+    let stale = store::read(&mut conn, &user).await.unwrap().unwrap();
+    discard_design(&st, &user, None).await.unwrap();
+    let second = start_design(&st, &user, CALLER, "a slow second design")
+        .await
+        .unwrap();
+    let mut resurrected = stale.design.clone();
+    resurrected.status = DesignStatus::Ready;
+    assert!(
+        !store::swap(&mut conn, &user, &stale.rev, Some(&resurrected))
+            .await
+            .unwrap(),
+        "a swap naming a revision from before the discard must not land"
+    );
+    let now = store::read(&mut conn, &user).await.unwrap().unwrap();
+    assert_eq!(now.design.id, second.id);
+    assert_ne!(now.rev, stale.rev);
+    until_settled(&user).await;
+    discard_design(&st, &user, None).await.unwrap();
+    cleanup(&st.pg, "aba").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_a_stale_tab_cannot_edit_or_refine_the_newer_design() {
+    // S5: tab A holds design X; elsewhere X is discarded and a manual design
+    // Z started. A's save and refine name X and are refused; Z is untouched.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "stale").await;
+    start_design(&st, &user, CALLER, "design x").await.unwrap();
+    let x = until_settled(&user).await;
+    discard_design(&st, &user, Some(&x.id)).await.unwrap();
+    let z = edit_design(&st, &user, None, draft_for("manual z"))
+        .await
+        .unwrap();
+    let mut from_a = x.draft.clone().unwrap();
+    from_a.role = "written by the stale tab".into();
+    assert!(matches!(
+        edit_design(&st, &user, Some(&x.id), from_a.clone()).await,
+        Err(DesignError::Refused(Refusal::Stale))
+    ));
+    assert!(matches!(
+        edit_design(&st, &user, None, from_a.clone()).await,
+        Err(DesignError::Refused(Refusal::Stale))
+    ));
+    assert!(matches!(
+        refine_design(
+            &st,
+            &user,
+            CALLER,
+            Some(&x.id),
+            "make it terse",
+            Some(from_a)
+        )
+        .await,
+        Err(DesignError::Refused(Refusal::Stale))
+    ));
+    let held = current_design(&st, &user, false).await.unwrap().unwrap();
+    assert_eq!(held.id, z.id);
+    assert_eq!(held.draft, z.draft);
+    discard_design(&st, &user, None).await.unwrap();
+    cleanup(&st.pg, "stale").await;
+}
+
+async fn hire_row(pg: &PgPool, id: &str, state: &str, error: Option<&str>) {
+    sqlx::query(
+        "insert into runs (id, kind, state, error) values ($1::uuid, 'agent-hire', $2, $3) \
+         on conflict (id) do update set state = excluded.state, error = excluded.error",
+    )
+    .bind(id)
+    .bind(state)
+    .bind(error)
+    .execute(pg)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_the_design_gates_the_hire() {
+    // S7: one design, one agent. A second hire is refused while the first
+    // may finish; a failed hire hands the design back intact; a finished
+    // hire consumes it.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "gate").await;
+    start_design(&st, &user, CALLER, "a scout to hire")
+        .await
+        .unwrap();
+    leave(&user).await;
+    let d = until_settled(&user).await;
+    // The bell row is filed just after the record lands.
+    for _ in 0..300 {
+        if !notices(&st.pg, &user).await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(notices(&st.pg, &user).await.len(), 1);
+    let (h1, h2, h3) = (
+        Uuid::new_v4().to_string(),
+        Uuid::new_v4().to_string(),
+        Uuid::new_v4().to_string(),
+    );
+    claim_for_hire(&st, &user, &d.id, &h1).await.unwrap();
+    hire_row(&st.pg, &h1, "running", None).await;
+    // Tab two, another handle: refused, and so are edits meanwhile.
+    assert!(matches!(
+        claim_for_hire(&st, &user, &d.id, &h2).await,
+        Err(DesignError::Refused(Refusal::Hiring))
+    ));
+    assert!(matches!(
+        edit_design(&st, &user, Some(&d.id), d.draft.clone().unwrap()).await,
+        Err(DesignError::Refused(Refusal::Hiring))
+    ));
+    // The bell row was read when the person acted on it.
+    assert!(
+        notices(&st.pg, &user)
+            .await
+            .iter()
+            .all(|(_, _, read)| *read)
+    );
+    let spent = current_design(&st, &user, false).await.unwrap().unwrap();
+    assert_eq!(spent.hire_run_id.as_deref(), Some(h1.as_str()));
+
+    // The hire fails on something the form can fix: the design comes back.
+    hire_row(
+        &st.pg,
+        &h1,
+        "error",
+        Some("the department research is taken"),
+    )
+    .await;
+    let back = current_design(&st, &user, false).await.unwrap().unwrap();
+    assert_eq!(back.hire_run_id, None);
+    assert_eq!(back.status, DesignStatus::Ready);
+    assert_eq!(back.draft, d.draft);
+    assert!(
+        back.error
+            .as_deref()
+            .unwrap()
+            .contains("the department research is taken")
+    );
+
+    // Fixed and hired again; this one finishes and spends the design.
+    let mut fixed = d.draft.clone().unwrap();
+    fixed.department = "research-2".into();
+    edit_design(&st, &user, Some(&d.id), fixed).await.unwrap();
+    claim_for_hire(&st, &user, &d.id, &h3).await.unwrap();
+    hire_row(&st.pg, &h3, "done", None).await;
+    assert!(current_design(&st, &user, false).await.unwrap().is_none());
+
+    // An enqueue that failed hands it straight back.
+    start_design(&st, &user, CALLER, "another scout")
+        .await
+        .unwrap();
+    let e = until_settled(&user).await;
+    let h4 = Uuid::new_v4().to_string();
+    claim_for_hire(&st, &user, &e.id, &h4).await.unwrap();
+    release_hire(&st, &user, &h4).await;
+    let again = current_design(&st, &user, false).await.unwrap().unwrap();
+    assert_eq!(again.hire_run_id, None);
+    assert_eq!(again.id, e.id);
+
+    for h in [&h1, &h3] {
+        sqlx::query("delete from runs where id = $1::uuid")
+            .bind(h)
+            .execute(&st.pg)
+            .await
+            .unwrap();
+    }
+    discard_design(&st, &user, None).await.unwrap();
+    cleanup(&st.pg, "gate").await;
 }

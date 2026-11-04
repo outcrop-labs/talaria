@@ -29,7 +29,9 @@ progress or waiting for review, the **+** carries a dot and the roster shows a r
 If it finishes while the modal is closed, the bell gets an **Agent design ready** entry that
 opens the review. Your edits on the review step are saved as you type. **Discard design**
 throws the design away, and stops it if it is still running. **Create agent** uses it up. A
-design nobody hires or discards is kept for three days.
+design nobody hires or discards is kept for three days. If the server restarts mid-design, the design
+picks up again within about five minutes. If a hire from a design fails, the design comes back
+on the review step with the reason. **Duplicate** never touches a design that is waiting.
 
 To skip the description, **Configure manually →** opens the same review form empty: type the
 name, handle and department, and **Create agent** hires it. **Duplicate** on a roster agent

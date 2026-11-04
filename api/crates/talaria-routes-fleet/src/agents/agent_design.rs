@@ -8,11 +8,15 @@
 //            the elapsed count agrees across tabs. `?watching=1` is the open
 //            modal: a landing in the next few seconds skips the bell.
 //   POST   → start (`{ instruction }`) or refine (`{ instruction, refine:
-//            true, current? }`). A start while one generates answers that one.
+//            true, id, current? }`). A start while one generates answers that
+//            one.
 //   PATCH  → the person's own draft (review-step edits, a role template, a
-//            manual start). 409 while a run is writing it.
+//            manual start), naming the design (`id`) unless there is none.
+//            409 while a run or a hire holds it, or when `id` is stale.
 //   DELETE → discard (`{ id? }`); 404 when there is nothing (another tab got
-//            there first). A hire with `designId` consumes it too.
+//            there first). A hire with `designId` claims it, and the design is
+//            consumed once that hire finishes. The record's `chat` stays on
+//            the server; the wire carries `chatLength`.
 // The permission is the hire's (`agents.manage`): the design exists to be
 // hired.
 
@@ -38,12 +42,25 @@ pub struct WatchQuery {
     watching: Option<String>,
 }
 
+/// The record on the wire. The chat stays on the server: it is up to ten
+/// turns of whole drafts (a soul alone may be 200k characters), the open
+/// modal reads every two seconds while a design generates, and the UI needs
+/// only to know whether there is one (`chatLength`).
+fn wire(d: &AgentDesign) -> Value {
+    let mut v = serde_json::to_value(d).expect("a design serializes");
+    if let Some(o) = v.as_object_mut() {
+        o.remove("chat");
+        o.insert("chatLength".into(), json!(d.chat.len()));
+    }
+    v
+}
+
 fn answer(design: Option<AgentDesign>) -> Response {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    Json(json!({ "design": design, "now": now })).into_response()
+    Json(json!({ "design": design.as_ref().map(wire), "now": now })).into_response()
 }
 
 fn failed(e: DesignError) -> Response {
@@ -84,6 +101,11 @@ pub async fn post(
         }
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // The design a refine revises; a start names none.
+    let id = match optional_uuid_member(obj, "id") {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
     let refine = match optional_boolean_member(obj, "refine") {
         Ok(v) => v.unwrap_or(false),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
@@ -109,12 +131,20 @@ pub async fn post(
             .unwrap_or(&user.id)
     );
     let out = if refine {
-        refine_design(&state, &user.id, &caller, &instruction, current).await
+        refine_design(
+            &state,
+            &user.id,
+            &caller,
+            id.as_deref(),
+            &instruction,
+            current,
+        )
+        .await
     } else {
         start_design(&state, &user.id, &caller, &instruction).await
     };
     Ok(match out {
-        Ok(d) => Json(json!({ "design": d })).into_response(),
+        Ok(d) => Json(json!({ "design": wire(&d) })).into_response(),
         Err(e) => failed(e),
     })
 }
@@ -131,10 +161,18 @@ pub async fn patch(
         Ok(f) => f,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    Ok(match edit_design(&state, &user.id, fields).await {
-        Ok(d) => Json(json!({ "design": d })).into_response(),
-        Err(e) => failed(e),
-    })
+    // The design these edits are for: absent only for a manual start, where
+    // the person holds none. Naming another is the stale tab's 409.
+    let id = match optional_uuid_member(obj, "id") {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    Ok(
+        match edit_design(&state, &user.id, id.as_deref(), fields).await {
+            Ok(d) => Json(json!({ "design": wire(&d) })).into_response(),
+            Err(e) => failed(e),
+        },
+    )
 }
 
 pub async fn delete(

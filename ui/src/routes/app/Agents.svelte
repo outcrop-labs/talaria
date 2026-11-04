@@ -2,7 +2,8 @@
   import PageSurface from '@/components/app/PageSurface.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { CircleAlert, Import, LayoutGrid, List, Plus, Repeat } from '@lucide/svelte'
-  import { designHeadline, useAgentDesign } from '@/lib/agent-design'
+  import { designHeadline, pendingDesign, useAgentDesign } from '@/lib/agent-design'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { searchParams } from 'sv-router'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
@@ -165,7 +166,7 @@
   // or failed, the designed agent's name once landed. Null when there is
   // none. Read only where the person may hire.
   const designQuery = useAgentDesign(() => canHire)
-  const design = $derived(designQuery.data?.design ?? null)
+  const design = $derived(pendingDesign(designQuery.data?.design))
   const designRow = $derived(design ? { status: design.status, headline: designHeadline(design) } : null)
   // The bell's link back (`/agents?design=open`): open New agent on the
   // design, then drop the parameter so a reload does not reopen it.
@@ -282,11 +283,9 @@
               <Plus size={16} />
             </Button>
             {#if designRow}
-              <span
-                class="pointer-events-none absolute -right-1 -top-1 size-2.5 rounded-full border-2 border-bg {designRow.status === 'error' ? 'bg-danger' : 'bg-accent'} {designRow.status === 'generating' ? 'animate-pulse' : ''}"
-                data-testid="design-mark"
-                data-status={designRow.status}
-              ></span>
+              <span class="pointer-events-none absolute -right-0.5 -top-0.5 flex" data-testid="design-mark" data-status={designRow.status}>
+                <StatusDot status={designRow.status === 'error' ? 'danger' : 'accent'} pulse={designRow.status === 'generating'} class="h-2 w-2" />
+              </span>
             {/if}
           </span>
           {#if isAdmin}

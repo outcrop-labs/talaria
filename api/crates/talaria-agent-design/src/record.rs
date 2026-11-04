@@ -89,6 +89,12 @@ pub struct AgentDesign {
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub updated_at: i64,
+    /// The hire this design is spent on, while that hire is in flight. The
+    /// design is consumed when the hire finishes and handed back (with the
+    /// hire's sentence in `error`) when it fails, so a hire that needs an
+    /// edit never loses the design, and a second hire from it is refused.
+    #[serde(default)]
+    pub hire_run_id: Option<String>,
 }
 
 /// A transition the record refuses — each is a 409 the person can act on.
@@ -98,6 +104,11 @@ pub enum Refusal {
     Generating,
     /// There is no draft to refine.
     NothingToRefine,
+    /// The caller named a design that is no longer the person's (another tab
+    /// or device discarded or replaced it).
+    Stale,
+    /// A hire from this design is in flight.
+    Hiring,
 }
 
 impl Refusal {
@@ -107,6 +118,10 @@ impl Refusal {
                 "an agent design is still generating — wait for it, or discard it"
             }
             Refusal::NothingToRefine => "there is no agent design to refine — describe one first",
+            Refusal::Stale => {
+                "this agent design was replaced or discarded since it was opened — showing the current one"
+            }
+            Refusal::Hiring => "an agent is already being hired from this design",
         }
     }
 }
@@ -121,18 +136,20 @@ pub enum Start {
     Fresh(AgentDesign),
 }
 
-/// A describe. A record that is generating is returned as it is; anything
-/// idle (ready, error, a manual start) is replaced, because a fresh describe
-/// is a fresh intent.
+/// A describe. A record that is generating is returned as it is, unless its
+/// run can no longer answer (`run`); anything idle (ready, error, a manual
+/// start) is replaced, because a fresh describe is a fresh intent.
 pub fn start(
     existing: Option<&AgentDesign>,
     purpose: &str,
     now: i64,
-    design_id: String,
-    run_id: String,
+    ids: (String, String),
+    run: RunSeen,
 ) -> Start {
+    let (design_id, run_id) = ids;
     if let Some(d) = existing
         && d.status == DesignStatus::Generating
+        && stalled(d, run, now).is_none()
     {
         return Start::Existing(d.clone());
     }
@@ -150,7 +167,19 @@ pub fn start(
         started_at: Some(now),
         finished_at: None,
         updated_at: now,
+        hire_run_id: None,
     })
+}
+
+/// The design `want` names must be the one held: a caller editing a design
+/// another tab replaced is told so rather than writing over the new one. A
+/// caller naming none may only start one where none exists.
+fn names(existing: Option<&AgentDesign>, want: Option<&str>) -> Result<(), Refusal> {
+    match (existing, want) {
+        (Some(d), Some(w)) if d.id == w => Ok(()),
+        (None, None) => Ok(()),
+        _ => Err(Refusal::Stale),
+    }
 }
 
 /// A refine of the current draft. `current` is the form as the person sees
@@ -158,16 +187,25 @@ pub fn start(
 /// and replaces the stored draft when given.
 pub fn refine(
     existing: Option<&AgentDesign>,
+    want: Option<&str>,
     instruction: &str,
     current: Option<DraftFields>,
     now: i64,
     run_id: String,
 ) -> Result<AgentDesign, Refusal> {
     let Some(d) = existing else {
-        return Err(Refusal::NothingToRefine);
+        return Err(if want.is_some() {
+            Refusal::Stale
+        } else {
+            Refusal::NothingToRefine
+        });
     };
+    names(existing, want)?;
     if d.status == DesignStatus::Generating {
         return Err(Refusal::Generating);
+    }
+    if d.hire_run_id.is_some() {
+        return Err(Refusal::Hiring);
     }
     let Some(base) = current.or_else(|| d.draft.clone()) else {
         return Err(Refusal::NothingToRefine);
@@ -240,16 +278,22 @@ fn answering(d: &AgentDesign, run_id: &str) -> bool {
 /// manual start): the draft is theirs now. Refused while a run is writing it.
 pub fn edit(
     existing: Option<&AgentDesign>,
+    want: Option<&str>,
     fields: DraftFields,
     now: i64,
     design_id: String,
 ) -> Result<AgentDesign, Refusal> {
+    names(existing, want)?;
     match existing {
         Some(d) if d.status == DesignStatus::Generating => Err(Refusal::Generating),
+        Some(d) if d.hire_run_id.is_some() => Err(Refusal::Hiring),
+        // The receipt is the refine's, not the person's: a hand edit after a
+        // refine ends it, so typing never reads as "Refine applied".
         Some(d) => Ok(AgentDesign {
             status: DesignStatus::Ready,
             error: None,
             draft: Some(fields),
+            previous: None,
             updated_at: now,
             ..d.clone()
         }),
@@ -267,7 +311,85 @@ pub fn edit(
             started_at: None,
             finished_at: None,
             updated_at: now,
+            hire_run_id: None,
         }),
+    }
+}
+
+/// Spend the design on a hire: refused when it is not the one held, not
+/// ready, or already being hired by a hire that may still finish (`other`
+/// is the claim the caller found and whether its hire is still live).
+pub fn claim(
+    existing: Option<&AgentDesign>,
+    want: &str,
+    hire_run_id: &str,
+    other: Option<(&str, bool)>,
+    now: i64,
+) -> Result<AgentDesign, Refusal> {
+    names(existing, Some(want))?;
+    let d = existing.ok_or(Refusal::Stale)?;
+    if d.status == DesignStatus::Generating {
+        return Err(Refusal::Generating);
+    }
+    if let Some(held) = d.hire_run_id.as_deref() {
+        // Only a claim the caller saw ended may be taken over.
+        if other != Some((held, false)) {
+            return Err(Refusal::Hiring);
+        }
+    }
+    Ok(AgentDesign {
+        hire_run_id: Some(hire_run_id.to_string()),
+        error: None,
+        updated_at: now,
+        ..d.clone()
+    })
+}
+
+/// What a read saw of the hire a design is spent on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HireSeen {
+    Live,
+    Done,
+    /// Failed or cancelled, with the hire's own sentence when it has one.
+    Failed(Option<String>),
+    Missing,
+}
+
+/// What a settled hire does to its design: nothing yet, consumed (the hire
+/// finished), or handed back with the hire's sentence (it failed).
+pub enum Settled {
+    Unchanged,
+    Consumed,
+    Released(Box<AgentDesign>),
+}
+
+pub fn settle_hire(d: &AgentDesign, hire: &HireSeen, now: i64) -> Settled {
+    let Some(_) = d.hire_run_id.as_deref() else {
+        return Settled::Unchanged;
+    };
+    let why = match hire {
+        HireSeen::Live => return Settled::Unchanged,
+        HireSeen::Done => return Settled::Consumed,
+        HireSeen::Failed(e) => e.clone(),
+        HireSeen::Missing if now - d.updated_at > MISSING_RUN_GRACE_MS => None,
+        HireSeen::Missing => return Settled::Unchanged,
+    };
+    Settled::Released(Box::new(release(d, why.as_deref(), now)))
+}
+
+/// Hand the design back after a hire that did not go through.
+pub fn release(d: &AgentDesign, why: Option<&str>, now: i64) -> AgentDesign {
+    let why = why.map(str::trim).filter(|w| !w.is_empty());
+    AgentDesign {
+        hire_run_id: None,
+        error: Some(match why {
+            Some(w) => {
+                format!("The hire did not finish: {w}. Check the fields and create it again.")
+            }
+            None => "The hire did not finish. Check the fields and create it again.".to_string(),
+        }),
+        updated_at: now,
+        ..d.clone()
     }
 }
 
@@ -320,7 +442,13 @@ mod tests {
     }
 
     fn fresh(purpose: &str, run: &str) -> AgentDesign {
-        match start(None, purpose, 1_000, "d-1".into(), run.into()) {
+        match start(
+            None,
+            purpose,
+            1_000,
+            ("d-1".into(), run.into()),
+            RunSeen::Live,
+        ) {
             Start::Fresh(d) => d,
             Start::Existing(_) => unreachable!(),
         }
@@ -340,15 +468,26 @@ mod tests {
     #[test]
     fn a_second_start_while_generating_follows_the_first() {
         let d = fresh("first", "r-1");
-        let again = start(Some(&d), "second", 2_000, "d-2".into(), "r-2".into());
+        let again = start(
+            Some(&d),
+            "second",
+            2_000,
+            ("d-2".into(), "r-2".into()),
+            RunSeen::Live,
+        );
         assert_eq!(again, Start::Existing(d));
     }
 
     #[test]
     fn a_describe_replaces_an_idle_design() {
         let ready = land(&fresh("first", "r-1"), "r-1", draft("Scout"), 2_000).unwrap();
-        let Start::Fresh(next) = start(Some(&ready), "second", 3_000, "d-2".into(), "r-2".into())
-        else {
+        let Start::Fresh(next) = start(
+            Some(&ready),
+            "second",
+            3_000,
+            ("d-2".into(), "r-2".into()),
+            RunSeen::Live,
+        ) else {
             panic!("an idle design is replaced");
         };
         assert_eq!(next.id, "d-2");
@@ -356,7 +495,13 @@ mod tests {
         assert!(next.draft.is_none() && next.chat.is_empty());
         let failed = fail(&fresh("x", "r-1"), "r-1", "no", 2_000).unwrap();
         assert!(matches!(
-            start(Some(&failed), "y", 3_000, "d-3".into(), "r-3".into()),
+            start(
+                Some(&failed),
+                "y",
+                3_000,
+                ("d-3".into(), "r-3".into()),
+                RunSeen::Live
+            ),
             Start::Fresh(_)
         ));
     }
@@ -392,6 +537,7 @@ mod tests {
         edited.role = "Lead Analyst".into();
         let r = refine(
             Some(&ready),
+            Some("d-1"),
             "make it terse",
             Some(edited.clone()),
             6_000,
@@ -415,16 +561,16 @@ mod tests {
     fn a_refine_is_refused_while_generating_or_with_no_draft() {
         let gen_ = fresh("a scout", "r-1");
         assert_eq!(
-            refine(Some(&gen_), "x", None, 2_000, "r-2".into()),
+            refine(Some(&gen_), Some("d-1"), "x", None, 2_000, "r-2".into()),
             Err(Refusal::Generating)
         );
         assert_eq!(
-            refine(None, "x", None, 2_000, "r-2".into()),
+            refine(None, None, "x", None, 2_000, "r-2".into()),
             Err(Refusal::NothingToRefine)
         );
         let failed = fail(&gen_, "r-1", "no", 2_000).unwrap();
         assert_eq!(
-            refine(Some(&failed), "x", None, 3_000, "r-2".into()),
+            refine(Some(&failed), Some("d-1"), "x", None, 3_000, "r-2".into()),
             Err(Refusal::NothingToRefine)
         );
     }
@@ -432,7 +578,7 @@ mod tests {
     #[test]
     fn a_failed_refine_keeps_the_draft_it_started_from() {
         let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
-        let r = refine(Some(&ready), "x", None, 6_000, "r-2".into()).unwrap();
+        let r = refine(Some(&ready), Some("d-1"), "x", None, 6_000, "r-2".into()).unwrap();
         let failed = fail(&r, "r-2", "Muse could not design an agent", 7_000).unwrap();
         assert_eq!(failed.status, DesignStatus::Error);
         assert_eq!(failed.draft, Some(draft("Scout")));
@@ -451,7 +597,15 @@ mod tests {
     fn the_chat_window_keeps_eight_turns_then_the_new_pair() {
         let mut d = land(&fresh("t0", "r-0"), "r-0", draft("A"), 1).unwrap();
         for i in 1..8 {
-            let r = refine(Some(&d), &format!("t{i}"), None, i, format!("r-{i}")).unwrap();
+            let r = refine(
+                Some(&d),
+                Some("d-1"),
+                &format!("t{i}"),
+                None,
+                i,
+                format!("r-{i}"),
+            )
+            .unwrap();
             d = land(&r, &format!("r-{i}"), draft("A"), i).unwrap();
         }
         assert_eq!(d.chat.len(), 10);
@@ -463,15 +617,22 @@ mod tests {
     fn an_edit_is_refused_while_generating_and_makes_a_manual_start_otherwise() {
         let gen_ = fresh("a scout", "r-1");
         assert_eq!(
-            edit(Some(&gen_), draft("X"), 2_000, "d-2".into()),
+            edit(Some(&gen_), Some("d-1"), draft("X"), 2_000, "d-2".into()),
             Err(Refusal::Generating)
         );
-        let manual = edit(None, draft("Hand"), 2_000, "d-2".into()).unwrap();
+        let manual = edit(None, None, draft("Hand"), 2_000, "d-2".into()).unwrap();
         assert_eq!(manual.status, DesignStatus::Ready);
         assert_eq!(manual.id, "d-2");
         assert!(manual.run_id.is_none() && manual.chat.is_empty());
         let failed = fail(&gen_, "r-1", "no", 2_000).unwrap();
-        let fixed = edit(Some(&failed), draft("Hand"), 3_000, "d-3".into()).unwrap();
+        let fixed = edit(
+            Some(&failed),
+            Some("d-1"),
+            draft("Hand"),
+            3_000,
+            "d-3".into(),
+        )
+        .unwrap();
         assert_eq!(fixed.status, DesignStatus::Ready);
         assert_eq!(fixed.error, None);
         assert_eq!(fixed.id, "d-1", "an edit keeps the record it edits");
@@ -501,5 +662,158 @@ mod tests {
         assert_eq!(v["runId"], "r-1");
         assert_eq!(v["startedAt"], 1_000);
         assert!(v.get("finishedAt").is_some());
+    }
+
+    #[test]
+    fn a_describe_over_a_design_whose_run_died_starts_fresh() {
+        let dead = fresh("an orphan", "r-1");
+        let later = 1_000 + MISSING_RUN_GRACE_MS + 1;
+        assert!(matches!(
+            start(
+                Some(&dead),
+                "again",
+                later,
+                ("d-2".into(), "r-2".into()),
+                RunSeen::Ended
+            ),
+            Start::Fresh(_)
+        ));
+        assert!(matches!(
+            start(
+                Some(&dead),
+                "again",
+                2_000,
+                ("d-2".into(), "r-2".into()),
+                RunSeen::Live
+            ),
+            Start::Existing(_)
+        ));
+    }
+
+    #[test]
+    fn an_edit_or_refine_must_name_the_design_it_edits() {
+        let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
+        assert_eq!(
+            edit(
+                Some(&ready),
+                Some("d-other"),
+                draft("X"),
+                6_000,
+                "d-9".into()
+            ),
+            Err(Refusal::Stale)
+        );
+        assert_eq!(
+            edit(Some(&ready), None, draft("X"), 6_000, "d-9".into()),
+            Err(Refusal::Stale),
+            "a nameless save only starts a design where none exists"
+        );
+        assert_eq!(
+            edit(None, Some("d-1"), draft("X"), 6_000, "d-9".into()),
+            Err(Refusal::Stale),
+            "a save for a design discarded elsewhere does not recreate it"
+        );
+        assert_eq!(
+            refine(
+                Some(&ready),
+                Some("d-other"),
+                "x",
+                None,
+                6_000,
+                "r-2".into()
+            ),
+            Err(Refusal::Stale)
+        );
+        assert_eq!(
+            refine(None, Some("d-1"), "x", None, 6_000, "r-2".into()),
+            Err(Refusal::Stale)
+        );
+    }
+
+    #[test]
+    fn a_hand_edit_ends_the_refine_receipt() {
+        let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
+        let r = refine(Some(&ready), Some("d-1"), "x", None, 6_000, "r-2".into()).unwrap();
+        let landed = land(&r, "r-2", draft("Terse"), 7_000).unwrap();
+        assert!(landed.previous.is_some());
+        let edited = edit(
+            Some(&landed),
+            Some("d-1"),
+            draft("Hand"),
+            8_000,
+            "d-9".into(),
+        )
+        .unwrap();
+        assert_eq!(edited.previous, None);
+    }
+
+    #[test]
+    fn a_hire_claims_the_design_once_and_settles_it() {
+        let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
+        let claimed = claim(Some(&ready), "d-1", "h-1", None, 6_000).unwrap();
+        assert_eq!(claimed.hire_run_id.as_deref(), Some("h-1"));
+        // A second tab, a second hire: refused while the first may finish.
+        assert_eq!(
+            claim(Some(&claimed), "d-1", "h-2", None, 6_500),
+            Err(Refusal::Hiring)
+        );
+        assert_eq!(
+            claim(Some(&claimed), "d-1", "h-2", Some(("h-1", true)), 6_500),
+            Err(Refusal::Hiring)
+        );
+        assert_eq!(
+            claim(Some(&claimed), "d-9", "h-2", None, 6_500),
+            Err(Refusal::Stale)
+        );
+        // Not editable or refinable while the hire runs.
+        assert_eq!(
+            edit(Some(&claimed), Some("d-1"), draft("X"), 7_000, "d-9".into()),
+            Err(Refusal::Hiring)
+        );
+        assert_eq!(
+            refine(Some(&claimed), Some("d-1"), "x", None, 7_000, "r-2".into()),
+            Err(Refusal::Hiring)
+        );
+        // The hire finished: the design is spent.
+        assert!(matches!(
+            settle_hire(&claimed, &HireSeen::Done, 8_000),
+            Settled::Consumed
+        ));
+        assert!(matches!(
+            settle_hire(&claimed, &HireSeen::Live, 8_000),
+            Settled::Unchanged
+        ));
+        // The hire failed: the design comes back, saying why, and may be hired again.
+        let Settled::Released(back) = settle_hire(
+            &claimed,
+            &HireSeen::Failed(Some("the department research is taken".into())),
+            8_000,
+        ) else {
+            panic!("a failed hire hands the design back");
+        };
+        assert_eq!(back.hire_run_id, None);
+        assert_eq!(back.draft, Some(draft("Scout")));
+        assert!(
+            back.error
+                .as_deref()
+                .unwrap()
+                .contains("the department research is taken")
+        );
+        assert!(claim(Some(&back), "d-1", "h-3", None, 9_000).is_ok());
+        // A claim whose hire was seen ended may be taken over.
+        assert!(claim(Some(&claimed), "d-1", "h-3", Some(("h-1", false)), 9_000).is_ok());
+        // A hire row that never appeared hands it back after the grace.
+        assert!(matches!(
+            settle_hire(&claimed, &HireSeen::Missing, 7_000),
+            Settled::Unchanged
+        ));
+        assert!(matches!(
+            settle_hire(
+                &claimed,
+                &HireSeen::Missing,
+                6_000 + MISSING_RUN_GRACE_MS + 1
+            ),
+            Settled::Released(_)
+        ));
     }
 }

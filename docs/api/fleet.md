@@ -85,11 +85,15 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_design.rs`](../../api
 >            the elapsed count agrees across tabs. `?watching=1` is the open
 >            modal: a landing in the next few seconds skips the bell.
 >   POST   → start (`{ instruction }`) or refine (`{ instruction, refine:
->            true, current? }`). A start while one generates answers that one.
+>            true, id, current? }`). A start while one generates answers that
+>            one.
 >   PATCH  → the person's own draft (review-step edits, a role template, a
->            manual start). 409 while a run is writing it.
+>            manual start), naming the design (`id`) unless there is none.
+>            409 while a run or a hire holds it, or when `id` is stale.
 >   DELETE → discard (`{ id? }`); 404 when there is nothing (another tab got
->            there first). A hire with `designId` consumes it too.
+>            there first). A hire with `designId` claims it, and the design is
+>            consumed once that hire finishes. The record's `chat` stays on
+>            the server; the wire carries `chatLength`.
 > The permission is the hire's (`agents.manage`): the design exists to be
 > hired.
 
@@ -105,12 +109,14 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_design.rs`](../../api
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `instruction` | `string(1, 8000)` |  |
+| `id` | `uuid?` | The design a refine revises; a start names none. |
 | `refine` | `bool?` |  |
 
 ### PATCH `/api/fleet/agent-design` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `id` | `uuid?` | The design these edits are for: absent only for a manual start, where the person holds none. Naming another is the stale tab's 409. |
 | `name` | `string(0, 60)` |  |
 | `handle` | `string(0, 30)` |  |
 | `department` | `string(0, 40)` |  |

@@ -13,8 +13,10 @@
     EMPTY_FIELDS,
     discardDesign,
     elapsedSeconds,
+    isConflict,
     landingKey,
     openingStep,
+    pendingDesign,
     refineDesign,
     refineReceipt,
     saveDesign,
@@ -78,19 +80,29 @@
   $effect(() => watchDesign())
 
   const read = $derived(designQuery.data)
-  const design = $derived(read?.design ?? null)
+  // DUPLICATE IS ITS OWN FORM: a preselected chassis never reads, writes or
+  // spends the person's waiting design. And a design a hire is spending is
+  // not offered either (the hiring strip has it).
+  const design = $derived(preselect ? null : pendingDesign(read?.design))
   const generating = $derived(design?.status === 'generating')
   const genErr = $derived(design?.status === 'error' ? design.error : null)
-  const generated = $derived((design?.chat.length ?? 0) > 0)
+  // A design handed back by a failed hire says why on the review step.
+  const hireErr = $derived(design?.status === 'ready' ? design.error : null)
+  const generated = $derived((design?.chatLength ?? 0) > 0)
   const lastChange = $derived(refineReceipt(design))
+  // The first read failed (a 500, a deploy in progress): say so, offer a
+  // retry, and leave describe and "Configure manually" open meanwhile.
+  const readErr = $derived(!preselect && designQuery.isError && !read ? errorMessage(designQuery.error) : null)
 
   // The step: chosen from the record once it is known (the roster usually
   // read it already, so this is the first frame), then moved by the person
   // and by a landing. Null only while the very first read is out.
   // svelte-ignore state_referenced_locally -- reason: the opening step is chosen once from the preselect and the cached record; the modal remounts per open
-  let step = $state<'describe' | 'review' | null>(preselect ? 'review' : read ? openingStep(read.design, false) : null)
+  let step = $state<'describe' | 'review' | null>(preselect ? 'review' : read ? openingStep(pendingDesign(read.design), false) : null)
   $effect(() => {
-    if (step === null && read) step = openingStep(read.design, false)
+    if (step !== null) return
+    if (read) step = openingStep(pendingDesign(read.design), false)
+    else if (designQuery.isError) step = 'describe'
   })
 
   // The elapsed count, on the server's clock: the same number in every tab
@@ -148,22 +160,54 @@
   })
 
   // Hand edits: the form now, the record shortly after (one save per pause).
+  // SAVED AS YOU TYPE means no edit is ever lost: a pending save is FLUSHED,
+  // never dropped — on close, on Create, and as the page goes away (with
+  // `keepalive`, so it outlives the tab).
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   let saveErr = $state<string | null>(null)
-  const persist = () => {
+  const save = (keepalive = false): Promise<void> => {
     // A run is writing the record (a refine): its landing reseeds the form,
-    // and the server refuses an edit until then.
-    if (generating) return
+    // and the edits being typed rode in with the refine.
+    if (generating || preselect) return Promise.resolve()
+    return saveDesign(qc, $state.snapshot(form), design?.id, keepalive ? { keepalive: true } : undefined)
+      .then(() => {
+        saveErr = null
+      })
+      .catch(async (e: unknown) => {
+        saveErr = errorMessage(e)
+        // The design changed elsewhere (or a hire holds it): show the one
+        // the server holds now, rather than keep typing into a ghost.
+        if (isConflict(e)) {
+          await qc.refetchQueries({ queryKey: DESIGN_KEY })
+          seededFrom = null
+        }
+      })
+  }
+  const flush = (keepalive = false): Promise<void> => {
+    if (!saveTimer) return Promise.resolve()
+    clearTimeout(saveTimer)
+    saveTimer = null
+    return save(keepalive)
+  }
+  const persist = () => {
+    // Duplicate holds its own form, and a look at "Configure manually" that
+    // never named anything is not a design worth keeping for three days.
+    if (preselect || generating) return
+    if (!design && !form.name.trim() && !form.handle.trim()) return
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => {
       saveTimer = null
-      saveDesign(qc, $state.snapshot(form))
-        .then(() => (saveErr = null))
-        .catch((e: unknown) => (saveErr = errorMessage(e)))
+      void save()
     }, 600)
   }
-  $effect(() => () => {
-    if (saveTimer) clearTimeout(saveTimer)
+  $effect(() => {
+    const away = () => void flush(true)
+    window.addEventListener('pagehide', away)
+    return () => {
+      window.removeEventListener('pagehide', away)
+      // The modal closing (Cancel, the X, a navigation) saves what was typed.
+      void flush(true)
+    }
   })
 
   const set = (patch: Partial<DraftFields>) => {
@@ -226,11 +270,20 @@
 
   const refine = async (text: string) => {
     startErr = null
+    if (!design) return
+    // The pending edits ride in the refine's `current`; a save fired into
+    // the run it starts would only be refused.
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
     try {
-      const d = await refineDesign(qc, text, $state.snapshot(form))
+      const d = await refineDesign(qc, design.id, text, $state.snapshot(form))
       seededFrom = landingKey(d)
     } catch (e) {
       startErr = errorMessage(e)
+      if (isConflict(e)) {
+        await qc.refetchQueries({ queryKey: DESIGN_KEY })
+        seededFrom = null
+      }
     }
   }
 
@@ -255,13 +308,16 @@
   // for it is what made creation feel broken — a stuck spinner, a proxy
   // timeout, an agent that only existed after a refresh. The roster strip
   // shows the phases; the only error that belongs HERE is one the open form
-  // can fix (a taken handle). The hire names the design, and the server
-  // spends it once the hire is queued.
+  // can fix (a taken handle). The hire names the design: the server spends
+  // it on this hire (a second one is refused), consumes it when the hire
+  // finishes, and hands it back here if the hire fails.
   const create = async () => {
     err = null
     busy = true
     try {
-      if (saveTimer) clearTimeout(saveTimer)
+      // The latest edits reach the record first, so a refusal below leaves
+      // the design exactly as the form shows it.
+      await flush()
       const f = form
       const r = await hireFleetAgent({
         slug: f.handle,
@@ -388,6 +444,12 @@
       {/key}
     </AutoHeight>
     {#if genErr || startErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr ?? startErr}</p>{/if}
+    {#if readErr}
+      <p transition:slide={{ duration: 150 }} class="text-xs text-danger" data-testid="design-read-error">
+        Could not check for a design in progress: {readErr}
+        <button type="button" class="ml-1 underline hover:text-fg" onclick={() => void designQuery.refetch()}>Retry</button>
+      </p>
+    {/if}
     <div class="flex items-center gap-3 border-t border-line pt-4">
       {#if generating}
         <button type="button" class="text-xs text-muted hover:text-danger" onclick={() => void discard()} data-testid="design-discard">
@@ -515,6 +577,7 @@
       {/if}
 
       <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start the container now" class="gap-2 text-sm text-fg" />
+      {#if hireErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger" data-testid="design-hire-error">{hireErr}</div>{/if}
       {#if err || saveErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err ?? `Your edits were not saved: ${saveErr}`}</div>{/if}
       <div class="flex items-center gap-2 border-t border-line pt-4">
         {#if !preselect}

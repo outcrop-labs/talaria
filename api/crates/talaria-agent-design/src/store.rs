@@ -55,9 +55,14 @@ return 1
 });
 
 /// The record and the revision a swap must name.
+///
+/// THE REVISION NEVER REPEATS: a fresh UUID per write. A counter restarted
+/// at 1 after a delete (or a TTL expiry), so a landing that read "rev 1" of a
+/// design, stalled, and swapped after the person discarded it and described
+/// another — also "rev 1" — wrote the dead design over the new one.
 #[derive(Debug, Clone)]
 pub struct Stored {
-    pub rev: u64,
+    pub rev: String,
     pub design: AgentDesign,
 }
 
@@ -74,11 +79,8 @@ pub async fn read(conn: &mut ConnectionManager, user_id: &str) -> RedisResult<Op
     let (Some(rev), Some(json)) = (rev, json) else {
         return Ok(None);
     };
-    match (
-        rev.parse::<u64>(),
-        serde_json::from_str::<AgentDesign>(&json),
-    ) {
-        (Ok(rev), Ok(design)) => Ok(Some(Stored { rev, design })),
+    match (rev.is_empty(), serde_json::from_str::<AgentDesign>(&json)) {
+        (false, Ok(design)) => Ok(Some(Stored { rev, design })),
         _ => {
             tracing::warn!("[agent-design] unreadable record for {user_id}; removed");
             let _: () = conn.del(key(user_id)).await?;
@@ -114,11 +116,8 @@ pub async fn update<T>(
 ) -> RedisResult<T> {
     for _ in 0..SWAP_TRIES {
         let current = read(conn, user_id).await?;
-        let expected = current
-            .as_ref()
-            .map(|s| s.rev.to_string())
-            .unwrap_or_default();
-        let next_rev = current.as_ref().map_or(1, |s| s.rev + 1).to_string();
+        let expected = current.as_ref().map(|s| s.rev.clone()).unwrap_or_default();
+        let next_rev = uuid::Uuid::new_v4().to_string();
         let (new_rev, json, out) = match decide(current.as_ref().map(|s| &s.design)) {
             Write::Keep(out) => return Ok(out),
             Write::Delete(out) => (String::new(), String::new(), out),
@@ -128,15 +127,7 @@ pub async fn update<T>(
                 out,
             ),
         };
-        let swapped: i32 = SWAP
-            .key(key(user_id))
-            .arg(expected)
-            .arg(new_rev)
-            .arg(json)
-            .arg(DESIGN_TTL_SECS)
-            .invoke_async(conn)
-            .await?;
-        if swapped == 1 {
+        if swap_raw(conn, user_id, &expected, &new_rev, &json).await? {
             return Ok(out);
         }
     }
@@ -144,6 +135,44 @@ pub async fn update<T>(
         redis::ErrorKind::Client,
         "agent design write kept losing the race",
     )))
+}
+
+/// One compare-and-set: write `json` under `new_rev` (or delete, when
+/// `new_rev` is empty) only if the stored revision is still `expected`.
+async fn swap_raw(
+    conn: &mut ConnectionManager,
+    user_id: &str,
+    expected: &str,
+    new_rev: &str,
+    json: &str,
+) -> RedisResult<bool> {
+    let swapped: i32 = SWAP
+        .key(key(user_id))
+        .arg(expected)
+        .arg(new_rev)
+        .arg(json)
+        .arg(DESIGN_TTL_SECS)
+        .invoke_async(conn)
+        .await?;
+    Ok(swapped == 1)
+}
+
+/// The same swap with a record, for a test standing in for a writer that
+/// read `expected` and wrote late.
+#[cfg(test)]
+pub(crate) async fn swap(
+    conn: &mut ConnectionManager,
+    user_id: &str,
+    expected: &str,
+    next: Option<&AgentDesign>,
+) -> RedisResult<bool> {
+    let json = next.map(|d| serde_json::to_string(d).expect("a design serializes"));
+    let rev = if json.is_some() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        String::new()
+    };
+    swap_raw(conn, user_id, expected, &rev, json.as_deref().unwrap_or("")).await
 }
 
 /// The open modal is looking at this person's design right now.
