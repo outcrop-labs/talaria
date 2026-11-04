@@ -104,6 +104,30 @@ async fn position_of(pg: &PgPool, agent_model: &str, queued_ms: i64) -> i64 {
     n.max(1)
 }
 
+/// The tickets an agent has live work sessions on, oldest first — what a
+/// queued ticket is waiting BEHIND. The wait row says why it waits (RAM, the
+/// live-job cap); this says on what. A ticket ref when the board numbers its
+/// tickets, else the title's head.
+pub async fn working_on(pg: &PgPool, agent_model: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "select coalesce( \
+                  case when t.ticket_no is not null \
+                       then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end, \
+                  left(t.title, 40)) \
+         from runs r \
+         join tasks t on t.id::text = r.subject_id \
+         join boards b on b.id = t.board_id \
+         where r.kind = 'work-session' and r.state in ('queued', 'running', 'awaiting') \
+           and r.input->>'agentModel' = $1 \
+         order by r.created_at \
+         limit 16",
+    )
+    .bind(agent_model)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default()
+}
+
 pub fn phase_of(position: i64) -> String {
     if position <= 1 {
         "next up — waiting for RAM".into()

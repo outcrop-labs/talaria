@@ -24,6 +24,7 @@ talaria-auth = { workspace = true }
 talaria-auth-config = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-body = { workspace = true }
+talaria-work-pulse = { workspace = true }
 talaria-brain-health = { workspace = true }
 talaria-channels = { workspace = true }
 talaria-chips = { workspace = true }

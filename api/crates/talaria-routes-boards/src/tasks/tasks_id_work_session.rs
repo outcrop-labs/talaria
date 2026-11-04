@@ -55,7 +55,8 @@ pub async fn get(
     // Terminal runs are history (the ticket strip tells that story); this
     // surface answers one question — is anyone on it right now.
     let row = sqlx::query(
-        "select id::text, state::text, phase, input, checkpoint \
+        "select id::text, state::text, phase, input, checkpoint, agent_run_id, \
+                (trunc(extract(epoch from created_at) * 1000))::bigint as since_ms \
          from runs \
          where kind = 'work-session' and subject_id = $1 \
            and state in ('queued', 'running', 'awaiting') \
@@ -68,9 +69,14 @@ pub async fn get(
         Ok(r) => r,
         Err(e) => return Ok(internal("[work-session] read failed", e)),
     };
-    let wait = talaria_work_wait::for_task(&state.pg, &id)
-        .await
-        .map(|w| talaria_work_wait::wire(&w));
+    let wait = match talaria_work_wait::for_task(&state.pg, &id).await {
+        Some(w) => {
+            let mut wire = talaria_work_wait::wire(&w);
+            wire["behind"] = json!(talaria_work_wait::working_on(&state.pg, &w.agent_model).await);
+            Some(wire)
+        }
+        None => None,
+    };
     let Some(row) = row else {
         return Ok(Json(json!({ "session": null, "wait": wait })).into_response());
     };
@@ -79,14 +85,36 @@ pub async fn get(
     let phase: Option<String> = row.get("phase");
     let input: serde_json::Value = row.get("input");
     let checkpoint: serde_json::Value = row.get("checkpoint");
+    let agent_model = input
+        .get("agentModel")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let live = crate::work_status::Live {
+        run_id: run_id.clone(),
+        task_id: id.clone(),
+        agent_model: agent_model.clone(),
+        since_ms: row.get("since_ms"),
+        agent_run: row
+            .get::<Option<String>, _>("agent_run_id")
+            .filter(|s| !s.is_empty()),
+    };
+    let status = crate::work_status::statuses(&state, std::slice::from_ref(&live))
+        .await
+        .pop()
+        .unwrap_or_default();
     Ok(Json(json!({
         "session": {
             "runId": run_id,
             "state": run_state,
             "phase": phase,
-            "agentModel": input.get("agentModel").and_then(|v| v.as_str()),
+            "agentModel": agent_model,
             "turn": checkpoint.get("turn").and_then(|v| v.as_i64()),
             "lastTail": checkpoint.get("lastTail").and_then(|v| v.as_str()),
+            "startedAt": live.since_ms,
+            "activity": status["activity"],
+            "spend": status["spend"],
+            "now": status["now"],
         },
         "wait": wait,
     }))

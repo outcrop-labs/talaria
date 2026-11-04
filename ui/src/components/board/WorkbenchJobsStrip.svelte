@@ -17,7 +17,20 @@
     plan: string
     status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
     prUrl: string | null
+    /** The workbench's own setup of this job (clone, toolchains), when the
+     *  server reports it. Rendered as it says, failures loudest. */
+    provisioning?: {
+      state?: string
+      status?: string
+      step?: string
+      detail?: string
+      error?: string | null
+      updatedAt?: string
+    } | null
   }
+  const provState = (p: NonNullable<WbJob['provisioning']>) => (p.state ?? p.status ?? '').toLowerCase()
+  const provFailed = (p: NonNullable<WbJob['provisioning']>) =>
+    !!p.error || ['failed', 'error'].includes(provState(p))
 
   /** Workbench jobs on this ticket — the plan-approval gate and PR links live
    *  here, next to the work they govern. Hidden when there are genuinely none;
@@ -104,6 +117,15 @@
             {/if}
           </span>
         </div>
+        {#if j.provisioning && (provState(j.provisioning) || j.provisioning.error)}
+          {@const p = j.provisioning}
+          <p
+            class={cn('mt-1 truncate font-mono text-[11px]', provFailed(p) ? 'text-danger' : 'text-muted')}
+            title={p.error ?? p.detail ?? undefined}
+          >
+            workbench {provState(p) || 'failed'}{#if p.step} · {p.step}{/if}{#if p.error} · {p.error}{:else if p.detail} · {p.detail}{/if}
+          </p>
+        {/if}
         {#if j.status === 'awaiting_approval' && j.plan}<p class="mt-1.5 line-clamp-4 whitespace-pre-wrap font-sans text-xs text-muted">{j.plan}</p>{/if}
       </div>
     {/each}

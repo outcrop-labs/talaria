@@ -36,6 +36,7 @@
   import { fade, listStagger, QUICK } from '@/lib/motion'
   import { EFFORT_LABEL, OFF_BOARD_STATUSES, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, pgNum, pgNumOr, taskTimeSpent, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
   import { relativeTime } from '@/lib/fleet'
+  import WorkPulse from './WorkPulse.svelte'
   import {
     ALL_KEYS,
     DEFAULT_COLUMNS,
@@ -576,14 +577,18 @@
                           />
                           <div class="relative flex min-w-0 flex-1 items-center gap-2">
                             {#if working(t.id)}
-                              <span class="truncate text-xs text-fg">
-                                {(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working
-                                {#if working(t.id)!.turn}<span class="text-muted"> · turn {working(t.id)!.turn}</span>{/if}
+                              <span class="shrink-0 text-xs text-fg">
+                                {(working(t.id)!.agentModel ?? 'agent').split('-')[0]}
                               </span>
+                              {#if working(t.id)!.activity}
+                                <WorkPulse session={working(t.id)!} receivedAt={work.dataUpdatedAt} compact class="min-w-0 flex-1" />
+                              {:else if working(t.id)!.turn}
+                                <span class="text-xs text-muted">is working · turn {working(t.id)!.turn}</span>
+                              {/if}
                             {:else if queued(t.id)}
                               <span class="truncate text-xs text-fg">
                                 {(queued(t.id)!.agentModel ?? 'agent').split('-')[0]} is queued
-                                <span class="text-muted"> · {queued(t.id)!.phase}</span>
+                                <span class="text-muted"> · {queued(t.id)!.phase}{#if queued(t.id)!.behind?.length} · behind {queued(t.id)!.behind!.join(', ')}{/if}</span>
                               </span>
                             {/if}
                           </div>
