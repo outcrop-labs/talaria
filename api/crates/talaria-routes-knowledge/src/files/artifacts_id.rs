@@ -21,8 +21,9 @@ use talaria_api_facades::kb::perms::{
 use talaria_api_facades::retrieval::artifact_routing::apply_artifact_routing;
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_artifacts::{
-    SaveArtifactPatch, delete_artifact, get_artifact, guarded, index_plan_doc, save_artifact,
-    set_artifact_official, set_artifact_routing, targets_for_artifact,
+    ConditionalSave, SaveArtifactPatch, delete_artifact, get_artifact, guarded, index_plan_doc,
+    save_artifact, save_artifact_content_if_unchanged, set_artifact_official, set_artifact_routing,
+    targets_for_artifact,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -47,6 +48,9 @@ struct PutBody {
     editors: Option<Vec<talaria_api_facades::kb::perms::EditorGrant>>,
     official: Option<bool>,
     rag_routing: Option<String>,
+    /// The `updatedAt` the caller's editing surface was seeded from — see
+    /// `save_artifact_content_if_unchanged`. Absent: the old replace.
+    base_updated_at: Option<String>,
 }
 
 fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, String> {
@@ -62,8 +66,27 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         editors: parse_editors(obj.get("editors"))?,
         official: optional_boolean_member(obj, "official")?,
         rag_routing: optional_max_string_member(obj, "ragRouting", 60)?,
+        base_updated_at: valid_base(optional_max_string_member(obj, "baseUpdatedAt", 40)?)?,
     })
 }
+
+/// `baseUpdatedAt` — the version an editor's buffer started from, as the
+/// `updatedAt` it read (ISO 8601). Shared with `/api/kb/docs/{id}`. A value
+/// that is not a timestamp is the caller's mistake, said at 400, never a
+/// cast failure at 500 inside the conditional update.
+pub(crate) fn valid_base(base: Option<String>) -> Result<Option<String>, String> {
+    if let Some(b) = &base
+        && chrono::DateTime::parse_from_rfc3339(b).is_err()
+    {
+        return Err("baseUpdatedAt must be an ISO 8601 timestamp (the updatedAt you read)".into());
+    }
+    Ok(base)
+}
+
+/// The refusal's sentence — the editor shows its own line, so this one is
+/// written for anything else that reads the 409.
+pub(crate) const STALE_BASE: &str = "this document changed since your copy was loaded — \
+     reload it (or review it in version history) before saving over it";
 
 fn not_found() -> Response {
     house_error(StatusCode::NOT_FOUND, "not found")
@@ -296,7 +319,21 @@ pub async fn get(
     ) {
         return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    Ok(Json(json!({ "artifact": artifact, "editors": editors_json(&editors) })).into_response())
+    // The PUT's content rule (`body_editor`'s human arm), answered on read, so
+    // a surface can leave out what the PUT would refuse (version history's
+    // Restore for a viewer).
+    let can_edit = can_edit_human(
+        &guarded(&artifact),
+        Some(&user.id),
+        who_of(&user).as_deref(),
+        &editors,
+        &team_ids,
+    );
+    let mut wire = serde_json::to_value(&artifact).expect("Artifact serializes");
+    if let Some(obj) = wire.as_object_mut() {
+        obj.insert("canEdit".into(), json!(can_edit));
+    }
+    Ok(Json(json!({ "artifact": wire, "editors": editors_json(&editors) })).into_response())
 }
 
 pub async fn put(
@@ -385,6 +422,52 @@ pub async fn put(
         }
     }
 
+    // NO SILENT OVERWRITE. An editor's save names the version its buffer
+    // started from; its title and body land in one conditional update
+    // (`save_artifact_content_if_unchanged`), and a file that moved under the
+    // buffer — an agent's update_document, another person's save — is
+    // refused with the row as it now is. After authority (a caller who may
+    // not edit learns nothing from a 409), before anything else is written.
+    let content = body.body.is_some() || body.title.is_some();
+    let mut content_saved = false;
+    if let (Some(base), Some(new_body)) = (body.base_updated_at.as_deref(), body.body.as_deref()) {
+        match save_artifact_content_if_unchanged(
+            &state.pg,
+            &id,
+            body.title.as_deref(),
+            new_body,
+            &actor,
+            base,
+        )
+        .await
+        {
+            Ok(ConditionalSave::Saved(_)) => content_saved = true,
+            Ok(ConditionalSave::Moved) => {
+                let now = match get_artifact(&state.pg, &id).await {
+                    Ok(Some(a)) => a,
+                    Ok(None) => return Ok(not_found()),
+                    Err(e) => {
+                        return Ok(arm_failed("[artifacts] re-read failed", &id, "re-read", e));
+                    }
+                };
+                return Ok((
+                    StatusCode::CONFLICT,
+                    Json(json!({ "error": STALE_BASE, "conflict": true, "artifact": now })),
+                )
+                    .into_response());
+            }
+            Ok(ConditionalSave::Missing) => return Ok(not_found()),
+            Err(e) => {
+                return Ok(arm_failed(
+                    "[artifacts] save failed",
+                    &id,
+                    "save-content",
+                    e,
+                ));
+            }
+        }
+    }
+
     if !owner {
         body.official = None;
     }
@@ -405,8 +488,9 @@ pub async fn put(
         SaveArtifactPatch {
             // The Patch's title is string-optional, never nullish — absent
             // means "don't touch", never "clear" (the column is not-null).
-            title: body.title.as_deref().map(Some),
-            body: body.body.as_deref(),
+            // Title and body were already written, conditionally, above.
+            title: body.title.as_deref().filter(|_| !content_saved).map(Some),
+            body: body.body.as_deref().filter(|_| !content_saved),
             icon: body.icon.as_ref().map(|o| o.as_deref()),
             storage_ref: body.storage_ref.as_ref().map(|o| o.as_deref()),
             content_type: body.content_type.as_ref().map(|o| o.as_deref()),
@@ -492,7 +576,7 @@ pub async fn put(
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         }
     }
-    if body.body.is_some() || body.title.is_some() {
+    if content {
         reindex_content(&state, &id, &updated);
     }
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &id).await {
@@ -573,6 +657,18 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_base_that_is_not_a_timestamp_is_a_400_sentence() {
+        assert_eq!(
+            valid_base(Some("2026-11-03T10:00:00.000Z".into()))
+                .unwrap()
+                .as_deref(),
+            Some("2026-11-03T10:00:00.000Z")
+        );
+        assert_eq!(valid_base(None).unwrap(), None);
+        assert!(valid_base(Some("yesterday".into())).is_err());
+    }
 
     #[tokio::test]
     async fn transient_read_names_the_recovery_and_hides_the_engine_error() {

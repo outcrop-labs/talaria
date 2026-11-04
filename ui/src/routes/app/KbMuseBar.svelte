@@ -6,7 +6,7 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import { slide } from '@/lib/motion'
   import { streamMuse } from '@/lib/muse.svelte'
-  import { summarize } from '@/lib/agent-refine'
+  import { summarize } from '@/lib/change-summary'
 
   /** Muse as the knowledge worker — ALWAYS present under the doc (read and
    *  edit): describe a change and it drafts from the current document. With a
@@ -34,13 +34,19 @@
     /** True when the selection can be replaced in place. */
     surgical?: boolean
     onClearSelection?: () => void
-    onAccept: (markdown: string) => Promise<void>
-    onAcceptSelection?: (replacement: string) => Promise<void>
+    /** `source` is the document text the draft was written from. Resolves
+     *  false when the accept was refused (the document moved since): the
+     *  draft comes back, with the reason, rather than vanishing. */
+    onAccept: (markdown: string, source: string) => Promise<boolean | void>
+    onAcceptSelection?: (replacement: string) => Promise<boolean | void>
   } = $props()
 
   let instruction = $state('')
   let proposal = $state<string | null>(null)
   let proposalScope = $state<'doc' | 'selection'>('doc')
+  /** The document text the current draft chain started from — what an
+   *  accept would be replacing. Refinements keep it. */
+  let draftSource = ''
   let generating = $state(false)
   let error = $state<string | null>(null)
   let chat = $state<Array<{ role: 'user' | 'assistant'; content: string }>>([])
@@ -65,12 +71,9 @@
     const ac = new AbortController()
     abortCtl = ac
     try {
-      const current =
-        prevProposal !== null && prevScope === scope
-          ? prevProposal
-          : scope === 'selection'
-            ? selection!
-            : currentText()
+      const refining = prevProposal !== null && prevScope === scope
+      if (!refining && scope === 'doc') draftSource = currentText()
+      const current = refining ? prevProposal : scope === 'selection' ? selection! : draftSource
       const ctx =
         scope === 'selection'
           ? `${context} You are editing ONLY this passage of the document — reply with the replacement passage alone, no commentary.`
@@ -101,8 +104,15 @@
     const before = scope === 'selection' ? (selection ?? '') : currentText()
     lastChange = { ...summarize(before, md), scope }
     proposal = null
-    if (scope === 'selection' && onAcceptSelection) void onAcceptSelection(md)
-    else void onAccept(md)
+    error = null
+    const accepted = scope === 'selection' && onAcceptSelection ? onAcceptSelection(md) : onAccept(md, draftSource)
+    void accepted.then((ok) => {
+      if (ok !== false) return
+      proposal = md
+      proposalScope = scope
+      lastChange = null
+      error = 'Not applied: the document changed while this draft was open. Draft again to work from the current text.'
+    })
   }
 </script>
 

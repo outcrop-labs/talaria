@@ -19,7 +19,7 @@ use crate::classes::{
     Category, FALLBACK_CLASS, category_of, class_def, for_you_kinds, kind_reason, kinds_of,
     kinds_of_category, known_kinds, notify_class_of,
 };
-use crate::meta::{NotifyEntity, entity};
+use crate::meta::{NotifyEntity, entity, group_key};
 use crate::prefs::email_frequency;
 
 /// The inbox's own feature flags (I-23): `?since` reads, the views / filters /
@@ -1023,6 +1023,32 @@ pub async fn clear_channel_notifications(
 ) -> Result<Vec<String>, sqlx::Error> {
     let href = format!("/comms/channel/{channel_id}");
     mark_read_by_href(pg, user_id, &href).await
+}
+
+/// Reading ONE thread to its end clears that thread's bell rows — the
+/// thread-scoped sibling of `clear_channel_notifications`. A thread's rows
+/// (`thread-reply`, one per thread per person) share the channel's href with
+/// its @mention rows, so the href sweep would over-clear: a mention unread
+/// on the main feed is not read because a reply was. This clears by the
+/// thread's `group_key` (`group_key::channel_thread` — `reply:<root>`, the
+/// spelling `notify_channel_post` files under) and answers the ids it read.
+/// The caller decides "to its end" (the thread cursor covers the newest
+/// complete reply).
+pub async fn clear_channel_thread_notifications(
+    pg: &PgPool,
+    user_id: &str,
+    thread_root_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "update notifications set read_at = now(), \
+                push_due_at = case when pushed_at is null then null else push_due_at end \
+         where user_id = $1::uuid and group_key = $2 and read_at is null returning id::text",
+    )
+    .bind(user_id)
+    .bind(group_key::channel_thread(thread_root_id))
+    .fetch_all(pg)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
 /// The thing these rows are about resolved (an approval decided, an MCP

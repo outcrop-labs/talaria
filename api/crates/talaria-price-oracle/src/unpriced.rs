@@ -97,6 +97,16 @@ pub fn unpriced_reason(
             ),
         ),
         Some(Lookup {
+            outcome: "variable",
+            detail,
+        }) => reason(
+            "variable_price",
+            format!(
+                "No per-token price: {}",
+                detail.unwrap_or("the source publishes a variable price for this model.")
+            ),
+        ),
+        Some(Lookup {
             outcome: "no_match",
             detail,
         }) => reason(
@@ -562,6 +572,22 @@ mod tests {
             miss.text
                 .starts_with("No published price found. OpenRouter's public catalog")
         );
+        // A router the catalog prices as variable: unpriced, and said so.
+        let variable = r(
+            "openrouter",
+            true,
+            "openrouter/auto",
+            Some(Lookup {
+                outcome: "variable",
+                detail: Some("OpenRouter's catalog publishes a variable price for openrouter/auto"),
+            }),
+        );
+        assert_eq!(variable.code, "variable_price");
+        assert!(
+            variable
+                .text
+                .starts_with("No per-token price: OpenRouter's catalog publishes a variable price")
+        );
         // Priced when last checked, yet these rows are not: retry.
         assert_eq!(
             r(
@@ -783,6 +809,217 @@ mod live {
 
     fn near(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn openrouter_auto_stays_unpriced_and_never_prices_below_zero() {
+        let pg = pg().await;
+        let ep = name("auto");
+        let id = endpoint(&pg, &ep, "openrouter", &["openrouter/auto"]).await;
+        // What a release before the fix stored for the live catalog's
+        // `openrouter/auto` ("-1" / "-1" per token): -1e6 per mtok.
+        published(
+            &pg,
+            &id,
+            "openrouter/auto",
+            "",
+            -1_000_000.0,
+            -1_000_000.0,
+            None,
+        )
+        .await;
+        // The review's rows: main's per-turn shape and rc's cut-off stream,
+        // 10k in / 1k out each — once -$11 apiece.
+        for _ in 0..5 {
+            sqlx::query(
+                "insert into usage_events (agent_model, source, prompt_tokens, completion_tokens, \
+                   estimated, endpoint_class, llm_model, endpoint) \
+                 values ($1, 'chat', 10000, 1000, false, 'cloud', 'openrouter/auto', $2)",
+            )
+            .bind(format!("{ep}:agent"))
+            .bind(&ep)
+            .execute(&pg)
+            .await
+            .unwrap();
+        }
+        let rows = priced_rows(&pg, &ep).await;
+        assert_eq!(rows.len(), 5);
+        assert!(
+            rows.iter().all(|r| r.1.is_none() && r.2.is_none()),
+            "a stored -1 is no price: {rows:?}"
+        );
+        // The budget read sees $0 for them, never a negative sum.
+        let window = talaria_gateway::usage::spend_since(&pg, 24, Some(&format!("{ep}:agent")))
+            .await
+            .unwrap();
+        assert_eq!(window.cost, 0.0);
+        assert_eq!(window.unpriced_tokens, 5 * 11_000);
+        // The oracle's recorded reason reaches the panel.
+        crate::record_lookup(
+            &pg,
+            &id,
+            "openrouter/auto",
+            "variable",
+            Some(&crate::variable_detail("openrouter/auto")),
+        )
+        .await
+        .unwrap();
+        let reason = reason_now(&pg, &ep, "openrouter/auto")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reason.code, "variable_price");
+        assert!(reason.text.contains("variable price for openrouter/auto"));
+        // The provider's own charge still prices a router call.
+        book(
+            &pg,
+            &ep,
+            "openrouter/auto",
+            tokens(10, 10, 0),
+            Some(ReportedSpend {
+                cost_usd: Some(0.0042),
+                ..ReportedSpend::default()
+            }),
+        )
+        .await;
+        let charged = priced_rows(&pg, &ep).await;
+        assert!(charged.iter().any(|r| r.2.as_deref() == Some("provider")));
+        cleanup(&pg, &ep).await;
+    }
+
+    /// PROPERTY: over every combination of the price sources — the row's
+    /// class, its provider charge (absent / real / negative), an admin
+    /// decision (none / included / a valid manual rate / a negative manual
+    /// rate written past the api), published rows (none / real / negative /
+    /// a real one with a negative cache rate), the served variant, and token
+    /// counts (some written negative) — the view's cost is null or >= 0, and
+    /// its basis is `price_basis` on the facts the guards leave standing.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn no_combination_of_sources_prices_a_row_below_zero() {
+        let pg = pg().await;
+        let ep = name("property");
+        let id = endpoint(&pg, &ep, "openrouter", &[]).await;
+        let classes = [Some("cloud"), Some("local"), None];
+        let charges = [None, Some(0.01), Some(-5.0)];
+        // (mode, in, out, cache_read)
+        type Admin = Option<(&'static str, Option<f64>, Option<f64>, Option<f64>)>;
+        let admins: [Admin; 4] = [
+            None,
+            Some(("included", None, None, None)),
+            Some(("manual", Some(2.0), Some(8.0), Some(-1.0))),
+            Some(("manual", Some(-2.0), Some(8.0), None)),
+        ];
+        // (variant, in, out, cache_read) rows published for the model.
+        type Pub = &'static [(&'static str, f64, f64, Option<f64>)];
+        let pubs: [Pub; 4] = [
+            &[],
+            &[("", 3.0, 15.0, Some(0.3))],
+            &[("", -1_000_000.0, -1_000_000.0, None)],
+            &[("Anthropic", 3.0, 15.0, Some(-1.0)), ("", -1.0, 2.0, None)],
+        ];
+        let served = [None, Some("Anthropic"), Some("OpenAI")];
+        let counts = [(10_000i64, 1_000i64, 500i64), (-10_000, -5, -1)];
+        let mut n = 0;
+        for class in classes {
+            for charge in charges {
+                for admin in admins {
+                    for published_rows in pubs {
+                        for variant in served {
+                            for (prompt, completion, cache_read) in counts {
+                                n += 1;
+                                let model = format!("m{n}");
+                                for (v, inn, out, read) in published_rows {
+                                    published(&pg, &id, &model, v, *inn, *out, *read).await;
+                                }
+                                if let Some((mode, inn, out, read)) = admin {
+                                    sqlx::query(
+                                        "insert into model_price_overrides (endpoint, model, mode, \
+                                           price_in_per_mtok, price_out_per_mtok, price_cache_read_per_mtok) \
+                                         values ($1, $2, $3, $4, $5, $6)",
+                                    )
+                                    .bind(&ep)
+                                    .bind(&model)
+                                    .bind(mode)
+                                    .bind(inn)
+                                    .bind(out)
+                                    .bind(read)
+                                    .execute(&pg)
+                                    .await
+                                    .unwrap();
+                                }
+                                sqlx::query(
+                                    "insert into usage_events (agent_model, source, prompt_tokens, \
+                                       completion_tokens, cache_read_tokens, estimated, endpoint_class, \
+                                       llm_model, endpoint, provider_cost, cost_variant) \
+                                     values ($1, 'gateway', $2, $3, $4, false, $5, $6, $7, $8, $9)",
+                                )
+                                .bind(format!("{ep}:caller"))
+                                .bind(prompt as i32)
+                                .bind(completion as i32)
+                                .bind(cache_read as i32)
+                                .bind(class)
+                                .bind(&model)
+                                .bind(&ep)
+                                .bind(charge)
+                                .bind(variant)
+                                .execute(&pg)
+                                .await
+                                .unwrap();
+                                // The facts the guards leave standing.
+                                let usable: Vec<&str> = published_rows
+                                    .iter()
+                                    .filter(|(_, inn, out, _)| *inn >= 0.0 && *out >= 0.0)
+                                    .map(|(v, ..)| *v)
+                                    .collect();
+                                let admin_fact = match admin {
+                                    Some(("included", ..)) => Some(AdminPricing::Included),
+                                    Some(("manual", Some(inn), Some(out), _))
+                                        if inn >= 0.0 && out >= 0.0 =>
+                                    {
+                                        Some(AdminPricing::Manual)
+                                    }
+                                    _ => None,
+                                };
+                                let want = price_basis(&PriceFacts {
+                                    class,
+                                    provider_cost: charge.is_some_and(|c| c >= 0.0),
+                                    admin: admin_fact,
+                                    served_variant: variant,
+                                    published_variants: &usable,
+                                });
+                                let sql = format!(
+                                    "with priced as ({}) select cost::float8, cost_basis from priced \
+                                     where endpoint = $1 and llm_model = $2",
+                                    priced_view()
+                                );
+                                let (cost, basis): (Option<f64>, Option<String>) =
+                                    sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+                                        .bind(&ep)
+                                        .bind(&model)
+                                        .fetch_one(&pg)
+                                        .await
+                                        .unwrap();
+                                let case = format!(
+                                    "{model}: class {class:?}, charge {charge:?}, admin {admin:?}, \
+                                     published {published_rows:?}, served {variant:?}, tokens \
+                                     ({prompt}, {completion}, {cache_read})"
+                                );
+                                assert!(
+                                    cost.is_none_or(|c| c >= 0.0),
+                                    "negative cost {cost:?} — {case}"
+                                );
+                                assert_eq!(basis.as_deref(), want.map(CostBasis::as_str), "{case}");
+                                assert_eq!(cost.is_some(), basis.is_some(), "{case}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(n, 3 * 3 * 4 * 4 * 3 * 2);
+        cleanup(&pg, &ep).await;
     }
 
     #[tokio::test]

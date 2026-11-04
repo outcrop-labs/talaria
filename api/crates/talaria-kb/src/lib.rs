@@ -678,6 +678,80 @@ pub async fn save_doc(
     Ok(next)
 }
 
+/// What an editor's content save, carrying the version its buffer started
+/// from, did.
+#[derive(Debug)]
+pub enum ConditionalDocSave {
+    /// The title and body landed; the re-read row (boxed: the row is large).
+    Saved(Box<KbDoc>),
+    /// The row moved past that version and the save would overwrite what
+    /// moved — nothing was written.
+    Moved,
+    /// No such doc.
+    Missing,
+}
+
+/// NO SILENT OVERWRITE, atomically. An editor holds a buffer seeded from one
+/// version of the doc and saves its title and body back whole. When an
+/// agent's `edit_kb_doc` (or another person's save) lands while that buffer
+/// is open, the buffer's next save would replace it without anyone seeing
+/// it go. So the editor names the version it started from
+/// (`expected_updated_at`, the wire's ISO `updatedAt`, compared at the
+/// millisecond the wire carries) and the title and body land in ONE update,
+/// only if the row is still that version — or if the save would change
+/// nothing that moved (the row already holds this body, and this title when
+/// one is sent). A check in the route followed by `save_doc`'s separate
+/// title and body updates left the authority queries in between as a
+/// window; this has none. The artifact twin is
+/// `talaria_artifacts::save_artifact_content_if_unchanged`.
+///
+/// Snapshot and RAG re-sync follow `save_doc`'s content-change rule.
+#[allow(clippy::too_many_arguments)]
+pub async fn save_doc_content_if_unchanged(
+    pg: &PgPool,
+    qd: &QdrantDeps,
+    ed: &EmbedDeps,
+    id: &str,
+    title: Option<&str>,
+    body: &str,
+    actor: &str,
+    expected_updated_at: &str,
+) -> Result<ConditionalDocSave, sqlx::Error> {
+    let done = sqlx::query(
+        "update kb_docs set title = coalesce($2, title), body = $3, updated_by = $4, \
+             updated_at = now() \
+         where id = $1::uuid \
+           and (date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', $5::timestamptz) \
+                or (body = $3 and ($2::text is null or title = $2)))",
+    )
+    .bind(id)
+    .bind(title)
+    .bind(body)
+    .bind(actor)
+    .bind(expected_updated_at)
+    .execute(pg)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Ok(match get_doc(pg, id).await? {
+            Some(_) => ConditionalDocSave::Moved,
+            None => ConditionalDocSave::Missing,
+        });
+    }
+    let Some(next) = get_doc(pg, id).await? else {
+        return Ok(ConditionalDocSave::Missing);
+    };
+    let _ = snapshot(
+        pg,
+        "kb-doc",
+        id,
+        &format!("# {}\n\n{}", next.title, next.body),
+        Some(actor),
+    )
+    .await;
+    let _ = sync_doc_effective(pg, qd, ed, &next).await;
+    Ok(ConditionalDocSave::Saved(Box::new(next)))
+}
+
 async fn sync_doc_effective(
     pg: &PgPool,
     qd: &QdrantDeps,

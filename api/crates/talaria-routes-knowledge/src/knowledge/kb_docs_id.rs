@@ -26,8 +26,9 @@ use talaria_api_facades::kb::perms::{
     can_read_agent, set_editors,
 };
 use talaria_api_facades::kb::{
-    DocPatch, delete_doc, effective_doc_perms, get_doc, parent_placement_refusal, save_doc,
-    set_doc_routing, set_official,
+    ConditionalDocSave, DocPatch, delete_doc, effective_doc_perms, get_doc,
+    parent_placement_refusal, save_doc, save_doc_content_if_unchanged, set_doc_routing,
+    set_official,
 };
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_audit::{AuditEntry, log_audit};
@@ -39,6 +40,7 @@ use talaria_session::{actor_of, require_perm, require_user, who_of};
 use talaria_state::AppState;
 
 use super::kb_spaces_id::{editors_json, parse_editors};
+use crate::files::artifacts_id::{STALE_BASE, valid_base};
 
 /// `{ ...doc, visibility, editPolicy, governs? }` — the GET/PUT response
 /// overlay. Overriding a key keeps it at its ORIGINAL position (the struct's
@@ -48,6 +50,7 @@ fn doc_overlay(
     doc: &talaria_api_facades::kb::KbDoc,
     eff: &Guarded,
     governs: Option<bool>,
+    can_edit: Option<bool>,
 ) -> Value {
     let mut v = serde_json::to_value(doc).expect("KbDoc serializes");
     let obj = v.as_object_mut().expect("KbDoc serializes to an object");
@@ -55,6 +58,11 @@ fn doc_overlay(
     obj.insert("editPolicy".into(), json!(eff.edit_policy));
     if let Some(g) = governs {
         obj.insert("governs".into(), json!(g));
+    }
+    // The PUT's content rule, answered on read, so a surface can leave out
+    // what the PUT would refuse (version history's Restore for a viewer).
+    if let Some(c) = can_edit {
+        obj.insert("canEdit".into(), json!(c));
     }
     v
 }
@@ -105,7 +113,7 @@ pub async fn get(
             return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         return Ok(Json(
-            json!({ "doc": doc_overlay(&doc, &eff.perms, None), "editors": editors_json(&eff.grants) }),
+            json!({ "doc": doc_overlay(&doc, &eff.perms, None, None), "editors": editors_json(&eff.grants) }),
         )
         .into_response());
     }
@@ -129,10 +137,21 @@ pub async fn get(
             Ok(g) => g,
             Err(e) => return Ok(internal("[kb] govern check failed", e)),
         };
+    // The PUT's human rule: `kb.edit`, then the doc's edit audience.
+    let can_edit = matches!(
+        talaria_permissions::has_perm(&state.pg, &user.id, &user.role, "kb.edit").await,
+        Ok(true)
+    ) && can_edit_human(
+        &eff.perms,
+        Some(&user.id),
+        who.as_deref(),
+        &eff.grants,
+        &team_ids,
+    );
     Ok(
     // Surface the effective visibility/policy so the UI shows what applies.
     Json(
-        json!({ "doc": doc_overlay(&doc, &eff.perms, Some(governs)), "editors": editors_json(&eff.grants) }),
+        json!({ "doc": doc_overlay(&doc, &eff.perms, Some(governs), Some(can_edit)), "editors": editors_json(&eff.grants) }),
     )
     .into_response())
 }
@@ -150,6 +169,9 @@ struct PutBody {
     official: Option<bool>,
     regenerate_okf: bool,
     rag_routing: Option<String>,
+    /// The `updatedAt` the caller's editor was seeded from — the conditional
+    /// content update below (`save_doc_content_if_unchanged`).
+    base_updated_at: Option<String>,
 }
 
 fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, String> {
@@ -165,6 +187,7 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         official: optional_boolean_member(obj, "official")?,
         regenerate_okf: optional_boolean_member(obj, "regenerateOkf")?.unwrap_or(false),
         rag_routing: optional_max_string_member(obj, "ragRouting", 60)?,
+        base_updated_at: valid_base(optional_max_string_member(obj, "baseUpdatedAt", 40)?)?,
     })
 }
 
@@ -296,6 +319,55 @@ pub async fn put(
             Err(e) => return Ok(internal("[kb] parent read failed", e)),
         }
     }
+    let qd = qdrant::real_deps();
+    let ed = embed::real_deps();
+    // NO SILENT OVERWRITE. An editor's save names the version its buffer
+    // started from; its title and body land in one conditional update
+    // (`save_doc_content_if_unchanged`), and a doc that moved under the
+    // buffer — an agent's edit_kb_doc, another person's save — is refused
+    // with the doc as it now is. After authority (a caller who may not edit
+    // learns nothing from a 409), before anything below writes.
+    let mut content_saved = false;
+    if let (Some(base), Some(new_body)) = (body.base_updated_at.as_deref(), body.body.as_deref()) {
+        match save_doc_content_if_unchanged(
+            &state.pg,
+            &qd,
+            &ed,
+            &id,
+            body.title.as_deref(),
+            new_body,
+            &actor,
+            base,
+        )
+        .await
+        {
+            Ok(ConditionalDocSave::Saved(_)) => content_saved = true,
+            Ok(ConditionalDocSave::Moved) => {
+                let now = match get_doc(&state.pg, &id).await {
+                    Ok(Some(d)) => d,
+                    Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+                    Err(e) => return Ok(internal("[kb] doc re-read failed", e)),
+                };
+                let eff = match effective_doc_perms(&state.pg, &now).await {
+                    Ok(e) => e,
+                    Err(e) => return Ok(internal("[kb] perms read failed", e)),
+                };
+                return Ok((
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "error": STALE_BASE,
+                        "conflict": true,
+                        "doc": doc_overlay(&now, &eff.perms, None, None),
+                    })),
+                )
+                    .into_response());
+            }
+            Ok(ConditionalDocSave::Missing) => {
+                return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
+            }
+            Err(e) => return Ok(internal("[kb] doc save failed", e)),
+        }
+    }
 
     if owner {
         if body.perms_inherited == Some(true) {
@@ -333,16 +405,15 @@ pub async fn put(
             return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
         }
     }
-    let qd = qdrant::real_deps();
-    let ed = embed::real_deps();
     let mut updated = match save_doc(
         &state.pg,
         &qd,
         &ed,
         &id,
         &DocPatch {
-            title: body.title.clone(),
-            body: body.body.clone(),
+            // Already written, conditionally, above.
+            title: body.title.clone().filter(|_| !content_saved),
+            body: body.body.clone().filter(|_| !content_saved),
             icon: body.icon.clone(),
             visibility: body.visibility.clone(),
             edit_policy: body.edit_policy.clone(),
@@ -411,7 +482,7 @@ pub async fn put(
     };
     Ok(
     Json(
-        json!({ "doc": doc_overlay(&updated, &eff.perms, None), "editors": editors_json(&eff.grants) }),
+        json!({ "doc": doc_overlay(&updated, &eff.perms, None, None), "editors": editors_json(&eff.grants) }),
     )
     .into_response())
 }

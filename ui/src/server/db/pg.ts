@@ -4712,6 +4712,47 @@ alter table tasks drop column if exists conversation_id`,
      checked_at timestamptz not null default now(),
      primary key (endpoint_id, model)
    )`,
+  // Per-thread read cursors — the thread-panel twin of channel_members'
+  // last_read_seq. Reading a thread is not reading the channel: replies share
+  // the channel's own seq counter (insert_channel_message draws every seq
+  // from channels.msg_seq), but the channel cursor advances only on the main
+  // feed the panel is opened from. This row says "this person has read this
+  // thread this far": monotonic by contract (greatest, never backwards —
+  // mark_channel_thread_read), and a missing row means no thread cursor, so
+  // the reply counts unread the way it always did.
+  `create table if not exists channel_thread_reads (
+     thread_root_id uuid not null references channel_messages(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     last_read_seq integer not null default 0,
+     updated_at timestamptz not null default now(),
+     primary key (thread_root_id, user_id)
+   )`,
+  // The viewer's own thread cursors, as the unread predicates read them: the
+  // rail's queries negate `thread_read_covers_sql!` as a top-level `not
+  // exists`, which Postgres plans as an anti-join against this person's rows.
+  // Keyed (user_id, thread_root_id) with the cursor included, that side is an
+  // index-only read. The PK leads with the thread, so it cannot serve it, nor
+  // the users ON DELETE cascade, which otherwise scans the whole table.
+  `create index if not exists channel_thread_reads_user_idx
+     on channel_thread_reads (user_id, thread_root_id) include (last_read_seq)`,
+  // ── Negative "prices" (2026-11-03, follow-up to #682) ───────────────────────
+  // OpenRouter's catalog prices its routers (openrouter/auto, /fusion,
+  // nvidia/switchyard …) at "-1" — "variable", not -$1 per token — and the
+  // price oracle stored that as a model-level row. #682 let the priced view
+  // read model-level rows on OpenRouter, so those rows priced calls at about
+  // minus their token count in dollars and drove every USD budget negative.
+  // The oracle now refuses a negative or non-finite number and the view
+  // reads none; this removes the rows already stored.
+  `-- deliberate: a negative rate is never a price (OpenRouter's "-1" means variable); the
+   -- next price pass records those models as variable-priced instead
+   delete from provider_prices
+    where price_in_per_mtok < 0 or price_out_per_mtok < 0
+       or price_cache_write_per_mtok < 0 or price_cache_read_per_mtok < 0`,
+  // The oracle's new outcome for them: the catalog lists the model with a
+  // variable price, so it stays unpriced and the panel says why.
+  `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
+  `alter table price_lookups add constraint price_lookups_outcome_check
+     check (outcome in ('priced', 'no_match', 'source_failed', 'variable'))`,
   // A ticket's old ref, after it moved boards (POST /api/tasks/{id}/move).
   // A move re-keys the ticket on its new board's counter; the (board,
   // number) it carried stays here so `PLAT-118` pasted into a doc, a chat or
