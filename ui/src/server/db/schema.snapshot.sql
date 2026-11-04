@@ -1120,6 +1120,20 @@ CREATE TABLE public.model_blurbs (
     blurb text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.model_price_overrides (
+    endpoint text NOT NULL,
+    model text NOT NULL,
+    mode text NOT NULL,
+    price_in_per_mtok numeric,
+    price_out_per_mtok numeric,
+    price_cache_write_per_mtok numeric,
+    price_cache_read_per_mtok numeric,
+    note text,
+    set_by text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT model_price_overrides_check CHECK (((mode = 'included'::text) OR ((price_in_per_mtok IS NOT NULL) AND (price_out_per_mtok IS NOT NULL)))),
+    CONSTRAINT model_price_overrides_mode_check CHECK ((mode = ANY (ARRAY['manual'::text, 'included'::text])))
+);
 CREATE TABLE public.notifications (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     user_id uuid NOT NULL,
@@ -1216,6 +1230,15 @@ CREATE TABLE public.plugins (
     upkeep jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT plugins_update_policy_check CHECK ((update_policy = ANY (ARRAY['approve'::text, 'auto'::text])))
 );
+CREATE TABLE public.price_lookups (
+    endpoint_id uuid NOT NULL,
+    model text NOT NULL,
+    outcome text NOT NULL,
+    detail text,
+    source text NOT NULL,
+    checked_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT price_lookups_outcome_check CHECK ((outcome = ANY (ARRAY['priced'::text, 'no_match'::text, 'source_failed'::text])))
+);
 CREATE TABLE public.provider_prices (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     endpoint_id uuid NOT NULL,
@@ -1225,7 +1248,9 @@ CREATE TABLE public.provider_prices (
     price_in_per_mtok numeric,
     price_out_per_mtok numeric,
     source text NOT NULL,
-    fetched_at timestamp with time zone DEFAULT now() NOT NULL
+    fetched_at timestamp with time zone DEFAULT now() NOT NULL,
+    price_cache_write_per_mtok numeric,
+    price_cache_read_per_mtok numeric
 );
 CREATE TABLE public.provider_spend (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1982,6 +2007,8 @@ ALTER TABLE ONLY public.messages
     ADD CONSTRAINT messages_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.model_blurbs
     ADD CONSTRAINT model_blurbs_pkey PRIMARY KEY (model_id);
+ALTER TABLE ONLY public.model_price_overrides
+    ADD CONSTRAINT model_price_overrides_pkey PRIMARY KEY (endpoint, model);
 ALTER TABLE ONLY public.notifications
     ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.org_domains
@@ -1998,6 +2025,8 @@ ALTER TABLE ONLY public.plugin_pr_watch
     ADD CONSTRAINT plugin_pr_watch_pkey PRIMARY KEY (app_slug, pr_number);
 ALTER TABLE ONLY public.plugins
     ADD CONSTRAINT plugins_pkey PRIMARY KEY (app_slug);
+ALTER TABLE ONLY public.price_lookups
+    ADD CONSTRAINT price_lookups_pkey PRIMARY KEY (endpoint_id, model);
 ALTER TABLE ONLY public.provider_prices
     ADD CONSTRAINT provider_prices_endpoint_id_model_variant_key UNIQUE (endpoint_id, model, variant);
 ALTER TABLE ONLY public.provider_prices
@@ -2504,6 +2533,8 @@ ALTER TABLE ONLY public.plugins
     ADD CONSTRAINT plugins_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.plugins
     ADD CONSTRAINT plugins_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.price_lookups
+    ADD CONSTRAINT price_lookups_endpoint_id_fkey FOREIGN KEY (endpoint_id) REFERENCES public.llm_endpoints(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.provider_prices
     ADD CONSTRAINT provider_prices_endpoint_id_fkey FOREIGN KEY (endpoint_id) REFERENCES public.llm_endpoints(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.provider_spend

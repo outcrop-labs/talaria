@@ -1,5 +1,6 @@
 mod spend;
 mod spend_fetch;
+pub mod unpriced;
 
 // Zero-config pricing: OpenRouter's
 // public model catalog (no auth) carries per-token prices for essentially every
@@ -58,6 +59,17 @@ pub struct TokPrice {
     pub out_per_mtok: f64,
 }
 
+/// One catalog entry's price: the input/output pair plus the catalog's own
+/// cache rates (`input_cache_write` / `input_cache_read`), when it publishes
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CatalogPrice {
+    in_per_mtok: f64,
+    out_per_mtok: f64,
+    cache_write_per_mtok: Option<f64>,
+    cache_read_per_mtok: Option<f64>,
+}
+
 /// The jsonb shape the costing join reads (`auto_prices->model->>'in'`,
 /// gateway/usage.rs) — the key names are load-bearing, hence the renames.
 #[derive(serde::Serialize)]
@@ -81,23 +93,50 @@ fn normalize(s: &str) -> String {
         .replace('.', "-")
 }
 
-/// Trailing "-YYYYMMDD" off the tail: a dash then exactly eight ASCII digits.
-/// Byte-indexed — a matching ASCII dash is always a char boundary.
+/// A snapshot date off the tail, in the three shapes providers stamp ids
+/// with: Anthropic's "-YYYYMMDD" (`claude-sonnet-4-5-20250929`), OpenAI's
+/// "-YYYY-MM-DD" (`gpt-4.1-2025-04-14`), and the "-MMDD" of xAI and older
+/// OpenAI ids (`grok-4-0709`, `gpt-4-0613`) — the last only when it reads as
+/// a real month and day, so a "-2507" (Qwen's YYMM) or a "-1234" is left
+/// alone. Byte-indexed — a matching ASCII dash is always a char boundary.
 fn strip_date_suffix(s: &str) -> String {
     let b = s.as_bytes();
-    if b.len() >= 9 && b[b.len() - 9] == b'-' && b[b.len() - 8..].iter().all(|c| c.is_ascii_digit())
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    let two = |i: usize| (b[i] - b'0') * 10 + (b[i + 1] - b'0');
+    let n = b.len();
+    // -YYYY-MM-DD: 11 bytes.
+    if n >= 11
+        && b[n - 11] == b'-'
+        && digits(n - 10..n - 6)
+        && b[n - 6] == b'-'
+        && digits(n - 5..n - 3)
+        && b[n - 3] == b'-'
+        && digits(n - 2..n)
     {
-        s[..s.len() - 9].to_string()
-    } else {
-        s.to_string()
+        return s[..n - 11].to_string();
     }
+    // -YYYYMMDD: 9 bytes.
+    if n >= 9 && b[n - 9] == b'-' && digits(n - 8..n) {
+        return s[..n - 9].to_string();
+    }
+    // -MMDD: 5 bytes, a plausible month and day, with something before the
+    // dash to keep.
+    if n >= 6 && b[n - 5] == b'-' && digits(n - 4..n) {
+        let (month, day) = (two(n - 4), two(n - 2));
+        if (1..=12).contains(&month) && (1..=31).contains(&day) {
+            return s[..n - 5].to_string();
+        }
+    }
+    s.to_string()
 }
 
 /// The id shapes a model might wear in a public catalog, most-specific first:
-/// as-is → ":variant" stripped → trailing "-YYYYMMDD" date stripped →
-/// "-latest" stripped. Each step feeds the next, so combinations occur — but
-/// each strip fires at most once (the chain, not a fixpoint).
-fn id_candidates(model: &str) -> Vec<String> {
+/// as-is → ":variant" stripped → a trailing snapshot date stripped (see
+/// `strip_date_suffix`) → "-latest" stripped → for a multi-segment path
+/// (Fireworks' `accounts/fireworks/models/<id>`), its last segment. Each step
+/// feeds the next, so combinations occur — but each strip fires at most once
+/// (the chain, not a fixpoint).
+pub(crate) fn id_candidates(model: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let push = |m: String, out: &mut Vec<String>| {
         if !m.is_empty() && !out.contains(&m) {
@@ -118,17 +157,25 @@ fn id_candidates(model: &str) -> Vec<String> {
     if let Some(unlatest) = cur.strip_suffix("-latest") {
         push(unlatest.to_string(), &mut out);
     }
+    if cur.matches('/').count() >= 2
+        && let Some(last) = cur.rsplit('/').next()
+    {
+        push(last.to_string(), &mut out);
+    }
     out
 }
 
 struct SuffixEntry {
     vendor: String,
-    price: TokPrice,
+    price: CatalogPrice,
 }
 
 struct Catalog {
-    by_id: HashMap<String, TokPrice>,
+    by_id: HashMap<String, CatalogPrice>,
     by_suffix: HashMap<String, Vec<SuffixEntry>>,
+    /// How many priced models the catalog carried — a miss says how big the
+    /// list it was not in was.
+    size: usize,
 }
 
 /// The pricing fields arrive as strings or numbers. Anything else —
@@ -160,9 +207,13 @@ fn build_catalog(models: &[Value]) -> Catalog {
         ) else {
             continue;
         };
-        let price = TokPrice {
+        let price = CatalogPrice {
             in_per_mtok: in_tok * 1e6,
             out_per_mtok: out_tok * 1e6,
+            cache_write_per_mtok: tok_per_token(pricing.and_then(|p| p.get("input_cache_write")))
+                .map(|p| p * 1e6),
+            cache_read_per_mtok: tok_per_token(pricing.and_then(|p| p.get("input_cache_read")))
+                .map(|p| p * 1e6),
         };
         by_id.insert(normalize(id), price);
         let (vendor, rest) = match id.split_once('/') {
@@ -179,10 +230,15 @@ fn build_catalog(models: &[Value]) -> Catalog {
             price,
         });
     }
-    Catalog { by_id, by_suffix }
+    let size = by_id.len();
+    Catalog {
+        by_id,
+        by_suffix,
+        size,
+    }
 }
 
-fn suffix_match(catalog: &Catalog, vendor: &str, model: &str) -> Option<TokPrice> {
+fn suffix_match(catalog: &Catalog, vendor: &str, model: &str) -> Option<CatalogPrice> {
     let candidates = catalog.by_suffix.get(&normalize(model))?;
     let vendor = normalize(vendor);
     if let Some(hit) = candidates.iter().find(|c| c.vendor == vendor) {
@@ -198,7 +254,7 @@ fn suffix_match(catalog: &Catalog, vendor: &str, model: &str) -> Option<TokPrice
 /// only an unambiguous candidate). Alias shapes (":free" variants, "-latest",
 /// trailing dates, "~" prefixes) fall back through id_candidates. None = no
 /// match — stays unpriced, never guessed.
-fn price_for(catalog: &Catalog, provider: &str, model: &str) -> Option<TokPrice> {
+fn price_for(catalog: &Catalog, provider: &str, model: &str) -> Option<CatalogPrice> {
     for id in id_candidates(model) {
         if id.contains('/') {
             if let Some(hit) = catalog.by_id.get(&normalize(&id)) {
@@ -221,15 +277,42 @@ fn price_for(catalog: &Catalog, provider: &str, model: &str) -> Option<TokPrice>
     None
 }
 
+/// An error and every cause under it, joined — reqwest's own Display stops at
+/// "error sending request for url (…)", and the reason a person can act on
+/// (a DNS failure, a refused connection, a proxy, a TLS failure) is in the
+/// source chain below it.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(cause) = cur {
+        let text = cause.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        cur = cause.source();
+    }
+    out
+}
+
 async fn fetch_catalog() -> Result<Catalog, String> {
     let fetch = async {
         let resp = talaria_gateway::provider::http()
             .get(OPENROUTER_MODELS_URL)
             .send()
             .await
-            .map_err(|e| format!("openrouter catalog fetch failed: {e}"))?;
+            .map_err(|e| format!("openrouter catalog fetch failed: {}", error_chain(&e)))?;
         if !resp.status().is_success() {
-            return Err(format!("openrouter {}", resp.status().as_u16()));
+            // The source's own words, not ours: the first line of what it
+            // answered, beside the status.
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            let said: String = body.trim().chars().take(200).collect();
+            return Err(if said.is_empty() {
+                format!("openrouter answered {status}")
+            } else {
+                format!("openrouter answered {status}: {said}")
+            });
         }
         resp.json::<Value>()
             .await
@@ -257,6 +340,9 @@ pub struct RefreshCounts {
     pub upsert_failed: usize,
     /// The first upsert error, for the warn the job logs.
     pub first_upsert_error: Option<String>,
+    /// Models the catalog had no entry for — each one's `price_lookups` row
+    /// says which ids were tried.
+    pub no_match: usize,
 }
 
 /// The model-level published price a catalog hit becomes: variant '' (the
@@ -264,50 +350,163 @@ pub struct RefreshCounts {
 /// like every stored rate, and sourced from the public catalog. Direct
 /// providers publish no prices of their own — this row is what their usage
 /// is derived from.
-fn catalog_price_row(model: &str, hit: TokPrice) -> spend::PublishedPrice {
+fn catalog_price_row(model: &str, hit: CatalogPrice) -> spend::PublishedPrice {
     spend::PublishedPrice {
         model: model.to_string(),
         variant: String::new(),
         price_in_per_mtok: Some(round4(hit.in_per_mtok)),
         price_out_per_mtok: Some(round4(hit.out_per_mtok)),
+        price_cache_write_per_mtok: hit.cache_write_per_mtok.map(round4),
+        price_cache_read_per_mtok: hit.cache_read_per_mtok.map(round4),
         source: "openrouter.catalog",
     }
 }
 
-async fn refresh_auto_prices(pg: &PgPool) -> Result<RefreshCounts, String> {
-    let catalog = fetch_catalog().await?;
-    let endpoints: Vec<(String, String, String, Value)> = sqlx::query_as(
-        "select id::text, name, provider, models from llm_endpoints where class = 'cloud'",
+/// The source every catalog lookup records under.
+pub(crate) const CATALOG_SOURCE: &str = "openrouter.catalog";
+
+/// The sentence a catalog miss records: how big the list was and every id
+/// shape that was tried, so a person can see the gap rather than guess it.
+fn no_match_detail(model: &str, catalog_size: usize) -> String {
+    let tried = id_candidates(model);
+    let also: Vec<&str> = tried
+        .iter()
+        .map(String::as_str)
+        .filter(|t| *t != model)
+        .collect();
+    let mut out = format!(
+        "OpenRouter's public catalog ({catalog_size} priced models) has no entry for {model}"
+    );
+    if !also.is_empty() {
+        out.push_str(&format!(" (also tried {})", also.join(", ")));
+    }
+    out
+}
+
+/// One lookup's conclusion for an endpoint's model, upserted so the unpriced
+/// list can say why a model has no price and when that was last checked.
+async fn record_lookup(
+    pg: &PgPool,
+    endpoint_id: &str,
+    model: &str,
+    outcome: &str,
+    detail: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into price_lookups (endpoint_id, model, outcome, detail, source, checked_at) \
+         values ($1::uuid, $2, $3, $4, $5, now()) \
+         on conflict (endpoint_id, model) do update set \
+           outcome = excluded.outcome, detail = excluded.detail, \
+           source = excluded.source, checked_at = now()",
     )
+    .bind(endpoint_id)
+    .bind(model)
+    .bind(outcome)
+    .bind(detail)
+    .bind(CATALOG_SOURCE)
+    .execute(pg)
+    .await
+    .map(|_| ())
+}
+
+/// The cloud endpoints and the models to price on each: the endpoint's own
+/// catalog list plus every model usage has been booked under on it. `only`
+/// narrows the pass to one (endpoint name, model) — the Retry button's.
+async fn models_to_price(
+    pg: &PgPool,
+    only: Option<(&str, &str)>,
+) -> Result<Vec<(String, String, String, Vec<String>)>, String> {
+    let endpoints: Vec<(String, String, String, Value)> = sqlx::query_as(
+        "select id::text, name, provider, models from llm_endpoints \
+         where class = 'cloud' and ($1::text is null or name = $1)",
+    )
+    .bind(only.map(|o| o.0))
     .fetch_all(pg)
     .await
     .map_err(|e| format!("cloud endpoint read failed: {e}"))?;
-    let seen: Vec<(String, String)> = sqlx::query_as(
-        "select distinct endpoint, llm_model from usage_events \
-         where endpoint is not null and llm_model is not null",
-    )
-    .fetch_all(pg)
-    .await
-    .map_err(|e| format!("usage read failed: {e}"))?;
+    let seen: Vec<(String, String)> = if only.is_some() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "select distinct endpoint, llm_model from usage_events \
+             where endpoint is not null and llm_model is not null",
+        )
+        .fetch_all(pg)
+        .await
+        .map_err(|e| format!("usage read failed: {e}"))?
+    };
+    Ok(endpoints
+        .into_iter()
+        .map(|(id, name, provider, models)| {
+            let mut all: Vec<String> = match only {
+                Some((_, model)) => vec![model.to_string()],
+                None => {
+                    let mut set: HashSet<String> = models
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    for (endpoint, model) in &seen {
+                        if endpoint == &name {
+                            set.insert(model.clone());
+                        }
+                    }
+                    set.into_iter().collect()
+                }
+            };
+            all.sort();
+            (id, name, provider, all)
+        })
+        .collect())
+}
 
-    let mut counts = RefreshCounts::default();
-    for (id, name, provider, models) in endpoints {
-        let mut all: HashSet<String> = models
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        for (endpoint, model) in &seen {
-            if endpoint == &name {
-                all.insert(model.clone());
+/// When the catalog could not be read, say so on every model that has no
+/// price to fall back on — quoting the failure — and leave the ones that are
+/// priced alone (a published price from an earlier pass still applies).
+async fn record_source_failure(
+    pg: &PgPool,
+    targets: &[(String, String, String, Vec<String>)],
+    error: &str,
+) {
+    for (id, _, _, models) in targets {
+        for m in models {
+            let priced: Option<(i32,)> = sqlx::query_as(
+                "select 1 from provider_prices where endpoint_id = $1::uuid and model = $2 \
+                 and price_in_per_mtok is not null and price_out_per_mtok is not null limit 1",
+            )
+            .bind(id)
+            .bind(m)
+            .fetch_optional(pg)
+            .await
+            .unwrap_or(None);
+            if priced.is_none() {
+                let _ = record_lookup(pg, id, m, "source_failed", Some(error)).await;
             }
         }
+    }
+}
+
+async fn refresh_auto_prices(
+    pg: &PgPool,
+    only: Option<(&str, &str)>,
+) -> Result<RefreshCounts, String> {
+    let targets = models_to_price(pg, only).await?;
+    let catalog = match fetch_catalog().await {
+        Ok(c) => c,
+        Err(e) => {
+            record_source_failure(pg, &targets, &e).await;
+            return Err(e);
+        }
+    };
+
+    let mut counts = RefreshCounts::default();
+    for (id, _name, provider, models) in targets {
         let mut auto = JsonMap::new();
-        for m in all {
+        for m in models {
             if let Some(hit) = price_for(&catalog, &provider, &m) {
                 let value = serde_json::to_value(AutoPrice {
                     in_per_mtok: round4(hit.in_per_mtok),
@@ -320,30 +519,81 @@ async fn refresh_auto_prices(pg: &PgPool) -> Result<RefreshCounts, String> {
                 // this endpoint.
                 let price = catalog_price_row(&m, hit);
                 match spend_fetch::upsert_price(pg, &id, &provider, &price).await {
-                    Ok(()) => counts.catalog_priced += 1,
+                    Ok(()) => {
+                        counts.catalog_priced += 1;
+                        let _ = record_lookup(pg, &id, &m, "priced", None).await;
+                    }
                     Err(e) => {
                         counts.upsert_failed += 1;
+                        let _ = record_lookup(
+                            pg,
+                            &id,
+                            &m,
+                            "source_failed",
+                            Some(&format!(
+                                "the catalog priced it, and storing the price failed: {e}"
+                            )),
+                        )
+                        .await;
                         if counts.first_upsert_error.is_none() {
                             counts.first_upsert_error = Some(e);
                         }
                     }
                 }
+            } else {
+                counts.no_match += 1;
+                let detail = no_match_detail(&m, catalog.size);
+                let _ = record_lookup(pg, &id, &m, "no_match", Some(&detail)).await;
             }
         }
-        sqlx::query(
-            "update llm_endpoints set auto_prices = $1, updated_at = now() where id = $2::uuid",
-        )
-        .bind(Value::Object(auto))
-        .bind(&id)
-        .execute(pg)
-        .await
-        .map_err(|e| format!("auto_prices write failed: {e}"))?;
+        // A full pass replaces the endpoint's fill map (a model that left the
+        // catalog leaves it); a targeted retry merges its one entry in.
+        let sql = if only.is_some() {
+            "update llm_endpoints set auto_prices = coalesce(auto_prices, '{}'::jsonb) || $1, \
+             updated_at = now() where id = $2::uuid"
+        } else {
+            "update llm_endpoints set auto_prices = $1, updated_at = now() where id = $2::uuid"
+        };
+        sqlx::query(sql)
+            .bind(Value::Object(auto))
+            .bind(&id)
+            .execute(pg)
+            .await
+            .map_err(|e| format!("auto_prices write failed: {e}"))?;
         counts.endpoints += 1;
     }
     // auto_prices is a cached column of the endpoints serve window — the
     // next completion must be able to see the fill.
     talaria_gateway::registry::invalidate_endpoints_cache();
     Ok(counts)
+}
+
+/// THE RETRY: look one endpoint's model up now, awaited, outside the
+/// scheduled pass's throttle — an admin pressed the button and is waiting for
+/// the answer. The catalog fetch and, for an OpenRouter endpoint, that
+/// model's per-endpoint price list. The outcome lands in `price_lookups`
+/// either way; an Err is a failure to look at all (the endpoint is gone or
+/// not cloud), and a failed source is an Ok whose recorded outcome says so.
+pub async fn lookup_now(pg: &PgPool, endpoint: &str, model: &str) -> Result<(), String> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "select id::text, provider from llm_endpoints where name = $1 and class = 'cloud'",
+    )
+    .bind(endpoint)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("endpoint read failed: {e}"))?;
+    let Some((id, provider)) = row else {
+        return Err(format!(
+            "there is no cloud endpoint named {endpoint} to look prices up on"
+        ));
+    };
+    if provider == "openrouter" {
+        let _ = spend_fetch::ingest_openrouter_model(pg, &id, model).await;
+    }
+    // The outcome is recorded inside; a source failure is not this call's
+    // error — the recorded row carries it.
+    let _ = refresh_auto_prices(pg, Some((endpoint, model))).await;
+    Ok(())
 }
 
 struct Stamps {
@@ -386,7 +636,7 @@ async fn refresh_once(
     }
     stamps().last_attempt = now_ms();
     let _ = spend_fetch::ingest_published_prices(pg).await;
-    let result = refresh_auto_prices(pg).await;
+    let result = refresh_auto_prices(pg, None).await;
     if result.is_ok() {
         stamps().last_refresh = now_ms();
     }
@@ -562,6 +812,10 @@ mod tests {
             ["openai/gpt-5:free", "openai/gpt-5"]
         );
         assert_eq!(id_candidates("gpt-5-20260101"), ["gpt-5-20260101", "gpt-5"]);
+        assert_eq!(
+            id_candidates("gpt-5-2026-01-01"),
+            ["gpt-5-2026-01-01", "gpt-5"]
+        );
         // Each strip fires at most once: -latest exposes the dated id, and
         // the date strip has already had its turn.
         assert_eq!(
@@ -666,13 +920,139 @@ mod tests {
         // Stored rounded to four decimals like every other rate.
         let row = catalog_price_row(
             "m",
-            TokPrice {
+            CatalogPrice {
                 in_per_mtok: 1.23456,
                 out_per_mtok: 7.00006,
+                cache_write_per_mtok: Some(1.543_21),
+                cache_read_per_mtok: None,
             },
         );
         assert!(near(row.price_in_per_mtok.unwrap(), 1.2346));
         assert!(near(row.price_out_per_mtok.unwrap(), 7.0001));
+        assert!(near(row.price_cache_write_per_mtok.unwrap(), 1.5432));
+        assert_eq!(row.price_cache_read_per_mtok, None);
+    }
+
+    #[test]
+    fn a_catalog_entry_carries_its_published_cache_rates() {
+        // The live catalog's z-ai/glm-4.6 of 2026-11-03: cache read published
+        // (0.2x input, not the 0.1x multiplier), no cache write.
+        let c = build_catalog(&[json!({
+            "id": "z-ai/glm-4.6",
+            "pricing": { "prompt": "0.0000005", "completion": "0.000002", "input_cache_read": "0.0000001" }
+        })]);
+        let hit = price_for(&c, "custom", "glm-4.6").unwrap();
+        assert!(near(hit.in_per_mtok, 0.5));
+        assert!(near(hit.cache_read_per_mtok.unwrap(), 0.1));
+        assert_eq!(hit.cache_write_per_mtok, None);
+        assert_eq!(c.size, 1);
+    }
+
+    #[test]
+    fn snapshot_dates_strip_in_every_shape_providers_stamp() {
+        // Anthropic's -YYYYMMDD, OpenAI's -YYYY-MM-DD, xAI's / old OpenAI's -MMDD.
+        assert_eq!(
+            strip_date_suffix("claude-sonnet-4-5-20250929"),
+            "claude-sonnet-4-5"
+        );
+        assert_eq!(strip_date_suffix("gpt-4.1-2025-04-14"), "gpt-4.1");
+        assert_eq!(strip_date_suffix("gpt-5-mini-2025-08-07"), "gpt-5-mini");
+        assert_eq!(strip_date_suffix("grok-4-0709"), "grok-4");
+        assert_eq!(strip_date_suffix("gpt-4-0613"), "gpt-4");
+        // A 4-digit tail that is not a month and day stays: Qwen's YYMM.
+        assert_eq!(
+            strip_date_suffix("qwen3-235b-a22b-2507"),
+            "qwen3-235b-a22b-2507"
+        );
+        assert_eq!(
+            strip_date_suffix("mistral-large-2411"),
+            "mistral-large-2411"
+        );
+        assert_eq!(strip_date_suffix("model-1399"), "model-1399");
+        // Not a month and day, or no dash right before the four digits.
+        assert_eq!(strip_date_suffix("v-123-45-6789"), "v-123-45-6789");
+        assert_eq!(strip_date_suffix("build-10709"), "build-10709");
+        // Too short, or no dash: untouched.
+        assert_eq!(strip_date_suffix("0709"), "0709");
+        assert_eq!(strip_date_suffix("gpt-5"), "gpt-5");
+    }
+
+    #[test]
+    fn real_provider_ids_reach_the_catalog_entry_they_are_sold_as() {
+        // Ids as each provider's own /models lists them, against catalog
+        // entries as OpenRouter's lists them (2026-11-03). Each of these was
+        // unpriced before the date shapes and the last-segment step.
+        let c = build_catalog(&[
+            entry("openai/gpt-4.1", "0.000002", "0.000008"),
+            entry("openai/gpt-5-mini", "0.00000025", "0.000002"),
+            entry("x-ai/grok-4", "0.000003", "0.000015"),
+            entry("deepseek/deepseek-v3", "0.0000003", "0.0000012"),
+        ]);
+        let in_rate = |provider: &str, id: &str| price_for(&c, provider, id).map(|p| p.in_per_mtok);
+        assert!(near(in_rate("openai", "gpt-4.1-2025-04-14").unwrap(), 2.0));
+        assert!(near(
+            in_rate("openai", "gpt-5-mini-2025-08-07").unwrap(),
+            0.25
+        ));
+        assert!(near(in_rate("x-ai", "grok-4-0709").unwrap(), 3.0));
+        assert!(near(
+            in_rate("custom", "accounts/fireworks/models/deepseek-v3").unwrap(),
+            0.3
+        ));
+        // Still never a guess: an id with no catalog shape stays unpriced.
+        assert!(in_rate("custom", "llama-3.3-70b-versatile").is_none());
+    }
+
+    #[test]
+    fn a_multi_segment_path_also_tries_its_last_segment() {
+        assert_eq!(
+            id_candidates("accounts/fireworks/models/deepseek-v3"),
+            ["accounts/fireworks/models/deepseek-v3", "deepseek-v3"]
+        );
+        // One slash is a vendor path, matched whole and by suffix already.
+        assert_eq!(id_candidates("openai/gpt-5"), ["openai/gpt-5"]);
+    }
+
+    #[test]
+    fn a_failure_names_every_cause_under_it() {
+        #[derive(Debug)]
+        struct E(&'static str, Option<Box<E>>);
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for E {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|e| e as _)
+            }
+        }
+        let e = E(
+            "error sending request for url (https://openrouter.ai/api/v1/models)",
+            Some(Box::new(E(
+                "client error (Connect)",
+                Some(Box::new(E(
+                    "tcp connect error: Connection refused (os error 111)",
+                    None,
+                ))),
+            ))),
+        );
+        assert_eq!(
+            error_chain(&e),
+            "error sending request for url (https://openrouter.ai/api/v1/models): client error (Connect): tcp connect error: Connection refused (os error 111)"
+        );
+    }
+
+    #[test]
+    fn a_miss_records_the_catalog_size_and_every_id_it_tried() {
+        assert_eq!(
+            no_match_detail("gpt-9-2027-01-01", 454),
+            "OpenRouter's public catalog (454 priced models) has no entry for gpt-9-2027-01-01 (also tried gpt-9)"
+        );
+        assert_eq!(
+            no_match_detail("llama-3.3-70b-versatile", 454),
+            "OpenRouter's public catalog (454 priced models) has no entry for llama-3.3-70b-versatile"
+        );
     }
 
     #[test]

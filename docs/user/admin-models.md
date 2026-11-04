@@ -30,10 +30,43 @@ Self-hosted hardware and cloud keys sit in separate sections.
 - **Available models** — trim the list to what you actually carry; add from the provider's
   live catalog.
 - **Reasoning effort** — declare the levels each model accepts; they're sent verbatim.
-- **Pricing** — cloud only, read-only. Rates come from the provider, with the source and when
-  they were fetched. Spend uses the provider's reported charge when they send one; a published
-  price is a labeled fallback, never an editable number. OpenRouter shows each endpoint's price,
-  because the same model can cost a different amount depending on which endpoint served the call.
+- **Pricing** — cloud only. Published rates come from the provider, with the source and when
+  they were fetched, and are read-only. Spend uses the provider's reported charge when they send
+  one, then the published price: OpenRouter's per-endpoint price when the call names the endpoint
+  that served it, otherwise the model's published price. A model no source prices shows up under
+  **Observability → Cost → Unpriced models**, where an admin sets a rate or marks it included in a
+  plan; those settings are listed here too.
+
+### When usage has no price
+
+**Observability → Cost** lists, for admins, every cloud model whose last 30 days of usage has no
+price. Each row shows the endpoint, the model, the tokens, and why:
+
+| Reason | What it means |
+| :--- | :--- |
+| **no published price** | The price check asked OpenRouter's public catalog and found no entry for the id, or for the shapes it also tried (the id with a snapshot date or a `:tag` removed) |
+| **source didn't answer** | The catalog could not be read. The row quotes the error it gave |
+| **not looked up yet** | The check runs every 6 hours and soon after new usage |
+| **endpoint removed** / **no endpoint recorded** | The usage was booked under an endpoint that no longer exists, or under none, so no endpoint's published price applies |
+
+Each row offers three fixes:
+
+- **Set price** — dollars per 1M input and output tokens, plus cache write and cache read if you
+  know them. Without cache rates, cache tokens bill at the input rate × 1.25 and × 0.1.
+- **Included in a plan** — for a flat-rate plan, such as a coding plan or a subscription, or a free
+  tier. Calls are priced at $0 and labelled *included*, never shown as a silent zero. This applies
+  even where a published pay-as-you-go price exists, because a catalog cannot know your account is
+  on a plan.
+- **Retry lookup** — run the price check for that model now.
+
+A fix re-prices that model's past calls straight away, so the spend figures and the **Unpriced
+cloud usage** alert update for history as well as new usage. The order is fixed:
+
+1. The provider's own charge.
+2. *Included in a plan*.
+3. A published price.
+4. Your manual rate. It applies only until a published price appears, and the panel says when a
+   published price has taken over. **Remove** undoes a setting.
 - **Remove provider** — cascades: every agent on it gets new versions and a re-render, and each
   running one restarts onto them (offline for about a minute). An agent someone stopped stays
   stopped and picks the change up when it next starts.
