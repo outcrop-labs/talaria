@@ -1505,8 +1505,7 @@ pub async fn session_overview(agent_model: &str, conversation_id: &str) -> Optio
 /// Every row of a Hermes session, oldest first, asked of the agent's own
 /// container page by page on the control window. `None` is any failure, a
 /// 404 included; a page that comes back short is the end. The 500-row page
-/// is Hermes' ceiling, and the page cap is a long session's: a work session
-/// of twelve turns and a few hundred tool calls fits in two.
+/// is Hermes' ceiling; the page cap stops a runaway session at 4000 rows.
 pub async fn session_messages(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
     const PAGE: usize = 500;
     const PAGES: usize = 8;

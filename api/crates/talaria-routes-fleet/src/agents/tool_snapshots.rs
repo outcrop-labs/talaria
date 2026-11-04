@@ -11,9 +11,9 @@
 // work session the session id names, as for a tool frame; the job has to be
 // this agent's, or the row records that it is not and is unrestorable; a
 // frame the ledger already holds answers landed without a second row. A
-// frame that cannot land is dropped quietly, as every frame on this door is:
-// observability yields to the agent, and a snapshot failure never fails a
-// run.
+// frame that names no live run, or fails to write, is answered `landed:
+// false` and dropped: observability yields to the agent, and a snapshot
+// failure never fails a run.
 
 use axum::Json;
 use axum::http::StatusCode;
@@ -37,7 +37,7 @@ struct Call {
     failed: bool,
 }
 
-/// The frame, read from the body and bounded. None when it names no batch.
+/// The frame, read from the body and bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Frame {
     session_id: Option<String>,
@@ -94,9 +94,9 @@ fn read_frame(body: &Value, now_ms: i64) -> Option<Frame> {
     })
 }
 
-/// What the view calls a batch of more than one call: the distinct tool
-/// names in order, each with its count. One call needs no title; its tool
-/// name is the row's.
+/// The title of a batch of more than one call: the distinct tool names in
+/// order, each with its count. One call needs no title; its tool name is the
+/// row's.
 fn title_for(calls: &[Call]) -> Option<String> {
     if calls.len() < 2 {
         return None;

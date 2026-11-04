@@ -313,8 +313,8 @@ pub const QUEUED_STALE_AFTER_SECS: i64 = 24 * 60 * 60;
 /// `idle_secs` is how long since the row's `updated_at`; a job the sweep
 /// cannot date (null) is never stale. A superseded job whose checkout a
 /// rewind could still restore from stays while its ticket is open, however
-/// idle; once the ticket closes a rewind is refused anyway, and the checkout
-/// goes with the ticket's other jobs.
+/// idle; once the ticket closes, the checkout goes with the ticket's other
+/// jobs.
 pub fn sweep_action(
     job_status: &str,
     ticket_closed: Option<bool>,

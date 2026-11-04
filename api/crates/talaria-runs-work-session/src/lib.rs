@@ -510,8 +510,8 @@ pub fn step_places(rows: &[Value]) -> Vec<StepPlace> {
 /// Stamp the transcript's order on the run's step rows at the end of turn
 /// `turn`. Best-effort by contract: a transcript the container cannot give,
 /// or one whose user rows do not count up to this turn (a steer or a notice
-/// the driver did not send), leaves the rows at their provisional place,
-/// which is still safe to rewind. Nothing here fails the step.
+/// the driver did not send), leaves the rows at their provisional place.
+/// Nothing here fails the step.
 async fn place_session_steps(d: &WorkSessionDeps, agent_model: &str, run_id: &str, turn: i64) {
     let Some(rows) = (d.session_messages)(agent_model.to_string(), run_id.to_string()).await else {
         tracing::debug!(

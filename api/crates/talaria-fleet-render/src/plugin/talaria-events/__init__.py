@@ -399,7 +399,7 @@ def on_post_tool_call(
     failed = error is not None and error != "" and error is not False
     status = "error" if (failed or _is_error_result(result)) else "completed"
     if session_id and tool_call_id:
-        _remember(_call_status, session_id, {}).setdefault(tool_call_id, status)
+        _bounded(_call_status, session_id).setdefault(session_id, {}).setdefault(tool_call_id, status)
     if session_id and tool_name.endswith(_JOB_TOOLS):
         _learn_checkout(session_id, args, result)
     event = {
@@ -518,11 +518,12 @@ def on_subagent_stop(
     )
 
 
-def _remember(table: dict, session_id: str, fresh: Any) -> Any:
-    """`table[session_id]`, made if absent, with the table kept bounded."""
+def _bounded(table: dict, session_id: str) -> dict:
+    """The table with room for `session_id`: the oldest session goes when
+    the table is full."""
     if session_id not in table and len(table) >= _SESSIONS_CAP:
         table.pop(next(iter(table)))
-    return table.setdefault(session_id, fresh)
+    return table
 
 
 def _job_answer(result: Any) -> dict | None:
@@ -569,8 +570,7 @@ def _learn_checkout(session_id: str, args: Any, result: Any) -> None:
             if asked is None or job_id == asked:
                 named.append((job_id, workdir))
     if len(named) == 1:
-        _remember(_checkouts, session_id, named[0])
-        _checkouts[session_id] = named[0]
+        _bounded(_checkouts, session_id)[session_id] = named[0]
 
 
 def _trailing_batch(history: Any) -> list[tuple[str, str]]:
@@ -643,8 +643,7 @@ def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
             os.unlink(index)
         except OSError:
             pass
-    _remember(_last_tree, session_id, (tree, commit))
-    _last_tree[session_id] = (tree, commit)
+    _bounded(_last_tree, session_id)[session_id] = (tree, commit)
     return tree, commit
 
 
@@ -658,7 +657,7 @@ def on_pre_api_request(
     **_: Any,
 ) -> None:
     """Report the step boundary the model call about to be made stands at,
-    with a snapshot of the job's checkout. Returns None, always."""
+    with a snapshot of the job's checkout."""
     if platform == "cron" or not session_id:
         return None
     batch = _trailing_batch(conversation_history)
@@ -667,8 +666,7 @@ def on_pre_api_request(
     boundary = batch[-1][0]
     if _last_boundary.get(session_id) == boundary:
         return None
-    _remember(_last_boundary, session_id, boundary)
-    _last_boundary[session_id] = boundary
+    _bounded(_last_boundary, session_id)[session_id] = boundary
     statuses = _call_status.pop(session_id, {})
     event: dict[str, Any] = {
         "kind": "snapshot",

@@ -1038,10 +1038,10 @@ impl StepSnapshot {
 }
 
 /// Append a step row, taking the next `seq` from the run's one allocator.
-/// `Ok(None)` is a frame the ledger already holds: the plugin re-sends a
-/// boundary when the model call behind it is retried, and the row's identity
-/// is its tool call id. The allocator is not bumped for a duplicate, so
-/// `seq` stays gapless.
+/// `Ok(None)` is a frame the ledger already holds: the row's identity is its
+/// tool call id, and the plugin remembers its last boundary only in process
+/// memory, so a restarted container can send one twice. The allocator is not
+/// bumped for a duplicate, so `seq` stays gapless.
 pub async fn record_step(
     pg: &PgPool,
     run_id: &str,
