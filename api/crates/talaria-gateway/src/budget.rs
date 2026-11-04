@@ -174,7 +174,7 @@ pub fn budget_message(d: &BudgetDenial) -> String {
     let fix = if d.via == "key" {
         "the key's owner can raise or remove the cap (Settings → API keys)."
     } else {
-        "an admin can raise the limit (Admin → Settings → LLM budgets)."
+        "an admin can raise the limit (Admin → Security → LLM budgets)."
     };
     let when = d
         .resets_at
@@ -440,7 +440,7 @@ mod tests {
             budget_message(&agent),
             "\"engineer-engineering\" has reached its LLM budget: $2.50 of $2.00 in the last 24h. \
              Requests resume as spend ages out of the window (around 2026-10-28 14:21 UTC, if \
-             nothing more is spent), or an admin can raise the limit (Admin → Settings → LLM budgets)."
+             nothing more is spent), or an admin can raise the limit (Admin → Security → LLM budgets)."
         );
     }
 
