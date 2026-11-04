@@ -57,10 +57,10 @@ pub const PROVIDER: &str = "talaria";
 pub const PI_CODING_AGENT_DIR: &str = "/opt/data/workbench/harness/pi";
 
 /// The bun the coding harness runs on. omp's executable is a bun program
-/// (`#!/usr/bin/env bun`, `engines.bun >= 1.3.14`), so a sandbox without bun
-/// on the PATH cannot start it at all. Pinned so every sandbox agrees; this is
-/// the harness's runtime, not the repo's toolchain (`mise.toml` decides that).
-pub const HARNESS_BUN: &str = "1.4.0";
+/// (`#!/usr/bin/env bun`) and exits at start on a bun below its `engines.bun`.
+/// This is the harness's runtime, not the repo's toolchain (`mise.toml` decides
+/// that).
+pub const HARNESS_BUN: &str = "1.4.4";
 
 /// mise's data dir on a Developer Agent's volume (the render sets
 /// `XDG_DATA_HOME` to this, and mise keeps its installs and shims under it).
@@ -395,6 +395,22 @@ pub const SANDBOX_SHAPE_FILE: &str = "/opt/workbench-config/render-shape";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // omp's `engines.bun`, copied by hand from the npm package: a pin lowered
+    // under it fails here, a floor raised upstream does not.
+    const OMP_BUN_FLOOR: [u32; 3] = [1, 4, 4];
+
+    #[test]
+    fn the_pinned_bun_is_one_omp_will_start_on() {
+        let pin: Vec<u32> = HARNESS_BUN
+            .split('.')
+            .map(|part| part.parse().expect("HARNESS_BUN is a plain x.y.z"))
+            .collect();
+        assert!(
+            pin.as_slice() >= OMP_BUN_FLOOR.as_slice(),
+            "omp exits with `Bun runtime must be >= {OMP_BUN_FLOOR:?}` on bun {HARNESS_BUN}"
+        );
+    }
 
     #[test]
     fn the_runtime_script_puts_the_pinned_bun_on_every_shells_path() {

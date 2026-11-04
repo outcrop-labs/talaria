@@ -122,6 +122,9 @@ pub enum JobName {
     NotifyMissedMail,
     NotifyRetention,
     PushPrune,
+    /// The agent image's Hermes stable channel (talaria-hermes-channel):
+    /// the check, the preparation and the rollout, one step a minute.
+    HermesChannel,
 }
 
 impl JobName {
@@ -154,6 +157,7 @@ impl JobName {
             JobName::NotifyMissedMail => "notify-missed-mail",
             JobName::NotifyRetention => "notify-retention",
             JobName::PushPrune => "push-prune",
+            JobName::HermesChannel => "hermes-channel",
         }
     }
 }

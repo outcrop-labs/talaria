@@ -391,6 +391,10 @@ talaria-harness-schema = { path = "crates/talaria-harness-schema" }
 
 talaria-harness-text = { path = "crates/talaria-harness-text" }
 
+talaria-hermes-channel = { path = "crates/talaria-hermes-channel" }
+
+talaria-hermes-images = { path = "crates/talaria-hermes-images" }
+
 talaria-hermes-skills = { path = "crates/talaria-hermes-skills" }
 
 talaria-host-metrics = { path = "crates/talaria-host-metrics" }
@@ -775,6 +779,8 @@ talaria-harness-model = { workspace = true }
 talaria-harness-prompt-rules = { workspace = true }
 talaria-harness-schema = { workspace = true }
 talaria-harness-text = { workspace = true }
+talaria-hermes-channel = { workspace = true }
+talaria-hermes-images = { workspace = true }
 talaria-hermes-skills = { workspace = true }
 talaria-home = { workspace = true }
 talaria-inbox-focus = { workspace = true }

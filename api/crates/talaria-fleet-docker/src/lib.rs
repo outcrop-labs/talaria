@@ -273,12 +273,63 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// started and was then stopped. And a stop asked while the image downloaded
 /// cancels the start ([`NOT_STARTED`]): the person's last word was stop.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
-    start_unless_stopped(department, pull_agent_image(pg, department), || async {
+    let began = stop_clock(pg).await;
+    let up = start_unless_stopped(department, pull_agent_image(pg, department), || async {
         compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
             .await
             .map(UpOutcome::into_stderr)
     })
+    .await;
+    if up.is_ok() {
+        clear_stop_since(pg, department, began.as_deref()).await;
+    }
+    up
+}
+
+/// The database's clock now, as text: a start reads it before it begins, so
+/// it clears only a Stop recorded before then. None when it cannot be read.
+pub async fn stop_clock(pg: &PgPool) -> Option<String> {
+    sqlx::query_scalar::<_, String>("select now()::text")
+        .fetch_one(pg)
+        .await
+        .ok()
+}
+
+/// Record a person's Stop of the department's agent, in Postgres so every
+/// api process and every restart agrees: the agent image channel keeps an
+/// agent with a recorded Stop down, whatever happens to its container. A
+/// failed write is logged; the stop itself already happened.
+pub async fn record_stop(pg: &PgPool, department: &str) {
+    if let Err(e) = sqlx::query(
+        // Always the latest Stop's time: a start that began before it never
+        // clears it.
+        "update agent_defs set stopped_at = now() where department = $1",
+    )
+    .bind(department)
+    .execute(pg)
     .await
+    {
+        tracing::warn!("[fleet] {department}: the stop could not be recorded: {e}");
+    }
+}
+
+/// The agent was started (or recreated) by a verb that began at `began` (the
+/// database's clock): a Stop recorded before then is over. One recorded
+/// since — a person pressing Stop while the verb waited for the agent's lock
+/// — stands, and the Stop runs after it. With no start time, any Stop is
+/// cleared.
+pub async fn clear_stop_since(pg: &PgPool, department: &str, began: Option<&str>) {
+    if let Err(e) = sqlx::query(
+        "update agent_defs set stopped_at = null where department = $1 \
+           and stopped_at is not null and ($2::timestamptz is null or stopped_at < $2::timestamptz)",
+    )
+    .bind(department)
+    .bind(began)
+    .execute(pg)
+    .await
+    {
+        tracing::warn!("[fleet] {department}: the stop could not be cleared: {e}");
+    }
 }
 
 /// [`fleet_up`]'s order, apart from docker: read the department's stop mark,
@@ -321,7 +372,8 @@ pub const NOT_STARTED_SENTENCE: &str = "Not started: a stop was asked while the 
 /// recreate that fails or runs out its time cleans up after itself
 /// (`recover_failed_recreate`).
 pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, String> {
-    compose_up(
+    let began = stop_clock(pg).await;
+    let up = compose_up(
         pg,
         department,
         &["up", "-d", "--force-recreate", "--no-deps"],
@@ -329,7 +381,13 @@ pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, Str
         false,
     )
     .await
-    .map(UpOutcome::into_stderr)
+    .map(UpOutcome::into_stderr);
+    // It is running again: a Stop from before this recreate is over (one
+    // pressed while it ran stands, and its stop follows).
+    if up.is_ok() {
+        clear_stop_since(pg, department, began.as_deref()).await;
+    }
+    up
 }
 
 /// [`fleet_recreate`] for a change being APPLIED, which must never start an
@@ -1240,6 +1298,37 @@ pub async fn pull_agent_image_within(
     pull::wait(pull::join(&svc), Some(within)).await
 }
 
+/// Start (or join) the pull of a service's image in a compose project of its
+/// own — `project` is the `compose -p … -f … --env-file …` prefix — and wait
+/// at most `within`. The same one-pull-per-key machinery as an agent's
+/// ([`pull_agent_image_within`]): the pull goes on after this answers, and a
+/// caller that asks again joins it.
+pub async fn pull_project_image_within(
+    key: &str,
+    project: &[String],
+    svc: &str,
+    within: Duration,
+) -> PullStatus {
+    pull::wait(pull::join_project(key, project, svc), Some(within)).await
+}
+
+/// How many image pulls this process is running now.
+pub fn pulls_running() -> usize {
+    pull::running()
+}
+
+/// Whether this process is running the pull keyed `key` now.
+pub fn pull_running(key: &str) -> bool {
+    pull::running_key(key)
+}
+
+/// The last failure of the pull keyed `key` since it was last read: a
+/// background caller that asks now and then learns of a pull that failed
+/// between its asks, so it backs off instead of starting another at once.
+pub fn take_pull_failure(key: &str) -> Option<String> {
+    pull::take_failed(key)
+}
+
 /// Whether the named container exists and is running.
 pub async fn container_running(name: &str) -> bool {
     docker(
@@ -1744,6 +1833,7 @@ pub async fn fleet_stop(pg: &PgPool, department: &str) -> Result<String, String>
     // Before the move lock: a legacy agent's move home in progress reads it,
     // and leaves the agent in `-b` for this stop instead of starting it home.
     note_stop(department);
+    record_stop(pg, department).await;
     compose_verb(
         pg,
         department,

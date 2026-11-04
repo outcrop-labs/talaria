@@ -159,7 +159,8 @@ CREATE TABLE public.agent_defs (
     developer boolean DEFAULT false NOT NULL,
     pinned_sessions boolean DEFAULT false NOT NULL,
     disabled_toolsets jsonb DEFAULT '[]'::jsonb NOT NULL,
-    max_children integer DEFAULT 3 NOT NULL
+    max_children integer DEFAULT 3 NOT NULL,
+    stopped_at timestamp with time zone
 );
 CREATE TABLE public.agent_google_connections (
     agent_model text NOT NULL,
@@ -814,6 +815,26 @@ CREATE TABLE public.harness_runs (
     caller text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     error text
+);
+CREATE TABLE public.hermes_agent_images (
+    agent_id uuid NOT NULL,
+    digest text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.hermes_images (
+    digest text NOT NULL,
+    repository text NOT NULL,
+    version text,
+    config_version integer,
+    status text DEFAULT 'candidate'::text NOT NULL,
+    reason text,
+    inspect jsonb DEFAULT '{}'::jsonb NOT NULL,
+    pulled_here boolean DEFAULT false NOT NULL,
+    first_seen timestamp with time zone DEFAULT now() NOT NULL,
+    prepared_at timestamp with time zone,
+    good_since timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT hermes_images_status_check CHECK ((status = ANY (ARRAY['candidate'::text, 'good'::text, 'bad'::text])))
 );
 CREATE TABLE public.inbox_decisions (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1942,6 +1963,10 @@ ALTER TABLE ONLY public.guard_findings
     ADD CONSTRAINT guard_findings_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.harness_runs
     ADD CONSTRAINT harness_runs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.hermes_agent_images
+    ADD CONSTRAINT hermes_agent_images_pkey PRIMARY KEY (agent_id);
+ALTER TABLE ONLY public.hermes_images
+    ADD CONSTRAINT hermes_images_pkey PRIMARY KEY (digest);
 ALTER TABLE ONLY public.inbox_decisions
     ADD CONSTRAINT inbox_decisions_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.inbox_focus_state
@@ -2446,6 +2471,8 @@ ALTER TABLE ONLY public.google_pending_actions
     ADD CONSTRAINT google_pending_actions_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.google_pending_actions
     ADD CONSTRAINT google_pending_actions_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.hermes_agent_images
+    ADD CONSTRAINT hermes_agent_images_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.inbox_decisions
     ADD CONSTRAINT inbox_decisions_assistant_message_id_fkey FOREIGN KEY (assistant_message_id) REFERENCES public.messages(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.inbox_decisions
