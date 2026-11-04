@@ -377,7 +377,7 @@ impl RewindWorld for Real {
                 .ok_or_else(|| format!("not a job id: {source_job_id:?}"))?;
             container::probe(pg, agent_model)
                 .await
-                .map_err(|e| format!("the agent cannot rewind: {e}"))?;
+                .map_err(|e| e.to_string())?;
             let root = container::git_root(pg, agent_model, &workdir).await?;
             if !contained(&workdir, &root) {
                 return Err(format!(

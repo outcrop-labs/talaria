@@ -35,6 +35,11 @@ pub fn canary_soak() -> Duration {
     Duration::from_secs(crate::env_secs("TALARIA_HERMES_CANARY_SOAK_SECS", 5 * 60))
 }
 
+/// The session the rewind contract forks. The canary's volume is new each
+/// boot, so the name is free, and a fixed name keeps the words of a problem
+/// the same from one canary to the next, as an admin's Accept matches them.
+const CONTRACT_SESSION: &str = "talaria-canary-rewind";
+
 /// The log lines that say a Hermes boot went wrong with its config: the
 /// migration Talaria's version stamp exists to prevent (it fails on the
 /// read-only bind), and a config Hermes refused. Lowercase; matched on a
@@ -230,6 +235,28 @@ pub async fn get_json(url: &str, bearer: Option<&str>) -> Result<(u16, serde_jso
         .build()
         .map_err(|e| format!("probe client would not build: {e}"))?;
     let mut req = client.get(url);
+    if let Some(key) = bearer.filter(|k| !k.is_empty()) {
+        req = req.bearer_auth(key);
+    }
+    let resp = req.send().await.map_err(|e| format!("no answer: {e}"))?;
+    let status = resp.status().as_u16();
+    let body = resp.json().await.unwrap_or(serde_json::Value::Null);
+    Ok((status, body))
+}
+
+/// A JSON POST on the probe client: the status and the body, or no answer.
+pub async fn post_json(
+    url: &str,
+    bearer: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<(u16, serde_json::Value), String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("probe client would not build: {e}"))?;
+    let mut req = client.post(url).json(body);
     if let Some(key) = bearer.filter(|k| !k.is_empty()) {
         req = req.bearer_auth(key);
     }
@@ -562,6 +589,11 @@ async fn canary_checks(
     let mut problems = contract_shapes(&url, &files.api_key)
         .await
         .map_err(Fault::Infra)?;
+    problems.extend(
+        crate::rewind_contract::ask(&url, &files.api_key, &files.container, CONTRACT_SESSION)
+            .await
+            .map_err(Fault::Infra)?,
+    );
     problems.retain(|p| !accepted.contains(p));
     if !problems.is_empty() {
         return Err(Fault::Held(problems));

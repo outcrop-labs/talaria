@@ -3,9 +3,11 @@
 //
 // Hermes' HTTP fork copies a whole session and cannot cut it, so the cut goes
 // through its session store in-process, the way its own /retry and /undo do.
-// That is an internal, not a public API: `probe` checks the symbols before a
-// rewind touches anything, and a Hermes that renamed them fails the rewind
-// instead of corrupting a transcript. The checkout is restored with git alone.
+// That is an internal, not a public API: the canary carries out a fork and a
+// cut on every release before it reaches an agent, `probe` checks the symbols
+// before a rewind touches anything, and a Hermes that renamed them fails the
+// rewind instead of corrupting a transcript. The checkout is restored with git
+// alone.
 
 use serde_json::Value;
 use sqlx::PgPool;
@@ -16,16 +18,27 @@ const AGENT_USER: &str = "hermes";
 const PYTHON: &str = "/opt/hermes/.venv/bin/python";
 const EXEC_TIMEOUT_MS: u64 = 60_000;
 
-/// Fails the import when `replace_messages` cannot archive the dropped suffix:
-/// a plain delete would leave nothing to recover and evict the rows from the
-/// search index.
+/// Prints `ok`, or `missing: ` and what the scripts below read that this Hermes
+/// lacks. `replace_messages` must archive the dropped suffix: a plain delete
+/// would leave nothing to recover and evict the rows from the search index.
 const PROBE_PY: &str = r#"
 import inspect, sys
 sys.path.insert(0, "/opt/hermes")
-from hermes_state import SessionDB
-assert "archive_dropped" in inspect.signature(SessionDB.replace_messages).parameters
-assert callable(getattr(SessionDB, "_session_turn_lease_key", None))
-print("ok")
+try:
+    from hermes_state import SessionDB
+except ImportError:
+    print("missing: hermes_state.SessionDB")
+    sys.exit(0)
+missing = [n for n in ("get_messages", "get_session", "_read_ctx", "_session_turn_lease_key") if not callable(getattr(SessionDB, n, None))]
+replace = getattr(SessionDB, "replace_messages", None)
+if replace is None or "archive_dropped" not in inspect.signature(replace).parameters:
+    missing.append("replace_messages(archive_dropped)")
+if "_read_ctx" not in missing:
+    with SessionDB()._read_ctx() as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(session_turn_leases)")}
+    if not {"conversation_id", "expires_at"} <= columns:
+        missing.append("session_turn_leases(conversation_id, expires_at)")
+print("missing: " + ", ".join(missing) if missing else "ok")
 "#;
 
 /// argv: session id. Hermes holds a `session_turn_leases` row for the whole
@@ -74,6 +87,30 @@ if db.get_session(sid) and db.get_messages(sid):
     db.replace_messages(sid, [], archive_dropped=True)
 print("ok")
 "#;
+
+/// argv: session id. Writes the transcript the canary forks and cuts.
+const SEED_PY: &str = r#"
+import sys
+sys.path.insert(0, "/opt/hermes")
+from hermes_state import SessionDB
+def call(id):
+    return {"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]}
+SessionDB().replace_messages(sys.argv[1], [
+    {"role": "user", "content": "canary"},
+    call("canary_call_1"),
+    {"role": "tool", "tool_call_id": "canary_call_1", "content": "one"},
+    call("canary_call_2"),
+    {"role": "tool", "tool_call_id": "canary_call_2", "content": "two"},
+    {"role": "assistant", "content": "done"},
+])
+print("ok")
+"#;
+
+/// The rows [`seed_session`] writes, and the call the canary cuts at: its
+/// result row is the third.
+pub const SEED_ROWS: usize = 6;
+pub const SEED_CUT_CALL: &str = "canary_call_1";
+pub const SEED_CUT_ROWS: usize = 3;
 
 /// $1 workdir. The checkout the agent made under a job's workdir: the workdir
 /// itself, or the one directory beneath it, as the snapshot plugin finds it.
@@ -135,19 +172,78 @@ pub async fn department_of(pg: &PgPool, agent_model: &str) -> Result<String, Str
 
 async fn exec(pg: &PgPool, agent_model: &str, command: &[&str]) -> Result<String, String> {
     let (container, _) = container_of(pg, agent_model).await?;
-    let (out, _) = docker_exec_as(&container, Some(AGENT_USER), command, None, EXEC_TIMEOUT_MS)
+    exec_in(&container, command).await
+}
+
+async fn exec_in(container: &str, command: &[&str]) -> Result<String, String> {
+    let (out, _) = docker_exec_as(container, Some(AGENT_USER), command, None, EXEC_TIMEOUT_MS)
         .await
         .map_err(|e| format!("in {container}: {e}"))?;
     Ok(out)
 }
 
-/// The symbols the cut needs, and the container answering at all.
-pub async fn probe(pg: &PgPool, agent_model: &str) -> Result<(), String> {
-    let out = exec(pg, agent_model, &[PYTHON, "-c", PROBE_PY]).await?;
-    if out.trim() != "ok" {
-        return Err(format!("the rewind probe answered {:?}", out.trim()));
+/// Whether a failed exec is docker's and says nothing of the Hermes inside:
+/// the daemon refused, the container is not there, or the exec never finished.
+pub fn docker_failed(e: &str) -> bool {
+    [
+        "Error response from daemon",
+        "Cannot connect to the Docker daemon",
+        "docker exec ",
+    ]
+    .iter()
+    .any(|m| e.contains(m))
+}
+
+/// Why a container cannot be asked for a rewind.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Unready {
+    /// This Hermes lacks what a rewind reads; the words name what.
+    Lacks(String),
+    /// Docker could not ask, so nothing is known of the Hermes.
+    NoAnswer(String),
+}
+
+impl std::fmt::Display for Unready {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unready::Lacks(what) => {
+                write!(f, "this agent's Hermes does not support rewind ({what})")
+            }
+            Unready::NoAnswer(e) => write!(f, "the agent could not be asked about rewind: {e}"),
+        }
     }
-    Ok(())
+}
+
+fn probe_verdict(answer: Result<String, String>) -> Result<(), Unready> {
+    match answer {
+        Ok(out) if out.trim() == "ok" => Ok(()),
+        Ok(out) => Err(Unready::Lacks(out.trim().to_string())),
+        Err(e) if docker_failed(&e) => Err(Unready::NoAnswer(e)),
+        Err(e) => Err(Unready::Lacks(
+            e.lines().last().unwrap_or(&e).trim().to_string(),
+        )),
+    }
+}
+
+/// What a rewind reads from Hermes, and the container answering at all.
+pub async fn probe(pg: &PgPool, agent_model: &str) -> Result<(), Unready> {
+    let (container, _) = container_of(pg, agent_model)
+        .await
+        .map_err(Unready::NoAnswer)?;
+    probe_container(&container).await
+}
+
+/// [`probe`] on a container by name, as the canary asks a release before it
+/// reaches an agent.
+pub async fn probe_container(container: &str) -> Result<(), Unready> {
+    probe_verdict(exec_in(container, &[PYTHON, "-c", PROBE_PY]).await)
+}
+
+/// Write the transcript the canary forks and cuts into an existing session.
+pub async fn seed_session(container: &str, session_id: &str) -> Result<(), String> {
+    exec_in(container, &[PYTHON, "-c", SEED_PY, session_id])
+        .await
+        .map(|_| ())
 }
 
 /// The git checkout under a job's workdir, or why there is none.
@@ -167,10 +263,15 @@ pub async fn git_root(pg: &PgPool, agent_model: &str, workdir: &str) -> Result<S
 
 /// Empty the session a failed rewind forked under an attempt's id.
 pub async fn clear_session(pg: &PgPool, agent_model: &str, session_id: &str) -> Result<(), String> {
+    let (container, _) = container_of(pg, agent_model).await?;
+    clear_session_in(&container, session_id).await
+}
+
+pub async fn clear_session_in(container: &str, session_id: &str) -> Result<(), String> {
     if !plain(session_id) {
         return Err("the session id is not one this can name".into());
     }
-    exec(pg, agent_model, &[PYTHON, "-c", CLEAR_PY, session_id])
+    exec_in(container, &[PYTHON, "-c", CLEAR_PY, session_id])
         .await
         .map(|_| ())
 }
@@ -182,10 +283,15 @@ pub async fn session_idle(
     agent_model: &str,
     session_id: &str,
 ) -> Result<bool, String> {
+    let (container, _) = container_of(pg, agent_model).await?;
+    session_idle_in(&container, session_id).await
+}
+
+pub async fn session_idle_in(container: &str, session_id: &str) -> Result<bool, String> {
     if !plain(session_id) {
         return Err("the session id is not one this can name".into());
     }
-    let out = exec(pg, agent_model, &[PYTHON, "-c", IDLE_PY, session_id]).await?;
+    let out = exec_in(container, &[PYTHON, "-c", IDLE_PY, session_id]).await?;
     match out.trim() {
         "idle" => Ok(true),
         "busy" => Ok(false),
@@ -231,15 +337,19 @@ pub async fn cut_session(
     session_id: &str,
     tool_call_id: &str,
 ) -> Result<Cut, String> {
+    let (container, _) = container_of(pg, agent_model).await?;
+    cut_session_in(&container, session_id, tool_call_id).await
+}
+
+pub async fn cut_session_in(
+    container: &str,
+    session_id: &str,
+    tool_call_id: &str,
+) -> Result<Cut, String> {
     if !plain(session_id) || !plain(tool_call_id) {
         return Err("the session id or tool call id is not one this can name".into());
     }
-    let out = exec(
-        pg,
-        agent_model,
-        &[PYTHON, "-c", CUT_PY, session_id, tool_call_id],
-    )
-    .await?;
+    let out = exec_in(container, &[PYTHON, "-c", CUT_PY, session_id, tool_call_id]).await?;
     let answer: Value = serde_json::from_str(out.trim()).map_err(|_| {
         format!(
             "the cut answered something that is not json: {:?}",
@@ -349,6 +459,37 @@ mod tests {
     }
 
     #[test]
+    fn a_hermes_that_lacks_a_symbol_is_told_apart_from_docker_failing() {
+        assert_eq!(probe_verdict(Ok("ok\n".into())), Ok(()));
+        let lacks = probe_verdict(Ok("missing: replace_messages(archive_dropped)\n".into()));
+        assert_eq!(
+            lacks.unwrap_err().to_string(),
+            "this agent's Hermes does not support rewind (missing: replace_messages(archive_dropped))"
+        );
+        let crashed = "in c: Traceback (most recent call last):\n  File \"<string>\", line 1\nAttributeError: gone";
+        assert_eq!(
+            probe_verdict(Err(crashed.into())),
+            Err(Unready::Lacks("AttributeError: gone".into()))
+        );
+        let moved = "in c: OCI runtime exec failed: exec failed: unable to start container process: exec: \"/opt/hermes/.venv/bin/python\": stat /opt/hermes/.venv/bin/python: no such file or directory";
+        assert!(matches!(
+            probe_verdict(Err(moved.into())),
+            Err(Unready::Lacks(_))
+        ));
+        for docker in [
+            "in c: Error response from daemon: container abc is not running",
+            "in c: Error response from daemon: No such container: c",
+            "in c: Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
+            "in c: docker exec c …: timed out",
+        ] {
+            assert!(
+                matches!(probe_verdict(Err(docker.into())), Err(Unready::NoAnswer(_))),
+                "{docker}"
+            );
+        }
+    }
+
+    #[test]
     fn the_scripts_take_their_inputs_as_arguments() {
         assert!(CUT_PY.contains("sys.argv[1], sys.argv[2]"));
         assert!(
@@ -359,6 +500,8 @@ mod tests {
         assert!(CLEAR_PY.contains("sys.argv[1]"));
         assert!(PROBE_PY.contains("archive_dropped"));
         assert!(PROBE_PY.contains("_session_turn_lease_key"));
+        assert!(PROBE_PY.contains("session_turn_leases"));
+        assert!(SEED_PY.contains("sys.argv[1]") && SEED_PY.contains(SEED_CUT_CALL));
         assert!(IDLE_PY.contains("sys.argv[1]") && IDLE_PY.contains("session_turn_leases"));
     }
 }
