@@ -955,14 +955,22 @@ fn decode_kind(s: &str) -> Result<CheckpointKind, sqlx::Error> {
     }
 }
 
-/// A run's ledger, oldest first. An unknown run reads as an empty ledger, and
-/// so does a run older than the ledger: both have nothing to go back to.
+/// A run's ledger in the order the work happened. A turn opens with its
+/// `send` row, holds its steps, and closes with its `record` or `failed` row;
+/// steps sort by the place the transcript gave them, then by the hook's own
+/// clock, because a step's frame can land after the turn that held it was
+/// recorded. `seq` is identity, not order. An unknown run reads as an empty
+/// ledger, and so does a run older than the ledger: both have nothing to go
+/// back to.
 pub async fn run_checkpoints(pg: &PgPool, id: &str) -> Result<Vec<RunCheckpoint>, sqlx::Error> {
     let rows = sqlx::query(
         "select seq, kind, turn, agent_turn_id, step_no, tool_call_id, tool, title, status, \
                 job_id::text, workspace_commit, workspace_tree, restorable, unrestorable_reason, \
                 (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms \
-         from run_checkpoints where run_id = $1::uuid order by seq",
+         from run_checkpoints where run_id = $1::uuid \
+         order by turn nulls last, \
+                  case when kind = 'step' then 1 when status = 'send' then 0 else 2 end, \
+                  step_no nulls last, created_at, seq",
     )
     .bind(id)
     .fetch_all(pg)
@@ -988,6 +996,149 @@ pub async fn run_checkpoints(pg: &PgPool, id: &str) -> Result<Vec<RunCheckpoint>
             })
         })
         .collect()
+}
+
+/// One model step of a work session, as the agent's plugin reported it and
+/// the door checked it: the boundary after the batch of tool calls the model
+/// made, and the git snapshot of the job's checkout taken there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepSnapshot {
+    pub agent_turn_id: Option<String>,
+    /// The last tool call of the batch. A rewind cuts the conversation after
+    /// its result row, and the row is unique per run on it.
+    pub tool_call_id: String,
+    pub tool: String,
+    pub title: Option<String>,
+    pub status: String,
+    /// The job whose checkout was snapshotted, once the door has confirmed it
+    /// is this agent's.
+    pub job_id: Option<String>,
+    pub workspace_commit: Option<String>,
+    pub workspace_tree: Option<String>,
+    /// Why the step cannot be restored. None when it can.
+    pub unrestorable_reason: Option<String>,
+    /// The hook's clock, epoch milliseconds: the row's `created_at`, so late
+    /// frames still sort where the step happened.
+    pub at_ms: i64,
+}
+
+impl StepSnapshot {
+    /// Why the row cannot be restored: the plugin's own reason first, then
+    /// what the door could not confirm. None is a restorable step.
+    fn reason(&self) -> Option<&str> {
+        if let Some(reason) = &self.unrestorable_reason {
+            return Some(reason);
+        }
+        match (&self.job_id, &self.workspace_commit) {
+            (None, _) => Some("the step named no job of this agent"),
+            (_, None) => Some("the step carried no snapshot commit"),
+            _ => None,
+        }
+    }
+}
+
+/// Append a step row, taking the next `seq` from the run's one allocator.
+/// `Ok(None)` is a frame the ledger already holds: the plugin re-sends a
+/// boundary when the model call behind it is retried, and the row's identity
+/// is its tool call id. The allocator is not bumped for a duplicate, so
+/// `seq` stays gapless.
+pub async fn record_step(
+    pg: &PgPool,
+    run_id: &str,
+    step: &StepSnapshot,
+) -> Result<Option<i64>, sqlx::Error> {
+    let written: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
+        "with bumped as ( \
+           update runs set checkpoint_seq = checkpoint_seq + 1 \
+           where id = $1::uuid \
+             and not exists (select 1 from run_checkpoints \
+                             where run_id = $1::uuid and tool_call_id = $2) \
+           returning checkpoint_seq, coalesce((checkpoint->>'turn')::bigint, 1) as turn \
+         ), ledger as ( \
+           insert into run_checkpoints \
+             (run_id, seq, kind, turn, agent_turn_id, tool_call_id, tool, title, status, \
+              job_id, workspace_commit, workspace_tree, restorable, unrestorable_reason, \
+              created_at) \
+           select $1::uuid, checkpoint_seq, 'step', turn, $3, $2, $4, $5, $6, \
+                  $7::uuid, $8, $9, $10, $11, to_timestamp($12::double precision / 1000.0) \
+           from bumped \
+           returning seq \
+         ) \
+         select seq from ledger",
+    )
+    .bind(run_id)
+    .bind(&step.tool_call_id)
+    .bind(&step.agent_turn_id)
+    .bind(&step.tool)
+    .bind(&step.title)
+    .bind(&step.status)
+    .bind(&step.job_id)
+    .bind(&step.workspace_commit)
+    .bind(&step.workspace_tree)
+    .bind(step.reason().is_none())
+    .bind(step.reason())
+    .bind(step.at_ms)
+    .fetch_optional(pg)
+    .await;
+    match written {
+        // Two copies of one frame raced past the not-exists check; the
+        // unique key kept the second out, which is the answer wanted.
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(None),
+        other => other,
+    }
+}
+
+/// Where the transcript puts a step: its Talaria turn, and its ordinal among
+/// the turn's tool calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepPlace {
+    pub tool_call_id: String,
+    pub turn: i64,
+    pub step_no: i64,
+}
+
+/// Stamp the transcript's order on a run's step rows. Rows the transcript
+/// does not name keep their provisional turn; rows already in place are left
+/// alone, so the record stage can run this on every turn. Answers how many
+/// rows moved.
+pub async fn place_steps(
+    pg: &PgPool,
+    run_id: &str,
+    places: &[StepPlace],
+) -> Result<u64, sqlx::Error> {
+    if places.is_empty() {
+        return Ok(0);
+    }
+    let ids: Vec<&str> = places.iter().map(|p| p.tool_call_id.as_str()).collect();
+    let turns: Vec<i64> = places.iter().map(|p| p.turn).collect();
+    let steps: Vec<i64> = places.iter().map(|p| p.step_no).collect();
+    let done = sqlx::query(
+        "update run_checkpoints c set turn = p.turn, step_no = p.step_no \
+         from unnest($2::text[], $3::bigint[], $4::bigint[]) as p(tool_call_id, turn, step_no) \
+         where c.run_id = $1::uuid and c.kind = 'step' and c.tool_call_id = p.tool_call_id \
+           and (c.turn is distinct from p.turn or c.step_no is distinct from p.step_no)",
+    )
+    .bind(run_id)
+    .bind(&ids)
+    .bind(&turns)
+    .bind(&steps)
+    .execute(pg)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// A job's checkout is gone, so every step that pointed into it can no
+/// longer be restored. Rows already unrestorable keep their own reason.
+pub async fn retire_job_steps(pg: &PgPool, job_id: &str, reason: &str) -> Result<u64, sqlx::Error> {
+    let done = sqlx::query(
+        "update run_checkpoints set restorable = false, unrestorable_reason = $2 \
+         where job_id = $1::uuid and restorable",
+    )
+    .bind(job_id)
+    .bind(reason)
+    .execute(pg)
+    .await?;
+    Ok(done.rows_affected())
 }
 
 /// A run's place among the attempts of one piece of work. A run nobody rewound

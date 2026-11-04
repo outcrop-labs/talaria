@@ -16,7 +16,8 @@ use talaria_api::runs::define::{
 };
 use talaria_api::runs::store::{
     AnswerOutcome, CancelOutcome, CheckpointKind, ClaimOutcome, NewRun, PgRunStore, RunStore,
-    WriteFailure, run_checkpoints,
+    StepPlace, StepSnapshot, WriteFailure, place_steps, record_step, retire_job_steps,
+    run_checkpoints,
 };
 /// Every test passes its own kind: the suite runs in parallel, and this deletes
 /// all of a kind's runs.
@@ -439,6 +440,224 @@ async fn a_lost_lease_write_leaves_no_ledger_row() {
         .await
         .unwrap();
     assert_eq!(seq, 1, "a refused write allocates no seq");
+
+    cleanup(&pg, kind).await;
+}
+
+fn step(call: &str, tool: &str, at_ms: i64, job_id: Option<&str>) -> StepSnapshot {
+    StepSnapshot {
+        agent_turn_id: Some("hermes-turn".into()),
+        tool_call_id: call.into(),
+        tool: tool.into(),
+        title: None,
+        status: "completed".into(),
+        job_id: job_id.map(str::to_string),
+        workspace_commit: Some("a".repeat(40)),
+        workspace_tree: Some("b".repeat(40)),
+        unrestorable_reason: None,
+        at_ms,
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn step_rows_share_the_seq_allocator_dedupe_by_call_and_read_in_the_transcript_s_order() {
+    let pg = pg().await;
+    let kind = "rust-store-test-steps";
+    cleanup(&pg, kind).await;
+    let store = PgRunStore::new(pg.clone());
+    let (id, token) = claimed_run(&store, kind).await;
+    let job = uuid::Uuid::new_v4().to_string();
+    // The hook's clock runs well behind the driver's: the test proves that
+    // rank and place order a turn, not the wall clock.
+    let past = 1_700_000_000_000i64;
+
+    let turn = |n: i64, stage: &str| json!({"stage": stage, "turn": n, "stageAttempt": 0});
+    store
+        .checkpoint(&id, &token, turn(1, "send"), "pushed".into(), false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record_step(&pg, &id, &step("c1", "terminal", past + 1_000, None))
+            .await
+            .unwrap(),
+        Some(2),
+        "a step takes the next seq after the turn row"
+    );
+    assert_eq!(
+        record_step(
+            &pg,
+            &id,
+            &step("c2", "write_file", past + 2_000, Some(&job))
+        )
+        .await
+        .unwrap(),
+        Some(3)
+    );
+    assert_eq!(
+        record_step(
+            &pg,
+            &id,
+            &step("c2", "write_file", past + 2_000, Some(&job))
+        )
+        .await
+        .unwrap(),
+        None,
+        "the frame the ledger already holds adds no row"
+    );
+    store
+        .checkpoint(
+            &id,
+            &token,
+            turn(1, "record"),
+            "turn 1 answered".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .checkpoint(
+            &id,
+            &token,
+            turn(2, "send"),
+            "turn 1 recorded".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // A frame of turn 1 that lands after turn 2 opened reads turn 2 until
+    // the transcript places it.
+    assert_eq!(
+        record_step(&pg, &id, &step("c0", "read_file", past + 500, None))
+            .await
+            .unwrap(),
+        Some(6)
+    );
+    let (allocated,): (i64,) =
+        sqlx::query_as("select checkpoint_seq from runs where id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert_eq!(allocated, 6, "a duplicate does not spend a seq");
+
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r.seq, r.turn, r.step_no))
+            .collect::<Vec<_>>(),
+        [
+            (1, Some(1), None),
+            (2, Some(1), None),
+            (3, Some(1), None),
+            (4, Some(1), None),
+            (5, Some(2), None),
+            (6, Some(2), None),
+        ],
+        "provisional: a turn's send row, its steps by the hook's clock, its record row"
+    );
+    assert_eq!(rows[1].kind, CheckpointKind::Step);
+    assert_eq!(rows[1].tool.as_deref(), Some("terminal"));
+    assert_eq!(rows[1].agent_turn_id.as_deref(), Some("hermes-turn"));
+    assert!(
+        !rows[1].restorable,
+        "a step with no job of the agent restores nothing"
+    );
+    assert_eq!(
+        rows[1].unrestorable_reason.as_deref(),
+        Some("the step named no job of this agent")
+    );
+    assert!(rows[2].restorable);
+    assert_eq!(rows[2].job_id.as_deref(), Some(job.as_str()));
+    assert_eq!(
+        rows[2].workspace_commit.as_deref(),
+        Some("a".repeat(40).as_str())
+    );
+    assert_eq!(
+        rows[1].created_at, "2023-11-14T22:13:21.000Z",
+        "the hook's clock is the row's"
+    );
+
+    let placed = place_steps(
+        &pg,
+        &id,
+        &[
+            StepPlace {
+                tool_call_id: "c0".into(),
+                turn: 1,
+                step_no: 1,
+            },
+            StepPlace {
+                tool_call_id: "c1".into(),
+                turn: 1,
+                step_no: 2,
+            },
+            StepPlace {
+                tool_call_id: "c2".into(),
+                turn: 1,
+                step_no: 3,
+            },
+            StepPlace {
+                tool_call_id: "never-reported".into(),
+                turn: 1,
+                step_no: 4,
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        placed, 3,
+        "every reported step moved; an unknown call places nothing"
+    );
+    assert_eq!(
+        place_steps(
+            &pg,
+            &id,
+            &[StepPlace {
+                tool_call_id: "c1".into(),
+                turn: 1,
+                step_no: 2
+            }]
+        )
+        .await
+        .unwrap(),
+        0,
+        "placing again moves nothing"
+    );
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [1, 6, 2, 3, 4, 5],
+        "placed: the late frame reads where the transcript put it"
+    );
+    assert_eq!(rows[1].step_no, Some(1));
+    assert_eq!(rows[1].turn, Some(1));
+
+    assert_eq!(
+        retire_job_steps(&pg, &job, "the job's checkout was removed")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        retire_job_steps(&pg, &job, "again").await.unwrap(),
+        0,
+        "a retired row keeps its reason"
+    );
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    let c2 = rows
+        .iter()
+        .find(|r| r.tool_call_id.as_deref() == Some("c2"))
+        .unwrap();
+    assert!(!c2.restorable);
+    assert_eq!(
+        c2.unrestorable_reason.as_deref(),
+        Some("the job's checkout was removed")
+    );
 
     cleanup(&pg, kind).await;
 }
