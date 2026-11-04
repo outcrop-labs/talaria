@@ -346,7 +346,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "triage_ticket",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — all refuse with 403, and assigning or marking done are human-only.",
+            description: "Triage a ticket: adjust priority, effort, labels, description, due date. Change its status ONLY when a person asked you to move it — a ticket never moves as a side effect of your work. While your work session is live on the ticket a status change is refused (403): report_outcome records the result and a person moves it. Otherwise a requested move goes FORWARD only: to the active column (in_progress by default), to blocked, or to review (quality_review by default). Restarting a blocked ticket, taking anything out of quality_review, moving a ticket into a column agents pick up from, and any write at all to a ticket a person has taken off the table — closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD — are a person's call and return 403. Assigning and marking done are human-only.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -361,7 +361,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "color": one_of(TICKET_COLORS, "Color-code the ticket (shows on cards + gantt)"),
                     "status": one_of(
                         &["in_progress", "blocked", "quality_review"],
-                        "Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that.",
+                        "Only when a person asked you to move the ticket. Forward only, never from blocked, never into a column agents pick up from, and never during your own work session on the ticket. blocked and quality_review are one-way: a person moves it after that.",
                     ),
                 },
                 "required": ["taskId"],
@@ -400,14 +400,14 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "report_outcome",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. Only ever on a live ticket.",
+            description: "Report the outcome of work on a ticket: what changed (outcome), how (resolution), or what went wrong (errorMessage — also how you say you are blocked). It records the result on the ticket and ends your work session on it; it does NOT move the ticket. A person reads it, reviews the work, and moves the ticket — to review, to done, or back. Add anything further as a comment. Only ever on a live ticket.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "taskId": str_schema("Ticket id"),
                     "outcome": str_schema("What was accomplished"),
                     "resolution": str_schema("How it was resolved"),
-                    "errorMessage": str_schema("If the work failed, what went wrong"),
+                    "errorMessage": str_schema("If the work failed or is blocked, what went wrong"),
                 },
                 "required": ["taskId", "outcome"],
             }),
