@@ -3,11 +3,17 @@
   import Modal from '@/components/ui/Modal.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { Square } from '@lucide/svelte'
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import type { TabItem } from '@/components/ui/tabs'
+  import { fromLedger, type LedgerRow } from '@/lib/agent-checkpoints'
   import { getJson } from '@/lib/fetch-json'
-  import { useStopWorkSession, useWorkSession } from '@/lib/work-session.svelte'
+  import { openStream } from '@/lib/sse'
+  import { useStopWorkSession, useWorkSession, useWorkSessionHistory } from '@/lib/work-session.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { framesFromTranscript, splitWatch, type WatchFrame } from '@/lib/work-watch'
+  import AgentCheckpoints from './AgentCheckpoints.svelte'
   import WorkWatch from './WorkWatch.svelte'
 
   // The run-detail modal: the full-insight view of a work session, one pane
@@ -16,6 +22,7 @@
   // turns above the live tail. TURNS is the harness exchange — the ask, the
   // harness output, and the prose the agent wrote back. Both read the
   // retained transcript through the run's own door, plus the live watch.
+  // CHECKPOINTS is the run's ledger as a line.
   // RESOURCES is the agent container's cpu/mem/pids over the run's window.
   // The header's Stop ends the ticket's live session. Everything else in
   // here still only reads.
@@ -39,7 +46,7 @@
     focus?: 'agent' | 'turns'
   } = $props()
 
-  type Tab = 'agent' | 'turns' | 'resources'
+  type Tab = 'agent' | 'turns' | 'checkpoints' | 'resources'
   // svelte-ignore state_referenced_locally -- reason: seeded from the opener; the effect below re-seeds when the run changes
   let tab = $state<Tab>(focus)
   // A new run opens where the caller asked. Tab switches stay until the run
@@ -124,6 +131,35 @@
     liveFrames = []
   })
 
+  // ── Checkpoints: the ledger, read only while its tab is open. ──────────
+  const qc = useQueryClient()
+  const history = useWorkSessionHistory(() => taskId)
+  const runState = $derived(history.data?.sessions.find((s) => s.runId === runId)?.state)
+  const ledger = createQuery(() => ({
+    queryKey: ['run-checkpoints', runId],
+    enabled: open && tab === 'checkpoints',
+    refetchInterval: 5_000,
+    queryFn: () => getJson<{ checkpoints: LedgerRow[] }>(`/api/runs/${runId}/checkpoints`),
+  }))
+  // A checkpoint write publishes a transition, so a frame says the ledger
+  // moved. The stream carries no replay, and the poll is the floor under it.
+  $effect(() => {
+    if (!open || tab !== 'checkpoints') return
+    const id = runId
+    const refresh = () => {
+      void qc.invalidateQueries({ queryKey: ['run-checkpoints', id] })
+      void qc.invalidateQueries({ queryKey: ['work-sessions-history', taskId] })
+    }
+    return openStream(`/api/runs/${id}/events`, refresh, {
+      reconnect: true,
+      pauseWhenHidden: true,
+      onResume: refresh,
+      onOpen: ({ first, resumed }) => {
+        if (!first || resumed) refresh()
+      },
+    })
+  })
+
   // ── Resources: the sampler's series for this agent. ─────────────────────
   type Sample = { t: number; cpu: number; mem: number; pids: number }
   let samples = $state<Sample[]>([])
@@ -176,6 +212,7 @@
   const tabs = $derived<TabItem<Tab>[]>([
     { id: 'agent', label: 'Agent' },
     { id: 'turns', label: harnessTurns.length ? `Turns (${harnessTurns.length})` : 'Turns' },
+    { id: 'checkpoints', label: 'Checkpoints' },
     { id: 'resources', label: 'Resources' },
   ])
 </script>
@@ -255,6 +292,23 @@
             {/each}
           </div>
         {/if}
+      {/if}
+      {#if tab === 'checkpoints'}
+        <QueryState
+          query={ledger}
+          errorTitle="Could not load the checkpoints"
+          errorVariant="inline"
+        >
+          {#snippet skeleton()}
+            <SkeletonRows rows={3} />
+          {/snippet}
+          {#snippet children(data)}
+            <AgentCheckpoints
+              checkpoints={fromLedger(data.checkpoints, runState)}
+              live={runState !== undefined && !['done', 'error', 'cancelled'].includes(runState)}
+            />
+          {/snippet}
+        </QueryState>
       {/if}
       {#if tab === 'resources'}
         {#if resourcesDenied}
