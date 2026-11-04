@@ -7,7 +7,6 @@ use futures_util::future::BoxFuture;
 use serde_json::Value;
 use sqlx::{FromRow, PgPool};
 
-use talaria_agent_auth::{iso_to_epoch_ms, now_ms};
 use talaria_fleet_docker::rewind as container;
 use talaria_gateway::fleet_chat;
 use talaria_runs_define::is_terminal;
@@ -17,8 +16,7 @@ use talaria_runs_store::{
     insert_attempt, run_checkpoints,
 };
 use talaria_runs_work_session::{
-    AgentStop, INTERRUPTED_TURN_SETTLE_MS, WORK_SESSION_KIND, WorkSessionInput, seeded_send,
-    session_run_id, stop_agent_turn,
+    AgentStop, WORK_SESSION_KIND, WorkSessionInput, seeded_send, session_run_id, stop_agent_turn,
 };
 use talaria_state::AppState;
 use talaria_statuses::status_meta;
@@ -28,7 +26,7 @@ use talaria_work_dispatch::holds::{lock_pair, place_hold};
 use talaria_workbench_mcp::rewind::supersede_jobs;
 use talaria_workbench_mcp::teardown::job_workdir;
 
-use crate::{RewindInput, RewindPlan, Stage, Validated, attempt_input, settled};
+use crate::{RewindInput, RewindPlan, Stage, Validated, attempt_input};
 
 pub use talaria_fleet_docker::rewind::{Checkout, Cut};
 pub use talaria_gateway::fleet_chat::Fork;
@@ -100,8 +98,64 @@ pub enum Quiet {
     Unconfirmed(String),
 }
 
+/// The attempt row as the world reads it: enough to tell this rewind's own
+/// attempt from a session claimed by someone else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptRow {
+    pub run_id: String,
+    pub job_id: String,
+}
+
+/// Where a rewind may take the ticket, read at validate and again at start:
+/// a working column stays, review goes back to the working column, and done
+/// or any other column refuses. A person's later move is never overwritten.
+pub fn column_move(ticket: &Ticket) -> Result<Option<String>, String> {
+    match &ticket.column {
+        TicketColumn::Working => Ok(None),
+        TicketColumn::Review => ticket.active_key.clone().map(Some).ok_or_else(|| {
+            format!(
+                "the ticket is in review (\"{}\") and the board has no working column to move it back to",
+                ticket.status
+            )
+        }),
+        TicketColumn::Done => Err(format!(
+            "the ticket is done (\"{}\") — a finished ticket is not rewound",
+            ticket.status
+        )),
+        TicketColumn::Other => Err(format!(
+            "the ticket is in \"{}\", which is not a column an agent works in — move it first",
+            ticket.status
+        )),
+    }
+}
+
+/// What one round of the quiet stage concludes. The agent's own word that the
+/// turn ended, or no turn at all, is quiet; so is a session with no turn
+/// lease in the agent's store. Anything else keeps polling until the budget.
+pub fn quiet_from(stop: &AgentStop, idle: Option<bool>) -> Option<Quiet> {
+    match stop {
+        AgentStop::Ended(_) | AgentStop::NoTurn => Some(Quiet::Confirmed),
+        AgentStop::Unconfirmed(_) if idle == Some(true) => Some(Quiet::Confirmed),
+        AgentStop::Unconfirmed(_) => None,
+    }
+}
+
+/// A path the container reported is used only when it is the workdir or
+/// sits beneath it, spelled plainly.
+pub fn contained(workdir: &str, root: &str) -> bool {
+    if root.is_empty() || root.contains('\n') || root.split('/').any(|part| part == "..") {
+        return false;
+    }
+    root == workdir
+        || root
+            .strip_prefix(workdir)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 pub trait RewindWorld: Send + Sync {
     fn source<'a>(&'a self, input: &'a RewindInput) -> BoxFuture<'a, Result<Source, String>>;
+    /// The ticket as it is now.
+    fn ticket<'a>(&'a self, task_id: &'a str) -> BoxFuture<'a, Result<Option<Ticket>, String>>;
     /// The agent answers, the cut's symbols are there, and the commit is in
     /// the source job's checkout. Answers that checkout's root.
     fn reach<'a>(
@@ -152,22 +206,27 @@ pub trait RewindWorld: Send + Sync {
         agent_model: &'a str,
         root: &'a str,
     ) -> BoxFuture<'a, Result<Checkout, String>>;
-    /// Move the ticket if the plan says so, insert the attempt and its job
-    /// with the hold lifted, retire the source's jobs, and drive the attempt.
+    /// The attempt row under the plan's run id, when one exists.
+    fn attempt<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, Result<Option<AttemptRow>, String>>;
+    /// Move the ticket to `move_to` when given, insert the attempt and its
+    /// job with the hold lifted, retire the source's jobs, and drive the
+    /// attempt. Called once, for an attempt that does not exist yet.
     fn start<'a>(
         &'a self,
         rewind_id: &'a str,
         input: &'a RewindInput,
         plan: &'a RewindPlan,
+        move_to: Option<&'a str>,
     ) -> BoxFuture<'a, Result<(), String>>;
-    /// Take back what a failed rewind placed: the hold, the checkout, the
-    /// forked session's rows. Best effort; the run is already failing.
-    fn fail<'a>(
+    /// Lift this rewind's hold. Best effort; the run is already failing.
+    fn lift_hold<'a>(&'a self, rewind_id: &'a str) -> BoxFuture<'a, ()>;
+    /// Take back the checkout and the forked session's rows a failed rewind
+    /// placed. Only for an attempt known not to exist. Best effort.
+    fn discard<'a>(
         &'a self,
-        rewind_id: &'a str,
         input: &'a RewindInput,
-        plan: Option<&'a RewindPlan>,
-        stage: Option<Stage>,
+        plan: &'a RewindPlan,
+        stage: Stage,
     ) -> BoxFuture<'a, ()>;
 }
 
@@ -243,33 +302,7 @@ impl RewindWorld for Real {
                 .map_err(|e| format!("job read: {e}"))?,
                 None => None,
             };
-            let ticket = match talaria_tasks::get_task(pg, &session.task_id)
-                .await
-                .map_err(|e| format!("ticket read: {e}"))?
-            {
-                Some(task) => {
-                    let meta = status_meta(pg, &task.board_id)
-                        .await
-                        .map_err(|e| format!("board read: {e}"))?;
-                    let column = if meta.terminal(&task.status) {
-                        TicketColumn::Done
-                    } else if meta.review_keys.contains(&task.status) {
-                        TicketColumn::Review
-                    } else if meta.working_keys.contains(&task.status) {
-                        TicketColumn::Working
-                    } else {
-                        TicketColumn::Other
-                    };
-                    Some(Ticket {
-                        ticket_ref: task.ticket_ref.clone(),
-                        title: task.title.clone(),
-                        status: task.status.clone(),
-                        column,
-                        active_key: meta.active_key.clone().or(meta.assigned_key.clone()),
-                    })
-                }
-                None => None,
-            };
+            let ticket = self.ticket(&session.task_id).await?;
             Ok(Source {
                 run_id: run.id,
                 seq: input.seq,
@@ -279,6 +312,55 @@ impl RewindWorld for Real {
                 ticket,
                 job,
             })
+        }
+        .boxed()
+    }
+
+    fn ticket<'a>(&'a self, task_id: &'a str) -> BoxFuture<'a, Result<Option<Ticket>, String>> {
+        async move {
+            let pg = self.pg();
+            let Some(task) = talaria_tasks::get_task(pg, task_id)
+                .await
+                .map_err(|e| format!("ticket read: {e}"))?
+            else {
+                return Ok(None);
+            };
+            let meta = status_meta(pg, &task.board_id)
+                .await
+                .map_err(|e| format!("board read: {e}"))?;
+            let column = if meta.terminal(&task.status) {
+                TicketColumn::Done
+            } else if meta.review_keys.contains(&task.status) {
+                TicketColumn::Review
+            } else if meta.working_keys.contains(&task.status) {
+                TicketColumn::Working
+            } else {
+                TicketColumn::Other
+            };
+            Ok(Some(Ticket {
+                ticket_ref: task.ticket_ref.clone(),
+                title: task.title.clone(),
+                status: task.status.clone(),
+                column,
+                active_key: meta.active_key.clone().or(meta.assigned_key.clone()),
+            }))
+        }
+        .boxed()
+    }
+
+    fn attempt<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, Result<Option<AttemptRow>, String>> {
+        async move {
+            let row: Option<(String, Option<String>)> = sqlx::query_as(
+                "select id::text, input->'rewind'->>'jobId' from runs where id = $1::uuid",
+            )
+            .bind(run_id)
+            .fetch_optional(self.pg())
+            .await
+            .map_err(|e| format!("run read: {e}"))?;
+            Ok(row.map(|(run_id, job_id)| AttemptRow {
+                run_id,
+                job_id: job_id.unwrap_or_default(),
+            }))
         }
         .boxed()
     }
@@ -297,6 +379,11 @@ impl RewindWorld for Real {
                 .await
                 .map_err(|e| format!("the agent cannot rewind: {e}"))?;
             let root = container::git_root(pg, agent_model, &workdir).await?;
+            if !contained(&workdir, &root) {
+                return Err(format!(
+                    "the container reported a checkout at {root:?}, outside {workdir}"
+                ));
+            }
             if !container::commit_exists(pg, agent_model, &root, commit).await? {
                 return Err(format!("snapshot commit {commit} is not in {root}"));
             }
@@ -421,32 +508,47 @@ impl RewindWorld for Real {
     fn quiet<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, Quiet> {
         async move {
             // One unconfirmed answer is not final: a turn names itself after
-            // the cancel, and the stop then lands on it. The row's id and the
-            // agent's word are re-read until the budget runs out.
+            // the cancel, and the stop then lands on it. Until the budget
+            // ends, the stop is sent again and the agent's store is asked
+            // whether the session holds a turn lease at all. A Talaria row
+            // that reads finished proves nothing about the agent.
             let deadline = tokio::time::Instant::now() + QUIET_BUDGET;
-            let store = PgRunStore::new(self.pg().clone());
+            let session = run_id;
+            let agent_model: Option<String> =
+                sqlx::query_scalar("select input->>'agentModel' from runs where id = $1::uuid")
+                    .bind(run_id)
+                    .fetch_optional(self.pg())
+                    .await
+                    .ok()
+                    .flatten();
             loop {
                 let stop =
-                    tokio::time::timeout_at(deadline, stop_agent_turn(self.pg(), run_id)).await;
-                let why = match stop {
-                    Ok(AgentStop::Ended(_) | AgentStop::NoTurn) => return Quiet::Confirmed,
-                    Ok(AgentStop::Unconfirmed(why)) => why,
-                    Err(_) => "no answer inside the stop window".to_string(),
+                    match tokio::time::timeout_at(deadline, stop_agent_turn(self.pg(), run_id))
+                        .await
+                    {
+                        Ok(stop) => stop,
+                        Err(_) => AgentStop::Unconfirmed("no answer inside the stop window".into()),
+                    };
+                let idle = match &agent_model {
+                    Some(model) => container::session_idle(self.pg(), model, session)
+                        .await
+                        .ok(),
+                    None => None,
                 };
-                let run = store.get(run_id).await.ok().flatten();
-                let settled_now = run.is_some_and(|run| {
-                    settled(
-                        run.state,
-                        run.finished_at.as_deref().and_then(iso_to_epoch_ms),
-                        now_ms(),
-                        INTERRUPTED_TURN_SETTLE_MS,
-                    )
-                });
-                if settled_now {
-                    return Quiet::Confirmed;
+                if let Some(verdict) = quiet_from(&stop, idle) {
+                    return verdict;
                 }
+                let why = match stop {
+                    AgentStop::Unconfirmed(why) => why,
+                    _ => unreachable!("a confirmed stop has returned"),
+                };
                 if tokio::time::Instant::now() + QUIET_POLL >= deadline {
-                    return Quiet::Unconfirmed(why);
+                    return Quiet::Unconfirmed(match idle {
+                        Some(false) => {
+                            format!("{why}; the agent still holds a turn on the session")
+                        }
+                        _ => why,
+                    });
                 }
                 tokio::time::sleep(QUIET_POLL).await;
             }
@@ -523,6 +625,7 @@ impl RewindWorld for Real {
         rewind_id: &'a str,
         input: &'a RewindInput,
         plan: &'a RewindPlan,
+        move_to: Option<&'a str>,
     ) -> BoxFuture<'a, Result<(), String>> {
         async move {
             let pg = self.pg();
@@ -539,29 +642,26 @@ impl RewindWorld for Real {
                 .await
                 .map_err(|e| format!("pair lock: {e}"))?;
             let outcome = async {
-                if let Some(row) = deps
+                if deps
                     .store
                     .get(&plan.attempt_run_id)
                     .await
                     .map_err(|e| format!("run read: {e}"))?
+                    .is_some()
                 {
-                    // This rewind already started it and died before saying so.
-                    if row.input["rewind"]["jobId"].as_str() == Some(plan.job_id.as_str()) {
-                        return Ok(());
-                    }
                     return Err(format!(
                         "session {} was claimed while the rewind ran",
                         plan.attempt_run_id
                     ));
                 }
-                if let Some(status) = &plan.move_to {
+                if let Some(status) = move_to {
                     let redis = self.state.redis().await.ok();
                     let task_deps = TaskDeps::from_route(pg.clone(), redis);
                     talaria_tasks::update_task(
                         &task_deps,
                         &input.task_id,
                         TaskPatch {
-                            status: Some(status.clone()),
+                            status: Some(status.to_string()),
                             ..TaskPatch::default()
                         },
                         &TaskActor::human(input.requested_by.clone()),
@@ -656,37 +756,48 @@ impl RewindWorld for Real {
         .boxed()
     }
 
-    fn fail<'a>(
-        &'a self,
-        rewind_id: &'a str,
-        input: &'a RewindInput,
-        plan: Option<&'a RewindPlan>,
-        stage: Option<Stage>,
-    ) -> BoxFuture<'a, ()> {
+    fn lift_hold<'a>(&'a self, rewind_id: &'a str) -> BoxFuture<'a, ()> {
         async move {
-            let pg = self.pg();
             if let Err(e) =
                 sqlx::query("delete from work_dispatch_holds where rewind_run_id = $1::uuid")
                     .bind(rewind_id)
-                    .execute(pg)
+                    .execute(self.pg())
                     .await
             {
                 tracing::warn!("{LOG} {rewind_id}: the hold was not lifted: {e}");
             }
-            let Some(plan) = plan else { return };
+        }
+        .boxed()
+    }
+
+    fn discard<'a>(
+        &'a self,
+        input: &'a RewindInput,
+        plan: &'a RewindPlan,
+        stage: Stage,
+    ) -> BoxFuture<'a, ()> {
+        async move {
+            let pg = self.pg();
             if let Err(e) = container::remove_checkout(pg, &input.agent_model, &plan.workdir).await
             {
-                tracing::warn!("{LOG} {rewind_id}: {} was not removed: {e}", plan.workdir);
+                tracing::warn!(
+                    "{LOG} {}: {} was not removed: {e}",
+                    input.source_run_id,
+                    plan.workdir
+                );
             }
             let forked = matches!(
                 stage,
-                Some(Stage::Cut | Stage::Restore | Stage::Verify | Stage::Start)
+                Stage::Cut | Stage::Restore | Stage::Verify | Stage::Start
             );
             if forked
                 && let Err(e) =
                     container::clear_session(pg, &input.agent_model, &plan.attempt_run_id).await
             {
-                tracing::warn!("{LOG} {rewind_id}: the forked session was not cleared: {e}");
+                tracing::warn!(
+                    "{LOG} {}: the forked session was not cleared: {e}",
+                    input.source_run_id
+                );
             }
         }
         .boxed()

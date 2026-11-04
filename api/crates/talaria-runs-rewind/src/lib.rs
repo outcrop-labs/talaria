@@ -22,9 +22,15 @@
 //   cut       the fork is cut after the step's tool result row.
 //   restore   the snapshot commit is checked out into the attempt's workdir.
 //   verify    the fork ends at that row and the checkout's tree is the step's.
-//   start     the ticket is moved if it sat in review, the attempt and its job
-//             are inserted in one transaction with the hold lifted, the
-//             source's jobs are retired, and the attempt is driven.
+//   start     the ticket is read again under the lock and moved if it still
+//             sits in review, the attempt and its job are inserted in one
+//             transaction with the hold lifted, the source's jobs are
+//             retired, and the attempt is driven. An attempt that already
+//             exists from an earlier try ends the rewind with no other write.
+//
+// AFTER ANY CRASH A RETRY CONVERGES on the same end state and touches nothing
+// that happened since. A failure lifts the hold, and discards the checkout
+// and the fork only when the attempt is known not to exist.
 //
 // WHAT DECIDES AND WHAT ACTS are kept apart. `validate` is pure and the step
 // is written against the `RewindWorld` trait, so the tests drive every stage,
@@ -37,15 +43,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use talaria_runs_define::{
-    Authority, RunDefinition, RunRow, RunState, RunStepContext, StepResult, is_terminal,
-    register_run,
+    Authority, RunDefinition, RunRow, RunStepContext, StepResult, register_run,
 };
 use talaria_runs_store::{CheckpointKind, RunCheckpoint};
 use talaria_runs_work_session::{RewindInput as AttemptBinding, WorkSessionInput};
 
 pub mod world;
 pub use world::{
-    Checkout, Cut, Fork, Quiet, Reservation, RewindWorld, Source, SourceJob, Ticket, TicketColumn,
+    AttemptRow, Checkout, Cut, Fork, Quiet, Reservation, RewindWorld, Source, SourceJob, Ticket,
+    TicketColumn, column_move,
 };
 
 /// The registry key and the `kind` column. Stable forever.
@@ -194,27 +200,7 @@ pub fn validate(source: &Source) -> Result<Validated, String> {
         .ticket
         .as_ref()
         .ok_or_else(|| "the ticket is gone".to_string())?;
-    let move_to = match &ticket.column {
-        TicketColumn::Working => None,
-        TicketColumn::Review => Some(ticket.active_key.clone().ok_or_else(|| {
-            format!(
-                "the ticket is in review (\"{}\") and the board has no working column to move it back to",
-                ticket.status
-            )
-        })?),
-        TicketColumn::Done => {
-            return Err(format!(
-                "the ticket is done (\"{}\") — a finished ticket is not rewound",
-                ticket.status
-            ));
-        }
-        TicketColumn::Other => {
-            return Err(format!(
-                "the ticket is in \"{}\", which is not a column an agent works in — move it first",
-                ticket.status
-            ));
-        }
-    };
+    let move_to = column_move(ticket)?;
     Ok(Validated {
         row: row.clone(),
         tool_call_id,
@@ -276,7 +262,9 @@ fn next(stage: Stage, plan: RewindPlan) -> StepResult {
 }
 
 /// ONE STAGE. A failure anywhere ends the run with its reason, after the
-/// world has taken back what the rewind had placed.
+/// hold is lifted and, when the attempt is known not to exist, the checkout
+/// and the fork are taken back. An attempt whose existence cannot be read is
+/// left alone: a retry past its own commit must never destroy it.
 pub async fn rewind_step(
     ctx: RunStepContext,
     world: &dyn RewindWorld,
@@ -292,14 +280,12 @@ pub async fn rewind_step(
                 return Err(why);
             }
             tracing::warn!("{LOG} {rewind_id}: failed: {why}");
-            world
-                .fail(
-                    &rewind_id,
-                    &input,
-                    cp.as_ref().map(|c| &c.plan),
-                    cp.as_ref().map(|c| c.stage),
-                )
-                .await;
+            world.lift_hold(&rewind_id).await;
+            if let Some(cp) = &cp
+                && matches!(world.attempt(&cp.plan.attempt_run_id).await, Ok(None))
+            {
+                world.discard(&input, &cp.plan, cp.stage).await;
+            }
             Err(why)
         }
     }
@@ -435,7 +421,28 @@ async fn stage(
             Ok(next(Stage::Start, plan))
         }
         Stage::Start => {
-            world.start(&ctx.run.id, input, &plan).await?;
+            match world.attempt(&plan.attempt_run_id).await? {
+                Some(row) if row.job_id == plan.job_id => {
+                    (ctx.log)("the attempt was started by an earlier try".into());
+                }
+                Some(_) => {
+                    return Err(format!(
+                        "session {} was claimed while the rewind ran",
+                        plan.attempt_run_id
+                    ));
+                }
+                None => {
+                    // The person may have moved the ticket since validate.
+                    let ticket = world
+                        .ticket(&input.task_id)
+                        .await?
+                        .ok_or_else(|| "the ticket is gone".to_string())?;
+                    let move_to = column_move(&ticket)?;
+                    world
+                        .start(&ctx.run.id, input, &plan, move_to.as_deref())
+                        .await?;
+                }
+            }
             Ok(StepResult::Done {
                 result: json!({
                     "attemptRunId": plan.attempt_run_id,
@@ -448,12 +455,6 @@ async fn stage(
             })
         }
     }
-}
-
-/// Whether a source run may be forked without tearing a turn: terminal and
-/// settled, or confirmed quiet by the agent. The world's `quiet` applies it.
-pub fn settled(state: RunState, finished_ms: Option<i64>, now_ms: i64, settle_ms: i64) -> bool {
-    is_terminal(state) && finished_ms.is_some_and(|at| now_ms - at >= settle_ms)
 }
 
 // ── The definition ───────────────────────────────────────────────────────────

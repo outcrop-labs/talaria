@@ -24,7 +24,22 @@ import inspect, sys
 sys.path.insert(0, "/opt/hermes")
 from hermes_state import SessionDB
 assert "archive_dropped" in inspect.signature(SessionDB.replace_messages).parameters
+assert callable(getattr(SessionDB, "_session_turn_lease_key", None))
 print("ok")
+"#;
+
+/// argv: session id. Hermes holds a `session_turn_leases` row for the whole
+/// of a running turn, keyed by the conversation's lineage root; a session
+/// with no unexpired row has no turn running. Prints `idle` or `busy`.
+const IDLE_PY: &str = r#"
+import sys, time
+sys.path.insert(0, "/opt/hermes")
+from hermes_state import SessionDB
+db = SessionDB()
+key = db._session_turn_lease_key(sys.argv[1])
+with db._read_ctx() as conn:
+    row = conn.execute("SELECT expires_at FROM session_turn_leases WHERE conversation_id = ?", (key,)).fetchone()
+print("busy" if row is not None and float(row[0]) > time.time() else "idle")
 "#;
 
 /// argv: session id, tool call id. Keeps every row through the result row of
@@ -158,6 +173,24 @@ pub async fn clear_session(pg: &PgPool, agent_model: &str, session_id: &str) -> 
     exec(pg, agent_model, &[PYTHON, "-c", CLEAR_PY, session_id])
         .await
         .map(|_| ())
+}
+
+/// Whether the agent's store holds no running turn on `session_id`: the proof
+/// a fork will not tear a turn when the turn itself cannot be named.
+pub async fn session_idle(
+    pg: &PgPool,
+    agent_model: &str,
+    session_id: &str,
+) -> Result<bool, String> {
+    if !plain(session_id) {
+        return Err("the session id is not one this can name".into());
+    }
+    let out = exec(pg, agent_model, &[PYTHON, "-c", IDLE_PY, session_id]).await?;
+    match out.trim() {
+        "idle" => Ok(true),
+        "busy" => Ok(false),
+        other => Err(format!("the idle probe answered {other:?}")),
+    }
 }
 
 /// Whether `commit` is in the checkout at `root`.
@@ -325,5 +358,7 @@ mod tests {
         assert!(ROOT_SH.contains(r#"dir="$1""#));
         assert!(CLEAR_PY.contains("sys.argv[1]"));
         assert!(PROBE_PY.contains("archive_dropped"));
+        assert!(PROBE_PY.contains("_session_turn_lease_key"));
+        assert!(IDLE_PY.contains("sys.argv[1]") && IDLE_PY.contains("session_turn_leases"));
     }
 }

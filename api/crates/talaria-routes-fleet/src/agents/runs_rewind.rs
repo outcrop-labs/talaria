@@ -42,13 +42,24 @@ pub async fn post(
         Ok(_) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
         Err(e) => return Ok(internal("[runs/rewind] run read failed", e)),
     };
-    let (task_id, agent_model, board_id) = match (
+    let (task_id, agent_model) = match (
         run.input["taskId"].as_str(),
         run.input["agentModel"].as_str(),
-        run.input["boardId"].as_str(),
     ) {
-        (Some(t), Some(a), Some(b)) => (t.to_string(), a.to_string(), b.to_string()),
+        (Some(t), Some(a)) => (t.to_string(), a.to_string()),
         _ => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+    };
+    // The ticket's board as it is now, as the Stop route reads it: a ticket
+    // moved to another board since the session started answers to that
+    // board's editors, and the run's input still names the old one.
+    let board: Option<(String,)> =
+        sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
+            .bind(&task_id)
+            .fetch_optional(&state.pg)
+            .await
+            .unwrap_or(None);
+    let Some((board_id,)) = board else {
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     match board_role(&state.pg, &user.id, &board_id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
