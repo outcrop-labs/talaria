@@ -211,7 +211,7 @@ pub fn session_run_id(task_id: &str, agent_model: &str, generation: u32) -> Stri
 
 /// Wire shape (`taskId`/`agentModel`/…) — the row's spelling, kept stable so
 /// rows written by earlier deploys stay legible.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkSessionInput {
     pub task_id: String,
@@ -228,6 +228,25 @@ pub struct WorkSessionInput {
     /// Which session this is for this ticket+agent. See `session_run_id`.
     #[serde(default)]
     pub generation: i64,
+    /// Set on an attempt a rewind made. Its first prompt names this job, and
+    /// its session is resumed at any turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewind: Option<RewindInput>,
+}
+
+/// What a rewind attempt knows about itself, written once by the rewind. The
+/// run row's lineage columns are not on `RunRow`, so the step reads it here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewindInput {
+    pub from_run_id: String,
+    /// The turn the attempt starts at: the checkpoint's own, so the budget is
+    /// not refreshed. The prompt sent at this turn carries the job binding.
+    pub turn: i64,
+    pub attempt_no: i32,
+    pub job_id: String,
+    pub branch: String,
+    pub workdir: String,
 }
 
 /// What one turn's reply is kept as.
@@ -311,6 +330,17 @@ fn as_checkpoint(raw: &Value) -> Result<Option<WorkSessionCheckpoint>, String> {
         .map_err(|e| format!("work-session checkpoint could not be read: {e}"))
 }
 
+/// The checkpoint a rewind seeds its attempt with: `send` at the checkpoint's
+/// turn, nothing owed, so the attempt's first step is that turn's prompt.
+pub fn seeded_send(turn: i64) -> Value {
+    json!(WorkSessionCheckpoint::Send {
+        turn,
+        stage_attempt: 0,
+        last_tail: String::new(),
+        not_before: None,
+    })
+}
+
 // ── What the session is allowed to see ───────────────────────────────────────
 
 /// Where the ticket is now — the session's continue/stop signal.
@@ -376,6 +406,7 @@ pub type TurnFn = Arc<
             LivenessTap,
             String,
             i64,
+            bool,
         ) -> BoxFuture<'static, Result<TurnOutput, String>>
         + Send
         + Sync,
@@ -468,7 +499,7 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
         }),
         skill_names: Arc::new(|pg, agent_model| Box::pin(real_skill_names(pg, agent_model))),
         turn: Arc::new(
-            |state, agent_model, task_id, prompt, liveness, run_id, turn| {
+            |state, agent_model, task_id, prompt, liveness, run_id, turn, rewound| {
                 Box::pin(real_turn(
                     state,
                     agent_model,
@@ -477,6 +508,7 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
                     liveness,
                     run_id,
                     turn,
+                    rewound,
                 ))
             },
         ),
@@ -682,6 +714,7 @@ pub fn session_for_turn(run_id: &str, turn: i64) -> PersonaSession {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn real_turn(
     state: AppState,
     agent_model: String,
@@ -690,6 +723,7 @@ async fn real_turn(
     liveness: LivenessTap,
     run_id: String,
     turn: i64,
+    rewound: bool,
 ) -> Result<TurnOutput, String> {
     // THE WATCH TEE: this turn's stream events are published to
     // run-watch:<id> and appended to its tail, which the watch route replays
@@ -775,7 +809,10 @@ async fn real_turn(
     // than through a request slot every single-shot harness would carry
     // empty. Everything else about the turn (the pump, the meter, the watch
     // tee, the guard pass) is the same transport it always was.
-    let session = session_for_turn(&run_id, turn);
+    // A rewind attempt's session is the fork its rewind cut, there at any
+    // turn; turn 1 of an attempt must not open an empty room over it.
+    let mut session = session_for_turn(&run_id, turn);
+    session.resumed |= rewound;
     let run_started = record_agent_run(state.pg.clone(), run_id.clone(), agent_model.clone(), turn);
     let mut deps = real_deps(&state);
     deps.transport = {
@@ -1555,6 +1592,22 @@ fn reconcile_prompt(status: &str) -> String {
     )
 }
 
+/// The forked conversation still names the job its source worked, its branch,
+/// its workdir and the harness commands it ran there; the attempt's first
+/// prompt rebinds all of that before the agent takes another step. The
+/// workbench's refusal of a superseded job id is the backstop.
+fn rewind_prompt(rewind: &RewindInput) -> String {
+    format!(
+        "[Work session — rewind attempt {}] This session was rewound to an earlier step: the \
+         conversation above ends at that step, and {} already holds the files exactly as they \
+         stood then, on branch {} as job {}. Every job id, branch and workdir named earlier in \
+         this conversation is retired, and calls naming them are refused. Call start_job for \
+         this ticket first (it answers this job; do not clone over the workdir). Oh My Pi starts \
+         fresh here, so give it the context it needs.",
+        rewind.attempt_no, rewind.workdir, rewind.branch, rewind.job_id
+    )
+}
+
 /// Every continuation carries the LIVE ticket state, so the agent never works
 /// a stale picture — which is also what makes a resumed session safe to
 /// continue: the prompt is built from the ticket as it is now, not as it was
@@ -1810,6 +1863,19 @@ pub async fn work_session_step(
         // FIRST thing that happens, because the world may have changed
         // entirely while it was parked.
         let state = (d.session_state)(pg.clone(), task_id.clone(), agent_model.clone()).await?;
+        // An attempt that cannot send its first turn is a failed attempt, not
+        // a finished one: Done with no turn of its own is the empty run a
+        // rewind must never produce.
+        let first_attempt_turn = input.rewind.as_ref().is_some_and(|r| r.turn == *turn);
+        if first_attempt_turn {
+            let stop = match &state {
+                Some(state) => state.stop.clone(),
+                None => Some("ticket gone".into()),
+            };
+            if let Some(stop) = stop {
+                return Err(format!("the rewind attempt could not start: {stop}"));
+            }
+        }
         if let Some(stop) = state.as_ref().and_then(|s| s.stop.clone()) {
             say(
                 d,
@@ -1872,7 +1938,9 @@ pub async fn work_session_step(
             });
         }
 
-        let kind = if *turn == 1 {
+        let kind = if first_attempt_turn {
+            TurnKind::Turn
+        } else if *turn == 1 {
             TurnKind::Dispatch
         } else if DONE_OR_BLOCKED.is_match(last_tail) {
             TurnKind::Reconcile
@@ -1891,7 +1959,14 @@ pub async fn work_session_step(
                 .await?
             }
             TurnKind::Reconcile => reconcile_prompt(&state.task.status),
-            TurnKind::Turn => continue_prompt(*turn, &state.task.status),
+            TurnKind::Turn => match input.rewind.as_ref().filter(|_| first_attempt_turn) {
+                Some(rewind) => format!(
+                    "{}\n\n{}",
+                    rewind_prompt(rewind),
+                    continue_prompt(*turn, &state.task.status)
+                ),
+                None => continue_prompt(*turn, &state.task.status),
+            },
         };
 
         // The last gate before the money: the driver aborts when the step
@@ -1912,6 +1987,7 @@ pub async fn work_session_step(
             Some(ctx.activity.as_ping()),
             ctx.run.id.clone(),
             *turn,
+            input.rewind.is_some(),
         )
         .await
         {
@@ -2480,7 +2556,7 @@ mod tests {
             workflows_for_task: Arc::new(|_pg, _t| Box::pin(async { Ok(vec![]) })),
             skill_names: Arc::new(|_pg, _a| Box::pin(async { Ok(HashSet::new()) })),
             turn: Arc::new(
-                move |_state, _agent, _task, _prompt, _liveness, _run, _turn| {
+                move |_state, _agent, _task, _prompt, _liveness, _run, _turn, _rewound| {
                     Box::pin(async {
                         Ok(TurnOutput {
                             text: turn_text.to_string(),
@@ -2819,7 +2895,7 @@ mod tests {
     #[tokio::test]
     async fn a_turn_that_answers_nothing_fails_through_a_checkpoint() {
         let (mut deps, _rec) = recording_deps("unused");
-        deps.turn = Arc::new(|_s, _a, _t, _p, _l, _r, _n| {
+        deps.turn = Arc::new(|_s, _a, _t, _p, _l, _r, _n, _rewound| {
             Box::pin(async { Err("gateway completion 429: rate limited".to_string()) })
         });
         let cp = json!({"stage":"send","turn":2,"stageAttempt":0,"lastTail":""});

@@ -587,8 +587,9 @@ multiplexer.
      Healthy means docker's health check, `/health` and `/v1/models` over the gateway's own dial
      (not reaching a container docker calls healthy is the network's fault, never the image's),
      no config or migration fault in its log that the fleet's own image does not log too, the
-     drain's s6 service in place, and the `/health/detailed` and `/api/jobs` fields Talaria
-     reads to tell whether an agent is working — and it stays up and is asked again every 20 s
+     drain's s6 service in place, the `/health/detailed` and `/api/jobs` fields Talaria
+     reads to tell whether an agent is working, and a rewind's fork and cut carried out on a
+     seeded transcript with the scripts a rewind runs — and it stays up and is asked again every 20 s
      for a **soak** of 5 min (`TALARIA_HERMES_CANARY_SOAK_SECS`). It spends no tokens and is
      taken down with its volume either way. A contract the inspection or the canary found
      changed **holds** the release (not a ban): the panel lists what changed, an admin's

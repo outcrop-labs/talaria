@@ -1308,6 +1308,65 @@ pub async fn agent_turn_of(
     .await
 }
 
+/// A rewind's attempt, as the rewind inserts it: a queued work session whose
+/// first step is the checkpoint's turn, not the brief. `insert` writes no
+/// checkpoint and a null one restarts at the brief, so this is its own write.
+#[derive(Debug, Clone)]
+pub struct AttemptSeed {
+    pub id: String,
+    pub subject_id: String,
+    pub input: Value,
+    pub phase: String,
+    pub checkpoint: Value,
+    pub lineage_id: String,
+    pub attempt_no: i32,
+    pub rewound_from_run_id: String,
+    pub rewound_from_seq: i64,
+}
+
+/// Insert the attempt, queued and unleased, with its seeded checkpoint and the
+/// ledger's opening turn row. On the caller's connection so the row lands in
+/// the same transaction as the job it works and the hold it lifts; nothing
+/// drives it until that commits.
+pub async fn insert_attempt(
+    conn: &mut sqlx::PgConnection,
+    seed: &AttemptSeed,
+) -> Result<(), sqlx::Error> {
+    let turn = seed.checkpoint.get("turn").and_then(Value::as_i64);
+    let stage = seed
+        .checkpoint
+        .get("stage")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    sqlx::query(
+        "with attempt as ( \
+           insert into runs \
+             (id, kind, subject_type, subject_id, state, phase, input, checkpoint, \
+              checkpoint_seq, lineage_id, attempt_no, rewound_from_run_id, rewound_from_seq) \
+           values ($1::uuid, 'work-session', 'task', $2, 'queued', $3, $4, $5, 1, \
+                   $6::uuid, $7, $8::uuid, $9) \
+           returning id \
+         ) \
+         insert into run_checkpoints (run_id, seq, kind, turn, title, status, unrestorable_reason) \
+         select id, 1, 'turn', $10::bigint, $3::text, $11::text, $12::text from attempt",
+    )
+    .bind(&seed.id)
+    .bind(&seed.subject_id)
+    .bind(&seed.phase)
+    .bind(&seed.input)
+    .bind(&seed.checkpoint)
+    .bind(&seed.lineage_id)
+    .bind(seed.attempt_no)
+    .bind(&seed.rewound_from_run_id)
+    .bind(seed.rewound_from_seq)
+    .bind(turn)
+    .bind(stage)
+    .bind(TURN_UNRESTORABLE)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 // ── Pure unit tests ──────────────────────────────────────────────────────────
 //
 // The Postgres surface is proven by the `#[ignore]`d live-DB tests in

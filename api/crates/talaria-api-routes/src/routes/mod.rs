@@ -1781,6 +1781,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/runs/{id}/rewind",
+            post(talaria_routes_fleet::agents::runs_rewind::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/agents/tool-events",
             post(talaria_routes_fleet::agents::tool_events::post).fallback(|| async { method_not_allowed("POST") }),
         )

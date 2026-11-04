@@ -5,6 +5,7 @@
 //
 //   node scripts/rewind-fixture.mjs setup    --stack <checkout> [--agent atlas] [--model <id>]
 //   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait] [--batched|--direct|--long]
+//   node scripts/rewind-fixture.mjs rewind   --stack <checkout> --run <run id> --seq <ledger seq>
 //   node scripts/rewind-fixture.mjs teardown --stack <checkout>
 //
 // `<checkout>` is a checkout made by `bun talaria worktree`, with `talaria dev`
@@ -77,6 +78,7 @@ const shOk = (cmd, args) => {
   }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const say = (line) => process.stderr.write(`[fixture] ${line}\n`)
 const die = (line) => {
   process.stderr.write(`[fixture] ${line}\n`)
@@ -502,6 +504,45 @@ async function ticket(stack, slug, wait, variant) {
   if (!healthy) die(`the session did not finish healthy: run ${out.run.state}, ticket ${out.ticket.status}`)
 }
 
+// Rewind a session to one of its ledger steps and watch the run-rewind row
+// to its end. Prints one JSON line: the rewind row and, when it made one,
+// the attempt row with its job.
+async function rewind(stack, runId, seq) {
+  const api = apiClient(stack, mintSession(stack))
+  const { rewindRunId } = await api('POST', `/api/runs/${runId}/rewind`, { seq })
+  say(`rewind ${rewindRunId} of ${runId} to step ${seq}`)
+  const deadline = Date.now() + 5 * 60_000
+  let last = ''
+  let row
+  while (Date.now() < deadline) {
+    await sleep(2000)
+    row = JSON.parse(
+      psql(
+        stack,
+        `select row_to_json(r) from (select id, state, phase, error, result, checkpoint->>'stage' as stage,
+           (extract(epoch from finished_at) - extract(epoch from started_at)) as seconds
+           from runs where id = '${rewindRunId}') r`,
+      ),
+    )
+    const line = `${row.state} | ${row.phase}`
+    if (line !== last) say((last = line))
+    if (/^(done|error|cancelled)$/.test(row.state)) break
+  }
+  const attemptId = row.result?.attemptRunId
+  const attempt = attemptId
+    ? JSON.parse(
+        psql(
+          stack,
+          `select row_to_json(a) from (select r.id, r.state, r.phase, r.attempt_no, r.lineage_id, r.rewound_from_run_id, r.rewound_from_seq,
+             r.checkpoint, r.input->'rewind' as rewind, j.id as job_id, j.branch, j.status as job_status
+             from runs r left join workbench_jobs j on j.run_id = r.id where r.id = '${attemptId}') a`,
+        ),
+      )
+    : null
+  process.stdout.write(`${JSON.stringify({ rewind: row, attempt })}\n`)
+  if (row.state !== 'done') die(`the rewind ended ${row.state}: ${row.error}`)
+}
+
 function teardown(stack) {
   for (const name of [stack.forgejoTls, stack.forgejoApp]) shOk('docker', ['rm', '-f', '-v', name])
   say('forgejo removed; the stack itself goes with the cleanup skill')
@@ -516,14 +557,20 @@ const { values, positionals } = parseArgs({
     'no-wait': { type: 'boolean', default: false },
     batched: { type: 'boolean', default: false },
     direct: { type: 'boolean', default: false },
+    run: { type: 'string' },
+    seq: { type: 'string' },
     long: { type: 'boolean', default: false },
   },
 })
 const [command] = positionals
-if (!values.stack || !['setup', 'ticket', 'teardown'].includes(command)) {
-  die('usage: rewind-fixture.mjs setup|ticket|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait] [--batched|--direct|--long]')
+if (!values.stack || !['setup', 'ticket', 'rewind', 'teardown'].includes(command)) {
+  die('usage: rewind-fixture.mjs setup|ticket|rewind|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait] [--batched|--direct|--long] [--run <id> --seq <n>]')
 }
 const stack = readStack(resolve(values.stack))
 if (command === 'setup') await setup(stack, values.agent, values.model)
 if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'], values.long ? 'long' : values.direct ? 'direct' : values.batched ? 'batched' : 'plain')
+if (command === 'rewind') {
+  if (!UUID_RE.test(values.run ?? '') || !/^\d+$/.test(values.seq ?? '')) die('rewind needs --run <uuid> and --seq <n>')
+  await rewind(stack, values.run, Number(values.seq))
+}
 if (command === 'teardown') teardown(stack)

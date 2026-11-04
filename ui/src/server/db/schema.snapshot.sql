@@ -1716,6 +1716,12 @@ CREATE TABLE public.work_dispatch_blocks (
     blocked_by text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.work_dispatch_holds (
+    task_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    rewind_run_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.work_wait (
     task_id uuid NOT NULL,
     agent_model text NOT NULL,
@@ -2198,6 +2204,8 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_sub_key UNIQUE (sub);
 ALTER TABLE ONLY public.work_dispatch_blocks
     ADD CONSTRAINT work_dispatch_blocks_pkey PRIMARY KEY (task_id, agent_model);
+ALTER TABLE ONLY public.work_dispatch_holds
+    ADD CONSTRAINT work_dispatch_holds_pkey PRIMARY KEY (task_id, agent_model);
 ALTER TABLE ONLY public.work_wait
     ADD CONSTRAINT work_wait_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.workbench_harness_defs
@@ -2717,6 +2725,10 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_avatar_upload_id_fkey FOREIGN KEY (avatar_upload_id) REFERENCES public.uploads(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.work_dispatch_blocks
     ADD CONSTRAINT work_dispatch_blocks_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.work_dispatch_holds
+    ADD CONSTRAINT work_dispatch_holds_rewind_run_id_fkey FOREIGN KEY (rewind_run_id) REFERENCES public.runs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.work_dispatch_holds
+    ADD CONSTRAINT work_dispatch_holds_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.work_wait
     ADD CONSTRAINT work_wait_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs

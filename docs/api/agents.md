@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-28 routes.
+29 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -34,6 +34,7 @@
 | [`/api/muse`](#apimuse) | POST | `session` |
 | [`/api/runs/{id}/checkpoints`](#apirunsidcheckpoints) | GET | `session` |
 | [`/api/runs/{id}/events`](#apirunsidevents) | GET | `session` |
+| [`/api/runs/{id}/rewind`](#apirunsidrewind) | POST | `session` |
 | [`/api/runs/{id}/transcript`](#apirunsidtranscript) | GET | `session` |
 | [`/api/runs/{id}/watch`](#apirunsidwatch) | GET | `session` |
 | [`/api/skills`](#apiskills) | GET | `session` |
@@ -418,6 +419,24 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/runs_events.rs`](../../api/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200, 403 | SSE |
+
+## `/api/runs/{id}/rewind`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/runs_rewind.rs`](../../api/crates/talaria-routes-fleet/src/agents/runs_rewind.rs)
+
+> POST /api/runs/{id}/rewind. Start a rewind of a work session to one of its
+> ledger steps, as a `run-rewind` run of its own. The answer is that run's
+> id: the rewind runs detached, stage by stage, and its row says how it went.
+> A refusal this route can see without touching anything (no such step, a
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apirunsidrewind-body) | `{rewindRunId}` | 200, 202, 400, 403, 404, 409 | — |
+
+### POST `/api/runs/{id}/rewind` body
+
+Body schema `Value` is not an object literal in the route file — see the route source.
 
 ## `/api/runs/{id}/transcript`
 

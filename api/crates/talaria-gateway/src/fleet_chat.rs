@@ -1418,6 +1418,91 @@ pub async fn agent_request(
     }
 }
 
+/// Whether the agent holds a session under `session_id`, and whose fork it is.
+pub async fn session_at(agent_model: &str, session_id: &str) -> Result<SessionAt, String> {
+    let answer = agent_request(
+        agent_model,
+        Method::GET,
+        &format!("/api/sessions/{session_id}"),
+        None,
+        CONTROL_WINDOW,
+    )
+    .await?;
+    match answer.status {
+        200..=299 => Ok(SessionAt::Held {
+            parent: parent_of(&answer.body),
+        }),
+        404 => Ok(SessionAt::Absent),
+        status => Err(format!("the session read answered {status}")),
+    }
+}
+
+fn parent_of(session: &Value) -> Option<String> {
+    session["session"]["parent_session_id"]
+        .as_str()
+        .or(session["parent_session_id"].as_str())
+        .map(str::to_string)
+}
+
+/// A session id as the agent holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionAt {
+    Absent,
+    Held { parent: Option<String> },
+}
+
+/// How Hermes answered a session fork: the child exists, or why not.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fork {
+    /// Created now, a copy of the whole source; the source is ended as
+    /// `branched`.
+    Created,
+    /// A session with that id was already there. Its parent says whether it is
+    /// an earlier try of this same fork.
+    Exists { parent_session_id: Option<String> },
+}
+
+/// `POST /api/sessions/{source}/fork` with the child's id chosen by the caller.
+/// Hermes copies the whole transcript and ignores any boundary, so a rewind
+/// cuts the child afterwards. `Err` is a refusal or no answer.
+pub async fn fork_session(
+    agent_model: &str,
+    source_id: &str,
+    fork_id: &str,
+) -> Result<Fork, String> {
+    let answer = agent_request(
+        agent_model,
+        Method::POST,
+        &format!("/api/sessions/{source_id}/fork"),
+        Some(&json!({ "id": fork_id })),
+        CONTROL_WINDOW,
+    )
+    .await?;
+    match answer.status {
+        200..=299 => Ok(Fork::Created),
+        409 if answer.body["error"]["code"].as_str() == Some("session_exists") => {
+            let session = agent_request(
+                agent_model,
+                Method::GET,
+                &format!("/api/sessions/{fork_id}"),
+                None,
+                CONTROL_WINDOW,
+            )
+            .await?;
+            Ok(Fork::Exists {
+                parent_session_id: parent_of(&session.body),
+            })
+        }
+        status => Err(format!(
+            "the fork answered {status}{}",
+            answer.body["error"]["code"]
+                .as_str()
+                .map(|c| format!(" {c}"))
+                .unwrap_or_default()
+        )),
+    }
+}
+
 /// [`agent_request`]'s error when the agent accepted the connection (the
 /// connect alone is bounded at 10 s, and failing it is a transport error) and
 /// then said nothing for the whole `window`: the request went out, so the agent
