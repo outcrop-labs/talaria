@@ -68,7 +68,6 @@ use talaria_harness_defs::defs::work_session::{
 use talaria_runs_define::{
     Authority, RunDefinition, RunRow, RunStepContext, StepResult, register_run,
 };
-use talaria_runs_store::StepPlace;
 use talaria_state::AppState;
 use talaria_statuses as statuses;
 use talaria_tasks as tasks;
@@ -478,66 +477,49 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
     }
 }
 
-/// Where the transcript puts each tool call: the Talaria turn it ran in, by
-/// counting the session's user rows (one per turn the driver sent), and its
-/// ordinal among that turn's tool rows. The ledger's step rows are keyed by
-/// tool call id, so this is all a placement needs.
-pub fn step_places(rows: &[Value]) -> Vec<StepPlace> {
-    let mut places = Vec::new();
-    let (mut turn, mut step_no) = (0i64, 0i64);
-    for row in rows {
-        match row.get("role").and_then(Value::as_str) {
-            Some("user") => {
-                turn += 1;
-                step_no = 0;
-            }
-            Some("tool") => {
-                if let Some(id) = row.get("tool_call_id").and_then(Value::as_str) {
-                    step_no += 1;
-                    places.push(StepPlace {
-                        tool_call_id: id.to_string(),
-                        turn,
-                        step_no,
-                    });
-                }
-            }
-            _ => {}
-        }
-    }
-    places
+/// The tool call ids the live transcript still carries.
+pub fn present_call_ids(rows: &[Value]) -> Vec<String> {
+    rows.iter()
+        .filter(|r| r.get("role").and_then(Value::as_str) == Some("tool"))
+        .filter_map(|r| r.get("tool_call_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
 }
 
-/// Stamp the transcript's order on the run's step rows at the end of turn
-/// `turn`. Best-effort by contract: a transcript the container cannot give,
-/// or one whose user rows do not count up to this turn (a steer or a notice
-/// the driver did not send), leaves the rows at their provisional place.
-/// Nothing here fails the step.
-async fn place_session_steps(d: &WorkSessionDeps, agent_model: &str, run_id: &str, turn: i64) {
+/// After turn `turn` is recorded, read the session once and retire the step
+/// rows whose boundary a compaction took out of the live transcript. The
+/// ledger's `seq` is read first, so a frame that lands during the read is
+/// not judged by a transcript that could not hold it. Best-effort by
+/// contract: a transcript the container cannot give, or one too long to read
+/// whole, changes nothing. Nothing here fails the step.
+async fn retire_compacted_session_steps(
+    d: &WorkSessionDeps,
+    agent_model: &str,
+    run_id: &str,
+    turn: i64,
+) {
+    let through = match talaria_runs_store::checkpoint_seq(&d.state.pg, run_id).await {
+        Ok(seq) => seq,
+        Err(e) => {
+            tracing::warn!("{LOG} {run_id}: ledger seq unreadable at turn {turn}: {e}");
+            return;
+        }
+    };
     let Some(rows) = (d.session_messages)(agent_model.to_string(), run_id.to_string()).await else {
         tracing::debug!(
-            "{LOG} {run_id}: transcript not readable at turn {turn}; steps keep their provisional order"
+            "{LOG} {run_id}: transcript not readable at turn {turn}; steps keep their standing"
         );
         return;
     };
-    let users = rows
-        .iter()
-        .filter(|r| r.get("role").and_then(Value::as_str) == Some("user"))
-        .count() as i64;
-    if users != turn {
-        tracing::warn!(
-            "{LOG} {run_id}: transcript holds {users} user rows at turn {turn}; steps keep their provisional order"
-        );
-        return;
-    }
-    let places = step_places(&rows);
-    match talaria_runs_store::place_steps(&d.state.pg, run_id, &places).await {
-        Ok(moved) if moved > 0 => {
+    let present = present_call_ids(&rows);
+    match talaria_runs_store::retire_compacted_steps(&d.state.pg, run_id, through, &present).await {
+        Ok(retired) if retired > 0 => {
             tracing::info!(
-                "{LOG} {run_id}: {moved} step row(s) placed by the transcript at turn {turn}"
+                "{LOG} {run_id}: {retired} step row(s) compacted out of the transcript by turn {turn}"
             );
         }
         Ok(_) => {}
-        Err(e) => tracing::warn!("{LOG} {run_id}: step placement failed at turn {turn}: {e}"),
+        Err(e) => tracing::warn!("{LOG} {run_id}: compaction check failed at turn {turn}: {e}"),
     }
 }
 
@@ -1508,7 +1490,7 @@ pub async fn work_session_step(
                     .await;
                 }
             }
-            place_session_steps(d, &agent_model, &ctx.run.id, *turn).await;
+            retire_compacted_session_steps(d, &agent_model, &ctx.run.id, *turn).await;
             return Ok(StepResult::Next {
                 checkpoint: json!(WorkSessionCheckpoint::Send {
                     turn: turn + 1,
@@ -2101,39 +2083,20 @@ mod tests {
     // ── Checkpoint wire shape ───────────────────────────────────────────────
 
     #[test]
-    fn the_transcript_places_each_tool_call_in_its_turn() {
+    fn the_live_transcript_names_the_calls_it_still_holds() {
         let rows = vec![
             json!({"role": "user", "content": "turn 1"}),
             json!({"role": "assistant", "tool_calls": [{"id": "c1"}, {"id": "c2"}]}),
             json!({"role": "tool", "tool_call_id": "c1", "tool_name": "terminal"}),
             json!({"role": "tool", "tool_call_id": "c2", "tool_name": "terminal"}),
-            json!({"role": "assistant", "content": "done"}),
-            json!({"role": "user", "content": "turn 2"}),
-            json!({"role": "assistant", "tool_calls": [{"id": "c3"}]}),
-            json!({"role": "tool", "tool_call_id": "c3", "tool_name": "write_file"}),
-            json!({"role": "tool", "content": "a row with no call id is not a step"}),
+            json!({"role": "tool", "content": "a row with no call id names no step"}),
+            json!({"role": "user", "content": "turn 2", "display_kind": "internal_notification"}),
         ];
         assert_eq!(
-            step_places(&rows),
-            vec![
-                StepPlace {
-                    tool_call_id: "c1".into(),
-                    turn: 1,
-                    step_no: 1
-                },
-                StepPlace {
-                    tool_call_id: "c2".into(),
-                    turn: 1,
-                    step_no: 2
-                },
-                StepPlace {
-                    tool_call_id: "c3".into(),
-                    turn: 2,
-                    step_no: 1
-                },
-            ]
+            present_call_ids(&rows),
+            vec!["c1".to_string(), "c2".to_string()]
         );
-        assert!(step_places(&[]).is_empty());
+        assert!(present_call_ids(&[]).is_empty());
     }
 
     #[test]

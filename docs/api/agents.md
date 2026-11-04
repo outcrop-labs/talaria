@@ -395,10 +395,10 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/muse.rs`](../../api/crates/
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/runs_checkpoints.rs`](../../api/crates/talaria-routes-fleet/src/agents/runs_checkpoints.rs)
 
-> GET /api/runs/{id}/checkpoints. The run's append-only ledger in the order
-> the work happened: each turn's send row, its steps, then its record row.
-> `seq` is identity, not order.
->
+> GET /api/runs/{id}/checkpoints. The run's ledger in the order the work
+> happened; `seq` is identity, not order. A step's snapshot holds the job
+> checkout's tracked and untracked files; ignored files and the platform's
+> `.talaria/env` are not captured and come back empty on a restore, at every
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

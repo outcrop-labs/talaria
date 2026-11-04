@@ -159,12 +159,8 @@ async fn a_snapshot_lands_one_step_row_on_the_live_run_and_only_once() {
         Some("3 calls: terminal ×2, mcp__workbench__job_status")
     );
     assert_eq!(row.status.as_deref(), Some("failed"));
-    assert_eq!(
-        row.turn,
-        Some(3),
-        "the turn the run is on, until the transcript says"
-    );
-    assert_eq!(row.step_no, None);
+    assert_eq!(row.turn, Some(3), "the turn the run is on");
+    assert_eq!(row.step_no, Some(1), "numbered on arrival");
     assert_eq!(row.agent_turn_id.as_deref(), Some("hermes-turn-4"));
     assert_eq!(row.job_id.as_deref(), Some(job.as_str()));
     assert_eq!(
@@ -291,13 +287,6 @@ async fn the_last_step_lands_after_the_run_has_ended_and_is_placed() {
     );
     let (_, body) = post(&state, Some(&key), first).await;
     assert_eq!(body["seq"], 1, "{body}");
-    sqlx::query(
-        "update run_checkpoints set step_no = 1 where run_id = $1::uuid and tool_call_id = 'call_1'",
-    )
-    .bind(&run)
-    .execute(&state.pg)
-    .await
-    .unwrap();
     sqlx::query(
         "insert into run_checkpoints (run_id, seq, kind, turn, status, title) \
          values ($1::uuid, 2, 'turn', 1, 'record', 'turn 1 answered')",
