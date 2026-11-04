@@ -19,6 +19,10 @@
 // Each session also says which attempt it is (a run nobody rewound is attempt
 // 1 of its own lineage) and what it did outside its workspace: tokens, pushes
 // and pull requests. `lineages` groups the sessions into their attempts.
+// `rewinds` is the ticket's `run-rewind` rows, newest first, twenty deep: a
+// rewind has no attempt until its last stage, so this is the only place a
+// pending or failed one can be read. `ticketMove` is the move a rewind would
+// make now, null when it would make none.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -32,6 +36,7 @@ use talaria_error::{house_error, internal};
 use talaria_runs_store::{LINEAGE_COLS, RunLineage};
 use talaria_session::require_user;
 use talaria_state::AppState;
+use talaria_statuses::{BoardStatus, StatusMeta, list_statuses, meta_of};
 
 pub async fn get(
     State(state): State<AppState>,
@@ -43,13 +48,13 @@ pub async fn get(
         Err(resp) => return Ok(resp),
     };
     let user = require_user(&state, &headers).await?;
-    let board: Option<(String,)> =
-        sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
+    let board: Option<(String, String)> =
+        sqlx::query_as("select board_id::text, status from tasks where id = $1::uuid")
             .bind(&id)
             .fetch_optional(&state.pg)
             .await
             .unwrap_or(None);
-    let Some((board_id,)) = board else {
+    let Some((board_id, status)) = board else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     match board_role(&state.pg, &user.id, &board_id).await {
@@ -117,7 +122,61 @@ pub async fn get(
         attempts.push((lineage, run_id));
     }
     let lineages = group_attempts(attempts);
-    Ok(Json(json!({ "sessions": sessions, "lineages": lineages })).into_response())
+    let rewinds = match sqlx::query(
+        "select id::text, state::text, checkpoint->>'stage' as stage, \
+                input->>'sourceRunId' as source_run_id, (input->>'seq')::bigint as seq, \
+                coalesce(result->>'attemptRunId', checkpoint->'plan'->>'attemptRunId') as attempt_run_id, \
+                error \
+         from runs \
+         where kind = 'run-rewind' and subject_id = $1 \
+         order by created_at desc \
+         limit 20",
+    )
+    .bind(&id)
+    .fetch_all(&state.pg)
+    .await
+    {
+        Ok(rows) => rows.iter().map(rewind_json).collect::<Vec<_>>(),
+        Err(e) => return Ok(internal("[work-sessions] rewind read failed", e)),
+    };
+    let ticket_move = match list_statuses(&state.pg, &board_id).await {
+        Ok(list) => rewind_ticket_move(&list, &meta_of(&list), &status),
+        Err(e) => return Ok(internal("[work-sessions] board read failed", e)),
+    };
+    Ok(Json(json!({
+        "sessions": sessions,
+        "lineages": lineages,
+        "rewinds": rewinds,
+        "ticketMove": ticket_move,
+    }))
+    .into_response())
+}
+
+fn rewind_json(row: &sqlx::postgres::PgRow) -> Value {
+    json!({
+        "id": row.get::<String, _>("id"),
+        "state": row.get::<String, _>("state"),
+        "stage": row.get::<Option<String>, _>("stage"),
+        "sourceRunId": row.get::<Option<String>, _>("source_run_id"),
+        "seq": row.get::<Option<i64>, _>("seq"),
+        "attemptRunId": row.get::<Option<String>, _>("attempt_run_id"),
+        "error": row.get::<Option<String>, _>("error"),
+    })
+}
+
+/// A ticket in review goes back to the board's working column, by the same
+/// keys the rewind's `validate` reads.
+fn rewind_ticket_move(list: &[BoardStatus], meta: &StatusMeta, status: &str) -> Option<Value> {
+    if !meta.review_keys.iter().any(|key| key == status) {
+        return None;
+    }
+    let to = meta.active_key.as_ref().or(meta.assigned_key.as_ref())?;
+    let label = |key: &str| {
+        list.iter()
+            .find(|s| s.key == key)
+            .map_or(key.to_string(), |s| s.label.clone())
+    };
+    Some(json!({ "from": label(status), "to": label(to) }))
 }
 
 fn group_attempts(attempts: Vec<(RunLineage, String)>) -> Vec<Value> {
@@ -151,6 +210,35 @@ mod tests {
             rewound_from_seq: None,
         };
         (lineage, run_id.into())
+    }
+
+    fn column(key: &str, label: &str, category: &str) -> BoardStatus {
+        BoardStatus {
+            id: None,
+            key: key.into(),
+            label: label.into(),
+            color: String::new(),
+            category: category.into(),
+            agent_start: false,
+            position: 0,
+            system: None,
+        }
+    }
+
+    #[test]
+    fn only_a_ticket_in_review_moves_and_it_moves_to_the_working_column() {
+        let list = vec![
+            column("doing", "In progress", "active"),
+            column("check", "In review", "review"),
+            column("shipped", "Shipped", "done"),
+        ];
+        let meta = meta_of(&list);
+        assert_eq!(
+            rewind_ticket_move(&list, &meta, "check"),
+            Some(json!({ "from": "In review", "to": "In progress" }))
+        );
+        assert_eq!(rewind_ticket_move(&list, &meta, "doing"), None);
+        assert_eq!(rewind_ticket_move(&list, &meta, "shipped"), None);
     }
 
     #[test]
