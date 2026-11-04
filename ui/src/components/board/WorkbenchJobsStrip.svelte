@@ -15,7 +15,7 @@
     branch: string
     effort: string
     plan: string
-    status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
+    status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned' | 'superseded'
     prUrl: string | null
   }
 
@@ -49,7 +49,7 @@
     }
     await qc.invalidateQueries({ queryKey: ['workbench-jobs', taskId] })
   }
-  const live = $derived((jobs ?? []).filter((j) => j.status !== 'abandoned'))
+  const live = $derived((jobs ?? []).filter((j) => j.status !== 'abandoned' && j.status !== 'superseded'))
 </script>
 
 <!-- Which coding plan this ticket runs on, ABOVE the jobs and outside their
