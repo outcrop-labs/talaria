@@ -35,6 +35,7 @@ talaria-plugins = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-repo-env = { workspace = true }
 talaria-runs-define = { workspace = true }
+talaria-runs-store = { workspace = true }
 talaria-scheduler = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-statuses = { workspace = true }
