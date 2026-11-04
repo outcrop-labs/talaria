@@ -97,8 +97,12 @@ pub fn log_faults(logs: &str) -> Vec<String> {
 }
 
 /// A container's logs (stdout and stderr), its last `tail` lines.
+/// Scrubbed at the source ([`talaria_agent_secrets::scrub_text`]): every
+/// secret the agents were given ([`known_secrets`]) and every
+/// credential-shaped token is taken out before any of it is read, so no
+/// fault, reason, notification or log line Talaria makes of it carries one.
 pub async fn logs(container: &str, tail: u32) -> String {
-    match docker(
+    let raw = match docker(
         &["logs", "--tail", &tail.to_string(), container],
         Duration::from_secs(30),
     )
@@ -106,7 +110,42 @@ pub async fn logs(container: &str, tail: u32) -> String {
     {
         Ok((out, err)) => format!("{out}\n{err}"),
         Err(e) => format!("(logs unavailable: {e})"),
+    };
+    talaria_agent_secrets::scrub_text(&raw, &known_secrets())
+}
+
+/// Every secret value the agents were given: each credential-named value in
+/// the fleet's `.env` (the gateway keys, each agent's own keys) and every
+/// value in an agent's `secrets.env`.
+pub fn known_secrets() -> Vec<String> {
+    let dir = talaria_fleet_layout::fleet_dir();
+    let mut out = Vec::new();
+    let mut read = |path: std::path::PathBuf, all: bool| {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        for line in text.lines() {
+            let Some((k, v)) = line.trim().split_once('=') else {
+                continue;
+            };
+            let v = v.trim().trim_matches(|c| c == '"' || c == '\'');
+            if k.trim_start().starts_with('#') || v.chars().count() < 3 {
+                continue;
+            }
+            if all || talaria_agent_secrets::may_hold_credential(k.trim(), "x") {
+                out.push(v.to_string());
+            }
+        }
+    };
+    read(dir.join(".env"), false);
+    if let Ok(agents) = std::fs::read_dir(dir.join("agents")) {
+        for a in agents.flatten() {
+            read(a.path().join("secrets.env"), true);
+        }
     }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// A request that never got an answer: no connection, no name, no reply in
@@ -227,6 +266,16 @@ pub async fn image_id(image: &str) -> Result<String, String> {
     )
     .await
     .map(|(out, _)| out.trim().to_string())
+}
+
+/// `docker image rm` (never forced), and whether the image is then gone from
+/// the host — checked by its id, since removing a digest reference while a
+/// tag still names the image (docker's classic store) only untags it and
+/// frees nothing.
+pub async fn remove_image_verified(image: &str) -> Result<bool, String> {
+    let id = image_id(image).await?;
+    docker(&["image", "rm", image], Duration::from_secs(120)).await?;
+    Ok(image_id(&id).await.is_err())
 }
 
 /// The `repository@sha256:…` an image was pulled as: `prefer`'s first, else
@@ -377,7 +426,7 @@ async fn last_word(container: &str) -> Option<String> {
         log.lines()
             .map(str::trim)
             .rfind(|l| !l.is_empty())
-            .map(|l| l.chars().take(200).collect())
+            .map(|l| l.chars().take(120).collect())
     })
 }
 
@@ -651,5 +700,30 @@ mod tests {
         assert_eq!(s.health, None);
         assert_eq!(s.started_at, "2026-11-03T15:00:00.1Z");
         assert!(!parse_snapshot("").exists);
+    }
+
+    /// A remove that only untags is not a removal: the prune checks the
+    /// image's id is gone. Run by hand on a host with docker:
+    /// `TALARIA_PRUNE_TEST_BASE=busybox:1.37` (any small local image).
+    #[tokio::test]
+    #[ignore = "needs docker and a small local image (TALARIA_PRUNE_TEST_BASE)"]
+    async fn a_remove_that_only_untags_is_not_counted_as_removed() {
+        let Ok(base) = std::env::var("TALARIA_PRUNE_TEST_BASE") else {
+            eprintln!("TALARIA_PRUNE_TEST_BASE is not set: nothing to check");
+            return;
+        };
+        let t = Duration::from_secs(120);
+        let (c, _) = docker(&["create", &base, "true"], t).await.unwrap();
+        let c = c.trim().to_string();
+        let (a, b) = ("talaria-prune-test/x:a", "talaria-prune-test/x:b");
+        docker(&["commit", &c, a], t).await.unwrap();
+        docker(&["rm", &c], t).await.unwrap();
+        docker(&["tag", a, b], t).await.unwrap();
+        let first = remove_image_verified(a).await;
+        let second = remove_image_verified(b).await;
+        let _ = docker(&["image", "rm", a, b], t).await;
+        println!("first remove: {first:?}, second: {second:?}");
+        assert_eq!(first, Ok(false), "another tag holds it: untagged only");
+        assert_eq!(second, Ok(true), "its last reference: gone");
     }
 }

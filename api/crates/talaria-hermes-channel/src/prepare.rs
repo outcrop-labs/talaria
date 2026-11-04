@@ -940,19 +940,21 @@ pub async fn prepare(
         return Prepared::Ready;
     }
     let values = config_values(configs);
+    let known = crate::probe::known_secrets();
+    let scrub = |t: &str| scrub(&talaria_agent_secrets::scrub_text(t, &known), &values);
     match inspect(&image, &record.digest, configs).await {
         Ok(mut found) => {
             if let Some(e) = &found.sandbox_error {
                 return Prepared::Failed {
                     why: format!(
                         "the inspection's sandbox failed ({}): the host's, tried again",
-                        scrub(e, &values)
+                        scrub(e)
                     ),
                     definitive: false,
                 };
             }
-            found.problems = found.problems.iter().map(|p| scrub(p, &values)).collect();
-            found.checked = found.checked.iter().map(|p| scrub(p, &values)).collect();
+            found.problems = found.problems.iter().map(|p| scrub(p)).collect();
+            found.checked = found.checked.iter().map(|p| scrub(p)).collect();
             if !found.s6 {
                 return Prepared::Failed {
                     why: "the image has no s6-svc and s6-svwait under /command — Talaria drains an agent's gateway with them before every roll and stop, so this image would be hard-killed on each".into(),
@@ -991,7 +993,7 @@ pub async fn prepare(
             Prepared::Ready
         }
         Err((why, definitive)) => Prepared::Failed {
-            why: scrub(&why, &values),
+            why: scrub(&why),
             definitive,
         },
     }

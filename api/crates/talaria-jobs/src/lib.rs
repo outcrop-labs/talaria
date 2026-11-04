@@ -156,7 +156,10 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
             if !talaria_hermes_channel::deploy_roll_may_go(adopted, booted.elapsed()) {
                 return Err("waiting for the agent image channel to keep each agent on the Hermes it runs, so this roll moves no agent's Hermes".to_string());
             }
-            talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await
+            // Past the wait, an agent the channel still has not recorded is
+            // left exactly as it is, never recreated onto the compiled pin.
+            let skip = talaria_hermes_channel::unadopted_departments(&pg).await;
+            talaria_fleet_reconcile::roll_running_agents_except(&pg, &sb, &skip).await
         })
     }));
     // THE ANNOUNCE EDGE FOR A QUEUED GOOGLE WRITE. `queue_action` calls this

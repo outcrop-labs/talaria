@@ -97,6 +97,13 @@ pub const MASKED_MAX: u32 = 2;
 pub const DEFER_ALERT_AFTER: u32 = 3;
 /// Where the state says the fleet was adopted (`extra`), once.
 pub const ADOPTED_KEY: &str = "fleetAdoptedAt";
+/// The agents the adoption has seen so far (by slug), in the state's `extra`.
+pub const ADOPTED_AGENTS: &str = "adoptedAgents";
+/// The adoption's steps that missed an agent, in the state's `extra`.
+const ADOPT_TRIES: &str = "adoptTries";
+/// Steps an agent docker will not describe is asked again before the admins
+/// are told.
+const ADOPT_ALERT_AFTER: u64 = 10;
 /// How long an adopted image waits for its inspection before its version is
 /// taken as unknown (it is then moved onto the fleet's image).
 const ADOPT_INSPECT_WAIT_MS: i64 = HOUR;
@@ -401,9 +408,6 @@ impl<'a> Engine<'a> {
         let assigned = images::assignments(self.pg)
             .await
             .map_err(|e| format!("the agents' images could not be read: {e}"))?;
-        // Mid-rollout (a host that ran an earlier build of the channel), its
-        // assignments stand: only the stops are recorded.
-        let images_too = state.rollout.as_ref().is_none_or(|r| !r.open());
         let current = self.current(state);
         let current_id = match self.record(&current).await? {
             Some(rec) => self.ops.image_id(&rec.image_ref()).await.ok(),
@@ -411,18 +415,32 @@ impl<'a> Engine<'a> {
         };
         let mut stopped = Vec::new();
         let mut kept = Vec::new();
+        // Adopted one agent at a time: one docker will not describe is asked
+        // again next step, and holds up no other (`ADOPTED_AGENTS`).
+        let mut seen: Vec<String> = state
+            .extra
+            .get(ADOPTED_AGENTS)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let mut missed = Vec::new();
         let in_hand = state
             .rollout
             .as_ref()
             .filter(|r| r.open())
             .and_then(|r| r.agent.clone());
-        for a in agents.iter().filter(|a| on_channel(a)) {
-            let snap = self.ops.snapshot(a).await.map_err(|e| {
-                format!(
-                    "docker would not describe {} ({e}): the fleet is adopted on a later step",
-                    a.display_name
-                )
-            })?;
+        let todo: Vec<&ChannelAgent> = agents
+            .iter()
+            .filter(|a| on_channel(a) && !seen.contains(&a.slug))
+            .collect();
+        for a in todo {
+            let snap = match self.ops.snapshot(a).await {
+                Ok(s) => s,
+                Err(e) => {
+                    missed.push(format!("{} ({e})", a.display_name));
+                    continue;
+                }
+            };
+            seen.push(a.slug.clone());
             // Down by this channel's own hand (mid-move) is the channel's to
             // finish, never someone's stop.
             let ours =
@@ -432,19 +450,29 @@ impl<'a> Engine<'a> {
                 self.ops.record_stop(a).await?;
                 stopped.push(a.display_name.clone());
             }
-            if !images_too
+            // An agent with an assignment (a rollout moved it) keeps it; the
+            // one a rollout has in hand is that rollout's.
+            if ours
                 || assigned.contains_key(&a.id)
                 || !snap.exists
                 || current_id.as_deref() == Some(snap.image.as_str())
             {
                 continue;
             }
-            let Some(found) = self.ops.repo_digest(&snap.image).await else {
-                continue;
-            };
+            // Pulled from a registry: by its repo digest. Built or loaded
+            // here (no repo digest): by its image id, which the render names
+            // as it is — it is kept on it either way.
+            let found = self
+                .ops
+                .repo_digest(&snap.image)
+                .await
+                .unwrap_or_else(|| format!("@{}", snap.image));
             let Some((repo, digest)) = found.split_once('@') else {
                 continue;
             };
+            if !images::is_digest(digest) {
+                continue;
+            }
             let label = match self.record(digest).await? {
                 Some(rec) if rec.status == Status::Bad => continue,
                 Some(rec) => rec.label(),
@@ -486,9 +514,38 @@ impl<'a> Engine<'a> {
                     .join(", ")
             ));
         }
+        let tries = state
+            .extra
+            .get(ADOPT_TRIES)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            + u64::from(!missed.is_empty());
+        if !missed.is_empty() {
+            let text = format!(
+                "docker would not describe {}: each stays as it is — on the Hermes it runs, never moved — and is asked again every minute",
+                missed.join(", ")
+            );
+            tracing::warn!("[hermes] {text}");
+            if tries >= ADOPT_ALERT_AFTER {
+                self.alert_once(
+                    crate::KIND_CHANNEL_STUCK,
+                    "adopt",
+                    "The agent image channel cannot read some agents' containers",
+                    &format!("{text}. It has asked {tries} times; check docker on the host."),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        let done = missed.is_empty();
         let notes = said.clone();
         self.patch(move |s| {
-            s.extra.insert(ADOPTED_KEY.into(), serde_json::json!(now));
+            s.extra
+                .insert(ADOPTED_AGENTS.into(), serde_json::json!(seen));
+            s.extra.insert(ADOPT_TRIES.into(), serde_json::json!(tries));
+            if done {
+                s.extra.insert(ADOPTED_KEY.into(), serde_json::json!(now));
+            }
             for n in &notes {
                 s.note(now, n.clone());
             }
@@ -731,7 +788,7 @@ impl<'a> Engine<'a> {
             d != &current
                 && behind(&a.slug, d)
                 && rec_of(d).is_some_and(|x| {
-                    x.adopted() && x.release().zip(current_release).is_none_or(|(h, w)| h < w)
+                    x.adopted() && x.release().zip(current_release).is_some_and(|(h, w)| h < w)
                 })
         });
         // An Upgrade giving way with agents already on its image takes them
@@ -978,6 +1035,12 @@ impl<'a> Engine<'a> {
         .await
         .map_err(|e| e.to_string())?;
         Ok(drift)
+    }
+
+    /// `text` with every secret the agents were given, and every
+    /// credential-shaped token, taken out.
+    fn clean(&self, text: &str) -> String {
+        talaria_agent_secrets::scrub_text(text, &self.ops.known_secrets())
     }
 
     /// Whether the channel itself left this agent mid-move (recreated, or
@@ -1757,6 +1820,7 @@ impl<'a> Engine<'a> {
     ) -> Result<Move, StateError> {
         let label = record.label();
         let watched = watching(r, record);
+        let checked = checked.map_err(|f| f.map_text(|t| self.clean(t)));
         match checked {
             Ok(Some(w)) => Ok(Move::Moved(
                 watched.then_some(w),
@@ -2126,6 +2190,9 @@ impl<'a> Engine<'a> {
         touched: Option<&ChannelAgent>,
         fault: Fault,
     ) -> Result<String, StateError> {
+        // Text from a container (its log, its exception) never reaches a
+        // stored reason, a notification or the log with a secret in it.
+        let fault = fault.map_text(|t| self.clean(t));
         let now = self.now();
         let label = record.label();
         let watched = watching(r, record);

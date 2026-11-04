@@ -1161,6 +1161,17 @@ pub async fn roll_running_agents(
     pg: &PgPool,
     sb: &SecretBox,
 ) -> Result<(Vec<String>, Vec<String>), String> {
+    roll_running_agents_except(pg, sb, &[]).await
+}
+
+/// [`roll_running_agents`], leaving the departments in `skip` exactly as
+/// they are (the deploy's fleet roll, for agents the agent image channel has
+/// not recorded yet: a recreate would move them onto the compiled pin).
+pub async fn roll_running_agents_except(
+    pg: &PgPool,
+    sb: &SecretBox,
+    skip: &[String],
+) -> Result<(Vec<String>, Vec<String>), String> {
     let render = {
         let f = RENDER_FLEET
             .get()
@@ -1185,6 +1196,12 @@ pub async fn roll_running_agents(
     let mut warnings = render.1;
     for (department, display_name) in &managed {
         if !running.contains(department) {
+            continue;
+        }
+        if skip.contains(department) {
+            warnings.push(format!(
+                "{display_name} left as it is: the agent image channel has not recorded the Hermes it runs yet"
+            ));
             continue;
         }
         // Named rolled only when its container was recreated: one stopped

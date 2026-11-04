@@ -410,6 +410,14 @@ struct Fake {
     rolls: Mutex<Vec<(String, String)>>,
     /// (kind, topic, title) of every notification.
     notes: Mutex<Vec<(String, String, String)>>,
+    /// Each notification's body.
+    bodies: Mutex<Vec<String>>,
+    /// The secrets the agents were given (what a log could quote).
+    secrets: Mutex<Vec<String>>,
+    /// Agents whose container docker will not describe.
+    unreadable: Mutex<HashSet<String>>,
+    /// Digests whose remove only untags (another reference holds them).
+    untag_only: Mutex<HashSet<String>>,
     canary_calls: AtomicI64,
     /// The images this test may remove (any other is "in use"), and those
     /// removed — the suite's other tests share the records table.
@@ -483,6 +491,10 @@ impl Fake {
             vanish: Mutex::new(HashSet::new()),
             rolls: Mutex::new(Vec::new()),
             notes: Mutex::new(Vec::new()),
+            bodies: Mutex::new(Vec::new()),
+            secrets: Mutex::new(Vec::new()),
+            unreadable: Mutex::new(HashSet::new()),
+            untag_only: Mutex::new(HashSet::new()),
             canary_calls: AtomicI64::new(0),
             removable: Mutex::new(HashSet::new()),
             removed: Mutex::new(Vec::new()),
@@ -657,6 +669,9 @@ impl FleetOps for Fake {
     }
     fn snapshot<'a>(&'a self, a: &'a ChannelAgent) -> BoxFuture<'a, Result<Snapshot, String>> {
         Box::pin(async move {
+            if self.unreadable.lock().unwrap().contains(&a.slug) {
+                return Err("context deadline exceeded".into());
+            }
             let mut s = self.containers.lock().unwrap()[&a.slug].clone();
             s.image = self.id_of(&s.image);
             Ok(s)
@@ -826,9 +841,10 @@ impl FleetOps for Fake {
         kind: &'a str,
         topic: &'a str,
         title: &'a str,
-        _body: &'a str,
+        body: &'a str,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            self.bodies.lock().unwrap().push(body.to_string());
             self.notes.lock().unwrap().push((
                 kind.to_string(),
                 topic.to_string(),
@@ -836,15 +852,21 @@ impl FleetOps for Fake {
             ));
         })
     }
-    fn remove_image<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<(), String>> {
+    fn remove_image<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<bool, String>> {
         Box::pin(async move {
             let digest = image.split_once('@').map(|(_, d)| d).unwrap_or(image);
             if !self.removable.lock().unwrap().contains(digest) {
                 return Err("image is being used by a running container".into());
             }
+            if self.untag_only.lock().unwrap().contains(digest) {
+                return Ok(false);
+            }
             self.removed.lock().unwrap().push(digest.to_string());
-            Ok(())
+            Ok(true)
         })
+    }
+    fn known_secrets(&self) -> Vec<String> {
+        self.secrets.lock().unwrap().clone()
     }
     fn host_stalled(&self) -> bool {
         self.stalled.load(Ordering::SeqCst)
@@ -2890,7 +2912,7 @@ async fn an_agent_on_a_newer_hermes_is_never_moved_down() {
         "kept on what it runs"
     );
     let rec = images::record(&w.pg, &latest).await.unwrap().unwrap();
-    assert!(rec.adopted() && rec.pulled_here);
+    assert!(rec.adopted() && !rec.pulled_here, "found, not pulled here");
     assert_eq!(rec.version.as_deref(), Some("v9.0.5"));
     // Stable's time is up; its move of agent 0 fails, and it goes back to
     // what it ran.
@@ -3210,5 +3232,157 @@ async fn a_stop_pressed_during_a_recreate_stands() {
     talaria_fleet_docker::record_stop(&w.pg, &dept).await;
     talaria_fleet_docker::clear_stop_since(&w.pg, &dept, began.as_deref()).await;
     assert!(stopped(w.pg.clone(), id).await, "the Stop wins");
+    w.done().await;
+}
+
+// ── Round six: the r5 reviews' must-fix items ───────────────────────────────
+
+/// Must 1: a secret an agent was given, quoted in a canary's log, never
+/// reaches a stored reason, a notification, an event or the log — in clear,
+/// URL-encoded or base64.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_planted_secret_in_a_canary_log_reaches_no_reason_notification_or_log() {
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct Buf(std::sync::Arc<Mutex<Vec<u8>>>);
+    impl Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = Buf::default();
+    let out = buf.clone();
+    let sub = tracing_subscriber::fmt()
+        .with_writer(move || out.clone())
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    let _guard = tracing::subscriber::set_default(sub);
+    let w = World::new("leak", 1).await;
+    let t = tuning();
+    let (short, long) = ("s3cr", "tlk_live_9f8e7d6c5b4a3f2e");
+    *w.fake.secrets.lock().unwrap() = vec![short.to_string(), long.to_string()];
+    let line = format!(
+        "the canary exited before it reported healthy; its last word: boot with key={short} Authorization: Bearer {long} echo dGxrX2xpdmVfOWY4ZTdkNmM1YjRhM2YyZQ cb?x=tlk%5Flive%5F9f8e7d6c5b4a3f2e"
+    );
+    for _ in 0..2 {
+        w.fake
+            .canary_script
+            .lock()
+            .unwrap()
+            .push_back(Err(Fault::Image(line.clone())));
+    }
+    for _ in 0..4 {
+        w.step(&t).await;
+        w.fake.advance(11 * MIN);
+    }
+    assert_eq!(
+        w.status_of(&w.new).await,
+        Status::Bad,
+        "it failed twice: banned"
+    );
+    let stored: (String, String) = sqlx::query_as(
+        "select coalesce(reason, ''), inspect::text from hermes_images where digest = $1",
+    )
+    .bind(&w.new)
+    .fetch_one(&w.pg)
+    .await
+    .unwrap();
+    let events = serde_json::to_string(&w.state().await).unwrap();
+    let bodies = w.fake.bodies.lock().unwrap().join("\n");
+    let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        stored.0.contains("canary exited"),
+        "the reason is kept: {}",
+        stored.0
+    );
+    for (what, text) in [
+        ("reason", &stored.0),
+        ("inspect", &stored.1),
+        ("events", &events),
+        ("notifications", &bodies),
+        ("log", &logged),
+    ] {
+        for leak in [
+            short,
+            long,
+            "dGxrX2xpdmVfOWY4ZTdkNmM1YjRhM2YyZQ",
+            "tlk%5Flive%5F9f8e7d6c5b4a3f2e",
+        ] {
+            assert!(!text.contains(leak), "{what} carries {leak}: {text}");
+        }
+    }
+    assert!(!bodies.is_empty(), "the admins were told");
+    w.done().await;
+}
+
+/// Engine S1/S2: an agent docker will not describe holds up no other's
+/// adoption, nothing stalls, and the admins hear it after a bound.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_agent_docker_will_not_describe_holds_up_no_other() {
+    let w = World::new("unread", 2).await;
+    let mut t = tuning();
+    t.min_stable_ms = 48 * 60 * MIN;
+    // Newer than the fleet's image: adopted and kept, so the assignment shows.
+    let latest = digest(&w.tag, 9);
+    w.main_left(0, &latest, "v9.0.5").await;
+    w.main_left(1, &latest, "v9.0.5").await;
+    w.fake.unreadable.lock().unwrap().insert(w.slug(1));
+    w.step(&t).await;
+    assert_eq!(
+        w.assigned(0).await.as_deref(),
+        Some(latest.as_str()),
+        "the readable one is adopted"
+    );
+    assert_eq!(w.assigned(1).await, None, "the other waits");
+    let s = w.state().await;
+    assert!(!s.extra.contains_key("fleetAdoptedAt"));
+    for _ in 0..10 {
+        w.fake.advance(MIN);
+        w.step(&t).await;
+    }
+    assert_eq!(w.fake.notes_like("cannot read some agents"), 1, "said once");
+    w.fake.unreadable.lock().unwrap().clear();
+    w.step(&t).await;
+    assert_eq!(w.assigned(1).await.as_deref(), Some(latest.as_str()));
+    assert!(w.state().await.extra.contains_key("fleetAdoptedAt"));
+    w.done().await;
+}
+
+/// Engine S3: an adopted image whose version cannot be read (a nightly-style
+/// tag) is kept — never moved down — and stable takes it on.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_adopted_image_of_unknown_version_is_never_moved_down() {
+    let w = World::new("unknownver", 1).await;
+    let mut t = tuning();
+    t.min_stable_ms = 48 * 60 * MIN;
+    let nightly = digest(&w.tag, 9);
+    w.main_left(0, &nightly, "nightly-2026-11-03").await;
+    for _ in 0..8 {
+        w.step(&t).await;
+        w.fake.advance(11 * MIN);
+    }
+    assert!(
+        !w.fake.rolled().iter().any(|(_, d)| d == &w.old),
+        "not moved down onto the pin: {:?}",
+        w.fake.rolled()
+    );
+    w.fake.advance(48 * 60 * MIN);
+    for _ in 0..4 {
+        w.step(&t).await;
+        w.fake.advance(11 * MIN);
+    }
+    assert_eq!(
+        w.fake.on(&w.slug(0)),
+        w.new,
+        "stable took it on: {:?}",
+        w.fake.rolled()
+    );
     w.done().await;
 }

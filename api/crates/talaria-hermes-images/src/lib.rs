@@ -116,6 +116,12 @@ impl ImageRecord {
         self.inspect.get("adopted").and_then(|v| v.as_bool()) == Some(true)
     }
 
+    /// A prune only untagged it: it is still on the host under another name,
+    /// and is not tried again.
+    pub fn untagged(&self) -> bool {
+        self.inspect.get("untagged").and_then(|v| v.as_bool()) == Some(true)
+    }
+
     /// Why the inspection of an adopted image could not run, if it could not.
     pub fn adopt_error(&self) -> Option<&str> {
         self.inspect.get("adoptError").and_then(|v| v.as_str())
@@ -224,6 +230,11 @@ impl ImageRecord {
 /// `nousresearch/hermes-agent:v0.22.6@sha256:…`, or without the tag when no
 /// valid one is known.
 pub fn image_ref(repository: &str, version: Option<&str>, digest: &str) -> String {
+    // An image adopted by its id (built or loaded on the host, never pulled):
+    // docker names it by the id alone.
+    if repository.is_empty() {
+        return digest.to_string();
+    }
     match version.filter(|v| is_version_tag(v)) {
         Some(v) => format!("{repository}:{v}@{digest}"),
         None => format!("{repository}@{digest}"),
@@ -448,9 +459,9 @@ pub async fn set_prepared(
 /// Record an image an agent ran before this channel (main's `:latest`, an
 /// operator's), as it was found: runnable for the render at the config
 /// version the render stamps today, so a recreate keeps the agent on it,
-/// and inspected later. It came from this install, so it is this
-/// instance's to prune once nothing runs it (`docker image rm` is never
-/// forced: an image any container uses stays).
+/// and inspected later. Found, not pulled here: another stack on the host
+/// may use it, so the prune never removes it (an operator does, once no
+/// stack uses it).
 pub async fn adopt(
     pg: &PgPool,
     digest: &str,
@@ -459,12 +470,25 @@ pub async fn adopt(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "insert into hermes_images (digest, repository, config_version, inspect, pulled_here, prepared_at) \
-         values ($1, $2, $3, '{\"adopted\": true}'::jsonb, true, now()) \
+         values ($1, $2, $3, '{\"adopted\": true}'::jsonb, false, now()) \
          on conflict (digest) do nothing",
     )
     .bind(digest)
     .bind(repository)
     .bind(config_version as i32)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// A prune's `docker image rm` only untagged the image (another tag or
+/// reference holds it): it stays on record as on the host.
+pub async fn note_untagged(pg: &PgPool, digest: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update hermes_images set inspect = inspect || '{\"untagged\": true}'::jsonb, \
+           updated_at = now() where digest = $1",
+    )
+    .bind(digest)
     .execute(pg)
     .await?;
     Ok(())

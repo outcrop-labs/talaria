@@ -23,6 +23,8 @@ use std::path::Path;
 use talaria_secretbox::SecretBox;
 
 mod config_seal;
+mod scrub;
+pub use scrub::{REDACTED, scrub_text};
 mod env_file;
 pub use config_seal::{
     CONFIG_SECRET_PREFIX, ConfigLiteral, ConfigSeal, config_secret_handles, config_secret_paths,

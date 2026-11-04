@@ -346,7 +346,7 @@ pub fn prune_plan(
     keep.extend(assigned.values().map(String::as_str));
     records
         .iter()
-        .filter(|r| r.pulled_here && !keep.contains(&r.digest.as_str()))
+        .filter(|r| r.pulled_here && !r.untagged() && !keep.contains(&r.digest.as_str()))
         .filter(|r| r.status != Status::Candidate || now - r.first_seen > ABANDONED_AFTER_MS)
         .map(|r| r.digest.clone())
         .collect()
@@ -392,9 +392,18 @@ pub async fn prune(engine: &Engine<'_>, state: &ChannelState) -> Option<String> 
             continue;
         };
         match engine.ops.remove_image(&r.image_ref()).await {
-            Ok(()) => {
+            Ok(true) => {
                 let _ = images::note_pruned(pg, &r.digest).await;
                 pruned.push(r.label());
+            }
+            Ok(false) => {
+                // Untagged only: still on the host under another name. Not
+                // counted as pruned, and not tried again.
+                let _ = images::note_untagged(pg, &r.digest).await;
+                pruned.push(format!(
+                    "{} (untagged; still on the host under another name)",
+                    r.label()
+                ));
             }
             Err(e) => tracing::info!("{LOG} {} kept: {e}", r.label()),
         }
@@ -981,6 +990,36 @@ pub async fn fleet_adopted(pg: &PgPool) -> bool {
     })
 }
 
+/// The departments of agents the channel has not adopted yet (docker would
+/// not describe their container): the deploy's fleet roll leaves them as
+/// they are, so it never moves an agent's Hermes the channel has not
+/// recorded. Empty once the fleet is adopted, or when the channel stands
+/// aside.
+pub async fn unadopted_departments(pg: &PgPool) -> Vec<String> {
+    if off_reason().await.is_some() {
+        return Vec::new();
+    }
+    let Ok(state) = images::load_state(pg).await else {
+        return Vec::new();
+    };
+    if state.extra.contains_key(engine::ADOPTED_KEY) {
+        return Vec::new();
+    }
+    let seen: Vec<String> = state
+        .extra
+        .get(engine::ADOPTED_AGENTS)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    match ops::channel_agents(pg).await {
+        Ok(agents) => agents
+            .into_iter()
+            .filter(|a| ops::on_channel(a) && !seen.contains(&a.slug))
+            .map(|a| a.department)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// How long the deploy's fleet roll waits for the channel to adopt the
 /// fleet before it goes ahead anyway (a channel that cannot run must not
 /// hold a Talaria update's roll forever).
@@ -1045,7 +1084,15 @@ pub async fn status(pg: &PgPool) -> Result<Value, String> {
         records
             .iter()
             .find(|r| r.digest == d)
-            .map(|r| r.label())
+            .map(|r| {
+                // Adopted as found and its release not known (a nightly tag,
+                // an inspection that could not run): kept, and said so.
+                if r.adopted() && r.release().is_none() {
+                    format!("{} (version unknown)", r.label())
+                } else {
+                    r.label()
+                }
+            })
             .unwrap_or_else(|| {
                 if d == pin_digest {
                     pin_tag.clone()
@@ -1251,6 +1298,15 @@ mod tests {
         let mut plan = prune_plan(&state, &records, &assigned, &d(8), now);
         plan.sort();
         assert_eq!(plan, vec![d(2), d(4), d(6)]);
+        // One a remove only untagged (still on the host) is not tried again,
+        // and an adopted image (found, not pulled here) is never pruned.
+        let mut untagged = records.clone();
+        untagged[3].inspect = json!({ "untagged": true });
+        assert!(!prune_plan(&state, &untagged, &assigned, &d(8), now).contains(&d(4)));
+        let mut adopted = records.clone();
+        adopted[3].inspect = json!({ "adopted": true });
+        adopted[3].pulled_here = false;
+        assert!(!prune_plan(&state, &adopted, &assigned, &d(8), now).contains(&d(4)));
         // The current one good for under three days keeps the previous.
         let mut fresh = records.clone();
         fresh[0].good_since = Some(now - DAY);

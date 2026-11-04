@@ -3,8 +3,6 @@
 // (engine.rs) runs the same against the real fleet ([`DockerOps`]) and
 // against a scripted one in the live-DB tests.
 
-use std::time::Duration;
-
 use futures_util::future::BoxFuture;
 use sqlx::PgPool;
 
@@ -59,6 +57,15 @@ pub enum Fault {
 }
 
 impl Fault {
+    /// The same fault with every text passed through `f` (the scrub).
+    pub fn map_text(self, f: impl Fn(&str) -> String) -> Fault {
+        match self {
+            Fault::Image(s) => Fault::Image(f(&s)),
+            Fault::Infra(s) => Fault::Infra(f(&s)),
+            Fault::Held(p) => Fault::Held(p.iter().map(|x| f(x)).collect()),
+        }
+    }
+
     pub fn text(&self) -> String {
         match self {
             Fault::Image(s) | Fault::Infra(s) => s.clone(),
@@ -149,6 +156,10 @@ pub trait FleetOps: Send + Sync {
     fn snapshot<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<Snapshot, String>>;
     /// The id an image reference resolves to on this host.
     fn image_id<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<String, String>>;
+    /// Every secret value the agents were given (what their logs could
+    /// quote): taken out of any container text before it is stored, shown,
+    /// mailed or logged.
+    fn known_secrets(&self) -> Vec<String>;
     /// The `repository@sha256:…` an image on this host was pulled as (its
     /// first repo digest, the channel's repository first), or None for one
     /// built here and never pulled.
@@ -191,8 +202,11 @@ pub trait FleetOps: Send + Sync {
         title: &'a str,
         body: &'a str,
     ) -> BoxFuture<'a, ()>;
-    /// Remove an image this instance pulled.
-    fn remove_image<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<(), String>>;
+    /// Remove an image this instance pulled: `Ok(true)` once it is gone from
+    /// the host (checked by its id), `Ok(false)` when the remove only untagged
+    /// it — another tag or reference still holds it, as on docker's classic
+    /// image store, where removing by digest untags.
+    fn remove_image<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<bool, String>>;
     /// Whether the host's disk is saturated now (a failure then is the
     /// host's, not the image's).
     fn host_stalled(&self) -> bool;
@@ -392,6 +406,10 @@ impl FleetOps for DockerOps {
         Box::pin(async move { probe::image_id(image).await })
     }
 
+    fn known_secrets(&self) -> Vec<String> {
+        probe::known_secrets()
+    }
+
     fn repo_digest<'a>(&'a self, image_id: &'a str) -> BoxFuture<'a, Option<String>> {
         Box::pin(async move {
             let (_, _, repo) = talaria_fleet_render::compiled_pin_parts();
@@ -559,12 +577,8 @@ impl FleetOps for DockerOps {
         })
     }
 
-    fn remove_image<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            talaria_fleet_docker::docker(&["image", "rm", image], Duration::from_secs(120))
-                .await
-                .map(|_| ())
-        })
+    fn remove_image<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<bool, String>> {
+        Box::pin(async move { probe::remove_image_verified(image).await })
     }
 
     fn host_stalled(&self) -> bool {

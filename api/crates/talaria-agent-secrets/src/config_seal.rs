@@ -138,7 +138,7 @@ pub fn credential_value(value: &str) -> bool {
             r"|[a-z][a-z0-9+.-]*://[^/\s@:]+:[^/\s@]+@",
             r"|[?&](token|access_token|api_key|apikey|key|secret|sig|signature|password|auth)=[^&\s]",
             r"|hooks\.slack\.com/services/",
-            r"|(^|[^a-z0-9])(sk-[a-z0-9_-]{8,}|sk_live_|rk_live_|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abposr]-|akia[0-9a-z]{12})",
+            r"|(^|[^a-z0-9])(sk-[a-z0-9_-]{8,}|sk_live_|rk_live_|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abposr]-|akia[0-9a-z]{12}|hf_[a-z0-9]{16,}|aiza[0-9a-z_-]{20,}|secret_[a-z0-9]{16,}|ntn_[a-z0-9]{16,}|sk_test_|pk_live_|rk_test_)",
             r"|eyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.",
         ))
         .unwrap()
