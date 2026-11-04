@@ -13,7 +13,8 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { slide, GROW_X } from '@/lib/motion'
   import { markChannelThreadRead, sendChannelMessage, useThreadMessages } from '@/lib/channels.svelte'
-  import { lookingNow, readCursorToPost, watchLooking } from '@/lib/looking'
+  import { lookingNow, watchLooking } from '@/lib/looking'
+  import { NOTHING_POSTED, postedAfter, threadReadFor, trailingReads, type ThreadReadPosted } from '@/lib/thread-read'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
@@ -86,25 +87,14 @@
   let looking = $state(lookingNow())
   $effect(() => watchLooking((v) => (looking = v)))
   const qc = useQueryClient()
-  // What was posted is keyed by the ROOT, as ChannelView keys its own by the
-  // channel: ChannelView swaps rootId without remounting this panel, and seqs
-  // are channel-wide, so a second thread whose newest reply is older than the
-  // first's sat below a bare high-water mark and never posted its read.
-  let lastReadPosted: { id: string; seq: number } = { id: '', seq: 0 }
-  $effect(() => {
-    // Oldest first, root first: the last row is the newest reply (or the
-    // root itself in a thread with no replies — covered by the channel
-    // cursor, and a no-op here).
-    const latest = messages[messages.length - 1]?.seq ?? 0
-    const root = rootId
-    const seq = readCursorToPost({ channelId: root, latest, posted: lastReadPosted, looking })
-    if (seq === null) return
-    lastReadPosted = { id: root, seq }
-    // Both counts the read moves: the sidebar pill (['channels']) and the
-    // rail's Comms badge (['unreads']). The rail otherwise waits for the next
-    // firehose landing or its 30 s floor, since a read that clears no bell
-    // row publishes nothing.
-    void markChannelThreadRead(channelId, root, seq)
+  // Both counts a read moves: the sidebar pill (['channels']) and the rail's
+  // Comms badge (['unreads']). The rail otherwise waits for the next firehose
+  // landing or its 30 s floor, since a read that clears no bell row publishes
+  // nothing. Replies landing in a burst are one read (lib/thread-read.ts
+  // trailingReads): each post costs those two refetches, the rail's heaviest
+  // queries.
+  const reads = trailingReads((read) => {
+    void markChannelThreadRead(channelId, read.rootId, read.seq ?? undefined)
       .then(() =>
         Promise.all([
           qc.invalidateQueries({ queryKey: ['channels'] }),
@@ -112,6 +102,35 @@
         ]),
       )
       .catch(() => {})
+  })
+  // Closing the panel sends what it showed.
+  $effect(() => () => reads.flush())
+  // What was posted is keyed by the ROOT, as ChannelView keys its own by the
+  // channel: ChannelView swaps rootId without remounting this panel, and seqs
+  // are channel-wide, so a second thread whose newest reply is older than the
+  // first's sat below a bare high-water mark and never posted its read. A
+  // full page (the thread's oldest 300) posts no seq: threadReadFor says why.
+  let posted: ThreadReadPosted = NOTHING_POSTED
+  $effect(() => {
+    // Oldest first, root first: the last row is the newest reply on the page
+    // (or the root itself in a thread with no replies — covered by the
+    // channel cursor, and a no-op here).
+    const root = rootId
+    const fetchedAt = threadQuery.dataUpdatedAt
+    const read = threadReadFor({
+      rootId: root,
+      count: messages.length,
+      latest: messages[messages.length - 1]?.seq ?? 0,
+      fetchedAt,
+      posted,
+      looking,
+    })
+    if (!read) return
+    const opened = posted.id !== root
+    posted = postedAfter(read, fetchedAt)
+    reads.push(read)
+    // A thread just opened reads at once; the replies after it wait a beat.
+    if (opened) reads.flush()
   })
 </script>
 
