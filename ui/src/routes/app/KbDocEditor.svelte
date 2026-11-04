@@ -23,9 +23,11 @@
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { toastError } from '@/lib/toast.svelte'
-  import { deleteDoc, saveDoc, useBacklinks, useDoc, type KbDocMeta } from '@/lib/kb'
+  import { deleteDoc, putDoc, useBacklinks, useDoc, type DocPatch, type KbDocMeta } from '@/lib/kb'
+  import { followRevisions, historyKey } from '@/lib/revisions.svelte'
+  import { guardedSaver } from '@/lib/save-base.svelte'
+  import { heldKey, holdRefusedEdits } from '@/lib/held-edit.svelte'
   import KbArtifactAttachments from './KbArtifactAttachments.svelte'
-  import AgentRefineNotice from '@/components/kb/AgentRefineNotice.svelte'
   import KbCommentsPanel from './KbCommentsPanel.svelte'
   import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
   import KbHistoryRail from './KbHistoryRail.svelte'
@@ -82,9 +84,9 @@
   let readRef = $state<HTMLDivElement | null>(null)
   let pendingQuote = $state<string | null>(null)
   let selPop = $state<{ x: number; y: number; quote: string } | null>(null)
-  // Presence drives the multiplayer avatars and the read-mode auto-refresh.
-  // Defaulted it says "you are alone in here" during an outage, which is when
-  // two people are most likely to overwrite each other.
+  // Presence drives the multiplayer avatars. Defaulted it says "you are alone
+  // in here" during an outage, which is when two people are most likely to
+  // overwrite each other.
   // svelte-ignore state_referenced_locally -- reason: the component is keyed-remounted per doc ({#key docId} at the call site), so docId is fixed per mount
   const presenceList = listQuery(useDocLive(docId, () => mode), { title: 'Could not see who else is here', variant: 'inline' })
   const presence = $derived(presenceList.rows)
@@ -93,22 +95,32 @@
   const comments = $derived(commentsQuery.data ?? [])
   const openThreads = $derived(comments.filter((c) => !c.parentId && !c.resolved).length)
   const otherEditors = $derived(presence.filter((p) => p.userId !== me?.id && p.mode === 'edit'))
+  // Every save goes through one door, one at a time. The edit pane's buffer
+  // saves GUARDED: it names the version it started from, and when an agent
+  // (or another person) saved this doc meanwhile the route refuses rather than
+  // let the buffer wipe their edit — `saver.conflict`, the one inline line
+  // below, shown at that save and never on open (lib/save-base.svelte.ts).
+  // svelte-ignore state_referenced_locally -- reason: the component is keyed-remounted per doc ({#key docId} at the call site), so docId is fixed per mount
+  const saver = guardedSaver((p: DocPatch & { baseUpdatedAt?: string }) => putDoc(docId, p))
   let initMode = false
   $effect(() => {
     if (doc) title = doc.title
     if (doc && !initMode) {
       initMode = true
       mode = doc.body.trim() ? 'read' : 'edit'
+      saver.rebase(doc)
     }
   })
 
-  // Multiplayer read freshness: while others are here, the rendered doc
-  // follows their saves (edit mode never yanks your buffer).
-  $effect(() => {
-    if (mode !== 'read' || presence.length <= 1) return
-    const t = setInterval(() => void qc.invalidateQueries({ queryKey: ['kb-doc', docId] }), 10_000)
-    return () => clearInterval(t)
-  })
+  // READ PANES FOLLOW THE SERVER: the rendered doc refreshes when a revision
+  // lands — an agent's edit_kb_doc, another person's save. No notice: the
+  // text changes, and the Version history rail says who changed what. Edit
+  // mode never follows (the buffer is the person's).
+  followRevisions(
+    () => 'kb-doc',
+    () => docId,
+    { active: () => mode === 'read', onMoved: () => void qc.invalidateQueries({ queryKey: ['kb-doc', docId] }) },
+  )
 
   // Quote-anchored highlights: after render, find each OPEN thread's quote in
   // the read surface and wrap it in a clickable mark. Idempotent — old marks
@@ -169,22 +181,111 @@
     return chain
   })
 
-  const save = async (patch: Parameters<typeof saveDoc>[1]) => {
+  /** Resolves true when the save landed. `guard`: the edit pane's own buffer.
+   *  `rethrow`: the caller shows the failure itself (version history's
+   *  restore says it inline) instead of a toast. */
+  const save = async (patch: DocPatch, opts: { guard?: boolean; rethrow?: boolean } = {}): Promise<boolean> => {
+    let saved
     try {
-      await saveDoc(docId, patch)
+      saved = await saver.save(patch, opts)
     } catch (e) {
-      // saveDoc used to resolve the `{ error }` body as the saved doc, so a
-      // refused save ("only the owner can change sharing") cleared `dirty`
-      // and read as done. It rejects now — say so, and keep the doc marked
-      // unsaved so onblur retries instead of silently dropping the edits.
+      if (opts.rethrow) throw e
+      // A refused save ("only the owner can change sharing") must not clear
+      // `dirty` and read as done — say so, and keep the doc marked unsaved so
+      // onblur retries instead of silently dropping the edits.
       toastError('Save failed', e)
-      return
+      return false
     }
+    void qc.invalidateQueries({ queryKey: historyKey('kb-doc', docId) })
+    if (!saved) return false // a conflict: the line is up, the buffer stays unsaved
     await qc.invalidateQueries({ queryKey: ['kb-doc', docId] })
     await qc.invalidateQueries({ queryKey: ['kb-docs', doc?.spaceId] })
     dirty = false
+    return true
   }
-  const saveBody = () => save({ title, body: editorRef?.getMarkdown() ?? doc?.body ?? '' })
+  /** The buffer the person is looking at, when an editor is mounted. */
+  const liveText = () => editorRef?.getMarkdown()
+  const saveBody = () => save({ title, body: liveText() ?? doc?.body ?? '' }, { guard: mode === 'edit' })
+  /** Reseed the edit pane from the doc as it now is (after a replace landed). */
+  const reseed = () => {
+    seed += 1
+    saver.rebase(doc)
+  }
+  /** A deliberate replace — Keep mine, or a kept edit from an earlier visit:
+   *  unguarded, so it lands over the newer version (which stays in version
+   *  history). The title rides only when the person renamed the doc. */
+  const replaceWith = async (edit: { title?: string; body: string }) => {
+    if (!(await save(edit))) return false
+    reseed()
+    return true
+  }
+  const keepMine = () => {
+    const body = liveText() ?? saver.held?.body
+    if (body === undefined) return
+    void replaceWith({ ...(title !== saver.base?.title ? { title } : {}), body })
+  }
+
+  // What a refused buffer leaves behind is kept on this device, offered back
+  // on the next open, and asked about before any way out (lib/held-edit).
+  const held = holdRefusedEdits({
+    key: () => (me?.id ? heldKey('kb-doc', docId, me.id) : null),
+    saver,
+    editing: () => mode === 'edit',
+    live: () => {
+      const body = liveText()
+      return body === undefined ? undefined : { ...(title !== saver.base?.title ? { title } : {}), body }
+    },
+    current: () => doc,
+    leave: () =>
+      confirm({
+        title: 'Leave with unsaved edits?',
+        message: 'This document changed while you were editing, so your edits were not saved. They stay on this device and are offered back when you open it again.',
+        confirmLabel: 'Leave',
+      }),
+  })
+
+  /** Read ⇄ Edit. Entering edit seeds the buffer from the doc on screen, so
+   *  that is its base — once any save still in flight has landed and the doc
+   *  has been read again. Leaving saves what is unsaved, and stays in Edit if
+   *  that save was refused or failed (the line and the buffer stay on
+   *  screen); with a refusal already up it asks first. */
+  const setMode = async (m: 'read' | 'edit') => {
+    if (m === mode) return
+    if (m === 'edit') {
+      if (saver.busy) {
+        await saver.idle()
+        await qc.invalidateQueries({ queryKey: ['kb-doc', docId] })
+      }
+      saver.rebase(doc)
+    } else if (saver.conflict) {
+      const discard = await confirm({
+        title: 'Discard your unsaved edits?',
+        message: 'This document changed while you were editing, so your edits were not saved. Discard them and read the current version, or stay and keep yours.',
+        confirmLabel: 'Discard',
+        danger: true,
+      })
+      if (!discard) return
+      await qc.invalidateQueries({ queryKey: ['kb-doc', docId] })
+      saver.rebase(doc)
+    } else {
+      // Capture edits on exit; an autosave already in flight is awaited too.
+      const ok = dirty || editorRef?.hasUnsavedChanges() ? await saveBody() : (await saver.idle(), true)
+      if (!ok || saver.conflict) return
+    }
+    mode = m
+  }
+
+  /** A read-mode Muse accept. The draft was written from `source`; if the doc
+   *  moved since (the read pane follows the server), it would replace text
+   *  the draft never saw — refuse, and the Muse bar gives the draft back.
+   *  Otherwise the save is guarded on the doc as it is on screen. */
+  const acceptOnRead = async (body: string, source: string | null) => {
+    if (!doc || (source !== null && source !== doc.body)) return false
+    saver.rebase(doc)
+    const ok = await save({ title, body }, { guard: true })
+    if (!ok) saver.rebase(doc) // read mode shows no line: the Muse bar says it
+    return ok
+  }
 
   // Scroll the rendered editor to the Nth heading (headings render in order).
   const scrollToHeading = (index: number) => {
@@ -284,7 +385,7 @@
       {#if mode === 'edit' && otherEditors.length > 0}
         <span
           class="shrink-0 rounded-md bg-warning/15 px-2 py-0.5 text-[11px] text-warning"
-          title="Someone else is editing too. Last save wins, so coordinate or take turns"
+          title="Someone else is editing too. If their save lands first, yours stops and asks before it overwrites theirs, so coordinate or take turns"
         >
           also editing: {otherEditors.map((p) => p.name).join(', ')}
         </span>
@@ -304,10 +405,7 @@
         size="xs"
         options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
         value={mode}
-        onChange={(m) => {
-          if (m === 'read' && mode === 'edit') void saveBody() // capture edits on exit
-          mode = m
-        }}
+        onChange={(m) => void setMode(m)}
       />
       <!-- Sharing + promotion: one quiet cluster. The Official pill is a
            STATE — promoting confirms once, demoting confirms twice (it pulls
@@ -377,6 +475,22 @@
       </div>
     {/if}
 
+    {#if held.offered}
+      <div
+        transition:slide={{ duration: 150 }}
+        class="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-1.5 text-xs"
+        role="alert"
+        data-held-edit
+      >
+        <span class="min-w-0 flex-1 truncate text-warning" title={held.offered.body}>
+          Edits you left here {relativeTime(held.offered.at)} were not saved: this document changed while you were editing.
+        </span>
+        <Button variant="outline" size="xs" class="shrink-0" onclick={() => (showHistory = true)}>Review in version history</Button>
+        <Button variant="ghost" size="xs" class="shrink-0" onclick={() => void held.keepWith(replaceWith)}>Keep mine</Button>
+        <Button variant="ghost" size="xs" class="shrink-0" onclick={() => held.settle()}>Discard</Button>
+      </div>
+    {/if}
+
     <div bind:this={bodyRef} class="flex min-h-0 flex-1">
       {#if mode === 'edit'}
         <!-- Flush page surface: the editor fills the panel, text wraps to a
@@ -414,6 +528,18 @@
             ])
           }}
         >
+          {#if saver.conflict}
+            <div
+              transition:slide={{ duration: 150 }}
+              class="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-1.5 text-xs"
+              role="alert"
+              data-save-conflict
+            >
+              <span class="min-w-0 flex-1 truncate text-warning">Not saved: this document changed while you were editing.</span>
+              <Button variant="outline" size="xs" class="shrink-0" onclick={() => (showHistory = true)}>Review in version history</Button>
+              <Button variant="ghost" size="xs" class="shrink-0" onclick={() => void keepMine()}>Keep mine</Button>
+            </div>
+          {/if}
           {#key `${docId}-${seed}`}
             <RichEditor
               bind:this={editorRef}
@@ -429,22 +555,6 @@
               class="min-w-0 flex-1"
             />
           {/key}
-          <!-- TALA-4: an agent refining this document while it is open now
-               announces itself here, in the editing surface. -->
-          {#if doc}
-            <AgentRefineNotice
-              kind="kb-doc"
-              id={docId}
-              current={() => editorRef?.getMarkdown() ?? doc.body}
-              onLoad={(md) => {
-                // Same grammar as a Muse accept: the staged text is saved
-                // (viewer-stamped as the review) and the editor reseeds.
-                void save({ title, body: md }).then(() => (seed += 1))
-              }}
-              {me}
-              class="shrink-0"
-            />
-          {/if}
           <KbMuseBar
             context={`Knowledge document “${title || doc.title}”${folderName ? ` in the “${folderName}” space` : ''}.`}
             currentText={() => editorRef?.getMarkdown() ?? doc.body}
@@ -452,8 +562,9 @@
             onClearSelection={() => (museSel = null)}
             surgical={!!museSel}
             onAccept={async (md) => {
-              await save({ title, body: md })
-              seed += 1
+              // The draft was written from this buffer: guarded like it.
+              if (!(await save({ title, body: md }, { guard: true }))) return false
+              reseed()
               museSel = null
             }}
             onAcceptSelection={async (replacement) => {
@@ -463,8 +574,7 @@
                 await saveBody()
               } else {
                 const body = editorRef?.getMarkdown() ?? doc.body
-                await save({ title, body: body.replace(museSel.text, replacement) })
-                seed += 1
+                if (await save({ title, body: body.replace(museSel.text, replacement) }, { guard: true })) reseed()
               }
               museSel = null
             }}
@@ -477,26 +587,6 @@
              editor state (seed-keyed for Muse/revisions), so it keeps its hard
              cut rather than replaying an entrance. -->
         <div in:fly={{ y: 6, duration: 200 }} class="flex min-w-0 flex-1 flex-col">
-          <!-- TALA-4: read mode gets the same announcement at the top of the
-               pane — an agent refine lands while you are reading. The pane
-               holds no buffer of its own, so it follows the server on
-               announce; the updated text appears without a manual reload. -->
-          {#if doc}
-            <AgentRefineNotice
-              kind="kb-doc"
-              id={docId}
-              current={() => doc.body}
-              onLoad={(md) => {
-                // Read mode has no buffer of its own: refresh the view from
-                // the server (already saved there) rather than re-saving.
-                void md
-                void qc.invalidateQueries({ queryKey: ['kb-doc', docId] })
-              }}
-              onAnnounce={() => void qc.invalidateQueries({ queryKey: ['kb-doc', docId] })}
-              {me}
-              class="mx-auto w-full max-w-[46rem] shrink-0"
-            />
-          {/if}
           <div
             bind:this={readRef}
             class="re-prose relative min-w-0 flex-1 overflow-y-auto"
@@ -579,7 +669,7 @@
               <Markdown class="tiptap" children={doc.body} />
             {:else}
               <div class="mx-auto max-w-[46rem] px-6 py-8">
-                <button type="button" onclick={() => (mode = 'edit')} class="text-sm text-muted hover:text-fg">
+                <button type="button" onclick={() => void setMode('edit')} class="text-sm text-muted hover:text-fg">
                   This document is empty. Click to start writing.
                 </button>
               </div>
@@ -627,13 +717,13 @@
             selection={museSel?.text ?? null}
             onClearSelection={() => (museSel = null)}
             surgical={!!museSel && doc.body.includes(museSel.text)}
-            onAccept={async (md) => {
-              await save({ title, body: md })
+            onAccept={async (md, source) => {
+              if (!(await acceptOnRead(md, source))) return false
               museSel = null
             }}
             onAcceptSelection={async (replacement) => {
               if (!museSel) return
-              await save({ title, body: doc.body.replace(museSel.text, replacement) })
+              if (!(await acceptOnRead(doc.body.replace(museSel.text, replacement), null))) return false
               museSel = null
             }}
           />
@@ -671,14 +761,17 @@
         <div class="w-64 p-3">
           <KbHistoryRail
             id={docId}
+            canRestore={doc.canEdit !== false}
             onRestore={async (content) => {
               // Snapshots are stored as `# Title\n\n<body>`; split them back out.
               const m = /^#\s+(.*)\n+([\s\S]*)$/.exec(content)
               const t = m ? m[1]!.trim() : title
               const b = m ? m[2]! : content
               title = t
-              await save({ title: t, body: b })
-              seed += 1
+              // A deliberate replace: unguarded, and the buffer reseeds from
+              // it. A failure rejects so the rail says it, dialog still open.
+              if (!(await save({ title: t, body: b }, { rethrow: true }))) throw new Error('The restore did not save.')
+              reseed()
             }}
           />
         </div>
@@ -719,7 +812,9 @@
       inheritable
       inherited={doc.permsInherited}
       {folderName}
-      onSave={(patch) => save(patch)}
+      onSave={async (patch) => {
+        await save(patch)
+      }}
     />
   </div>
 {/if}

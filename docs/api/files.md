@@ -172,7 +172,7 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id.rs`](../../
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{artifact, editors}` | 200, 403, 404, 500 | — |
-| PUT | `dual` | [body](#put-apiartifactsid-body) | `{artifact, editors}` | 200, 400, 403, 404 | audit |
+| PUT | `dual` | [body](#put-apiartifactsid-body) | `{artifact, editors}` | 200, 400, 403, 404, 409 | audit |
 | DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
 
 ### PUT `/api/artifacts/{id}` body
@@ -189,6 +189,7 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id.rs`](../../
 | `editPolicy` | `enum(owner|org|restricted)?` |  |
 | `official` | `bool?` |  |
 | `ragRouting` | `string?(60)` |  |
+| `baseUpdatedAt` | `string?(40)` |  |
 
 ## `/api/artifacts/{id}/comments`
 
