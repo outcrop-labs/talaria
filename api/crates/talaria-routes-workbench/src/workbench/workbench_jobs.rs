@@ -30,7 +30,7 @@ use talaria_tasks::{get_task, log_activity};
 const JOB_ROW: &str = "id::text, agent_model, task_id::text, repo, branch, effort, plan, \
                        status, pr_url, summary, \
                        (trunc(extract(epoch from created_at) * 1000))::bigint, \
-                       (trunc(extract(epoch from updated_at) * 1000))::bigint";
+                       (trunc(extract(epoch from updated_at) * 1000))::bigint, provision";
 
 type Row = (
     String,
@@ -45,6 +45,7 @@ type Row = (
     String,
     i64,
     i64,
+    Option<serde_json::Value>,
 );
 
 fn row_wire(r: &Row) -> serde_json::Value {
@@ -61,7 +62,21 @@ fn row_wire(r: &Row) -> serde_json::Value {
         "summary": r.9,
         "createdAt": epoch_ms_to_iso(r.10),
         "updatedAt": epoch_ms_to_iso(r.11),
+        "provision": r.12.as_ref().map(provision_wire),
     })
+}
+
+/// A job's provisioning record as the ticket strip and the Work view read
+/// it: state (`ready` / `running` / `failed`), the current or failing
+/// `step`, every finished step with its time and one-line note, and on a
+/// failure the `error` and the step's `output` tail. `null` = never
+/// provisioned. The stored row's bookkeeping (heartbeat, the full toolchain
+/// answer the agent's prepare_env reads) stays off this wire.
+fn provision_wire(stored: &serde_json::Value) -> serde_json::Value {
+    let mut out = stored.as_object().cloned().unwrap_or_default();
+    out.remove("heartbeatMs");
+    out.remove("toolchain");
+    serde_json::Value::Object(out)
 }
 
 async fn job_by_id(pg: &PgPool, id: &str) -> Result<Option<Row>, sqlx::Error> {

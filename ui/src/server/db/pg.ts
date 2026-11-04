@@ -4828,6 +4828,12 @@ alter table tasks drop column if exists conversation_id`,
   // does not end a turn in the agent; a stop has to name it, and the api
   // process that read the id may be gone by the time a person presses Stop.
   `alter table runs add column if not exists agent_run_id text`,
+  // A workbench job's provisioning: Talaria clones the branch, installs the
+  // toolchain and the pinned harness, and preflights it before the agent gets
+  // a single command. One jsonb record (state ready / running / failed, the
+  // steps, the failing step's output, a heartbeat) that the MCP answers, the
+  // ticket strip and the Work view all read. NULL = never provisioned.
+  `alter table workbench_jobs add column if not exists provision jsonb`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

@@ -17,6 +17,9 @@
     plan: string
     status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
     prUrl: string | null
+    /** Talaria's provisioning of the job before the agent's first harness
+     *  turn: clone, toolchain, harness, preflight. null = never provisioned. */
+    provision: { state: 'running' | 'ready' | 'failed'; step: string | null; error: string | null; output: string | null } | null
   }
 
   /** Workbench jobs on this ticket — the plan-approval gate and PR links live
@@ -79,7 +82,11 @@
       <div
         class={cn(
           'rounded-lg border px-4 py-2.5 text-sm',
-          j.status === 'awaiting_approval' ? 'border-warning/40 bg-warning/5' : 'border-line bg-card/40',
+          j.status === 'awaiting_approval'
+            ? 'border-warning/40 bg-warning/5'
+            : j.status === 'started' && j.provision?.state === 'failed'
+              ? 'border-danger/40'
+              : 'border-line bg-card/40',
         )}
       >
         <div class="flex items-center gap-2">
@@ -105,6 +112,18 @@
           </span>
         </div>
         {#if j.status === 'awaiting_approval' && j.plan}<p class="mt-1.5 line-clamp-4 whitespace-pre-wrap font-sans text-xs text-muted">{j.plan}</p>{/if}
+        {#if j.status === 'started' && j.provision?.state === 'running'}
+          <p class="mt-1 font-sans text-xs text-muted">{`Setting up the workbench: ${j.provision.step ?? 'starting'}…`}</p>
+        {/if}
+        {#if j.status === 'started' && j.provision?.state === 'failed'}
+          <p class="mt-1 font-sans text-xs text-danger">{`Workbench setup failed at ${j.provision.step ?? '?'}: ${j.provision.error ?? 'no reason given'}`}</p>
+          {#if j.provision.output}
+            <details class="mt-1">
+              <summary class="cursor-pointer font-sans text-xs text-muted">Output</summary>
+              <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-muted">{j.provision.output}</pre>
+            </details>
+          {/if}
+        {/if}
       </div>
     {/each}
   </div>

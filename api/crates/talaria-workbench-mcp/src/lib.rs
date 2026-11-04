@@ -57,11 +57,12 @@ use talaria_tasks::{
     update_task,
 };
 pub mod devenv;
+pub mod provision;
 pub mod teardown;
 
 use talaria_workbench_harnesses::{
-    MCP_CONFIG_FILE, OMP, SANDBOX_SHAPE, SANDBOX_SHAPE_FILE, fill_cmd, fill_cmd_arg, model_arg,
-    omp_roles, role_env_prefix,
+    DOCTOR_SLOT, MCP_CONFIG_FILE, OMP, SANDBOX_SHAPE_ENV, fill_cmd, fill_cmd_arg, job_agent_dir,
+    job_launcher, model_arg, omp_roles, role_env_prefix, sandbox_stale_reason,
 };
 use teardown::{Teardown, spawn_teardown};
 
@@ -284,7 +285,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "start_job",
-            "description": "Start a workbench job for a ticket. Talaria cuts the working branch from the default branch — named to satisfy the repo's branch rules (a grant with a configured branch prefix gets the job branch under it) — and returns a clone URL plus workdir. Work ONLY in that workdir, on that branch; commit and push there as you go. Omitting effort defaults to standard. standard and heavy are refused without `plan` (approach, files, test strategy) — pass plan on the first call; retrying without it does not pass. One job per ticket. A live-job cap refusal lists each live jobId; finish_job or abandon one of those before starting another. When the host is out of headroom the job is QUEUED, not failed: the answer carries status 'queued', queuePosition, and waitReason, and the job starts automatically when resources free up — do not retry start_job, poll job_status instead.",
+            "description": "Start a workbench job for a ticket. Talaria cuts the working branch from the default branch — named to satisfy the repo's branch rules (a grant with a configured branch prefix gets the job branch under it) — then PROVISIONS the job before you touch it: clones that branch into the job's workdir, installs the repo's toolchains, installs and checks Oh My Pi in a harness dir of the job's own, and answers with `provision` (state ready / running / failed, each step, and on failure the step and its output) and, once ready, the harness lines to run as given. Never clone, install or repair the harness yourself; a `running` answer means poll job_status, a `failed` one is report_problem. Work ONLY in that workdir, on that branch; commit and push there as you go. Omitting effort defaults to standard. standard and heavy are refused without `plan` (approach, files, test strategy) — pass plan on the first call; retrying without it does not pass. One job per ticket. A live-job cap refusal lists each live jobId; finish_job or abandon one of those before starting another. When the host is out of headroom the job is QUEUED, not failed: the answer carries status 'queued', queuePosition, and waitReason, and the job starts automatically when resources free up — do not retry start_job, poll job_status instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -299,7 +300,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "job_status",
-            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir — and for a STARTED job the harness invocation lines (harnesses[0].jsonRun / continueJsonRun), sessionDir and models, so a job you did not start this turn is still drivable. This is where you get the command after a resume; do not go looking for a binary on disk. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no cloneUrl or workdir yet.",
+            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir — and for a STARTED job its `provision` (ready / running / failed, the steps, and the failing step's output) and, once provision.state is ready, the harness invocation lines (harnesses[0].jsonRun / continueJsonRun), sessionDir and models, so a job you did not start this turn is still drivable. This is where you get the command after a resume; do not go looking for a binary on disk. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no cloneUrl or workdir yet.",
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job. Not a ticket ref (TALA-35, omp-tala35). Omit to list your jobs." } } },
         }),
         json!({
@@ -335,7 +336,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "prepare_env",
-            "description": "Set up the job's dev environment after you clone: Talaria reads the repo (its mise.toml / .tool-versions, else rust-toolchain.toml, .nvmrc, package.json, go.mod, .python-version, ...) and installs those toolchains through mise, plus any OS packages the repo lists in .talaria/workbench.toml. A repo with a talaria.json at its root is a Talaria app: this also installs the instance's SDK kit and puts `talaria-app` on your PATH (check, build, eval — appKit in the answer says how). Idempotent; call it at the start of every job. The first run of a new toolchain can take minutes. Never install toolchains or system packages yourself: declare them in the repo and call this again.",
+            "description": "Provision the job AGAIN. start_job already provisions every job before it hands out the harness lines — it clones the branch, reads the repo (its mise.toml / .tool-versions, else rust-toolchain.toml, .nvmrc, package.json, go.mod, .python-version, ...) and installs those toolchains through mise plus any OS packages the repo lists in .talaria/workbench.toml, installs and checks Oh My Pi — so you do NOT need this to start. Call it after you change what the repo declares (a tool or package in mise.toml or .talaria/workbench.toml), so the change takes effect. A repo with a talaria.json at its root is a Talaria app: provisioning also installs the instance's SDK kit and puts `talaria-app` on your PATH (appKit in the answer says how). The answer is the toolchain result plus `provision` (state, steps, and on failure the failing step and its output). Never install toolchains or system packages yourself: declare them in the repo and call this again.",
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status. Not a ticket ref." } }, "required": ["jobId"] },
         }),
         json!({
@@ -695,10 +696,6 @@ async fn call_tool(
             // some earlier prepare_env had happened to install one — on a fresh
             // agent it never had. The platform puts the runtime there now
             // (idempotent, cheap once done), and the probe reports on that.
-            let runtime = devenv::ensure_harness_runtime(pg, &agent.department).await;
-            if let Err(why) = &runtime {
-                checks.push(format!("harness runtime: bun NOT AVAILABLE — {why}"));
-            }
             let roles = match omp_roles(pg).await {
                 Ok(r) => r,
                 Err(e) => return thrown(e),
@@ -709,7 +706,21 @@ async fn call_tool(
             let plan = talaria_coding_accounts::resolve(pg, &agent.id, None)
                 .await
                 .unwrap_or(None);
-            let probe = harness_probe(pg, &agent.department).await;
+            let gateway = plan.as_ref().is_none_or(|p| p.is_gateway());
+            let runtime = devenv::ensure_harness_runtime(pg, &agent.department).await;
+            if let Err(why) = &runtime {
+                checks.push(format!("harness runtime: NOT AVAILABLE — {why}"));
+            }
+            // Probe through the SAME launcher a job gets (its own slot), so a
+            // green doctor means what a job will run, not some other omp.
+            let launcher = job_launcher(DOCTOR_SLOT);
+            let probe = match &runtime {
+                Ok(rt) => match doctor_slot(pg, &agent.department, rt, gateway).await {
+                    Ok(()) => harness_probe(pg, &agent.department, &launcher).await,
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e.clone()),
+            };
             // A harness that STARTS is not one that can work: `--version`
             // calls no model. omp answered it while every model call it made
             // from the agent's terminal was refused — the key rode a name
@@ -728,7 +739,8 @@ async fn call_tool(
                 ),
                 (Ok(_), Some(model), _) => match auth_probe_budget(started.elapsed()) {
                     Some(budget) => AuthCheck::Ran(
-                        harness_auth_probe(pg, &agent.department, model, budget).await,
+                        harness_auth_probe(pg, &agent.department, model, &launcher, budget)
+                            .await,
                     ),
                     None => AuthCheck::Skipped(format!(
                         "its gateway login was not checked: the steps before it used doctor's time ({} s of the {} s an MCP call gets) — run doctor again, it is quicker once warm",
@@ -737,7 +749,8 @@ async fn call_tool(
                     )),
                 },
             };
-            let writable = harness_writable(pg, &agent.department).await;
+            let writable =
+                harness_writable(pg, &agent.department, &job_agent_dir(DOCTOR_SLOT)).await;
             checks.push(match (&probe, &auth) {
                 (Ok(version), AuthCheck::Ran(Ok(_))) => format!(
                     "harness: {} ({}) runs — {version} — and reached the Talaria gateway (one model call as `{}`), no key needed on your side",
@@ -821,13 +834,15 @@ async fn call_tool(
                 "harness": {
                     "slug": OMP.slug,
                     "guide": OMP.guide,
-                    "probe": OMP.probe,
+                    "probe": fill_cmd(OMP.probe, None, "", &launcher),
+                    "version": talaria_workbench_harnesses::OMP_VERSION,
                     "passthroughConfig": format!("/opt/workbench-config/{MCP_CONFIG_FILE}"),
                 },
                 "models": models,
                 "repoCreation": repo_creation,
                 "workspaceRoot": "/opt/data/workbench/jobs/<jobId>",
-                "sessionHistory": "/opt/data/workbench/harness (persistent, shared with your department)",
+                "sessionHistory": "/opt/data/workbench/sessions/<jobId> (persistent, on your department's volume)",
+                "jobHarness": "Each job gets its own harness dir and launcher (/opt/data/workbench/harness/jobs/<jobId>), provisioned and checked by start_job before you get its lines.",
                 // The probe already ran, above. Telling the agent to run it
                 // itself is how its failure stayed invisible.
                 "probeResult": match &probe { Ok(v) => json!({ "ok": true, "version": v }), Err(e) => json!({ "ok": false, "error": e }) },
@@ -837,11 +852,11 @@ async fn call_tool(
                     AuthCheck::Skipped(why) => json!({ "ok": null, "skipped": why }),
                     AuthCheck::NotRun => Value::Null,
                 },
-                "runtime": match &runtime { Ok(v) => json!({ "ok": true, "bun": v }), Err(e) => json!({ "ok": false, "error": e }) },
+                "runtime": match &runtime { Ok(v) => json!({ "ok": true, "bun": v.bun, "omp": v.omp }), Err(e) => json!({ "ok": false, "error": e }) },
                 "next": match (&probe, &auth) {
                     (Err(e), _) => format!("The harness cannot start in this sandbox ({e}). report_problem — do NOT hand-code the ticket."),
                     (Ok(_), AuthCheck::Ran(Err(e))) => format!("The harness starts but cannot reach the gateway ({e}). Roll the agent if the sandbox is STALE, else report_problem — do NOT hand-code the ticket."),
-                    _ => "start_job with the ticket, then clone into the workdir and call prepare_env.".to_string(),
+                    _ => "start_job with the ticket: Talaria clones the repo, installs its toolchain and the harness, checks them, and answers with the lines to run.".to_string(),
                 },
             }))
         }
@@ -1316,38 +1331,52 @@ async fn call_tool(
             // the persistent volume, so clones and harness sessions survive
             // restarts.
             let workdir = format!("/opt/data/workbench/jobs/{}", job.id);
-            // The run lines below are only worth handing out if the harness
-            // can start; provisioning its runtime here is what makes that true
-            // on an agent whose first act is start_job. A failure is SAID in
-            // the answer rather than failing the job: the branch and the job
-            // row are real, and doctor names the fix.
-            let runtime = if gated {
+            // PROVISION, then answer. Talaria clones the branch into the
+            // workdir, installs the repo's toolchain and the pinned harness,
+            // lays out this job's own harness dir and launcher, and checks it
+            // all — before the agent is handed a single command. It runs in
+            // the background (a first-time toolchain outlasts an MCP call);
+            // this answer waits for most of an MCP call's budget, and a job
+            // still provisioning answers `running` with "poll job_status".
+            // The harness lines are only handed out once the check passed:
+            // a broken harness is a failure on the job, never a thing for the
+            // agent to discover by running it.
+            let provision_state = if gated {
                 None
             } else {
-                Some(devenv::ensure_harness_runtime(pg, &agent.department).await)
+                let pj = provision::ProvisionJob {
+                    id: job.id.clone(),
+                    agent_id: agent.id.clone(),
+                    agent_model: agent.model.clone(),
+                    department: agent.department.clone(),
+                    repo: repo.clone(),
+                    branch: branch.clone(),
+                    host_id: grant.host_id.clone(),
+                    task_id: task_id.clone(),
+                };
+                if let Err(e) = provision::kick(deps, &pj, provision::Claim::Fresh).await {
+                    return thrown(e);
+                }
+                provision::wait(pg, &job.id, START_PROVISION_WAIT_MS).await
             };
-            let clone = if gated {
-                Value::Null
-            } else {
-                Value::String(host.clone_url(&repo))
-            };
+            let ready = provision::is_ready(provision_state.as_ref());
             let rules = if gated {
-                "Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved it returns the clone URL. Do NOT begin building."
+                "Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved, Talaria provisions the job and job_status returns the lines to run. Do NOT begin building."
                     .to_string()
+            } else if !ready {
+                provision_state
+                    .as_ref()
+                    .map(provision::next_step)
+                    .unwrap_or_else(|| provision::next_step(&Value::Null))
             } else if let Some(pr) = &resumed_pr {
                 format!(
-                    "This job RESUMES your open PR #{number} ({url}) for a revise round: same branch ({branch}), same workdir. The earlier round's checkout may still be in {workdir} — if {workdir}/.git exists, `git -C {workdir} pull` and keep working there; otherwise clone the URL above INTO {workdir} (mkdir -p first) and check out {branch}. The clone URL carries no credential and needs none. Never touch {base}. Call prepare_env with this jobId once the checkout is there (it writes this project's env, if it has one, to {workdir}/{env_file}). Drive Oh My Pi as before (continueJsonRun keeps its context). Push your fixes to {branch}: that updates the PR. finish_job then keeps the PR (it never opens a second one) and posts your summary on it.",
+                    "This job RESUMES your open PR #{number} ({url}) for a revise round: same branch ({branch}), same workdir ({workdir}). Talaria kept the checkout that was there (or cloned {branch} again if it was gone) and re-checked the toolchain and harness; `git -C {workdir} pull` if the branch moved on the host. Never touch {base}. Drive Oh My Pi as before with the lines below (continueJsonRun keeps its context). Push your fixes to {branch}: that updates the PR. finish_job then keeps the PR (it never opens a second one) and posts your summary on it.",
                     number = pr.number,
                     url = pr.url,
-                    env_file = devenv::JOB_ENV_FILE,
                 )
             } else {
-                // The project env is NOT written here: the workdir must be
-                // empty for `git clone <url> <workdir>`, and prepare_env —
-                // which runs on the checkout — is where it lands, beside the
-                // repo's own .talaria/ and excluded from git.
                 format!(
-                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none: your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go; commits are authored as YOU. Never touch {base}. Once cloned, call prepare_env with this jobId: it installs the repo's toolchains and system packages (never install them yourself) and writes this project's env, if it has one, to {workdir}/{env_file} — load it before you build or test. You are the orchestrator: Oh My Pi (harnesses[0]) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Do not override its --model; omp switches between its roles itself. When the change is right, finish_job. Talaria opens the PR.",
+                    "Your workbench is READY: Talaria cloned {repo} into {workdir} on {branch}, installed its toolchains, wrote this project's env (if it has one) to {workdir}/{env_file}, and installed and checked Oh My Pi for this job. Do NOT clone, install, upgrade or wrap anything, and do not reuse a harness dir or wrapper from another job. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go; commits are authored as YOU. Never touch {base}. You are the orchestrator: Oh My Pi (harnesses[0]) is the pair programmer — the lines below are the whole command, runnable from any directory (the launcher stands in the workdir and loads the project env). First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) so the harness keeps context. Run each turn in the background and wait on it. Read structured results, then steer. Git over https:// just works. Do not override its --model; omp switches between its roles itself. When the change is right, finish_job. Talaria opens the PR.",
                     env_file = devenv::JOB_ENV_FILE,
                 )
             };
@@ -1368,14 +1397,8 @@ async fn call_tool(
             value.insert("status".into(), json!(job.status));
             value.insert("workdir".into(), json!(workdir));
             value.insert("sessionDir".into(), json!(session_dir));
-            if !gated {
-                value.insert("cloneUrl".into(), clone);
-                if let Some(Err(why)) = &runtime {
-                    value.insert(
-                        "harnessRuntime".into(),
-                        json!({ "ok": false, "error": why, "next": "call doctor; if bun still cannot be provisioned, report_problem — do not hand-code the ticket" }),
-                    );
-                }
+            if let Some(state) = &provision_state {
+                value.insert("provision".into(), provision::wire(state));
             }
             value.insert("effort".into(), json!(effort));
             value.insert(
@@ -1389,7 +1412,10 @@ async fn call_tool(
             if let Some(plan) = coding {
                 value.insert("codingAccount".into(), plan);
             }
-            value.insert("harnesses".into(), Value::Array(harnesses));
+            // Only a job whose harness passed its preflight gets the lines.
+            if ready {
+                value.insert("harnesses".into(), Value::Array(harnesses));
+            }
             value.insert("rules".into(), json!(rules));
             if !gated {
                 sync_agent_budget(pg, &agent.department, &agent.id).await;
@@ -1436,37 +1462,70 @@ async fn call_tool(
                 let job = WorkbenchJob::of(row);
                 let mut wire = job.wire();
                 if job.status == "started" {
-                    let clone = match hosts::host(pg, &deps.sb, &job.host_id).await {
-                        Ok(host) => Value::String(host.clone_url(&job.repo)),
-                        Err(e) => return CallOutcome::Fail(e),
-                    };
                     let obj = wire.as_object_mut().expect("wire is an object");
-                    obj.insert("cloneUrl".into(), clone);
                     obj.insert(
                         "workdir".into(),
                         json!(format!("/opt/data/workbench/jobs/{}", job.id)),
                     );
-                    // The commands, every poll. A started job is one an agent
-                    // is about to drive, and until now this answer told it
-                    // where to work without telling it what to run.
+                    // A started job that was never provisioned — queued or
+                    // gated until now, or started before provisioning existed
+                    // — is provisioned now; one whose run died (its api
+                    // restarted) is taken over. Neither waits here: the
+                    // answer says `running`, and the next poll sees it move.
+                    let mut state = provision::read(pg, &job.id).await;
+                    let stale_or_missing = match &state {
+                        None => true,
+                        Some(s) => {
+                            s.get("state").and_then(Value::as_str) == Some("running")
+                                && s.get("heartbeatMs").and_then(Value::as_i64).unwrap_or(0)
+                                    < wall_ms() - 90_000
+                        }
+                    };
+                    if stale_or_missing {
+                        let pj = provision::ProvisionJob {
+                            id: job.id.clone(),
+                            agent_id: agent.id.clone(),
+                            agent_model: agent.model.clone(),
+                            department: agent.department.clone(),
+                            repo: job.repo.clone(),
+                            branch: job.branch.clone(),
+                            host_id: job.host_id.clone(),
+                            task_id: job.task_id.clone(),
+                        };
+                        if let Err(e) =
+                            provision::kick(deps, &pj, provision::Claim::IfMissing).await
+                        {
+                            return thrown(e);
+                        }
+                        state = provision::wait(pg, &job.id, 5_000).await;
+                    }
+                    if let Some(s) = &state {
+                        obj.insert("provision".into(), provision::wire(s));
+                    }
+                    // The commands, every poll — once the job's harness has
+                    // passed its preflight. A started job is one an agent is
+                    // about to drive, and until provisioning this answer told
+                    // it where to work without telling it what to run.
                     // The job's own ticket, so a RESUMED job's lines carry the
                     // same pinned plan the first turn got. Reading the agent's
                     // default here instead would silently move a pinned
                     // ticket's work onto another plan on its second turn.
-                    match harness_answer(pg, &job.id, &agent.id, job.task_id.as_deref()).await {
-                        Ok(a) => {
-                            obj.insert("harnesses".into(), Value::Array(a.harnesses));
-                            obj.insert("sessionDir".into(), json!(a.session_dir));
-                            obj.insert(
-                                "model".into(),
-                                a.model.map(Value::String).unwrap_or(Value::Null),
-                            );
-                            obj.insert("models".into(), a.models);
-                            if let Some(plan) = a.coding {
-                                obj.insert("codingAccount".into(), plan);
+                    if provision::is_ready(state.as_ref()) {
+                        match harness_answer(pg, &job.id, &agent.id, job.task_id.as_deref()).await {
+                            Ok(a) => {
+                                obj.insert("harnesses".into(), Value::Array(a.harnesses));
+                                obj.insert("sessionDir".into(), json!(a.session_dir));
+                                obj.insert(
+                                    "model".into(),
+                                    a.model.map(Value::String).unwrap_or(Value::Null),
+                                );
+                                obj.insert("models".into(), a.models);
+                                if let Some(plan) = a.coding {
+                                    obj.insert("codingAccount".into(), plan);
+                                }
                             }
+                            Err(e) => return thrown(e),
                         }
-                        Err(e) => return thrown(e),
                     }
                 }
                 if job.status == "queued" {
@@ -1490,8 +1549,8 @@ async fn call_tool(
             if let Some(error) = bad_job_id(&job_id) {
                 return CallOutcome::Fail(error);
             }
-            let row: Option<(String, String, Option<String>)> = match sqlx::query_as(
-                "select status, repo, task_id::text from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
+            let owned: Option<String> = match sqlx::query_scalar(
+                "select status from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
             )
             .bind(&job_id)
             .bind(&agent.id)
@@ -1501,73 +1560,55 @@ async fn call_tool(
                 Ok(row) => row,
                 Err(e) => return thrown(format!("job read: {e}")),
             };
-            let (repo, task_id) = match row {
+            match owned.as_deref() {
                 None => return CallOutcome::Fail("unknown job".into()),
-                Some((status, repo, task_id)) if status == "started" => (repo, task_id),
-                Some((other, _, _)) => return CallOutcome::Fail(format!("job is {other}")),
+                Some("started") => {}
+                Some(other) => return CallOutcome::Fail(format!("job is {other}")),
+            }
+            let pj = match provision::ProvisionJob::load(pg, &job_id).await {
+                Ok(Some(pj)) => pj,
+                Ok(None) => return CallOutcome::Fail("job is not started".into()),
+                Err(e) => return thrown(e),
             };
-            let Some(workdir) = teardown::job_workdir(&job_id) else {
-                return CallOutcome::Fail(format!("not a job id: {job_id:?}"));
-            };
-            let mut result = match devenv::prepare_env(pg, &agent.department, &workdir).await {
-                Ok(result) => result,
-                Err(e) => return CallOutcome::Fail(e),
-            };
-            // The checkout exists now (the scan just found it), so this is
-            // also where a job that was queued or gated at start_job — and
-            // so had no workdir to write into then — gets its env, and where
-            // a value changed in the store since the start lands.
-            let env_vars =
-                match devenv::deliver_job_env(pg, &deps.sb, &agent.department, &workdir, &repo)
-                    .await
-                {
-                    Ok(vars) => vars,
-                    Err(e) => return thrown(format!("project env: {e}")),
-                };
-            // The harness's own runtime, beside the repo's: a repo that pins
-            // rust and no bun must still leave omp startable.
-            let runtime = devenv::ensure_harness_runtime(pg, &agent.department).await;
-            // A Talaria app gets the SDK kit, on the runtime just ensured.
-            let app_kit = if result["talariaApp"] == json!(true) {
-                Some(match &runtime {
-                    Ok(_) => {
-                        let session = record_eval_session(pg, &job_id, task_id.as_deref()).await;
-                        match devenv::install_app_kit(
-                            pg,
-                            &agent.department,
-                            &workdir,
-                            session.as_deref(),
-                        )
-                        .await
-                        {
-                            Ok(v) => v,
-                            Err(e) => json!({ "ok": false, "error": e }),
-                        }
-                    }
-                    Err(_) => {
-                        json!({ "ok": false, "error": "the SDK kit runs on the harness's bun, which could not be provisioned (harnessRuntime)" })
-                    }
-                })
-            } else {
-                None
-            };
+            // prepare_env IS provisioning, run again: the clone is kept, the
+            // toolchain re-read from the repo (so a declaration the agent
+            // just fixed takes effect), the harness re-checked. One that is
+            // already running is waited on, not doubled.
+            if let Err(e) = provision::kick(deps, &pj, provision::Claim::Fresh).await {
+                return thrown(e);
+            }
+            let state = provision::wait(pg, &job_id, PREPARE_PROVISION_WAIT_MS).await;
+            let mut result = state
+                .as_ref()
+                .and_then(|s| s.get("toolchain"))
+                .cloned()
+                .filter(Value::is_object)
+                .unwrap_or_else(|| json!({}));
             if let Some(obj) = result.as_object_mut() {
                 obj.insert(
-                    "projectEnv".into(),
-                    devenv::job_env_answer(&workdir, env_vars),
+                    "provision".into(),
+                    state
+                        .as_ref()
+                        .map(provision::wire)
+                        .unwrap_or_else(|| provision::wire(&Value::Null)),
                 );
-                obj.insert(
-                    "harnessRuntime".into(),
-                    match &runtime {
-                        Ok(v) => json!({ "ok": true, "bun": v }),
-                        Err(e) => json!({ "ok": false, "error": e }),
-                    },
-                );
-                if let Some(kit) = app_kit {
-                    obj.insert("appKit".into(), kit);
-                }
             }
-            CallOutcome::Ok(result)
+            match state
+                .as_ref()
+                .and_then(|s| s.get("state"))
+                .and_then(Value::as_str)
+            {
+                Some("failed") => CallOutcome::Fail(format!(
+                    "{} {}",
+                    state
+                        .as_ref()
+                        .and_then(|s| s.get("error"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("provisioning failed"),
+                    serde_json::to_string(&result).unwrap_or_default()
+                )),
+                _ => CallOutcome::Ok(result),
+            }
         }
 
         "request_repo" => {
@@ -2271,9 +2312,10 @@ const AGENT_TERMINAL_HOME_ENV: &str = "HOME=/opt/data/home";
 ///
 /// Ok(version) is the harness's own version line. Err is the reason it could
 /// not run, which is the whole point of the check.
-async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> {
+async fn harness_probe(pg: &PgPool, department: &str, launcher: &str) -> Result<String, String> {
     let container = managed_container(pg, department).await;
-    let script = format!("{} 2>&1", OMP.probe);
+    let probe = fill_cmd(OMP.probe, None, "", launcher);
+    let script = format!("{probe} 2>&1");
     let out = docker_exec(
         &container,
         &agent_terminal_argv(&script, &[]),
@@ -2299,7 +2341,7 @@ async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> 
         .map(str::trim)
         .rfind(|l| !l.is_empty() && !l.starts_with("npm notice"))
         .unwrap_or("no output");
-    Err(format!("`{}` said: {why}", OMP.probe))
+    Err(format!("`{probe}` said: {why}"))
 }
 
 /// One model call through omp to the gateway, from the shell the AGENT gets.
@@ -2319,10 +2361,11 @@ async fn harness_auth_probe(
     pg: &PgPool,
     department: &str,
     model: &str,
+    launcher: &str,
     timeout_ms: u64,
 ) -> Result<String, String> {
     let container = managed_container(pg, department).await;
-    let line = fill_cmd(OMP.auth_probe, Some(model), "");
+    let line = fill_cmd(OMP.auth_probe, Some(model), "", launcher);
     // The stripped names arrive as positional args, never inside the script.
     let script = format!(
         "for n do unset \"$n\" 2>/dev/null || true; done\n\
@@ -2414,6 +2457,14 @@ fn auth_probe_budget(spent: std::time::Duration) -> Option<u64> {
     (left >= AUTH_PROBE_MIN_MS).then(|| left.min(AUTH_PROBE_TIMEOUT_MS))
 }
 
+/// How long start_job waits for its job's provision before answering
+/// `running` (the provision carries on behind it). Inside Hermes's 300 s MCP
+/// call timeout with room for the branch and ticket work before it.
+const START_PROVISION_WAIT_MS: u64 = 180_000;
+
+/// How long prepare_env waits for the provision it restarts.
+const PREPARE_PROVISION_WAIT_MS: u64 = 240_000;
+
 /// doctor's whole answer, inside Hermes's 300 s MCP call timeout with room
 /// for the quick checks that follow the probe.
 const DOCTOR_BUDGET_MS: u64 = 270_000;
@@ -2438,7 +2489,7 @@ const AUTH_PROBE_TIMEOUT_MS: u64 = 3 * 60_000;
 ///
 /// Checked separately from the probe because the probe can pass while this
 /// fails: `--version` writes nothing.
-async fn harness_writable(pg: &PgPool, department: &str) -> Result<(), String> {
+async fn harness_writable(pg: &PgPool, department: &str, dir: &str) -> Result<(), String> {
     let container = managed_container(pg, department).await;
     // Positional arg, and a probe file that names itself.
     let script = "d=\"$1\"; [ -d \"$d\" ] || { echo \"missing: $d\"; exit 1; }; \
@@ -2456,7 +2507,7 @@ async fn harness_writable(pg: &PgPool, department: &str) -> Result<(), String> {
             "-c",
             script,
             "sh",
-            PI_STATE_DIR,
+            dir,
         ],
         30_000,
     )
@@ -2473,13 +2524,50 @@ async fn harness_writable(pg: &PgPool, department: &str) -> Result<(), String> {
     ))
 }
 
+/// Lay out doctor's own harness slot: the same layout and launcher a job
+/// gets ([`provision`]), standing in the workbench root rather than a
+/// checkout.
+async fn doctor_slot(
+    pg: &PgPool,
+    department: &str,
+    rt: &talaria_workbench_harnesses::Runtime,
+    gateway: bool,
+) -> Result<(), String> {
+    let container = managed_container(pg, department).await;
+    let text = talaria_workbench_harnesses::launcher_script(
+        DOCTOR_SLOT,
+        "/opt/data/workbench",
+        &rt.bun_path,
+        gateway,
+    );
+    talaria_fleet_docker::docker_exec_as(
+        &container,
+        Some(devenv::AGENT_USER),
+        &[
+            "sh",
+            "-c",
+            &talaria_workbench_harnesses::job_harness_script(),
+            "sh",
+            &talaria_workbench_harnesses::job_harness_dir(DOCTOR_SLOT),
+            "/opt/data/workbench/sessions/doctor",
+        ],
+        Some(&text),
+        30_000,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("could not lay out the harness dir: {}", e.trim()))
+}
+
 /// Is this container the one the CURRENT render builds?
 ///
 /// A render change reaches a container only when the agent is re-rendered
 /// and rolled. Nothing forces that, so a merged fix can be absent from every
 /// running agent with no symptom but the thing it was meant to fix. The
-/// render leaves its shape token in the config dir; a container carrying a
-/// different one — or none, because it predates the token — is stale.
+/// render stamps its shape token into the container's ENV, which is fixed
+/// when the container is created; a container carrying a different one — or
+/// none, because it predates the token — is stale. (It used to read a file
+/// in a live bind of the render dir, so every container looked current.)
 async fn sandbox_stale(pg: &PgPool, department: &str) -> Option<String> {
     let container = managed_container(pg, department).await;
     let (stdout, _) = docker_exec(
@@ -2487,30 +2575,16 @@ async fn sandbox_stale(pg: &PgPool, department: &str) -> Option<String> {
         &[
             "sh",
             "-c",
-            "cat \"$1\" 2>/dev/null",
+            "printf '%s' \"$(printenv \"$1\" 2>/dev/null)\"",
             "sh",
-            SANDBOX_SHAPE_FILE,
+            SANDBOX_SHAPE_ENV,
         ],
         20_000,
     )
     .await
     .ok()?;
-    let found = stdout.trim();
-    if found == SANDBOX_SHAPE {
-        return None;
-    }
-    Some(format!(
-        "this sandbox was built by an older render ({}) and this Talaria expects {SANDBOX_SHAPE} — roll the agent to pick up the current mounts",
-        if found.is_empty() {
-            "no shape token"
-        } else {
-            found
-        },
-    ))
+    sandbox_stale_reason(&stdout)
 }
-
-/// Where omp keeps its agent state, per `PI_CODING_AGENT_DIR`.
-const PI_STATE_DIR: &str = "/opt/data/workbench/harness/pi";
 
 /// The unprivileged user every sandbox runs its agent as.
 const HARNESS_USER: &str = "hermes";
@@ -2582,10 +2656,13 @@ async fn harness_answer(
         ),
     };
     let session_dir = format!("/opt/data/workbench/sessions/{job_id}");
+    // The job's own launcher (provision.rs lays it out): omp pinned, on the
+    // harness's bun, in this job's own agent dir, standing in the workdir.
+    let launcher = job_launcher(job_id);
     let fill = |tmpl: &str| {
         format!(
             "{env_prefix}{}",
-            fill_cmd_arg(tmpl, arg.as_deref(), &session_dir)
+            fill_cmd_arg(tmpl, arg.as_deref(), &session_dir, &launcher)
         )
     };
     // One entry, in the shape every start_job has answered with, so a driver

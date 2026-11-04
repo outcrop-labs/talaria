@@ -1710,13 +1710,45 @@ pub async fn docker_exec_as(
     .await
     .map_err(|_| format!("docker exec {container} …: timed out"))??;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(stderr);
+        return Err(exec_failure(
+            out.status.code(),
+            &String::from_utf8_lossy(&out.stdout),
+            &String::from_utf8_lossy(&out.stderr),
+        ));
     }
     Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     ))
+}
+
+/// What a failed exec says. stderr when there is any — it is what `docker
+/// exec` itself, or the command, reported, and callers match on it. When a
+/// command failed SILENTLY on stderr (a script that sends its output to
+/// stdout with `2>&1`), the exit status and stdout's last lines, never "":
+/// doctor printed `the probe could not be run in the sandbox: .` on the live
+/// fleet for exactly this, and every agent that read it had to rediscover
+/// the reason (`mise ERROR No version is set for shim: bun`) by hand.
+pub fn exec_failure(code: Option<i32>, stdout: &str, stderr: &str) -> String {
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.to_string();
+    }
+    let tail: Vec<&str> = stdout
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let tail = tail[tail.len().saturating_sub(5)..].join("\n");
+    let status = match code {
+        Some(c) => format!("exited {c}"),
+        None => "was killed by a signal".to_string(),
+    };
+    if tail.is_empty() {
+        format!("the command {status} with no output")
+    } else {
+        format!("the command {status}: {tail}")
+    }
 }
 
 /// The managed container's CURRENT name — anything that docker-execs into an
@@ -2020,6 +2052,38 @@ async fn container_status_fresh(departments: &[String]) -> Result<Vec<AgentConta
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_silent_exec_failure_says_its_status_and_what_it_printed() {
+        // stderr wins whenever there is any: callers match on docker's text.
+        assert_eq!(
+            exec_failure(Some(1), "ignored", "Error: No such container: x\n"),
+            "Error: No such container: x"
+        );
+        // The doctor case: everything went to stdout, stderr was empty.
+        assert_eq!(
+            exec_failure(
+                Some(1),
+                "npm notice\nmise ERROR No version is set for shim: bun\n",
+                ""
+            ),
+            "the command exited 1: npm notice\nmise ERROR No version is set for shim: bun"
+        );
+        assert_eq!(
+            exec_failure(Some(127), "", " \n"),
+            "the command exited 127 with no output"
+        );
+        assert_eq!(
+            exec_failure(None, "", ""),
+            "the command was killed by a signal with no output"
+        );
+        let long: String = (1..=9).map(|i| format!("line {i}\n")).collect();
+        assert_eq!(
+            exec_failure(Some(2), &long, ""),
+            "the command exited 2: line 5\nline 6\nline 7\nline 8\nline 9"
+        );
+    }
+
     use super::*;
 
     #[tokio::test]

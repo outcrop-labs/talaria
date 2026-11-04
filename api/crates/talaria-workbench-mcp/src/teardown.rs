@@ -69,7 +69,8 @@ impl Teardown {
     }
 }
 
-/// Positional args only ($1 = workdir, $2 = mode): nothing is interpolated
+/// Positional args only ($1 = workdir, $2 = mode, $3 = the job's harness
+/// dir, removed with the workdir): nothing is interpolated
 /// into the script. TERM first so a harness can flush its session, KILL for
 /// what ignored it. Matching on cwd catches the whole tree the agent started
 /// there (the shell, cargo, every rustc and test binary) and nothing the
@@ -77,7 +78,7 @@ impl Teardown {
 /// The project env file goes in BOTH modes — it is `devenv::JOB_ENV_FILE`,
 /// spelled here because the script is positional and that path is fixed.
 const TEARDOWN_SH: &str = r#"
-dir="$1"; mode="$2"
+dir="$1"; mode="$2"; harness="${3:-}"
 rm -f -- "$dir/.talaria/env"
 in_dir() {
   cwd=$(readlink "$1/cwd" 2>/dev/null) || return 1
@@ -93,7 +94,10 @@ signal_all() {
 signal_all TERM
 sleep 3
 signal_all KILL
-if [ "$mode" = remove ]; then rm -rf -- "$dir"; fi
+if [ "$mode" = remove ]; then
+  rm -rf -- "$dir"
+  case "$harness" in /opt/data/workbench/harness/jobs/?*) rm -rf -- "$harness" ;; esac
+fi
 "#;
 
 /// Deleting a cold `target/` takes minutes on a busy disk; the stop half is
@@ -252,7 +256,17 @@ pub async fn teardown_job(
     let container = managed_container(pg, department).await;
     docker_exec(
         &container,
-        &["sh", "-c", TEARDOWN_SH, "sh", &dir, mode.as_str()],
+        &[
+            "sh",
+            "-c",
+            TEARDOWN_SH,
+            "sh",
+            &dir,
+            mode.as_str(),
+            // The job's own harness dir (provision.rs) goes with its
+            // workdir; the id is a validated uuid by now (job_workdir).
+            &talaria_workbench_harnesses::job_harness_dir(job_id),
+        ],
         TEARDOWN_TIMEOUT_MS,
     )
     .await?;

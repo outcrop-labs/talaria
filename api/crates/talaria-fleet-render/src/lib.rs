@@ -1964,6 +1964,13 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             for (k, v) in talaria_workbench_harnesses::omp_env() {
                 env.insert(k, v);
             }
+            // Which render created this container, in the one place a
+            // container cannot be updated behind: its env. The workbench's
+            // provisioning reads it back to tell a stale sandbox from a
+            // current one (talaria_workbench_harnesses::SANDBOX_SHAPE).
+            for (k, v) in talaria_workbench_harnesses::shape_env() {
+                env.insert(k, v);
+            }
             for (k, v) in omp_roles.env() {
                 env.insert(k, v);
             }
@@ -3784,6 +3791,7 @@ own() {
 # dir does not come out root-owned.
 mkdir -p \
   /opt/data/workbench/harness/pi \
+  /opt/data/workbench/harness/jobs \
   /opt/data/workbench/harness/xdg \
   /opt/data/workbench/harness/playwright \
   /opt/data/workbench/harness/npm \
@@ -3793,6 +3801,7 @@ mkdir -p \
 own /opt/data/workbench
 own /opt/data/workbench/harness
 own /opt/data/workbench/harness/pi
+own /opt/data/workbench/harness/jobs
 own /opt/data/workbench/harness/xdg
 own /opt/data/workbench/harness/playwright
 own /opt/data/workbench/harness/npm
