@@ -27,6 +27,11 @@ import {
   type DraftFields,
   isConflict,
   pendingDesign,
+  heldDesign,
+  keepaliveBody,
+  KEEPALIVE_MAX_BYTES,
+  stashUnsaved,
+  takeUnsaved,
 } from './agent-design'
 
 const DRAFT: DraftFields = {
@@ -253,5 +258,56 @@ describe('what the review and the roster say', () => {
     expect(designHeadline(design())).toBe('A release manager that tracks deploy trains')
     expect(designHeadline(design({ purpose: 'one two three four five six seven eight.' }))).toBe('one two three four five six seven')
     expect(designHeadline(ready())).toBe('Scout')
+  })
+})
+
+describe('New agent waits while a hire holds the design', () => {
+  it('is held, polled until the read settles it, and not offered as pending', () => {
+    const spent = ready({ hireRunId: 'h-1' })
+    expect(heldDesign(spent)?.id).toBe('d-1')
+    expect(heldDesign(ready())).toBeNull()
+    expect(pendingDesign(spent)).toBeNull()
+    expect(pollEvery(spent, true)).toBe(3_000)
+    expect(pollEvery(spent, false)).toBe(10_000)
+  })
+})
+
+describe('the save that leaves with the page', () => {
+  const big = { ...DRAFT, soul: 'x'.repeat(200_000) }
+
+  it('sends the whole edit when it fits the keepalive cap', () => {
+    const { fields, whole } = keepaliveBody(DRAFT, null)
+    expect(whole).toBe(true)
+    expect(fields).toEqual(DRAFT)
+  })
+
+  it('over the cap, sends the small fields over the server soul and says it is partial', () => {
+    const server = { ...DRAFT, soul: 'the saved soul' }
+    const { fields, whole } = keepaliveBody({ ...big, name: 'Renamed' }, server)
+    expect(whole).toBe(false)
+    expect(fields.name).toBe('Renamed')
+    expect(fields.soul).toBe('the saved soul')
+    expect(new TextEncoder().encode(JSON.stringify(fields)).length).toBeLessThanOrEqual(KEEPALIVE_MAX_BYTES)
+  })
+
+  it('keeps the edit in this browser and offers it back once, on the same design', () => {
+    const store = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    })
+    stashUnsaved({ id: 'd-1', form: big, at: 1_000 })
+    // Another design: not offered (and the stale stash is gone).
+    expect(takeUnsaved('d-2', DRAFT, 2_000)).toBeNull()
+    stashUnsaved({ id: 'd-1', form: big, at: 1_000 })
+    expect(takeUnsaved('d-1', DRAFT, 2_000)?.soul.length).toBe(200_000)
+    expect(takeUnsaved('d-1', DRAFT, 2_000)).toBeNull()
+    // The keepalive save landed after all: nothing to restore.
+    stashUnsaved({ id: 'd-1', form: DRAFT, at: 1_000 })
+    expect(takeUnsaved('d-1', DRAFT, 2_000)).toBeNull()
+    // A day later it is not offered.
+    stashUnsaved({ id: 'd-1', form: big, at: 1_000 })
+    expect(takeUnsaved('d-1', DRAFT, 1_000 + 25 * 3600 * 1000)).toBeNull()
   })
 })

@@ -211,20 +211,15 @@ pub async fn post(
     // THE DESIGN IS A GATE: spent on this hire before it is enqueued, so a
     // second tab cannot hire a second agent from it (409). It is consumed
     // when the hire finishes and handed back if the hire fails
-    // (talaria-agent-design settles both on read).
+    // (talaria-agent-design settles both on read). The order is
+    // `gate_hire`'s, where a test pins it.
     let hire_id = uuid::Uuid::new_v4().to_string();
-    if let Some(id) = design_id.as_deref() {
-        match talaria_agent_design::claim_for_hire(&state, &user.id, id, &hire_id).await {
-            Ok(()) => {}
-            Err(talaria_agent_design::DesignError::Refused(r)) => {
-                return Ok(house_error(StatusCode::CONFLICT, r.sentence()));
-            }
-            Err(talaria_agent_design::DesignError::Fault(e)) => {
-                return Ok(internal("[fleet] design claim failed", e));
-            }
-        }
-    }
-    let row = match enqueue(
+    let claim = design_id.as_deref().map(|id| {
+        Box::pin(talaria_agent_design::claim_for_hire(
+            &state, &user.id, id, &hire_id,
+        )) as futures_util::future::BoxFuture<'_, _>
+    });
+    let enqueued = Box::pin(enqueue(
         def,
         input,
         EnqueueOptions {
@@ -238,15 +233,20 @@ pub async fn post(
             start: Some(true),
         },
         &deps,
-    )
-    .await
-    {
-        Ok(row) => row,
-        Err(e) => {
-            if design_id.is_some() {
-                talaria_agent_design::release_hire(&state, &user.id, &hire_id).await;
-            }
-            return Ok(internal("[fleet] hire enqueue failed", e));
+    ));
+    let (st, owner, held) = (state.clone(), user.id.clone(), hire_id.clone());
+    let release = move || {
+        Box::pin(talaria_agent_design::release_hire(st, owner, held))
+            as futures_util::future::BoxFuture<'static, ()>
+    };
+    let row = match talaria_agent_design::gate_hire(claim, enqueued, release).await {
+        Ok(Ok(row)) => row,
+        Ok(Err(e)) => return Ok(internal("[fleet] hire enqueue failed", e)),
+        Err(talaria_agent_design::DesignError::Refused(r)) => {
+            return Ok(house_error(StatusCode::CONFLICT, r.sentence()));
+        }
+        Err(talaria_agent_design::DesignError::Fault(e)) => {
+            return Ok(internal("[fleet] design claim failed", e));
         }
     };
     Ok(Json(json!({

@@ -229,6 +229,13 @@ async fn design_live_a_second_start_while_generating_follows_the_first() {
     assert_eq!(again.purpose, "a slow scout");
     let d = until_settled(&user).await;
     assert_eq!(d.status, DesignStatus::Ready);
+    // The landing files its bell row (if any) before its run is done.
+    for _ in 0..300 {
+        if run_state(&st.pg, d.run_id.as_deref().unwrap()).await == "done" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     // Idle now: a describe replaces it, and its bell row is read.
     let next = start_design(&st, &user, CALLER, "a new intent")
         .await
@@ -565,7 +572,7 @@ async fn design_live_the_design_gates_the_hire() {
     let e = until_settled(&user).await;
     let h4 = Uuid::new_v4().to_string();
     claim_for_hire(&st, &user, &e.id, &h4).await.unwrap();
-    release_hire(&st, &user, &h4).await;
+    release_hire(st.clone(), user.clone(), h4.clone()).await;
     let again = current_design(&st, &user, false).await.unwrap().unwrap();
     assert_eq!(again.hire_run_id, None);
     assert_eq!(again.id, e.id);
@@ -579,4 +586,86 @@ async fn design_live_the_design_gates_the_hire() {
     }
     discard_design(&st, &user, None).await.unwrap();
     cleanup(&st.pg, "gate").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_new_agent_waits_while_a_hire_holds_the_design() {
+    // NS1: a describe or a manual save during the hire is refused with
+    // Hiring, and the held design (and its hand-back) is kept.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "held").await;
+    start_design(&st, &user, CALLER, "a scout to hire")
+        .await
+        .unwrap();
+    let d = until_settled(&user).await;
+    let h1 = Uuid::new_v4().to_string();
+    claim_for_hire(&st, &user, &d.id, &h1).await.unwrap();
+    hire_row(&st.pg, &h1, "awaiting", None).await;
+    assert!(matches!(
+        start_design(&st, &user, CALLER, "the next agent").await,
+        Err(DesignError::Refused(Refusal::Hiring))
+    ));
+    assert!(matches!(
+        edit_design(&st, &user, None, draft_for("manual")).await,
+        Err(DesignError::Refused(Refusal::Hiring))
+    ));
+    let still = current_design(&st, &user, false).await.unwrap().unwrap();
+    assert_eq!(still.id, d.id);
+    assert_eq!(still.hire_run_id.as_deref(), Some(h1.as_str()));
+    // The hire fails: the design comes back, and New agent is open again.
+    hire_row(&st.pg, &h1, "error", Some("the department is taken")).await;
+    let back = current_design(&st, &user, false).await.unwrap().unwrap();
+    assert_eq!(back.id, d.id);
+    assert_eq!(back.hire_run_id, None);
+    assert!(
+        edit_design(&st, &user, Some(&d.id), d.draft.clone().unwrap())
+            .await
+            .is_ok()
+    );
+    sqlx::query("delete from runs where id = $1::uuid")
+        .bind(&h1)
+        .execute(&st.pg)
+        .await
+        .unwrap();
+    discard_design(&st, &user, None).await.unwrap();
+    cleanup(&st.pg, "held").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_a_retried_hire_takes_the_design_with_it() {
+    // NS3: the hiring strip's Retry runs a new hire; the design follows it
+    // (held, or already handed back) and is spent when the retry finishes.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "retry").await;
+    start_design(&st, &user, CALLER, "a scout to retry")
+        .await
+        .unwrap();
+    let d = until_settled(&user).await;
+    let (h1, r1) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    claim_for_hire(&st, &user, &d.id, &h1).await.unwrap();
+    hire_row(&st.pg, &h1, "error", Some("a transient pull failure")).await;
+    // Read first: the design is handed back from h1.
+    let back = current_design(&st, &user, false).await.unwrap().unwrap();
+    assert_eq!(back.hire_run_id, None);
+    // Retry from the strip: the design follows the retry run.
+    follow_retry(&st, &user, &h1, &r1).await;
+    hire_row(&st.pg, &r1, "awaiting", None).await;
+    let held = current_design(&st, &user, false).await.unwrap().unwrap();
+    assert_eq!(held.hire_run_id.as_deref(), Some(r1.as_str()));
+    assert_eq!(held.error, None);
+    // The retry hires the agent: the design is spent, not offered again.
+    hire_row(&st.pg, &r1, "done", None).await;
+    assert!(current_design(&st, &user, false).await.unwrap().is_none());
+    for h in [&h1, &r1] {
+        sqlx::query("delete from runs where id = $1::uuid")
+            .bind(h)
+            .execute(&st.pg)
+            .await
+            .unwrap();
+    }
+    cleanup(&st.pg, "retry").await;
 }

@@ -13,14 +13,18 @@
     EMPTY_FIELDS,
     discardDesign,
     elapsedSeconds,
+    heldDesign,
     isConflict,
+    keepaliveBody,
     landingKey,
     openingStep,
     pendingDesign,
     refineDesign,
     refineReceipt,
     saveDesign,
+    stashUnsaved,
     startDesign,
+    takeUnsaved,
     useAgentDesign,
     watchDesign,
     type DraftFields,
@@ -77,13 +81,18 @@
   const qc = useQueryClient()
   const designQuery = useAgentDesign()
   // This modal is looking: reads say so, and a landing skips the bell.
-  $effect(() => watchDesign())
+  // Duplicate looks at no design, so it must not hold the bell back either.
+  $effect(() => (preselect ? undefined : watchDesign()))
 
   const read = $derived(designQuery.data)
   // DUPLICATE IS ITS OWN FORM: a preselected chassis never reads, writes or
   // spends the person's waiting design. And a design a hire is spending is
   // not offered either (the hiring strip has it).
   const design = $derived(preselect ? null : pendingDesign(read?.design))
+  // A hire is spending the person's design: New agent waits for it (see
+  // `heldDesign`), saying so, rather than offer a describe or a manual
+  // start the server would refuse.
+  const held = $derived(preselect ? null : heldDesign(read?.design))
   const generating = $derived(design?.status === 'generating')
   const genErr = $derived(design?.status === 'error' ? design.error : null)
   // A design handed back by a failed hire says why on the review step.
@@ -141,6 +150,7 @@
           form = { ...EMPTY_FIELDS, ...d.draft }
           soulRev += 1
         }
+        restoreUnsaved(d?.id ?? null, d?.draft ?? null)
         return
       }
       if (!d || key === seededFrom) return
@@ -161,17 +171,23 @@
 
   // Hand edits: the form now, the record shortly after (one save per pause).
   // SAVED AS YOU TYPE means no edit is ever lost: a pending save is FLUSHED,
-  // never dropped — on close, on Create, and as the page goes away (with
-  // `keepalive`, so it outlives the tab).
+  // never dropped — on close and on Create as an ordinary save (the app
+  // outlives the modal), and as the page goes away with `keepalive`. A
+  // keepalive body is capped at 64 KiB, so an edit too large for it sends
+  // the small fields and is kept in this browser (`stashUnsaved`) until New
+  // agent next opens on the design; it is never reported saved.
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   let saveErr = $state<string | null>(null)
-  const save = (keepalive = false): Promise<void> => {
+  let restored = $state(false)
+  /** Resolves true when the edit reached the server. */
+  const save = (): Promise<boolean> => {
     // A run is writing the record (a refine): its landing reseeds the form,
     // and the edits being typed rode in with the refine.
-    if (generating || preselect) return Promise.resolve()
-    return saveDesign(qc, $state.snapshot(form), design?.id, keepalive ? { keepalive: true } : undefined)
+    if (generating || preselect) return Promise.resolve(true)
+    return saveDesign(qc, $state.snapshot(form), design?.id)
       .then(() => {
         saveErr = null
+        return true
       })
       .catch(async (e: unknown) => {
         saveErr = errorMessage(e)
@@ -181,13 +197,37 @@
           await qc.refetchQueries({ queryKey: DESIGN_KEY })
           seededFrom = null
         }
+        return false
       })
   }
-  const flush = (keepalive = false): Promise<void> => {
-    if (!saveTimer) return Promise.resolve()
+  const flush = (): Promise<boolean> => {
+    if (!saveTimer) return Promise.resolve(true)
     clearTimeout(saveTimer)
     saveTimer = null
-    return save(keepalive)
+    return save()
+  }
+  // The page is going away: the one save that must outlive it.
+  const flushAway = () => {
+    if (!saveTimer || generating || preselect) return
+    clearTimeout(saveTimer)
+    saveTimer = null
+    const now = $state.snapshot(form)
+    // Kept here first: a reload can outrun its own keepalive save, and an
+    // edit over the cap cannot ride it at all.
+    stashUnsaved({ id: design?.id ?? null, form: now, at: Date.now() })
+    const { fields } = keepaliveBody(now, design?.draft ?? null)
+    void saveDesign(qc, fields, design?.id, { keepalive: true }).catch(() => {})
+  }
+  // An edit that could not leave with the page, offered back on this design.
+  function restoreUnsaved(id: string | null, server: DraftFields | null) {
+    if (preselect) return
+    const back = takeUnsaved(id, server)
+    if (!back) return
+    form = { ...EMPTY_FIELDS, ...back }
+    soulRev += 1
+    restored = true
+    if (step === 'describe' && id) step = 'review'
+    persist()
   }
   const persist = () => {
     // Duplicate holds its own form, and a look at "Configure manually" that
@@ -201,12 +241,12 @@
     }, 600)
   }
   $effect(() => {
-    const away = () => void flush(true)
-    window.addEventListener('pagehide', away)
+    window.addEventListener('pagehide', flushAway)
     return () => {
-      window.removeEventListener('pagehide', away)
-      // The modal closing (Cancel, the X, a navigation) saves what was typed.
-      void flush(true)
+      window.removeEventListener('pagehide', flushAway)
+      // The modal closing (Cancel, the X, a navigation) saves what was
+      // typed, as an ordinary save: no size cap, and the app is still here.
+      void flush()
     }
   })
 
@@ -291,6 +331,9 @@
   // bell row about it is read. Start over from an empty describe.
   const discard = async () => {
     startErr = null
+    // A pending save would recreate what is being thrown away.
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
     try {
       await discardDesign(qc, design?.id)
       form = { ...EMPTY_FIELDS }
@@ -315,9 +358,15 @@
     err = null
     busy = true
     try {
-      // The latest edits reach the record first, so a refusal below leaves
-      // the design exactly as the form shows it.
-      await flush()
+      // The design this form belongs to, named BEFORE the flush: a flush
+      // that meets a newer design (another tab or device) refetches it, and
+      // its id must never ride out with this form. Such a flush stops the
+      // Create; the person sees the current design and decides again.
+      const designId = design?.id
+      if (!(await flush())) {
+        err = saveErr ?? 'The design changed before it could be hired; check it and create again.'
+        return
+      }
       const f = form
       const r = await hireFleetAgent({
         slug: f.handle,
@@ -327,7 +376,7 @@
         ...(templateId ? { templateId } : {}),
         ...(f.soul.trim() ? { soul: f.soul } : {}),
         ...(f.skills.length ? { skills: f.skills } : {}),
-        ...(design ? { designId: design.id } : {}),
+        ...(designId ? { designId } : {}),
         start,
       })
       if (r.error) {
@@ -338,6 +387,12 @@
         // field says who holds it and Create waits. For any other refusal it
         // is one extra read.
         void qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+        // A 409 may be the design's own (replaced elsewhere, or a hire from
+        // another tab holds it): read it again and show what is current.
+        if (r.status === 409 && designId) {
+          await qc.refetchQueries({ queryKey: DESIGN_KEY })
+          seededFrom = null
+        }
         return
       }
       await qc.invalidateQueries({ queryKey: ['fleet-hires'] })
@@ -358,6 +413,27 @@
     <div class="flex items-center gap-2 py-6 text-sm text-muted">
       <WaitingMark site="fleet/agent-design" size={12} />
       Checking for a design in progress
+    </div>
+  </Modal>
+{:else if held}
+  <!-- A hire is spending the design. New agent waits for it: a describe or
+       a manual start would have to replace the design the hire hands back
+       if it fails (to fix a field and create it again), so the server
+       refuses both until the hire settles. Duplicate still works. -->
+  <Modal {open} {onClose} title="New agent" width="max-w-lg">
+    <div class="space-y-3 py-2" data-testid="design-held">
+      <p class="flex items-center gap-2 text-sm text-fg">
+        <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
+        Hiring {held.draft?.name || 'the designed agent'}
+      </p>
+      <p class="text-sm leading-relaxed text-muted">
+        New agent opens again when this hire finishes. If it fails, the design comes back here so you can fix it and
+        create it again. The roster shows the hire's progress.
+      </p>
+    </div>
+    <div class="flex items-center border-t border-line pt-4">
+      <span class="ml-auto"></span>
+      <Button variant="ghost" size="sm" onclick={onClose}>Close</Button>
     </div>
   </Modal>
 {:else if step === 'describe'}
@@ -578,6 +654,7 @@
 
       <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start the container now" class="gap-2 text-sm text-fg" />
       {#if hireErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger" data-testid="design-hire-error">{hireErr}</div>{/if}
+      {#if restored}<div transition:slide={{ duration: 150 }} class="text-sm text-muted" data-testid="design-restored">Restored edits that had not reached the server when the page closed. They are being saved now.</div>{/if}
       {#if err || saveErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err ?? `Your edits were not saved: ${saveErr}`}</div>{/if}
       <div class="flex items-center gap-2 border-t border-line pt-4">
         {#if !preselect}

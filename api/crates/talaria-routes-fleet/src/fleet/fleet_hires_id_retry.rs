@@ -198,6 +198,8 @@ pub struct RetryPlan {
     pub department: String,
     pub name: String,
     pub def_exists: bool,
+    /// Whose hire it was: an agent design spent on it is theirs.
+    pub owner: Option<String>,
 }
 
 /// The retry up to docker: read the hire, decide who may act, and refuse —
@@ -255,6 +257,7 @@ pub async fn plan_retry(
         department,
         name,
         def_exists: hire.def_exists,
+        owner: hire.owner,
     })
 }
 
@@ -310,6 +313,12 @@ pub async fn post(
     };
     let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
     let deps = dispatch_deps(state.pg.clone(), redis, realtime);
+    // An agent design spent on the failed hire follows the retry before it
+    // is enqueued, so it is consumed when the retry finishes instead of
+    // coming back for an agent that by then exists.
+    if let Some(owner) = plan.owner.as_deref() {
+        talaria_agent_design::follow_retry(&state, owner, &id, &plan.retry_id).await;
+    }
     let row = match enqueue(
         agent_hire_run(),
         plan.input,

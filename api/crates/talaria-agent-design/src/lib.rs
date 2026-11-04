@@ -41,6 +41,8 @@ pub mod store;
 
 #[cfg(test)]
 mod design_live;
+#[cfg(test)]
+mod gate_tests;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -268,8 +270,53 @@ pub async fn claim_for_hire(
     Ok(())
 }
 
+/// The hiring strip retried the hire `failed` as `retry` (for the design's
+/// owner): the design spent on it follows the retry, so it is consumed when
+/// the retry finishes rather than offered again for an agent that exists.
+/// Best effort, like the hand-back: a design that does not follow is handed
+/// back on its next read, which is the old behaviour.
+pub async fn follow_retry(state: &AppState, user_id: &str, failed: &str, retry: &str) {
+    let now = now_ms();
+    let followed = async {
+        let mut conn = redis(state).await?;
+        store::update(&mut conn, user_id, |d| {
+            match d.and_then(|d| record::follow(d, failed, retry, now)) {
+                Some(next) => Write::put(next, ()),
+                None => Write::Keep(()),
+            }
+        })
+        .await
+        .map_err(DesignError::from)
+    };
+    if let Err(e) = followed.await {
+        tracing::warn!("[agent-design] following the retry of {failed} failed: {e:?}");
+    }
+}
+
+/// THE HIRE ROUTE'S ORDER, as one function so a test can pin it: claim the
+/// design, then enqueue, then (only if the enqueue failed) hand it back. A
+/// design consumed after the enqueue would let a second tab hire from it
+/// meanwhile, and a hire that then failed would have nothing to hand back.
+/// `claim` is None for a hire with no design.
+pub async fn gate_hire<T, E>(
+    claim: Option<futures_util::future::BoxFuture<'_, Result<(), DesignError>>>,
+    enqueue: futures_util::future::BoxFuture<'_, Result<T, E>>,
+    release: impl FnOnce() -> futures_util::future::BoxFuture<'static, ()>,
+) -> Result<Result<T, E>, DesignError> {
+    let gated = claim.is_some();
+    if let Some(claim) = claim {
+        claim.await?;
+    }
+    let out = enqueue.await;
+    if out.is_err() && gated {
+        release().await;
+    }
+    Ok(out)
+}
+
 /// The hire could not be enqueued: hand the design back at once.
-pub async fn release_hire(state: &AppState, user_id: &str, hire_run_id: &str) {
+pub async fn release_hire(state: AppState, user_id: String, hire_run_id: String) {
+    let (state, user_id, hire_run_id) = (&state, user_id.as_str(), hire_run_id.as_str());
     let now = now_ms();
     let released = async {
         let mut conn = redis(state).await?;
@@ -307,11 +354,13 @@ pub async fn start_design(
     let (design_id, run_id) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
     let (design, fresh, replaced) = store::update(&mut conn, user_id, |d| {
         match record::start(d, purpose, now, (design_id.clone(), run_id.clone()), seen) {
-            Start::Existing(e) => Write::Keep((e, false, None)),
-            Start::Fresh(f) => Write::put(f.clone(), (f, true, d.map(|d| d.id.clone()))),
+            Start::Existing(e) => Write::Keep(Ok((e, false, None))),
+            Start::Fresh(f) => Write::put(f.clone(), Ok((f, true, d.map(|d| d.id.clone())))),
+            Start::Refused(r) => Write::Keep(Err(r)),
         }
     })
-    .await?;
+    .await?
+    .map_err(DesignError::Refused)?;
     if !fresh {
         return Ok(design);
     }

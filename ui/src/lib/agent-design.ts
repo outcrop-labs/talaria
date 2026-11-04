@@ -91,8 +91,11 @@ export async function fetchAgentDesign(watching: boolean): Promise<DesignRead> {
  *  event on the person's stream usually gets there first), and not at all
  *  once it has settled. */
 export function pollEvery(design: AgentDesign | null | undefined, watching: boolean): number | false {
-  if (design?.status !== 'generating') return false
-  return watching ? 2_000 : 5_000
+  if (design?.status === 'generating') return watching ? 2_000 : 5_000
+  // A hire is spending it: New agent waits, and opens again when the read
+  // settles it (consumed, or handed back).
+  if (design?.hireRunId) return watching ? 3_000 : 10_000
+  return false
 }
 
 /** The person's design. One cache entry for every reader — the roster's
@@ -156,6 +159,74 @@ export async function discardDesign(qc: QueryClient, id?: string): Promise<void>
  *  story; the record returns here if the hire fails). */
 export function pendingDesign(design: AgentDesign | null | undefined): AgentDesign | null {
   return design && !design.hireRunId ? design : null
+}
+
+/** The design a hire is spending right now, if any. While there is one, New
+ *  agent waits: a describe or a manual start would have to replace the
+ *  design the hire hands back if it fails, so the server refuses both (409)
+ *  and the modal says why instead of offering them. */
+export function heldDesign(design: AgentDesign | null | undefined): AgentDesign | null {
+  return design?.hireRunId ? design : null
+}
+
+// ── The edit that could not leave with the page ──────────────────────────────
+//
+// A save on `pagehide` rides `keepalive`, and the browser caps a keepalive
+// body at 64 KiB while a soul alone may be 200k characters. Such an edit is
+// kept here, in this browser, and offered back the next time New agent opens
+// on the same design: per-viewer view state, the one thing localStorage is
+// for, never the design itself. A reload that outruns its own keepalive save
+// is caught the same way.
+const UNSAVED_KEY = 'talaria.agent-design.unsaved'
+const UNSAVED_TTL_MS = 24 * 3600 * 1000
+/** Under the browser's keepalive cap, with room for the headers. */
+export const KEEPALIVE_MAX_BYTES = 60_000
+
+export interface UnsavedEdit {
+  id: string | null
+  form: DraftFields
+  at: number
+}
+
+export function stashUnsaved(edit: UnsavedEdit): void {
+  try {
+    localStorage.setItem(UNSAVED_KEY, JSON.stringify(edit))
+  } catch {
+    /* storage unavailable: nothing more this browser can do */
+  }
+}
+
+/** The stashed edit for this design, if one is fresh and differs from what
+ *  the server holds; it is removed either way once read. */
+export function takeUnsaved(id: string | null, server: DraftFields | null, now: number = Date.now()): DraftFields | null {
+  let raw: string | null = null
+  try {
+    raw = localStorage.getItem(UNSAVED_KEY)
+    localStorage.removeItem(UNSAVED_KEY)
+  } catch {
+    return null
+  }
+  if (!raw) return null
+  try {
+    const edit = JSON.parse(raw) as UnsavedEdit
+    if (edit.id !== id || now - edit.at > UNSAVED_TTL_MS) return null
+    if (server && JSON.stringify(server) === JSON.stringify(edit.form)) return null
+    return edit.form
+  } catch {
+    return null
+  }
+}
+
+/** What a pagehide save can send: the whole edit when it fits the
+ *  keepalive cap, else the small fields over the server's soul and skills
+ *  (the rest waits in `stashUnsaved`). `whole` says which it is. */
+export function keepaliveBody(form: DraftFields, server: DraftFields | null): { fields: DraftFields; whole: boolean } {
+  const size = new TextEncoder().encode(JSON.stringify(form)).length
+  if (size <= KEEPALIVE_MAX_BYTES) return { fields: form, whole: true }
+  return {
+    fields: { ...form, soul: server?.soul ?? '', skills: server?.skills ?? [] },
+    whole: false,
+  }
 }
 
 /** Where New agent opens. A design that landed, or a refine that failed
