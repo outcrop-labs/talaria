@@ -1,0 +1,75 @@
+{
+  "jobs": [
+    {
+      "id": "5f5354fee911",
+      "name": "short-sleeper",
+      "prompt": "",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": "short.sh",
+      "no_agent": true,
+      "monitor_script": null,
+      "monitor_url": null,
+      "monitor_state": null,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "24 15 * * *",
+        "display": "24 15 * * *"
+      },
+      "schedule_display": "24 15 * * *",
+      "repeat": {
+        "times": null,
+        "completed": 0
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-11-03T15:23:59.829979+00:00",
+      "next_run_at": "2026-11-04T15:24:00+00:00",
+      "last_run_at": null,
+      "last_status": null,
+      "last_error": null,
+      "last_delivery_error": null,
+      "last_delivery_unverified": null,
+      "last_failure": null,
+      "failure_streak": 0,
+      "deliver": "local",
+      "origin": null,
+      "enabled_toolsets": null,
+      "workdir": null,
+      "last_dispatch": {
+        "scheduled_at": "2026-11-03T15:24:00+00:00",
+        "dispatched_at": "2026-11-03T15:24:48.935685+00:00",
+        "lateness_seconds": 48.9,
+        "kind": "on_time"
+      },
+      "fire_claim": {
+        "at": "2026-11-03T15:25:49.043581+00:00",
+        "by": "e92bac4c6060:159:beac1399f7fe4baabab1fbcfdc4128d1"
+      },
+      "latest_execution": {
+        "id": "58ff62c1c67740308b51c430afd387f9",
+        "job_id": "5f5354fee911",
+        "source": "builtin",
+        "process_id": "988253faf8444ccb8dd54f47109a37fe",
+        "pid": 159,
+        "process_started_at": 46332284,
+        "status": "running",
+        "handoff_pending": 0,
+        "handoff_started_at": null,
+        "claimed_at": "2026-11-03T15:24:49.013286+00:00",
+        "started_at": "2026-11-03T15:24:49.043792+00:00",
+        "finished_at": null,
+        "error": null,
+        "delivery_outcome": null,
+        "scheduled_instant": "2026-11-03T15:24:00+00:00",
+        "progress_at": null
+      }
+    }
+  ]
+}

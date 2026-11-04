@@ -7,6 +7,12 @@
 // so an in-flight model call is dropped at its next await, not at the
 // next step boundary.
 //
+// THE AGENT IS TOLD SEPARATELY. A dropped stream does not end a turn in
+// Hermes, so each cancelled run also gets a stop naming its agent run. That
+// is spawned: Hermes takes about a second to end a turn and a dead container
+// holds the call for the whole control window, and the person who pressed
+// Stop is not waiting on either.
+//
 // THE TICKET IS NOT TOUCHED. Status and assignees stay exactly as they
 // are — the same choice a turn-cap or a failed session makes — because a
 // stop is a triage event, not an outcome: the ticket stays where the
@@ -33,6 +39,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_api_facades::runs::defs::work_session::stop_agent_turn;
+use talaria_api_facades::runs::store::CancelOutcome;
 use talaria_boards::{board_role, can_edit};
 use talaria_error::{house_error, internal};
 use talaria_session::require_user;
@@ -120,16 +128,22 @@ pub async fn post(
             }
         }
         for (run_id, _) in &live {
-            if let Err(e) = talaria_api_facades::runs::run::cancel_run(
+            match talaria_api_facades::runs::run::cancel_run(
                 run_id,
                 Some(format!("stopped by {who}")),
                 &deps,
             )
             .await
             {
+                Ok(CancelOutcome::Cancelled { .. }) => {
+                    let pg = state.pg.clone();
+                    let run_id = run_id.clone();
+                    tokio::spawn(async move { stop_agent_turn(&pg, &run_id).await });
+                }
+                Ok(_) => {}
                 // One session's refused cancel must not shield the others;
                 // the activity line below says what was attempted.
-                tracing::error!("[work-session/stop] cancel of {run_id} failed: {e}");
+                Err(e) => tracing::error!("[work-session/stop] cancel of {run_id} failed: {e}"),
             }
         }
         if let Err(e) = talaria_tasks::log_activity(

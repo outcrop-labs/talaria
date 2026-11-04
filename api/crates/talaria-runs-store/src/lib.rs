@@ -1234,6 +1234,49 @@ pub async fn live_work_sessions_for_agent(
     .await
 }
 
+/// Record the Hermes run id of `turn`, so a stop can name it from any instance,
+/// and after the process that read it is gone. `None` clears it as a turn
+/// opens. Only the turn the row is on may write: a late write from an earlier
+/// turn must not replace a newer id. Answers the run's state, read after the
+/// write and not with it, so a cancel either sees this id or is seen here.
+pub async fn set_agent_run_id(
+    pg: &PgPool,
+    run_id: &str,
+    turn: i64,
+    agent_run_id: Option<&str>,
+) -> Result<Option<RunState>, sqlx::Error> {
+    sqlx::query(
+        "update runs set agent_run_id = $3 \
+         where id = $1::uuid and (checkpoint->>'turn')::bigint = $2",
+    )
+    .bind(run_id)
+    .bind(turn)
+    .bind(agent_run_id)
+    .execute(pg)
+    .await?;
+    let state: Option<String> = sqlx::query_scalar("select state from runs where id = $1::uuid")
+        .bind(run_id)
+        .fetch_optional(pg)
+        .await?;
+    state.as_deref().map(decode_state).transpose()
+}
+
+/// The agent a work session runs on and the Hermes run id of its newest turn.
+/// `None` when no turn can exist: the row is gone, names no agent, or no driver
+/// ever claimed it. The id is `None` while a turn is opening.
+pub async fn agent_turn_of(
+    pg: &PgPool,
+    run_id: &str,
+) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    sqlx::query_as(
+        "select input->>'agentModel', agent_run_id from runs \
+         where id = $1::uuid and input ? 'agentModel' and started_at is not null",
+    )
+    .bind(run_id)
+    .fetch_optional(pg)
+    .await
+}
+
 // ── Pure unit tests ──────────────────────────────────────────────────────────
 //
 // The Postgres surface is proven by the `#[ignore]`d live-DB tests in

@@ -33,6 +33,8 @@ talaria-error = { workspace = true }
 talaria-gaps = { workspace = true }
 talaria-harness-defs = { workspace = true }
 talaria-harness-model = { workspace = true }
+talaria-hermes-channel = { workspace = true }
+talaria-hermes-images = { workspace = true }
 talaria-host-metrics = { workspace = true }
 talaria-instance = { workspace = true }
 talaria-llm-keys = { workspace = true }

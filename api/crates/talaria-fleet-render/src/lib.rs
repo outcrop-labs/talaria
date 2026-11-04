@@ -43,6 +43,8 @@
 // everything a 1.1 reader would re-resolve (see the emitter's own header).
 // The compose file is emitted with serde_yaml_ng (1.2).
 
+pub mod canary;
+
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -1131,21 +1133,69 @@ pub const HERMES_IMAGE_PIN: &str = HERMES_IMAGE_DEFAULTS[HERMES_IMAGE_DEFAULTS.l
 /// version says so, and both paths skip as up to date.
 pub const HERMES_CONFIG_VERSION: u64 = 51;
 
-/// What every agent's service gets whatever chassis it was seeded from:
-/// the current pin in place of any stock default a past template shipped,
-/// and a stop grace long enough for Hermes to drain
-/// (`AGENT_STOP_GRACE_SECS`) unless the chassis sets its own.
-fn apply_service_defaults(svc: &mut Map<String, Value>) {
-    let stock = svc
-        .get("image")
-        .and_then(Value::as_str)
+/// The pin's digest (`sha256:…`), its tag, and its repository.
+pub fn compiled_pin_parts() -> (&'static str, &'static str, &'static str) {
+    let (repo_tag, digest) = HERMES_IMAGE_PIN
+        .split_once('@')
+        .expect("the pin is repo:tag@digest");
+    let (repo, tag) = repo_tag
+        .rsplit_once(':')
+        .expect("the pin is repo:tag@digest");
+    (digest, tag, repo)
+}
+
+/// The compiled pin as the image plan's floor: what every agent runs when
+/// the channel has nothing to say (talaria-hermes-images).
+pub fn compiled_plan() -> talaria_hermes_images::Planned {
+    talaria_hermes_images::Planned {
+        image: HERMES_IMAGE_PIN.to_string(),
+        config_version: HERMES_CONFIG_VERSION,
+    }
+}
+
+/// Whether a chassis service's image is a stock default — `${HERMES_IMAGE:-x}`
+/// with `x` any default a template ever shipped — which the render replaces
+/// with the planned image. Anything else is the operator's image.
+pub fn is_stock_image(image: Option<&str>) -> bool {
+    image
         .and_then(|i| i.strip_prefix("${HERMES_IMAGE:-"))
         .and_then(|i| i.strip_suffix('}'))
-        .is_some_and(|default| HERMES_IMAGE_DEFAULTS.contains(&default));
-    if stock {
+        .is_some_and(|default| HERMES_IMAGE_DEFAULTS.contains(&default))
+}
+
+/// Whether an agent runs the planned image: every agent but a Developer
+/// Agent on the operator's workbench image (`TALARIA_WORKBENCH_IMAGE`). The
+/// one rule the render and the channel (talaria-hermes-channel's
+/// `on_channel`) both read.
+pub fn runs_planned_image(developer: bool) -> bool {
+    runs_planned_image_with(developer, talaria_workbench::sandbox_image().as_deref())
+}
+
+/// [`runs_planned_image`] with the workbench image given.
+pub fn runs_planned_image_with(developer: bool, workbench_image: Option<&str>) -> bool {
+    !(developer && workbench_image.is_some_and(|i| !i.trim().is_empty()))
+}
+
+/// Whether the agent image follows the planned image at all: a stock chassis
+/// image and no `HERMES_IMAGE` set by the operator. Either of those is the
+/// operator's choice, and the channel stands aside for it
+/// (talaria-hermes-channel reads the same answer).
+pub async fn follows_planned_image(chassis: &Chassis) -> bool {
+    is_stock_image(chassis.service.get("image").and_then(Value::as_str))
+        && talaria_hermes_images::operator_image().await.is_none()
+}
+
+/// What every agent's service gets whatever chassis it was seeded from:
+/// the planned image (the agent's channel image, or the current pin) in
+/// place of any stock default a past template shipped, and a stop grace
+/// long enough for Hermes to drain (`AGENT_STOP_GRACE_SECS`) unless the
+/// chassis sets its own. The `${HERMES_IMAGE:-…}` wrapper stays, so an
+/// operator's `HERMES_IMAGE` still overrides it.
+fn apply_service_defaults(svc: &mut Map<String, Value>, planned_image: &str) {
+    if is_stock_image(svc.get("image").and_then(Value::as_str)) {
         svc.insert(
             "image".into(),
-            json!(format!("${{HERMES_IMAGE:-{HERMES_IMAGE_PIN}}}")),
+            json!(format!("${{HERMES_IMAGE:-{planned_image}}}")),
         );
     }
     svc.entry("stop_grace_period")
@@ -1252,6 +1302,41 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
     }
 
     let chassis = read_chassis().await?;
+    // The image each agent runs and the config version that image reads
+    // (talaria-hermes-images): the agent's channel assignment, else the
+    // channel's current image, else the compiled pin. An image the operator
+    // chose — a chassis image that is not a stock default, or HERMES_IMAGE —
+    // is theirs: nothing planned is rendered over it, and the compiled
+    // version is stamped, as before the channel existed.
+    let follows_plan = follows_planned_image(&chassis).await;
+    let image_plan = if follows_plan {
+        talaria_hermes_images::image_plan(pg, compiled_plan())
+            .await
+            .map_err(|e| store_fault("[fleet] render: agent image plan read failed", e))?
+    } else {
+        talaria_hermes_images::ImagePlan::compiled(compiled_plan())
+    };
+    // The env names the good Hermes images on record strip from an agent's
+    // commands, from the records (so every api process agrees): a per-agent
+    // secret under one of them is not loaded, and the materialize below says
+    // so per agent. A read that fails keeps the set this process last read.
+    match talaria_hermes_images::stripped_env_of_good(pg).await {
+        Ok(names) => {
+            let added = talaria_agent_secrets::set_image_stripped(names);
+            if !added.is_empty() {
+                let line = format!(
+                    "a Hermes image now in use strips {} more env name(s) from an agent's commands: {} — a per-agent secret stored under one of them is no longer loaded",
+                    added.len(),
+                    added.join(", ")
+                );
+                tracing::warn!("[fleet] {line}");
+                result.warnings.push(line);
+            }
+        }
+        Err(e) => tracing::warn!(
+            "[fleet] render: the Hermes images' stripped env could not be read ({e}); keeping the last set"
+        ),
+    }
 
     // Every rendered soul opens with the toolkit contract (always), the
     // dev-work policy (always): dev work flows through a ticket and a
@@ -1630,12 +1715,22 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
         routed.insert("plugins".into(), Value::Object(plugins));
         // The agent's own secrets, by name, so execute_code gets them too.
         let secret_names = talaria_agent_secrets::passthrough_names(pg, &def.id).await?;
+        // A Developer Agent on the operator's workbench image runs that image,
+        // not the planned one: it gets the compiled version, as before.
+        let planned = image_plan.for_agent(&def.id);
+        let on_plan = follows_plan && runs_planned_image(def.developer);
+        let config_version = if on_plan {
+            planned.config_version
+        } else {
+            HERMES_CONFIG_VERSION
+        };
         let browser_engine = fleet_owned_config(
             &mut routed,
             def,
             &toolset_floor,
             &secret_names,
             &web_search.web,
+            config_version,
         );
         match talaria_model_efforts::EffortVoices::read(pg).await {
             Ok(voices) => {
@@ -1730,7 +1825,7 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             obj.remove("build");
             obj.remove("depends_on");
             obj.remove("profiles");
-            apply_service_defaults(obj);
+            apply_service_defaults(obj, &planned.image);
             label_start_config(obj, &start_fingerprint);
             if !dial_is_container() {
                 let port = ports.get(&def.slug).copied().unwrap_or(0);
@@ -2608,6 +2703,7 @@ fn fleet_owned_config(
     toolset_floor: &[String],
     secret_names: &[String],
     web: &[(&'static str, Value)],
+    config_version: u64,
 ) -> bool {
     fleet_env_passthrough(routed, secret_names);
     fleet_approvals(routed, def.developer);
@@ -2620,7 +2716,7 @@ fn fleet_owned_config(
     fleet_tool_loop_guardrails(routed);
     fleet_title_generation(routed);
     fleet_model_routes(routed, &def.model);
-    fleet_config_version(routed);
+    fleet_config_version(routed, config_version);
     browser_engine
 }
 
@@ -3253,12 +3349,14 @@ fn fleet_title_generation(routed: &mut Map<String, Value>) {
     routed.insert("auxiliary".into(), Value::Object(aux));
 }
 
-/// The schema version the render writes against ([`HERMES_CONFIG_VERSION`]),
-/// set over whatever the authored config carried: an imported or federated
-/// def may hold an older stamp, and an older stamp is what sends Hermes into
-/// a migration of a file it cannot write.
-fn fleet_config_version(routed: &mut Map<String, Value>) {
-    routed.insert("_config_version".into(), json!(HERMES_CONFIG_VERSION));
+/// The schema version the render writes against — the agent's image's own
+/// (read from it by the channel's inspection; [`HERMES_CONFIG_VERSION`] for
+/// the compiled pin and for an image the operator chose) — set over whatever
+/// the authored config carried: an imported or federated def may hold an
+/// older stamp, and an older stamp is what sends Hermes into a migration of
+/// a file it cannot write.
+fn fleet_config_version(routed: &mut Map<String, Value>, config_version: u64) {
+    routed.insert("_config_version".into(), json!(config_version));
 }
 
 /// The compose label that carries [`start_config_fingerprint`]. A label is
@@ -4984,7 +5082,14 @@ service:
     fn shaped(authored: Value, web: &[(&'static str, Value)]) -> Map<String, Value> {
         let def = target("ada", "eng", 0).def;
         let mut routed = authored.as_object().cloned().unwrap_or_default();
-        fleet_owned_config(&mut routed, &def, &mandatory(), &[], web);
+        fleet_owned_config(
+            &mut routed,
+            &def,
+            &mandatory(),
+            &[],
+            web,
+            HERMES_CONFIG_VERSION,
+        );
         routed
     }
 
@@ -5059,7 +5164,7 @@ service:
                 "image".into(),
                 json!(format!("${{HERMES_IMAGE:-{shipped}}}")),
             );
-            apply_service_defaults(&mut seeded);
+            apply_service_defaults(&mut seeded, HERMES_IMAGE_PIN);
             assert_eq!(seeded.get("image"), Some(&pinned), "seeded with {shipped}");
             assert_eq!(seeded.get("stop_grace_period"), Some(&json!("45s")));
         }
@@ -5085,7 +5190,7 @@ service:
             let mut chosen = Map::new();
             chosen.insert("image".into(), json!(mine));
             chosen.insert("stop_grace_period".into(), json!("90s"));
-            apply_service_defaults(&mut chosen);
+            apply_service_defaults(&mut chosen, HERMES_IMAGE_PIN);
             assert_eq!(
                 chosen.get("image"),
                 Some(&json!(mine)),
@@ -5119,11 +5224,81 @@ service:
         // An imported def stamped by an older Hermes: overridden, not kept —
         // an older stamp is what starts a migration of the read-only file.
         routed.insert("_config_version".into(), json!(9));
-        fleet_config_version(&mut routed);
+        fleet_config_version(&mut routed, HERMES_CONFIG_VERSION);
         let text = config_yaml_text("x-eng", 3, &routed);
         assert!(text.contains("\n_config_version: 51\n"), "{text}");
         let back: Value = serde_yaml_ng::from_str(&text).expect("parses");
         assert_eq!(back["_config_version"], json!(HERMES_CONFIG_VERSION));
+    }
+
+    #[test]
+    fn an_agent_on_a_channel_image_is_stamped_with_that_images_own_version() {
+        // The stamp is the image's, not the compiled constant: a newer
+        // Hermes whose DEFAULT_CONFIG moved to 52 must read 52, or it tries
+        // to migrate the read-only file. Before the channel this was always
+        // HERMES_CONFIG_VERSION, whatever the agent ran.
+        let def = target("ada", "eng", 0).def;
+        let mut routed = Map::new();
+        fleet_owned_config(&mut routed, &def, &mandatory(), &[], &[], 52);
+        assert_eq!(routed["_config_version"], json!(52));
+        let text = config_yaml_text("ada-eng", 1, &routed);
+        assert!(text.contains("\n_config_version: 52\n"), "{text}");
+        // And the stamp is a start-time key: moving it moves the label, so
+        // the container is recreated onto the image that reads it.
+        let mut older = Map::new();
+        fleet_owned_config(&mut older, &def, &mandatory(), &[], &[], 51);
+        assert_ne!(
+            start_config_fingerprint(&routed),
+            start_config_fingerprint(&older)
+        );
+    }
+
+    #[test]
+    fn a_stock_chassis_renders_the_planned_image_inside_the_operators_override() {
+        let planned = "nousresearch/hermes-agent:v0.22.6@sha256:d27689bc6e8581ec884a7227c9101fdaebf6c853cff8859020dac14f21452b4d";
+        for shipped in HERMES_IMAGE_DEFAULTS {
+            let mut svc = Map::new();
+            svc.insert(
+                "image".into(),
+                json!(format!("${{HERMES_IMAGE:-{shipped}}}")),
+            );
+            apply_service_defaults(&mut svc, planned);
+            assert_eq!(
+                svc.get("image"),
+                Some(&json!(format!("${{HERMES_IMAGE:-{planned}}}"))),
+                "seeded with {shipped}"
+            );
+        }
+        assert!(is_stock_image(Some(
+            "${HERMES_IMAGE:-nousresearch/hermes-agent:latest}"
+        )));
+        assert!(!is_stock_image(Some("registry.example/hermes:mine")));
+        assert!(!is_stock_image(None));
+        let (digest, tag, repo) = compiled_pin_parts();
+        assert_eq!(
+            format!("{repo}:{tag}@{digest}"),
+            HERMES_IMAGE_PIN,
+            "the pin splits into its parts"
+        );
+        assert_eq!(compiled_plan().config_version, HERMES_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn only_a_developer_agent_on_the_workbench_image_leaves_the_plan() {
+        assert!(runs_planned_image_with(false, None));
+        assert!(runs_planned_image_with(
+            false,
+            Some("ghcr.io/x/workbench:1")
+        ));
+        assert!(runs_planned_image_with(true, None));
+        assert!(
+            runs_planned_image_with(true, Some("  ")),
+            "a blank image is unset"
+        );
+        assert!(!runs_planned_image_with(
+            true,
+            Some("ghcr.io/x/workbench:1")
+        ));
     }
 
     #[test]

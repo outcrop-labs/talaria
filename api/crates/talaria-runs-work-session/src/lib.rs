@@ -50,6 +50,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock};
+use std::time::Duration;
 
 use futures_util::future::BoxFuture;
 use futures_util::stream::StreamExt;
@@ -60,18 +61,25 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 use talaria_agent_auth::now_ms as wall_ms;
+use talaria_gateway::fleet_chat::{
+    CONTROL_WINDOW, HEADERS_WINDOW, Method, agent_request, stop_not_placed, stop_run,
+};
 use talaria_harness::run::{RunContext, RunLedger, real_deps, run_harness};
-use talaria_harness::transport::{LedgerSource, PersonaSession, dispatch_session_transport};
+use talaria_harness::transport::{
+    LedgerSource, PersonaSession, RunStartedTap, dispatch_session_transport,
+};
 use talaria_harness_defs::defs::work_session::{
     dispatch_prompt as dispatch_brief, work_session_harness,
 };
 use talaria_runs_define::{
-    Authority, RunDefinition, RunRow, RunStepContext, StepResult, register_run,
+    Authority, RunDefinition, RunRow, RunState, RunStepContext, StepResult, register_run,
 };
+use talaria_runs_store::{agent_turn_of, set_agent_run_id};
 use talaria_state::AppState;
 use talaria_statuses as statuses;
 use talaria_tasks as tasks;
 use talaria_workflows as workflows;
+use tokio::time::{Instant, timeout_at};
 
 /// The registry key, and the `kind` column on every row this definition has
 /// ever produced. Stable forever — a rename orphans every session mid-flight.
@@ -98,6 +106,21 @@ pub const MAX_SESSION_TURNS: i64 = 12;
 /// default wait) — long enough that the common case has landed, short enough
 /// that a reclaimed session reads as a pause rather than a stall.
 pub const INTERRUPTED_TURN_SETTLE_MS: i64 = 120_000;
+
+const AGENT_STOP_WINDOW: Duration = Duration::from_secs(30);
+
+const AGENT_STOP_POLL: Duration = Duration::from_millis(250);
+
+/// The run statuses Hermes reports for a turn that has ended. Anything else
+/// reads as still running, so a word this build does not know times out rather
+/// than claiming a quiet agent.
+const TURN_OVER: [&str; 5] = [
+    "cancelled",
+    "completed",
+    "failed",
+    "incomplete",
+    "interrupted",
+];
 
 /// Consecutive FAILED tool calls before a turn aborts as thrash. This is
 /// the silence rule's complement, not a replacement: "no total timeout on
@@ -686,14 +709,17 @@ async fn real_turn(
         })
         .await;
     }
+    // Awaited before the request opens: a stop in the gap until `run.started`
+    // must find no id, because the last turn's id would read as this one over.
+    if let Err(e) = set_agent_run_id(&state.pg, &run_id, turn, None).await {
+        tracing::warn!("{LOG} {run_id}: could not clear the agent's run id: {e}");
+    }
     // THE THRASH BRAKE. The turn has no total timeout by law — frames
     // arriving means the turn runs — but the plugin's toolfull frames carry
     // the one verdict the stream itself never shows: whether each tool call
     // SUCCEEDED. A subscriber on this run's watch channel counts
     // consecutive failures and, at TOOL_FAIL_TURN_ABORT, the select below
-    // drops the harness future mid-await — the same interrupt a stop or a
-    // driver death produces (the persona sees the stream go away and stops
-    // its task).
+    // drops the harness future mid-await and stops the turn in the agent.
     // The same subscriber is the turn's second LIVENESS source: the persona's
     // HTTP chunks ping the tap from the transport, but a tool call that
     // streams nothing (a build, a test run) is silent on that wire for its
@@ -747,13 +773,20 @@ async fn real_turn(
     // empty. Everything else about the turn (the pump, the meter, the watch
     // tee, the guard pass) is the same transport it always was.
     let session = session_for_turn(&run_id, turn);
+    let run_started = record_agent_run(state.pg.clone(), run_id.clone(), agent_model.clone(), turn);
     let mut deps = real_deps(&state);
     deps.transport = {
         let state = state.clone();
         Arc::new(move |req| {
             let state = state.clone();
             let session = session.clone();
-            Box::pin(async move { dispatch_session_transport(&state, &req, &session).await })
+            let run_started = run_started.clone();
+            Box::pin(async move {
+                let turn = async move {
+                    dispatch_session_transport(&state, &req, &session, &run_started).await
+                };
+                read_on_when_let_go(turn, HEADERS_WINDOW).await?
+            })
         })
     };
     let turn_ctx = RunContext {
@@ -779,9 +812,11 @@ async fn real_turn(
         }
         Ok(n) = &mut breach_rx => {
             // The turn IS still streaming — that is the point. Dropping the
-            // harness future drops the stream, the persona's interrupt; the
-            // transcript of everything the turn did say is captured first
-            // so the abort is reviewable, not a hole in the record.
+            // harness future only drops the stream: the agent's loop runs on
+            // until it is told to stop. The transcript of everything the turn
+            // did say is then captured so the abort is reviewable, not a hole
+            // in the record.
+            stop_agent_turn(&state.pg, &run_id).await;
             capture_turn_transcript(
                 &state,
                 &run_id,
@@ -817,6 +852,180 @@ async fn real_turn(
         text,
         findings: run.findings,
     })
+}
+
+/// A run cancelled before its turn named itself has no other stop: the one the
+/// cancel sent had no id to send it to. That stop is spawned so it cannot hold
+/// back the write of a later id.
+fn record_agent_run(pg: PgPool, run_id: String, agent_model: String, turn: i64) -> RunStartedTap {
+    in_event_order(move |agent_run_id: String| {
+        let pg = pg.clone();
+        let run_id = run_id.clone();
+        let agent_model = agent_model.clone();
+        async move {
+            match set_agent_run_id(&pg, &run_id, turn, Some(&agent_run_id)).await {
+                Ok(Some(RunState::Cancelled)) => {
+                    tokio::spawn(async move {
+                        stop_named_turn(&run_id, &agent_model, Some(&agent_run_id)).await;
+                    });
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("{LOG} {run_id}: could not record the agent's run id: {e}");
+                }
+            }
+        }
+    })
+}
+
+/// One writer per turn. The gateway's lost-turn repair names two runs in one
+/// stream, and a spawn per event could let the refused run's id land last,
+/// leaving a stop aimed at a run that is over.
+fn in_event_order<Write, Written>(write: Write) -> RunStartedTap
+where
+    Write: Fn(String) -> Written + Send + 'static,
+    Written: Future<Output = ()> + Send,
+{
+    let (ids, mut named) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(agent_run_id) = named.recv().await {
+            write(agent_run_id).await;
+        }
+    });
+    Arc::new(move |agent_run_id: &str| {
+        let _ = ids.send(agent_run_id.to_string());
+    })
+}
+
+/// Keep reading a turn its caller let go of, for at most `window`. Cancelling a
+/// run drops the caller, and only this stream can deliver `run.started`, so a
+/// turn still opening would otherwise run in Hermes with nothing able to name it.
+async fn read_on_when_let_go<T: Send + 'static>(
+    turn: impl Future<Output = T> + Send + 'static,
+    window: Duration,
+) -> Result<T, String> {
+    let (mut reply, answer) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        tokio::pin!(turn);
+        tokio::select! {
+            out = &mut turn => {
+                let _ = reply.send(out);
+            }
+            () = reply.closed() => {
+                let _ = tokio::time::timeout(window, turn).await;
+            }
+        }
+    });
+    answer.await.map_err(|e| e.to_string())
+}
+
+/// What a stop did to a work session's turn in the agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentStop {
+    /// No driver ever took this run, so no turn can exist.
+    NoTurn,
+    /// The agent reports the turn over, in its own word for how it ended.
+    Ended(String),
+    /// The turn had not named itself, so no stop could be sent, or the agent
+    /// refused it, never answered, or was still working when the window closed.
+    /// The turn may still be running.
+    Unconfirmed(String),
+}
+
+/// End a work session's turn in the agent, and wait until it says so. Cancelling
+/// the run drops the stream, and Hermes runs a turn to its end whether anyone
+/// reads it or not, so only this stops the agent's tools. Reads the id from the
+/// row, so it works from any instance and after a restart. A failure is logged
+/// and returned, never raised: the run is already over on Talaria's side.
+pub async fn stop_agent_turn(pg: &PgPool, run_id: &str) -> AgentStop {
+    let (agent_model, agent_run_id) = match agent_turn_of(pg, run_id).await {
+        Ok(Some(turn)) => turn,
+        Ok(None) => return AgentStop::NoTurn,
+        Err(e) => {
+            tracing::warn!("{LOG} {run_id}: could not read the agent's run id: {e}");
+            return AgentStop::Unconfirmed(e.to_string());
+        }
+    };
+    stop_named_turn(run_id, &agent_model, agent_run_id.as_deref()).await
+}
+
+async fn stop_named_turn(run_id: &str, agent_model: &str, agent_run_id: Option<&str>) -> AgentStop {
+    let outcome = settle_agent_turn(
+        agent_run_id,
+        |id| stop_run(agent_model, id),
+        |id| agent_run_status(agent_model, id),
+        AGENT_STOP_WINDOW,
+    )
+    .await;
+    match &outcome {
+        AgentStop::NoTurn => {}
+        AgentStop::Ended(how) => {
+            tracing::info!("{LOG} {run_id}: the turn on {agent_model} ended: {how}");
+        }
+        AgentStop::Unconfirmed(why) => {
+            tracing::warn!("{LOG} {run_id}: the stop on {agent_model} is unconfirmed: {why}");
+        }
+    }
+    outcome
+}
+
+async fn agent_run_status(agent_model: &str, agent_run_id: &str) -> Result<String, String> {
+    let answer = agent_request(
+        agent_model,
+        Method::GET,
+        &format!("/v1/runs/{agent_run_id}"),
+        None,
+        CONTROL_WINDOW,
+    )
+    .await?;
+    answer.body["status"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("run status answered {}", answer.status))
+}
+
+/// A stop Hermes cannot place yet is sent again: it announces `run.started`
+/// before it binds the turn's admission.
+async fn settle_agent_turn<'a, Stop, Stopped, Read, Status>(
+    agent_run_id: Option<&'a str>,
+    stop: Stop,
+    status: Read,
+    window: Duration,
+) -> AgentStop
+where
+    Stop: Fn(&'a str) -> Stopped,
+    Stopped: Future<Output = Result<(), String>>,
+    Read: Fn(&'a str) -> Status,
+    Status: Future<Output = Result<String, String>>,
+{
+    let Some(agent_run_id) = agent_run_id else {
+        return AgentStop::Unconfirmed("the turn has not named itself".into());
+    };
+    let deadline = Instant::now() + window;
+    let no_answer = || AgentStop::Unconfirmed("no answer inside the stop window".into());
+    loop {
+        match timeout_at(deadline, stop(agent_run_id)).await {
+            Err(_) => return no_answer(),
+            Ok(Ok(())) => break,
+            Ok(Err(why)) if !stop_not_placed(&why) => return AgentStop::Unconfirmed(why),
+            Ok(Err(why)) if Instant::now() + AGENT_STOP_POLL >= deadline => {
+                return AgentStop::Unconfirmed(why);
+            }
+            Ok(Err(_)) => tokio::time::sleep(AGENT_STOP_POLL).await,
+        }
+    }
+    loop {
+        let last = match timeout_at(deadline, status(agent_run_id)).await {
+            Err(_) => return no_answer(),
+            Ok(Ok(word)) if TURN_OVER.contains(&word.as_str()) => return AgentStop::Ended(word),
+            Ok(Ok(word)) => format!("still {word}"),
+            Ok(Err(why)) => why,
+        };
+        if Instant::now() + AGENT_STOP_POLL >= deadline {
+            return AgentStop::Unconfirmed(last);
+        }
+        tokio::time::sleep(AGENT_STOP_POLL).await;
+    }
 }
 
 /// A spawned task that ends when its handle does. A dropped `JoinHandle`
@@ -2683,6 +2892,193 @@ mod tests {
         .unwrap_err();
         assert_eq!(err, "the boards read died");
         assert!(rec.lines.lock().unwrap().is_empty());
+    }
+
+    fn counted_stop(
+        calls: &Arc<Mutex<Vec<String>>>,
+    ) -> impl Fn(&str) -> std::future::Ready<Result<(), String>> {
+        let calls = calls.clone();
+        move |id| {
+            calls.lock().unwrap().push(id.to_string());
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancel_with_a_known_id_stops_the_agent_once_and_waits_for_the_end() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let reads = Arc::new(Mutex::new(vec!["cancelled", "running"]));
+        let outcome = settle_agent_turn(
+            Some("run_7"),
+            counted_stop(&calls),
+            |_| {
+                let word = reads.lock().unwrap().pop().unwrap().to_string();
+                std::future::ready(Ok(word))
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(outcome, AgentStop::Ended("cancelled".into()));
+        assert_eq!(*calls.lock().unwrap(), ["run_7"]);
+        assert!(reads.lock().unwrap().is_empty(), "it read until the end");
+    }
+
+    #[tokio::test]
+    async fn a_turn_with_no_id_yet_is_unconfirmed_and_calls_nothing_on_the_agent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let outcome = settle_agent_turn(
+            None,
+            counted_stop(&calls),
+            |_| std::future::ready(Err("never read".to_string())),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(
+            outcome,
+            AgentStop::Unconfirmed("the turn has not named itself".into())
+        );
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_stop_is_reported_and_reads_nothing() {
+        let outcome = settle_agent_turn(
+            Some("run_7"),
+            |_| std::future::ready(Err("502".to_string())),
+            |_| -> std::future::Ready<Result<String, String>> {
+                panic!("a refused stop has nothing to wait for")
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(outcome, AgentStop::Unconfirmed("502".into()));
+    }
+
+    #[tokio::test]
+    async fn a_turn_still_running_past_the_window_is_unconfirmed_not_ended() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let outcome = settle_agent_turn(
+            Some("run_7"),
+            counted_stop(&calls),
+            |_| std::future::ready(Ok("stopping".to_string())),
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(outcome, AgentStop::Unconfirmed("still stopping".into()));
+    }
+
+    #[tokio::test]
+    async fn a_slow_status_cannot_end_the_stop_after_its_deadline() {
+        let started = tokio::time::Instant::now();
+        let outcome = settle_agent_turn(
+            Some("run_7"),
+            |_| async { Ok(()) },
+            |_| async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Ok("cancelled".to_string())
+            },
+            Duration::from_millis(100),
+        )
+        .await;
+        assert!(
+            matches!(outcome, AgentStop::Unconfirmed(_)),
+            "an answer past the deadline proves nothing: {outcome:?}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(300));
+    }
+
+    #[tokio::test]
+    async fn a_slow_stop_spends_the_same_deadline() {
+        let started = tokio::time::Instant::now();
+        let outcome = settle_agent_turn(
+            Some("run_7"),
+            |_| async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Ok(())
+            },
+            |_| async { Ok("cancelled".to_string()) },
+            Duration::from_millis(100),
+        )
+        .await;
+        assert!(matches!(outcome, AgentStop::Unconfirmed(_)), "{outcome:?}");
+        assert!(started.elapsed() < Duration::from_millis(300));
+    }
+
+    #[tokio::test]
+    async fn a_stop_the_agent_cannot_place_yet_is_sent_again() {
+        let calls = Arc::new(Mutex::new(0));
+        let outcome = settle_agent_turn(
+            Some("run_7"),
+            |_| {
+                let mut calls = calls.lock().unwrap();
+                *calls += 1;
+                let answer = if *calls < 3 {
+                    Err("409 not_found".to_string())
+                } else {
+                    Ok(())
+                };
+                std::future::ready(answer)
+            },
+            |_| std::future::ready(Ok("cancelled".to_string())),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(outcome, AgentStop::Ended("cancelled".into()));
+        assert_eq!(*calls.lock().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_repaired_turn_keeps_the_id_its_stream_named_last() {
+        let row = Arc::new(Mutex::new(None));
+        let tap = {
+            let row = row.clone();
+            in_event_order(move |id: String| {
+                let row = row.clone();
+                async move {
+                    if id == "run_refused" {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    *row.lock().unwrap() = Some(id);
+                }
+            })
+        };
+        tap("run_refused");
+        tap("run_replacement");
+        drop(tap);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(row.lock().unwrap().as_deref(), Some("run_replacement"));
+    }
+
+    #[tokio::test]
+    async fn a_turn_let_go_of_is_read_on_until_it_names_itself() {
+        let named = Arc::new(Mutex::new(None));
+        let turn = {
+            let named = named.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                *named.lock().unwrap() = Some("run_late");
+            }
+        };
+        let reader = read_on_when_let_go(turn, Duration::from_secs(5));
+        let _ = tokio::time::timeout(Duration::from_millis(1), reader).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(*named.lock().unwrap(), Some("run_late"));
+    }
+
+    #[tokio::test]
+    async fn a_turn_let_go_of_is_not_read_past_its_window() {
+        let finished = Arc::new(Mutex::new(false));
+        let turn = {
+            let finished = finished.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                *finished.lock().unwrap() = true;
+            }
+        };
+        let reader = read_on_when_let_go(turn, Duration::from_millis(50));
+        let _ = tokio::time::timeout(Duration::from_millis(1), reader).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(!*finished.lock().unwrap());
     }
 
     #[tokio::test]

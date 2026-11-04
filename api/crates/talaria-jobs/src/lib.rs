@@ -144,8 +144,23 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
             async move { talaria_fleet_reconcile::apply_agent_changes(&pg, &sb, &depts).await },
         )
     }));
-    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
-        Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
+    // The deploy's fleet roll recreates every running agent on the new
+    // render. It waits until the agent image channel has adopted the fleet
+    // (each agent assigned the Hermes it runs), so the roll restarts agents
+    // on their own Hermes and the channel alone moves it, by its rules — or
+    // until the channel's bound, when it goes anyway.
+    let booted = std::time::Instant::now();
+    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(move |pg, sb| {
+        Box::pin(async move {
+            let adopted = talaria_hermes_channel::fleet_adopted(&pg).await;
+            if !talaria_hermes_channel::deploy_roll_may_go(adopted, booted.elapsed()) {
+                return Err("waiting for the agent image channel to keep each agent on the Hermes it runs, so this roll moves no agent's Hermes".to_string());
+            }
+            // Past the wait, an agent the channel still has not recorded is
+            // left exactly as it is, never recreated onto the compiled pin.
+            let skip = talaria_hermes_channel::unadopted_departments(&pg).await;
+            talaria_fleet_reconcile::roll_running_agents_except(&pg, &sb, &skip).await
+        })
     }));
     // THE ANNOUNCE EDGE FOR A QUEUED GOOGLE WRITE. `queue_action` calls this
     // the instant a confirm-send lands, so the person who has to approve it
@@ -849,6 +864,19 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_update_job::register_update_reconcile_job(Arc::new(talaria_update_job::UpdateDeps {
         state: state.clone(),
     }));
+    // The agent image follows Hermes' stable channel: the check, the
+    // preparation, the canary and the one-at-a-time rollout, a step a
+    // minute (talaria-hermes-channel). Optional like the update pair: its
+    // absence leaves every agent on the image it runs.
+    talaria_hermes_channel::boot(&state.pg).await;
+    talaria_hermes_channel::register_job(Arc::new(talaria_hermes_channel::ChannelDeps {
+        pg: state.pg.clone(),
+        sb: sb.clone(),
+        notify: talaria_notify::NotifyDeps {
+            pg: state.pg.clone(),
+            realtime: rt.clone(),
+        },
+    }));
 }
 
 /// The census kinds this build cannot define. Empty is arming's
@@ -1091,6 +1119,16 @@ mod tests {
         assert!(
             !REQUIRED_JOBS.contains(&JobName::UpdateReconcile),
             "update-reconcile must stay optional: dormant installs legitimately run it as a no-op"
+        );
+        // The agent image's stable channel: out of the table, every agent
+        // stays on the image it runs forever, with nothing to say so.
+        assert!(
+            names.contains(&JobName::HermesChannel),
+            "hermes-channel fell out of the job table — agents would never follow Hermes stable"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::HermesChannel),
+            "hermes-channel must stay optional: an operator's HERMES_IMAGE legitimately turns it off"
         );
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This

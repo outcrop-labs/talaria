@@ -1454,6 +1454,12 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
+            "/api/fleet/hermes",
+            get(talaria_routes_fleet::fleet::fleet_hermes::get)
+                .post(talaria_routes_fleet::fleet::fleet_hermes::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
             "/api/fleet/federate",
             post(talaria_routes_fleet::fleet::fleet_federate::post).fallback(|| async { method_not_allowed("POST") }),
         )
