@@ -85,6 +85,10 @@ pub struct ChannelPost<'a> {
     pub content: &'a str,
     /// The thread it replies in, when it is a thread reply.
     pub thread_root_id: Option<&'a str>,
+    /// The message itself, when the caller has it. A thread reply's
+    /// followers whose thread cursor already covers it file no
+    /// `thread-reply` row (see `notify_channel_post`); without it, they do.
+    pub message_id: Option<&'a str>,
 }
 
 /// THE post's notification fan-out. Every producer below reads each member's
@@ -230,8 +234,33 @@ pub async fn notify_channel_post(deps: &NotifyDeps, post: &ChannelPost<'_>) {
             body: Some(&body),
             href: Some(&href),
         };
+        // ALREADY READ IN ITS THREAD. A follower whose thread cursor covers
+        // this reply's seq watched it land: an agent's reply is inserted
+        // `streaming`, with its seq, and an open thread panel posts the read
+        // while it streams, but this fan-out runs only at completion. A row
+        // filed now would stay lit beside a badge that reads 0. A failed read
+        // files as before, so nobody misses a reply.
+        let covered: Vec<String> = match post.message_id {
+            Some(message_id) => sqlx::query_scalar(
+                "select tr.user_id::text from channel_thread_reads tr \
+                 join channel_messages m on m.id = $2::uuid \
+                 where tr.thread_root_id = $1::uuid and tr.last_read_seq >= m.seq",
+            )
+            .bind(root)
+            .bind(message_id)
+            .fetch_all(&deps.pg)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("[channels] thread-reply cursor read failed: {e}");
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
         for user in people {
-            if told.contains(&user) || level(&user) == Some(ChannelLevel::Nothing) {
+            if told.contains(&user)
+                || level(&user) == Some(ChannelLevel::Nothing)
+                || covered.contains(&user)
+            {
                 continue;
             }
             // ACCESS AT NOTIFY TIME (C24): a member row is access; anyone
@@ -478,6 +507,7 @@ pub async fn notify_dm_message(
         sender: MentionSender::of(sender_user_id, sender_label),
         content,
         thread_root_id: None,
+        message_id: None,
     };
     dm_rows(deps, &post, &listeners, &members).await;
 }
@@ -501,6 +531,7 @@ pub async fn notify_user_mentions(
             sender: MentionSender::of(sender_user_id, sender_label),
             content,
             thread_root_id: None,
+            message_id: None,
         },
     )
     .await;
@@ -1316,6 +1347,7 @@ async fn stream_reply(
                 let channel_name = channel_name.to_string();
                 let model = model.to_string();
                 let thread_root_id = thread_root_id.clone();
+                let message_id = message_id.to_string();
                 tokio::spawn(async move {
                     let label = describe_agent(&model).label;
                     notify_channel_post(
@@ -1330,6 +1362,7 @@ async fn stream_reply(
                             },
                             content: &body,
                             thread_root_id: thread_root_id.as_deref(),
+                            message_id: Some(&message_id),
                         },
                     )
                     .await;

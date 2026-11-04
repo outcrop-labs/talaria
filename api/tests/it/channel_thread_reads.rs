@@ -15,7 +15,9 @@ use talaria_api::channels::{
     channel_read_caught_up, channel_thread_read_caught_up, channel_unread_total, create_channel,
     list_channels, list_shared_with_person, mark_channel_read, mark_channel_thread_read,
 };
-use talaria_api::notify::clear_channel_thread_notifications;
+use talaria_api::notify::{NotifyDeps, clear_channel_thread_notifications};
+use talaria_channel_replies::{ChannelPost, notify_channel_post};
+use talaria_mentions::MentionSender;
 
 /// Delete every fixture person under one email prefix; the cascade takes
 /// their channels, members, thread reads, messages and bell rows with them.
@@ -305,6 +307,77 @@ async fn caught_up_gates_read_a_thread_read_as_the_badge_does() {
     );
 
     cleanup(&pg, "chanthr-gates").await;
+}
+
+/// A follower who already read a reply in its thread is not rung for it. An
+/// agent's reply is inserted `streaming`, with its seq, at the start; an open
+/// thread panel posts the read while it streams; the fan-out runs only at
+/// completion. Filing then would leave the bell lit beside a badge reading 0.
+/// A follower whose cursor is behind still gets the row, and so does a
+/// caller that does not say which message it is.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_reply_read_in_its_thread_rings_no_one_who_watched_it() {
+    let pg = pg().await;
+    cleanup(&pg, "chanthr-watch").await;
+    let ada_email = "chanthr-watch@test.invalid";
+    let ada = person(&pg, "chanthr-watch", ada_email, "Watch Ada").await;
+    let cy_email = "chanthr-watch-cy@test.invalid";
+    let cy = person(&pg, "chanthr-watch-cy", cy_email, "Watch Cy").await;
+    let channel = create_channel(&pg, &ada, "chanthr-watch-room", None, "room")
+        .await
+        .unwrap()
+        .id;
+    add_member(&pg, &channel, &cy).await;
+    let href = format!("/comms/channel/{channel}");
+    let thread_rows = |user: String| {
+        let pg = pg.clone();
+        let href = href.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "select count(*) from notifications \
+                 where user_id = $1::uuid and kind = 'thread-reply' and href = $2",
+            )
+            .bind(user)
+            .bind(href)
+            .fetch_one(&pg)
+            .await
+            .unwrap()
+        }
+    };
+
+    // Ada's root and Cy's reply make both of them the thread's people. The
+    // agent's reply lands at seq 3; Ada's panel read it while it streamed,
+    // and Cy's cursor stops at their own reply.
+    let root = land(&pg, &channel, 1, ada_email, "complete", None).await;
+    land(&pg, &channel, 2, cy_email, "complete", Some(&root)).await;
+    let reply = land(&pg, &channel, 3, "chanthr-agent", "complete", Some(&root)).await;
+    mark_channel_thread_read(&pg, &root, &ada, 3).await.unwrap();
+    mark_channel_thread_read(&pg, &root, &cy, 2).await.unwrap();
+
+    let deps = NotifyDeps::publishing(pg.clone(), None);
+    let agent = MentionSender {
+        user_id: "",
+        label: "Watch Agent",
+        agent_model: Some("chanthr-agent"),
+    };
+    let post = |message_id| ChannelPost {
+        channel_id: &channel,
+        channel_name: "chanthr-watch-room",
+        sender: agent,
+        content: "the checklist is green",
+        thread_root_id: Some(&root),
+        message_id,
+    };
+    notify_channel_post(&deps, &post(Some(reply.as_str()))).await;
+    assert_eq!(thread_rows(ada.clone()).await, 0, "Ada watched it land");
+    assert_eq!(thread_rows(cy.clone()).await, 1, "Cy's cursor is behind");
+
+    // Without the message, nothing says what was read: the row files.
+    notify_channel_post(&deps, &post(None)).await;
+    assert_eq!(thread_rows(ada.clone()).await, 1);
+
+    cleanup(&pg, "chanthr-watch").await;
 }
 
 /// A thread read to its end clears that thread's OWN bell rows — and only
