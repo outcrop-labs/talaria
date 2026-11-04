@@ -16,6 +16,7 @@ use talaria_api::runs::define::{
 };
 use talaria_api::runs::store::{
     AnswerOutcome, CancelOutcome, ClaimOutcome, NewRun, PgRunStore, RunStore, WriteFailure,
+    agent_turn_of, set_agent_run_id,
 };
 /// One run of the test kind; earlier crashed runs of this suite are swept so
 /// the unique approval_key index never bites the next attempt.
@@ -235,6 +236,65 @@ async fn the_cas_lifecycle_refuses_every_wrong_writer() {
     ));
 
     cleanup(&pg).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_late_turn_cannot_overwrite_a_newer_turns_agent_run_id() {
+    let pg = pg().await;
+    let store = PgRunStore::new(pg.clone());
+    let id = uuid::Uuid::new_v4().to_string();
+    store
+        .insert(NewRun {
+            id: id.clone(),
+            kind: "rust-store-agent-run-test".into(),
+            owner_user_id: None,
+            subject_type: None,
+            subject_id: None,
+            input: json!({"agentModel": "atlas"}),
+            phase: "starting".into(),
+        })
+        .await
+        .unwrap();
+    let token = "owner-a";
+    store.claim(&id, token, 60_000).await.unwrap();
+    store
+        .checkpoint(
+            &id,
+            token,
+            json!({"stage": "send", "turn": 2}),
+            "t".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let state = set_agent_run_id(&pg, &id, 2, Some("run_new"))
+        .await
+        .unwrap();
+    assert_eq!(state, Some(RunState::Running));
+    set_agent_run_id(&pg, &id, 1, Some("run_old"))
+        .await
+        .unwrap();
+
+    let (_, named) = agent_turn_of(&pg, &id).await.unwrap().unwrap();
+    assert_eq!(named.as_deref(), Some("run_new"));
+
+    store.cancel(&id, None).await.unwrap();
+    let state = set_agent_run_id(&pg, &id, 1, Some("run_old"))
+        .await
+        .unwrap();
+    assert_eq!(
+        state,
+        Some(RunState::Cancelled),
+        "a refused write still reports the cancel, so its turn gets stopped"
+    );
+    sqlx::query("delete from runs where id = $1::uuid")
+        .bind(&id)
+        .execute(&pg)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
