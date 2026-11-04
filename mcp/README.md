@@ -34,6 +34,7 @@ guardrail prose rules below are checked against.
 | `fetch_attachment` | Read an attached upload: text as text, images as an image, other binaries as metadata |
 | `create_ticket` | Create a ticket → lands in **inbox**, unassigned |
 | `triage_ticket` | Priority, effort, labels, description, due date, and **forward-only** status moves using the board's own status keys (see below) |
+| `move_ticket` | Move a ticket to another board the agent is on — re-keyed there (the old ref still resolves); labels the new board lacks are dropped and assignees not on it unassigned, both named in `moved`; never into a closed or pickup column; `preview: true` moves nothing |
 | `comment` | Comment on a ticket — lands in the ticket's **discussion thread** (the room where the agent and the board's humans talk); the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
 | `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
 | `add_time` | Add seconds to the auto-accumulated time-spent. Live tickets only |
@@ -278,6 +279,7 @@ itself:
 | --- | --- |
 | the ticket patch (`triage_ticket`, `report_outcome`, `add_time`) | `agent_safe_patch` inside `updateTask` |
 | `add_dependency` (both ends), `report_gap`'s `taskId` | their own routes — they never reach `updateTask` |
+| `move_ticket` (the SOURCE ticket; the destination asks `board_allows_agent`) | `move_task` (`api/crates/talaria-tasks/src/moving.rs`) — it never reaches `updateTask`, so it asks the predicate itself, plus the review / blocked / closed-column / pickup-queue rules in `pick_move_status` |
 | `comment` | its route, with intent `comment` — see below |
 | the workbench MCP's ticket audit lines, **including `finish_job --abandon`** | `logTicket` → `authorizeTicket` (`api/crates/talaria-workbench-mcp/src/lib.rs`) |
 | the ticket a workbench verb names in its arguments | `ticketArg` → `authorizeTicket` — parse and gate are one call, so a verb cannot hold an ungated `taskId` |
