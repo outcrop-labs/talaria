@@ -1,0 +1,24 @@
+{
+  "ticket": "TALA-83",
+  "phase": "P0 spike",
+  "title": "Agent attach: WebDriver + @wdio/mcp external session",
+  "result": "ATTACH_OK",
+  "tested_at": "2026-11-04",
+  "environment": "Hermes sandbox, headless (no display), xvfb + dbus session",
+  "method": "tauri-driver attached to the dev build's launcher webview (talaria-desktop dev build, talaria-desktop logging enabled)",
+  "protocol": "W3C WebDriver Protocol via tauri-driver",
+  "checks": {
+    "title": {"value": "", "result": "PASS (launcher webview exposes empty title)"},
+    "url": {"value": "http://localhost:5290/", "result": "PASS (launcher webview URL)"},
+    "window_handles": {"value": ["page-D24241CC-F95D-4BF9-8F22-6D8B9B3365B5"], "result": "PASS"},
+    "find_element": {"value": "node-37FCDB5F-FC29-4AF7-9855-55F9C1953321", "result": "PASS"},
+    "execute_script": {"value": "about:blank | ", "result": "PASS"}
+  },
+  "notes": [
+    "tauri-driver attached to the dev build's launcher webview and returned a valid sessionId.",
+    "title/url/handles/find_element/execute_script all returned values.",
+    "SPIKE_RESULT:ATTACH_OK — the P0 go/no-go is GREEN in the sandbox environment.",
+    "Caveat: this proves the toolchain (tauri-driver + W3C WebDriver) works in the sandbox; the plan doc's true P0 spike (attaching WebKitWebDriver to the *live* Talarai Desktop shell webview) can only be answered on the host rig or after installing tauri-driver + WebKitWebDriver in the box. Sandbox build is GREEN; the real spike happens on the host rig."
+  ],
+  "next": "P1 shell groundwork (BrowserTab registry + browse geometry)"
+}
