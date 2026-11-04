@@ -175,9 +175,27 @@
   // `docs`, so until then there is nothing to open but the section, which
   // the chevron-free arrival path opens via the same store. Absent ids are
   // harmless (absent = collapsed default), and openPath never closes.
+  //
+  // THE LATCH, because the effect and the user fight otherwise. The effect
+  // reads the store, so a manual collapse re-runs it — and with a selected
+  // doc still under that branch it would snap the branch right back open,
+  // making the chevron dead while anything is selected. So the effect opens
+  // a (space, doc) pair's chain ONCE: after that, the pair is latched and
+  // the only writers that close its chain are the user's chevrons, whose
+  // call stands. A different pair — a new doc, another space, the same doc
+  // re-selected after a deselect — resets the latch and is handled fresh.
+  // The loading wait stays unconditional: the latch only guards the
+  // openPath call, never the wait.
+  let latched: { space: string | null; doc: string } | null = null
   $effect(() => {
-    if (!onKnowledge || !docId) return
+    if (!onKnowledge) return
+    if (!docId) {
+      latched = null // deselected: the next selection is a fresh arrival
+      return
+    }
     if (docsQuery.isLoading || !docs.length) return
+    const space = spaceId ?? activeSpace?.id ?? null
+    if (latched?.space === space && latched.doc === docId) return // handled once; collapses since are the user's
     const parentOf = new Map(docs.map((d) => [d.id, d.parentId ?? null]))
     if (!parentOf.has(docId)) return // not this space's tree (or gone): nothing honest to open
     const chain: string[] = []
@@ -185,9 +203,10 @@
       if (!parentOf.has(cur)) break // stale parent: open what exists, no further
       chain.push(cur)
     }
-    if (chain.some((id) => !kbTreeState.docExpanded(id)) || !kbTreeState.sectionExpanded(spaceId ?? activeSpace?.id ?? '')) {
-      kbTreeState.openPath(chain, spaceId ?? activeSpace?.id ?? '')
+    if (chain.some((id) => !kbTreeState.docExpanded(id)) || !kbTreeState.sectionExpanded(space ?? '')) {
+      kbTreeState.openPath(chain, space ?? '')
     }
+    latched = { space, doc: docId }
   })
   $effect(() => {
     if (!onKnowledge) return
@@ -357,6 +376,11 @@
               space={s}
               active={activeSpace?.id === s.id}
               onSelect={() => {
+                // Open the section too (TALA-92): clicking a space's name is
+                // "show me this space", and the doc tree IS the space in the
+                // sidebar — the shipped muscle memory. The chevron alone
+                // collapses; this only ever opens.
+                kbTreeState.toggleSection(s.id, true)
                 setLoc(s.id, null) // open the space's own overview
               }}
               onRename={(name) => void renameSpace(s.id, name)}
