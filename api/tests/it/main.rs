@@ -90,6 +90,7 @@ mod unreads;
 mod update_live;
 mod uploads_live;
 mod users_link;
+mod work_sessions_history_live;
 mod workbench_queue;
 mod workchains_live;
 mod yaml_stringify;
