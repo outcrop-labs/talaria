@@ -1502,6 +1502,37 @@ pub async fn session_overview(agent_model: &str, conversation_id: &str) -> Optio
     })
 }
 
+/// Every row of a Hermes session, oldest first, asked of the agent's own
+/// container page by page on the control window. `None` is any failure, a
+/// 404 included; a page that comes back short is the end. The 500-row page
+/// is Hermes' ceiling, and the page cap is a long session's: a work session
+/// of twelve turns and a few hundred tool calls fits in two.
+pub async fn session_messages(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
+    const PAGE: usize = 500;
+    const PAGES: usize = 8;
+    let entry = agent_entry(agent_model).await?;
+    let mut rows = Vec::new();
+    for page in 0..PAGES {
+        let path = format!(
+            "/api/sessions/{session_id}/messages?limit={PAGE}&offset={}&order=oldest",
+            page * PAGE
+        );
+        let body = control_get_json(&entry, &path, agent_model).await?;
+        if body.get("session_id").and_then(Value::as_str) != Some(session_id) {
+            tracing::debug!(
+                "[fleet_chat] {agent_model}: session {session_id} resolved to another; its rows are not this run's"
+            );
+            return None;
+        }
+        let data = body.get("data")?.as_array()?;
+        rows.extend(data.iter().cloned());
+        if data.len() < PAGE {
+            return Some(rows);
+        }
+    }
+    Some(rows)
+}
+
 /// A read through the agent's own door, parsed as json — bounded by the
 /// control window. Only the STATUS of a refusal is logged: an agent's own
 /// words can be in that body, and this is a session's transcript.
