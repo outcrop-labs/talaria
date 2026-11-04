@@ -406,7 +406,8 @@ thing that changes an agent's Hermes, and it keeps what it finds. With the defau
   rollout can go back to it, a week after it was found. The compiled pin is never
   pruned. A stable release before the current one stays 3 days after the new one is
   good. An image any container uses, on any stack, is never removed (`docker image rm`
-  is not forced).
+  is not forced) — so an agent stopped on the older release keeps the old `:latest` on
+  the host until someone starts it (it then starts on the fleet's image).
 
 Pre-pulling the pin before an upgrade (`docker pull <the pin>`) still saves night 1 its
 download.
