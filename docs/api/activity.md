@@ -7,13 +7,17 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-16 routes.
+19 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/activity`](#apiactivity) | GET | `session` |
 | [`/api/alerts`](#apialerts) | GET | `session` |
 | [`/api/cost`](#apicost) | GET | `session` + `view:/observability` |
+| [`/api/cost/prices`](#apicostprices) | PUT | `admin` |
+| [`/api/cost/prices`](#apicostprices) | DELETE | `admin` |
+| [`/api/cost/unpriced`](#apicostunpriced) | GET | `admin` |
+| [`/api/cost/unpriced/lookup`](#apicostunpricedlookup) | POST | `admin` |
 | [`/api/history`](#apihistory) | GET | `session` |
 | [`/api/home`](#apihome) | GET | `session` |
 | [`/api/host`](#apihost) | GET | `session` + `view:/observability` |
@@ -62,6 +66,85 @@ Source: [`api/crates/talaria-routes-comms/src/activity/cost.rs`](../../api/crate
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `view:/observability` | — | `…` | 200 | — |
+
+## `/api/cost/prices`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/cost_prices.rs`](../../api/crates/talaria-routes-comms/src/activity/cost_prices.rs)
+
+> /api/cost/prices. An admin's pricing decision for one (endpoint, model)
+> no published price covers. PUT `mode: "manual"` sets a rate per 1M
+> input / output tokens (cache-write and cache-read optional; the input
+> rate times 1.25 / 0.1 when absent); PUT `mode: "included"` marks it
+> included in a plan or free — priced at $0 and labelled `included`, never
+> a silent zero. DELETE removes the decision (404 when there is none).
+> The endpoint is the ledger's own text, "" for usage booked without one,
+> so a deleted endpoint's history can still be priced. Pricing is
+> read-time: every past row of the model re-prices at once, and each
+> answer says how (`repriced`). Precedence: the provider's own charge,
+> then included, then a published price, then a manual rate.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `admin` | [body](#put-apicostprices-body) | `{price, repriced}` | 200, 400 | audit |
+| DELETE | `admin` | [body](#delete-apicostprices-body) | `{ok, repriced}` | 200, 400, 404 | audit |
+
+### PUT `/api/cost/prices` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `mode` | `enum(manual|included)` |  |
+| `priceInPerMtok` | `number? nullable(0, 100000)` |  |
+| `priceOutPerMtok` | `number? nullable(0, 100000)` |  |
+| `priceCacheWritePerMtok` | `number? nullable(0, 100000)` |  |
+| `priceCacheReadPerMtok` | `number? nullable(0, 100000)` |  |
+| `note` | `string? nullish(200)` |  |
+| `endpoint` | `string(0, 200)` |  |
+| `model` | `string(1, 300)` |  |
+
+### DELETE `/api/cost/prices` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `endpoint` | `string(0, 200)` |  |
+| `model` | `string(1, 300)` |  |
+
+## `/api/cost/unpriced`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/cost_unpriced.rs`](../../api/crates/talaria-routes-comms/src/activity/cost_unpriced.rs)
+
+> GET /api/cost/unpriced. Every cloud model whose usage in the last 30
+> days has no price — its endpoint, model, token counts and the reason
+> (no published price found, the price source didn't answer, not looked
+> up yet, the endpoint is gone) — and every admin pricing decision with
+> what it prices now. Admins only: the fix is theirs to make.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{unpriced, prices}` | 200 | — |
+
+## `/api/cost/unpriced/lookup`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/cost_unpriced_lookup.rs`](../../api/crates/talaria-routes-comms/src/activity/cost_unpriced_lookup.rs)
+
+> POST /api/cost/unpriced/lookup. Retry the published-price lookup for one
+> (endpoint, model) now, and wait for it: OpenRouter's public catalog,
+> plus that model's per-endpoint prices on an OpenRouter endpoint. Answers
+> whether the model is priced now and, when it is not, the reason the
+> lookup recorded (the source's own words when it did not answer), with
+> what the window's past rows price at (`repriced`). 404 when no cloud
+> endpoint carries that name — a deleted endpoint's history is priced by
+> hand instead (PUT /api/cost/prices).
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apicostunpricedlookup-body) | `{priced, reason, repriced}` | 200, 400, 404 | — |
+
+### POST `/api/cost/unpriced/lookup` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `endpoint` | `string(1, 200)` |  |
+| `model` | `string(1, 300)` |  |
 
 ## `/api/history`
 

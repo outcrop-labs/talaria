@@ -2,7 +2,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
-  import { formatCost, formatTokens, type CostOverview } from '@/lib/cost.svelte'
+  import { formatTokens, modelCostLabel, type CostOverview } from '@/lib/cost.svelte'
 
   /** Segment colors: hue family = class (green local, chart-blue cloud — gold
    *  stays reserved for action/attention, spec §1), lightness step = model
@@ -66,9 +66,7 @@
         <span class="text-fg">{s.label}</span>
         <span>
           {formatTokens(s.tokens)} · {s.endpointClass ?? 'unattributed'}{s.endpointClass === 'cloud'
-            ? s.cost === null
-              ? ' · unpriced'
-              : ` · ${formatCost(s.cost)}`
+            ? ` · ${modelCostLabel(s)}`
             : ''}
         </span>
       </span>

@@ -4668,6 +4668,50 @@ alter table tasks drop column if exists conversation_id`,
      after insert or update on app_settings
      for each row when (new.key = 'github_config')
      execute function talaria_github_setting_to_host()`,
+  // ── Unpriced cloud usage (2026-11-03) ────────────────────────────────────
+  // The priced view (api talaria-gateway usage.rs) reads all three.
+  //
+  // 1 · A published price's own cache rates. OpenRouter's catalog and its
+  //     per-endpoint lists publish `input_cache_write` / `input_cache_read`
+  //     beside prompt/completion; the view bills cache tokens at them and
+  //     falls back to the 1.25x / 0.1x multipliers only when a rate is null.
+  `alter table provider_prices
+     add column if not exists price_cache_write_per_mtok numeric,
+     add column if not exists price_cache_read_per_mtok numeric`,
+  // 2 · An admin's pricing decision for usage no published price covers:
+  //     'manual' (a rate per 1M input / output / cache-write / cache-read
+  //     tokens) or 'included' (a plan or free tier — $0, labelled, never a
+  //     silent zero). Keyed by the ledger's own (endpoint, model) text, '' for
+  //     a row booked with no endpoint, so it prices history whose endpoint was
+  //     since deleted or never recorded. No foreign key on purpose: the usage
+  //     it prices outlives the endpoint row.
+  `create table if not exists model_price_overrides (
+     endpoint text not null,
+     model text not null,
+     mode text not null check (mode in ('manual', 'included')),
+     price_in_per_mtok numeric,
+     price_out_per_mtok numeric,
+     price_cache_write_per_mtok numeric,
+     price_cache_read_per_mtok numeric,
+     note text,
+     set_by text,
+     updated_at timestamptz not null default now(),
+     primary key (endpoint, model),
+     check (mode = 'included' or (price_in_per_mtok is not null and price_out_per_mtok is not null))
+   )`,
+  // 3 · What the price oracle last concluded for one endpoint's model, and
+  //     why: 'priced', 'no_match' (detail = the ids it tried) or
+  //     'source_failed' (detail = the source's own error). The unpriced list
+  //     reads it as each model's reason.
+  `create table if not exists price_lookups (
+     endpoint_id uuid not null references llm_endpoints(id) on delete cascade,
+     model text not null,
+     outcome text not null check (outcome in ('priced', 'no_match', 'source_failed')),
+     detail text,
+     source text not null,
+     checked_at timestamptz not null default now(),
+     primary key (endpoint_id, model)
+   )`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

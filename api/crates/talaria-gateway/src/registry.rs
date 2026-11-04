@@ -191,7 +191,7 @@ pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, 
     )
     .fetch_all(pg)
     .await?;
-    let prices: Vec<(
+    type PriceRow = (
         String,
         String,
         String,
@@ -199,11 +199,35 @@ pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, 
         Option<f64>,
         String,
         Option<String>,
-    )> = sqlx::query_as(
+        Option<f64>,
+        Option<f64>,
+    );
+    let prices: Vec<PriceRow> = sqlx::query_as(
         "select endpoint_id::text, model, variant, price_in_per_mtok::float8, \
              price_out_per_mtok::float8, source, \
-             to_char(fetched_at at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+             to_char(fetched_at at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
+             price_cache_write_per_mtok::float8, price_cache_read_per_mtok::float8 \
              from provider_prices",
+    )
+    .fetch_all(pg)
+    .await?;
+    // An admin's pricing decisions, keyed by the ledger's endpoint TEXT —
+    // shown on the endpoint they name, read-only here (the cost page's
+    // unpriced panel is where they are set).
+    type OverrideRow = (
+        String,
+        String,
+        String,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<String>,
+    );
+    let overrides: Vec<OverrideRow> = sqlx::query_as(
+        "select endpoint, model, mode, price_in_per_mtok::float8, price_out_per_mtok::float8, \
+             price_cache_write_per_mtok::float8, price_cache_read_per_mtok::float8, note \
+             from model_price_overrides order by model",
     )
     .fetch_all(pg)
     .await?;
@@ -236,8 +260,25 @@ pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, 
                             "variant": p.2,
                             "in": p.3,
                             "out": p.4,
+                            "cacheWrite": p.7,
+                            "cacheRead": p.8,
                             "source": p.5,
                             "fetchedAt": p.6,
+                        })
+                    })
+                    .collect();
+                let admin_prices: Vec<serde_json::Value> = overrides
+                    .iter()
+                    .filter(|o| o.0 == name)
+                    .map(|o| {
+                        serde_json::json!({
+                            "model": o.1,
+                            "mode": o.2,
+                            "in": o.3,
+                            "out": o.4,
+                            "cacheWrite": o.5,
+                            "cacheRead": o.6,
+                            "note": o.7,
                         })
                     })
                     .collect();
@@ -252,6 +293,7 @@ pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, 
                     "models": models,
                     "modelEfforts": model_efforts,
                     "providerPrices": provider_prices,
+                    "adminPrices": admin_prices,
                     "requestDefaults": request_defaults,
                     "hasKey": has_key,
                 })

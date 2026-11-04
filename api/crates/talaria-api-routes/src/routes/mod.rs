@@ -120,6 +120,21 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_comms::activity::cost::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/cost/unpriced",
+            get(talaria_routes_comms::activity::cost_unpriced::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/cost/unpriced/lookup",
+            post(talaria_routes_comms::activity::cost_unpriced_lookup::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/cost/prices",
+            put(talaria_routes_comms::activity::cost_prices::put)
+                .delete(talaria_routes_comms::activity::cost_prices::delete)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
+        )
+        .route(
             "/api/keys",
             get(talaria_routes_fleet::models::keys::get)
                 .post(talaria_routes_fleet::models::keys::post)
