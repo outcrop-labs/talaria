@@ -51,9 +51,7 @@ pub enum CheckpointKind {
     Step,
 }
 
-/// One ledger row, as `GET /api/runs/{id}/checkpoints` answers it. It holds no
-/// checkpoint body: a work session's carries slices of the agent's reply, which
-/// must not skip the transcript's scrub or outlive its retention.
+/// One ledger row, as `GET /api/runs/{id}/checkpoints` answers it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunCheckpoint {

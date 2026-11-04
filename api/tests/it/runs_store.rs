@@ -18,9 +18,8 @@ use talaria_api::runs::store::{
     AnswerOutcome, CancelOutcome, CheckpointKind, ClaimOutcome, NewRun, PgRunStore, RunStore,
     WriteFailure, agent_turn_of, run_checkpoints, set_agent_run_id,
 };
-/// Sweeps a test's own kind, so earlier crashed runs never bite the unique
-/// approval_key index. Every test owns a kind: this suite runs in parallel, and
-/// a shared one would delete a neighbour's run mid-test.
+/// Every test passes its own kind: the suite runs in parallel, and this deletes
+/// all of a kind's runs.
 async fn cleanup(pg: &PgPool, kind: &str) {
     sqlx::query("delete from runs where kind = $1")
         .bind(kind)
