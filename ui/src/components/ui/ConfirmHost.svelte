@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import Button from './Button.svelte'
   import Input from './Input.svelte'
   import Modal from './Modal.svelte'
@@ -24,6 +25,17 @@
     }
   })
 
+  let answerRef = $state<HTMLButtonElement | null>(null)
+  let cancelRef = $state<HTMLButtonElement | null>(null)
+  $effect(() => {
+    if (!spec || needsText) return
+    const before = document.activeElement
+    void tick().then(() => (spec.danger && cancelRef ? cancelRef : answerRef)?.focus())
+    return () => {
+      if (before instanceof HTMLElement) before.focus()
+    }
+  })
+
   function settle(result: boolean | string | null) {
     dialog.active?.resolve(result)
     dialog.active = null
@@ -32,6 +44,16 @@
   const cancel = () => settle(spec?.kind === 'prompt' ? null : false)
   const accept = () => settle(spec?.kind === 'confirm' ? true : spec?.kind === 'prompt' ? value : null)
 </script>
+
+<!-- Every open Modal listens for Escape on the document, so a confirm over a
+     dialog would close the dialog under it too. -->
+<svelte:window
+  onkeydowncapture={(e) => {
+    if (!spec || e.key !== 'Escape') return
+    e.stopPropagation()
+    cancel()
+  }}
+/>
 
 <Modal open={!!spec} onClose={cancel} title={spec?.title}>
   {#if spec?.message}
@@ -57,11 +79,12 @@
   {#snippet footer()}
     <div class="flex justify-end gap-2">
       {#if !isAlert}
-        <Button variant="ghost" size="sm" onclick={cancel}>
+        <Button bind:ref={cancelRef} variant="ghost" size="sm" onclick={cancel}>
           {spec?.cancelLabel ?? 'Cancel'}
         </Button>
       {/if}
       <Button
+        bind:ref={answerRef}
         variant={spec?.danger ? 'danger-outline' : 'primary'}
         size="sm"
         onclick={accept}
