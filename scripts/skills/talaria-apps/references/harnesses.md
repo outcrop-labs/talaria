@@ -165,11 +165,11 @@ over its budget, 502 when the agent failed or went silent.
 
 In production your harness runs, and the fitness sweep's replays of your fixtures, go to the
 gateway on the app's own key and count against one budget, `app:<slug>`, which an admin sets in
-Admin → Settings → LLM budgets. Over it, a harness run makes no call and comes back with the
+Admin → Security → LLM budgets. Over it, a harness run makes no call and comes back with the
 gateway's sentence in `error`, and `ctx.agents.turn` starts no turn (a 403):
 
 ```
-"app:<slug>" has reached its LLM budget: <used> of <cap> in the last <n>h. Requests resume as spend ages out of the window, or an admin can raise the limit (Admin → Settings → LLM budgets).
+"app:<slug>" has reached its LLM budget: <used> of <cap> in the last <n>h. Requests resume as spend ages out of the window, or an admin can raise the limit (Admin → Security → LLM budgets).
 ```
 
 Plan for it: a harness run that comes back `value: null` is an answer your route still has to

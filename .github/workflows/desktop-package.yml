@@ -89,11 +89,14 @@
 # linux-flatpak consume the binary the `linux` job built rather than compiling
 # again: the artifact is the app, and a packager only arranges files around it.
 #
-# WHY THE ATTACH STEP LIVES HERE AND NOT IN release.yml. The assets are this
-# file's artifacts; release.yml hands over the tag and the work follows. A
-# re-run of this workflow alone re-attaches everything (--clobber), and the
-# release body — which release.yml owns — never has to name files this file
-# decides the names of.
+# ONLY desktop-v RELEASES CARRY INSTALLERS. release.yml's vX.Y.Z and
+# vX.Y.Z-rc.N tags used to call this file and attach installers stamped with
+# the server version; they no longer do. A Desktop numbered 0.13.0 beside
+# desktop-v0.12.0 would never be offered an update until Desktop passed 0.13,
+# because the updater offers only a higher number. The `workflow_call` trigger
+# below has no caller now and stays as an inert door. The assets are this
+# file's artifacts, and a re-run of this workflow alone re-attaches everything
+# (--clobber).
 #
 # WHY CANCEL-IN-PROGRESS IS SAFE HERE, unlike in release.yml's publish: nothing
 # below moves a channel tag, and the updater feed flips LAST — latest.json is
@@ -136,11 +139,11 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'the ref to build (release.yml passes the tag it is publishing)'
+        description: 'the ref to build (no caller today: server tags carry no installers)'
         type: string
         required: true
       version:
-        description: 'version to stamp (release.yml passes the tag minus v)'
+        description: 'version to stamp'
         type: string
         required: true
       release_tag:
@@ -806,9 +809,9 @@ jobs:
   # The only job that writes to anything outside the run: every installer, a
   # checksum list, and latest.json for the in-app updater, onto the release.
   # It runs last so a half-built release never looks complete. The release is
-  # either release.yml's (a vX.Y.Z cut, via workflow_call) or one this job
-  # opens itself for a minted desktop-v tag — the gate is simply "a
-  # release_tag exists".
+  # either one this job opens itself for a minted desktop-v tag, or an existing
+  # release a dispatch names in `release_tag` (a re-attach) — the gate is simply
+  # "a release_tag exists".
   attach:
     name: attach installers to the release
     needs: [resolve, linux, linux-pacman, linux-flatpak, macos, windows]
@@ -860,9 +863,9 @@ jobs:
           path: assets
 
       # Suffix-free versions only: the feed is GitHub's Latest release, and an
-      # RC must never reach it. A vX.Y.Z release gets the file too, though
-      # nothing serves it: only a desktop-v mint is ever Latest (the Upload
-      # step). Missing signatures
+      # RC must never reach it. A re-attach into a release that is not Latest
+      # gets the file too, though nothing serves it: only a desktop-v mint is
+      # made Latest (the Upload step). Missing signatures
       # fail the job — shipping a release the installed app cannot update to
       # is worse than a red attach. On a minted desktop-v release the manifest
       # is the point of the channel, so its absence is an error, not a skip.
@@ -927,12 +930,11 @@ jobs:
           # automatic pick, because the feed must be a DESKTOP release: the one
           # this run minted, which is the newest on the auto-minor path (a
           # dispatch that finishes an older version's mint moves the feed back
-          # to it). Only on the mint path: this job also attaches into
-          # release.yml's vX.Y.Z releases, and the guard below is what keeps
-          # those off Latest. A vX.Y.Z release (release.yml's, which this file only
-          # attaches into) is never Latest: release.yml creates it
-          # --latest=false, its latest.json is a download nothing reads, and
-          # the desktop line moves on at the next desktop-v mint.
+          # to it). Only on the mint path: a dispatch that re-attaches into an
+          # existing release (`release_tag` without `publish`) must not move the
+          # feed, and the guard below is what keeps it off Latest. A vX.Y.Z
+          # server release never reaches this job, and release.yml opens it
+          # --latest=false.
           # check-invariants.mjs (`release-latest-is-the-desktop-feed`) holds
           # this flag and release.yml's.
           if [ "$MINT" = true ]; then
@@ -948,8 +950,8 @@ jobs:
   # desktop-v0.7.0 through v0.10.0 all shipped without a submission. Same gate
   # as `attach`, and it runs after it, so the store is only pointed at a tag
   # whose installers are already on the release. omapak-submit re-checks the
-  # tag shape and refuses prereleases itself, so an RC coming through
-  # release.yml cannot move the pin.
+  # tag shape and refuses prereleases itself, so a prerelease named by a
+  # dispatch cannot move the pin.
   omapak:
     name: submit to omapak
     needs: [resolve, attach]
