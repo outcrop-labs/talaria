@@ -55,38 +55,31 @@ pub(crate) fn superseded_refusal(job_id: &str, current: Option<&str>) -> String 
     }
 }
 
-/// Retire every job of the lineage the attempt replaced, along with the job its
-/// checkpoint names, which a revise round may have moved to a run outside the
+/// Retire every other job this agent holds on the ticket. The key is the ticket
+/// and not the lineage because a revise round moves a job to a run outside its
 /// lineage. Jobs an earlier rewind retired are repointed, so `superseded_by`
 /// always names the current job. Repeats safely: a job already retired is
 /// stopped once, and `current_job` is never touched.
 pub async fn supersede_jobs(
     pg: &PgPool,
     department: &str,
-    lineage: &RunLineage,
     current_job: &str,
 ) -> Result<(), sqlx::Error> {
     let retired: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "with lineage as ( \
-           select id from runs where id = $1::uuid or lineage_id = $1::uuid \
-         ), prior as ( \
+        "with prior as ( \
            select j.id, j.status from workbench_jobs j \
-           where j.id <> $4::uuid \
+           join workbench_jobs current_job on current_job.id = $1::uuid \
+           where j.id <> current_job.id \
+             and j.task_id = current_job.task_id and j.agent_id = current_job.agent_id \
              and j.status in ('started', 'queued', 'awaiting_approval', 'pr_open', 'superseded') \
-             and (j.run_id in (select id from lineage) \
-                  or j.id in (select c.job_id from run_checkpoints c \
-                              where c.run_id = $2::uuid and c.seq = $3)) \
            for update of j \
          ) \
          update workbench_jobs j set \
-           status = 'superseded', superseded_by = $4::uuid, queued_reason = null, \
+           status = 'superseded', superseded_by = $1::uuid, queued_reason = null, \
            updated_at = case when prior.status = 'superseded' then j.updated_at else now() end \
          from prior where j.id = prior.id \
          returning j.id::text, prior.status, j.task_id::text",
     )
-    .bind(&lineage.lineage_id)
-    .bind(&lineage.rewound_from_run_id)
-    .bind(lineage.rewound_from_seq)
     .bind(current_job)
     .fetch_all(pg)
     .await?;
@@ -145,7 +138,7 @@ pub(crate) async fn start_job(
             )));
         }
     }
-    if let Err(e) = supersede_jobs(pg, &agent.department, &attempt.lineage, &job.id).await {
+    if let Err(e) = supersede_jobs(pg, &agent.department, &job.id).await {
         return RewindStart::Answered(thrown(format!("job update: {e}")));
     }
     let host = match hosts::host(pg, &deps.sb, &job.host_id).await {
