@@ -536,6 +536,9 @@ export async function hireFleetAgent(input: {
   soul?: string
   skills?: Array<{ name: string; content: string }>
   start?: boolean
+  /** The agent design this hire came from: the server spends it once the
+   *  hire is queued. */
+  designId?: string
 }): Promise<{ ok?: boolean; hire?: { id: string; state: string; phase: string }; error?: string }> {
   try {
     return await postJson<{ ok?: boolean; hire?: { id: string; state: string; phase: string } }>('/api/fleet/create', input)

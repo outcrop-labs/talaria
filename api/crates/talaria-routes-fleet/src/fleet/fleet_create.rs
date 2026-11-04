@@ -89,6 +89,8 @@ struct HireBody {
     soul: Option<String>,
     skills: Vec<SkillSeed>,
     start: bool,
+    /// The agent design this hire came from: spent once the hire is queued.
+    design_id: Option<String>,
 }
 
 fn validate_body(obj: &serde_json::Map<String, Value>) -> Result<HireBody, String> {
@@ -116,6 +118,7 @@ fn validate_body(obj: &serde_json::Map<String, Value>) -> Result<HireBody, Strin
         }
     };
     let start = optional_boolean_member(obj, "start")?.unwrap_or(true);
+    let design_id = optional_uuid_member(obj, "designId")?;
     Ok(HireBody {
         slug,
         department,
@@ -125,6 +128,7 @@ fn validate_body(obj: &serde_json::Map<String, Value>) -> Result<HireBody, Strin
         soul,
         skills,
         start,
+        design_id,
     })
 }
 
@@ -172,6 +176,7 @@ pub async fn post(
     // name, else the id.
     let def = agent_hire_run();
     let actor = talaria_session::actor_of(&user);
+    let design_id = body.design_id.clone();
     let input = AgentHireInput {
         slug: body.slug.clone(),
         department: body.department,
@@ -223,6 +228,11 @@ pub async fn post(
         Ok(row) => row,
         Err(e) => return Ok(internal("[fleet] hire enqueue failed", e)),
     };
+    // The design is spent: the hire's phases carry the story from here, and
+    // a reopened New agent starts fresh rather than offering it again.
+    if let Some(id) = design_id {
+        talaria_agent_design::consume_design(&state, &user.id, &id).await;
+    }
     Ok(Json(json!({
         "ok": true,
         "hire": { "id": row.id, "state": row.state, "phase": row.phase }

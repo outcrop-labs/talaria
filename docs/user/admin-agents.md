@@ -22,6 +22,15 @@ ready for your red pen. Set **Name** and handle, pick a **role** (from **Your or
 or the **Common roles** Talaria maintains) and department, and optionally **Start the
 container now**.
 
+The design runs on the server, so you don't have to wait for it. Close the modal, reload, or
+come back from another tab or device, and **New agent** opens where the design stands: still
+designing, with the time since you started it, or on the review step. While a design is in
+progress or waiting for review, the **+** carries a dot and the roster shows a row for it.
+If it finishes while the modal is closed, the bell gets an **Agent design ready** entry that
+opens the review. Your edits on the review step are saved as you type. **Discard design**
+throws the design away, and stops it if it is still running. **Create agent** uses it up. A
+design nobody hires or discards is kept for three days.
+
 To skip the description, **Configure manually →** opens the same review form empty: type the
 name, handle and department, and **Create agent** hires it. **Duplicate** on a roster agent
 opens that form with the agent's chassis (model tiers, tools and plugins) preselected, and the

@@ -7,11 +7,15 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-29 routes.
+30 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/fleet`](#apifleet) | GET | `session` + `view:/observability` |
+| [`/api/fleet/agent-design`](#apifleetagent-design) | GET | `session` + `perm:agents.manage` |
+| [`/api/fleet/agent-design`](#apifleetagent-design) | POST | `session` + `perm:agents.manage` |
+| [`/api/fleet/agent-design`](#apifleetagent-design) | PATCH | `session` + `perm:agents.manage` |
+| [`/api/fleet/agent-design`](#apifleetagent-design) | DELETE | `session` + `perm:agents.manage` |
 | [`/api/fleet/agents/{id}/control`](#apifleetagentsidcontrol) | POST | `session` + `agent-manager` |
 | [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | GET | `session` + `agent-reader` |
 | [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | POST | `session` + `agent-manager` |
@@ -66,6 +70,58 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet.rs`](../../api/crates/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `view:/observability` | — | `…` | 200 | — |
+
+## `/api/fleet/agent-design`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/agent_design.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_design.rs)
+
+> The caller's agent design — New agent's "describe it", owned by the
+> server (talaria-agent-design). The record lives in Redis for 72 hours;
+> the muse call is an `agent-design` run, so a design survives a reload,
+> a closed tab and a restart. One design per person.
+>
+> /api/fleet/agent-design.
+>   GET    → `{ design, now }`: the design or null, and the server's clock so
+>            the elapsed count agrees across tabs. `?watching=1` is the open
+>            modal: a landing in the next few seconds skips the bell.
+>   POST   → start (`{ instruction }`) or refine (`{ instruction, refine:
+>            true, current? }`). A start while one generates answers that one.
+>   PATCH  → the person's own draft (review-step edits, a role template, a
+>            manual start). 409 while a run is writing it.
+>   DELETE → discard (`{ id? }`); 404 when there is nothing (another tab got
+>            there first). A hire with `designId` consumes it too.
+> The permission is the hire's (`agents.manage`): the design exists to be
+> hired.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `perm:agents.manage` | — | `{design, now}` | 200, 409 | — |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagent-design-body) | `{design}` | 200, 400, 409 | — |
+| PATCH | `session` + `perm:agents.manage` | [body](#patch-apifleetagent-design-body) | `{design}` | 200, 400, 409 | — |
+| DELETE | `session` + `perm:agents.manage` | [body](#delete-apifleetagent-design-body) | `{ok}` | 200, 400, 404, 409 | — |
+
+### POST `/api/fleet/agent-design` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `instruction` | `string(1, 8000)` |  |
+| `refine` | `bool?` |  |
+
+### PATCH `/api/fleet/agent-design` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(0, 60)` |  |
+| `handle` | `string(0, 30)` |  |
+| `department` | `string(0, 40)` |  |
+| `role` | `string(0, 80)` |  |
+| `soul` | `string(0, 200000)` |  |
+
+### DELETE `/api/fleet/agent-design` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid?` |  |
 
 ## `/api/fleet/agents/{id}/control`
 
@@ -207,6 +263,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_create.rs`](../../api/
 | `templateId` | `uuid?` |  |
 | `soul` | `string?(200000)` |  |
 | `start` | `bool?` |  |
+| `designId` | `uuid?` |  |
 
 ## `/api/fleet/crons`
 

@@ -326,6 +326,7 @@ export const USER_STREAM_KEYS = [
   'conversations',
   'research-runs',
   'research-run',
+  'agent-design',
   'daily-brief',
 ] as const
 
@@ -371,6 +372,11 @@ export function useUserEventInvalidation(): void {
         case 'run':
           void qc.invalidateQueries({ queryKey: ['research-runs'] })
           void qc.invalidateQueries({ queryKey: ['research-run', event.runId] })
+          // An agent design is a run too (talaria-agent-design): its landing
+          // reaches the roster row, the New agent mark and an open modal on
+          // this tick instead of the next poll. Ids only, so every run event
+          // asks; an unmounted design read refetches nothing.
+          void qc.invalidateQueries({ queryKey: ['agent-design'] })
           break
         case 'brief':
           void qc.invalidateQueries({ queryKey: ['daily-brief'] })

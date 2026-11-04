@@ -3603,6 +3603,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-design"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-config",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-model",
+ "talaria-notify",
+ "talaria-org",
+ "talaria-realtime",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-state",
+ "talaria-tasks-types",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-agent-managers"
 version = "0.1.0"
 dependencies = [
@@ -5854,6 +5880,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-design",
  "talaria-agent-skills",
  "talaria-alerts",
  "talaria-app-triggers",
@@ -7024,6 +7051,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-design",
  "talaria-agent-managers",
  "talaria-agent-mcp",
  "talaria-agent-role-templates",
