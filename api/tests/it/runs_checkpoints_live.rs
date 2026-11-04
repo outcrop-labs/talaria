@@ -67,13 +67,19 @@ async fn the_ledger_and_its_route_hold_no_reply_text() {
             .unwrap();
     }
     let run = store.get(&id).await.unwrap().unwrap();
-    assert_eq!(run.checkpoint["lastTail"], REPLY, "the resume source keeps it");
+    assert_eq!(
+        run.checkpoint["lastTail"], REPLY,
+        "the resume source keeps it"
+    );
 
     let path = format!("/api/runs/{id}/checkpoints");
     let (status, _, raw) = call_bytes(&state, "GET", &path, Some(&cookie), None).await;
     assert_eq!(status, StatusCode::OK);
     let body = String::from_utf8(raw).unwrap();
-    assert!(!body.contains(REPLY), "the route repeated reply text: {body}");
+    assert!(
+        !body.contains(REPLY),
+        "the route repeated reply text: {body}"
+    );
     let parsed: Value = serde_json::from_str(&body).unwrap();
     let rows = parsed["checkpoints"].as_array().unwrap();
     let stages: Vec<_> = rows.iter().map(|r| (&r["status"], &r["turn"])).collect();
@@ -94,7 +100,10 @@ async fn the_ledger_and_its_route_hold_no_reply_text() {
     .fetch_one(&state.pg)
     .await
     .unwrap();
-    assert!(!stored.contains(REPLY), "the ledger stored reply text: {stored}");
+    assert!(
+        !stored.contains(REPLY),
+        "the ledger stored reply text: {stored}"
+    );
 
     sweep_members(&state.pg).await;
 }
