@@ -147,6 +147,10 @@ describe('toolKind', () => {
     expect(toolKind('quantum_flux_capacitor')).toBe('other')
   })
 
+  it.each(['constructor', 'mcp__talaria__constructor', '__proto__'])('reads %s as an unknown tool, not an object key', (name) => {
+    expect(toolKind(name)).toBe('other')
+  })
+
   it('does not match inside a word', () => {
     expect(toolKind('thread_summary')).toBe('other')
   })

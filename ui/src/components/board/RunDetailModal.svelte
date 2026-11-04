@@ -138,6 +138,22 @@
     refetchInterval: 5_000,
     queryFn: () => getJson<{ checkpoints: LedgerRow[] }>(`/api/runs/${runId}/checkpoints`),
   }))
+  // A refetch of a query with no data resets it to pending and clears its
+  // error, so the poll would swap the failure for the skeleton every 5 seconds.
+  let lastLedgerError = $state<unknown>(null)
+  $effect(() => {
+    void runId
+    lastLedgerError = null
+  })
+  $effect(() => {
+    if (ledger.isError) lastLedgerError = ledger.error
+    else if (ledger.isSuccess) lastLedgerError = null
+  })
+  const ledgerError = $derived(ledger.data === undefined ? (ledger.isError ? ledger.error : lastLedgerError) : null)
+  const retryLedger = () => {
+    lastLedgerError = null
+    void ledger.refetch()
+  }
   const refreshLedger = () => {
     void qc.invalidateQueries({ queryKey: ['run-checkpoints', runId] })
     void qc.invalidateQueries({ queryKey: ['work-sessions-history', taskId] })
@@ -278,21 +294,26 @@
         {/if}
       {/if}
       {#if tab === 'checkpoints'}
-        <QueryState
-          query={ledger}
-          errorTitle="Could not load the checkpoints"
-          errorVariant="inline"
-        >
-          {#snippet skeleton()}
-            <SkeletonRows rows={3} />
-          {/snippet}
-          {#snippet children(data)}
-            <AgentCheckpoints
-              checkpoints={fromLedger(data.checkpoints, runState)}
-              live={!history.isSuccess || runIsLive(runState)}
-            />
-          {/snippet}
-        </QueryState>
+        {#if ledgerError}
+          <QueryError
+            variant="inline"
+            error={ledgerError}
+            title="Could not load the checkpoints"
+            onRetry={retryLedger}
+          />
+        {:else}
+          <QueryState query={ledger}>
+            {#snippet skeleton()}
+              <SkeletonRows rows={3} />
+            {/snippet}
+            {#snippet children(data)}
+              <AgentCheckpoints
+                checkpoints={fromLedger(data.checkpoints, runState)}
+                live={!history.isSuccess || runIsLive(runState)}
+              />
+            {/snippet}
+          </QueryState>
+        {/if}
       {/if}
       {#if tab === 'resources'}
         {#if resourcesDenied}
