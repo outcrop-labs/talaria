@@ -47,6 +47,17 @@
   const included = $derived(new Set((ep.adminPrices ?? []).filter((p) => p.mode === 'included').map((p) => p.model)))
   let planBusy = $state<string | null>(null)
   const setIncluded = async (model: string, on: boolean) => {
+    // Ticking replaces a manual rate (one setting per model); say so first,
+    // and unticking would then remove the rate with it.
+    const manual = (ep.adminPrices ?? []).find((p) => p.model === model && p.mode === 'manual')
+    if (on && manual) {
+      const ok = await confirm({
+        title: 'Replace the manual rate',
+        message: `${model} has a manual rate (${settingLabel(manual)}). Marking it included in a plan replaces that rate with $0.`,
+        confirmLabel: 'Mark included',
+      })
+      if (!ok) return
+    }
     planBusy = model
     try {
       if (on) await setPrice(includedBody({ endpoint: ep.name, model }, ''))

@@ -23,6 +23,9 @@ export interface CostOverview {
     /** Cloud tokens an admin marked included in a plan: priced at $0, and
      *  labelled wherever spend is shown — never a silent zero. */
     includedCloudTokens?: number
+    /** Of the 30-day dollars, those estimated from a published price rather
+     *  than charged by the provider or set by an admin. */
+    derivedCost?: number
     providerReported?: { cost: number; source: string; fetchedAt: string | null; stale: boolean }
   }
   perModel: Array<{
@@ -32,8 +35,13 @@ export interface CostOverview {
     cost: number | null
     /** Of `tokens`, those included in a plan ($0, labelled). */
     includedTokens?: number
+    /** The catalog entry a FUZZY match priced the model as. */
+    pricedAs?: string
+    matchKind?: string
   }>
-  perAgent: Array<CostTotals & { agentModel: string; lastUsed: string | null; cost: number; localShare: number | null }>
+  perAgent: Array<
+    CostTotals & { agentModel: string; lastUsed: string | null; cost: number; localShare: number | null; includedTokens?: number }
+  >
   perDay: Array<CostTotals & { day: string; local: number; cloud: number }>
 }
 
@@ -63,10 +71,18 @@ import { formatTokens as formatTokensLabel, formatUsd as formatUsdLabel } from '
 /** A cloud model's spend as the legend says it: "unpriced", "included in a
  *  plan" when every token is, the dollars plus how much was included when
  *  some is — an included model never reads as a bare "$0". */
-export function modelCostLabel(m: { cost: number | null; tokens: number; includedTokens?: number }): string {
+export function modelCostLabel(m: { cost: number | null; tokens: number; includedTokens?: number; pricedAs?: string }): string {
   const included = m.includedTokens ?? 0
   if (m.cost === null) return 'unpriced'
   if (included > 0 && included >= m.tokens) return 'included in a plan'
-  if (included > 0) return `${formatUsdLabel(m.cost)} + ${formatTokensLabel(included)} included`
-  return formatUsdLabel(m.cost)
+  const dollars = included > 0 ? `${formatUsdLabel(m.cost)} + ${formatTokensLabel(included)} included` : formatUsdLabel(m.cost)
+  return m.pricedAs ? `${dollars}, priced as ${m.pricedAs} (fuzzy match)` : dollars
+}
+
+/** An agent's 30-day dollars as the "By agent" list says them — a run
+ *  entirely on an included plan reads "included", never a bare $0. */
+export function agentCostLabel(a: { cost: number; prompt: number; completion: number; includedTokens?: number }): string {
+  const included = a.includedTokens ?? 0
+  if (included > 0 && a.cost === 0) return 'included'
+  return formatUsdLabel(a.cost)
 }

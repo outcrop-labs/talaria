@@ -247,7 +247,8 @@ export interface TaskUsage {
   completionTokens: number
   cost: number
   unpricedTokens: number
-  perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null }>
+  /** `includedTokens`: priced at $0 because the model is included in a plan. */
+  perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null; includedTokens?: number }>
 }
 
 export interface TaskFull {

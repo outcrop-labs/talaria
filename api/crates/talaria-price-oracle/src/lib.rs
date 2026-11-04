@@ -62,12 +62,44 @@ pub struct TokPrice {
 /// One catalog entry's price: the input/output pair plus the catalog's own
 /// cache rates (`input_cache_write` / `input_cache_read`), when it publishes
 /// them.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct CatalogPrice {
+    /// The catalog's own id for the entry — what a match was "priced as".
+    id: String,
     in_per_mtok: f64,
     out_per_mtok: f64,
     cache_write_per_mtok: Option<f64>,
     cache_read_per_mtok: Option<f64>,
+}
+
+impl CatalogPrice {
+    /// Same input/output rates — the test for "unambiguous" and for a
+    /// snapshot that disagrees with its alias.
+    fn same_rates(&self, other: &CatalogPrice) -> bool {
+        self.in_per_mtok == other.in_per_mtok && self.out_per_mtok == other.out_per_mtok
+    }
+}
+
+/// How a candidate id was derived from the model's own id — the match's
+/// confidence. Only `AsIs` is an exact match; the rest are fuzzy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+    AsIs,
+    Tag,
+    Date,
+    Latest,
+    Segment,
+}
+
+impl Step {
+    /// The `provider_prices.match_kind` / `price_lookups.match_kind` word.
+    fn kind(self) -> &'static str {
+        match self {
+            Step::AsIs => "exact",
+            Step::Tag | Step::Date | Step::Latest => "alias",
+            Step::Segment => "segment",
+        }
+    }
 }
 
 /// The jsonb shape the costing join reads (`auto_prices->model->>'in'`,
@@ -137,30 +169,50 @@ fn strip_date_suffix(s: &str) -> String {
 /// feeds the next, so combinations occur — but each strip fires at most once
 /// (the chain, not a fixpoint).
 pub(crate) fn id_candidates(model: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let push = |m: String, out: &mut Vec<String>| {
-        if !m.is_empty() && !out.contains(&m) {
-            out.push(m);
+    id_steps(model).into_iter().map(|(id, _)| id).collect()
+}
+
+/// The candidates with how each was derived. The full id's chain first
+/// (as-is → ":tag" stripped → date stripped → "-latest" stripped), then —
+/// for a multi-segment path (`accounts/fireworks/models/<id>`) — the SAME
+/// chain on its last segment, so `…/deepseek-r1-0528` tries
+/// `deepseek-r1-0528` before `deepseek-r1`.
+pub(crate) fn id_steps(model: &str) -> Vec<(String, Step)> {
+    let mut out: Vec<(String, Step)> = Vec::new();
+    let chain = |start: &str, first: Step, out: &mut Vec<(String, Step)>| {
+        let push = |m: String, step: Step, out: &mut Vec<(String, Step)>| {
+            if !m.is_empty() && !out.iter().any(|(id, _)| id == &m) {
+                out.push((m, step));
+            }
+        };
+        let fuzzy = |step: Step| {
+            if first == Step::Segment {
+                Step::Segment
+            } else {
+                step
+            }
+        };
+        let mut cur = start.to_string();
+        push(cur.clone(), first, out);
+        if cur.contains(':') {
+            cur = cur.split(':').next().unwrap_or(&cur).to_string();
+            push(cur.clone(), fuzzy(Step::Tag), out);
+        }
+        let dateless = strip_date_suffix(&cur);
+        if dateless != cur {
+            cur = dateless;
+            push(cur.clone(), fuzzy(Step::Date), out);
+        }
+        if let Some(unlatest) = cur.strip_suffix("-latest") {
+            push(unlatest.to_string(), fuzzy(Step::Latest), out);
         }
     };
-    let mut cur = model.strip_prefix('~').unwrap_or(model).to_string();
-    push(cur.clone(), &mut out);
-    if cur.contains(':') {
-        cur = cur.split(':').next().unwrap_or(&cur).to_string();
-        push(cur.clone(), &mut out);
-    }
-    let dateless = strip_date_suffix(&cur);
-    if dateless != cur {
-        cur = dateless;
-        push(cur.clone(), &mut out);
-    }
-    if let Some(unlatest) = cur.strip_suffix("-latest") {
-        push(unlatest.to_string(), &mut out);
-    }
-    if cur.matches('/').count() >= 2
-        && let Some(last) = cur.rsplit('/').next()
+    let full = model.strip_prefix('~').unwrap_or(model);
+    chain(full, Step::AsIs, &mut out);
+    if full.matches('/').count() >= 2
+        && let Some(last) = full.rsplit('/').next()
     {
-        push(last.to_string(), &mut out);
+        chain(last, Step::Segment, &mut out);
     }
     out
 }
@@ -178,6 +230,10 @@ struct Catalog {
     size: usize,
     /// Normalized ids the catalog lists with a variable (negative) price.
     variable: HashSet<String>,
+    /// Dated snapshots' prices by their undated base id (normalized), for
+    /// the alias check: a snapshot the catalog lacks may borrow its alias's
+    /// price only when every snapshot it does list agrees with that alias.
+    snapshots: HashMap<String, Vec<CatalogPrice>>,
 }
 
 /// The pricing fields arrive as strings or numbers. Anything else —
@@ -212,6 +268,7 @@ fn build_catalog(models: &[Value]) -> Catalog {
     let mut by_id = HashMap::new();
     let mut by_suffix: HashMap<String, Vec<SuffixEntry>> = HashMap::new();
     let mut variable = HashSet::new();
+    let mut snapshots: HashMap<String, Vec<CatalogPrice>> = HashMap::new();
     for m in models {
         let Some(id) = m.get("id").and_then(Value::as_str) else {
             continue;
@@ -233,6 +290,7 @@ fn build_catalog(models: &[Value]) -> Catalog {
             continue;
         };
         let price = CatalogPrice {
+            id: id.to_string(),
             in_per_mtok: in_tok * 1e6,
             out_per_mtok: out_tok * 1e6,
             cache_write_per_mtok: tok_per_token(pricing.and_then(|p| p.get("input_cache_write")))
@@ -240,7 +298,12 @@ fn build_catalog(models: &[Value]) -> Catalog {
             cache_read_per_mtok: tok_per_token(pricing.and_then(|p| p.get("input_cache_read")))
                 .map(|p| p * 1e6),
         };
-        by_id.insert(normalize(id), price);
+        let norm = normalize(id);
+        let base = strip_date_suffix(&norm);
+        if base != norm {
+            snapshots.entry(base).or_default().push(price.clone());
+        }
+        by_id.insert(norm, price.clone());
         let (vendor, rest) = match id.split_once('/') {
             Some((v, r)) => (v, r),
             None => (id, ""),
@@ -261,6 +324,7 @@ fn build_catalog(models: &[Value]) -> Catalog {
         by_suffix,
         size,
         variable,
+        snapshots,
     }
 }
 
@@ -286,11 +350,11 @@ fn suffix_match(catalog: &Catalog, vendor: &str, model: &str) -> Option<CatalogP
     let candidates = catalog.by_suffix.get(&normalize(model))?;
     let vendor = normalize(vendor);
     if let Some(hit) = candidates.iter().find(|c| c.vendor == vendor) {
-        return Some(hit.price);
+        return Some(hit.price.clone());
     }
-    let first = candidates[0].price;
-    let unambiguous = candidates.iter().all(|c| c.price == first);
-    unambiguous.then_some(first)
+    let first = &candidates[0].price;
+    let unambiguous = candidates.iter().all(|c| c.price.same_rates(first));
+    unambiguous.then(|| first.clone())
 }
 
 /// Pick a price for a model on a provider. Vendor-prefixed ids
@@ -298,27 +362,88 @@ fn suffix_match(catalog: &Catalog, vendor: &str, model: &str) -> Option<CatalogP
 /// only an unambiguous candidate). Alias shapes (":free" variants, "-latest",
 /// trailing dates, "~" prefixes) fall back through id_candidates. None = no
 /// match — stays unpriced, never guessed.
+#[cfg(test)]
 fn price_for(catalog: &Catalog, provider: &str, model: &str) -> Option<CatalogPrice> {
-    for id in id_candidates(model) {
-        if id.contains('/') {
-            if let Some(hit) = catalog.by_id.get(&normalize(&id)) {
-                return Some(*hit);
-            }
-            // A vendor-prefixed id can still suffix-match when the catalog
-            // files the model under a different vendor path (rare, but
-            // aliases do this).
-            if let Some((vendor, rest)) = id.split_once('/')
-                && let Some(hit) = suffix_match(catalog, vendor, rest)
-            {
-                return Some(hit);
-            }
+    id_steps(model)
+        .into_iter()
+        .find_map(|(id, _)| lookup(catalog, provider, &id))
+}
+
+/// One candidate id against the catalog: a vendor-prefixed id by its full
+/// id, then by suffix under another vendor path; a bare id by suffix.
+fn lookup(catalog: &Catalog, provider: &str, id: &str) -> Option<CatalogPrice> {
+    if id.contains('/') {
+        if let Some(hit) = catalog.by_id.get(&normalize(id)) {
+            return Some(hit.clone());
+        }
+        let (vendor, rest) = id.split_once('/')?;
+        return suffix_match(catalog, vendor, rest);
+    }
+    suffix_match(catalog, provider, id)
+}
+
+/// What the price pass does with one model.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Decision {
+    /// Store this price; `step` says how sure the match is.
+    Price { hit: CatalogPrice, step: Step },
+    /// A model on another host matched an OpenRouter entry only by its last
+    /// path segment: OpenRouter's rate is not that host's, so it is offered
+    /// to the admin, never applied.
+    Suggest { hit: CatalogPrice },
+    /// The catalog lists the model with a variable price.
+    Variable { catalog_id: String },
+    /// Nothing usable; the sentence says what was tried and why.
+    NoMatch { detail: String },
+}
+
+/// THE MATCH POLICY over the raw matcher:
+/// - on an OpenRouter endpoint a `:tag` id (`:online`, `:nitro`) is priced
+///   only by its own catalog entry — OpenRouter lists every id it sells, and
+///   the base model's rate leaves out what the tag adds (a web-search fee,
+///   a faster and dearer provider);
+/// - a dated snapshot the catalog lacks borrows its undated alias's price
+///   only when every snapshot of it the catalog does list agrees with that
+///   alias (`gpt-4o-2024-05-13` costs twice `gpt-4o`);
+/// - a last-segment match prices only on OpenRouter; anywhere else it is a
+///   suggestion.
+pub(crate) fn decide(catalog: &Catalog, provider: &str, model: &str) -> Decision {
+    let openrouter = provider == "openrouter";
+    let mut notes: Vec<String> = Vec::new();
+    for (id, step) in id_steps(model) {
+        if openrouter && step == Step::Tag {
+            notes.push(format!(
+                "on OpenRouter a tagged id is priced only by its own entry, and the catalog has none for {model} (the base model's rate would leave out what the tag adds)"
+            ));
             continue;
         }
-        if let Some(hit) = suffix_match(catalog, provider, &id) {
-            return Some(hit);
+        let Some(hit) = lookup(catalog, provider, &id) else {
+            continue;
+        };
+        if matches!(step, Step::Date)
+            && let Some(snaps) = catalog.snapshots.get(&normalize(&hit.id))
+            && snaps.iter().any(|snap| !snap.same_rates(&hit))
+        {
+            notes.push(format!(
+                "the catalog prices {}'s dated snapshots differently from {} itself, so a snapshot it does not list cannot borrow that price",
+                hit.id, hit.id
+            ));
+            continue;
         }
+        if step == Step::Segment && !openrouter {
+            return Decision::Suggest { hit };
+        }
+        return Decision::Price { hit, step };
     }
-    None
+    if let Some(catalog_id) = variable_entry(catalog, model) {
+        return Decision::Variable { catalog_id };
+    }
+    let mut detail = no_match_detail(model, catalog.size);
+    if !notes.is_empty() {
+        detail.push_str("; ");
+        detail.push_str(&notes.join("; "));
+    }
+    Decision::NoMatch { detail }
 }
 
 /// An error and every cause under it, joined — reqwest's own Display stops at
@@ -394,7 +519,7 @@ pub struct RefreshCounts {
 /// like every stored rate, and sourced from the public catalog. Direct
 /// providers publish no prices of their own — this row is what their usage
 /// is derived from.
-fn catalog_price_row(model: &str, hit: CatalogPrice) -> spend::PublishedPrice {
+fn catalog_price_row(model: &str, hit: &CatalogPrice, step: Step) -> spend::PublishedPrice {
     spend::PublishedPrice {
         model: model.to_string(),
         variant: String::new(),
@@ -403,6 +528,16 @@ fn catalog_price_row(model: &str, hit: CatalogPrice) -> spend::PublishedPrice {
         price_cache_write_per_mtok: hit.cache_write_per_mtok.map(round4),
         price_cache_read_per_mtok: hit.cache_read_per_mtok.map(round4),
         source: "openrouter.catalog",
+        matched_id: Some(hit.id.clone()),
+        match_kind: Some(step.kind()),
+    }
+}
+
+/// "priced as openai/gpt-4o (alias)" — what a catalog hit records.
+fn priced_as_detail(hit: &CatalogPrice, step: Step) -> String {
+    match step {
+        Step::AsIs => format!("priced as {}", hit.id),
+        _ => format!("priced as {} ({} match)", hit.id, step.kind()),
     }
 }
 
@@ -441,13 +576,54 @@ async fn record_lookup(
          values ($1::uuid, $2, $3, $4, $5, now()) \
          on conflict (endpoint_id, model) do update set \
            outcome = excluded.outcome, detail = excluded.detail, \
-           source = excluded.source, checked_at = now()",
+           source = excluded.source, checked_at = now(), \
+           matched_id = null, suggest_in_per_mtok = null, suggest_out_per_mtok = null, \
+           suggest_cache_write_per_mtok = null, suggest_cache_read_per_mtok = null",
     )
     .bind(endpoint_id)
     .bind(model)
     .bind(outcome)
     .bind(detail)
     .bind(CATALOG_SOURCE)
+    .execute(pg)
+    .await
+    .map(|_| ())
+}
+
+/// A last-segment match on another host: OpenRouter's entry and rates,
+/// recorded as a suggestion the admin may accept as a manual price.
+async fn record_suggestion(
+    pg: &PgPool,
+    endpoint_id: &str,
+    model: &str,
+    hit: &CatalogPrice,
+) -> Result<(), sqlx::Error> {
+    let detail = format!(
+        "OpenRouter lists {} under the same name. That is OpenRouter's rate, not necessarily this provider's, so it is offered here rather than applied.",
+        hit.id
+    );
+    sqlx::query(
+        "insert into price_lookups (endpoint_id, model, outcome, detail, source, checked_at, \
+           matched_id, suggest_in_per_mtok, suggest_out_per_mtok, suggest_cache_write_per_mtok, \
+           suggest_cache_read_per_mtok) \
+         values ($1::uuid, $2, 'suggested', $3, $4, now(), $5, $6, $7, $8, $9) \
+         on conflict (endpoint_id, model) do update set \
+           outcome = excluded.outcome, detail = excluded.detail, source = excluded.source, \
+           checked_at = now(), matched_id = excluded.matched_id, \
+           suggest_in_per_mtok = excluded.suggest_in_per_mtok, \
+           suggest_out_per_mtok = excluded.suggest_out_per_mtok, \
+           suggest_cache_write_per_mtok = excluded.suggest_cache_write_per_mtok, \
+           suggest_cache_read_per_mtok = excluded.suggest_cache_read_per_mtok",
+    )
+    .bind(endpoint_id)
+    .bind(model)
+    .bind(&detail)
+    .bind(CATALOG_SOURCE)
+    .bind(&hit.id)
+    .bind(round4(hit.in_per_mtok))
+    .bind(round4(hit.out_per_mtok))
+    .bind(hit.cache_write_per_mtok.map(round4))
+    .bind(hit.cache_read_per_mtok.map(round4))
     .execute(pg)
     .await
     .map(|_| ())
@@ -551,43 +727,12 @@ async fn refresh_auto_prices(
     for (id, _name, provider, models) in targets {
         let mut auto = JsonMap::new();
         for m in models {
-            if let Some(hit) = price_for(&catalog, &provider, &m) {
-                let value = serde_json::to_value(AutoPrice {
-                    in_per_mtok: round4(hit.in_per_mtok),
-                    out_per_mtok: round4(hit.out_per_mtok),
-                })
-                .expect("an f64 pair serializes");
-                auto.insert(m.clone(), value);
-                counts.priced += 1;
-                // The same hit is also a published model-level price for
-                // this endpoint.
-                let price = catalog_price_row(&m, hit);
-                match spend_fetch::upsert_price(pg, &id, &provider, &price).await {
-                    Ok(()) => {
-                        counts.catalog_priced += 1;
-                        let _ = record_lookup(pg, &id, &m, "priced", None).await;
-                    }
-                    Err(e) => {
-                        counts.upsert_failed += 1;
-                        let _ = record_lookup(
-                            pg,
-                            &id,
-                            &m,
-                            "source_failed",
-                            Some(&format!(
-                                "the catalog priced it, and storing the price failed: {e}"
-                            )),
-                        )
-                        .await;
-                        if counts.first_upsert_error.is_none() {
-                            counts.first_upsert_error = Some(e);
-                        }
-                    }
-                }
-            } else if let Some(entry) = variable_entry(&catalog, &m) {
-                // No price to store: drop any earlier pass's row for this
-                // model (one written before negatives were refused), and say
-                // why it stays unpriced.
+            let decision = decide(&catalog, &provider, &m);
+            if !matches!(decision, Decision::Price { .. }) {
+                // No catalog price applies any more: drop an earlier pass's
+                // row for this model — a "-1" stored before negatives were
+                // refused, or a fuzzy match the policy now withholds — so it
+                // stops pricing.
                 let _ = sqlx::query(
                     "delete from provider_prices where endpoint_id = $1::uuid and model = $2 \
                      and variant = '' and source = $3",
@@ -597,13 +742,57 @@ async fn refresh_auto_prices(
                 .bind(CATALOG_SOURCE)
                 .execute(pg)
                 .await;
-                counts.no_match += 1;
-                let detail = variable_detail(&entry);
-                let _ = record_lookup(pg, &id, &m, "variable", Some(&detail)).await;
-            } else {
-                counts.no_match += 1;
-                let detail = no_match_detail(&m, catalog.size);
-                let _ = record_lookup(pg, &id, &m, "no_match", Some(&detail)).await;
+            }
+            match decision {
+                Decision::Price { hit, step } => {
+                    let value = serde_json::to_value(AutoPrice {
+                        in_per_mtok: round4(hit.in_per_mtok),
+                        out_per_mtok: round4(hit.out_per_mtok),
+                    })
+                    .expect("an f64 pair serializes");
+                    auto.insert(m.clone(), value);
+                    counts.priced += 1;
+                    // The same hit is also a published model-level price for
+                    // this endpoint, carrying which catalog entry it is and
+                    // how sure the match was.
+                    let price = catalog_price_row(&m, &hit, step);
+                    match spend_fetch::upsert_price(pg, &id, &provider, &price).await {
+                        Ok(()) => {
+                            counts.catalog_priced += 1;
+                            let detail = priced_as_detail(&hit, step);
+                            let _ = record_lookup(pg, &id, &m, "priced", Some(&detail)).await;
+                        }
+                        Err(e) => {
+                            counts.upsert_failed += 1;
+                            let _ = record_lookup(
+                                pg,
+                                &id,
+                                &m,
+                                "source_failed",
+                                Some(&format!(
+                                    "the catalog priced it, and storing the price failed: {e}"
+                                )),
+                            )
+                            .await;
+                            if counts.first_upsert_error.is_none() {
+                                counts.first_upsert_error = Some(e);
+                            }
+                        }
+                    }
+                }
+                Decision::Suggest { hit } => {
+                    counts.no_match += 1;
+                    let _ = record_suggestion(pg, &id, &m, &hit).await;
+                }
+                Decision::Variable { catalog_id } => {
+                    counts.no_match += 1;
+                    let detail = variable_detail(&catalog_id);
+                    let _ = record_lookup(pg, &id, &m, "variable", Some(&detail)).await;
+                }
+                Decision::NoMatch { detail } => {
+                    counts.no_match += 1;
+                    let _ = record_lookup(pg, &id, &m, "no_match", Some(&detail)).await;
+                }
             }
         }
         // A full pass replaces the endpoint's fill map (a model that left the
@@ -969,7 +1158,9 @@ mod tests {
     fn a_catalog_hit_becomes_a_model_level_price_row() {
         let c = build_catalog(&[entry("openai/gpt-5", "1", "2")]);
         let hit = price_for(&c, "openai", "gpt-5").unwrap();
-        let row = catalog_price_row("gpt-5", hit);
+        let row = catalog_price_row("gpt-5", &hit, Step::AsIs);
+        assert_eq!(row.matched_id.as_deref(), Some("openai/gpt-5"));
+        assert_eq!(row.match_kind, Some("exact"));
         // variant '' is the model-level rate — the one the spend view
         // matches when no serving variant is known.
         assert_eq!(row.model, "gpt-5");
@@ -980,13 +1171,16 @@ mod tests {
         // Stored rounded to four decimals like every other rate.
         let row = catalog_price_row(
             "m",
-            CatalogPrice {
+            &CatalogPrice {
+                id: "v/m".into(),
                 in_per_mtok: 1.23456,
                 out_per_mtok: 7.00006,
                 cache_write_per_mtok: Some(1.543_21),
                 cache_read_per_mtok: None,
             },
+            Step::Date,
         );
+        assert_eq!(row.match_kind, Some("alias"));
         assert!(near(row.price_in_per_mtok.unwrap(), 1.2346));
         assert!(near(row.price_out_per_mtok.unwrap(), 7.0001));
         assert!(near(row.price_cache_write_per_mtok.unwrap(), 1.5432));
@@ -1129,6 +1323,168 @@ mod tests {
             (None, None)
         );
         assert!(hit.in_per_mtok >= 0.0 && hit.out_per_mtok >= 0.0);
+    }
+
+    #[test]
+    fn a_dated_path_tries_its_own_dated_segment_before_the_undated_one() {
+        // S3: the last segment's whole chain, dated id first.
+        assert_eq!(
+            id_candidates("accounts/fireworks/models/deepseek-r1-0528"),
+            [
+                "accounts/fireworks/models/deepseek-r1-0528",
+                "accounts/fireworks/models/deepseek-r1",
+                "deepseek-r1-0528",
+                "deepseek-r1",
+            ]
+        );
+        let c = build_catalog(&[entry(
+            "deepseek/deepseek-r1-0528",
+            "0.0000005",
+            "0.00000215",
+        )]);
+        assert_eq!(
+            price_for(&c, "custom", "accounts/fireworks/models/deepseek-r1-0528")
+                .unwrap()
+                .id,
+            "deepseek/deepseek-r1-0528"
+        );
+        // Each candidate carries how it was derived.
+        let steps: Vec<Step> = id_steps("accounts/fireworks/models/deepseek-r1-0528")
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect();
+        assert_eq!(
+            steps,
+            [Step::AsIs, Step::Date, Step::Segment, Step::Segment]
+        );
+        assert_eq!(
+            id_steps("openai/gpt-4o:online")
+                .into_iter()
+                .map(|(_, s)| s)
+                .collect::<Vec<_>>(),
+            [Step::AsIs, Step::Tag]
+        );
+    }
+
+    #[test]
+    fn the_policy_marks_how_sure_a_match_is() {
+        let c = build_catalog(&[
+            entry("anthropic/claude-sonnet-4.5", "0.000003", "0.000015"),
+            entry("openai/gpt-5", "0.00000125", "0.00001"),
+        ]);
+        // The model's own id (a bare id on its own vendor counts): exact.
+        assert!(matches!(
+            decide(&c, "anthropic", "claude-sonnet-4.5"),
+            Decision::Price {
+                step: Step::AsIs,
+                ..
+            }
+        ));
+        assert!(matches!(
+            decide(&c, "openrouter", "anthropic/claude-sonnet-4.5"),
+            Decision::Price {
+                step: Step::AsIs,
+                ..
+            }
+        ));
+        // Reached through a stripped date: priced, and marked an alias.
+        match decide(&c, "openai", "gpt-5-2026-01-01") {
+            Decision::Price { hit, step } => {
+                assert_eq!((hit.id.as_str(), step.kind()), ("openai/gpt-5", "alias"));
+                assert_eq!(
+                    priced_as_detail(&hit, step),
+                    "priced as openai/gpt-5 (alias match)"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_never_borrows_an_alias_its_listed_snapshots_disagree_with() {
+        // The live catalog of 2026-11-03: the listed gpt-4o snapshot costs
+        // twice the alias, so an unlisted snapshot cannot take the alias.
+        let c = build_catalog(&[
+            entry("openai/gpt-4o", "0.0000025", "0.00001"),
+            entry("openai/gpt-4o-2024-05-13", "0.000005", "0.000015"),
+            entry("openai/gpt-5", "0.00000125", "0.00001"),
+            entry("openai/gpt-5-2025-08-07", "0.00000125", "0.00001"),
+        ]);
+        // Listed: exact, at its own price.
+        match decide(&c, "openai", "gpt-4o-2024-05-13") {
+            Decision::Price { hit, step } => {
+                assert_eq!((hit.in_per_mtok, step), (5.0, Step::AsIs));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Unlisted, and the family disagrees: unpriced, with the reason.
+        match decide(&c, "openai", "gpt-4o-2024-11-20") {
+            Decision::NoMatch { detail } => {
+                assert!(detail.contains("dated snapshots differently"), "{detail}")
+            }
+            other => panic!("{other:?}"),
+        }
+        // Unlisted, and every listed snapshot agrees with the alias: priced, fuzzy.
+        assert!(matches!(
+            decide(&c, "openai", "gpt-5-2026-02-02"),
+            Decision::Price {
+                step: Step::Date,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_tagged_openrouter_id_takes_only_its_own_entry() {
+        // S5: the live catalog has no openai/gpt-4o:online.
+        let c = build_catalog(&[
+            entry("openai/gpt-4o", "0.0000025", "0.00001"),
+            entry("recursive/flint-v1.0:free", "0", "0"),
+        ]);
+        match decide(&c, "openrouter", "openai/gpt-4o:online") {
+            Decision::NoMatch { detail } => assert!(
+                detail.contains("tagged id is priced only by its own entry"),
+                "{detail}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            decide(&c, "openrouter", "openai/gpt-4o:nitro"),
+            Decision::NoMatch { .. }
+        ));
+        // A tag the catalog lists is its own entry, exact.
+        assert!(matches!(
+            decide(&c, "openrouter", "recursive/flint-v1.0:free"),
+            Decision::Price {
+                step: Step::AsIs,
+                ..
+            }
+        ));
+        // Elsewhere a ":tag" is the endpoint's own spelling; the alias applies, marked fuzzy.
+        assert!(matches!(
+            decide(&c, "custom", "openai/gpt-4o:latest"),
+            Decision::Price {
+                step: Step::Tag,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_last_segment_match_on_another_host_is_a_suggestion() {
+        let c = build_catalog(&[entry("openai/gpt-oss-120b", "0.00000002", "0.000000076")]);
+        match decide(&c, "custom", "accounts/fireworks/models/gpt-oss-120b") {
+            Decision::Suggest { hit } => assert_eq!(hit.id, "openai/gpt-oss-120b"),
+            other => panic!("{other:?}"),
+        }
+        // On OpenRouter itself a segment match is OpenRouter's own rate.
+        assert!(matches!(
+            decide(&c, "openrouter", "x/models/gpt-oss-120b"),
+            Decision::Price {
+                step: Step::Segment,
+                ..
+            }
+        ));
     }
 
     #[test]

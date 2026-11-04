@@ -22,7 +22,7 @@ use talaria_body::{
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_price_oracle::unpriced::{
-    PriceInput, clear_price, repriced, set_price, validate_price,
+    PriceInput, clear_price, repriced, set_price, setting_json, validate_price,
 };
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -87,6 +87,11 @@ pub async fn put(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let actor = actor_of(&user);
+    // What it replaces, for the audit's `before`.
+    let before = match setting_json(&state.pg, &input.endpoint, &input.model).await {
+        Ok(b) => b,
+        Err(e) => return Ok(internal("[cost] price read failed", e)),
+    };
     if let Err(e) = set_price(&state.pg, &input, &actor).await {
         return Ok(internal("[cost] price save failed", e));
     }
@@ -117,7 +122,7 @@ pub async fn put(
             target_type: "model_price",
             target_id: None,
             target_label: Some(&label),
-            before: None,
+            before,
             after: Some(after.clone()),
         },
     )
@@ -139,6 +144,10 @@ pub async fn delete(
     let (endpoint, model) = match target(obj) {
         Ok(t) => t,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let before = match setting_json(&state.pg, &endpoint, &model).await {
+        Ok(b) => b,
+        Err(e) => return Ok(internal("[cost] price read failed", e)),
     };
     match clear_price(&state.pg, &endpoint, &model).await {
         Ok(true) => {}
@@ -162,7 +171,7 @@ pub async fn delete(
             target_type: "model_price",
             target_id: None,
             target_label: Some(&label),
-            before: None,
+            before,
             after: None,
         },
     )

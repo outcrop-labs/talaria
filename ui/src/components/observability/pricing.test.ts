@@ -128,3 +128,37 @@ describe('the spend legend', () => {
     expect(modelCostLabel({ cost: 1.5, tokens: 3000 })).toBe('$1.50')
   })
 })
+
+describe('the review follow-ups', () => {
+  it('offers no fixes for rows with no model, and refuses a manual $0 / $0', async () => {
+    const { canFix, manualBody: body, emptyPriceForm: form } = await import('./pricing')
+    expect(canFix({ model: '' })).toBe(false)
+    expect(canFix({ model: 'gpt-5' })).toBe(true)
+    expect(body({ endpoint: 'e', model: 'm' }, { ...form(), input: '0', output: '0' })).toEqual({
+      ok: false,
+      error: 'A $0 rate is “Included in a plan” — mark the model included instead.',
+    })
+  })
+
+  it('accepts a suggestion as a manual rate that says where it came from', async () => {
+    const { suggestionBody, suggestionLabel, pricedAsLabel } = await import('./pricing')
+    const s = { matchedId: 'openai/gpt-oss-120b', in: 0.02, out: 0.076, cacheWrite: null, cacheRead: 0.018 }
+    expect(suggestionBody({ endpoint: 'fireworks', model: 'accounts/fireworks/models/gpt-oss-120b' }, s)).toMatchObject({
+      mode: 'manual',
+      priceInPerMtok: 0.02,
+      priceOutPerMtok: 0.076,
+      priceCacheReadPerMtok: 0.018,
+      note: "OpenRouter's rate for openai/gpt-oss-120b, accepted as a suggestion",
+    })
+    expect(suggestionLabel(s)).toBe('$0.02 in · $0.076 out · $0.018 cache read per 1M')
+    expect(pricedAsLabel('openai/gpt-4o')).toBe('priced as openai/gpt-4o (fuzzy match)')
+  })
+
+  it('labels a fuzzy match in the legend and an included-only agent as included', async () => {
+    const { modelCostLabel, agentCostLabel } = await import('@/lib/cost.svelte')
+    expect(modelCostLabel({ cost: 2.5, tokens: 1000, pricedAs: 'openai/gpt-4o' })).toBe('$2.50, priced as openai/gpt-4o (fuzzy match)')
+    expect(agentCostLabel({ cost: 0, prompt: 10, completion: 5, includedTokens: 15 })).toBe('included')
+    expect(agentCostLabel({ cost: 0, prompt: 10, completion: 5 })).toBe('$0')
+    expect(agentCostLabel({ cost: 1.5, prompt: 10, completion: 5, includedTokens: 3 })).toBe('$1.50')
+  })
+})

@@ -116,11 +116,13 @@ Source: [`api/crates/talaria-routes-comms/src/activity/cost_unpriced.rs`](../../
 > days has no price — its endpoint, model, token counts and the reason
 > (no published price found, the price source didn't answer, not looked
 > up yet, the endpoint is gone) — and every admin pricing decision with
-> what it prices now. Admins only: the fix is theirs to make.
+> what it prices now, plus (`fuzzy`) every model priced by a fuzzy
+> catalog match — the entry it was priced as — which a manual rate can
+> override. Admins only: the fix is theirs to make.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{unpriced, prices}` | 200 | — |
+| GET | `admin` | — | `{unpriced, prices, fuzzy}` | 200 | — |
 
 ## `/api/cost/unpriced/lookup`
 
@@ -137,7 +139,7 @@ Source: [`api/crates/talaria-routes-comms/src/activity/cost_unpriced_lookup.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `admin` | [body](#post-apicostunpricedlookup-body) | `{priced, reason, repriced}` | 200, 400, 404 | — |
+| POST | `admin` | [body](#post-apicostunpricedlookup-body) | `{priced, reason, repriced}` | 200, 400, 404 | audit |
 
 ### POST `/api/cost/unpriced/lookup` body
 

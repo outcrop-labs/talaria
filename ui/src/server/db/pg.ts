@@ -4730,6 +4730,26 @@ alter table tasks drop column if exists conversation_id`,
   `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
   `alter table price_lookups add constraint price_lookups_outcome_check
      check (outcome in ('priced', 'no_match', 'source_failed', 'variable'))`,
+  // ── How sure a catalog match is (2026-11-03, #682 review) ─────────────────
+  // A catalog price records the entry it came from and how the model's id
+  // reached it: 'exact', 'alias' (a stripped :tag, date or -latest) or
+  // 'segment' (the last path segment). The priced view lets an admin's
+  // manual rate beat a fuzzy match but not an exact one; null (a provider's
+  // own price list, or a row from before this) reads as exact.
+  `alter table provider_prices
+     add column if not exists matched_id text,
+     add column if not exists match_kind text`,
+  // A match the oracle will not apply (another host's model found by its
+  // last segment) is offered instead: the entry and its rates.
+  `alter table price_lookups
+     add column if not exists matched_id text,
+     add column if not exists suggest_in_per_mtok numeric,
+     add column if not exists suggest_out_per_mtok numeric,
+     add column if not exists suggest_cache_write_per_mtok numeric,
+     add column if not exists suggest_cache_read_per_mtok numeric`,
+  `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
+  `alter table price_lookups add constraint price_lookups_outcome_check
+     check (outcome in ('priced', 'no_match', 'source_failed', 'variable', 'suggested'))`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]
