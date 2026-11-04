@@ -37,16 +37,13 @@ pub async fn post(
         Err(resp) => return Ok(resp),
     };
     let caller = agent_caller(&state.pg, &headers).await?;
-    let (mover, audit_actor) = match caller {
+    let mover = match caller {
         Some(caller) => {
             let model = caller.model.clone();
-            (
-                Mover::Agent {
-                    subject: AgentSubject::Caller(caller),
-                    model: model.clone(),
-                },
+            Mover::Agent {
+                subject: AgentSubject::Caller(caller),
                 model,
-            )
+            }
         }
         None => {
             let user = require_user(&state, &headers).await?;
@@ -55,13 +52,10 @@ pub async fn post(
                 .clone()
                 .or_else(|| user.name.clone())
                 .unwrap_or_else(|| "user".into());
-            (
-                Mover::Human {
-                    user_id: user.id.clone(),
-                    actor: actor.clone(),
-                },
+            Mover::Human {
+                user_id: user.id.clone(),
                 actor,
-            )
+            }
         }
     };
     let parsed = parse(&body);
@@ -104,34 +98,7 @@ pub async fn post(
     if outcome.moved.preview {
         return Ok(Json(json!({ "preview": true, "moved": outcome.moved })).into_response());
     }
-    // The move's record: from board → to board, the old and new refs, who,
-    // when (the row's created_at). A move changes who can see the ticket, so
-    // it is governance, not chatter. Never breaks the move itself.
-    let m = &outcome.moved;
-    talaria_audit::log_audit(
-        &state.pg,
-        talaria_audit::AuditEntry {
-            actor: &audit_actor,
-            action: "task.board_move",
-            target_type: "task",
-            target_id: Some(&id),
-            target_label: outcome.task.as_ref().map(|t| t.title.as_str()),
-            before: Some(json!({
-                "boardId": m.from_board_id,
-                "boardName": m.from_board_name,
-                "ref": m.from_ref,
-                "status": m.from_status,
-            })),
-            after: Some(json!({
-                "boardId": m.to_board_id,
-                "boardName": m.to_board_name,
-                "ref": m.to_ref,
-                "status": m.status,
-                "labelsDropped": m.labels_dropped,
-                "unassigned": m.unassigned,
-            })),
-        },
-    )
-    .await;
+    // The activity line and the audit row (`task.board_move`) were written in
+    // the move's own transaction: a committed move always has both.
     Ok(Json(json!({ "task": outcome.task, "moved": outcome.moved })).into_response())
 }

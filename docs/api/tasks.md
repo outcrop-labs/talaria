@@ -145,7 +145,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs`](../../ap
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apitasksidmove-body) | `{task, moved}` | 200, 400, 403, 404, 409 | audit |
+| POST | `dual` | [body](#post-apitasksidmove-body) | `{task, moved}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/move` body
 

@@ -464,6 +464,11 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 .iter()
                 .cloned()
                 .partition(|x| dest.agents.contains(x));
+            if unassigned.iter().any(|a| a.starts_with("user:")) {
+                return Err(refuse(
+                    "agents cannot unassign people — a person on this ticket is not on that board. A person can move it, or add them to that board first",
+                ));
+            }
             let from = t.board_id.clone();
             let preview = a["preview"].as_bool() == Some(true);
             let moved = json!({
