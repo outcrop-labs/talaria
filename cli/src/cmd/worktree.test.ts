@@ -23,7 +23,9 @@ import {
   slotPorts,
   stripOwnKeys,
   worktreeSlot,
+  worktreeCommand,
 } from './worktree'
+import { parseArgs } from '../cli'
 import { WORKTREE_COMPOSE, pgReadyArgs } from '../compose'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
@@ -963,5 +965,90 @@ describe('runWorktree — what the seed copied', () => {
     } finally {
       done()
     }
+  })
+})
+
+describe('runWorktree — the Rust build cache', () => {
+  // A new worktree used to start with an empty api/target and pay a cold
+  // build, writing its own copy of every third-party artifact. The seed
+  // reflinks the registry crates' units from an idle checkout instead
+  // (src/targetseed.ts). These tests drive the step through the command;
+  // what a seed copies is targetseed.test.ts's.
+  const H = '0123456789abcdef'
+  const LOCK = '[[package]]\nname = "itoa"\nversion = "1.0.14"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n'
+  function fixture(name: string) {
+    const root = mkdtempSync(join(tmpdir(), 'talaria-wt-'))
+    mkdirSync(join(root, 'ui/node_modules'), { recursive: true })
+    writeFileSync(join(root, 'ui/.env'), 'DATABASE_URL=postgres://t:t@127.0.0.1:5544/talaria\nTALARIA_SECRET_KEY=rootkey\n')
+    // The source: a checkout with a built api/target.
+    const from = join(root, 'src-checkout')
+    mkdirSync(join(from, `api/target/debug/.fingerprint/itoa-${H}`), { recursive: true })
+    mkdirSync(join(from, 'api/target/debug/deps'), { recursive: true })
+    writeFileSync(join(from, `api/target/debug/deps/libitoa-${H}.rlib`), 'rlib')
+    writeFileSync(join(from, 'api/target/debug/.cargo-build-lock'), '')
+    const wt = join(root, '..', `talaria-${name}`)
+    rmSync(wt, { recursive: true, force: true })
+    const ctx = mainCtx()
+    ctx.root = root
+    const exec = ctx.exec
+    ctx.exec = async (cmd, args, opts) => {
+      // A real checkout of the base ref carries its lockfile.
+      if (cmd === 'git' && args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(join(wt, 'api'), { recursive: true })
+        writeFileSync(join(wt, 'api/Cargo.lock'), LOCK)
+      }
+      return exec(cmd, args, opts)
+    }
+    const done = () => {
+      rmSync(wt, { recursive: true, force: true })
+      rmSync(root, { recursive: true, force: true })
+    }
+    return { ctx, from, wt, done }
+  }
+
+  test('--seed-from reflinks the named checkout\'s registry units into the new api/target', async () => {
+    const { ctx, from, wt, done } = fixture('seeded')
+    try {
+      await runWorktree(ctx, 'seeded', 'HEAD', { seedFrom: from })
+      const copy = ctx.calls.find((c) => c.cmd === 'flock' && c.args.includes('xargs'))
+      expect(copy?.opts?.cwd).toBe(join(from, 'api/target/debug'))
+      expect(copy?.args).toContain(join(wt, 'api/target/debug'))
+      expect(ctx.logLines.some((l) => l.kind === 'ok' && l.msg.includes(`api/target seeded from ${from} by reflink: 1 registry units reused`))).toBe(true)
+      expect(existsSync(join(wt, 'api/target/.talaria-seed.json'))).toBe(true)
+    } finally {
+      done()
+    }
+  })
+
+  test('--no-seed copies nothing and says the first build is cold', async () => {
+    const { ctx, wt, done } = fixture('cold')
+    try {
+      await runWorktree(ctx, 'cold', 'HEAD', { seed: false })
+      expect(ctx.calls.some((c) => c.cmd === 'flock' || (c.cmd === 'cp' && c.args.includes('--reflink=always')))).toBe(false)
+      expect(ctx.logLines).toContainEqual({ kind: 'skip', msg: '--no-seed: the first build is cold' })
+      expect(existsSync(join(wt, 'api/target'))).toBe(false)
+    } finally {
+      done()
+    }
+  })
+
+  test('a filesystem without reflink gets a cold build and a warning, and the stack is still whole', async () => {
+    const { ctx, from, wt, done } = fixture('noreflink')
+    ctx.plant(['cp', ['--reflink=always', join(from, `api/target/debug/deps/libitoa-${H}.rlib`), join(wt, 'api/target/.reflink-probe')]], new Error('Operation not supported'))
+    try {
+      expect(await runWorktree(ctx, 'noreflink', 'HEAD', { seedFrom: from })).toBe(0)
+      expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('cannot reflink'))).toBe(true)
+      expect(existsSync(join(wt, 'api/target'))).toBe(false)
+      expect(existsSync(join(wt, 'ui/.env'))).toBe(true)
+    } finally {
+      done()
+    }
+  })
+
+  test('--no-seed and --seed-from together is refused before anything is made', () => {
+    const ctx = mainCtx()
+    const args = parseArgs(['demo', '--no-seed', '--seed-from', '../talaria'], worktreeCommand.flags ?? [], 'talaria worktree')
+    expect(() => worktreeCommand.run(ctx, args)).toThrow(CliError)
+    expect(ctx.calls).toEqual([])
   })
 })

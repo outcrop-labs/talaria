@@ -24,11 +24,16 @@ import {
   orphanProjects,
   parseDockerTime,
   parseLabels,
+  prStateAt,
+  pressureDrops,
+  procLocksDev,
+  heldFlocks,
   projectVouchedBy,
   removalAllowed,
   removeArtifact,
   selectRemoval,
   verdict,
+  worktreeMarker,
   worktreeName,
   worktreeProjectOwners,
 } from './cleanup-sweep.mjs'
@@ -856,6 +861,110 @@ check('build caches are reported at any disk reading', () => {
   if (!text.includes('34 GiB')) throw new Error(text)
   if (!text.includes('cargo clean')) throw new Error(text)
   if (text.includes('nothing stale.')) throw new Error(text)
+})
+
+
+// ── Build caches: a finished PR's goes first; over the line, LRU idle ones ──
+const HOUR = 60 * 60 * 1000
+const cache = (over = {}) => ({
+  kind: 'target',
+  id: 'talaria-x/api/target',
+  path: '/work/talaria-x/api/target',
+  owner: '/work/talaria-x',
+  bytes: 5 * 1024 ** 3,
+  ageMs: 2 * HOUR,
+  busy: false,
+  stackRunning: false,
+  pr: null,
+  dirty: false,
+  unpushed: false,
+  inspected: true,
+  kept: false,
+  current: false,
+  primary: false,
+  foreign: false,
+  ...over,
+})
+
+check('a merged or closed PR drops its idle cache; open, none, or kept keeps it', () => {
+  eq(classify(cache({ pr: 'merged' })), 'remove')
+  eq(classify(cache({ pr: 'closed' })), 'remove')
+  eq(classify(cache({ pr: 'open' })), 'keep')
+  eq(classify(cache({ pr: null })), 'keep')
+  eq(classify(cache({ pr: 'merged', kept: true })), 'keep')
+  eq(classify(cache({ pr: 'open', bytes: POLICY.oversizedTargetBytes })), 'flag')
+})
+
+check('a finished PR in a dirty or unpushed tree: a human decides', () => {
+  eq(classify(cache({ pr: 'merged', dirty: true })), 'flag')
+  eq(classify(cache({ pr: 'closed', unpushed: true })), 'flag')
+})
+
+check('never a cache a cargo builds in, one used this hour, one whose stack runs', () => {
+  eq(classify(cache({ pr: 'merged', busy: true })), 'keep')
+  // null: the locks could not be read (not Linux). Unknown is not idle,
+  // and that holds for the 14-day clock too.
+  eq(classify(cache({ pr: 'merged', busy: null })), 'keep')
+  eq(classify(cache({ ageMs: POLICY.staleTargetMs + DAY, busy: null })), 'keep')
+  eq(classify(cache({ pr: 'merged', ageMs: POLICY.targetIdleMs - 1 })), 'keep')
+  eq(classify(cache({ pr: 'merged', stackRunning: true })), 'keep')
+  eq(classify(cache({ ageMs: POLICY.staleTargetMs + DAY, stackRunning: true })), 'keep')
+})
+
+check('never the primary, the current checkout, or a checkout talaria worktree did not make', () => {
+  eq(classify(cache({ pr: 'merged', primary: true })), 'keep')
+  eq(classify(cache({ pr: 'merged', current: true })), 'keep')
+  eq(classify(cache({ pr: 'merged', foreign: true })), 'keep')
+  eq(classify(cache({ ageMs: POLICY.staleTargetMs + DAY, foreign: true })), 'keep')
+  eq(classify(cache({ foreign: true, bytes: POLICY.oversizedTargetBytes })), 'flag')
+})
+
+check('over the line: idle clean caches, least recently used first, kept trees included', () => {
+  const over = { usedPct: POLICY.pressurePct + 1 }
+  const rows = [
+    cache({ id: 'recent', ageMs: 3 * HOUR, pr: 'open' }),
+    cache({ id: 'oldest', ageMs: 9 * DAY, kept: true }),
+    cache({ id: 'middle', ageMs: 2 * DAY }),
+    cache({ id: 'dirty', ageMs: 20 * DAY, dirty: true }),
+    cache({ id: 'busy', ageMs: 20 * DAY, busy: true }),
+    cache({ id: 'hot', ageMs: 10 * 60 * 1000 }),
+    cache({ id: 'primary', ageMs: 30 * DAY, primary: true }),
+    cache({ id: 'foreign', ageMs: 30 * DAY, foreign: true }),
+    cache({ id: 'uninspected', ageMs: 30 * DAY, inspected: false }),
+  ].map((a) => ({ ...a, action: classify(a) }))
+  eq(pressureDrops(rows, over).map((a) => a.id).join(','), 'oldest,middle,recent')
+  eq(pressureDrops(rows, { usedPct: POLICY.pressurePct - 1 }).length, 0)
+})
+
+check('a removable checkout counts its build dir once, and the build dir goes first', () => {
+  const wt = { ...stale({ path: '/work/talaria-x', merged: true }), bytes: 10, action: 'remove' }
+  const t = { ...cache({ pr: 'merged', bytes: 7 }), action: 'remove' }
+  eq(verdict([wt, t], { usedPct: 10 }).removableBytes, 10)
+  eq(selectRemoval([wt, t], 'apply')[0].kind, 'target')
+})
+
+check('PR state is the PR at this HEAD; an old PR of a reused name finishes nothing', () => {
+  const prs = [
+    { number: 1, state: 'MERGED', headRefName: 'wt/a', headRefOid: 'aaa' },
+    { number: 2, state: 'CLOSED', headRefName: 'feat/b', headRefOid: 'bbb' },
+    { number: 3, state: 'OPEN', headRefName: 'feat/c', headRefOid: 'ccc' },
+  ]
+  eq(prStateAt(prs, 'wt/a', 'aaa'), 'merged')
+  eq(prStateAt(prs, 'wt/a', 'a-later-commit'), null)
+  eq(prStateAt(prs, 'feat/b', 'bbb'), 'closed')
+  eq(prStateAt(prs, 'feat/c', 'whatever'), 'open')
+  eq(prStateAt(prs, 'feat/none', 'x'), null)
+  eq(prStateAt(null, 'wt/a', 'aaa'), null)
+})
+
+check('cargo locks from /proc/locks, and the worktree marker', () => {
+  const held = heldFlocks('1: FLOCK  ADVISORY  WRITE 3512 fc:00:621256963 0 EOF\n18:  -> FLOCK  ADVISORY  WRITE 9 fc:00:7 0 EOF\n2: POSIX  ADVISORY  WRITE 1 00:a0:5 0 EOF\n')
+  eq(held.has('fc:00:621256963'), true)
+  eq(held.has('fc:00:7'), true)
+  eq(held.has('00:a0:5'), false)
+  eq(procLocksDev(64512), 'fc:00')
+  eq(worktreeMarker('PORT=5306\nTALARIA_WORKTREE=docnotice\n'), 'docnotice')
+  eq(worktreeMarker('PORT=5306\n'), null)
 })
 
 check('--help and --pressure exit without deleting', () => {

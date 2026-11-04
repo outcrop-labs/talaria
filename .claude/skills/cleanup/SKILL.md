@@ -33,7 +33,7 @@ Once the proof line is green, tear it down.
 | `bun talaria worktree <name>` | from the **primary** checkout, not from inside it: `docker compose -p talaria-wt-<name> down -v && git worktree remove --force ../talaria-<name> && git branch -D wt/<name>` |
 | `bun talaria box new <name>` | `bun talaria box rm <name>` (it refuses a dirty or unpushed clone; `--force` is a human decision) |
 | a scratch checkout or throwaway download | put it under `/tmp/talaria-<name>` when you create it, and `rm -rf` it when you are done |
-| a one-off `CARGO_TARGET_DIR` or cold build dir | same prefix, `/tmp/talaria-*`, so the sweep can see it |
+| a one-off `CARGO_TARGET_DIR` or cold build dir | same prefix, `/tmp/talaria-*`, so the sweep can see it. Never point two checkouts at one `CARGO_TARGET_DIR`: their workspace crates share unit hashes, and one runs the other's code |
 
 If you are still inside the worktree, the sweep will not delete the checkout it is running in.
 Leave, then run the teardown from the primary. The next stop gate, in any checkout, will
@@ -48,9 +48,17 @@ flag it once it is stale.
   sweep **always names them and their size**, at any disk reading, because an artifact
   nobody can see is the one that fills the disk; it never deletes them on a timer.
   `cargo clean --manifest-path api/Cargo.toml` is a human decision.
-  A *side* worktree's build dir is different: untouched for 14 days it is spent, and
-  `--apply` reclaims it. Reclaiming is cheap to undo — `mise.toml` puts every cargo
-  behind a shared **sccache**, so the rebuild is a cache hit rather than an hour
+  A *side* worktree's build dir is different. `--apply` reclaims it when its pull
+  request has finished (merged, or closed unmerged, at the checkout's HEAD), after 14
+  idle days, or, with the disk over the line, the least recently used idle ones first
+  until it is back under. It never takes one a cargo holds the lock on, one built in
+  within the hour, one whose stack runs, or one in a dirty or unpushed tree (flagged
+  for a human instead). The checkout stays. Reclaiming is cheap to undo:
+  `bun talaria seed-target` reflinks the registry crates back from an idle checkout,
+  and sccache keeps the rest cheap. The sweep lists every linked checkout's build dirs,
+  including the worktrees whose branch was renamed (known by `TALARIA_WORKTREE` in
+  their `ui/.env`). A seeded target's `du` counts extents it shares, so it frees less
+  than it measures. docs/WORKTREES.md, "The Rust build cache", has the rules
 - docker images, volumes and exited containers outside a swept project. The sweep reports
   what docker says is reclaimable; `docker system prune` is a human's call, because an
   exited container is as often a one-shot init sidecar as it is garbage
