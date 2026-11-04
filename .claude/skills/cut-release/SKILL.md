@@ -86,12 +86,17 @@ tag, moves on nothing else — only a suffix-free `vX.Y.Z` tag.
 **The GitHub Release is never "Latest"** — that flag is the desktop updater feed. The shell
 reads `/releases/latest/download/latest.json`, which must resolve to the newest `desktop-v*`
 release (desktop-package.yml marks each mint Latest once its `latest.json` is up). A stable
-`v*` release would take the flag by default before its installers are attached, and every
+`v*` release would take the flag by default, it carries no `latest.json`, and every
 update check would 404, so `release.yml` creates and edits it `--latest=false` and
 `check-invariants.mjs` (`release-latest-is-the-desktop-feed`) fails a workflow that drops a
-flag. Do not mark it Latest in the Releases page either. Its desktop installers still carry
-`latest.json` and `.sig` (the `TAURI_SIGNING_PRIVATE_KEY` Actions secret); nothing serves
-that file. An RC does not publish `latest.json`.
+flag. Do not mark it Latest in the Releases page either.
+
+**No server tag builds or attaches desktop installers** — `vX.Y.Z` and `vX.Y.Z-rc.N` alike.
+Talaria Desktop ships only as `desktop-vX.Y.Z` releases, which `desktop-package.yml` mints on
+a main push that touches `desktop/` (or a `publish=true` dispatch). Desktop has its own
+version line: a 0.13.0 Desktop built from a server tag beside `desktop-v0.12.0` would never be
+offered an update until Desktop passed 0.13. A stable `v*` cut still raises the desktop
+auto-minor's baseline (RELEASING.md, "The desktop installers").
 
 ## Nightlies
 
