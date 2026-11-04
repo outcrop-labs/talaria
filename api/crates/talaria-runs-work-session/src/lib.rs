@@ -637,6 +637,11 @@ async fn real_turn(
         })
         .await;
     }
+    // Awaited before the request opens: a stop in the gap until `run.started`
+    // must find no id, because the last turn's id would read as this one over.
+    if let Err(e) = set_agent_run_id(&state.pg, &run_id, None).await {
+        tracing::warn!("{LOG} {run_id}: could not clear the agent's run id: {e}");
+    }
     // THE THRASH BRAKE. The turn has no total timeout by law — frames
     // arriving means the turn runs — but the plugin's toolfull frames carry
     // the one verdict the stream itself never shows: whether each tool call
@@ -782,7 +787,7 @@ fn record_agent_run(pg: PgPool, run_id: String) -> RunStartedTap {
         let run_id = run_id.clone();
         let agent_run_id = agent_run_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = set_agent_run_id(&pg, &run_id, &agent_run_id).await {
+            if let Err(e) = set_agent_run_id(&pg, &run_id, Some(&agent_run_id)).await {
                 tracing::warn!("{LOG} {run_id}: could not record the agent's run id: {e}");
             }
         });
@@ -792,12 +797,13 @@ fn record_agent_run(pg: PgPool, run_id: String) -> RunStartedTap {
 /// What a stop did to a work session's turn in the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStop {
-    /// No turn has named itself on this run, so there was nothing to stop.
+    /// No driver ever took this run, so no turn can exist.
     NoTurn,
     /// The agent reports the turn over, in its own word for how it ended.
     Ended(String),
-    /// The agent refused the stop, never answered, or was still working when
-    /// the window closed. The turn may still be running.
+    /// The turn had not named itself, so no stop could be sent, or the agent
+    /// refused it, never answered, or was still working when the window closed.
+    /// The turn may still be running.
     Unconfirmed(String),
 }
 
@@ -823,9 +829,7 @@ pub async fn stop_agent_turn(pg: &PgPool, run_id: &str) -> AgentStop {
     )
     .await;
     match &outcome {
-        AgentStop::NoTurn => {
-            tracing::info!("{LOG} {run_id}: no agent turn to stop on {agent_model}");
-        }
+        AgentStop::NoTurn => {}
         AgentStop::Ended(how) => {
             tracing::info!("{LOG} {run_id}: the turn on {agent_model} ended: {how}");
         }
@@ -864,7 +868,7 @@ where
     Status: Future<Output = Result<String, String>>,
 {
     let Some(agent_run_id) = agent_run_id else {
-        return AgentStop::NoTurn;
+        return AgentStop::Unconfirmed("the turn has not named itself".into());
     };
     if let Err(why) = stop(agent_run_id).await {
         return AgentStop::Unconfirmed(why);
@@ -2734,7 +2738,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_run_no_turn_named_calls_nothing_on_the_agent() {
+    async fn a_turn_with_no_id_yet_is_unconfirmed_and_calls_nothing_on_the_agent() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let outcome = settle_agent_turn(
             None,
@@ -2743,7 +2747,10 @@ mod tests {
             Duration::from_secs(5),
         )
         .await;
-        assert_eq!(outcome, AgentStop::NoTurn);
+        assert_eq!(
+            outcome,
+            AgentStop::Unconfirmed("the turn has not named itself".into())
+        );
         assert!(calls.lock().unwrap().is_empty());
     }
 
