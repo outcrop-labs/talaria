@@ -65,11 +65,14 @@ pub(crate) async fn upsert_price(
 ) -> Result<(), String> {
     sqlx::query(
         "insert into provider_prices (endpoint_id, provider, model, variant, price_in_per_mtok, \
-         price_out_per_mtok, source, fetched_at) \
-         values ($1::uuid, $2, $3, $4, $5, $6, $7, now()) \
+         price_out_per_mtok, price_cache_write_per_mtok, price_cache_read_per_mtok, source, \
+         fetched_at) \
+         values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, now()) \
          on conflict (endpoint_id, model, variant) do update set \
            price_in_per_mtok = excluded.price_in_per_mtok, \
            price_out_per_mtok = excluded.price_out_per_mtok, \
+           price_cache_write_per_mtok = excluded.price_cache_write_per_mtok, \
+           price_cache_read_per_mtok = excluded.price_cache_read_per_mtok, \
            source = excluded.source, \
            fetched_at = now()",
     )
@@ -79,6 +82,8 @@ pub(crate) async fn upsert_price(
     .bind(&price.variant)
     .bind(price.price_in_per_mtok)
     .bind(price.price_out_per_mtok)
+    .bind(price.price_cache_write_per_mtok)
+    .bind(price.price_cache_read_per_mtok)
     .bind(price.source)
     .execute(pg)
     .await
@@ -143,22 +148,33 @@ pub async fn ingest_published_prices(pg: &PgPool) -> Result<usize, String> {
     Ok(n)
 }
 
+/// One OpenRouter model's per-endpoint prices (`/models/{author}/{slug}/
+/// endpoints`, public), upserted as variant rows. Answers how many landed.
+pub(crate) async fn ingest_openrouter_model(pg: &PgPool, endpoint_id: &str, model: &str) -> usize {
+    let Some((author, slug)) = model.split_once('/') else {
+        return 0;
+    };
+    let url = format!("https://openrouter.ai/api/v1/models/{author}/{slug}/endpoints");
+    let Ok(body) = get_json(&url, None).await else {
+        return 0;
+    };
+    let mut n = 0;
+    for price in parse_openrouter_endpoints(model, &body) {
+        if upsert_price(pg, endpoint_id, "openrouter", &price)
+            .await
+            .is_ok()
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
 async fn ingest_one_catalog(pg: &PgPool, ep: &EndpointRow) -> usize {
     let mut n = 0;
     if ep.provider == "openrouter" {
         for model in model_ids(&ep.models) {
-            let Some((author, slug)) = model.split_once('/') else {
-                continue;
-            };
-            let url = format!("https://openrouter.ai/api/v1/models/{author}/{slug}/endpoints");
-            let Ok(body) = get_json(&url, None).await else {
-                continue;
-            };
-            for price in parse_openrouter_endpoints(&model, &body) {
-                if upsert_price(pg, &ep.id, &ep.provider, &price).await.is_ok() {
-                    n += 1;
-                }
-            }
+            n += ingest_openrouter_model(pg, &ep.id, &model).await;
         }
         return n;
     }

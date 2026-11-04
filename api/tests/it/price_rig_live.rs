@@ -107,50 +107,23 @@ async fn cloud_row(pg: &PgPool, endpoint: &str, model: &str, prompt: i32, comple
     .unwrap();
 }
 
-/// The priced view cost_overview's month window reads — the exact CTE,
-/// lifted once so the tests compare against the same SQL the product uses.
-/// The multiplier constants are the gateway's CACHE_WRITE/READ_MULTIPLIER.
-const PRICED_CTE: &str = "with priced as (
-    select u.*,
-      case when u.endpoint_class = 'local' then 0
-           when u.provider_cost is not null then u.provider_cost
-           when u.endpoint_class = 'cloud'
-                and pp.in_tok is not null and pp.out_tok is not null then
-             ((u.prompt_tokens + u.cache_write_tokens * 1.25
-               + u.cache_read_tokens * 0.1) * pp.in_tok
-              + u.completion_tokens * pp.out_tok) / 1e6
-           else null
-      end as cost,
-      case when u.endpoint_class = 'local' then 'local'
-           when u.provider_cost is not null then 'provider'
-           when u.endpoint_class = 'cloud'
-                and pp.in_tok is not null and pp.out_tok is not null then 'derived'
-           else null
-      end as cost_basis
-    from usage_events u
-    left join llm_endpoints e on e.name = u.endpoint
-    left join lateral (
-      select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok
-      from provider_prices p
-      where p.endpoint_id = e.id
-        and p.model = u.llm_model
-        and (
-          (coalesce(u.cost_variant, '') <> '' and p.variant = u.cost_variant)
-          or (
-            coalesce(u.cost_variant, '') = ''
-            and p.variant = ''
-            and e.provider is distinct from 'openrouter'
-          )
-        )
-      order by p.fetched_at desc
-      limit 1
-    ) pp on true)";
+/// The priced view cost_overview's month window reads — the gateway's own
+/// text (`priced_view`), so these tests compare against the SQL the product
+/// runs instead of a copy that drifts from it.
+fn priced_cte() -> String {
+    format!(
+        "with priced as ({})",
+        talaria_api_facades::gateway::usage::priced_view()
+    )
+}
 
 /// This endpoint's own row in the priced view: (cost, cost_basis). Null
 /// when the fixture row is missing — the caller's expect says which.
 async fn endpoint_row_cost(pg: &PgPool, endpoint: &str) -> Option<(f64, String)> {
-    let sql =
-        format!("{PRICED_CTE} select cost::float8, cost_basis from priced where endpoint = $1");
+    let sql = format!(
+        "{} select cost::float8, cost_basis from priced where endpoint = $1",
+        priced_cte()
+    );
     sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(endpoint)
         .fetch_optional(pg)
@@ -162,9 +135,9 @@ async fn endpoint_row_cost(pg: &PgPool, endpoint: &str) -> Option<(f64, String)>
 /// month window uses — the number a stale report must never move.
 async fn ledger_month_cost(pg: &PgPool) -> f64 {
     let sql = format!(
-        "{PRICED_CTE} \
-         select coalesce(sum(cost), 0)::float8 as cost \
-         from priced where created_at > now() - interval '30 days'"
+        "{} select coalesce(sum(cost), 0)::float8 as cost \
+         from priced where created_at > now() - interval '30 days'",
+        priced_cte()
     );
     let (cost,): (f64,) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .fetch_one(pg)
