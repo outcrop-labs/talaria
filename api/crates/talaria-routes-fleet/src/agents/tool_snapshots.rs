@@ -197,7 +197,16 @@ pub async fn land(
     };
     let run_id = match run_id {
         Ok(Some(run_id)) => run_id,
-        Ok(None) => return Ok(Json(json!({ "ok": true, "landed": false })).into_response()),
+        // The step after a turn's last tool call can reach here once the
+        // run has finished; the turn's record row closes that turn.
+        Ok(None) => {
+            tracing::debug!(
+                "[tool-events] {} snapshot at {} named no live run; dropped",
+                caller.model,
+                frame.calls.last().map(|c| c.id.as_str()).unwrap_or("")
+            );
+            return Ok(Json(json!({ "ok": true, "landed": false })).into_response());
+        }
         Err(e) => {
             tracing::warn!("[tool-events] snapshot run lookup failed: {e}");
             return Ok(Json(json!({ "ok": true, "landed": false })).into_response());
