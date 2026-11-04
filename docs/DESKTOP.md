@@ -722,10 +722,12 @@ every call site to it.
 
 ## Installers
 
-`.github/workflows/desktop-package.yml` builds every installer and attaches it to the
-GitHub Release a version tag opens — `release.yml` calls it after the image push
-(RELEASING.md has the operator's half). A push to main that touches `desktop/` builds the
-same set and leaves it as workflow artifacts.
+`.github/workflows/desktop-package.yml` builds every installer and attaches it to a
+`desktop-vX.Y.Z` release: a push to main that touches `desktop/` mints the next one, and a
+`publish=true` dispatch mints a hand-picked number (RELEASING.md has the operator's half).
+Those are the only releases that carry installers. A server tag (`vX.Y.Z`, `vX.Y.Z-rc.N`)
+builds none: Desktop has its own version line, and an installer stamped with the server's
+0.13.0 beside `desktop-v0.12.0` would never be offered an update until Desktop passed 0.13.
 
 | Platform | Files |
 |---|---|
@@ -857,9 +859,8 @@ to the check and to the whole download.
 `desktop-v` release: `desktop-package.yml` creates its mint with `--latest=false` and marks
 it Latest only after its `latest.json` is uploaded, so the feed never points at a release
 without one. A platform release (`vX.Y.Z`, `release.yml`) is never Latest: it would take the
-flag by default the moment it opened, an hour before its installers are attached, and
-every update check would 404. Its installers are downloads; its `latest.json` is not served.
-RCs do not publish `latest.json` at all. `check-invariants.mjs`
+flag by default the moment it opened, and it carries no installers and no `latest.json`, so
+every update check would 404. `check-invariants.mjs`
 (`release-latest-is-the-desktop-feed`) holds both workflows to this.
 
 **The update chip** (`src-tauri/src/update.rs`). Nobody had to find "Check for updates"

@@ -89,7 +89,7 @@ cannot open until the commit has been deployed.
 | `judge.yml` | every pull request | the standards half: the flow, the changelog claim against the surfaces touched, tests, generated trees, commit subjects — plus one sticky comment. Not a required check yet, on purpose |
 | `branch-push` (flow.yml) | pushes to `main`, `rc`, `testing` | content provenance: what a push introduces came from where it is allowed to come from |
 | `pre-push` (git hook) | a push from a wired clone | the same provenance rule, before the network |
-| `release.yml` | tags, and 03:17 UTC | the published channel images, the GitHub Release, the desktop installers |
+| `release.yml` | tags, and 03:17 UTC | the published channel images and the GitHub Release — no desktop installers (`desktop-package.yml` mints those as `desktop-v*` releases) |
 
 ## Promoting
 
