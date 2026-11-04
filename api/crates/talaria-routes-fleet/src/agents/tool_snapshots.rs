@@ -275,7 +275,7 @@ pub async fn land_with(
     // transcript judges it here, the way the record stage judges the rest.
     if settled && step.unrestorable_reason.is_none() {
         let held = match transcript(&caller.model, &run_id).await {
-            Some(ids) => ids.iter().any(|id| *id == step.tool_call_id),
+            Some(ids) => ids.contains(&step.tool_call_id),
             None => {
                 step.unrestorable_reason = Some(
                     "landed after the run ended and the session's transcript could not be read"
