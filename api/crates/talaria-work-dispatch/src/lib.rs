@@ -191,8 +191,6 @@ pub async fn dispatch_ticket_work(
     Dispatch::AtCap
 }
 
-/// Put the session cap on the ticket, where a person reads it. The sweep offers
-/// the ticket every minute, so the line lands once per agent.
 async fn surface_session_cap(pg: &PgPool, task_id: &str, agent_model: &str) {
     let line = format!(
         "has had {MAX_SESSIONS_PER_TICKET_AGENT} work sessions on this ticket and will not start \

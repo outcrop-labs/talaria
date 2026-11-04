@@ -120,8 +120,6 @@ pub async fn get(
     Ok(Json(json!({ "sessions": sessions, "lineages": lineages })).into_response())
 }
 
-/// One entry per lineage, in the order the sessions first name it, each
-/// listing its run ids from attempt 1 up.
 fn group_attempts(attempts: Vec<(RunLineage, String)>) -> Vec<Value> {
     let mut groups: Vec<(String, Vec<(i32, String)>)> = Vec::new();
     for (lineage, run_id) in attempts {

@@ -139,13 +139,14 @@ pub async fn post(
         .iter()
         .filter_map(|r| r.strip_prefix("refs/heads/"))
         .collect();
-    let jobs = match branch_jobs(&state.pg, &agent_id, &rule.host_id, &repo, &branches).await {
-        Ok(jobs) => jobs,
-        Err(e) => {
-            tracing::error!("[secrets] push attribution read failed for {repo}: {e}");
-            Vec::new()
-        }
-    };
+    let jobs =
+        match newest_job_per_branch(&state.pg, &agent_id, &rule.host_id, &repo, &branches).await {
+            Ok(jobs) => jobs,
+            Err(e) => {
+                tracing::error!("[secrets] push attribution read failed for {repo}: {e}");
+                Vec::new()
+            }
+        };
     if let Some(retired) = jobs.iter().find(|j| j.status == "superseded") {
         let current = retired
             .superseded_by
@@ -197,9 +198,7 @@ struct BranchJob {
     superseded_by: Option<String>,
 }
 
-/// The newest job on each branch: a branch name comes round again when a later
-/// job on the ticket mints it, and only the newest job speaks for it.
-async fn branch_jobs(
+async fn newest_job_per_branch(
     pg: &sqlx::PgPool,
     agent_id: &str,
     host_id: &str,

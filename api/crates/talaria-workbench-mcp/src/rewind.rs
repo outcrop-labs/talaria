@@ -1,9 +1,3 @@
-// A rewind attempt's job. The one path through start_job that cuts no branch:
-// the rewind allocated the attempt's job and restored its workdir, so start_job
-// hands that job over and retires the jobs the attempt replaced. Cutting a
-// branch here would base it on the default branch's tip, and the restored
-// commit could then never push over it.
-
 use serde_json::{Map, Value, json};
 use sqlx::{FromRow, PgPool};
 
@@ -19,10 +13,15 @@ use crate::{
     thrown, ticket_arg,
 };
 
-/// The live rewind attempt working the ticket this call names.
 pub(crate) struct RewindAttempt {
     run_id: String,
     lineage: RunLineage,
+}
+
+pub(crate) enum RewindStart {
+    Answered(CallOutcome),
+    /// The attempt's job has its PR open, so this is an ordinary revise round.
+    OrdinaryRevise,
 }
 
 pub(crate) async fn attempt_of_call(
@@ -47,7 +46,6 @@ pub(crate) async fn attempt_of_call(
     Some(RewindAttempt { run_id, lineage })
 }
 
-/// A refusal for a call naming a job a rewind replaced.
 pub(crate) fn superseded_refusal(job_id: &str, current: Option<&str>) -> String {
     match current {
         Some(current) => format!(
@@ -106,20 +104,17 @@ pub async fn supersede_jobs(
     Ok(())
 }
 
-/// start_job inside a rewind attempt. `None` hands the call to the ordinary
-/// path: an attempt whose job already has its PR open is in a revise round like
-/// any other.
 pub(crate) async fn start_job(
     deps: &WorkbenchDeps,
     subject: &AgentSubject,
     agent: &AgentCtx,
     args: &Map<String, Value>,
     attempt: &RewindAttempt,
-) -> Option<CallOutcome> {
+) -> RewindStart {
     let pg = &deps.pg;
     let task_id = match ticket_arg(pg, subject, args).await {
         Ok(id) => id,
-        Err(error) => return Some(CallOutcome::Fail(error)),
+        Err(error) => return RewindStart::Answered(CallOutcome::Fail(error)),
     };
     let row: Result<Option<JobRow>, sqlx::Error> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {JOB_COLS} from workbench_jobs \
@@ -133,33 +128,33 @@ pub(crate) async fn start_job(
     let job = match row {
         Ok(Some(row)) => WorkbenchJob::of(row),
         Ok(None) => {
-            return Some(CallOutcome::Fail(format!(
+            return RewindStart::Answered(CallOutcome::Fail(format!(
                 "this rewind attempt (run {}) has no job allocated — a rewind attempt works only the job its rewind restored",
                 attempt.run_id
             )));
         }
-        Err(e) => return Some(thrown(format!("job read: {e}"))),
+        Err(e) => return RewindStart::Answered(thrown(format!("job read: {e}"))),
     };
     match job.status.as_str() {
         "started" => {}
-        "pr_open" => return None,
+        "pr_open" => return RewindStart::OrdinaryRevise,
         other => {
-            return Some(CallOutcome::Fail(format!(
+            return RewindStart::Answered(CallOutcome::Fail(format!(
                 "this rewind attempt's job {} is {other} — a rewind attempt works only the job its rewind restored",
                 job.id
             )));
         }
     }
     if let Err(e) = supersede_jobs(pg, &agent.department, &attempt.lineage, &job.id).await {
-        return Some(thrown(format!("job update: {e}")));
+        return RewindStart::Answered(thrown(format!("job update: {e}")));
     }
     let host = match hosts::host(pg, &deps.sb, &job.host_id).await {
         Ok(host) => host,
-        Err(e) => return Some(CallOutcome::Fail(e)),
+        Err(e) => return RewindStart::Answered(CallOutcome::Fail(e)),
     };
     let base = match hosts::effective_base(pg, &host, &job.repo).await {
         Ok(base) => base,
-        Err(e) => return Some(thrown(e)),
+        Err(e) => return RewindStart::Answered(thrown(e)),
     };
     let HarnessAnswer {
         harnesses,
@@ -169,10 +164,10 @@ pub(crate) async fn start_job(
         coding,
     } = match harness_answer(pg, &job.id, &agent.id, task_id.as_deref()).await {
         Ok(answer) => answer,
-        Err(e) => return Some(thrown(e)),
+        Err(e) => return RewindStart::Answered(thrown(e)),
     };
     let Some(workdir) = job_workdir(&job.id) else {
-        return Some(thrown(format!("not a job id: {:?}", job.id)));
+        return RewindStart::Answered(thrown(format!("not a job id: {:?}", job.id)));
     };
     let runtime = devenv::ensure_harness_runtime(pg, &agent.department).await;
     let attempt_no = attempt.lineage.attempt_no;
@@ -223,5 +218,5 @@ pub(crate) async fn start_job(
         )),
     );
     sync_agent_budget(pg, &agent.department, &agent.id).await;
-    Some(CallOutcome::Ok(Value::Object(value)))
+    RewindStart::Answered(CallOutcome::Ok(Value::Object(value)))
 }

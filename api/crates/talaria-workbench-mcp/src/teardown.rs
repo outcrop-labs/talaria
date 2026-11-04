@@ -30,9 +30,7 @@
 // ticket reached a terminal column or was archived while `started` (abandoned
 // here), pr_open jobs whose ticket closed, and abandoned jobs a failed inline
 // teardown left behind. `workspace_cleared_at` is the done-marker, so a job is
-// removed once and never scanned again. A superseded job sits outside both:
-// a rewind may still need its checkout, so the status pass holds it while a
-// `run_checkpoints` row names it and clears it with its ticket after that.
+// removed once and never scanned again.
 //
 // The SIZE pass asks the question the status pass cannot: "how big is this?"
 // A job can be entirely legitimate and still hold 20 GiB, and ten of those is
@@ -196,10 +194,6 @@ pub fn should_reclaim(
     bytes >= ceiling.saturating_mul(1024 * 1024 * 1024)
 }
 
-/// A job status that could still be building. `pr_open`, `awaiting_approval`
-/// and `superseded` cannot be, by definition: the agent is waiting on a person
-/// or has moved on. `started` might be, so the script checks for live processes
-/// and refuses; this only decides who is worth asking.
 fn reclaim_candidate(status: &str) -> bool {
     matches!(
         status,
