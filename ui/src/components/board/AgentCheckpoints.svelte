@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack, type Component } from 'svelte'
+  import { MediaQuery } from 'svelte/reactivity'
   import {
     FileText,
     FlaskConical,
@@ -8,6 +9,7 @@
     Globe,
     MessagesSquare,
     Pencil,
+    RotateCcw,
     Search,
     SquareTerminal,
     Wrench,
@@ -24,10 +26,11 @@
     path,
     plural,
     RAIL,
+    rewindStageWords,
     ROW,
     summarize,
+    TOUCH_ROW,
     x,
-    y,
     type Checkpoint,
     type Placed,
     type ToolKind,
@@ -37,9 +40,19 @@
   let {
     checkpoints,
     live = false,
+    rewinding = false,
+    onRewind,
+    focusAttempt = null,
+    onFocused,
   }: {
     checkpoints: Checkpoint[]
     live?: boolean
+    /** A rewind of this lineage is under way, so no row offers another. */
+    rewinding?: boolean
+    onRewind?: (target: { runId: string; seq: number }) => void
+    /** The run whose opening row takes focus once it is drawn. */
+    focusAttempt?: string | null
+    onFocused?: () => void
   } = $props()
 
   const TOOLS: Record<ToolKind, Component> = {
@@ -61,11 +74,33 @@
 
   let list = $state<HTMLDivElement>()
   let width = $state(0)
+  let reasonsOpen = $state<string[]>([])
+  let measured = $state<Record<string, number>>({})
 
-  const placed = $derived(layout(checkpoints))
+  const touch = new MediaQuery('(hover: none), (max-width: 480px)')
+  const rowHeight = $derived(touch.current ? TOUCH_ROW : ROW)
+
+  type Note = { tone: 'reason' | 'failed'; text: string }
+
+  function noteOf(cp: Checkpoint): Note | undefined {
+    if (cp.rewind?.kind === 'failed') return { tone: 'failed', text: cp.rewind.reason }
+    if (cp.answer?.kind === 'reason' && reasonsOpen.includes(cp.id)) return { tone: 'reason', text: cp.answer.reason }
+  }
+
+  const notes = $derived(
+    Object.fromEntries(checkpoints.filter((cp) => noteOf(cp)).map((cp) => [cp.id, measured[cp.id] ?? 0])),
+  )
+  const placed = $derived(layout(checkpoints, { row: rowHeight, notes }))
+  const total = $derived(placed.reduce((end, p) => Math.max(end, p.top + rowHeight + (notes[p.cp.id] ?? 0)), 0))
   const sum = $derived(summarize(placed))
+  const failedRewinds = $derived(checkpoints.filter((cp) => cp.rewind?.kind === 'failed').length)
   const headline = $derived(
-    [plural(sum.checkpoints, 'checkpoint'), sum.attempts > 1 && plural(sum.attempts, 'attempt')]
+    [
+      plural(sum.checkpoints, 'checkpoint'),
+      sum.attempts > 1 && plural(sum.attempts, 'attempt'),
+      rewinding && 'Rewinding',
+      failedRewinds > 0 && `${plural(failedRewinds, 'rewind')} failed`,
+    ]
       .filter(Boolean)
       .join(' · '),
   )
@@ -74,12 +109,39 @@
   )
   const head = $derived(placed.at(-1))
   const onPath = $derived(livePath(placed))
-  const scrolls = $derived(placed.length > MAX_ROWS)
+  const scrolls = $derived(total > MAX_ROWS * rowHeight)
 
-  const rowsAtOpen = untrack(() => checkpoints.length)
+  const idsAtOpen = untrack(() => new Set(checkpoints.map((cp) => cp.id)))
+  const isNew = (cp: Checkpoint) => !idsAtOpen.has(cp.id)
 
-  const hasLine = (p: Placed): p is Placed & { from: number; fromLane: number } =>
-    p.from !== undefined && p.fromLane !== undefined
+  const hasLine = (p: Placed): p is Placed & { fromLane: number; fromMid: number } =>
+    p.fromLane !== undefined && p.fromMid !== undefined
+
+  const canRewind = (cp: Checkpoint) => !!onRewind && !rewinding && cp.answer?.kind === 'rewind'
+
+  function answer(cp: Checkpoint) {
+    if (cp.answer?.kind === 'reason') {
+      reasonsOpen = reasonsOpen.includes(cp.id) ? reasonsOpen.filter((id) => id !== cp.id) : [...reasonsOpen, cp.id]
+    } else if (cp.answer && canRewind(cp)) {
+      onRewind?.(cp.answer)
+    }
+  }
+
+  function rowLabel(p: Placed, isHead: boolean) {
+    const { cp } = p
+    return [
+      cp.title,
+      p.attempt && `attempt ${p.attempt}`,
+      cp.status !== 'done' && cp.status,
+      isHead ? 'current' : !onPath.has(p.row) && 'left behind',
+      cp.rewind?.kind === 'pending' && `rewinding: ${rewindStageWords(cp.rewind.stage)}`,
+      cp.rewind?.kind === 'failed' && 'rewind failed',
+      canRewind(cp) && 'rewind to this step',
+      cp.answer?.kind === 'reason' && 'cannot be rewound, show why',
+    ]
+      .filter(Boolean)
+      .join(', ')
+  }
 
   let following = true
   let landed = false
@@ -96,11 +158,19 @@
   }
 
   $effect(() => {
-    const rows = placed.length
+    const height = total
     if (!list || !scrolls || !following) return
     const smooth = landed && !prefersReducedMotion()
     landed = true
-    list.scrollTo({ top: rows * ROW + PAD, behavior: smooth ? 'smooth' : 'auto' })
+    list.scrollTo({ top: height + PAD, behavior: smooth ? 'smooth' : 'auto' })
+  })
+
+  $effect(() => {
+    if (!focusAttempt || !placed.length) return
+    const row = list?.querySelector<HTMLElement>(`[data-opens="${focusAttempt}"]`)
+    if (!row) return
+    row.focus()
+    onFocused?.()
   })
 </script>
 
@@ -108,7 +178,8 @@
   class="ackc rounded-lg border border-line-subtle"
   aria-labelledby="{uid}-title"
   bind:clientWidth={width}
-  style:--ackc-row="{ROW}px"
+  data-touch={touch.current ? '' : undefined}
+  style:--ackc-row="{rowHeight}px"
   style:--ackc-pad="{PAD}px"
   style:--ackc-max-rows={MAX_ROWS}
   style:--ackc-gutter="{GUTTER_INSET + (sum.lanes - 1) * pitch}px"
@@ -133,11 +204,11 @@
     <div
       bind:this={list}
       class="list"
-      style:--ackc-rows={placed.length}
+      style:--ackc-total="{total}px"
       data-scrolls={scrolls ? '' : undefined}
       onscroll={onScroll}
     >
-      <svg class="rail" width={x(sum.lanes, pitch)} height={placed.length * ROW} aria-hidden="true">
+      <svg class="rail" width={x(sum.lanes, pitch)} height={total} aria-hidden="true">
         <defs>
           <linearGradient id="{uid}-glint" x1="0" x2="1" y1="0" y2="0">
             <stop class="glint-stop" offset="0" stop-opacity="0" />
@@ -152,11 +223,11 @@
           {#if hasLine(p)}
             <path
               class="line"
-              d={path(p, pitch)}
+              d={path(p, pitch, rowHeight)}
               pathLength={1}
               data-path={onPath.has(p.row) ? '' : undefined}
               data-fork={p.lane !== p.fromLane ? '' : undefined}
-              data-new={p.row >= rowsAtOpen ? '' : undefined}
+              data-new={isNew(p.cp) ? '' : undefined}
             />
           {/if}
         {/each}
@@ -167,18 +238,19 @@
             data-path={onPath.has(p.row) ? '' : undefined}
             data-head={isHead ? '' : undefined}
             data-status={p.cp.status}
-            data-new={p.row >= rowsAtOpen ? '' : undefined}
+            data-fork={p.lane !== p.fromLane ? '' : undefined}
+            data-new={isNew(p.cp) ? '' : undefined}
           >
-            <circle cx={x(p.lane, pitch)} cy={y(p.row)} r={isHead ? 4.5 : 3.5} />
+            <circle cx={x(p.lane, pitch)} cy={p.mid} r={isHead ? 4.5 : 3.5} />
             {#if isHead}
               <clipPath id="{uid}-clip-{p.row}">
-                <circle cx={x(p.lane, pitch)} cy={y(p.row)} r={4.5} />
+                <circle cx={x(p.lane, pitch)} cy={p.mid} r={4.5} />
               </clipPath>
               <g clip-path="url(#{uid}-clip-{p.row})">
                 <rect
                   class="glint"
                   x={x(p.lane, pitch) - 4}
-                  y={y(p.row) - 8}
+                  y={p.mid - 8}
                   width={8}
                   height={16}
                   fill="url(#{uid}-glint)"
@@ -192,24 +264,50 @@
       <ol>
         {#each placed as p (p.cp.id)}
           {@const isHead = p.cp.id === head?.cp.id}
-          <li
-            class="row"
-            data-path={onPath.has(p.row) ? '' : undefined}
-            data-status={p.cp.status}
-            data-working={p.cp.status === 'running' ? '' : undefined}
-            data-new={p.row >= rowsAtOpen ? '' : undefined}
-            aria-current={isHead ? 'step' : undefined}
-          >
-            <span class="tool" data-kind={p.cp.tool}>
-              <svg width="11" height="11" aria-hidden="true"><use href="#{uid}-{p.cp.tool}" width="11" height="11" /></svg>
-            </span>
-            <span class="name" title={p.cp.title}>{p.cp.title}</span>
-            {#if p.attempt}<Chip>Attempt {p.attempt}</Chip>{/if}
-            {#if p.cp.status === 'failed'}<Chip tone="danger">Failed</Chip>{/if}
-            {#if p.cp.status === 'stopped'}<Chip>Stopped</Chip>{/if}
-            {#if p.cp.status === 'running'}<span class="sr-only">Running</span>{/if}
-            {#if !onPath.has(p.row)}<span class="sr-only">Left behind</span>{/if}
-            <span class="time">{clock(p.cp.at)}</span>
+          {@const note = noteOf(p.cp)}
+          {@const pending = p.cp.rewind?.kind === 'pending' ? p.cp.rewind : undefined}
+          <li class="slot" data-new={isNew(p.cp) ? '' : undefined} data-fork={p.lane !== p.fromLane ? '' : undefined}>
+            <button
+              type="button"
+              class="row"
+              data-path={onPath.has(p.row) ? '' : undefined}
+              data-status={p.cp.status}
+              data-working={p.cp.status === 'running' ? '' : undefined}
+              data-rewindable={canRewind(p.cp) ? '' : undefined}
+              data-opens={p.attempt ? p.cp.runId : undefined}
+              aria-current={isHead ? 'step' : undefined}
+              aria-label={rowLabel(p, isHead)}
+              aria-disabled={p.cp.answer?.kind === 'rewind' && !canRewind(p.cp) ? 'true' : undefined}
+              aria-expanded={p.cp.answer?.kind === 'reason' ? note !== undefined : undefined}
+              aria-describedby={note ? `${uid}-note-${p.row}` : undefined}
+              onclick={() => answer(p.cp)}
+            >
+              <span class="tool" data-kind={p.cp.tool}>
+                <svg width="11" height="11" aria-hidden="true"><use href="#{uid}-{p.cp.tool}" width="11" height="11" /></svg>
+              </span>
+              <span class="name" title={p.cp.title}>{p.cp.title}</span>
+              {#if p.attempt}<Chip>Attempt {p.attempt}</Chip>{/if}
+              {#if p.cp.status === 'failed'}<Chip tone="danger">Failed</Chip>{/if}
+              {#if p.cp.status === 'stopped'}<Chip>Stopped</Chip>{/if}
+              {#if pending}<Chip tone="accent">{rewindStageWords(pending.stage)}</Chip>{/if}
+              {#if p.cp.rewind?.kind === 'failed'}<Chip tone="danger">Rewind failed</Chip>{/if}
+              <span class="time">{clock(p.cp.at)}</span>
+              {#if canRewind(p.cp)}
+                <span class="act" aria-hidden="true"><RotateCcw class="h-3 w-3" /><span class="word">Rewind</span></span>
+              {:else if p.cp.answer?.kind === 'reason'}
+                <span class="act" data-quiet aria-hidden="true">No rewind</span>
+              {/if}
+            </button>
+            {#if note}
+              <p
+                id="{uid}-note-{p.row}"
+                class="note"
+                data-tone={note.tone}
+                bind:clientHeight={measured[p.cp.id]}
+              >
+                {note.text}
+              </p>
+            {/if}
           </li>
         {/each}
       </ol>
@@ -223,6 +321,8 @@
     --ackc-rail: var(--theme-border-strong);
     --ackc-edge: 14px;
     --ackc-ease: cubic-bezier(0.32, 0.72, 0.24, 1);
+    --ackc-fade: 320ms;
+    container: ackc / inline-size;
     font-size: 13px;
     line-height: 20px;
   }
@@ -254,7 +354,7 @@
   .list {
     position: relative;
     isolation: isolate;
-    height: calc(var(--ackc-rows) * var(--ackc-row) + var(--ackc-pad));
+    height: calc(var(--ackc-total) + var(--ackc-pad));
     max-height: calc(var(--ackc-max-rows) * var(--ackc-row) + var(--ackc-pad));
     overflow: hidden;
     overscroll-behavior: contain;
@@ -287,7 +387,7 @@
     stroke-linecap: round;
     stroke-dasharray: 1;
     stroke-dashoffset: 0;
-    transition: stroke 200ms ease-out;
+    transition: stroke var(--ackc-fade) ease-out;
   }
   .line[data-path] {
     stroke: var(--ackc-path);
@@ -306,13 +406,16 @@
   .dot[data-new] {
     animation: ackc-pop 180ms var(--ackc-ease) both;
   }
+  .dot[data-new][data-fork] {
+    animation-delay: 240ms;
+  }
   .dot circle {
     fill: var(--theme-panel);
     stroke: var(--ackc-rail);
     stroke-width: 1.5;
     transition:
-      fill 200ms ease-out,
-      stroke 200ms ease-out;
+      fill var(--ackc-fade) ease-out,
+      stroke var(--ackc-fade) ease-out;
   }
   .dot[data-path] circle {
     fill: var(--ackc-path);
@@ -338,18 +441,38 @@
     animation: ackc-glint 700ms 120ms ease-in-out both;
   }
 
-  .row {
+  .slot {
     content-visibility: auto;
+    contain-intrinsic-height: auto var(--ackc-row);
+  }
+  .slot[data-new] {
+    animation: ackc-rise 180ms var(--ackc-ease) both;
+  }
+  .slot[data-new][data-fork] {
+    animation-delay: 240ms;
+  }
+
+  .row {
     position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
+    width: 100%;
     height: var(--ackc-row);
     padding: 0 var(--ackc-edge) 0 var(--ackc-gutter);
+    border: 0;
+    outline: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: default;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
     transition: padding-left 240ms var(--ackc-ease);
   }
-  .row[data-new] {
-    animation: ackc-rise 180ms var(--ackc-ease) both;
+  .row[data-rewindable] {
+    cursor: pointer;
   }
   .row::before {
     content: '';
@@ -361,7 +484,11 @@
     opacity: 0;
     transition: opacity 150ms ease-out;
   }
-  .row:hover::before {
+  .row:focus-visible::before {
+    opacity: 1;
+    outline: 1.5px solid var(--theme-focus);
+  }
+  .row:active::before {
     opacity: 1;
   }
 
@@ -375,6 +502,9 @@
     border-radius: 4px;
     background: var(--theme-raised);
     color: var(--theme-muted);
+    transition:
+      border-color var(--ackc-fade) ease-out,
+      background-color var(--ackc-fade) ease-out;
   }
   .name {
     flex: 0 1 auto;
@@ -384,7 +514,7 @@
     color: var(--theme-text);
     white-space: nowrap;
     text-overflow: ellipsis;
-    transition: color 150ms ease-out;
+    transition: color var(--ackc-fade) ease-out;
   }
   .row[data-working] .name {
     background: linear-gradient(
@@ -410,9 +540,14 @@
     border-color: var(--theme-border-subtle);
     background: none;
   }
-  .row:not([data-path]):hover .name,
-  .row:hover .time {
-    color: var(--theme-text);
+  @media (hover: hover) and (pointer: fine) {
+    .row:hover::before {
+      opacity: 1;
+    }
+    .row:not([data-path]):hover .name,
+    .row:hover .time {
+      color: var(--theme-text);
+    }
   }
 
   .time {
@@ -426,7 +561,94 @@
     color: var(--theme-muted);
     text-align: right;
     white-space: nowrap;
-    transition: color 150ms ease-out;
+    transition:
+      color 150ms ease-out,
+      opacity 150ms ease-out;
+  }
+
+  .act {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--theme-border-strong);
+    border-radius: 6px;
+    background: var(--theme-panel);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--theme-text);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-50%) scale(0.96);
+    transition:
+      opacity 150ms ease-out,
+      transform 150ms ease-out;
+  }
+  .act[data-quiet] {
+    border-color: transparent;
+    background: none;
+    color: var(--theme-muted);
+  }
+  .row:focus-visible .act {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+  .row:focus-visible:has(.act) .time {
+    opacity: 0;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .row:hover .act {
+      opacity: 1;
+      transform: translateY(-50%);
+    }
+    .row:hover:has(.act) .time {
+      opacity: 0;
+    }
+  }
+  .row[data-rewindable]:active .act {
+    transform: translateY(-50%) scale(0.96);
+  }
+
+  .ackc[data-touch] .row[data-rewindable] .time,
+  .ackc[data-touch] .act[data-quiet] {
+    display: none;
+  }
+  .ackc[data-touch] .act {
+    position: static;
+    flex: none;
+    margin-left: auto;
+    opacity: 1;
+    transform: none;
+  }
+  .ackc[data-touch] .row[data-rewindable]:active .act {
+    transform: scale(0.96);
+  }
+  @container ackc (max-width: 420px) {
+    .word {
+      display: none;
+    }
+    .act {
+      padding: 0 5px;
+    }
+  }
+
+  .note {
+    margin: 0;
+    padding: 0 var(--ackc-edge) 8px calc(var(--ackc-gutter) + 26px);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--theme-muted);
+    overflow-wrap: anywhere;
+  }
+  .note[data-tone='failed'] {
+    color: var(--theme-danger);
   }
 
   @keyframes ackc-draw {

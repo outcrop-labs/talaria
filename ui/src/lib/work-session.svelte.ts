@@ -3,9 +3,10 @@
 // session is live (the modal attaches the run's own SSE for instant phase —
 // this poll is the ticker's floor, not the stream). A packing refuse is a
 // separate `wait` object — never a fake session with a null runId.
-import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+import { createQuery, useQueryClient, type QueryClient } from '@tanstack/svelte-query'
+import type { LedgerRow, OutsideSummary, RewindRow, RunAttempt, TicketMove } from '@/lib/agent-checkpoints'
 import { stopWorkSession } from '@/lib/boards.svelte'
-import { getJson } from '@/lib/fetch-json'
+import { getJson, postJson } from '@/lib/fetch-json'
 
 export interface LiveWorkSession {
   runId: string
@@ -52,6 +53,18 @@ export interface WorkSessionHistoryRow {
   agentModel: string
   turn: number | null
   finishedAt: string | null
+  lineageId: string
+  attemptNo: number
+  rewoundFromRunId: string | null
+  rewoundFromSeq: number | null
+  outside: OutsideSummary
+}
+
+export interface WorkSessionHistory {
+  sessions: WorkSessionHistoryRow[]
+  lineages: { lineageId: string; attempts: string[] }[]
+  rewinds: RewindRow[]
+  ticketMove: TicketMove | null
 }
 
 /** The ticket's work log: every session it has seen, most recent first
@@ -62,15 +75,49 @@ export function useWorkSessionHistory(taskId: () => string | null) {
     queryKey: ['work-sessions-history', taskId()],
     enabled: !!taskId(),
     refetchInterval: (query) =>
-      ((query.state.data as { sessions: WorkSessionHistoryRow[] } | undefined)?.sessions ?? []).some(
-        (s) => !s.finishedAt,
-      )
+      ((query.state.data as WorkSessionHistory | undefined)?.sessions ?? []).some((s) => !s.finishedAt)
         ? 30_000
         : false,
-    queryFn: (): Promise<{ sessions: WorkSessionHistoryRow[] }> =>
-      getJson<{ sessions: WorkSessionHistoryRow[] }>(`/api/tasks/${taskId()}/work-sessions`),
+    queryFn: () => getJson<WorkSessionHistory>(`/api/tasks/${taskId()}/work-sessions`),
   }))
 }
+
+export interface RunLineage {
+  attempts: RunAttempt[]
+  rewinds: RewindRow[]
+  ticketMove: TicketMove | null
+}
+
+/** One run's whole lineage in one read, so no poll can show an attempt with
+ *  another moment's rows. The history comes through its own cache key, and the
+ *  work log sees what this saw. */
+export async function readRunLineage(qc: QueryClient, taskId: string, runId: string): Promise<RunLineage> {
+  const history = await qc.fetchQuery({
+    queryKey: ['work-sessions-history', taskId],
+    queryFn: () => getJson<WorkSessionHistory>(`/api/tasks/${taskId}/work-sessions`),
+    staleTime: 0,
+  })
+  const runs = history.lineages.find((l) => l.attempts.includes(runId))?.attempts ?? [runId]
+  const attempts = await Promise.all(
+    runs.map(async (id): Promise<RunAttempt> => {
+      const { checkpoints } = await getJson<{ checkpoints: LedgerRow[] }>(`/api/runs/${id}/checkpoints`)
+      const session = history.sessions.find((s) => s.runId === id)
+      return {
+        runId: id,
+        attemptNo: session?.attemptNo ?? 1,
+        state: session?.state,
+        rewoundFromRunId: session?.rewoundFromRunId ?? null,
+        rewoundFromSeq: session?.rewoundFromSeq ?? null,
+        outside: session?.outside,
+        rows: checkpoints,
+      }
+    }),
+  )
+  return { attempts, rewinds: history.rewinds, ticketMove: history.ticketMove }
+}
+
+export const startRewind = (runId: string, seq: number) =>
+  postJson<{ rewindRunId: string }>(`/api/runs/${runId}/rewind`, { seq })
 
 /** The brake, wired: POST the stop, then drop every work-session read for
  *  the ticket so the ticker, the board's chips and the log all flip on the
