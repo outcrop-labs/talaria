@@ -159,6 +159,11 @@ pub mod group_key {
     pub fn mcp_down(server_id: &str) -> String {
         format!("mcp:{server_id}:down")
     }
+    /// The agent image channel's alerts: one open row per topic (a digest's
+    /// failed rollout, `<digest>:failed`; a stuck state, `checks-failing`).
+    pub fn hermes(topic: &str) -> String {
+        format!("hermes:{topic}")
+    }
     /// One approval waiting.
     pub fn approval(approval_id: &str) -> String {
         format!("approval:{approval_id}")
@@ -176,6 +181,7 @@ pub mod entity {
     pub const CONVERSATION: &str = "conversation";
     pub const APPROVAL: &str = "approval";
     pub const MCP_SERVER: &str = "mcp_server";
+    pub const HERMES_IMAGE: &str = "hermes_image";
     pub const PLAN: &str = "plan";
     pub const RESEARCH_RUN: &str = "research_run";
     pub const KB_DOC: &str = "kb_doc";

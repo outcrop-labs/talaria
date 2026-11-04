@@ -216,6 +216,18 @@ impl Tally {
 static PULLS: LazyLock<Mutex<HashMap<String, watch::Receiver<PullStatus>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Each key's last pull failure, kept until [`take_failed`] reads it: a pull
+/// that fails while nobody waits on it (a background preparation asks once a
+/// minute, for seconds) is otherwise forgotten, and the next ask starts
+/// another at once — no backoff. A pull that succeeds clears it.
+static FAILED: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The last failure of `key`'s pull since it was last read, if any.
+pub(crate) fn take_failed(key: &str) -> Option<String> {
+    FAILED.lock().unwrap_or_else(|p| p.into_inner()).remove(key)
+}
+
 /// What one pull runs, and how long it may go quiet or last. The real one is
 /// compose's ([`PullCmd::compose`]); a test's is a script.
 pub(crate) struct PullCmd {
@@ -240,12 +252,58 @@ impl PullCmd {
             ])),
         }
     }
+
+    /// The same pull for a service of another compose project: `project`
+    /// is the `compose -p … -f … --env-file …` prefix that addresses it.
+    fn project(project: &[String], svc: &str) -> PullCmd {
+        let with = |extra: &[&str]| {
+            let mut args = project.to_vec();
+            args.extend(extra.iter().map(|s| s.to_string()));
+            args
+        };
+        PullCmd {
+            program: "docker".into(),
+            args: with(&["--progress", "json", "pull", "--policy", "missing", svc]),
+            silence: PULL_SILENCE,
+            ceiling: PULL_CEILING,
+            fallback: Some(with(&["pull", "--policy", "missing", "--quiet", svc])),
+        }
+    }
 }
 
 /// Join the pull of `svc`'s image in flight in this process, or start one on
 /// a task of its own.
 pub(crate) fn join(svc: &str) -> watch::Receiver<PullStatus> {
     join_with(svc, || PullCmd::compose(svc))
+}
+
+/// [`join`] for a service of another compose project (the Hermes image
+/// canary's), keyed by `key` so it is one pull however often it is asked.
+pub(crate) fn join_project(
+    key: &str,
+    project: &[String],
+    svc: &str,
+) -> watch::Receiver<PullStatus> {
+    join_with(key, || PullCmd::project(project, svc))
+}
+
+/// How many pulls are running in this process now — the agents' own and any
+/// other. A background pull that should give way (the channel's
+/// preparation of a new image) waits while this is above zero.
+pub(crate) fn running() -> usize {
+    let pulls = PULLS.lock().unwrap_or_else(|p| p.into_inner());
+    pulls
+        .values()
+        .filter(|rx| matches!(*rx.borrow(), PullStatus::Running(_)) && rx.has_changed().is_ok())
+        .count()
+}
+
+/// Whether this process has a pull of `key` running now.
+pub(crate) fn running_key(key: &str) -> bool {
+    let pulls = PULLS.lock().unwrap_or_else(|p| p.into_inner());
+    pulls.get(key).is_some_and(|rx| {
+        matches!(*rx.borrow(), PullStatus::Running(_)) && rx.has_changed().is_ok()
+    })
 }
 
 /// [`join`] for any command, keyed by `key`.
@@ -265,9 +323,19 @@ fn join_with(key: &str, cmd: impl FnOnce() -> PullCmd) -> watch::Receiver<PullSt
     let cmd = cmd();
     tokio::spawn(async move {
         let end = match run(&key, cmd, &tx).await {
-            Ok(()) => PullStatus::Done,
+            Ok(()) => {
+                FAILED
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&key);
+                PullStatus::Done
+            }
             Err(e) => {
                 tracing::warn!("[fleet] {e}");
+                FAILED
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(key.clone(), e.clone());
                 PullStatus::Failed(e)
             }
         };
@@ -777,6 +845,41 @@ mod tests {
             e.contains("Error response from daemon: manifest unknown"),
             "{e}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failure_nobody_waited_for_is_kept_until_it_is_read() {
+        let rx = join_with("test-unwatched", || {
+            sh("echo nope >&2; exit 3".into(), Duration::from_secs(30))
+        });
+        // Nobody waits: the pull ends on its own.
+        drop(rx);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while running_key("test-unwatched") && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let e = take_failed("test-unwatched").expect("the failure is kept");
+        assert!(
+            e.contains("could not pull the image for test-unwatched"),
+            "{e}"
+        );
+        assert_eq!(take_failed("test-unwatched"), None, "read once");
+        // A pull that succeeds clears an unread failure.
+        let _ = wait(
+            join_with("test-unwatched", || {
+                sh("exit 3".into(), Duration::from_secs(30))
+            }),
+            None,
+        )
+        .await;
+        let _ = wait(
+            join_with("test-unwatched", || {
+                sh("exit 0".into(), Duration::from_secs(30))
+            }),
+            None,
+        )
+        .await;
+        assert_eq!(take_failed("test-unwatched"), None);
     }
 
     #[tokio::test]

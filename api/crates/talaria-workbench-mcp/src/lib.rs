@@ -2330,7 +2330,8 @@ async fn harness_auth_probe(
          out=$({line} 2>&1 </dev/null); rc=$?\n\
          printf '%s\\n{AUTH_EXIT_MARK}%s\\n' \"$out\" \"$rc\""
     );
-    let stripped: Vec<&str> = talaria_agent_secrets::hermes_stripped_names().collect();
+    let stripped_names = talaria_agent_secrets::hermes_stripped_names();
+    let stripped: Vec<&str> = stripped_names.iter().map(String::as_str).collect();
     let argv = agent_terminal_argv(&script, &stripped);
     let (stdout, stderr) = docker_exec(&container, &argv, timeout_ms)
         .await

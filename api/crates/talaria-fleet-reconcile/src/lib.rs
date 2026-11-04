@@ -614,6 +614,20 @@ pub async fn roll_running_agent_outcome(
     roll_agent_mode(pg, sb, department, None, RollMode::IfRunning).await
 }
 
+/// A roll that recreates the department's container whatever state it is
+/// in — started if it was not running. Only for putting an agent BACK: the
+/// Hermes channel's rollback recreates an agent that it moved onto an image
+/// which then failed (exited, crash-looped, never came up), and which was
+/// running before the channel touched it. Every other roll is
+/// [`roll_running_agent_outcome`], which never starts an agent.
+pub async fn roll_agent_back_outcome(
+    pg: &PgPool,
+    sb: &SecretBox,
+    department: &str,
+) -> Result<RollOutcome, String> {
+    roll_agent_mode(pg, sb, department, None, RollMode::Always).await
+}
+
 /// One member of a fleet-wide roll batch, its batch stamped on its registry
 /// records so the live picture can group them. `include_stopped` is the
 /// batch's `all`: the person asked for stopped agents to be rolled — and so
@@ -1147,6 +1161,17 @@ pub async fn roll_running_agents(
     pg: &PgPool,
     sb: &SecretBox,
 ) -> Result<(Vec<String>, Vec<String>), String> {
+    roll_running_agents_except(pg, sb, &[]).await
+}
+
+/// [`roll_running_agents`], leaving the departments in `skip` exactly as
+/// they are (the deploy's fleet roll, for agents the agent image channel has
+/// not recorded yet: a recreate would move them onto the compiled pin).
+pub async fn roll_running_agents_except(
+    pg: &PgPool,
+    sb: &SecretBox,
+    skip: &[String],
+) -> Result<(Vec<String>, Vec<String>), String> {
     let render = {
         let f = RENDER_FLEET
             .get()
@@ -1171,6 +1196,12 @@ pub async fn roll_running_agents(
     let mut warnings = render.1;
     for (department, display_name) in &managed {
         if !running.contains(department) {
+            continue;
+        }
+        if skip.contains(department) {
+            warnings.push(format!(
+                "{display_name} left as it is: the agent image channel has not recorded the Hermes it runs yet"
+            ));
             continue;
         }
         // Named rolled only when its container was recreated: one stopped
