@@ -4841,6 +4841,17 @@ alter table tasks drop column if exists conversation_id`,
    )`,
   `create index if not exists run_pushes_run_idx on run_pushes (run_id, created_at)`,
   `create index if not exists usage_events_ref_idx on usage_events (ref_id) where ref_id is not null`,
+  // A rewind in flight on a (ticket, agent) pair. The dispatcher refuses the
+  // pair while the row names a live run-rewind: the ticket move a rewind makes
+  // would otherwise open a fresh session before the attempt is inserted. A
+  // stop block cannot carry this, because a person's move deletes a block.
+  `create table if not exists work_dispatch_holds (
+     task_id uuid not null references tasks(id) on delete cascade,
+     agent_model text not null,
+     rewind_run_id uuid not null references runs(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (task_id, agent_model)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

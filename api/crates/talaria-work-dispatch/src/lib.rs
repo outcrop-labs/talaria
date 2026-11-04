@@ -33,6 +33,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub mod holds;
+
 use sqlx::PgPool;
 use talaria_agent_auth::now_ms as wall_ms;
 use talaria_runs_define::{RunState, is_terminal};
@@ -373,15 +375,51 @@ pub async fn maybe_dispatch_ticket(
         let subject = talaria_agent_auth::AgentSubject::Model(agent.clone());
         match tasks::agent_ticket_refusal(pg, &target, &subject, tasks::AgentIntent::Write).await {
             Ok(Some(_refusal)) => continue,
-            Ok(None) => match dispatch_ticket_work(deps, task, &agent, None).await {
-                Dispatch::Session => talaria_work_wait::clear_waiting(pg, &task.id).await,
-                Dispatch::NotNow => {}
-                Dispatch::AtCap => surface_session_cap(pg, &task.id, &agent).await,
-            },
+            Ok(None) => {}
             Err(e) => {
                 tracing::error!("{LOG} {}: dispatch to {agent} threw: {e}", task.id);
+                continue;
             }
         }
+        // THE PAIR LOCK, from the hold read until enqueue returns. A rewind
+        // holds the pair while it prepares its attempt, and the ticket move
+        // it makes lands here: a walk that found no live session would
+        // otherwise claim the attempt's generation.
+        let mut lock = match holds::lock_pair(pg, &task.id, &agent).await {
+            Ok(lock) => lock,
+            Err(e) => {
+                tracing::error!(
+                    "{LOG} {}: could not lock the pair with {agent}, not dispatching: {e}",
+                    task.id
+                );
+                continue;
+            }
+        };
+        match holds::hold_on(lock.conn(), &task.id, &agent).await {
+            Ok(None) => {}
+            Ok(Some(rewind)) => {
+                tracing::debug!(
+                    "{LOG} {}: rewind {rewind} holds {agent} on this ticket — not dispatching",
+                    task.id
+                );
+                lock.release().await;
+                continue;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "{LOG} {}: could not read the rewind hold for {agent}, not dispatching: {e}",
+                    task.id
+                );
+                lock.release().await;
+                continue;
+            }
+        }
+        match dispatch_ticket_work(deps, task, &agent, None).await {
+            Dispatch::Session => talaria_work_wait::clear_waiting(pg, &task.id).await,
+            Dispatch::NotNow => {}
+            Dispatch::AtCap => surface_session_cap(pg, &task.id, &agent).await,
+        }
+        lock.release().await;
     }
 }
 
