@@ -396,6 +396,22 @@ pub const SANDBOX_SHAPE_FILE: &str = "/opt/workbench-config/render-shape";
 mod tests {
     use super::*;
 
+    // omp's `engines.bun`, copied by hand from the npm package: a pin lowered
+    // under it fails here, a floor raised upstream does not.
+    const OMP_BUN_FLOOR: [u32; 3] = [1, 4, 4];
+
+    #[test]
+    fn the_pinned_bun_is_one_omp_will_start_on() {
+        let pin: Vec<u32> = HARNESS_BUN
+            .split('.')
+            .map(|part| part.parse().expect("HARNESS_BUN is a plain x.y.z"))
+            .collect();
+        assert!(
+            pin.as_slice() >= OMP_BUN_FLOOR.as_slice(),
+            "omp exits with `Bun runtime must be >= {OMP_BUN_FLOOR:?}` on bun {HARNESS_BUN}"
+        );
+    }
+
     #[test]
     fn the_runtime_script_puts_the_pinned_bun_on_every_shells_path() {
         let s = harness_runtime_script();
