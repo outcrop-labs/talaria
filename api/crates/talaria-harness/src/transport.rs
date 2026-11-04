@@ -1212,8 +1212,17 @@ pub struct PersonaTurn {
     pub error: Option<String>,
 }
 
+/// Told the agent's run id the moment the stream announces it, while the turn
+/// is still running: a stop that waited for the turn to end would be too late.
+pub type RunStartedTap = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 impl PersonaTurn {
-    fn fold(&mut self, ev: AgentStreamEvent, emit: &mut Option<&mut (dyn FnMut(&str) + Send)>) {
+    fn fold(
+        &mut self,
+        ev: AgentStreamEvent,
+        emit: &mut Option<&mut (dyn FnMut(&str) + Send)>,
+        run_started: Option<&RunStartedTap>,
+    ) {
         match ev {
             AgentStreamEvent::Content { text } => {
                 self.text.push_str(&text);
@@ -1232,10 +1241,12 @@ impl PersonaTurn {
                 });
             }
             AgentStreamEvent::Reasoning { .. } => {}
-            // The persona transport never steers or stops a run — and nothing
-            // here can be stopped from outside, so the interruption is not news
-            // to a turn assembled from what did arrive.
-            AgentStreamEvent::RunStarted { .. } | AgentStreamEvent::Stopped => {}
+            AgentStreamEvent::RunStarted { run_id } => {
+                if let Some(tap) = run_started {
+                    tap(&run_id);
+                }
+            }
+            AgentStreamEvent::Stopped => {}
             AgentStreamEvent::Error { message } => {
                 if self.error.is_none() {
                     self.error = Some(message);
@@ -1252,7 +1263,7 @@ pub async fn pump_persona_stream(
     body: ByteStream,
     emit: Option<&mut (dyn FnMut(&str) + Send)>,
 ) -> Result<PersonaTurn, String> {
-    pump_persona_stream_alive(body, emit, None, None).await
+    pump_persona_stream_alive(body, emit, None, None, None).await
 }
 
 /// The same pump with a LIVENESS TAP: every chunk from the agent's stream is
@@ -1265,6 +1276,7 @@ pub async fn pump_persona_stream_alive(
     mut emit: Option<&mut (dyn FnMut(&str) + Send)>,
     liveness: Option<&std::sync::Arc<dyn Fn() + Send + Sync>>,
     watch: Option<&std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+    run_started: Option<&RunStartedTap>,
 ) -> Result<PersonaTurn, String> {
     let mut parser = AgentStreamParser::new();
     let mut turn = PersonaTurn {
@@ -1284,7 +1296,7 @@ pub async fn pump_persona_stream_alive(
             {
                 tap(&line);
             }
-            turn.fold(ev, &mut emit);
+            turn.fold(ev, &mut emit, run_started);
         }
     }
     for ev in parser.finish() {
@@ -1293,7 +1305,7 @@ pub async fn pump_persona_stream_alive(
         {
             tap(&line);
         }
-        turn.fold(ev, &mut emit);
+        turn.fold(ev, &mut emit, run_started);
     }
     Ok(turn)
 }
@@ -1335,8 +1347,6 @@ fn watch_line(ev: &talaria_gateway::fleet_chat::AgentStreamEvent) -> Option<Stri
             }
             serde_json::Value::Object(frame)
         }
-        // Neither is a terminal line: usage is a count, and a run the watcher
-        // cannot stop has nothing to say about having been stopped.
         AgentStreamEvent::Usage { .. }
         | AgentStreamEvent::RunStarted { .. }
         | AgentStreamEvent::Stopped => return None,
@@ -1455,6 +1465,7 @@ async fn persona_turn(
     req: &TransportRequest,
     emit: Option<&mut (dyn FnMut(&str) + Send)>,
     session: Option<&PersonaSession>,
+    run_started: Option<&RunStartedTap>,
 ) -> Result<TransportReply, String> {
     // See `fleet_tool_defs_refusal`: the loop on the other side of the proxy
     // is the agent's, so a definition we send is neither guaranteed to arrive
@@ -1514,6 +1525,7 @@ async fn persona_turn(
         emit,
         req.liveness.as_ref(),
         watch_tap.as_ref(),
+        run_started,
     )
     .await?;
     // A failure frame is a failed call, not an empty one — the canned-stream
@@ -1538,7 +1550,7 @@ pub async fn fleet_transport(
     state: &AppState,
     req: &TransportRequest,
 ) -> Result<TransportReply, String> {
-    persona_turn(state, req, None, None).await
+    persona_turn(state, req, None, None, None).await
 }
 
 /// The blocking fleet side, on a Hermes SESSION the caller keys. The same
@@ -1549,8 +1561,9 @@ pub async fn fleet_session_transport(
     state: &AppState,
     req: &TransportRequest,
     session: &PersonaSession,
+    run_started: &RunStartedTap,
 ) -> Result<TransportReply, String> {
-    persona_turn(state, req, None, Some(session)).await
+    persona_turn(state, req, None, Some(session), Some(run_started)).await
 }
 
 /// The same call, with each delta handed on as it lands — the briefing
@@ -1562,7 +1575,7 @@ pub async fn fleet_stream(
     emit: impl FnMut(&str) + Send,
 ) -> Result<TransportReply, String> {
     let mut emit = emit;
-    persona_turn(state, req, Some(&mut emit), None).await
+    persona_turn(state, req, Some(&mut emit), None, None).await
 }
 
 /// Which side of the house a model lives on. The rule, stated once:
@@ -1636,9 +1649,10 @@ pub async fn dispatch_session_transport(
     state: &AppState,
     req: &TransportRequest,
     session: &PersonaSession,
+    run_started: &RunStartedTap,
 ) -> Result<TransportReply, String> {
     match transport_kind(state, &req.model).await {
-        TransportKind::Fleet => fleet_session_transport(state, req, session).await,
+        TransportKind::Fleet => fleet_session_transport(state, req, session, run_started).await,
         TransportKind::Gateway => gateway_transport(state, req).await,
     }
 }
@@ -2129,6 +2143,42 @@ mod tests {
         });
         assert!(replays_tools(&r));
         assert!(!replays_tools(&req(false)));
+    }
+
+    #[tokio::test]
+    async fn run_started_names_the_run_while_the_stream_is_still_open() {
+        use std::sync::{Arc, Mutex};
+
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let tap: RunStartedTap = {
+            let seen = seen.clone();
+            Arc::new(move |run_id| seen.lock().unwrap().push(run_id.to_string()))
+        };
+        let seen_mid_stream = Arc::new(Mutex::new(Vec::<String>::new()));
+        let chunks = vec![
+            "event: run.started\ndata: {\"run_id\": \"run_7\"}\n\n",
+            "event: assistant.delta\ndata: {\"delta\": \"working\"}\n\n",
+        ];
+        let body: ByteStream = {
+            let seen = seen.clone();
+            let seen_mid_stream = seen_mid_stream.clone();
+            Box::pin(futures_util::stream::iter(chunks).map(move |chunk| {
+                *seen_mid_stream.lock().unwrap() = seen.lock().unwrap().clone();
+                Ok(chunk.as_bytes().into())
+            }))
+        };
+
+        let turn = pump_persona_stream_alive(body, None, None, None, Some(&tap))
+            .await
+            .unwrap();
+
+        assert_eq!(turn.text, "working");
+        assert_eq!(*seen.lock().unwrap(), ["run_7"]);
+        assert_eq!(
+            *seen_mid_stream.lock().unwrap(),
+            ["run_7"],
+            "the tap fires before the next chunk is read, not when the turn ends"
+        );
     }
 
     #[test]

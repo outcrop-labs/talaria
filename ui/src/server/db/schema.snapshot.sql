@@ -1404,6 +1404,7 @@ CREATE TABLE public.runs (
     started_at timestamp with time zone,
     finished_at timestamp with time zone,
     crashes integer DEFAULT 0 NOT NULL,
+    agent_run_id text,
     checkpoint_seq bigint DEFAULT 0 NOT NULL,
     lineage_id uuid,
     attempt_no integer DEFAULT 1 NOT NULL,
