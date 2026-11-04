@@ -1936,6 +1936,18 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             );
             obj.insert("pids_limit".into(), json!("${AGENT_WB_PIDS_LIMIT:-2048}"));
             obj.insert("oom_score_adj".into(), json!(500));
+            // No hard CPU quota on a developer agent. Its workbench jobs run
+            // INSIDE this container — every clone, build, test suite and omp
+            // process of up to MAX_LIVE_JOBS_PER_AGENT tickets — so a chassis
+            // `cpus:` written for a chat agent (older templates carried
+            // `cpus: ${AGENT_CPUS:-2}`) puts all of them on two cores. On
+            // outcrop, 2026-11-04, three tickets' cargo builds and tests
+            // shared those two cores at a load average of 15 on a 32-core
+            // host; a cold build ran past Hermes' 420 s tool ceiling, was
+            // killed and was rebuilt, and two of the three sessions spent 40
+            // minutes without reaching their harness. `cpu_shares` (kept)
+            // is the fairness between containers; a hard cap is not.
+            drop_cpu_quota(obj);
             for (k, v) in talaria_workbench::sandbox_env() {
                 env.insert(k, v);
             }
@@ -2704,6 +2716,7 @@ fn fleet_owned_config(
     fleet_approvals(routed, def.developer);
     fleet_nous_off(routed);
     fleet_delegation(routed, def.max_children);
+    fleet_api_server_capacity(routed, def.developer);
     fleet_disabled_toolsets(routed, toolset_floor, &def.disabled_toolsets);
     talaria_agent_web_search::merge_into(routed, web);
     fleet_browser_local_close(routed, secret_names);
@@ -2854,6 +2867,54 @@ fn fleet_nous_off(routed: &mut Map<String, Value>) {
 /// its own work, so it is written from the column every render and a def
 /// cannot author its way past it. Every OTHER delegation key a def set is left
 /// alone: the rest of that block is the agent's to tune.
+/// The compose keys that cap a container's CPU outright, dropped from a
+/// developer agent's service (see the render's developer block).
+const DEVELOPER_CPU_QUOTA_KEYS: &[&str] = &["cpus", "cpu_quota", "cpu_period"];
+
+fn drop_cpu_quota(service: &mut Map<String, Value>) {
+    for quota in DEVELOPER_CPU_QUOTA_KEYS {
+        service.remove(*quota);
+    }
+}
+
+/// Headroom over the live-job cap for the agent's other turns: chats, crons,
+/// and a ticket's next turn opening while its last is still settling.
+const API_RUN_HEADROOM: u64 = 8;
+
+/// How many turns Hermes' API server takes at once. Every work session is a
+/// turn in flight for its whole length, and Hermes counts chats, crons and
+/// `/v1/runs` against the same cap — `gateway.api_server.max_concurrent_runs`,
+/// default 10 in v0.22.4, answered with a 429 past it. A developer agent may
+/// hold up to [`talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT`] sessions (16),
+/// so at the default its eleventh ticket's turn was refused and the session
+/// failed while the job cap said there was room. Developer agents get the cap
+/// plus [`API_RUN_HEADROOM`]; a def that authored a larger cap, or 0 (no cap),
+/// keeps it. Other agents keep Hermes' default.
+fn fleet_api_server_capacity(routed: &mut Map<String, Value>, developer: bool) {
+    if !developer {
+        return;
+    }
+    let floor = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT as u64 + API_RUN_HEADROOM;
+    let mut gateway = routed
+        .get("gateway")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut api = gateway
+        .get("api_server")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let authored = api.get("max_concurrent_runs").and_then(Value::as_u64);
+    let cap = match authored {
+        Some(n) if n == 0 || n >= floor => n,
+        _ => floor,
+    };
+    api.insert("max_concurrent_runs".into(), json!(cap));
+    gateway.insert("api_server".into(), Value::Object(api));
+    routed.insert("gateway".into(), Value::Object(gateway));
+}
+
 fn fleet_delegation(routed: &mut Map<String, Value>, max_children: i32) {
     let mut cfg = routed
         .get("delegation")
@@ -4679,6 +4740,60 @@ service:
             assert_eq!(
                 empty.get("tools"),
                 Some(&json!({ "tool_search": { "enabled": "on" } }))
+            );
+        }
+    }
+
+    #[test]
+    fn a_developer_service_loses_a_hard_cpu_quota_and_keeps_its_shares() {
+        // outcrop's chassis, seeded 2026-09-02 from a template that still
+        // carried the quota.
+        let mut svc = json!({
+            "cpus": "${AGENT_CPUS:-2}", "cpu_quota": 200000, "cpu_period": 100000,
+            "cpu_shares": "${AGENT_CPU_SHARES:-1024}", "mem_limit": "2g",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        drop_cpu_quota(&mut svc);
+        assert_eq!(
+            Value::Object(svc),
+            json!({ "cpu_shares": "${AGENT_CPU_SHARES:-1024}", "mem_limit": "2g" })
+        );
+    }
+
+    #[test]
+    fn a_developer_agent_takes_as_many_turns_as_it_may_hold_jobs() {
+        let floor = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT as u64 + API_RUN_HEADROOM;
+        let mut routed = Map::new();
+        fleet_api_server_capacity(&mut routed, false);
+        assert!(
+            routed.get("gateway").is_none(),
+            "a chat agent keeps Hermes' default"
+        );
+        fleet_api_server_capacity(&mut routed, true);
+        assert_eq!(
+            routed["gateway"]["api_server"]["max_concurrent_runs"],
+            json!(floor)
+        );
+        assert!(floor > 10, "above Hermes v0.22.4's default of 10");
+        // A def's own larger cap, or 0 (no cap), stands; a smaller one is raised.
+        for (authored, want) in [
+            (json!(64), json!(64)),
+            (json!(0), json!(0)),
+            (json!(4), json!(floor)),
+        ] {
+            let mut routed = Map::new();
+            routed.insert(
+                "gateway".into(),
+                json!({ "api_server": { "max_concurrent_runs": authored, "port": 8642 } }),
+            );
+            fleet_api_server_capacity(&mut routed, true);
+            assert_eq!(routed["gateway"]["api_server"]["max_concurrent_runs"], want);
+            assert_eq!(
+                routed["gateway"]["api_server"]["port"],
+                json!(8642),
+                "the rest of the block stays"
             );
         }
     }
