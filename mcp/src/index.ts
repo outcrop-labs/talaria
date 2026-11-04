@@ -219,7 +219,7 @@ const PERSONAL_ONLY =
  *  board's spelling; a board that renamed its columns (board settings →
  *  statuses) has its own keys, and the API 400s a key it does not have before
  *  the agent invariant runs. `blocked` is the one system column every board
- *  has. report_outcome already lets the server pick the review column;
+ *  has. report_outcome moves nothing (it records the result);
  *  triage_ticket takes the board's own key instead of a fixed enum. */
 const DEFAULT_AGENT_STATUSES = ['in_progress', 'blocked', 'quality_review'] as const
 const BOARD_STATUS_KEYS = `Status keys are the BOARD's own: ${DEFAULT_AGENT_STATUSES.join(' / ')} on a board that kept the defaults; a board that renamed its columns uses its own keys, and a 400 "is not a status on this board" names a wrong one — list_boards answers each board's statuses (key, label, category, agentStart) so read the key there before you move, and blocked exists on every board.`
@@ -537,7 +537,7 @@ server.registerTool(
   'triage_ticket',
   {
     description:
-      `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. ${BOARD_STATUS_KEYS} So once you have parked or reported, stop moving the ticket. ${CHAIN_WAIT} ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
+      `Triage a ticket: adjust priority, effort, labels, description, due date. Change its status ONLY when a person asked you to move it — a ticket never moves as a side effect of your work. While your work session is live on the ticket a status change is refused (403): report_outcome records the result and a person moves it. Otherwise a requested move goes FORWARD only: to the active column (in_progress by default), to blocked, or to review (quality_review by default). Restarting a blocked ticket, taking anything out of quality_review, moving a ticket into a column agents pick up from, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. ${BOARD_STATUS_KEYS} ${CHAIN_WAIT} ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       title: z.string().min(1).max(300).optional(),
@@ -553,7 +553,7 @@ server.registerTool(
         .max(64)
         .optional()
         .describe(
-          `A status key from this board — ${BOARD_STATUS_KEYS} Forward only: the active column (in_progress by default) is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and the review column (quality_review by default) are one-way: a person moves it after that.`,
+          `Only when a person asked you to move the ticket. A status key from this board — ${BOARD_STATUS_KEYS} Forward only, never from blocked, never into a column agents pick up from, and never during your own work session on the ticket. blocked and the review column (quality_review by default) are one-way: a person moves it after that.`,
         ),
     },
   },
@@ -598,36 +598,20 @@ server.registerTool(
   'report_outcome',
   {
     description:
-      `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. ${LIVE_ONLY} ${CHAIN_WAIT} ${COMMENT_INSTEAD}`,
+      `Report the outcome of work on a ticket: what changed (outcome), how (resolution), or what went wrong (errorMessage — also how you say you are blocked). It records the result on the ticket and ends your work session on it; it does NOT move the ticket. A person reads it, reviews the work, and moves the ticket — to review, to done, or back. Add anything further as a comment. ${LIVE_ONLY} ${CHAIN_WAIT} ${COMMENT_INSTEAD}`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       outcome: z.string().max(50_000).describe('What was accomplished'),
       resolution: z.string().max(50_000).optional().describe('How it was resolved'),
-      errorMessage: z.string().max(50_000).optional().describe('If the work failed, what went wrong'),
+      errorMessage: z.string().max(50_000).optional().describe('If the work failed or is blocked, what went wrong'),
     },
   },
-  async ({ taskId, ...body }) => {
-    // The review column belongs to the BOARD, not to this file. 'quality_review'
-    // is only the default board's key; a board that renamed or replaced its
-    // review column has no such status, and updateTask rejects the patch with
-    // "is not a status on this board" (400) BEFORE the agent invariant ever
-    // runs — so the hardcoded literal 400s exactly where handing work over
-    // matters most, and no endpoint tells an agent what the column is called.
-    //
-    // Ask the invariant instead of guessing: agent_safe_patch redirects EVERY
-    // terminal move to that board's review key, and the off-board terminals
-    // ('failed' / 'cancelled') are legal on every board by construction. So on
-    // the one failure that means "this board is named differently", re-send a
-    // terminal move and let the server pick the column. The ticket lands in
-    // review either way; only the spelling was ever in question.
-    const put = (status: string) => api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, { ...body, status })
-    try {
-      return ok(await put('quality_review'))
-    } catch (e) {
-      if (!/is not a status on this board/.test((e as Error).message)) throw e
-      return ok(await put('cancelled'))
-    }
-  },
+  // NO STATUS. A ticket moves only when a person moves it, an agent a person
+  // asked moves it, or a running workchain step does (talaria-tasks
+  // placement.rs) — reporting a result is none of those. This tool used to
+  // send `status: 'quality_review'` with the outcome, which is how every
+  // finished work session moved its own ticket.
+  async ({ taskId, ...body }) => ok(await api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, body)),
 )
 
 server.registerTool(

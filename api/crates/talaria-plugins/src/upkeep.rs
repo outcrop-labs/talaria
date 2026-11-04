@@ -42,10 +42,7 @@ use talaria_apps::{AppHost, PlatformCredentials};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_git_hosts::GitHost;
 use talaria_secretbox::SecretBox;
-use talaria_tasks::{
-    NewTask, TaskActor, TaskDeps, TaskPatch, add_comment, create_task, dispatch_ticket_of,
-    get_task, log_activity, update_task,
-};
+use talaria_tasks::{NewTask, TaskDeps, add_comment, create_task, get_task, log_activity};
 
 use crate::{Plugin, short_sha};
 
@@ -265,76 +262,27 @@ async fn job_for_pr(
     .await
 }
 
-/// Put `agent` back to work on ticket `task_id`: assign it if it is not, and
-/// when the ticket was handed off for review, send it back to the board's
-/// working column — the move a reviewer's "request changes" makes. A ticket
-/// already in a working column is offered to dispatch, the same push a
-/// ticket entering a pickup column gets (a live session stands down, a
-/// person's stop mark holds). A ticket a person parked anywhere else —
-/// intake, Blocked — is left where it is. Answers the sentence the comment
-/// carries.
-async fn resume(deps: &UpkeepDeps, task_id: &str, agent: &str, why: &str) -> String {
-    let tdeps = deps.tasks();
+/// What a PR's news means for ticket `task_id` and its maintainer `agent`:
+/// a sentence for the comment, and NOTHING ELSE. A PR event never moves a
+/// ticket, assigns one, or starts a work session (talaria-tasks
+/// placement.rs): it used to send a ticket in review back to the working
+/// column, assign the maintainer and dispatch it — a column move and new
+/// work that no person asked for. The comment tells the board's people; a
+/// person moves the ticket back when they want the agent on it again.
+async fn resume(deps: &UpkeepDeps, task_id: &str, agent: &str) -> String {
     let Ok(Some(task)) = get_task(&deps.pg, task_id).await else {
-        return "The ticket is gone, so no agent was resumed.".into();
+        return "The ticket is gone.".into();
     };
     let Ok(meta) = talaria_statuses::status_meta(&deps.pg, &task.board_id).await else {
-        return "The board's columns could not be read, so no agent was resumed.".into();
+        return "The board's columns could not be read.".into();
     };
     if task.archived_at.is_some() || meta.terminal(&task.status) {
-        return "The ticket is closed, so no agent was resumed: reopen it, or ask for a follow-up."
-            .into();
+        return "The ticket is closed: reopen it, or ask for a follow-up.".into();
     }
-    let in_review = meta.review_keys.contains(&task.status);
-    if !in_review && !meta.working_keys.contains(&task.status) {
-        return format!(
-            "The ticket sits in {}, so no agent was resumed: move it to a working column to put {agent} on it.",
-            task.status
-        );
-    }
-    let mut patch = TaskPatch::default();
-    if !task.assignees.iter().any(|a| a == agent) {
-        let mut assignees = task.assignees.clone();
-        assignees.push(agent.to_string());
-        patch.assignees = Some(assignees);
-    }
-    if in_review {
-        match meta
-            .active_key
-            .clone()
-            .or_else(|| meta.assigned_key.clone())
-        {
-            Some(target) => {
-                patch.status = Some(target);
-                patch.status_note = Some(why.to_string());
-            }
-            None => {
-                return "The board has no working column to send the ticket back to, so no agent was resumed."
-                    .into();
-            }
-        }
-    }
-    if (patch.status.is_some() || patch.assignees.is_some())
-        && let Err(e) =
-            update_task(&tdeps, task_id, patch, &TaskActor::platform(UPKEEP_ACTOR)).await
-    {
-        return format!("{agent} could not be put back on it: {}.", e.message());
-    }
-    // Offered to dispatch whether or not the write above already pushed it
-    // (update_task pushes on entering an agent-start column or gaining an
-    // agent): the claim is a derived run id, so a second offer stands down.
-    if let Ok(Some(fresh)) = get_task(&deps.pg, task_id).await
-        && meta.pickup_keys.contains(&fresh.status)
-    {
-        talaria_tasks_types::maybe_dispatch_ticket(
-            &deps.pg,
-            &tdeps.dispatch,
-            &dispatch_ticket_of(&fresh),
-            Some(&[agent.to_string()]),
-        )
-        .await;
-    }
-    format!("Talaria put {agent} back on this ticket to fix it.")
+    format!(
+        "The ticket stays in {} — move it to a column {agent} picks up from to put {agent} back on it.",
+        task.status
+    )
 }
 
 async fn pr_pass(deps: &UpkeepDeps, p: &Plugin, report: &mut UpkeepReport) -> Result<(), String> {
@@ -414,13 +362,8 @@ async fn pr_pass(deps: &UpkeepDeps, p: &Plugin, report: &mut UpkeepReport) -> Re
             && let (Some(task_id), Some(agent)) =
                 (task_id.as_deref(), p.maintainer_model.as_deref())
         {
-            let why = if news.checks.is_some() {
-                format!("CI failing on plugin PR #{}", pr.number)
-            } else {
-                format!("changes requested on plugin PR #{}", pr.number)
-            };
             let resumed = if job.is_some() {
-                resume(deps, task_id, agent, &why).await
+                resume(deps, task_id, agent).await
             } else {
                 format!(
                     "No workbench job opened it (its author is {}), so no agent was put on it.",
@@ -1109,10 +1052,10 @@ mod tests {
         let c = pr_comment(
             &s,
             &news,
-            "Talaria put dev-eng back on this ticket to fix it.",
+            "The ticket stays in quality_review — move it to a column dev-eng picks up from to put dev-eng back on it.",
         );
         assert!(c.starts_with("Plugin PR #7 (Add tags) needs work: its checks are failing (test, ci/build) and ann requested changes."), "{c}");
-        assert!(c.contains("Talaria put dev-eng back on this ticket"));
+        assert!(c.contains("The ticket stays in quality_review"));
         assert!(c.contains("Talaria never merges it"));
         assert!(!c.contains("lint"), "a passing check is not named");
     }

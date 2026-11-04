@@ -4828,6 +4828,36 @@ alter table tasks drop column if exists conversation_id`,
   // does not end a turn in the agent; a stop has to name it, and the api
   // process that read the id may be gone by the time a person presses Stop.
   `alter table runs add column if not exists agent_run_id text`,
+  // ── Who put a ticket in its column (2026-11-04) ───────────────────────────
+  // A ticket moves only when a person moves it, an agent a person asked moves
+  // it, or a step of an approved, running workchain does — never as a side
+  // effect of an assignment, a work session, a PR, a review or a sweep. Every
+  // status write records which of the three it was (talaria-tasks
+  // placement.rs is the one writer), and an agent picks a ticket up only
+  // from a pickup column one of them placed it in. Null is a ticket nobody
+  // placed: a column it was born in, or one from before this was recorded.
+  `alter table tasks
+     add column if not exists placed_by text,
+     add column if not exists placed_by_kind text,
+     add column if not exists placed_at timestamptz`,
+  `alter table tasks drop constraint if exists tasks_placed_by_kind_check`,
+  `alter table tasks add constraint tasks_placed_by_kind_check
+     check (placed_by_kind is null or placed_by_kind in ('person', 'agent', 'workchain'))`,
+  // The tickets already on the boards: a column a person moved the ticket
+  // into is a person's placement. Assignment's promotion wrote the person's
+  // name with "(promoted by assignment)", so those lines are not; nor are
+  // Talaria's own or an agent's. Anything else stays null and is not picked
+  // up until a person places it again.
+  `update tasks t set placed_by = a.actor, placed_by_kind = 'person', placed_at = a.created_at
+     from (select distinct on (task_id) task_id, actor, description, created_at
+             from task_activity where type = 'status'
+            order by task_id, created_at desc) a
+    where a.task_id = t.id
+      and t.placed_by_kind is null
+      and a.description like ('moved to ' || t.status || '%')
+      and a.description not like '%(promoted by assignment)%'
+      and a.actor <> 'talaria'
+      and not exists (select 1 from agent_defs d where d.model = a.actor)`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

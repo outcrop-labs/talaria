@@ -40,8 +40,8 @@ default). Then the columns carry the rules:
 
 | Column rule | Meaning |
 | :--- | :--- |
-| **agent start** | Assignment in this column counts as approval — agents only pick up work sitting there |
-| **review** | Where agent work lands for sign-off. An agent may not sign off its own work, so it hands finished tickets here for a person |
+| **agent start** | Agents pick up work a person put here (or an agent they asked, or a running workchain). Assigning an agent never moves a ticket or starts work |
+| **review** | Where agent work is signed off. A work session never moves its ticket: the agent reports its outcome, and a person moves the ticket here |
 | Blocked | Always present; an agent stuck here is waiting on something |
 
 ### Reviewing an agent's ticket

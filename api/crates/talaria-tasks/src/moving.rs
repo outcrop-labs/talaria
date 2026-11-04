@@ -80,6 +80,16 @@ pub enum Mover {
 }
 
 impl Mover {
+    /// The column-writer's mover. A move between boards is (a) for a person
+    /// and (b) for an agent: `live_hold` refuses the move outright while a
+    /// work session is live on the ticket or it is a workchain step, so an
+    /// agent here is never a session's side effect.
+    fn status_mover(&self) -> crate::StatusMover {
+        match self {
+            Mover::Human { actor, .. } => crate::StatusMover::Person(actor.clone()),
+            Mover::Agent { model, .. } => crate::StatusMover::Agent(model.clone()),
+        }
+    }
     fn actor(&self) -> &str {
         match self {
             Mover::Human { actor, .. } => actor,
@@ -852,21 +862,23 @@ pub async fn move_task(
         .await?;
     }
     sqlx::query(
-        "update tasks set board_id = $2::uuid, ticket_no = $3, status = $4, tags = $5, \
-         assignees = $6, parent_id = null, \
-         completed_at = case when $7 then completed_at end, \
-         approved_at = case when $7 then approved_at end, \
+        "update tasks set board_id = $2::uuid, ticket_no = $3, tags = $4, \
+         assignees = $5, parent_id = null, \
+         completed_at = case when $6 then completed_at end, \
+         approved_at = case when $6 then approved_at end, \
          updated_at = now() where id = $1::uuid",
     )
     .bind(id)
     .bind(req.board_id)
     .bind(ticket_no)
-    .bind(&pick.key)
     .bind(serde_json::json!(labels_kept))
     .bind(serde_json::json!(assignees))
     .bind(stays_closed)
     .execute(&mut *tx)
     .await?;
+    // A new board is a new placement, even under the same key: the mover put
+    // it in this board's column.
+    crate::placement::set_status(&mut tx, id, None, &pick.key, &mover.status_mover()).await?;
     moved.to_ref = Some(format!("{dest_prefix}-{ticket_no}"));
     let actor = mover.actor();
     activity_in(

@@ -717,9 +717,9 @@ async fn the_upkeep_pass_reads_prs_raises_the_update_and_files_tickets_once() {
     };
     let pass = || talaria_github::with_api_base(base.clone(), upkeep_pass(&deps));
 
-    // 1. Failing checks and a change request: one comment, and the ticket
-    //    goes back from review to the board's working column with the
-    //    maintainer on it.
+    // 1. Failing checks and a change request: one comment — and the ticket
+    //    STAYS IN REVIEW, nobody newly assigned. A PR event never moves a
+    //    ticket (talaria-tasks placement.rs); a person sends it back.
     let r = pass().await.unwrap();
     assert_eq!((r.plugins >= 1, r.resumed, r.errors), (true, 2, 0), "{r:?}");
     let ann = comments(&pg, &w.task_id, "Plugin PR #8").await;
@@ -739,20 +739,35 @@ async fn the_upkeep_pass_reads_prs_raises_the_update_and_files_tickets_once() {
         "{}",
         said[0]
     );
-    assert!(said[0].contains(&format!(
-        "Talaria put {} back on this ticket",
-        w.agent_model
-    )));
+    assert!(
+        said[0].contains(&format!(
+            "The ticket stays in {review} — move it to a column {} picks up from",
+            w.agent_model
+        )),
+        "{}",
+        said[0]
+    );
+    let before: Vec<String> = sqlx::query_scalar(
+        "select jsonb_array_elements_text(assignees) from tasks where id = $1::uuid",
+    )
+    .bind(&w.task_id)
+    .fetch_all(&pg)
+    .await
+    .unwrap();
     let task = talaria_tasks::get_task(&pg, &w.task_id)
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        meta.working_keys.contains(&task.status),
-        "moved to {}",
-        task.status
-    );
-    assert!(task.assignees.contains(&w.agent_model));
+    assert_eq!(task.status, review, "a PR event moved the ticket");
+    assert_eq!(task.assignees, before, "a PR event assigned the ticket");
+    let runs: i64 = sqlx::query_scalar(
+        "select count(*)::bigint from runs where kind = 'work-session' and subject_id = $1",
+    )
+    .bind(&w.task_id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(runs, 0, "a PR event started a work session");
 
     // 2. The same state again is not news.
     let r = pass().await.unwrap();

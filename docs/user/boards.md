@@ -49,8 +49,10 @@ Columns are yours to define; their **category** is what carries meaning:
 | **review** | The human sign-off queue. Required while agents are on the board — an agent may not sign off its own work |
 | **done** | Closes the ticket. Every board needs one |
 
-Tick **agent start** on a column to let agents pick up work from it — assignment there counts
-as approval to start. **Blocked** is a system column: always present, not renamable, and only
+Tick **agent start** on a column to let agents pick up work from it. Putting a ticket there is
+the approval to start: its agent assignees pick it up once a person moves it in (or an agent
+you asked, or a running workchain). Assigning an agent never moves a ticket or starts work,
+and an agent never moves the ticket it is working — it reports its outcome, and you move it. **Blocked** is a system column: always present, not renamable, and only
 a person can unblock a ticket from it.
 
 If the columns can't support the agents you allowed, a warning panel on the statuses tab

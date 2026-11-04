@@ -3276,6 +3276,108 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
+// ── A ticket's column has one writer ─────────────────────────────────────────
+// The owner's rule, broken by a new side door every time it was stated: a
+// ticket changes column only when it is TOLD to — a person's move, an agent's
+// move tool when a person asked, or a step of an approved, running workchain.
+// Never assignment, a work session, a PR, a review, a sweep or a trigger. On
+// 2026-11-04 the owner's instance showed 43 "(promoted by assignment)" moves
+// and 81 a work session made of its own ticket.
+//
+// `talaria-tasks/src/placement.rs` `set_status` is the one statement that
+// writes `tasks.status`, and it takes a StatusMover with exactly those three
+// kinds, recording which one placed the ticket — the pickup gate reads it.
+// So: no other `update tasks … set … status =` anywhere in the api or the
+// TypeScript; no other write of the placement columns; and a ticket is BORN
+// (insert with a status) only in create_task, which never stamps a placement.
+// Test code (tests/, `#[cfg(test)]` modules and files) seeds rows freely.
+// The migrations array is a one-shot backfill, not a writer, and is skipped.
+{
+  const HOME = 'api/crates/talaria-tasks/src/placement.rs'
+  const BIRTH = 'api/crates/talaria-tasks/src/lib.rs'
+  const UPDATE = /\bupdate\s+tasks\b(?:\s+(?!set\b)[a-z_]\w*)?\s+set\b/gi
+  /** The SET list after `index`: up to its where/returning/from, or 600 chars. */
+  const setList = (src, index) => {
+    const tail = src.slice(index, index + 600)
+    const end = tail.search(/\b(where|returning|from)\b/i)
+    return end === -1 ? tail : tail.slice(0, end)
+  }
+  /** Every status / placement write in one file's text: [{index, what}]. */
+  const statusWrites = (src) => {
+    const out = []
+    for (const m of src.matchAll(UPDATE)) {
+      const set = setList(src, m.index + m[0].length)
+      if (/(?:^|[^\w.])(?:\w+\.)?status\s*=(?!=)/i.test(set)) out.push({ index: m.index, what: 'update tasks … set status =' })
+      else if (/\bplaced_(?:by|by_kind|at)\s*=/i.test(set)) out.push({ index: m.index, what: 'update tasks … set placed_* =' })
+    }
+    for (const m of src.matchAll(/\binsert\s+into\s+tasks\s*\(([^)]*)\)/gi)) {
+      if (/\bplaced_(?:by|by_kind|at)\b/i.test(m[1])) out.push({ index: m.index, what: 'insert into tasks (… placed_* …)' })
+      else if (/\bstatus\b/i.test(m[1])) out.push({ index: m.index, what: 'insert into tasks (… status …)', birth: true })
+    }
+    return out
+  }
+  // The detector, on fixtures — a rule whose pattern stops matching passes a
+  // tree full of the thing it forbids.
+  const selfTest = [
+    ['"update tasks set status = $2 where id = $1"', 1],
+    ['"update tasks set title=$2, \\\n         status=$4, priority=$5 where id=$1"', 1],
+    ['"update tasks t set placed_by_kind = \'person\' where t.id = $1"', 1],
+    ['"insert into tasks (board_id, title, status) values ($1, $2, $3)"', 1],
+    ['"update tasks set tags = $2 where id = $1 and status = \'inbox\'"', 0],
+    ['"update tasks set approved_at = now(), updated_at = now() where id = $1"', 0],
+    ['"insert into tasks (board_id, title) values ($1, $2)"', 0],
+  ].filter(([src, want]) => statusWrites(src).length !== want)
+  const testFiles = new Set()
+  const rust = new Map(rustSources)
+  for (const f of walk(join(ROOT, 'api/src'), [], RUST_EXTS)) {
+    rust.set(relative(ROOT, f).split(sep).join('/'), stripComments(readFileSync(f, 'utf8')))
+  }
+  for (const [path, src] of rust) {
+    // `#[cfg(test)] mod live;` makes live.rs (or live/mod.rs) test code.
+    for (const m of src.matchAll(/#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;/g)) {
+      const dir = path.slice(0, path.lastIndexOf('/'))
+      testFiles.add(`${dir}/${m[1]}.rs`)
+      testFiles.add(`${dir}/${m[1]}/mod.rs`)
+    }
+  }
+  const found = selfTest.map(([src]) => ({ path: 'scripts/check-invariants.mjs', line: 0, text: `self-test missed: ${src}` }))
+  let anchor = false
+  const scan = (path, src, isRust) => {
+    if (/(^|\/)tests\//.test(path) || testFiles.has(path) || /\.test\.[mc]?[jt]s$/.test(path)) return
+    if (path === 'ui/src/server/db/pg.ts') return
+    const skip = isRust ? cfgTestRanges(src) : []
+    for (const w of statusWrites(src)) {
+      if (skip.some(([a, b]) => w.index >= a && w.index < b)) continue
+      if (path === HOME && w.what === 'update tasks … set status =') {
+        anchor = true
+        continue
+      }
+      if (w.birth && path === BIRTH) continue
+      found.push({ path, line: lineOf(src, w.index), text: w.what })
+    }
+  }
+  for (const [path, src] of rust) scan(path, src, true)
+  for (const [path, src] of sources) scan(path, src, false)
+  if (!anchor) found.push({ path: HOME, line: 0, text: 'the one status writer is gone — set_status no longer writes tasks.status here' })
+  if (found.length) {
+    failures.push({
+      id: 'ticket-status-one-writer',
+      what: "a ticket's column is written outside talaria-tasks placement.rs — a side door that moves tickets nobody asked to move",
+      fix: [
+        'Change a column through talaria_tasks::update_task (or placement::set_status inside the',
+        'tasks crate), which demands a StatusMover: a person, an agent a person asked (never its own',
+        'work session), or a step of an approved, running workchain. A side effect that wants to say',
+        'something — an assignment, a session, a PR, a review, a sweep, a trigger — records activity,',
+        'a label or a field (outcome, error_message) and leaves the column alone. A ticket is born',
+        'only in create_task, in intake, with no placement.',
+      ],
+      found,
+    })
+  } else {
+    notes.push("ticket column: one writer (placement.rs set_status), births only in create_task")
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)

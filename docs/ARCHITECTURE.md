@@ -985,7 +985,14 @@ gateway.
 Work delivery is **push-side**: the app dispatches durable work sessions to agents
 (`talaria-work-dispatch`): on the task write that hands an agent work (the ticket enters an
 agent-start column, or gains an agent assignee), on a workchain hand-off, and from a sixty-second
-sweep that re-offers anything a push missed. A workchain step whose predecessor is still open is
+sweep that re-offers anything a push missed. **A ticket moves only when it is told to**
+(`talaria-tasks` `placement.rs`, the one writer of `tasks.status`): a person's move, an agent's
+move tool when a person asked (refused while its own work session is live on the ticket), or a
+step of an approved, running workchain. Assignment, a session, a PR, a review, a sweep or a
+trigger never moves one. Each placement records its mover, and the pickup gate starts a session
+only on a ticket one of them placed in a pickup column, once per placement: a finished session
+is not restarted until somebody allowed places the ticket again. A session ends on the agent's
+`report_outcome`, which records the result and leaves the column to a person. A workchain step whose predecessor is still open is
 not dispatched — the gate asks `talaria_tasks::workchain_blocked` before any session starts, and
 the session asks it again on every turn. The agent cannot start it by hand either: moving it into a
 working column or review, or binding a workbench job to it, is refused the same way. Agents do not

@@ -1553,7 +1553,11 @@ CREATE TABLE public.tasks (
     parent_id uuid,
     start_date timestamp with time zone,
     color text,
-    approved_at timestamp with time zone
+    approved_at timestamp with time zone,
+    placed_by text,
+    placed_by_kind text,
+    placed_at timestamp with time zone,
+    CONSTRAINT tasks_placed_by_kind_check CHECK (((placed_by_kind IS NULL) OR (placed_by_kind = ANY (ARRAY['person'::text, 'agent'::text, 'workchain'::text]))))
 );
 CREATE TABLE public.team_agents (
     team_id uuid NOT NULL,

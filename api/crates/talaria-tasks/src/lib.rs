@@ -31,10 +31,12 @@ use talaria_statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
 use talaria_tasks_types::DispatchTicket;
 
 mod moving;
+pub mod placement;
 pub use moving::{
     MoveError, MoveOutcome, MoveRequest, MoveSummary, Mover, PickRefusal, StatusHow, StatusPick,
     map_labels, move_task, pick_move_status,
 };
+pub use placement::StatusMover;
 
 pub use talaria_tasks_types::{
     Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
@@ -570,6 +572,10 @@ struct UpdateNotices {
     archived_now: bool,
     review_keys: Vec<String>,
     actor: String,
+    /// An agent reported an outcome or an error on this write. A work session
+    /// no longer hands its ticket to review (placement.rs), so this notice is
+    /// how the ticket's people hear the work is theirs to look at and move.
+    reported_by_agent: bool,
 }
 
 /// Spawn everything `update_task` tells people, in one detached task — see
@@ -585,6 +591,7 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             archived_now,
             review_keys,
             actor,
+            reported_by_agent,
         } = n;
         let id = cur.id.clone();
         let href = format!("/boards/{}/{}", cur.board_id, id);
@@ -633,10 +640,9 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
                 Ok(mut audience) => {
                     // ONE ACTION, ONE ROW. A person this same patch assigns is
-                    // told by the `task-assigned` row below; the promotion's
-                    // status move was a second row for the same click. They
-                    // leave this audience — every other watcher still hears
-                    // the move.
+                    // told by the `task-assigned` row below, so they leave
+                    // this audience — every other watcher still hears the
+                    // move.
                     audience.retain(|uid| !newly.contains(uid));
                     let now = next_status.replacen('_', " ", 1);
                     notify_task_users(
@@ -658,6 +664,35 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
                     .await;
                 }
                 Err(e) => tracing::error!("tasks: status audience read failed: {e}"),
+            }
+        }
+        // THE AGENT'S REPORT, when it did not ride a move (which told the same
+        // people already): the result is on the ticket, the column is theirs.
+        if reported_by_agent && !moved {
+            match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
+                Ok(audience) => {
+                    notify_task_users(
+                        &deps.notify,
+                        &audience,
+                        &actor,
+                        &TaskNotification {
+                            kind: "task-status".into(),
+                            title: format!(
+                                "{}: outcome reported",
+                                cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
+                            ),
+                            body: Some(format!(
+                                "{} — the agent left it in {}; move it when you have reviewed the work",
+                                cur.title, cur.status
+                            )),
+                            href: Some(href.clone()),
+                            task_id: id.clone(),
+                            status_burst: None,
+                        },
+                    )
+                    .await;
+                }
+                Err(e) => tracing::error!("tasks: outcome audience read failed: {e}"),
             }
         }
         // NEWLY added humans get an inbox nudge.
@@ -906,22 +941,16 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     let pg = &deps.pg;
     let assignees: Vec<String> = input.assignees.to_vec();
     let meta = status_meta(pg, input.board_id).await?;
-    // A ticket is BORN in intake, or in the pickup queue when it arrives
-    // already assigned. Neither key is invented: `assigned_key` is None on a
-    // board with no usable agent-start column, and the honest landing spot
-    // then is intake — assigned to someone, not yet in anyone's pickup
-    // queue, and therefore not dispatched. `default_key` None means the
+    // A ticket is BORN in intake — assigned or not. Arriving with assignees
+    // used to land it in the pickup queue and start the agent on it: an
+    // assignment moving a ticket and starting work nobody released, which
+    // is exactly what the owner's rule forbids (placement.rs). A person
+    // moves it from intake when it is ready. `default_key` None means the
     // board has no intake column at all, which no legal board can reach;
     // say so instead of dropping the ticket into whatever column happened
     // to sort first (that fallback could resolve to the system Blocked
     // column).
-    let status = match if !assignees.is_empty() {
-        meta.assigned_key
-            .clone()
-            .or_else(|| meta.default_key.clone())
-    } else {
-        meta.default_key.clone()
-    } {
+    let status = match meta.default_key.clone() {
         Some(s) => s,
         None => {
             let board = board_label(pg, input.board_id).await?;
@@ -1012,10 +1041,6 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     let Some(task) = get_task(pg, &id).await? else {
         return Err(TaskError::Db(sqlx::Error::RowNotFound));
     };
-    // Born assigned into an agent-start column → push the work to the
-    // agents. Detached: the row is the record, the push is a
-    // delivery.
-    spawn_dispatch(deps, task.clone(), None);
     // Apps whose triggers name it hear that a ticket exists — its id and its
     // board, never its text (talaria-platform-events).
     talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketCreated {
@@ -1346,9 +1371,8 @@ async fn agent_safe_patch(
     }
     let status_present_and_moving =
         |patch: &TaskPatch| patch.status.as_ref().is_some_and(|s| s != &cur.status);
-    // A review column is the human sign-off QUEUE. Once an agent hands work
-    // over, only a person — or the platform, whose judge bounces revisions
-    // back — takes it out again. Otherwise the agent pulls its own work off
+    // A review column is the human sign-off QUEUE. Once a ticket is there,
+    // only a person takes it out again. Otherwise the agent pulls its own work off
     // the reviewer's board and mints itself a fresh work session on every
     // lap.
     if meta.review_keys.contains(&cur.status) && status_present_and_moving(&patch) {
@@ -1520,6 +1544,27 @@ pub async fn update_task(
         patch.resolution = patch.resolution.as_ref().map(|_| guarded[3].clone());
         patch.error_message = patch.error_message.as_ref().map(|_| guarded[4].clone());
     }
+    // ── WHO MOVES IT (placement.rs) ─────────────────────────────────────────
+    // A write that changes the column needs one of the three movers, and
+    // the caller's kind names which: a person is (a); an agent is (c) on a
+    // running workchain step, else (b) — unless its own work session is live
+    // on this ticket, which makes the move the session's side effect; the
+    // platform is none of them.
+    let mover = match patch.status.as_ref().filter(|s| **s != cur.status) {
+        None => None,
+        Some(_) => Some(match who.kind {
+            TaskActorKind::Human => StatusMover::Person(who.id.clone()),
+            TaskActorKind::Agent => {
+                match placement::agent_mover(pg, &cur.id, &cur.board_id, &meta, &who.id).await? {
+                    Ok(mover) => mover,
+                    Err(why) => return Err(TaskError::ApprovalRequired(why.into())),
+                }
+            }
+            TaskActorKind::Platform => {
+                return Err(TaskError::Refusal(placement::NO_MOVER.into()));
+            }
+        }),
+    };
     let assignees = patch
         .assignees
         .clone()
@@ -1536,21 +1581,11 @@ pub async fn update_task(
     if let Some(tags) = patch.tags.as_ref().filter(|t| !t.is_empty()) {
         ensure_labels(pg, &cur.board_id, tags).await?;
     }
-    // Assignees on an intake ticket promote it into the pickup queue —
-    // approval by assignment, so an agent's own write never triggers it. The
-    // DESTINATION is never invented: with no usable agent-start column
-    // (`assigned_key` None) there is no pickup queue to promote into, and
-    // the ticket stays in intake rather than being moved somewhere that
-    // merely sorted first — which, before `assigned_key` got this treatment,
-    // could be a DONE column, so assigning someone closed the ticket.
-    let promoted_to = if who.kind != TaskActorKind::Agent
-        && !assignees.is_empty()
-        && meta.default_key.as_deref() == Some(cur.status.as_str())
-    {
-        meta.assigned_key.clone()
-    } else {
-        None
-    };
+    // ASSIGNING NEVER MOVES A TICKET. It used to: assignees on an intake
+    // ticket "promoted" it into the pickup queue, and the agent started work
+    // nobody had released — 43 "(promoted by assignment)" moves on the
+    // owner's instance before this was taken out. The column moves when
+    // somebody allowed moves it (placement.rs), and only then.
     let next_title = patch.title.clone().unwrap_or_else(|| cur.title.clone());
     let next_description = pick(&patch.description, cur.description.clone());
     let next_effort = pick(&patch.effort, cur.effort.clone());
@@ -1567,11 +1602,7 @@ pub async fn update_task(
     let next_outcome = pick(&patch.outcome, cur.outcome.clone());
     let next_resolution = pick(&patch.resolution, cur.resolution.clone());
     let next_error_message = pick(&patch.error_message, cur.error_message.clone());
-    let next_status = patch
-        .status
-        .clone()
-        .or(promoted_to)
-        .unwrap_or_else(|| cur.status.clone());
+    let next_status = patch.status.clone().unwrap_or_else(|| cur.status.clone());
     let completed_at = completed_at_for(&meta, &next_status, cur.completed_at.as_deref());
     let approved_at = approved_at_for(&meta, &next_status, &cur.status, cur.approved_at.as_deref());
     let archived_at = match patch.archived {
@@ -1585,19 +1616,21 @@ pub async fn update_task(
     };
     let add_seconds = patch.add_time_spent_seconds.unwrap_or(0.0).round().max(0.0) as i64;
 
+    // The fields and the column in ONE transaction, the column through the
+    // one writer that records who placed it there.
+    let mut tx = pg.begin().await?;
     sqlx::query(
-        "update tasks set title=$2, description=$3, status=$4, priority=$5, effort=$6, \
-         assignees=$7, due_date=$8::timestamptz, start_date=$9::timestamptz, color=$10, \
-         estimated_hours=$11::numeric, parent_id=$12::uuid, tags=$13, attachments=$14, \
-         outcome=$15, resolution=$16, error_message=$17, completed_at=$18::timestamptz, \
-         archived_at=$19::timestamptz, approved_at=$21::timestamptz, \
-         time_spent_seconds=time_spent_seconds + $20, updated_at=now() \
+        "update tasks set title=$2, description=$3, priority=$4, effort=$5, \
+         assignees=$6, due_date=$7::timestamptz, start_date=$8::timestamptz, color=$9, \
+         estimated_hours=$10::numeric, parent_id=$11::uuid, tags=$12, attachments=$13, \
+         outcome=$14, resolution=$15, error_message=$16, completed_at=$17::timestamptz, \
+         archived_at=$18::timestamptz, approved_at=$20::timestamptz, \
+         time_spent_seconds=time_spent_seconds + $19, updated_at=now() \
          where id=$1::uuid",
     )
     .bind(id)
     .bind(&next_title)
     .bind(&next_description)
-    .bind(&next_status)
     .bind(&next_priority)
     .bind(&next_effort)
     .bind(serde_json::json!(assignees))
@@ -1615,8 +1648,12 @@ pub async fn update_task(
     .bind(&archived_at)
     .bind(add_seconds)
     .bind(&approved_at)
-    .execute(pg)
+    .execute(&mut *tx)
     .await?;
+    if let Some(mover) = &mover {
+        placement::set_status(&mut tx, id, None, &next_status, mover).await?;
+    }
+    tx.commit().await?;
 
     // ── THE NOTIFY WORK GOES OUT NOW (C30) ──────────────────────────────────
     // The write above has committed. Everything a person is told about it is
@@ -1635,6 +1672,13 @@ pub async fn update_task(
             archived_now: patch.archived == Some(true) && cur.archived_at.is_none(),
             review_keys: meta.review_keys.clone(),
             actor: who.id.clone(),
+            reported_by_agent: who.kind == TaskActorKind::Agent
+                && ((patch.outcome.is_some()
+                    && next_outcome.is_some()
+                    && next_outcome != cur.outcome)
+                    || (patch.error_message.is_some()
+                        && next_error_message.is_some()
+                        && next_error_message != cur.error_message)),
         },
     );
 
@@ -1653,20 +1697,10 @@ pub async fn update_task(
         .await?;
     }
 
-    // THE COLUMN MOVED — however it moved. Gating this on
-    // `patch.status.is_some()` meant PROMOTION BY ASSIGNMENT left nothing on
-    // the record: a person patching only `assignees` moved the ticket out of
-    // intake and into the agent pickup queue, and the ticket's own history
-    // said only "assigned to …". The watchers were not told either.
-    // `next_status` is what was actually written, so ask it.
+    // THE COLUMN MOVED. `next_status` is what was actually written; only a
+    // mover can have written it.
     if next_status != cur.status {
-        let why = patch.status_note.clone().unwrap_or_else(|| {
-            if patch.status.is_none() {
-                "promoted by assignment".to_string()
-            } else {
-                String::new()
-            }
-        });
+        let why = patch.status_note.clone().unwrap_or_default();
         let moved = if why.is_empty() {
             format!("moved to {next_status}")
         } else {
@@ -1686,11 +1720,11 @@ pub async fn update_task(
         // commit (`spawn_update_notices`).
     }
     // ── ONE push-side call ─────────────────────────────────────────────────
-    // Two things mean "this is now someone's work": the ticket ENTERED a
-    // pickup queue (a person moved the column, or promotion by assignment
-    // did), and/or it GAINED agent assignees. Whether the ticket may be
-    // dispatched to AT ALL is maybe_dispatch_ticket's call; this decides
-    // only whether anything changed enough to ask.
+    // Two things are worth asking dispatch about: the ticket ENTERED a pickup
+    // queue (an allowed mover put it there — nothing else can), and/or it
+    // GAINED agent assignees. Asking is not starting: maybe_dispatch_ticket's
+    // pickup gate starts work only on a ticket an allowed mover placed in a
+    // pickup column, so an assignee added anywhere else starts nothing.
     let added_agents = match &patch.assignees {
         Some(_) => agent_assignees(&assignees)
             .into_iter()
@@ -1851,26 +1885,6 @@ pub async fn update_task(
         },
     );
     get_task(pg, id).await.map_err(TaskError::Db)
-}
-
-/// The detached dispatch leg shared by the three writers that can hand an
-/// agent work (create hands the task it already holds; the update/review
-/// paths re-read fresh).
-fn spawn_dispatch(deps: &TaskDeps, task: Task, only_agents: Option<Vec<String>>) {
-    let Some(dispatch) = deps.dispatch.clone() else {
-        return;
-    };
-    let pg = deps.pg.clone();
-    tokio::spawn(async move {
-        let only = only_agents.as_deref();
-        talaria_tasks_types::maybe_dispatch_ticket(
-            &pg,
-            &Some(dispatch),
-            &dispatch_ticket_of(&task),
-            only,
-        )
-        .await;
-    });
 }
 
 /// The workchain hand-off's agent half: each successor a sign-off just made
@@ -2599,17 +2613,27 @@ pub async fn complete_quality_review(
     let completed_at = completed_at_for(&meta, next_status, current.completed_at.as_deref());
     let mut tx = pg.begin().await?;
     let rows: Vec<(String,)> = sqlx::query_as(
-        "update tasks set status = $1, completed_at = $2::timestamptz, \
-         approved_at = case when $5 then now() else null end, updated_at = now() \
-         where id = $3::uuid and status = $4 returning id::text",
+        "update tasks set completed_at = $1::timestamptz, \
+         approved_at = case when $4 then now() else null end, updated_at = now() \
+         where id = $2::uuid and status = $3 returning id::text",
     )
-    .bind(next_status)
     .bind(&completed_at)
     .bind(task_id)
     .bind(&current.status)
     .bind(approved)
     .fetch_all(&mut *tx)
     .await?;
+    // A rejection is a PERSON's move (a): the reviewer sends it back.
+    if !rows.is_empty() && next_status != current.status.as_str() {
+        placement::set_status(
+            &mut tx,
+            task_id,
+            Some(&current.status),
+            next_status,
+            &StatusMover::Person(reviewer.to_string()),
+        )
+        .await?;
+    }
     if rows.is_empty() {
         // The ticket moved between the read and the write — TS's begin
         // callback returns false on exactly this and commits an empty

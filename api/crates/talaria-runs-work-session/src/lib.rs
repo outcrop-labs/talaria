@@ -531,6 +531,33 @@ async fn real_session_state(
             task,
         }));
     }
+    // THE AGENT'S REPORT ENDS THE SESSION, not a column. A work session never
+    // moves its ticket (talaria-tasks placement.rs), so the ticket leaving
+    // the working columns is a PERSON's stop now; the agent's own end is its
+    // outcome (or its error) reported during this session.
+    let reported: bool = sqlx::query_scalar(
+        "select exists (select 1 from task_activity a \
+           where a.task_id = $1::uuid and a.actor = $2 and a.type in ('outcome', 'error') \
+             and a.created_at >= (select max(r.created_at) from runs r \
+               where r.kind = 'work-session' and r.subject_id = $3 \
+                 and r.input->>'agentModel' = $2 \
+                 and r.state in ('queued', 'running', 'awaiting')))",
+    )
+    .bind(&task_id)
+    .bind(&agent_model)
+    .bind(&task_id)
+    .fetch_one(&pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    if reported {
+        return Ok(Some(SessionState {
+            stop: Some(format!(
+                "{agent_model} reported its outcome — the ticket stays in \"{}\" until a person moves it",
+                task.status
+            )),
+            task,
+        }));
+    }
     Ok(Some(SessionState { task, stop: None }))
 }
 
@@ -1317,28 +1344,12 @@ async fn dispatch_prompt(
     agent_model: &str,
     board_name: Option<&str>,
 ) -> Result<String, String> {
-    let hint = (d.board_hint)(pg.clone(), task.board_id.clone()).await?;
     let (block, _) = workflow_context(d, pg, task, agent_model).await?;
-    // THE PROMPT HANDS THIS TO THE AGENT VERBATIM, so it is a destination
-    // and must come from `placeable` like every other one. It used to be the
-    // first active column by category, which does not exclude terminal
-    // columns: on a board whose first active column is labelled "Cancelled"
-    // the hint was "cancelled", so an agent obeying step 2 of its own
-    // work-session prompt sent a TERMINAL move. `active_key` is picked from
-    // `placeable`; with no active column at all we fall back to the pickup
-    // queue; with neither we say so rather than invent a key the board may
-    // not have.
-    let active_hint = hint.active_key.or(hint.assigned_key);
-    let step2 = match active_hint {
-        Some(key) => format!(
-            "comment a one-line acknowledgment in the ticket's discussion thread (the board's \
-             humans read it), and triage_ticket to status \"{key}\" while you work."
-        ),
-        None => "comment a one-line acknowledgment in the ticket's discussion thread (the board's \
-                 humans read it). Leave the status where it is — this board has no working column \
-                 for you to move it to."
-            .to_string(),
-    };
+    // A WORK SESSION NEVER MOVES ITS TICKET (talaria-tasks placement.rs). This
+    // step used to tell the agent to triage it to the board's working
+    // column, which is how every pickup became a column move nobody asked
+    // for; the write is refused now, so the brief does not ask for it.
+    let step2 = SESSION_STEP2.to_string();
     // The hygiene step is PERSONAL: this agent's own repo rules name the
     // bases and prefixes the pre-push hook will enforce. An agent with no
     // grants (or no rules) gets the standing default — branch-first is the
@@ -1452,11 +1463,19 @@ async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
 /// reconcile (report_outcome / set blocked), then stop pushing.
 fn reconcile_prompt(status: &str) -> String {
     format!(
-        "[Work session — reconcile] You said DONE/BLOCKED but the ticket is still \"{status}\". \
-         If finished: report_outcome now. If blocked: set status \"blocked\" with a comment. If \
+        "[Work session — reconcile] You said DONE/BLOCKED but nothing is reported on the ticket \
+         (still \"{status}\"). If finished: report_outcome now. If blocked: comment why, then \
+         report_outcome with errorMessage saying what blocks you. Never move the ticket. If \
          neither, keep working."
     )
 }
+
+/// Step 2 of the dispatch brief — the acknowledgment, and the one line that
+/// keeps the session's hands off the ticket's column.
+pub const SESSION_STEP2: &str = "comment a one-line acknowledgment in the ticket's discussion \
+     thread (the board's humans read it). Leave the ticket's column alone: a work session never \
+     moves its ticket — a person does, and triage_ticket refuses a status change while this \
+     session is live.";
 
 /// Every continuation carries the LIVE ticket state, so the agent never works
 /// a stale picture — which is also what makes a resumed session safe to
@@ -1468,7 +1487,7 @@ fn continue_prompt(turn: i64, status: &str) -> String {
          \"{status}\"). Continue like a developer: next step, run it, read the result, adjust. \
          Verify before you finish — tests, your own diff, and for UI work drive it in a real \
          browser (your browser tools) and attach evidence. When genuinely done: report_outcome. If stuck: \
-         status \"blocked\" + comment. End with your status line."
+         comment why + report_outcome with errorMessage. Never move the ticket. End with your status line."
     )
 }
 
