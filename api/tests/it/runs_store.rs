@@ -384,10 +384,7 @@ async fn n_checkpoints_yield_n_ledger_rows_and_the_run_holds_the_last() {
     assert!(rows[0].unrestorable_reason.is_some());
 
     let run = store.get(&id).await.unwrap().unwrap();
-    assert_eq!(
-        rows.last().unwrap().checkpoint.as_ref(),
-        Some(&run.checkpoint)
-    );
+    assert_eq!(run.checkpoint, json!({"cursor": 9}));
     assert_eq!(run.phase, "swept");
 
     cleanup(&pg, kind).await;

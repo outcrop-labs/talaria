@@ -51,7 +51,9 @@ pub enum CheckpointKind {
     Step,
 }
 
-/// One ledger row, as `GET /api/runs/{id}/checkpoints` answers it.
+/// One ledger row, as `GET /api/runs/{id}/checkpoints` answers it. It holds no
+/// checkpoint body: a work session's carries slices of the agent's reply, which
+/// must not skip the transcript's scrub or outlive its retention.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunCheckpoint {
@@ -64,7 +66,6 @@ pub struct RunCheckpoint {
     pub tool: Option<String>,
     pub title: Option<String>,
     pub status: Option<String>,
-    pub checkpoint: Option<Value>,
     pub job_id: Option<String>,
     pub workspace_commit: Option<String>,
     pub workspace_tree: Option<String>,
@@ -544,8 +545,8 @@ impl RunStore for PgRunStore {
                    returning id, checkpoint_seq \
                  ), ledger as ( \
                    insert into run_checkpoints \
-                     (run_id, seq, kind, turn, title, status, checkpoint, unrestorable_reason) \
-                   select id, checkpoint_seq, 'turn', $6::bigint, $4::text, $7::text, $3::jsonb, $8::text \
+                     (run_id, seq, kind, turn, title, status, unrestorable_reason) \
+                   select id, checkpoint_seq, 'turn', $6::bigint, $4::text, $7::text, $8::text \
                    from bumped \
                  ) \
                  select id from bumped",
@@ -961,8 +962,7 @@ fn decode_kind(s: &str) -> Result<CheckpointKind, sqlx::Error> {
 pub async fn run_checkpoints(pg: &PgPool, id: &str) -> Result<Vec<RunCheckpoint>, sqlx::Error> {
     let rows = sqlx::query(
         "select seq, kind, turn, agent_turn_id, step_no, tool_call_id, tool, title, status, \
-                checkpoint, job_id::text, workspace_commit, workspace_tree, restorable, \
-                unrestorable_reason, \
+                job_id::text, workspace_commit, workspace_tree, restorable, unrestorable_reason, \
                 (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms \
          from run_checkpoints where run_id = $1::uuid order by seq",
     )
@@ -981,7 +981,6 @@ pub async fn run_checkpoints(pg: &PgPool, id: &str) -> Result<Vec<RunCheckpoint>
                 tool: r.try_get("tool")?,
                 title: r.try_get("title")?,
                 status: r.try_get("status")?,
-                checkpoint: r.try_get("checkpoint")?,
                 job_id: r.try_get("job_id")?,
                 workspace_commit: r.try_get("workspace_commit")?,
                 workspace_tree: r.try_get("workspace_tree")?,
