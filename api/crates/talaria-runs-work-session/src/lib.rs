@@ -786,24 +786,45 @@ async fn real_turn(
 }
 
 /// A run cancelled before its turn named itself has no other stop: the one the
-/// cancel sent had no id to send it to.
+/// cancel sent had no id to send it to. That stop is spawned so it cannot hold
+/// back the write of a later id.
 fn record_agent_run(pg: PgPool, run_id: String, agent_model: String, turn: i64) -> RunStartedTap {
-    Arc::new(move |agent_run_id: &str| {
+    in_event_order(move |agent_run_id: String| {
         let pg = pg.clone();
         let run_id = run_id.clone();
         let agent_model = agent_model.clone();
-        let agent_run_id = agent_run_id.to_string();
-        tokio::spawn(async move {
+        async move {
             match set_agent_run_id(&pg, &run_id, turn, Some(&agent_run_id)).await {
                 Ok(Some(RunState::Cancelled)) => {
-                    stop_named_turn(&run_id, &agent_model, Some(&agent_run_id)).await;
+                    tokio::spawn(async move {
+                        stop_named_turn(&run_id, &agent_model, Some(&agent_run_id)).await;
+                    });
                 }
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!("{LOG} {run_id}: could not record the agent's run id: {e}");
                 }
             }
-        });
+        }
+    })
+}
+
+/// One writer per turn. The gateway's lost-turn repair names two runs in one
+/// stream, and a spawn per event could let the refused run's id land last,
+/// leaving a stop aimed at a run that is over.
+fn in_event_order<Write, Written>(write: Write) -> RunStartedTap
+where
+    Write: Fn(String) -> Written + Send + 'static,
+    Written: Future<Output = ()> + Send,
+{
+    let (ids, mut named) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        while let Some(agent_run_id) = named.recv().await {
+            write(agent_run_id).await;
+        }
+    });
+    Arc::new(move |agent_run_id: &str| {
+        let _ = ids.send(agent_run_id.to_string());
     })
 }
 
@@ -2890,6 +2911,28 @@ mod tests {
         .await;
         assert_eq!(outcome, AgentStop::Ended("cancelled".into()));
         assert_eq!(*calls.lock().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_repaired_turn_keeps_the_id_its_stream_named_last() {
+        let row = Arc::new(Mutex::new(None));
+        let tap = {
+            let row = row.clone();
+            in_event_order(move |id: String| {
+                let row = row.clone();
+                async move {
+                    if id == "run_refused" {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    *row.lock().unwrap() = Some(id);
+                }
+            })
+        };
+        tap("run_refused");
+        tap("run_replacement");
+        drop(tap);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(row.lock().unwrap().as_deref(), Some("run_replacement"));
     }
 
     #[tokio::test]
