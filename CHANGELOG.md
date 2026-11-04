@@ -4,6 +4,3713 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+## 0.1.0 — rolled retroactively on 2026-11-04 (2026-09-16)
+
+- **2026-08-26 audit remediation** (full work order: `docs/history/AUDIT-2026-08-26.md`, PR series
+  #257–#265). The one real vulnerability: both bytes routes served uploader-declared MIME inline —
+  `text/html`/`image/svg+xml` executed same-origin with the viewer's session. `serveUpload()` is
+  now the single disposition decision (raster + PDF inline; everything else attachment + nosniff +
+  sandbox CSP). Also: credential sealing now walks array-content turns (image turns traveled whole
+  — the exact case the adversarial tier measures); the one raw fetch on a model-supplied URL goes
+  through safe-fetch; federation imports validate slug/department alphabets (newline → `.env`
+  injection, `../` → traversal); invite email HTML escaped; timing-safe OAuth state compare; MCP
+  gateway validates non-builtin upstream URLs; `/api/join` rate-limited. Deferred hardening filed
+  as issues: llm.v1 per-key spend caps, stream-based upload size rejection, compose first-boot
+  secret generation, upstream-error-text sanitizer pass, Google `email_verified` enforcement.
+
+### Breaking
+
+- **A cross-off no longer comes back with tomorrow's date on it.** The brief
+  is one document per day, and a check-off lived only inside the day's own
+  append-only log — so every morning's open re-listed everything still live
+  in its sources, including the rows the owner had crossed off the day
+  before, un-crossed, forever. The owner's verdict now carries: the open and
+  the sweep skip a key whose newest entry on a prior day is the owner's own
+  check or dismissal with an unchanged source fingerprint, for thirty days.
+  The item reappears the moment its source actually moves (the task fails
+  differently, the thread gets a new message, the draft is rewritten) — the
+  same rule the within-day sweep always closed lines by — and `restore`
+  still works from the prior day's page, which the read serves before the
+  day's own brief opens. Verified against the live database
+  (`api/tests/brief_verdict_carry_live.rs`, ignored like every live proof):
+  a checked-off blocked task is absent from the next day's document, a
+  stale-fingerprint verdict does not suppress, and a restore lands on the
+  prior page and is re-added by the next sweep.
+
+- **A git credential the platform won't give fails fast instead of hanging the
+  agent.** A push to a repo off the agent's grant list made the credential
+  helper decline (correct), git fall back to its terminal prompt, and that
+  prompt waits forever in a harness PTY — the agent reads as stuck, and the
+  2026-09-14 incident was exactly this shape (the granted repo's pushes
+  worked; the probe of an ungranted one hung). The render now sets
+  `GIT_TERMINAL_PROMPT=0` in every agent service env, so every such case is
+  git's immediate "could not read Username" — which the toolkit skill already
+  tells the agent to `report_problem`. The helper's decline and the operator
+  log both name the repo now (`no credential for github.com/owner/repo`), so
+  the next stuck agent is diagnosable from one log line. Verified: an
+  ungranted path through `git credential fill` in Doug's container fails
+  immediately post-roll with the repo named in the stderr.
+
+- **A GitHub App private key pasted into the admin panel parses — the
+  single-line input was stripping its line breaks.** The Key field was a
+  password input, and the HTML value sanitizer deletes LF/CR from anything
+  pasted into one, so a real `.pem` arrived (and was stored,
+  envelope-encrypted) as `-----BEGIN RSA PRIVATE KEY-----base64…` on one
+  line — `github app key parse: PKCS#1 ASN.1 error: PEM error: PEM type
+  label invalid`, every time, with nothing visible wrong on the user's side.
+  Two fixes: the field is now a textarea (multi-line paste survives
+  verbatim), and the signer repairs a newline-stripped PEM at parse time —
+  the stored shape is unambiguous, so installs already holding a mangled
+  key start working without re-pasting. Verified: the stripped form of both
+  PEM labels (GitHub's PKCS#1 and PKCS#8) signs the pinned JWT bytes
+  (`api/tests/github_pem_repair.rs`), reproducing the exact reported error
+  before the fix.
+
+### Changed
+
+- **A golden-image deploy for Proxmox.** `scripts/image/` builds an openSUSE
+  MicroOS template with the system half of an install baked in — Docker +
+  compose v2 (podman stays unused), Tailscale, firewalld rules for the
+  agent→app path from AGENT-NETWORKING.md, Bun, the guest agent — and no
+  Talaria in it at all: every instance cloned from the template installs
+  *current* Talaria on its own first boot (clone → setup.sh → infra → build
+  → `talaria.service`), so the image can't ship a stale app. Per-instance
+  configuration rides cloud-init snippets (`qm set --cicustom` →
+  `/etc/talaria.env`): a handful of vars steer the bootstrap (tailnet key,
+  instance hostname, repo, ref) and everything else reaches the app process
+  verbatim, winning over `ui/.env` the way the environment always has.
+  `TALARIA_HOSTNAME` names the whole instance — system hostname via
+  hostnamectl plus a hosts(5) entry, not just the Tailscale node name —
+  because the cicustom snippet replaces the user-data that would otherwise
+  carry one, and every clone would answer to the template's neutral name.
+  The install is
+  re-entrant — first boot retries converge instead of wedging on a
+  half-installed `node_modules` (setup.sh's skip-if-exists can't heal that
+  on its own), the app unit gates on Postgres readiness rather than losing
+  the boot race to a cached failed migration, and a re-run never deletes the
+  checkout, where uploads and fleet state live outside git. systemd owns
+  restarts, so the in-app updater stands down (`TALARIA_UPDATER=off`) and
+  updates are a one-liner. The SearXNG settings render moved from dev.sh
+  into a shared `scripts/render-searxng.sh` so the bootstrap and the dev
+  loop mount the same file. `build.sh` assumes nothing about the host it
+  runs on: it prompts for the VM-disk storage (from live `pvesm` output)
+  and the snippet storage (offering to enable snippets on `local` by
+  *merging* content types — `pvesm set --content` replaces the list), and
+  when the host has no SSH public keys it generates and names a keypair to
+  inject; the same choices exist as flags for non-interactive runs, and
+  `--dry-run` prints the resolved plan. Full runbook:
+  docs/SELF-HOSTING.md. Verified repo-side: `bash -n` on every new script,
+  the generated cloud-init snippet round-trips its four embedded files
+  byte-for-byte under YAML literal-block indentation, and the build.sh
+  resolution/prompt/keygen flows pass a stubbed-host test matrix
+  (`pvesm`/`qm` stubs, pty-driven prompts, dry-run assertions); the image
+  build itself runs on the Proxmox host per SELF-HOSTING.md (not
+  exercisable from this tree).
+
+- **A Google login for an email that already has an account lands on that account —
+  no more forked second user.** Sign-in resolved people by sub alone, and subs are
+  per-door (`google:<subject>` vs `password:<email>`), so a Google login for a
+  claimed email silently inserted a second `users` row with role `member`: the
+  person's admin powers stayed on a row Google could never reach, and every Google
+  session ran as the fork — `users.email` has no unique constraint, so the insert
+  never failed. Sign-in now links by verified email first (Google refuses
+  unverified addresses, and the password path already links by email — the same
+  trust, the missing half), adopting the Google sub onto the existing row without
+  touching its role; a fork the repair hasn't merged yet can't have its sub stolen,
+  and the first-claim path promotes a same-email member to admin instead of
+  forking. Existing deployments heal at boot: a one-shot migration merges every
+  forked pair — admin row survives, everything pointing at the fork is re-pointed
+  or dies in its cascade — before the api starts. Merged-away rows' sessions age
+  out with the 7-day Redis TTL; those people sign in once more and land on the
+  survivor. Deployments need a rebuilt image; the repair runs at boot, no operator
+  action.
+
+- **A harness of choice installs once, not per box**: every box mounts the shared tools layer
+  (`../devboxes/shared/tools` → `/work/tools`, its `bin` first on PATH). `talaria box install
+  <name> '<cmd>'` installs into it from any box — flock-held, `NPM_CONFIG_PREFIX` pointed at the
+  layer (the image's own global prefix is root-owned; plain `npm i -g` in a box was always an
+  EACCES) — and the result is usable from every box, survives `box rm`, and rides into boxes
+  created later. `--setup` hooks get the same tools env, so recreate-with-same-`--setup` is a
+  no-op, not a re-download.
+
+- **A mention in a plain channel lands on the channel, not the channel
+  index.** The mention notification's href was `/channels` — a page that
+  now redirects to the comms root — so the reader arrived nowhere specific
+  and went looking for the conversation themselves, which is the work the
+  notification was supposed to save. It now carries
+  `/comms/channel/{id}` like every other channel-shaped notification, and
+  the brief's accessibility check passes it for the members it is for.
+  Verified by posting a live @mention through the real route.
+
+- **A migration added while the dev server runs now applies on the next
+  request.** The migration runner caches its "done" promise on globalThis so
+  vite's SSR module reloads don't re-open the pool — but that also meant a
+  MIGRATIONS array that grew after boot was never re-run, and every query
+  touching the new column 500'd ("column does not exist") until someone
+  restarted the dev server, which is exactly how `preferred_effort` got stuck.
+  The runner now records the array length of the last successful run beside
+  the promise, and a GROWN array re-arms the run: already-applied statements
+  no-op against schema_migrations, appended ones apply, and edits to applied
+  statements still trip the checksum check. Production is unaffected — the
+  array never changes inside a running process there.
+
+- **A parked tab stops burning a core — the standing wave fields now paint on
+  a bucketed clock.** A dither wave field animates forever by design, and the
+  engine repainted at full requestAnimationFrame for it: the daily brief's
+  hero (always mounted on Home) alone measured **47.5 seconds of JavaScript
+  per minute — ~80% of a core — on an otherwise idle tab**, which is the
+  "browser slows to a crawl after Talaria is open for a while" report (memory
+  stayed flat; it read as a leak but was continuous canvas paint). Waves now
+  repaint at ~12/s on the same bucketed clock shimmer already used — a wave
+  moves at single-digit pixels per second, a sub-pixel step per bucket, so
+  the motion is visually identical — and tweens keep full rate, because they
+  are short and they are the transition itself. Verified with a CDP profiler
+  against the live instance: heap/DOM/listeners flat over navigation laps
+  (no memory leak), and the burn attributed ~70% of samples to the dither
+  engine's paint before the change.
+
+- **A personal assistant can work the boards it is told it owns**: a board is born
+  carrying its creator's personal assistant on the agent allowlist, and a new assistant is
+  seeded onto the boards its owner already has — in both cases inside the same breath as
+  the creation, so there is no window where `list_boards` shows the board under the
+  owner's role while every board-scoped route 403s it. Boards the owner does not own stay
+  the board owner's call, and a removal via `set_board_agents` is never re-added: the
+  propagation lives in the seeding, not in the gate.
+
+- **A personal assistant reads its owner's private knowledge.** `can_read_agent`
+  gained an owner arm: private docs, spaces, and artifacts the owner owns open
+  to their assistant across the file plane (doc GET, doc trees, space and
+  artifact listings, Drive export) — the brain already retrieved that
+  collection for them, so two planes had stopped agreeing about "it reads your
+  private work". Edit stays grant-only; sharing, routing, and officialness
+  stay human-only.
+
+### Changed
+
+- **A personal research run's report is readable by the agent that ran it.**
+  The toolkit's own instructions tell the agent to read the report back with
+  `get_document`, but a personal run saved its report private with
+  owner-only grants — the agent got 403 on the artifact it had just been
+  asked to produce. The run's agent now lands a viewer grant alongside the
+  members shared on the run, matching what the brain's index already assumes
+  ("them + their assistant"). The pre-port TS had the same gap, so nothing
+  changes for anyone else.
+
+- **A platform-default reasoning effort, yours.** Settings → Preferred model
+  now offers a "Default reasoning effort" pick directly beneath the model —
+  but only when the selected model publishes effort levels (a model with no
+  ladder shows no control; there is nothing to default). The saved level
+  becomes the starting pick everywhere effort is offered — Comms agent chats
+  (tiers included) and the assistant panel — wherever the model in play
+  supports it; models that don't simply run at their own default and show no
+  chip. An explicit pick in any conversation (including auto) stays
+  authoritative for that conversation, and the default re-seeds exactly when a
+  model switch retires the pick. Stored on the profile beside the preferred
+  model (`users.preferred_effort`); picking auto clears it. Because the
+  preference travels across models, the server stores the bare level string
+  and each surface applies it only against the levels that model's metadata
+  vouches for — a stale level is inert, never an error.
+
+- **A re-drafted email converges on the approval already waiting, instead of
+  queueing a twin.** A retried agent run re-drafts the same outbound email —
+  reworded body, recipients reformatted — and every draft used to become its
+  own p0 SEND EMAIL card: the outcrop brief held six cards for one reply to
+  Cooper Beverage, and approving two of them was a double-send to a client.
+  `queue_action` now matches a new gmail_send against still-pending rows by
+  principal + recipient addresses + subject with the formatting boiled off,
+  and returns the existing row with "an identical draft is already waiting"
+  — nothing new queued, nothing announced twice. A decided row never
+  matches: after a reject, a fresh draft is a fresh ask. Verified live: the
+  re-draft from the incident report (display names vs bare addresses, flipped
+  case, different body) collapses onto one pending row
+  (`api/tests/pending_dedupe_live.rs`, house-ignored), and on outcrop the
+  brief's approval dismissal lands and survives the sweep under #361's
+  binary — the "can't dismiss" half of the report was the pre-#361 binary
+  that ran until 15:14 UTC today.
+
+- **A research run with nothing citable retries itself instead of parking on a person**:
+  two more search rounds, then a failure with a sentence in `error`. It used to pause on
+  a "search again?" decision that nothing in the UI could answer — an announcement landed
+  as a notification while the run read "running" forever, which looked like a stall to
+  everyone including the agent that filed the bug.
+
+- **A run that needs a person asks on its own page**: a parked run's question renders in
+  place on the research surface — with the options the step itself offered — and answering
+  there resumes the run (`POST /api/research/:id/decide`, authority-checked by the run's
+  declared audience; a member reads the question, the owner answers it). Status stays
+  four-value on the wire; the question rides beside it as `awaiting`, null the moment it
+  is answered.
+
+- **A Rust-served budgeted call was flying blind**: the priced-view SQL that
+  `spendSince` reads bound its cache multipliers as `$2`/`$3`, colliding with
+  the caller's own second bind — the statement couldn't even prepare
+  (`integer * text`), and the budget check's error-swallowing `.ok()?` turned
+  that into "no spend data" on every Rust-served gateway call with a budget
+  attached. The multipliers are values in the SQL text now, exactly as TS
+  interpolates them; the statement prepares and returns real spend.
+
+- **A single-container deploy: production image + instance compose.** The
+  whole app now builds into one image (root `Dockerfile`, multi-stage:
+  bun/node build → pruned prod deps → an alpine runtime with just bun, the
+  docker CLI + compose plugin, and git) and one `docker/compose.yml` stands
+  up an instance — app plus postgres, redis, qdrant, TEI embeddings, minio
+  and searxng, nothing published except the app itself. Configuration is
+  env-only by design: the image ships no `ui/.env`, real environment always
+  wins, and the entrypoint (`docker/entrypoint.sh`) generates what's missing
+  — secrets into `/var/lib/talaria/env/generated.env`, first-boot admin
+  credentials into the logs — so `docker compose up -d --build` with zero
+  env lands on a working, signable instance, while an orchestrator that
+  supplies everything overrides all of it. State is a host bind mounted at
+  the same path on both sides, because the fleet renderer bakes absolute
+  host paths into agent bind mounts that the *host* daemon resolves — a
+  named volume would be invisible to every agent. The fleet goes
+  container→container: the app joins the shared `talaria` network (a new
+  `TALARIA_AGENT_DIAL=container` makes the manifest dial agents by compose
+  service name instead of host-loopback ports; `TALARIA_MCP_GW_URL` and
+  `TALARIA_GATEWAY_SELF_URL` point agents at the app's service name), which
+  implements the "right shape" AGENT-NETWORKING.md describes — no host
+  firewall rule, and agents can reach the app but never postgres. The
+  fleet preflight derives its probe target from the renderer's config
+  instead of a hardcoded `host.docker.internal`, so containerized instances
+  stop reporting false negatives. SearXNG's settings (secret included — it
+  ignores env) are rendered by a one-shot init service running the same
+  image, and the updater stands down (`TALARIA_UPDATER=off` baked; deploys
+  are rebuilds, Dokploy/Portainer/plain-compose all work — build-at-deploy
+  time from a checkout, registry publishing left as a commented `image:`
+  line). Runbook and env contract: docs/CONTAINER.md.
+
+- **A slow Muse draft survives the proxies between the browser and the api.**
+  The structured kinds (the New Agent modal's design call, cron drafts,
+  ticket patches) put nothing on the wire until the whole validated JSON
+  exists — and a genuinely slow generation (outcrop 2026-09-14: a 2m20s
+  agent design on a cold provider day) ran into Cloudflare's 100s idle
+  ceiling and came back to the user as a timeout, while the api finished the
+  turn for nobody. A draft that runs past 45s now opens its `application/json`
+  body and drips `\n` heartbeats — leading whitespace is legal JSON, the
+  client's parse cannot tell — ending with the same object the buffered path
+  sends. Fast runs (the overwhelming case) answer byte-identically to
+  before, statuses included; the answer's error split (400 configuration /
+  502 model / 500 thrown) is pinned by test. The design modal also counts
+  aloud now: past ten seconds the progress label shows elapsed seconds, so
+  "working, slowly" stops reading as "wedged".
+
+- **A stranded cutover waited hours for a reader that could never come.**
+  `reconcile_boot` is the only writer that finishes a cutover, but its
+  callers were the 6h check (whose interval lease a dead container's ghost
+  holds for the whole interval) and the admin read — which arrives through
+  the very edge a stranded cutover has not raised; green publishes no port
+  of its own. And when reconcile *did* run while the old container still
+  held the port, the edge-raise lost the bind race and the whole reconcile
+  errored instead of recognizing the hold. A new `update-reconcile` job —
+  one reconcile a minute, one settings-row read when idle — now retries
+  the handover however it stranded, and the hold with the port still held
+  answers as the hold it is: the edge rises at the cut, and the next tick
+  lands the run.
+
+- **A ticket an agent is actively working wears the work: a dithered
+  live-work strip with a Watch-the-work modal.** While a work session is
+  live on a ticket, the detail view carries the same dither field the
+  generating blocks wear — "work is happening here" — with the agent's name,
+  the turn count, and the live phase sentence; a CTA opens a modal that
+  streams the session's own run events (`/api/runs/{id}/events`) for
+  instant phase transitions, shows the tail of the agent's last reply (the
+  session's checkpointed answer, not a re-read of the model), and refreshes
+  the ticket's activity and comments as work lands. Backed by a new
+  `GET /api/tasks/{id}/work-session` (board-gated like the ticket read)
+  returning the live session row or null. A window into the work, not
+  control of it — nothing in the modal touches the session.
+
+- **A wedged request no longer hangs a view until the page is reloaded.**
+  The agents roster reported it — often on first load, the skeleton stayed
+  for ever and only a refresh helped — but the hole was app-wide: browsers
+  give `fetch` no timeout, so a request whose connection silently died (a
+  dropped keep-alive after a server roll is the observed shape) stayed in
+  flight for ever; the query above it never errored, so it never retried,
+  and the surface waited on a skeleton nothing would ever claim. Two
+  deadlines close it, both READS-ONLY by the same rule. Every read through
+  the app's one HTTP door (`fetch-json`) now carries a 30s abort — a wedged
+  read becomes an error TanStack Query retries, so the roster heals itself
+  instead of waiting for a person to notice — and the SPA host's proxy to
+  the Rust api carries a 30s deadline to FIRST RESPONSE on GET/HEAD: the
+  stale-keepalive race a container roll leaves behind now answers a 502 the
+  retry can act on. Writes are deliberately exempt everywhere — fleet verbs
+  and reconcile block on docker for minutes, chat completions and assistant
+  tool-call commands stream via postStream, uploads POST their bodies — and
+  the proxy's deadline disarms the moment headers arrive, so the SSE relay
+  and every other streaming body run unbounded. Verified end-to-end on the
+  dev stack: with the api frozen mid-request (SIGSTOP), a proxied read
+  answers 502 at the deadline and 200 in 15ms the moment the api resumes;
+  the fake-timer tests pin all three halves (never-answering read → 502; a
+  POST that never answers stays pending past ten minutes of fake time; a
+  streaming body outlives the deadline).
+
+- **A work session waits out a working agent instead of hanging up on it, and
+  a dead session no longer strands the ticket.** A session turn is an agent
+  driving its tool loop — clone, build, test, iterate — and honest dev work
+  runs for HOURS; the step's wall-clock ceiling (11 minutes, sized for a
+  different world) killed the session mid-turn while the agent was
+  demonstrably working (last model call 67 seconds before the kill), and the
+  ticket sat in_progress silent for seven hours because dispatch only fires
+  when a ticket ENTERS a pickup column. Three changes: the runs engine gains
+  an IDLE-BASED step deadline (each ping on the step's activity tap re-arms
+  the clock; only silence abandons the step — the law the chat transport
+  already lived by, carried into the engine), the work session adopts it at
+  ten minutes of silence while the persona stream pings per chunk; and a
+  `work-redispatch` sweep re-offers every pickup-column ticket with agent
+  assignees to dispatch every minute, whose generation walk stands down on
+  live sessions and advances on dead ones — a dead session now costs a
+  minute of silence, not an evening. The dispatch prompt also tells the agent
+  to sync its checkout to latest `origin/main` BEFORE working (`git fetch`
+  alone does not move the working tree — the incident's agent was about to
+  base work on an eleven-day-old tree). Verified: engine tests pin both idle
+  halves (a pinging step outlives the wall clock; a silent one is abandoned
+  at the idle ceiling with a sentence that names it), and the session def
+  carries `idle_step_ms` by assertion.
+
+- **ACL audit fixes — six leaks closed.** (1) `/api/uploads/:id` streamed
+  any file by id; now gated by `canAccessUpload` — owner, admin, or
+  reachable through a conversation/channel/board/artifact the viewer can
+  actually read (agents resolve through their board/channel grants or
+  their owner's chats). (2) `/api/history` served full snapshot bodies for
+  any key; now enforces per-kind ACLs (artifact + KB perms incl. space
+  inheritance and editor grants, memory/skill by agent ownership,
+  templates admin-only). (3) `/api/memory/:id` GET let any user read any
+  agent's memory; now admin-or-owner like PUT. (4) KB search matched raw
+  row visibility, ignoring space inheritance and grants — a doc in a
+  private space leaked into results; now filters through the same
+  effective-permission check the read routes use. (5) Artifact link
+  DELETE had no read gate (POST did). (6) Research list/get had no owner
+  predicate at all — everyone saw everyone's runs.
+
+- **Adoption — the one-time handover that turns the engine on.** An admin
+  (or the migration script, through the machine key) presses Take over
+  updates and the install stops being orchestrator-deployed: adoption pulls
+  the image it should be (the registry's newest, or a re-pin of the running
+  image's own digest when the registry is silent), renders the
+  updater-owned project from the live container's own inspect document,
+  brings slot A up behind the same health gate a roll uses, moves the fleet
+  alias, and records the handover crash-safe before any port changes hands.
+  Then the port decision: a fresh port (the infra path) puts green and the
+  edge up on a port nobody holds while blue keeps serving — the second
+  adopt call, which can only arrive THROUGH the edge, is the proof the
+  proxy moved, and it stops blue; zero interruption at the origin. The
+  inherit path (the panel's button) takes a one-time cut of a few seconds,
+  named in the confirm dialog: the dying container arms a host-side helper
+  (the app image itself, docker-cli baked in) that raises the edge the
+  second the port frees, with green's reconcile as the crash fallback.
+  adopt on an adopted install is the resume — every crash heals on the next
+  call. The retired container is stopped by the finish, removed by the
+  reconcile, and nothing resurrects it. Still true everywhere else: an
+  install that never adopts keeps deploying exactly as it always has.
+
+- **Agent helpdesk tickets file to a board everyone can actually see.**
+  `report_problem` used to land on a personal helpdesk board only the
+  reporting user could open — a helpdesk nobody staffs. Problems now file to
+  an org-wide Helpdesk board under the Talaria team: org-wide boards
+  materialize an editor membership for every user (at ensure-time and on
+  every sign-in), so the whole org sees the board the moment something files
+  to it. Verified live: a synthetic agent problem posted with a real
+  per-agent key found the board org-wide with all four users holding editor
+  seats, and the ticket renders on /boards under Talaria → Helpdesk.
+
+- **Agent-made things belong to the human behind the run — the responsible
+  user, not the agent.** A knowledge doc or space, a document, file, or saved
+  image, a research report, a workbench plan: whatever an agent creates now
+  carries an owner, resolved by an attribution ladder — a personal
+  assistant's owner; the human an org agent is answering mid-chat (the same
+  turn key research reports back to); otherwise the admin who hired the
+  agent; and an untraceable agent stays ownerless, as before. The owner gets
+  the ordinary human's controls — share, make private, set policy — replacing
+  the old answer where org-agent output was locked to an allow-list nobody
+  could sit inside. Default visibility is deliberately unchanged: an org
+  agent's output stays workspace-readable (ownership adds control, not
+  secrecy), a personal assistant's stays private to its owner, and an org
+  agent's research stays org-visible and ambient-indexed however owned —
+  org-ness is derived from the run's own row (`requested_by` = the model,
+  plus the agent being ownerless in `agent_defs`), never a serialized flag,
+  so runs in flight across the deploy resolve correctly. The artifact
+  listing also caught up with the single-artifact GET: a personal assistant
+  now sees its owner's private files in the Files browser it could already
+  open them from. Going forward only — existing ownerless items stay as they
+  are.
+
+- **Agent-problem notices reach the brief at all.** The fact-flavored
+  agent-problem notifications (the ones telling workspace admins a problem
+  exists without quoting it) carried no href, and the brief lists only
+  notifications with somewhere to go — so they showed in the bell and never
+  on the page that is supposed to be the day. They now point at
+  `/observability/alerts`: never at the filed helpdesk ticket, because the
+  fact audience is precisely the people not on that board, and board
+  visibility is membership rather than role — a ticket href would be
+  dropped for every reader the row is for.
+
+- **Agent threads and plans finally track what you've read.** Conversations
+  grow a per-person read cursor — one table for agent chats and plans alike —
+  so a reply that lands while you're away grows a count pill on the thread's
+  row (agent chats in Comms, plans in the Plan rail), and opening it clears
+  the pill. Your own turns never count, a teammate's turn in a shared plan
+  does, and the cursor only ever moves forward. Right-click a thread →
+  **Mark read** clears it without opening.
+
+- **Agents can build out a knowledge space, not just append to it.**
+  Reported live from a fleet deploy: an agent asked to put a space's intro
+  and table of contents on the space page itself had no tool that could
+  reach it — `create_kb_space` writes a landing body only at creation, and
+  nothing after can edit it — so the content landed in a lookalike
+  top-level doc, and with no move or delete the misfile couldn't be
+  corrected, only duplicated. Three tools close the gap. `edit_kb_space`
+  (name, description, icon, and the landing markdown; admission mirrors
+  doc edits — authorship, an editor grant, or an elevated assistant on
+  non-private material — and sharing fields stay human-only).
+  `move_kb_doc` (nest under a same-space parent, lift to the space's top
+  level, or reorder among siblings), under the same edit admission the
+  doc's PUT already grants. And `delete_kb_doc`, deliberately narrower
+  than the edit beside it: an edit is versioned and recoverable, a delete
+  is not, so an agent deletes only docs it created and re-files anything
+  else (`move_kb_doc` re-files without destroying). Doc deletes now land
+  in the audit log whoever pulled the trigger. All three are mirrored
+  through the fitness lockstep — catalog, sandbox backends, exercise
+  tests — so the toolkit the next agent is trained against knows them.
+
+- **Agents can clean up an inbox, without ever being able to empty one.** Three
+  new fleet tools over the connected Google account: `list_labels` (Gmail's
+  folders ARE labels — INBOX and UNREAD are system ones), `create_label`
+  (find-or-create, so a retry is safe), and `organize_emails` (apply/remove
+  label names on up to 100 messages by id: removing INBOX archives — mail stays
+  in All Mail — removing UNREAD marks read). The HITL line is deliberate and
+  follows the platform's own rule: sends and invites leave the building under
+  the owner's identity and wait for approval, while filing, archiving and
+  mark-read stay inside the mailbox and are reversible — so they apply
+  immediately, because "clean up my inbox" behind fifty approval cards is not
+  cleanup. TRASH and SPAM are refused everywhere (service layer, sandbox,
+  agent-facing routes), so nothing in the toolkit can delete mail. Message
+  listings now carry label names alongside each message. Organizing needs the
+  `gmail.modify` scope (swapped in for `gmail.readonly`); a connection granted
+  before this needs one reconnect, and the routes say so when they hit it.
+  Fixtures grade the two real risks: filing into a label that was named but
+  never created, and reorganizing a mailbox without reading a single message in
+  it — including archiving an unread mail its owner still needs.
+
+- **Agents carry their own default effort, set where the model is picked.**
+  The agent editor's model rows — main model and every tier alias — now show
+  the effort chip beside the picker when the chosen model publishes levels,
+  and the saved level becomes that agent's conversation default: Comms DMs
+  with the agent (or the tier) and the assistant panel start there, and the
+  chat routes apply it server-side when a sender made no pick, re-validated
+  against the model's live levels so a stale config is inert. Precedence is
+  specific-over-general: your explicit conversation pick > the agent's
+  configured default > your platform default (Settings) > the model's own.
+  `/api/models/efforts` answers both halves (`efforts` + `default`), and the
+  persona resolver reads the configured effort from the same cached agent
+  config walk that resolves capability keys — one read, one TTL, re-pointing
+  an agent's model or effort follows within a minute.
+
+- **Agents developing Talaria get their own floor.** `AGENTS.md` is the
+  canonical instruction file for anyone — human or agent, on any harness —
+  coding in this repo: the distilled rules, the command map, environment
+  facts (ports, worktree isolation), parallel-session etiquette, the skills
+  index, and the do-not-touch list, kept under ~200 lines because it loads
+  into agent context at launch; `CLAUDE.md` is a stub importing it, since
+  Claude Code reads `CLAUDE.md` while opencode, Pi, Oh My Pi, and Codex read
+  `AGENTS.md` directly. Four skills (`.claude/skills/`: dev-loop, repo-traps,
+  ship-a-change, cut-release) carry the procedures — frontmatter `name` +
+  `description` so Claude Code and opencode both discover them natively, with
+  the AGENTS.md index as the path for everything else — including the
+  operational traps that cost real time, each phrased symptom → check → fix
+  and verified against the code they describe (the session-mint field order
+  against `api/src/session.rs`, the scheduler kill switch against
+  `api/src/scheduler.rs`). The stop gate is a harness-agnostic library:
+  `scripts/hooks/stop-check.mjs` runs `bun run check` (seconds, zero
+  dependencies) under one contract — exit 0 silent pass, exit 2 block with
+  the reason on stderr, anything else a non-blocking error — wired into
+  Claude Code by a tracked `.claude/settings.json` holding only the Stop
+  hook; permissions stay personal in the untracked `settings.local.json`,
+  which the tracked `.gitignore` now covers along with `.claude/worktrees/`.
+  How the layers fit and how each harness consumes them is documented at
+  `docs/AGENT-TOOLING.md`. Also corrects the stale "frozen at cutover" notes
+  about `docs/api/` in CONTRIBUTING.md and DEVELOPERS.md — the #293 extractor
+  landed; the reference is generated. Verified: `bun run check` green from a
+  checkout with no `node_modules` (every new link resolves, no generated
+  drift), the hook standalone passes silent and exits 2 on a planted dead doc
+  link, `git check-ignore` proves both new ignores, and Claude Code loads the
+  stub and lists the four skills (`/context`, `/skills`).
+
+- **An agent reply that lands while you're away rings once.** Replies in
+  agent chats, plans, and research discussions now file a single
+  "`Dex` replied" notification per person whose read cursor doesn't cover
+  them — watching the thread type counts as reading it, so the notification
+  is for whoever genuinely wasn't there. One row per thread: further replies
+  fold into it until it's opened, exactly like a DM. The row points where
+  the reply lives (the thread, the plan, or — for a research discussion —
+  the run, so opening the run clears the bell and the badge together), and
+  rides the dm class: toasts, the bell, email, and the brief all pick it up
+  through the one writer every other notification uses.
+
+- **An agent's code reaches main only through a human's merge.** The work
+  session's dispatch brief now carries the repo-hygiene law as a numbered
+  step — push to a branch named for the ticket, open a PR, put the link in
+  the outcome; the toolkit skill states the same rule for every other
+  surface — and it is enforced where behavior cannot be: `main` on the
+  granted repos now requires a pull request (branch protection, zero
+  approvals needed, administrators exempt), so an installation-token push to
+  main is declined by GitHub while human direct pushes are unchanged.
+  Verified live from inside an agent container with the injected credential:
+  a branch push succeeds (`hygiene-probe` created and cleaned up), a push to
+  main is refused (`protected branch hook declined`). Two private repos
+  (talaria-website, skal-website) cannot carry protection on the org's free
+  plan — the prompt and skill rules stand there, and upgrading the plan or a
+  push-webhook revert are the options if they need the hard wall too.
+
+- **An agent's `git push` authenticates again — the credential helper read a
+  key the api never accepted and a URL nothing ever set.** The fleet-rendered
+  git credential helper (`git-credential-talaria`) sent the chassis's own
+  server key where `/api/secrets/git-credential` authenticates the agent's
+  `tak_` credential — every helper call 401'd — and built its URL from
+  `TALARIA_API_URL`, a variable no renderer ever wrote, so even a valid key
+  would have posted to a relative address. The helper now sends
+  `TALARIA_AGENT_KEY`, and the render bakes `TALARIA_API_URL` into every
+  agent service env, derived from the app's own `TALARIA_GATEWAY_SELF_URL`
+  (dev-defaulted to the docker host-gateway) — one env, so the agent's shell
+  and the workbench harnesses running in the same container both get it. A
+  failed fetch now says so on stderr instead of exiting silently: a
+  credential that does not exist and a helper that cannot ask had the same
+  silence. Verified: the helper's contract is pinned by render tests (the
+  agent key, never the chassis key; the env-derived URL), and live on outcrop
+  after the roll + a fleet reconcile the helper answered a real GitHub
+  installation token for a granted repo from inside Doug's container.
+
+- **An embedded chat fills its container; the window floats over it.**
+  ChatView's root was transparent — invisible on the full-page stage,
+  where the page behind it is the same ground, but everywhere the chat is
+  embedded (a ticket's discussion tab, the plan split, a research run) it
+  sat on panel chrome, and the composer's opaque ground band floated on
+  that chrome with no ground of its own: a dark patch with seams on three
+  sides, disjointed from the surface around it. The root now paints the
+  ground, so the container becomes the chat's stage, edge to edge, and
+  the transcript column and the composer float over it — the geometry the
+  full-page stage always had.
+
+- **API-CONVENTIONS tells the current truth.** The page still described a TS
+  route tier the cutover deleted: the reference "frozen until #293" (the
+  extractor landed — it is generated, and drift fails check), a TS twin of the
+  agent-ticket predicate in `server/tasks.ts` (the file is gone; the predicate
+  lives once, in `api/src/tasks.rs` — `agent_safe_patch` through `update_task`,
+  the exported `agent_ticket_refusal` for every door that never reaches the
+  patch), an invariants table naming rules that left with those routes
+  (rewritten against the live script: swallowed query errors, flattened query
+  results, dropped `listQuery` notices, hand-rolled popover engines, and the
+  off-board / board-policy / fetch-door censuses), `.tsx` board filenames
+  (`Kanban.svelte` and `BoardList.svelte` refuse a failed statuses read,
+  `Gantt.svelte` marks it inline; the dead ci.yml note is gone), and an
+  audit-task pointer that resolves nowhere. Every claim in the rewrite was
+  re-verified against the code it names.
+
+- **API keys speak Rust**: `/api/keys` and `/api/keys/{id}` — the list with
+  its `canMint` gate, minting (the `tlk_` secret answered exactly once),
+  revocation, and the self-imposed policy plane (#265: token/USD caps and a
+  per-minute ceiling, where 0 means unlimited in the row but echoes back as
+  the 0 its owner sent). The policy PUT is the port's first nullish
+  `z.number()` body: the whole 400 table (safe-int guard bounds, a max
+  breach that says "number" even on an int field, fractional-vs-int, type
+  messages) was probed against zod 4.3.6 and pinned in Rust tests. Numbers
+  now ride every Rust wire through one `js_num` helper (hoisted from the
+  ledger) so an integral cap prints `1000`, never `1000.0`. Byte-diffed
+  against TS for anon, member (no grant → 403), and admin callers, with the
+  caps written by each runtime read back through both. One recorded
+  divergence generalized into the migration doc: a non-uuid `{id}` (like
+  TS's other uncaught route throws) answers the house 500 envelope, not the
+  platform's plain-text sentence.
+
+- **api/src is organized one dir per subsystem.** The flat layout — 217 route
+  modules and 149 top-level engines in two undifferentiated piles — is gone.
+  `api/src/routes/` now carries 23 group dirs mirroring the `docs/api` groups
+  (account, boards, comms, fleet, knowledge, …), the map inverted from the
+  reference's own Source links; the router table's handler paths are
+  group-qualified, so the table names the system. The engine families fold
+  into dirs with their prefixes dropped (`crate::fleet_render` →
+  `crate::fleet::render` — the shape `fitness/` and `runs/` were born with):
+  `fleet/`, `google/` (gmail included), `mcp/`, `model/`, `inbox_focus/`,
+  `kb/`, `workbench/`. Pure moves and path rewrites — no behavior change;
+  module names stay (docs/api links re-pointed, provenance headers intact),
+  `module_inception` is allowed at the crate level for the flagship-module
+  shape (`routes/agents/agents.rs`), and the top level keeps its true singles
+  (101 files, down from 149).
+
+- **Approvals are decided on the line, not by asking around them.** A
+  pending outbound action — an email or an event the assistant drafted —
+  appeared as a p0 "Needs you" line that went nowhere: its href was a
+  placeholder `/`, and no page in the app listed pending actions at all, so
+  the only way to act was a conversation with the assistant. The line now
+  carries its own decision block, quoting the exact outbound payload (who
+  receives it, what it says, who drafted it) above Approve/Reject buttons —
+  the same contract the drafted-reply block keeps, which is why neither
+  carries a modal. The buttons ride the existing
+  `/api/integrations/google/pending/{id}` decide route; the sweep reads the
+  pending row's decided status and closes the line as APPROVED or REJECTED
+  rather than a generic DONE. Verified on the running stack: the line
+  renders with its payload, a reject closes it as REJECTED on the next
+  read.
+
+- **Apps get their own place in the sidebar.** The rail now separates enabled
+  apps from Work: Work stays Talaria's own surfaces (Inbox, Comms, Boards, and
+  the rest), and each app's work surface sits under a new Apps heading of its
+  own between Work and Manage — you can tell platform from app at a glance.
+  An app's manage surface still slots under Manage, because Manage is the
+  control plane no matter who published the view. The Apps heading only
+  appears when an app is enabled; with none installed the rail reads exactly
+  as it did. Verified live both ways: no apps enabled (no phantom heading)
+  and the contacts reference app on (Apps holds it, its manage row lands
+  under Manage, and `/x/contacts` still routes).
+
+- **Artifacts, folders, links, uploads, and the Drive export speak Rust.**
+  Eleven routes over three proxy prefixes (`/api/artifacts` does NOT
+  prefix-match `/api/artifact-folders` — character 13, `s` vs `-`), with the
+  write half of the engine: version snapshots, the official→KB mirror
+  through the real qdrant/embed deps, the first-publish slug mint, the
+  streamed multipart capped BEFORE it buffers (a declared over-cap
+  content-length answers 413 unread), and the Drive export proven live
+  against production Google from both runtimes. The diff's finds:
+  `artifact_links.target_id` is TEXT (three `::uuid` casts refused to match),
+  and the PUT's title tri-state — absent means don't-touch, never set-null.
+
+- **Assistant briefings, per view.** Your personal assistant opens each
+  console tab with a short read on what needs you — at most five bullets,
+  each SCOPE with its own prompt (delivery-lead framing on Boards,
+  "who's waiting on a reply" on Comms, "what moved" on Plans,
+  "ready-and-unread reports first" on Research). Briefings cover ONLY
+  unreviewed things (unread, pending, in-flight, failed) and regenerate
+  only when that set actually changes — fingerprinted on ids and counts,
+  never on a timer. Deliberately EPHEMERAL: the summary lives in one
+  replaceable row, and chatting back (right in the panel) streams through
+  the assistant with the briefing as context, persisting nothing — no
+  conversation rows, nothing indexed, nothing for comms-decay to distill.
+
+- **Attachments reach the model everywhere.** Two asymmetries closed: channel
+  replies now hand image attachments to agents as data-URL image blocks
+  (1:1 chat already did — group channels were text-only), and TEXTUAL file
+  uploads (markdown, csv, json, code, ...) now contribute their contents to
+  the prompt in both paths — send, queued-turn history rebuilds, and channel
+  transcripts — clipped like ref chips. File bytes re-read only for the
+  recent transcript tail; images capped per reply. Verified live with a real
+  agent: quotes a token from an attached file in a DM and in a channel, and
+  perceives an attached image identically in both paths.
+
+- **Board column edits write again, and the DEK rotation sweep can run.**
+  The fourth eruption of the port's typed-bind crash class, reported live:
+  editing anything about a board column — label, color, category, and the
+  agent-start flag that says where agents pick work up — 500'd on every
+  attempt, first edit to the last. `update_status` resolves the row by key
+  and reads it back `id::text`, then built the dynamic
+  `update board_statuses set … where id = $N` and bound that string as TEXT
+  against the uuid column: prepare resolves `uuid = text`, the operator does
+  not exist, and the route answers 500 before anything moves. The cast rides
+  the final bind now (`where id = $N::uuid`), matching the delete path that
+  had it right all along. The same sweep found the identical shape in
+  `secret_rotation`: every `CIPHER_TARGETS` pk is non-text (three uuid, one
+  integer), so a DEK rotation would have died on its first row — the
+  re-encrypt update now compares `"pk"::text = $N`, the same text the sweep
+  reads them as. Proof in `api/tests/typed_binds.rs`'s house form: a
+  live-DB test drives the real `update_status` (materialize, then the
+  dynamic statement) twice with different fields and reads the rows back
+  changed, plus a pinned unit test on the extracted `pk_where` builder; a
+  sweep of every other `id/_id/_at = $N` site in `api/src` against
+  `information_schema` found the rest text-typed or already cast.
+
+- **Boards crash under WebKit with "Can't find variable: requestIdleCallback".**
+  `BoardLayout.svelte` feature-detected the global with
+  `requestIdleCallback ?? fallback` — but reading an absent global by name
+  throws ReferenceError before `??` ever runs, so WebKit (Safari, and
+  WebKitGTK — the desktop shell's engine) died opening any board. The guard
+  is now `typeof requestIdleCallback !== 'function'`, with the fallback and
+  its cleanup correctly paired. Found in the desktop shell on 2026-09-15;
+  it was equally broken for browser Safari.
+
+- **`box start` now converges with `up -d`** (was `compose start`, which merely re-launches the
+  existing containers): the documented stop → edit `compose.override.yml` → start flow for
+  auth/env changes silently never applied. Regression-tested against the verb.
+
+### Documentation
+
+- **Bun is the repo's runner, dev through production.** A root `package.json`
+  is now the hub for every way to drive the repo — `bun run dev` (full
+  stack), `build`, `start` (production server on the Bun runtime), `test`,
+  `typecheck`, `check` (invariants), `verify` (all of it) — and both packages
+  carry `bun.lock` (migrated from their npm lockfiles; versions unchanged).
+  setup/dev install and build through bun, the MCP server runs its TypeScript
+  entry directly in dev (`bun src/index.ts`; tsx dropped) and production
+  boots with `bun server-entry.js`. Node stays a hard floor — vite, vitest,
+  svelte-check, and tsc run under it — so CI installs both, pinned to bun
+  1.4.0. Verified live: `bun run verify` green from the root (2559 tests, 0
+  type errors, invariants pass), a full MCP stdio handshake under bun, and a
+  production boot serving real API traffic against live Postgres/Redis with a
+  clean SIGTERM shutdown (the scheduler's 9 jobs drained).
+
+- **Chats stopped 500ing — every conversation read, on every instance, since
+  the rooms cutover.** The cutover's migration said "every reader of
+  `tasks.conversation_id` was re-pointed before this drop," and six readers
+  were not: the conversation access predicates, the prior-turn transcript,
+  the notification audiences, and the task-delete unindex all still joined
+  the dropped column. Postgres validates a statement's whole text when it
+  plans it, so the mere presence of the dead reference broke EVERY
+  conversation detail and history read — ticket branch or not, chat or plan
+  or research — which is why a threads sidebar looked fine while opening
+  any thread answered 500. The dead legs are gone (no `kind='ticket'`
+  conversation can exist since the cutover deleted them all; a task's
+  thread is a channel room, gated by board membership on the channels
+  side), and the delete-task unindex is re-pointed to the room's
+  `channel_messages` — since the cutover it errored silently, leaving a
+  deleted ticket's comments answering searches. Verified against a
+  post-cutover database: the detail route answered 500 before the fix and
+  200 after, same row, same session.
+
+- **`check-docs` no longer reads code spans as links.** A generated schema
+  cell like `` `uuid[](50)` `` is markdown's `[text](target)` shape wearing
+  backticks; the link checker now masks inline code spans before matching,
+  so generated tables don't trip the dead-link rule.
+
+### Removed
+
+- **CI checks the surface that moved, not the whole tree.** A UI change no
+  longer re-runs the Rust api's `fmt`/`clippy`/`test`, a desktop change does not
+  re-run the UI suite, and a docs-only push runs the invariants job and nothing
+  else — decided per job, inside the run, by a new `changes` job in
+  `.github/workflows/ci.yml` (`.github/workflows/migrations.yml` gets the
+  equivalent trigger filters, its only inputs being the migration array in
+  `ui/src/server/db/pg.ts` and the snapshot beside it). The invariants job stays
+  unconditional on purpose: it is seconds long, needs no install, and a
+  "docs-only" change is exactly what breaks a doc link. Trigger-level `paths:`
+  are still out — a workflow-level filter is as coarse as the file, and a
+  filtered-out required check would report "pending" forever — and every unknown
+  resolves to the safe side: a first push, an unresolvable diff range, or a
+  `release.yml` call runs EVERY surface, because a publish is never a partial
+  gate. Verified: the decision logic was extracted verbatim and run against a
+  fixture repository for every path (ui-only, api-only, desktop-only, docs-only,
+  workflow-file, zero-before push, called-from-release, unresolvable range), each
+  producing the intended set; and `main`'s protection was read back to confirm it
+  requires a review and **no status checks**, so a skipped job cannot wedge a
+  merge the way a filtered-out required check would. The skip path itself becomes
+  observable on the first push to main that touches no code.
+
+- **CI publishes the app image from main.** Every push to main that touches
+  running bits now builds the full app image and publishes it as
+  `ghcr.io/outcrop-labs/talaria:sha-<sha12>` (immutable, first) and `:main`
+  (pointer, second) — trunk images, beside the release channels a human
+  cuts. The api stage is digest-pinned before each build: an api-touching
+  push waits for that same commit's api package (built in parallel by
+  api-package's own run), anything else pins the digest
+  `talaria-api:main` names — a trunk image never mixes a new UI with an
+  unbuilt api. No behavior change for any running instance: the feed is the
+  groundwork the in-app rolling updater consumes; `TALARIA_INSTALL=image`
+  now ships in the image's env as the signal that updater will key on
+  (absent in checkout installs, where it stays dormant).
+
+- **Comments and docs live in the present.** The port-era narration is gone
+  from the tree: ~470 Rust/TS files' comments no longer cite their TS
+  originals, batch/wave provenance, cross-references to deleted files, or a
+  parity battery that finished — each now states its own contract directly
+  (wire shapes, key order, invariants, ordering and parse-order facts,
+  security reasoning, test pins all kept). Stale port TODOs whose conditions
+  long since landed were deleted rather than rewritten (registry's
+  still-to-cross ids, define's DEFERRED block, artifacts' batch-5 notes,
+  render's ensure_mcp_service). What remains TS-named is deliberately so:
+  the four permanent residents' rule-10 facts, the live TS twin contracts
+  (`ui/src/server/tasks.ts`'s agent-authority predicate, `task-const.ts`,
+  the secretbox cross-language cipher), and `mcp/src/index.ts` sync pins.
+  Every changed line verified comment-only by a diff proof over the whole
+  tree. The docset follows: HARNESSES.md now points at the Rust harness
+  layer with the TS twin framed as the app-author plane; API-CONVENTIONS.md
+  makes the Rust crate the runtime of record with the TS dialect governing
+  the residents and app servers, and names both homes of the HITL
+  predicate; ARCHITECTURE, AGENT-NETWORKING and DEVELOPERS read current;
+  CONTAINER.md's fleet-manifest link points at `api/src/fleet/render.rs`
+  (was the dead TS renderer); and the port's own narrative moved to
+  `docs/history/rust-port.md` when RUST-MIGRATION.md split into living
+  rules + frozen record. Old references live exactly where they belong
+  now: this changelog and `docs/history/`.
+
+- **Comms goes Slack-lite: threads, reactions, paste-a-file, edit &
+  delete.** Channel messages (channels, Relays, DMs) now spawn THREADS —
+  a side panel with the root + replies and its own composer; replies stay
+  out of the main flow, roots carry a "N replies · when" rollup, and an
+  agent @mentioned inside a thread answers IN the thread with the
+  thread's own conversation as its context (replying to a reply re-roots
+  Slack-style — threads never nest). REACTIONS: a quick-react palette on
+  hover, chips with counts and who-reacted tooltips, click to toggle —
+  and agents can react under their own identity (one of our twists).
+  FILES: paste an image or drop files straight into any composer
+  (channels and agent DMs) — they upload immediately and ride as
+  attachment chips, images rendering inline. Plus own-message EDIT
+  (inline, enter-to-save, "(edited)" marker) and DELETE (author or
+  channel owner; a root takes its thread with it, the confirm says so).
+  Relay conclusions summarize thread content too. The composer itself is
+  now the Slack-shaped RICH EDITOR: markdown syntax as you type (**bold**,
+  `code`, ``` blocks, > quotes, lists) with a formatting toolbar in a
+  controls row under the full-width input, Enter sends (inside a code
+  block it newlines), Shift+Enter soft-breaks, @mention and :emoji:
+  autocomplete inline, and a searchable emoji picker next to attach.
+  Reaction palette dismisses on Esc/outside-click/mouse-leave.
+
+- **Compose's env channels are git-ignored**: `compose.env`, `compose.override.yml` (now the
+  devbox carrier for provider tokens and `--env` secrets) and `docker-compose.override.yml`, as
+  bare patterns so a devbox tree relocated into a checkout (`TALARIA_DEVBOX_HOME`) is covered
+  too. A regression test pins the canonical secret-carrying paths to `git check-ignore`.
+
+- **Confab guard: annotate and strict modes now act.** They were configurable
+  but every path discarded the result — observe was effectively the only mode.
+  Annotate pins findings to the flagged reply (`messages.guard` /
+  `channel_messages.guard`) and renders a warning caveat under it in chat and
+  channels (channels update live via republish); the public LLM route appends
+  the caveat to non-streaming responses and injects one final SSE delta before
+  `[DONE]` on streams. Strict additionally redacts detected secrets (keys,
+  tokens, whole private-key blocks) from whatever Talaria persists or hasn't
+  yet relayed, so saved copies and future transcripts stay clean. Agent-loop
+  keys (`gateway_unmetered_keys`) never receive caveats — a finding must never
+  re-enter a model's context; internal utility completions (judge, muse,
+  research) likewise stay observe-only so parsed outputs can't be corrupted.
+  Admin copy now describes what each mode actually does.
+
+- **Confab guard: PII check + coaching.** A fifth check, `pii_leak`, catches
+  high-precision personal data in model output — SSNs, Luhn-validated payment
+  card numbers, IBANs (emails/phones stay unpoliced: they're everyday
+  workspace content) — and strict mode now redacts PII alongside secrets in
+  whatever Talaria persists or hasn't yet relayed. And the guard finally
+  closes its loop: an opt-in **"Coach agents from findings"** toggle turns
+  repeated findings (≥2 of a check in 7 days) into templated behavioral notes
+  in the agent's rendered soul — per-check counts + fixed advice only, so
+  flagged CONTENT still never re-enters any model's context; delivery is at
+  render time, a performance review between sessions rather than a mid-turn
+  correction. Verified live: a raw model echoing a test SSN through the
+  public route came back `[redacted SSN]` with a caveat and an out-of-band
+  finding, and rendered souls gain/lose the coaching block as the toggle
+  flips, 8/8 checks.
+
+- **Context menus, platform-wide.** Right-click is real now: one primitive
+  (`ui/context-menu.tsx` — cursor-positioned, keyboard-navigable, portaled,
+  viewport-clamped) wired onto every row, card, and tile: kanban cards and
+  board list rows (open / copy link / copy ticket ref / archive), nav board
+  rows, channel/relay/DM rows (open / copy link / mark-read that reads the
+  REAL cursor), agent thread rows, message bubbles (copy text), knowledge
+  spaces and docs, artifacts and folders (incl. copy PUBLIC link when a
+  slug exists), the agents roster (the full lifecycle cluster, confirm
+  texts shared with the buttons so they can't drift), research runs, and
+  every home console row. Every item calls the exact function its button
+  counterpart calls — a context menu is a shortcut, never the only home of
+  an action (the rule lives in UI-CONVENTIONS). Native browser menus are
+  suppressed app-wide EXCEPT on editable fields, where paste and
+  spellcheck are real workflows.
+
+### Changed
+
+- **Creating an agent is a hire that runs in the background, not a request the modal has
+  to babysit**: "Create agent" now enqueues a durable `agent-hire` run (create the def,
+  write starter skills, render the fleet, boot the container, wait out the healthcheck)
+  and closes immediately. The roster shows the hire working through its phases — the
+  run's own sentences (`rendering the fleet config`, `starting the container`), no fake
+  percentage — and the finished agent's tile materializes over the strip without a
+  refresh; a failure shows its sentence for ten minutes. A boot that runs to minutes on
+  a cold pull used to live inside one POST: a modal that couldn't close, proxies timing
+  out, and agents visible only after a reload nobody knew they needed. The one error the
+  open modal still owns is a taken handle (409, fixable in place). Role templates moved
+  onto the first step of the flow — "or start from a role" fills the review form and
+  jumps to it, so a fresh install's entry path no longer hides behind a form that only
+  exists after you describe an agent first.
+
+- **Daily briefs file under Agents → [agent] → Briefs, not My Files.** Brief
+  transcripts used to drop into the owner's root folder where nothing else
+  lives. The artifact writer now ensures the per-agent Briefs folder chain,
+  and a migration (two appended statements — the second catches mirrors whose
+  folder the code path had already built; the checksum ledger refused the
+  in-place edit exactly as designed) moves every existing mirror into place.
+  Verified live: brief mirrors sit under Agents → Gregosaurus → Briefs.
+
+- **Dead code out**: `adapter/`, `stack/`, the unreachable focus-inbox cluster (11 files),
+  `MentionMenu`, `EmojiShortcodeMenu`, `NotificationsPanel` (live toasts are `NotificationToasts`),
+  `native-tools.ts` — every deletion grep-verified. Docs now say what's real: the plugin is
+  dormant/manual, backup is `bun talaria backup`, the work order lives in `docs/history/AUDIT-2026-08-26.md`.
+
+- **Deep links everywhere.** The URL is now the selection across the
+  platform: `/?tab=…`, `/knowledge?space=…&doc=…`, `/artifacts?a=…`,
+  `/research?r=…`, `/comms?c=…`/`?a=…&x=…`, `/plan?p=…`, `/admin?tab=…`,
+  `/settings?tab=…`. The old one-shot apply-then-clear pattern (which made
+  nothing copy-linkable) is gone: picks are push navigations so
+  back/forward walks your trail, defaults/healing are replace. Rule
+  recorded in UI-CONVENTIONS → Deep links.
+
+### Fixed
+
+- **`deploy update` pulls the api package before it builds.** The app image
+  never compiles the api — it bakes in the pre-built package named by the
+  Dockerfile's `TALARIA_API_IMAGE` — and `up -d --build` resolves that FROM
+  from the local daemon cache. So an update on a checkout host could git
+  pull, rebuild, recreate, and report success while still serving an api
+  binary from before the pull: new UI wrapped around an old api (bbills,
+  2026-09-03 — one day-old package answered for three "already fixed"
+  symptoms at once). `talaria deploy update` now `docker pull`s the package
+  the Dockerfile names, between the git pull and the build — the ref is
+  read from the ARG line itself, so the pull and the build can't disagree —
+  and a failed pull dies instead of baking the stale digest on purpose.
+  `deploy up` keeps its old leniency: that path is also the
+  reboot-a-broken-box path, and must not suddenly demand the registry.
+
+- **Devboxes: a containerized dev environment per task.**
+  `./scripts/devbox new <name>` builds a disposable full stack per agent
+  session or experiment: a local clone of the repo on its own branch
+  (`agent/<name>`), private stateful sidecars (Postgres/Redis/Qdrant/MinIO)
+  seeded from the primary dev environment, a private fleet project, and the
+  agent CLIs — Claude Code *and* opencode — inside the container
+  (`./scripts/devbox enter <name> claude|opencode`). The toolchain image
+  (`docker/devbox.Dockerfile`) is glibc on purpose (bun + the npm-packed CLIs
+  are glibc-first), fixes uid 1000 to match the host user so the bind-mounted
+  clone needs no chown dance, and pins the CLIs with their autoupdaters off
+  (version bumps are rebuilds). Networking is the production shape applied to
+  dev — three networks per box: its own (sidecars by service DNS, nothing
+  published — several are unauthenticated), the primary stack's network
+  (shared stateless TEI/SearXNG, reached by container name), and a per-box
+  `devbox-<name>-fleet` the spawned agents attach to, dialing the app
+  container-to-container (`TALARIA_AGENT_DIAL=container`). State binds at the
+  same absolute path on host and container, the same rule as the production
+  deploy, because the fleet renderer bakes host paths into agent binds; all
+  paths are canonicalized so symlinked checkouts can't leak a spelling the
+  box can't resolve. Seeding is a snapshot, not a link: Postgres dump-restore
+  and an `mc mirror` of the bucket always (Qdrant is opt-in `--qdrant`, being
+  derived data; Redis never, being transient), with the primary's
+  `TALARIA_SECRET_KEY` carried verbatim so sealed secrets decrypt. Agent-CLI
+  auth is per-box in a named home volume — interactive login, a headless
+  `--claude-token`, or GLM/provider env via a 0600 `compose.override.yml`
+  (`ANTHROPIC_BASE_URL`/`AUTH_TOKEN`/`MODEL`; never together with
+  `CLAUDE_CODE_OAUTH_TOKEN`) — a host `~/.claude` is never shared, because
+  concurrent CLIs corrupt `.claude.json`. `rm` refuses unpushed work;
+  teardown removes projects, volumes, the fleet network and the directory
+  with no residue. Verified end to end: two boxes plus the primary ran three
+  fleets on one host, both apps answered on their 53xx ports, agents reached
+  their app by service name with zero published ports, and home-volume
+  logins survived stop/start. Runbook: docs/DEVBOX.md.
+
+- **Devboxes are no longer API-dark on arrival.** The box compose's
+  `environment: PATH:` mirrored the node base image's PATH — but a compose
+  override *replaces*, and the devbox image prepends `~/.cargo/bin`: with
+  cargo off PATH, `talaria dev`'s api sidecar skipped itself (non-fatally, by
+  design) and every fresh box served a UI whose every `/api/*` call failed.
+  The override now mirrors the devbox image's PATH — cargo restored, plus the
+  sbin directories the abbreviated form had also dropped — so the sidecar
+  raises the Rust api on in-box loopback as intended.
+
+- **Devboxes spawn configured for the creating shell**: `box new` inherits
+  `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (and `_MODEL` when set) into the box's
+  `compose.override.yml` — a shell whose own Claude runs on GLM gets boxes that do too, no
+  per-box login. `--env KEY=VALUE` (repeatable) carries any other container env (explicit keys
+  beat the inherited trio), and `--setup <cmd>` (repeatable) runs arbitrary provisioning inside
+  the fresh box. An explicit `--claude-token` disables the inheritance; the two auth vars never
+  ride together.
+
+- **Docs match the platform again.** Three read-only audits diffed the doc set
+  against the code; what they caught is fixed: `ui/README` no longer claims a
+  React/TanStack Start stack or a violet-to-magenta Mercury accent (both
+  pre-Svelte, pre-gold) and says bun where it printed npm, `CONTRIBUTING` and
+  `HANDOFF` match it (typecheck is svelte-check, not `npx tsc`), `mcp/README`'s
+  install and example config use bun, `MCP.md` names the rendered gateway URL
+  for what it is (the app's own port, not the toolkit's standalone listener),
+  `AGENT-NETWORKING` gains a dated update on what the preflight covers now
+  (the app port, the `/api/mcp/gw` path agents actually dial, external DNS)
+  and the chassis's pinned resolvers, `WORKBENCH` explains why the built-in
+  browser depends on that DNS, and per-person timezones (brief open time,
+  digest arrival) are documented for the first time. Historical entries —
+  dated plans, the changelog itself, the phase log — were left as history.
+
+### Removed
+
+- **Docs overhaul, closeout — the developer hub.** New `docs/ARCHITECTURE.md`: the two planes
+  (one app process + the stateless MCP proxy) with the port table, the request lifecycle
+  (including the honest note that CSRF protection is SameSite=Lax + OAuth state, not
+  middleware), the auth stack (sessions, `tak_` agent keys, the legacy-key refusal, `tlk_`
+  bearer keys), the data layer (append-only checksummed migrations, envelope-encrypted
+  secrets, numerics-as-strings), the realtime bus and its "says what changed, never what it
+  says" rule, rendered fleet + blue/green rolls, the 51-tool MCP plane and its server-side
+  guardrails, the gateway as the single enforcement point, compile-in apps, and the
+  prod-only scheduler. `DEVELOPERS.md` rewritten as the complete hub — every doc in the repo
+  listed and grouped, nothing orphaned; `CONTRIBUTING.md` slimmed to the rules that aren't
+  style; the old `HANDOFF.md` moved to `docs/history/` behind a stub, and the completed
+  2026-08-26 audit with it. Truth fixes the pass surfaced on the way out: routing is the
+  `defineApi('…')` literal, not the filename (API-CONVENTIONS said the dot rule was
+  load-bearing; it's convention); dev infra is six services, not two (Postgres, Redis,
+  Qdrant, TEI, MinIO, SearXNG); `mcp/`'s guardrail described as what it actually is — no
+  assignee writes, no terminal status moves.
+
+- **Docs overhaul, part 1 of 5 — restructure + truth** (first PR of the docs pass: dev docs and
+  end-user docs, succinct and table-first). Ten dated/superseded docs moved to
+  `docs/history/` (PLAN, PRICING, SECRETS-PLAN, PRODUCT-GAPS/PRODUCT-PLAN, three audits,
+  m0-contract, TODO) with a README stating the rule: nothing there is current, the live doc wins —
+  every inbound link repointed. New `scripts/check-docs.mjs` tripwire: every markdown link in the
+  tree must resolve to a real file (would have caught the `m0-contract → adapter/` link that
+  pointed at a deleted directory for months); wired into `bun run check`. `apps/README.md`
+  rewritten to the real Svelte 5 SDK anatomy (was React-era: tsx/useQuery/react imports);
+  `ui/README.md` setup section now shows the one true path (`bun talaria setup` from the repo
+  root), drops its roadmap-duplicate sections, and documents per-agent `tak_` credentials instead
+  of the retired org-wide `TALARIA_AGENT_KEY`.
+
+- **Docs overhaul, part 2 of 5 — the generated references** (`bun run docs:api`, wired into
+  `bun run check` as `--check`). New `scripts/gen-docs.mjs` extracts the HTTP API reference from
+  the route sources — 214 routes, 343 (path, method) rows → `docs/api/` (23 group files + index
+  with the auth legend): path, method, guard class (session/admin/perm/view/agent/dual/fleet/
+  bearer-key/public), parseBody field tables (inline and named zod schemas, z.union variants),
+  literal statuses, SSE/audit markers, and a heuristic Returns column that prints `…` rather than
+  guess. The CLI reference (`docs/CLI-REFERENCE.md`) imports the real command tree — the same
+  declarations `--help` renders — plus a hand-written guide (`docs/CLI.md`). Prose notes live in
+  the source as `// doc:` runs (21 routes seeded); otherwise a route's own leading comment is the
+  note. Guard vocabulary is closed: an unrecognized `await X(request)` renders `unknown(X)`, never
+  a false `public` (this caught `actingUser`/`taskActor`/`commentReader` during the audit). CI now
+  runs `bun run check` instead of the bare invariants script, so every gate added to the chain
+  actually reaches CI.
+
+- **Docs overhaul, part 3 of 5 — the full SDK docset.** `docs/sdk/` replaces the single-file
+  `docs/SDK.md` (now a redirect stub, so existing links survive): getting-started, ui-kit,
+  client, server, mcp, harnesses (including the previously undocumented bridge pattern:
+  `runHarness`/`resolveHarnessModel` from app code), workbench-harnesses (the two-contracts
+  table), and `reference.md` — every export of both entry points, one row each. New tripwire in
+  `check-docs.mjs`: SDK export coverage diffs both directions against `reference.md`, so a new
+  export without a row fails `bun run check`, and so does a documented symbol that doesn't
+  exist (this caught `KeyHint`, which the old doc listed for months). Surface repairs the
+  coverage pass surfaced: `Popover` now actually exported from `@talaria/sdk`;
+  `CheckResult`, `ToolPolicy`, `ModelChainStep`, `ResolvedHarnessModel`, `RunLedger` exported
+  from `@talaria/sdk/server` (all referenced by already-exported types). The harness example
+  and the bridge example in `docs/sdk/harnesses.md` are transcribed verbatim into
+  `ui/src/sdk/server.test.ts` and run through the real runner — the documentation is a build
+  target. `docs/APPS.md` rewritten to the Svelte 5 anatomy, linking the docset.
+
+- **Docs overhaul, part 4 of 5 — the member guides** (`docs/user/`). Eight chapters plus an
+  index, one per work surface, written for people who use Talaria rather than run it:
+  getting-started (sign-in, the assistant wizard, finding your way), your-day (the daily
+  brief, the assistant drawer, notification classes), comms (channels, relays, DMs, agent
+  chats), boards (tickets, workflow columns, saved views, review and sign-off), plan (the
+  multiplayer planning conversation and its living document), research (three depths of
+  cited runs), knowledge (spaces, official content, OKF), files (places, sharing, Secrets).
+  Every recipe uses the UI's own words — the labels, buttons, and empty-state sentences the
+  components render — traced to source while writing; the agent chapters and admin guide
+  follow in part 5.
+
+- **Docs overhaul, part 5 of 5 — agents, admins, and the glossary** (`docs/user/`). Nine more
+  chapters complete the member docset: working-with-agents (meeting agents everywhere —
+  mentions, chats, board tickets, the review walk, the rails), personal-assistant (the
+  wizard, tuning in Settings, the brief and drafted replies, Google connection and
+  delegation), templates (the ticket/plan skeletons and the resolution chain), apps
+  (lifecycle, grants, the shipped reference apps), four admin chapters (people with the full
+  permission catalog; the agent roster; models; MCP + observability + apps), and a glossary
+  covering every term the guides use. Cross-links landed at the seams: comms and boards now
+  point into working-with-agents, and getting-started's read-next covers the whole set. The
+  permission table is verified id-for-id against `server/permissions.ts` (13 permissions,
+  same order, same member defaults).
+
+- **Docs refinement pass — the member guides written for readers, not gates.** The one
+  systematic artifact of the docset's authoring formula is gone: every per-chapter "Words"
+  dictionary table deleted (11 chapters) — the glossary defines each term exactly once,
+  and where a deleted table held an insight the chapter needed (distill's summary landing
+  in Files, the fitness sense of "tier" vs an agent's model alias, the brief/digest pair,
+  the role-templates disambiguation) it became a sentence where it's used. Chapters now
+  close on their own strongest note instead of the same dictionary; the docset index says
+  what a reader gets rather than describing the house style; one-sentence mega-constructs
+  (the assistant's Schedules/Skills/Memory parenthetical, the permission-chip
+  instructions, the ticket-detail run-on) are broken into readable shape. Same facts,
+  same traced claims, same coverage — the link check and full verify stay green.
+
+### Added
+
+- **docs/UPDATES.md — the update story in one place.** The taxonomy (who may
+  roll and why the refusals say what they say), digest pinning (a roll never
+  pulls a moving tag), the roll step by step including the two-process split
+  and the never-released lock, rollback (panel and the docker-only runbook
+  for a dead instance), the deploy key, the two-switch auto-update story, and
+  the overlap contract — the expand-contract migration rule a contributor
+  must keep, now linked from CONTRIBUTING.md's rules.
+
+- **Dynamic greeting** (time-of-day pools, stable per hour), subtitle
+  removed; notifications collapsed behind an unread badge so the
+  assistant briefing is the working surface.
+
+- **Dynamic titles (the Titler).** A seventh platform agent names things
+  as they take shape: chats and plans are retitled after their first real
+  exchange — but only while the title is still the mechanical truncated
+  first message, so a name a user typed is never clobbered — and research
+  runs get a concise title from their question the moment they start
+  (shown across the run list, header, and briefings; the raw question
+  remains underneath). Naming is fire-and-forget: a rate-limited or dead
+  model keeps the current title, never blocks the work. A RETROACTIVE
+  hourly sweep (kicked from comms reads, mirroring the distill sweep)
+  names everything that predates the Titler or whose call failed —
+  batched per pass, fail-fast when the model is down — so old chats,
+  plans, and research runs pick up titles too. Chats can also be renamed
+  by hand from the thread context menu (owner or plan collaborator);
+  a hand-picked name is never overwritten.
+
+- **Enter in the chat composer reliably sends: the @-mention and :emoji
+  autocomplete menus no longer swallow the key when they have nothing to
+  pick.** The suggestion menus' key handler claimed Enter/Tab even while their
+  candidate list was EMPTY (menu mounted by an earlier query, then emptied —
+  e.g. `:zz` mounts the emoji menu, appending a character empties its matches),
+  and ProseMirror consults plugin key handlers before keymap plugins, so the
+  send keymap never saw those presses: intermittent, silent, no error. The
+  menus now claim nothing with an empty list (a pure, unit-tested decision
+  shared by both renderers), and the send keymap additionally refuses any
+  Enter that belongs to an active IME composition — belt to ProseMirror's
+  suspend-on-compose braces. Verified: `bun run check`, `svelte-check`, and
+  the full vitest suite green (1118 tests incl. 7 new composer-keys tests);
+  the production build compiles; and the running surface was driven in a real
+  browser via CDP — plain Enter sends once, Shift+Enter inserts a newline and
+  the next Enter sends exactly once, a populated menu picks the highlighted
+  row without sending (then sends once on the following Enter), a
+  composition-Enter never sends, and a mounted-but-emptied menu falls through
+  so Enter sends (this last case demonstrated FAILING before the fix, PASSING
+  after).
+
+- **`execute_code` works again on fleet agents: rendered configs now carry
+  `approvals: { unattended_mode: approve, cron_mode: approve }`.** Talaria
+  drives every agent through the Hermes api — an "unattended platform" in
+  Hermes' approval model — and cron jobs run the same way, so the fail-closed
+  defaults denied `execute_code` outright (the live error: "This session runs
+  on an unattended platform (api_server) with no user present to approve it")
+  and stalled every dangerous-command prompt until timeout; agents limped
+  back to terminal one-shots. The container is the sandbox and tirith is the
+  guard, so both modes flip to approve, preserving any other approvals keys
+  an agent def carries. Verified: a unit test pins the override (authored
+  keys preserved, both modes flipped), and a live render in an isolated
+  worktree emits the approvals block into the agent's config.yaml.
+
+- **Explicit plan-template picker.** Plans could only seed their living document
+  from the agent's bound plan template, implicitly — the missing half of the
+  chain tickets already had. The Plan surface now shows a Template picker (in
+  the header, for a new plan before its first turn) listing every plan-kind
+  template; the pick rides through plan creation onto the conversation
+  (`conversations.plan_template_id`) and becomes the highest link in
+  `resolveTemplate` — explicit pick → agent binding → none. "Automatic" leaves
+  it to the agent default. The chosen skeleton seeds the doc verbatim and
+  shapes every later agent rewrite. Verified live: a plan created with an
+  explicit template seeds its doc from that skeleton, automatic falls through
+  to the agent binding, and the pick persists on the conversation, 7/7 checks.
+
+- **`fetch_attachment` toolkit tool.** Agents can now READ the files attached
+  to tickets and chats: text formats come back inline (clipped at 50k chars),
+  images arrive as real MCP image blocks the model can see, and other binary
+  formats report honest metadata instead of pretending. `get_ticket` now
+  advertises the attachments array. Verified live: fleet render seeds skill +
+  mount, MCP serves the tool, text/image/binary/404 behaviors all correct,
+  11/11 checks.
+
+- **Files can manage Google Drive itself — rename, move, and trash, in place
+  and on Google's side.** The personal connection's scope moves from
+  drive.readonly to full drive (existing connections keep browsing read-only
+  until one reconnect; the Drive place shows a "Reconnect Google to manage
+  files" banner while that stands, and the write verbs stay hidden — a
+  disabled verb reads as broken, a hidden one reads as not-yours-here). The
+  org connection already carried full drive, so the Workspace Drive is
+  manageable today; org writes require an admin, the same discipline the org
+  connection's grant implies. Rename is the house prompt, Trash sits last
+  behind the separator with a confirm (labeled Trash — Drive's trash is
+  restorable), both on rows and on multi-selections. Drag-to-move works
+  INSIDE the Drive place — folder to folder, onto the breadcrumb — routed
+  through Google's addParents/removeParents, never Talaria's folders; a drag
+  carries its source so a Drive drag can never hit the local move path. The
+  Move dialog speaks Drive too: browses Drive folders, creates a Drive
+  folder inline. Every write is audited (drive.rename | drive.move |
+  drive.trash | drive.create_folder). Also gone: the no-op "Connect a
+  source" rail row.
+
+### Added
+
+- **Files learns to move, copy, and duplicate — the whole management
+  grammar.** Cut/copy/paste for files AND folders: ⌘X/⌘C/⌘V, the selection
+  bar's Cut/Copy/Move, row and breadcrumb context menus (Paste into), and a
+  Paste entry on right-clicking empty space. Cut dims the spoken-for rows;
+  Escape clears the clipboard before the selection (the more transient thing
+  first); a cut pasted back where it came from is a silent no-op while a copy
+  pasted in place duplicates — Drive semantics. Copy's engine is new on the
+  server: POST /api/artifacts/{id}/duplicate and
+  /api/artifact-folders/{id}/duplicate copy one record or a whole folder tree
+  in one transaction (recursive CTE, cycle-guarded). Copies are the caller's
+  and private, land beside their source under a "Copy of" name with a
+  bounded collision ladder, share the source's storage blob (safe — no
+  delete touches the blob), and never inherit public slugs, KB mirrors, or
+  Google linkage. And the Move dialog is finally here: a navigable folder
+  browser with breadcrumbs, a New-folder control, and self/descendant
+  destinations dimmed and refused.
+
+### Changed
+
+- **Fine-grained permissions.** A 13-permission catalog across agents,
+  work surfaces, knowledge, artifacts, files, templates, and models —
+  resolved three layers deep (per-user overrides → org member defaults →
+  shipped defaults), admins unconditional, enforced server-side by the
+  same helpers everywhere. Admin → People shows per-person chips with
+  override provenance, one checklist gating work views, manage views,
+  and (later) app views, and agent allow-lists beside them.
+
+- **First-run claim + admin-managed auth.** A fresh instance offers `/claim` (email + password,
+  plus "Claim with Google" when Google login is on); the first identity through becomes the
+  admin, advisory-lock serialized so a race can't mint two. From then on auth is managed in the
+  app: Admin → People gains **password accounts** (create, reset, remove — including your own),
+  roles live only in the database (a sign-in never changes one; the last admin can't be demoted),
+  and once a Google client is configured, Admin → Google client links the admin's own Google
+  account.
+- Google login can be enabled from the Admin UI (Admin → Google client): the toggle writes the
+  `google_login_enabled` setting (`PUT /api/admin/google-client/login`), so login no longer needs
+  `AUTH_GOOGLE_ENABLED=1` in the env. The env var still pins login ON (undeactivatable from the
+  UI); the toggle stays inert until a client is actually configured.
+- `talaria service` — `install` starts the production stack (the `deploy up` build, in your
+  terminal) and installs a systemd unit that starts it at boot, health-gates that start on the
+  compose healthchecks (`up -d --wait`, dropped automatically on compose builds that hang on it),
+  and stops it cleanly (`compose down`) before docker.service; `uninstall` removes both, keeping
+  volumes and state; `status` shows the unit state and the compose view. `install` also pins
+  `DOCKER_GID` into `docker/.env` — the boot unit has no shell to resolve it from
+  (docs/CONTAINER.md → "Keep it running across reboots").
+
+### Changed
+
+- **First spin-up assumes the Rust api — the hop is the default, not an
+  opt-in.** `TALARIA_RUST_API_URL` unset now hops to the loopback default
+  `http://127.0.0.1:5274` (the same port `talaria dev` and the production
+  server-entry bind their api to), so a fresh checkout proxies the moment an
+  api is listening — the coexistence posture of unset-forwards-nothing died
+  with the TS routes it was protecting: post-cutover it served nothing but
+  404s. The literal `off` stands the hop down for the one posture that wants
+  no api behind the process (tests); every other posture — a set URL or the
+  default — keeps the no-fallback rule, so an api that is down answers 502.
+  `talaria setup` writes the URL into the generated `ui/.env`, `talaria dev`
+  lifts it into the vite child unless the shell or `ui/.env` names one (an
+  explicit value is never overwritten), healthz probes the effective URL
+  (the default included; `off` skips), and server-entry honors `off` without
+  probing or spawning. The docs cross with the code: RUST-MIGRATION's
+  coexistence narrative is past tense end to end, and "Where it stands"
+  records the cutover as landed.
+
+- **Fleet is gone from Home.** The Fleet tab (admin-only) and its pulse view
+  are deleted — Agents shows the same running state, and Observability owns
+  the deep view, so a third copy was overhead nobody normal asked for. The
+  home summary no longer computes fleet health (one fewer container status
+  pass on every load), and the assistant's surface map no longer knows a
+  Fleet destination. Old links keep working: `/fleet` redirects to /agents,
+  and `/home/fleet` falls back to the Inbox like any unknown tab. Verified
+  live: `/api/home` returns no `fleet` key, the Home tab strip renders
+  Boards/Comms/Plans/Research/Docs with no Fleet entry for an admin, and the
+  surface tests (including the `/home/fleet` fallback pin) pass.
+
+### Fixed
+
+- **Fresh deploys no longer die pulling minio — MinIO removed its Docker Hub
+  namespace, and every minio image reference now points at quay.io, which
+  hosts the same builds.** Symptom, from a customer deploy: `pull access
+  denied for minio/minio, repository does not exist or may require 'docker
+  login'` — verified upstream from two independent networks: the Docker Hub
+  repo 404s (the whole `minio` namespace, `minio/mc` too) while
+  `quay.io/minio/minio:latest` is digest-identical to the last Hub-published
+  build and pulls fine. Swapped `docker.io/minio/minio` → `quay.io/minio/minio`
+  in the deploy, dev, and devbox compose files, and `minio/mc` →
+  `quay.io/minio/mc` in `talaria box seed` and the backup sidecar's image
+  default — that last one would have broken existing installs' backup jobs on
+  their next mc pull, not just fresh deploys. Verified: `bun run check` green
+  (gen-docs current), tests 1118/1118, typecheck clean outside the gitignored
+  client subrepos (known local-only leak; CI is truth), all three compose
+  files parse via `docker compose config -q`, and both quay images pull on
+  this box (mc build 2025-09-07; `TALARIA_MC_IMAGE` still overrides).
+
+- **Generated API reference: 22 hidden method rows recovered.** The generator's method-span
+  scanner ran over raw source, so a comment inside a handler whose text contained backticks
+  and an apostrophe (`` `channels.ts`'s ``) read as a phantom string to the scanner and
+  de-synced its brace depth — `POST /api/channels/{id}/messages`, `PUT/DELETE
+  /api/tasks/{id}`, and 19 more rows never rendered (their body schemas attached to the
+  wrong row). Comments are now stripped length-preservingly before scanning, so offsets and
+  `// doc:` note positions survive; 343 → 365 method rows across 18 group files.
+
+- **`GET /api/agent/whoami`** — the introspection call agents were missing:
+  identity (personal? whose? elevated?), every board it can work with *why*
+  (policy / owner / elevated), channels, MCP servers, the guardrails that
+  will refuse it, and its own pending access requests — plus the MCP tools
+  that act on the answer (`whoami`, `join_board`, `leave_board`,
+  `request_board_access`). The fleet verifier's auth oracle moved onto this
+  purpose-built route from its old borrow on `GET /api/users`, so narrowing
+  the people directory can no longer take the toolkit dark.
+
+- **GitHub App keys parse in the label GitHub actually ships** — App keys
+  download as traditional `-----BEGIN RSA PRIVATE KEY-----` (SEC1) PEMs, and
+  the signer read only PKCS#8, so every real key died at install time with
+  `PKCS#8 ASN.1 error: PEM type label invalid` while the frozen fixture (a
+  PKCS#8 key) kept the suite green. The parser now takes PKCS#8 first, then
+  the SEC1 label — the same key either way, and a companion fixture pins the
+  traditional label to the same signed bytes.
+
+- **Google approvals show the payload, not a paraphrase.** An agent-drafted
+  email or calendar event surfaces in the Inbox as a P0 approval card whose
+  recommendation says "review the exact outbound payload" — which the card
+  never showed. The evidence rows are now the payload's own fields: To,
+  Subject, and Body for an email; When, Where/who, and Notes for an event —
+  so the human approves what will actually go out, not a summary of it.
+
+### Changed
+
+- **Google Drive is a place in Files, browsed like every other place — the
+  import modal is retired.** The rail's Sources row opens the Drive place:
+  the same list/grid columns, the same selection and keyboard grammar,
+  breadcrumbs into Drive folders (walked server-side so a deep link rebuilds
+  its own path), server-side sorting (honest with pagination), and Load more
+  past the first hundred. The rail expands the ROSTER while you're in the
+  place — one row per browsable Drive, visually distinct: your My Drive,
+  shared drives your account joined, and the org connection's Workspace
+  Drive marked `org` — so personal and org files can't be confused. The URL
+  carries the selection (`/artifacts/drive?d=<drive>&f=<folder>`), the same
+  URL-is-the-selection rule as everywhere. Import is a first-class verb now:
+  select Drive files, Import, and they land in a My Files folder named for
+  the Drive folder they came from — sequential pulls (Google rate limits),
+  one summary toast, oversize files counted. New: GET
+  /api/integrations/google/drive/drives (the roster; 409 only when BOTH
+  connections are absent — that 409 is the Drive place's connect screen) and
+  GET .../drive/browse (folders included, paginated, with the walked path);
+  the import route gained `folderId`. The old flat /drive/files search route
+  is gone with its modal; the agent drive route is untouched.
+
+### Added
+
+- **Google login no longer dumps back to /login — every `Set-Cookie` survives the
+  HTTP boundary.** The Response → `res.writeHead()` conversion in both wrappers
+  (prod `server-entry.js`, the vite dev middleware) read headers with
+  `Object.fromEntries(response.headers.entries())`, which collapses duplicate
+  keys — and `Set-Cookie` is the one header that legitimately repeats. The
+  OAuth login callback answers with two cookies (session on, one-shot state
+  off), so the object kept only the state clear and the session cookie died at
+  that hop on every deployment since the prod server landed: Google authorized,
+  the SPA booted at `/`, `/api/auth/session` said `{user: null}`, and the
+  cockpit bounced to /login — while password login (one cookie) worked, and
+  dev never caught it because the middleware had the same one-liner. The
+  conversion now lives once as `writeHeadHeaders` in `ui/src/server/http.ts`
+  (re-exported through the server bundle beside `migrate`), both wrappers
+  import it, and a test pins that a two-cookie response stays two cookies.
+  Deployments need a rebuilt image to pick this up — no env or Google-console
+  change is involved.
+
+- **Google sign-in no longer dies as ERR_TOO_MANY_REDIRECTS.** The OAuth
+  relocation (added with the pinned-origin rule) answered "relocate to the
+  pin" whenever the derived origin string differed from `AUTH_PUBLIC_URL` —
+  and when the difference was a LIE the proxy chain told, the redirect
+  pointed back at the URL the browser was already on: follow it, resend the
+  same headers, derive the same "wrong" origin, redirect again, until the
+  browser's budget died. The lies that triggered it are ordinary deployment
+  shapes: an outer proxy that states the host but not the scheme (the app
+  host backfills `x-forwarded-proto: http`, and an https pin never equals
+  an http hit), an explicit `:443` on the forwarded host, a typed-uppercase
+  pin, a comma-joined proxy chain. The one-origin check is now a HOST
+  check — cookies (the thing the relocation protects) are host-scoped, and
+  scheme and port never partition the jar, so a browser already on the
+  pinned host is already home and no redirect could have helped it. A
+  genuinely different host (the LAN URL the pin exists to retire) still
+  moves home in one hop, path and query intact; all five start/callback
+  routes share the one fixed function.
+
+- **Google sign-in speaks Rust too — and with it the session batch is whole**:
+  `GET /api/auth/google` and its `/callback` are serving from the Rust api, the
+  OAuth dance hand-rolled over reqwest (no SDK — the identity comes from
+  Google's userinfo endpoint, never a locally-verified JWT). The consent URL
+  byte-matches TS's own `URLSearchParams` serialization (pinned by test, then
+  diffed live against the TS serializer with the same client record and state
+  token), the state cookie is the same double-submit CSRF token with its
+  10-minute TTL and constant-time compare, and every failure door bounces to
+  `/login` with the machine-readable reason the SPA already renders. Verified
+  against the live dev stack: the disabled gates byte-diffed equal on both
+  routes; the client-precedence rule (a complete Admin record beats env, and
+  the env pin is what enables login — the record alone never does) exercised
+  for real; bad-state and cookie-mismatch bounces equal; and a live token
+  exchange against Google with a garbage code returns the fixed
+  `exchange_failed` sentence with the provider's prose dead in the log — the
+  boundary rule, held. The happy path past Google's consent screen (claim,
+  org-domain gate, invites) needs a human signing in, so those doors are
+  verified to their last reachable hop, not past it. The coexistence proxy now
+  forwards the caller's origin (`x-forwarded-proto`/`host`) so the two runtimes
+  derive the same `redirect_uri` through it.
+
+- **Guided reindex — the repair path for a changed embedding model.** Swapping
+  `TALARIA_EMBED_MODEL` changes vector dimensions and silently breaks every
+  index/search against the old collections. Talaria now probes what the
+  embedding service is actually serving (model + dimension, shown in Admin →
+  Retrieval) against the LIVE Qdrant collection shape — never the registry,
+  which had already gone stale once — and raises a critical alert plus an
+  admin banner when they diverge (or when a brain predates hybrid search).
+  One "Rebuild index" button recreates each brain in the current model's
+  shape and refills it from the workspace's own records; index-don't-copy
+  makes the rebuild lossless. Verified live: legacy 384d dense brains
+  rebuilt to hybrid, exact-identifier and paraphrase queries both rank the
+  seeded doc first, and stale points from deleted sources and
+  pre-officialization grounding rules washed out in the process.
+
+- **Hermes self-review — agents review their own work before the QA judge
+  does (#78).** Three moves. First, the plumbing bug that blocked all of it:
+  Hermes only discovers skills outside its home via `skills.external_dirs`
+  in config.yaml, and Talaria never rendered that key — the `/opt/skills` +
+  `/opt/dept-skills` mounts existed in every container but the skill registry
+  never scanned them. Rendered configs now carry both roots, so every
+  Talaria-managed skill is a first-class enabled Hermes skill (live: `hermes
+  skills list` shows them as `local/enabled` fleet-wide). Second,
+  `subagent-driven-development` (official Hermes registry, MIT,
+  obra/superpowers-derived) is vendored into `scripts/skills/` and seeds to
+  every install — with the bundled `requesting-code-review` it gives agents
+  fresh-context implementer/reviewer subagents per task. Third, the reflex:
+  the talaria-toolkit skill and every rendered soul now teach "before
+  `report_outcome`, self-review against the ticket's requirements —
+  `requesting-code-review` for code, `subagent-driven-development` for
+  multi-task plans" — the QA judge becomes the second line, not the first.
+  Bonus: shared-skill seeding upgraded from copy-if-missing to pristine
+  tracking (`fleet/skills/.seeds.json`) — copies still byte-identical to what
+  was seeded follow canonical updates; admin-edited copies are never
+  clobbered (both paths verified live).
+
+- **Home's "Set up your assistant" opens Settings → Assistant** (it went to
+  `/agents`, a Manage view members are denied — the route gate bounced them
+  straight back, so the button flashed and did nothing).
+
+- **Hybrid retrieval — keyword and meaning, fused.** Every brain now indexes
+  each chunk twice: the dense embedding it always had, plus a sparse
+  bag-of-terms vector (Qdrant IDF-modified, so exact identifiers like env
+  vars, ticket numbers, model names, and error strings survive whole).
+  Searches fuse both branches with reciprocal-rank fusion, so
+  `TALARIA_EMBED_MODEL` finds the doc that names it AND "how do embeddings
+  get configured" finds it too. Legacy dense-only brains keep working
+  untouched until rebuilt.
+
+- **Inference: live dashboard + container controls (#48).** The Compute page
+  is now a real inference dashboard: a live strip showing **generating right
+  now** (per agent, from streaming reply rows with a 10-minute recency clamp
+  and partial indexes to keep the scan tiny), the **gateway pulse** (upstream
+  calls / errors / time-to-first-byte p50+p95 over the last 15 minutes,
+  in-memory — a pulse, not a ledger), **fleet temperature**
+  (up/warming/unhealthy/down), and the last hour of per-agent activity; the
+  page leans into a 5s poll while anything is generating or warming. The
+  fleet roster finally shows the **warm-up state**: Docker's `starting`
+  health phase (the healthcheck's 60s start_period) renders as a pulsing
+  amber "warming up" dot instead of masquerading as up, and `up`/`unretire`
+  return immediately instead of blocking the request for up to two minutes —
+  the polled roster tells the story. Two new controls per agent:
+  **Restart** (quick bounce, confirm-gated since in-flight replies drop;
+  owners can restart their own assistant) and **Roll** (admin — the existing
+  zero-downtime blue/green replacement, previously only reachable through
+  config saves, now a button: fresh container warms up while the old one
+  keeps serving, then drains). Both audit-logged. Verified live: restart
+  showed `starting` → healthy on the roster, a roll flipped the slot with
+  the old container serving throughout, and a real streamed reply appeared
+  in "Generating now" with the gateway pulse moving. (Managing inference
+  BACKEND containers — Ollama/vLLM lifecycle — is the ROADMAP's separate,
+  bigger thread; this ships the agent-container half plus the dashboard.)
+
+- **Input consistency sweep (#49).** Every form control now speaks the same
+  keyboard language, via two tiny shared helpers (`submitOnEnter`,
+  `inlineEditKeys` in `ui/control.ts`) instead of hand-rolled `e.key`
+  handlers: inline title/name edits (KB space + doc, artifact, ticket) commit
+  on Enter and revert on Escape — Escape is shielded from modal/document
+  handlers so cancelling an edit no longer risks closing the surface;
+  field-plus-button rows submit on Enter (provider API key, assistant handle
+  rename, agent secrets, MCP server add, rerank key, audit retention,
+  federate directory, version note); the home-dashboard email compose — the
+  one dialog still hand-rolling its own backdrop and raw inputs — now sits on
+  the shared Modal (Escape/backdrop close for free) with the shared field
+  primitives and focuses "To" on open; and the login username, provider-create
+  name, and save-image title fields focus on open. Audited ~80 text controls
+  across 33 files; 16 gaps fixed, the rest already followed the conventions.
+
+### Added
+
+- **Invites + transactional email.** The third admission door: invite an
+  email address, they get a branded join link (public /join page shows
+  who invited them, to which org, bound to which address), and signing in
+  with Google admits them, stamping the invite accepted. 14-day expiry,
+  one live invite per address, instant revoke, state chips. Email rides a
+  provider seam — your own SMTP (Google Workspace works with an app
+  password) or Resend — with sealed secrets, masked GETs, and a
+  send-me-a-test button. Invite creation survives a broken mail config
+  (the error surfaces; the invite persists).
+
+- **Knowledge goes Notion-lite.** Quote-anchored COMMENT THREADS with
+  in-text highlights and resolve; multiplayer presence (who's here,
+  view/edit); Muse IN the page — an always-on chat bar that edits the doc,
+  plus select-any-text → Comment or Muse for surgical rewrites; context
+  menus across reading and editing (with full table controls and a
+  visible table toolbar); image paste/upload; inline artifact embeds; a
+  clean Official promote/demote lifecycle (double-confirm demote) with
+  agent-doc governance; and per-doc OKF summaries (GoogleCloudPlatform
+  knowledge-catalog spec) — an agent-facing frontmatter+summary the
+  Librarian maintains autonomously as official docs change. Space pages
+  and doc pages now share one editor grammar.
+
+- **Links that cross the app's boundary land where they claim.** Two href
+  writers still emitted the pre-path-routing query shape after tabs and
+  selections became path segments: a research run's completion notification
+  pointed at `/research?r=<runId>` (which opens the bare research view with
+  nothing selected — the quiet wrong answer) and a retrieved knowledge
+  document pointed at `/knowledge/<docId>`, a one-segment form the Knowledge
+  route parses as *space* with nothing selected. The writers now emit
+  `/research/<runId>` and the by-id permalink `/knowledge?doc=<docId>`. The
+  repair ships as the migration law's first exercise: two appended statements
+  rewrite the stored rows (`notifications.href`,
+  `briefings.source_href`) from `/research?r=` to `/research/` — idempotent
+  and WHERE-guarded, applied at boot like every other one-shot. What a
+  migration cannot reach — the href baked into emails already sent, and
+  Qdrant payload hrefs until the next reindex regenerates them — is caught
+  by a `?r=` redirect in the app shell, the same net `?tab=` already casts
+  for the same reason.
+
+- **`list_boards` no longer 500s for agents — the port's one never-executed
+  query.** The agent listing's `select distinct` sorted on `b.updated_at`,
+  but the boards port had replaced the raw timestamps with epoch-ms
+  expressions in the select list, and Postgres refuses a DISTINCT whose
+  ORDER BY expression isn't selected — so the statement was rejected
+  outright and every agent-authenticated boards call returned 500 from the
+  day the module landed (the fleet's first smoke test found it; the
+  user-session listing has no DISTINCT, which is why the UI never showed
+  it). The epoch columns now leave as named columns and the sort uses the
+  name. A live-DB suite (`api/tests/boards_store.rs`, `#[ignore]`d) now
+  executes the listing against the real table so an illegal shape can never
+  land again.
+
+- **LLM spend ceilings** (#243): rolling-window budgets in Admin → Settings — org-wide and
+  per-caller, in tokens and/or priced dollars — checked before every gateway call (the HTTP
+  route answers 429 `budget_exceeded` with `retry-after`; internal callers like the QA judge
+  are held to the same ceiling). Off by default; a $ ceiling is never tripped by tokens with
+  no price configured, and spend reads are cached briefly except at the edge (>80% of a cap
+  goes exact, bounding what a burst can slip past). Cron schedules get a frequency floor
+  (default: nothing faster than every 5 minutes) — a cron is an agent turn is spend.
+
+- **Loading-state audit, platform-wide (~70 gaps, 35 files).** Every
+  fetch-backed component now holds a layout-matched skeleton while in
+  flight; EmptyStates render only after a query RESOLVES empty. Parent
+  queries no longer block unrelated siblings (plan stage, models panels,
+  boards' serial fetch, comms message pane). Real bugs flushed out along
+  the way: clicking an agent before conversations resolved silently
+  started a NEW thread instead of resuming the working one; the memory
+  quick-add could clobber the file if used mid-load; a fleet-wide cron
+  created while the roster loaded would target nobody; false states
+  ("Not connected", "API keys are not enabled", unchecked policy
+  checkboxes) flashed during every load.
+
+### Changed
+
+- **Long agent turns finish instead of dying as "· interrupted."** Diagnosed
+  from a fleet deploy: a knowledgebase-build turn that ran past ten minutes
+  was killed by the API's own request timeout — a total 600s ceiling on the
+  agent stream — while the agent's container was still working; the partial
+  reply was dropped, the row landed as a bare error the chat rendered as
+  "· interrupted", and nothing retried. (Compaction was never the culprit —
+  it happens inside the container and simply made the turn long.) The turn
+  now ends only on SILENCE: frames flowing — deltas, tool progress,
+  keep-alives — keep it alive however long the work takes, with a tunable
+  idle ceiling (`TALARIA_AGENT_IDLE_SECS`, default 10 min, floored at 1) and
+  a bounded wait only for the stream to open. Liveness throughout is the
+  last write, not the row's age: a new `streamed_at` stamps every flush, and
+  the stale sweep, the sidebar's working flag, and the generating pulse all
+  read it — an hour-long turn no longer reads as dead at ten minutes. A
+  stream that does die is retried once, ON THE SAME ROW, after a short
+  backoff: the row is resurrected to streaming and the turn re-driven with
+  its own failed attempt excluded from the history, and the chat visibly
+  picks it back up ("↻ stream dropped — picking the turn back up…") rather
+  than sitting on an error. The error itself is now an explanation — the
+  row's content says what happened ("the agent's stream went silent for
+  600s mid-turn", the container's own failure reason when it refuses)
+  instead of a bare interrupted mark, and it survives reloads and reaches
+  the next turn's history. A turn that dies twice stays down for a person
+  to look at; an agent's refusal (the failure frame) is never retried.
+
+- **MCP OAuth 2.1, end to end.** Servers that answer 401 get the full
+  spec treatment: protected-resource metadata → RFC 8414 authorization-
+  server metadata (path-aware, so github.com/login/oauth resolves) →
+  dynamic client registration → PKCE, with resource indicators. No-DCR
+  providers (GitHub) get a manual OAuth-app flow: Talaria shows the
+  callback URL to copy and links the provider's own app portal from its
+  service_documentation. Tokens seal per subject (org or user), refresh
+  silently, and force a visible reconnect on revocation. Registry changes
+  that alter what a running agent carries roll the fleet blue/green —
+  Hermes wires MCP at process start, so a render alone was never enough.
+
+- **@mention autocomplete in the rich editor.** The thread #60 left open:
+  ticket comments and descriptions NOTIFIED on mentions but their TipTap
+  composers had no autocomplete — you had to guess the token. `RichEditor`
+  now takes a `mentions` prop (a TipTap Suggestion popup, modeled on the
+  slash-command menu): type `@` and pick from the people the mention will
+  actually notify. Picks insert plain `@token ` text — the exact grammar
+  the server parses and the renderer highlights, so the markdown
+  round-trip is untouched. Wired on the ticket surfaces with board
+  members: the comment composer and both description editors (inline +
+  slide-in). Also closed for consistency: a ticket CREATED with an
+  @mention in its description now notifies board members (only the edit
+  path did; template-seeded descriptions can't fire it). KB/artifact
+  bodies stay unwired on purpose — mentions there don't notify yet
+  (eligibility undecided, recorded in TODO).
+
+- **Mercury turns Talaria into a focused operator workspace.** A unified
+  near-black visual system now carries the full authenticated product, while
+  Inbox becomes a risk-ranked decision queue with source evidence, guarded
+  actions, persistent history, and an adjustable assistant panel that follows
+  the operator across work surfaces — addressing the owner's own assistant by
+  the name they gave it. The spec-matched composer keeps attachments,
+  agent and model selection, response modes, MCP access, skills, help, and
+  dictation in one conversation flow without weakening existing approvals.
+
+- **Migrations ship in the image — and bad ones die before (or at) the
+  door.** The `MIGRATIONS` array is now the stated single channel for schema
+  changes AND one-time data operations (a backfill, a watermark reset, a
+  repair): append a statement, redeploy, done — running psql by hand on a
+  customer database is never part of a release, because a fix that lived only
+  in a shell history did not ship. Two CI gates back the law: a new
+  `migrations` workflow boots a scratch `postgres:16-alpine` (the exact image
+  the sidecars run), replays the entire array from zero, runs the pass a
+  second time requiring `applied: 0`, and diffs the resulting schema against
+  a committed snapshot (`ui/src/server/db/schema.snapshot.sql`, regenerate
+  with `bun run migrations:snapshot`) — so every schema-touching PR carries
+  the real schema diff as its review artifact, and a statement with a syntax
+  error or a bad column reference can no longer pass CI and explode only at
+  customer boot. The invariant check adds a destructive-statement guard: any
+  statement that can destroy or rewrite data (drop table/column/type,
+  truncate, an unscoped delete or update, an `alter column … type`, a
+  rename) fails CI unless it carries an inline `-- deliberate: <why>`
+  comment — the marker is the second look, recorded next to the SQL it
+  justifies. And a FAILED boot migration pass now reports `migrations: !ok`
+  on `/api/healthz` (503), flipping the compose healthcheck unhealthy
+  instead of a green container whose every table query 500s; slow-but-running
+  passes stay non-fatal, because slow is not failed. The docs that claimed
+  the array was frozen and sqlx owned new migrations — never implemented —
+  now describe the array as the live single channel it has always been.
+
+- **Model cost autodetect is consistent now.** The price oracle only ever
+  priced an endpoint's REGISTERED models — but tier routing and aliases
+  attribute usage to models nobody registered (grok via a tier mention,
+  gemini "-latest" aliases), which stayed unpriced forever, and id shapes
+  like "~"-prefixed aliases, ":free" variants, "-latest", and trailing
+  release dates never matched OpenRouter's catalog ids. The oracle now
+  prices the union of registered models and every model usage has
+  actually landed on (keyed by the exact usage string so the costing
+  join hits), matches through alias fallbacks (strip "~", ":variant",
+  "-YYYYMMDD", "-latest", vendor-prefixed suffix match), and an unpriced
+  cloud usage row nudges a refresh ahead of the 6h cadence (15min
+  throttle). Live result: unpriced cloud tokens 13.5M → 0.
+
+### Added
+
+- **Navigation cleanup.** The sidebar is work surfaces only: the bottom
+  logo is gone, the System section is gone — Settings and Admin live under
+  the user menu (Admin still hard-gated by role independent of what the
+  rail renders). **Compute, Cost, Audit, and Alerts merged into one
+  Observability view** (`/observability`): the root is an Overview —
+  alerts strip worst-news-first, generating-now + fleet temperature,
+  gateway pulse, spend today, recent audit trail, each clicking through
+  to its detail tab (`?tab=compute|cost|audit|alerts`). The four old
+  routes are DELETED, not redirected — every reference (nav, home fleet
+  tiles, server-side notification hrefs, the activity indexer) was
+  rewritten to the new structure. **Models is tabbed**: Models (provider
+  registry) · Roles · Access, deep-linked, with the verbose panel
+  descriptions and field explanations moved into ⓘ tooltips.
+
+### Added
+
+- **Nine checker bugs that graded our gaps as model failures — and one
+  guard widened only after its own trap test vetoed two tokens.** The
+  sweep's headline fixes: the json-strict gate's verify step tested closure
+  the wrong way round (a strict failure looked verified), and unstamped
+  pre-revision records now self-heal on read rather than failing every model
+  forever; the workbench's stale-grade regex matched "NOT FINISHED" grades
+  as processed (`NF[KD]?D` on a grade that also reads "NOT DONE"), with a
+  scripted repro pinning it; the judge gate rework carried both. The
+  research gap-round checker now catches the question re-asked as a query
+  by token containment (all but ≤4 of the question's own words) — the
+  commonest repeat matched neither literal and re-trod the findings for
+  free, while a query naming new ground cannot carry those words and stays
+  legal. Six too-strict alternations widened, each anchored on words that
+  survive paraphrase and each with a trap test: a deferral recorded as
+  "postponed"/"no longer" no longer fires plan_doc's both-positions check
+  (the widening dropped `revisit` — CURRENT_DOC's own "revisited twice and
+  settled" HOLDS the decision — and `staying`, which qualifies the reversal
+  line, not the Postgres line), "notify customers by email" places the comms
+  plan, "left out"/"discarded" name an omission, a refusal worded "turned
+  down"/"vetoed"/"ruled out"/"passed on" is recorded, "I verified" grounds a
+  live-state count, and a brief about "the shared secret"/"the credential"/
+  "the HMAC check" engages with its item. Also honest now: `list_files` and
+  `write_file` report real bytes (the sandbox said "bytes" and returned
+  UTF-16 code units — identical on today's ASCII fixtures, a trap for the
+  first fixture with an em-dash), the stale FORTY-SIX tool counts read
+  FIFTY-FIVE (the number the sync test pins), and the timeout verdict names
+  which clock fired — a model idle for minutes is not a model that was
+  slow, and the inactivity clock now says so instead of letting a hung
+  upstream read as the model's timeout. Verified: each fix carries a test
+  that fails on the old pattern (the research repeat, the plan_doc
+  paraphrase, the distiller refusal quartet, the inbox grounding and brief,
+  the workbench repro, the judge inversion); full lib suite 1952 green.
+
+- **Notifications reach a browser that's closed.** Web Push, end to end: the
+  settings' desktop-notifications toggle now also files the browser as a push
+  recipient (a per-device subscription — the push service's endpoint plus
+  the key halves the payload is encrypted against), and any notification the
+  single writer files with an in-app copy fans out to every subscribed
+  browser of that person. The payload travels as RFC 8291 `aes128gcm`
+  ciphertext under RFC 8292 VAPID proof — hand-assembled on `p256` rather
+  than the OpenSSL-carrying `web-push` crate, keeping the runtime's
+  no-OpenSSL invariant, and pinned to the RFCs' own test vectors. The
+  instance's VAPID keypair is born once and its private half sealed under
+  the instance secretbox. The service worker shows the OS notification only
+  when no Talaria window is visible (the toast already covered the open
+  case) and lands you on the notification's target when clicked; dead
+  subscriptions (the service answered 404/410) prune themselves, and turning
+  the toggle off retires the subscription at both ends. Classes routed
+  **Email only** still reach mail alone.
+
+- **Notifications speak Rust**: `/api/notifications` — the bell's one read
+  (inbox, unread count, routing prefs, the digest answer, the instance email
+  switch, and whether this user may flip it), mark-read by ids or all, the
+  per-class routing patch, and the admin delivery switch. The mail side of
+  the prefs (sendGatedMail, the bounded outbox, the drain) is scheduler
+  plane and stays TS until batch 5; the port ends at the rows and switches
+  the SPA reads and writes, plus the brief-nudge without its SSE publish.
+  The prefs patch is the port's first zod record body — its full 400 table
+  probed against the ui's own zod and pinned in Rust tests — and the route's
+  ordering invariants held byte-for-byte against TS on the same DB: ids
+  absent and ids empty both mean "mark all of mine", the member's delivery
+  403 fires after the 400s and before any write (one PATCH never
+  half-applies), and the admin flips write identical audit rows on both
+  runtimes.
+
+- **Object storage — built-in bucket, bring-your-own, or both.** Upload blobs
+  can now live in a real S3-compatible bucket instead of local disk, three
+  ways: the **built-in bucket** — a bundled MinIO container (dev-compose
+  `minio` service, creds via `TALARIA_S3_*` env, bucket auto-created) so you
+  get durable object storage with no cloud account; any **external**
+  S3-compatible service (AWS S3, Backblaze B2, Cloudflare R2, MinIO) via
+  endpoint/bucket/keys in Admin → Storage (secret sealed by secretbox); and an
+  optional **replica** that mirrors every new upload to a second provider as
+  it lands (fire-and-forget — a replica outage never blocks an upload), with a
+  "Sync all" that backfills everything already stored and automatic read
+  fallback to the mirror when the primary can't serve a blob. The client is a
+  hand-rolled SigV4 signer over fetch — no SDK. Each upload's row records
+  where ITS bytes live (`s3+internal://` / `s3://` / filesystem path), so
+  switching modes never strands a file. Connection tests do a real
+  write/read/delete round-trip; a background migration moves local files into
+  the active bucket. Verified live 22/22 across two runs: external-bucket flow
+  against a throwaway MinIO, then built-in mode with auto-created bucket,
+  replica mirror-on-upload, full sync, and replica fallback after deleting the
+  primary object.
+
+- **One owner per duplicated helper** (the audit's recurring failure mode): Google OAuth built once
+  (`server/google/oauth.ts`), JSON-RPC envelope once (`mcp-jsonrpc.ts`), `errText`/`errLine`,
+  `tz.ts`, `docker-exec.ts`, `asIso`, shared zod schemas (`lib/api-schema.ts`); `localMoment`,
+  board-visibility SQL, MCP protocol pin consolidated. Client mutations all through
+  `fetch-json.ts` (`postJson`/`putJson`/`patchJson`/`delJson`) — and the `credentials:
+  'same-origin'` stanza is now census-enforced to live only there.
+
+- **Org-wide MCP with a real marketplace.** A registry of MCP servers
+  governed per agent AND per person (assignments ∩ allowances, tool
+  subsets everywhere, "All tools" explicit), enforced at a gateway that
+  filters tools/list and rejects tools/call — config can't be jailbroken
+  past the registry. The add flow searches the official MCP registry
+  (latest schema) with tier ranking so real remote servers beat wrapper
+  noise, brand icons, a featured business shelf, credential-driven
+  install forms from declared headers, and publisher resolution for
+  names the registry lacks (well-known manifests, documented endpoints).
+  Per-user servers connect each person's own account under Settings →
+  Connections. The built-in Talaria toolkit became a governable registry
+  row too — same subsets, same gateway, identity locked.
+
+- **Password login, the login screen's door list, and the first-run claim speak Rust too**:
+  the session batch's second slice — `POST /api/auth/password`, `GET /api/auth/providers`,
+  `POST /api/auth/claim` — is serving from the Rust api. The credential check is the same
+  scrypt contract both runtimes share (`scrypt$N$r$p$salt$hash` entries, parameters read
+  from the entry, the dummy-hash burn that keeps an unknown email exactly as slow as a
+  wrong password), run on the blocking pool where ~100ms of KDF never parks an async
+  worker. Zod's exact 400 messages ride through verbatim (probed against the ui's own zod
+  4.3.6 — the email pattern hand-rolled, and its truth table pinned), the login brakes
+  share one Redis counter space with TS (a Rust attempt and a TS attempt spend the same
+  budget; a success resets it), and the claim's advisory lock still makes a lost race a
+  409. Verified against the live dev stack: providers byte-identical between runtimes; a
+  Rust login verifying a node-hashed entry and returning the login body byte-identical to
+  TS's; either runtime's logout destroying the other's session; the claim limiter's 429
+  (message and Retry-After) agreeing across the shared counter; every validation error
+  path diffed equal.
+
+- **Per-agent branch rules, administered against the repo's real branches,
+  asked by a pre-push hook inside the container.** Every repo
+  grant now carries its own branch law: the base branch a human merges
+  (picked from the repo's live branch list, defaulting to its default
+  branch), whether the agent may push the base at all (`branches_only` is
+  the zero-config default posture — work lives on a branch; `free` is the
+  explicit opt-in), and an optional required prefix for the agent's
+  branches. The gates pass down the whole chain: the admin panel edits rules
+  beside the grant chips with real branch pickers; the work-session brief's
+  hygiene step is personalized from them (each granted repo's base and
+  prefix, with the standing default when unconfigured); and a rendered
+  `pre-push` hook — installed system-wide via `core.hooksPath`, chaining to
+  a repo's own hook when one exists — asks `/api/secrets/git-push-check`
+  over the agent's key with the refs git is about to push, and declines a
+  base-branch or off-prefix push with the rule's own sentence. That hook is
+  a client-side gate — git skips it on `--no-verify`, and the token the
+  sandbox holds can push — so the base branch is only actually closed by the
+  repository's own branch protection, which every granted repo needs; the
+  rule is the agent's instruction and the operator's log line, not the lock
+  on the door. Grant toggles no longer wipe rules (set
+  semantics, not delete-and-reinsert). Verified: the decision table is
+  pinned by unit tests, the generated hook is proven valid shell by `sh -n`
+  in the test suite, and live from an agent container a base push is
+  declined with the rule's own sentence while a conforming branch push
+  passes.
+
+- **Per-key caps and throttling** (#265): each LLM-gateway key carries its own ceilings in
+  **Settings → API keys** — a spend cap (tokens/$ over the org budget window) and a
+  requests-per-minute limit. Both self-imposed and unlimited by default; the cap can only
+  tighten an admin's ceiling, never raise past it, and the refusal (`429 budget_exceeded` /
+  `rate_limit_exceeded`, with `retry-after`) names the surface that holds the number.
+
+### Security
+
+- Upstream error text is sanitized at the trust boundary (#268): the two
+  proxy wires — `/api/llm/v1/chat/completions` (external key holders) and the
+  MCP gateway (agent containers) — no longer forward an upstream's error body
+  verbatim. Failed hops answer with the status (ours to share) and a fixed
+  sentence; the only upstream-written text that survives is the structured
+  `error.type`/`error.code` tokens OpenAI-style clients switch on for retries,
+  length-capped. The verbatim body goes to the server log, inside the
+  boundary. JSON-RPC errors on the MCP wire ride 200s and pass untouched —
+  tool results, including tool failures, are the protocol the agent speaks.
+- Oversized uploads are refused before they are buffered (#266): the upload
+  route reads its multipart body through a capped stream — a declared
+  content-length over the cap is answered 413 from the header alone, and a
+  chunked body (what every browser FormData POST is) is aborted mid-read at the
+  cap. Previously the whole body was buffered and only saveUpload's byte count
+  refused — after the memory was already spent.
+- Compose generates its first-boot secrets (#267): `talaria deploy up` writes
+  `POSTGRES_PASSWORD` and the minio root pair into `docker/.env` (once, 0600,
+  git-ignored) before invoking compose — the two places no container entrypoint
+  can reach, because interpolation happens at container-create time. An existing
+  postgres volume keeps the password it was initialized with (a fresh random
+  would lock the app out); the file says how to rotate. Without this, an
+  unconfigured compose instance ran on passwords published in the repo.
+- Password credentials live in Postgres as scrypt hashes (#244): `user_password_credentials`
+  stores `scrypt$N$r$p$salt$hash` (node:crypto, params in-band) — never plaintext, never env.
+  A login miss on the email burns a dummy verify, so response timing can't reveal which
+  addresses have accounts.
+- Google sign-in refuses unverified email addresses (#269): an identity whose email claim
+  Google has not verified — including an absent claim — is rejected at code exchange, so an
+  unverified address can no longer mint an account.
+
+- **Per-project env stores: an agent's build gets its `.env`, sealed at rest
+  and scoped by the repo grant.** Each granted repository can carry a set of
+  environment variables in the workbench admin (beside the branch rules):
+  KEY chips with write-only values — a value never crosses the API in either
+  direction after it is saved; it is sealed with the same envelope the
+  workspace secret vault uses and leaves the database exactly once, when the
+  fleet render materializes `/opt/workbench-env/owner/repo.env` into the
+  containers of the agents granted that repo (read-only mount, shell-safe
+  single-quoting, absent entirely when the store is empty). The work-session
+  brief names the file's path when one exists, so the agent sources it the
+  way a developer would. The visibility class is the inverse of the vault by
+  design and the panel says so: these values ARE readable by the agent's
+  build — exactly what a project `.env` is for; org credentials stay in
+  workspace secrets, which are never revealed to anything. Access control
+  needs no new grants: the existing repo grant IS the env grant. Verified
+  live: a variable set through the API arrives verbatim in the granted
+  agent's container file and in no other agent's, and the stored row is
+  ciphertext.
+
+- **Personal agents get a private RAG brain.** Every user's personal
+  collection ("My knowledge") is now the assistant's long-term memory of
+  that user, created lazily and bound to the owner + their assistant only:
+  chat distills land there (alongside the owner-scoped ambient copy —
+  search merges dedupe), and personal research reports index there instead
+  of sitting unreachable in the activity index. A personal assistant now
+  retrieves as its **owner's proxy** — the owner's channels, boards, plans,
+  and distilled history, exactly what the owner could retrieve and nothing
+  more (org agents keep their board-policy scope). Org-wide research
+  reports get an `orgWide` payload + matching scope clause, so they're
+  finally retrievable at all. Also fixes agent-key RAG search 502ing on a
+  uuid cast in the team-binding clause.
+
+- **Personal assistants inherit their owner's reach for read + draft — with the
+  grant friction gone and introspection in its place.** Boards were the one
+  policy-gated hole: the board listing showed an assistant its owner's boards
+  while the board interior 403'd it, and the only path onto a board was an
+  editor's hand. Now a personal assistant adds *itself* to any board its owner
+  can read (`POST /api/boards/{id}/agents/self` — one step, own row only,
+  audited), removes itself the same way, and for boards the owner cannot see
+  files a request (`/api/boards/{id}/agent-requests`) that lands in the
+  editors' approvals queue as a sixth approval kind (`board_access`) with a
+  one-press Approve/Decline card in Board settings → Agents — approve grants
+  and closes atomically, decline notifies the requester's owner. The board's
+  agent policy stays authoritative throughout; nothing here widens it.
+
+- **Personal-content privacy pass + multiplayer research.** Personal-agent
+  output is now private to its owner everywhere: PA-created documents, KB
+  docs, research reports, and generated media carry the owner's
+  `owner_user_id` and default to `private` (org agents keep publishing
+  org-wide). Research is scoped like plans: you see your own runs, runs
+  shared with you, and org-wide (agent-initiated) runs — and it's now
+  **multiplayer**: a `research_members` table, `/api/research/:id/members`
+  (share by email, owner-only, with notification + automatic editor grant
+  on the report artifact; collaborators can leave), and an avatar-stack
+  share UI in the run header mirroring plan sharing. Briefings only
+  surface research you own or were invited to.
+
+### Fixed
+
+- **Platform hardening: one API dialect, a modular UI kit, a complete SDK.**
+  A two-sided audit (all 162 API routes; the whole component tree) worked
+  through to zero: a guard module (`requireUser`/`requireAdmin`/
+  `requirePerm`/`requireView`/`parseBody`/`actorOf`) replaced ~160
+  hand-rolled auth prologues and ~90 body validations; 400s now name the
+  first zod issue; audit logging landed on every sensitive mutation that
+  lacked it (agent secrets, endpoint key rotations, gateway keys, agent
+  edits, cron lifecycle, KB creates, ACL grants); a provider key moved
+  out of a GET query string; org-wide views (cost, fleet, inference)
+  gained real authz. The kit grew Tabs, Checkbox/Toggle, SectionHeader,
+  Segmented, DropdownMenu, SaveButton, CopyButton, Chip modes, and
+  EmptyState variants — then the eight worst offender surfaces were swept
+  onto them at visual parity. The SDK now exports every primitive and
+  type a third-party app needs. Config writes are PUT; actions are POST.
+
+- **Platform sub-agents (Models → Platform).** Talaria's own workers are
+  now first-class, named agents — separate from the Hermes fleet, each a
+  model-agnostic harness with its own skills for one internal job: Muse
+  (prompt-editing everywhere), Distiller (chat → private-brain distills),
+  Concluder (relay closing summaries), Catalog writer (model blurbs),
+  Judge (ticket outcome review), and Briefer (view briefings; fixed to
+  your personal assistant by design). Each agent's model is configured
+  granularly on the new Models → Platform tab — an admin pick wins while
+  it routes, otherwise the job's auto chain keeps working untouched (the
+  Judge's pick shares judge_config with the Guard panel, one source of
+  truth). All platform work is now metered under `platform:<agent>`
+  callers, so spend per sub-agent is attributable.
+
+- **Proactive agent outreach (#59).** Agents stop waiting to be asked, two
+  ways. **`message_user`** — the first agent→human write path: a governed MCP
+  tool that starts (or continues) a real chat conversation with a teammate
+  plus an inbox notification deep-linked to it (`/comms?a=…&x=…`). Personal
+  assistants can only reach their owner; every agent↔person pair is
+  rate-capped per day (the declined-send reason goes back to the agent so it
+  can adapt). **The check-in sweep** — opt-in (master switch off by default
+  AND per-agent flags, Admin → Proactive outreach): each opted-in agent
+  periodically gets an automated turn through its OWN persona gateway showing
+  its stale/blocked/waiting work and its recent outreach ("don't repeat
+  yourself"), and acts through its normal tools — ticket comment, channel
+  post, or message_user — so everything stays attributed, board-policy-gated,
+  guard-visible, and ledger-metered. `outreach_events` logs every check-in
+  and DM (caps, repeat-avoidance, admin visibility). Verified live: with
+  nothing stale Jax replied NOTHING_TO_SURFACE; given a 96h-blocked
+  high-priority ticket he chose to DM the board owner through message_user —
+  message in the conversation, notification in the inbox, reasoning in the
+  log — and the dedupe context correctly suppressed a near-duplicate
+  follow-up; owner-only + daily-cap + unknown-target guards all refuse with
+  plain-language reasons.
+
+### Changed
+
+- **Reading a thread clears its bell rows.** Opening an agent chat, plan, or
+  research discussion advanced the read cursor — the unread pill went away —
+  but the notification rows pointing at the thread never learned, so the bell
+  kept counting a thread you were visibly reading, and the only way to clear
+  it was clicking the notification itself. The read route now sweeps: when
+  the advanced cursor covers the thread's latest turn, the bell rows pointing
+  at that thread (this reader's, at the href the writer filed) mark read
+  alongside it. The href is computed by the same function the writer uses to
+  file it, so the two ends cannot drift apart, and a read that stops short of
+  the latest turn still leaves the bell alone — there is genuinely something
+  left to read. The response carries how many rows cleared, so the client
+  refetches the bell only when it actually changed; a failed sweep logs and
+  still returns the cursor's ok (marking read must not 500 because the bell
+  hiccupped).
+
+- **Reasoning effort reaches the primary chat surfaces.** Comms agent DMs and
+  the assistant panel now offer an effort chip on the composer rail, right
+  aligned just left of the send tile — but only when the model's own catalog
+  metadata vouches for levels. OpenRouter-style catalogs publish
+  `reasoning.supported_efforts` per model; that list is extracted into the
+  stored per-model catalog metadata at the same moment an admin adds models on
+  /models (the live-catalog refresh the model adder already triggers), so the
+  picker lists exactly the levels the provider says the model accepts and
+  nothing else. A model that publishes no levels gets no chip, and its requests
+  carry no `reasoning_effort` at all. Server-side, `/api/chat` and the inbox
+  focus command validate the pick against the same metadata (a persona id is
+  resolved to the model actually serving it, tiers included), send it as
+  `reasoning_effort` on the outbound turn, and honor the effort of a QUEUED
+  message on the chained turn that covers it (stamped on the message row,
+  re-validated before the chain runs). Tool-offering gateway turns keep the
+  `'none'` workaround — function tools and an effort cannot share a request.
+  Verified: `npx tsc --noEmit`, `npm test` (2476 passing, including new
+  coverage for the catalog extraction, the pool intersection, the persona
+  resolution, and the transport bodies), `npm run typecheck`, plus a live
+  catalog read against OpenRouter confirming every `supported_efforts` list
+  arrives on a model that also advertises the `reasoning_effort` parameter.
+
+- **Release channels: nightly, RC, and stable images on GHCR.** A `rc`
+  branch stages release candidates, a `testing` branch feeds a nightly
+  (03:17 UTC), and one release workflow publishes both plus the stable
+  path: a `vX.Y.Z-rc.N` tag on `rc` builds image `X.Y.Z-rc.N` + moving
+  `rc` and opens a GitHub prerelease; a `vX.Y.Z` tag builds the version +
+  moving `latest`; the nightly publishes `nightly` + `nightly-YYYYMMDD`
+  with no Release (365 prereleases a year is tag noise with no reader).
+  The channel resolution lives in one `resolve` job that fails loud on
+  malformed tags — nothing silently falls through to `latest`. Publishes
+  are gated by calling ci.yml as a reusable workflow, so "what gates a
+  release" and "what gates a PR" are the same list and cannot drift. Git
+  tags are the version authority (the `package.json` versions stay
+  decorative and unread); the workflow never commits a version bump. The
+  image carries its identity as OCI labels + `TALARIA_VERSION`
+  (`unknown` on local builds, which is simply true of a local build).
+  Operators consume a channel with a committed override —
+  `docker compose -f docker/compose.yml -f docker/compose.registry.yml
+  up -d --no-build` with `TALARIA_CHANNEL` pinning the tag — and the
+  default checkout-build path is byte-identical to before (the base
+  compose file changed comments only, verified by diffing
+  `docker compose config`). The model, the tag grammar, and the
+  one-time GHCR visibility flip: `RELEASING.md`.
+
+- **RELEASING.md says how main actually merges.** The branch table claimed PRs
+  land "rebase-merged"; they land as merge commits, each merge subject carrying
+  the PR number. Corrected so the doc a release follows matches the history it
+  walks.
+
+- **Research searches on proven capability, not on hope**: a model is only handed the
+  search stage when something proves it can search — a probe or catalog that measured it
+  browsing, or a checked search backend (SearXNG) the model can drive through a tool. An
+  admin's assignment of a blind model used to be assumed native: the run asked plain
+  weights for cited findings and got a fluent uncited brief (or a 502). Now that
+  assignment is honored through the tool path, and a workspace with no proven search path
+  refuses to start, naming what to connect (`NO_SEARCH_REASON`) instead of paying a model
+  to answer from memory.
+- The tool path is actually taken. `planSearch` always said which path a run would use,
+  but only the model id reached the search stage — a `tool` plan was silently run as a
+  native completion. The plan's supplier now rides the checkpoint and `searchStage` picks
+  the transport to match.
+
+- **Rooms and threads ring the rail without being opened.** A message in a
+  channel you're not looking at, a reply landing in an agent thread you walked
+  away from, a run finishing while you read email — all of it now moves the
+  interface the moment it happens, on whatever page you're on, over a single
+  event stream per tab (two used to open: one for toasts, one for the brief —
+  each a dedicated server subscriber).
+
+- **Self-hosters — env auth is removed entirely.** `AUTH_USERS`, `AUTH_PASSWORD_ENABLED` and
+  `AUTH_ADMIN_EMAILS` are ignored after this upgrade (no import path). A fresh instance has
+  zero users: the first visit offers `/claim`, and the account created there (email + password,
+  or the first Google sign-in when Google login is enabled) becomes the admin — first claim
+  wins, so reach the claim screen before exposing a fresh instance publicly. Existing users
+  keep their stored roles; re-create password sign-in via Admin → People (or Google).
+  `AUTH_ALLOWED_*` gates Google sign-ins only now — password accounts are admitted by the
+  admin who creates them.
+- External SDK consumers only: API renames — `/api/plan/:id/doc|draft` → `/api/plans/…`; singular
+  `/api/inbox/focus/conversation` folded into `/api/inbox/focus/conversations/$id` (with `current`
+  sentinel); `/api/profile` → `/api/me`. Validation-failure bodies are now zod-issue 400s across
+  ~90 routes (was a mix of 400/422/custom); 401/403 split fixed on four task endpoints; 500s no
+  longer echo `e.message`.
+
+### Added
+
+- **Sending while a reply streams no longer interrupts it — anywhere in the
+  turn.** The server queue (`queue: true` + the chained follow-up turn) has
+  always existed, but a message sent during the FIRST turn's opening window —
+  after the request leaves, before the response headers carry the
+  conversation id back, which the server can hold for minutes behind a
+  restarting agent — took the fresh-send path and started a second stream,
+  forking the thread. Those messages are now held locally and flushed the
+  moment the id lands (or re-sent as a fresh turn if the first one died
+  without producing one); a hold never leaks across a thread switch, and
+  attachments stay live while streaming because the queue carries them. Stop
+  now means stop, too: the turn freezes what was on screen instead of the
+  live-resume poller re-animating the server's copy until it finished anyway.
+  Verified: `npx tsc --noEmit`, `npm run typecheck` (0 errors), `npm test`
+  (2476 passing), plus the queue paths walked by hand in the running app.
+
+- **Sign-up domains + the instance's own address.** Two kinds of domain,
+  deliberately separate. EMAIL sign-up domains (Admin → Org): prove
+  ownership via a DNS TXT record at `_talaria-verify.<domain>` and anyone
+  with a matching address may self-join — verification is mandatory, so
+  nobody claims gmail.com. The HOSTING domain verifies by a self-fetch
+  round trip: the server requests its own identity beacon through the
+  candidate domain and checks the instance id that answers — proof DNS,
+  routing, and TLS land on THIS deployment. Once verified it is the
+  canonical base URL for MCP OAuth callbacks and links.
+
+- **Skeletons were invisible.** The entire skeleton system (and tiptap
+  table borders, and the grey status dots) painted with `var(--theme-line)`
+  — a variable that never existed as raw CSS. One root alias fixes every
+  shimmer at once.
+
+- **Stale `/knowledge/<docId>` links open the document.** The #316 href
+  repair moved every retrieved-doc writer to the `?doc=` permalink — but the
+  copies already out in the world (hrefs baked into notification emails,
+  Qdrant payloads until the next reindex regenerates them) still arrive as
+  the one-segment form, which the route parses as a *space*: the roster
+  holds no such space, the view falls to the first space's overview, and the
+  click that promised a document quietly opens a folder — the same quiet
+  wrong answer the `?r=` net already casts for research. Knowledge now
+  resolves it the way `?doc=` resolves: a path segment that names no space
+  in the loaded roster but names a document is that stale shape, and it
+  redirects (replace) to the document's own space with the document open.
+  A segment that names neither stays on the overview as before, and the
+  selection memory does not record the pending segment as a space.
+
+- **Storage**: production refuses the published dev S3 password at the internal-mode use-time
+  doors (env.ts promised this guard; it didn't exist until now).
+- check-invariants grew three tripwires: inline-serving only via `serveUpload`, same-origin-fetch
+  census at zero, popover census.
+
+### Fixed
+
+- **`talaria deploy` honors `COMPOSE_FILE` — the registry-image flow works
+  through the wrappers, no build on the host.** Export the layered file list
+  (`docker/compose.yml:docker/compose.registry.yml[:your-vm override]`) and
+  every deploy leaf drops its explicit `-f` (docker's own precedence puts -f
+  ABOVE the env, so honoring the env means stepping aside); registry mode
+  pulls `talaria searxng-config` fail-fast and `up` runs WITHOUT `--build` —
+  the override swaps the image but cannot remove the base's `build:` key, so
+  a build would tag the checkout as the registry ref. `talaria service
+  install` captures the env into the systemd unit, and the env-drift warning
+  scans every file in the list (so `TALARIA_CHANNEL` and per-override knobs
+  join the checked set). Verified: `bun talaria deploy up/update/down` argv
+  under COMPOSE_FILE asserted in the CLI suite (pull-before-up ordering, no
+  --build, die-on-pull-failure), unit text with and without the env, drift
+  across a layered override, and the unset path byte-identical to before.
+
+- **Talaria Desktop — a Tauri v2 multitenant shell around Talaria instances
+  (`desktop/`, [`docs/DESKTOP.md`](./docs/DESKTOP.md)).** One window, two
+  views: the launcher's welcome screen (the only local frontend — wing mark
+  on the signature dither, Mercury typography, the instance list, add), and
+  the active instance's own web UI as the entire window — the interior is
+  always the real UI, never a second codebase. Switching lives INSIDE the
+  product: the desktop switcher (`ui/src/components/app/DesktopSwitcher.svelte`)
+  wears the current instance's identity beside the logo in the nav rail and
+  in the login screen's corner, rendering only inside the shell
+  (`inDesktopShell()`, feature-detected — a browser gets nothing);
+  Ctrl/Cmd+Shift+H opens the launcher even on instances whose deployed UI
+  predates the switcher. Adding an instance validates it against the
+  instance beacon (`/api/well-known/talaria-instance`) and dedupes by
+  instance uuid; each instance webview gets its own data directory, so
+  sessions on the same host at different ports never collide, and hidden
+  webviews stay loaded (SSE survives a switch). Instance origins are granted
+  exactly three commands at runtime (list / activate / show-welcome) via
+  Tauri's dynamic-ACL — remote content can switch instances and nothing
+  else. `decorations: false` (no GTK titlebar where the WM shows none).
+  Gates: `bun run desktop:check` runs in a devbox and CI's new `desktop`
+  job; the GUI runs on the host — the devbox image gained the webkit2gtk
+  build deps. Verified live: devbox instance + the real hosted
+  `talaria.outcroplabs.com` added through the dialog, signed in, and
+  switched between via the in-UI switcher; the active instance fills the
+  window at any size (an earlier persistent-sidebar design stacked the two
+  webviews vertically inside WebKitGTK and drowned the app — exactly-one-
+  visible-webview is the fix; manual bounds remain as belt-and-suspenders).
+
+- **Talaria Desktop ships installers for all three desktops, built and
+  attached by CI (`.github/workflows/desktop-package.yml`,
+  [`docs/DESKTOP.md`](./docs/DESKTOP.md)).** Tauri's bundlers cover linux
+  deb/rpm/AppImage, macOS as one universal build, and windows nsis (plus an
+  `.msi` when the version has no pre-release part — Windows product versions
+  have a numeric fourth field, so a `v0.2.0-rc.1` release ships the `.exe`
+  rather than an `.msi` claiming to be `0.2.0`); the two targets Tauri has none
+  of — Arch's pacman and flatpak — are built from one staged FHS tree in
+  `desktop/packaging/` (`stage.sh`, then `pack-pacman.sh`, or
+  `flatpak-builder` against the GNOME 50 runtime). The bundle targets moved
+  out of the previously-empty `targets` list into per-platform config files
+  (`tauri.linux.conf.json`, `tauri.windows.conf.json`,
+  `tauri.macos.conf.json`), so `tauri build` produces that platform's
+  installers instead of a bare binary — and the released version is merged in
+  at build time (`--config`), because the tag is the version authority
+  (RELEASING.md) and nothing in the repo carries a released version. On a
+  `vX.Y.Z[-rc.N]` tag, `release.yml` calls the workflow once the image is
+  pushed and every installer lands on that GitHub Release with a
+  `SHA256SUMS`; a push to main touching `desktop/` leaves the same set as
+  workflow artifacts. Nothing is signed or notarized — no Apple Developer
+  certificate and no Windows signing key exist here — so macOS wants a
+  right-click → Open the first time and Windows warns through SmartScreen.
+  Verified: `bun run desktop:check` green (fmt, clippy, 14 tests,
+  svelte-check); a local `tauri build` produced the release binary and a
+  `.deb` stamped with the injected version (`Version: 0.0.0-test`,
+  `Depends: libwebkit2gtk-4.1-0, libgtk-3-0`); `packaging/linux/*.sh` turned
+  that binary into a `.pkg.tar.zst` that `pacman -Qip` reads back
+  (`talaria-desktop-bin 0.2.0_rc.1-1`, deps `webkit2gtk-4.1`/`gtk3`, x86_64).
+  The full matrix then ran in CI
+  ([run](https://github.com/outcrop-labs/talaria/actions/runs/35064711777)):
+  six jobs green, producing
+  `Talaria_<v>_amd64.{deb,AppImage}`, `Talaria-<v>-1.x86_64.rpm`,
+  `Talaria-<v>-x86_64.pkg.tar.zst`, `Talaria-<v>-x86_64.flatpak`,
+  `Talaria_<v>_universal.dmg` + `.app.zip`, and the NSIS `.exe` — whose
+  control metadata, `pacman -Qip` output, DMG/PE headers and the AppImage's
+  ELF were all read back afterwards. Two of those runs earned their keep:
+  flatpak-builder needs `eu-strip` (elfutils), and the msi bundler refuses a
+  pre-release version, hence the conditional `.msi`. A third did: the
+  CI-built AppImage aborted on Arch (`Could not create surfaceless EGL
+  display: EGL_BAD_ALLOC`) — bisected to linuxdeploy's bundled
+  `libwayland-client.so.0`, excluded by a second repack pass
+  (`packaging/linux/repack-appimage.sh`) — and the repacked artifact was then
+  run on that same host: window up, the registered instance loaded.
+  Each platform's own job then proves the artifact comes up, not merely that
+  it built
+  ([run](https://github.com/outcrop-labs/talaria/actions/runs/35098785546)):
+  macOS verifies the dmg (`disk image (Apple_HFS : 4): verified`) and launches
+  the .app (still running 20 s later), windows installs the installer it just
+  produced and launches what it installed
+  (`C:\Users\…\AppData\Local\Talaria\talaria-desktop.exe`, still running), and
+  the deb, rpm, pacman and flatpak packages were each installed in a clean
+  container of their own distribution (Ubuntu, Fedora, Arch). What stays
+  unverified is what no runner can be: Gatekeeper and SmartScreen as a user
+  meets them — an artifact built on a runner was never quarantined — and
+  session isolation on macOS/Windows, which `data_directory` does not provide.
+
+### Changed
+
+- **Talaria is an app platform.** Apps are self-contained codebases in
+  `apps/<slug>/` that compile INTO the deployment and load as native
+  surfaces — work views, manage views, settings tabs — on the same
+  router, design system, and session as core. Each app can ship its own
+  API (`/api/apps/<slug>/*` with an authenticated user handed to every
+  handler), a migrations-free per-app document store, and MCP tools for
+  agents that register in the MCP registry (badged "app") under the SAME
+  granular governance — per-agent assignment, tool subsets, per-person
+  access, gateway-enforced, dispatched in-process. Apps are
+  explicit-grant: enabling one gives members nothing until an admin
+  allows its views per person. Manage → Apps has Installed + Discover:
+  a marketplace catalog (community + official, configurable index) and
+  install-from-any-git-URL — a shallow clone into `apps/` IS the
+  install; dev picks it up live, prod flags "awaiting build". Built on
+  `@talaria/sdk` (docs/SDK.md); `apps/contacts` is the reference.
+
+- **`talaria` — one TypeScript CLI for everything the bash scripts did.**
+  ~1,600 lines of shell across eleven scripts are now a zero-dependency
+  `cli/` package run directly under bun (`bun talaria …`), with a flat
+  tree: `setup`, `dev`, `worktree`, `reset`, `box`, `deploy`,
+  `backup`/`restore`. Every ported script is deleted in the same commit
+  that replaces it and every doc reference rewritten — no shims, no dual
+  sources of truth. The CLI is dependency-injected end to end
+  (`run(ctx, args)` with exec/pipe/readLine/env/isTTY/now behind one Ctx
+  interface), so all 126 of its tests run against planted process
+  behavior with no mocks. Safety rails survive structurally rather than
+  by careful quoting: reset's SQL runs as `psql -c` argv with
+  `ON_ERROR_STOP=1` (the bash's stdin-swallowing `read` trap is
+  impossible now), restore streams `gunzip | psql` (dumps never sit in a
+  buffer), and secrets land only in 0600 files. Two latent bash bugs the
+  port's live round-trips surfaced are fixed: worktree creation died on
+  container-name conflicts with the main stack whenever the main stack
+  was up (its compose up is now scoped to the two services a worktree
+  actually owns), and `dev` inside a worktree silently adopted the MAIN
+  stack's containers under the default compose project (it now aims at
+  `talaria-wt-<name>` with ports lifted from the worktree's own ui/.env).
+  `deploy` wraps exactly the commands CONTAINER.md documents and prints
+  each one before running it — a test reads the doc at runtime and
+  asserts the argv is character-for-character identical, so the doc and
+  the CLI cannot drift; it also resolves `DOCKER_GID` from the socket and
+  warns when a shell export is missing from `docker/.env` (the drift trap
+  the doc warns about, detected before it bites). `setup` now also installs
+  a bare `talaria` command on your PATH — a two-line sh shim in bun's bin
+  dir that runs the invoking checkout's CLI from anywhere (re-running
+  setup elsewhere repoints it; `TALARIA_BIN_DIR` overrides the location),
+  with a warning when the target dir isn't on PATH. Legacy checkouts:
+  re-run `bun talaria setup` to repoint the `git wt` alias at the CLI.
+  The runtime-coupled scripts (`update-restart.mjs`, `chassis.template.yml`,
+  `skills/`, the smoke/invariant checks) stay where they are — CI and the
+  prod image call them by path.
+
+- **Task workflows speak Rust**: `/api/workflows` and `/api/workflows/{id}` —
+  the list (any member; workflows ground what agents will be told), create,
+  the field-at-a-time patch, and delete. The match/skills/toolkits payload
+  rides as jsonb the DB itself orders, so both runtimes read the same bytes
+  back; and the group's quiet corners held: there is no 404 (a missed id
+  still answers ok), and an empty patch runs no SQL at all — which is why it
+  answers ok even for a garbage `{id}` while a one-field patch takes the
+  recorded platform-500 divergence. The zod array surface behind the body
+  (element checks before array length, trim before length, unknown keys
+  stripped at every level) is probed against the ui's own zod and pinned in
+  the api's tests.
+
+- **Teams speak Rust, and the identity-proxy model crosses with them**:
+  `/api/teams`, `/api/teams/{id}`, and `/api/teams/{id}/members` — the list
+  (with live member counts), create/rename/delete (owner-gated; boards
+  survive team deletion as personal boards), and the member plane (add by
+  email with re-role on conflict, remove that never removes an owner). The
+  list is the port's first ACTING-user surface: a personal assistant calling
+  with its `tak_` key acts as its owner, a general agent or a rejected
+  credential resolves to nobody, and the owner's admin role gates the
+  assistant's elevation. Byte-diffed against TS for anon, member, and admin
+  callers plus both agent shapes — reads, write cycles, the 405s with their
+  `allow` headers, and the full 400 table (the plain-Email check, the enum
+  role with its `.default('member')`, and the uuid body member).
+
+- **Teams**: `renameTeam`/`deleteTeam` landed — owner-gated route + minimal UI + the functions'
+  first tests.
+
+- **Templates view (Manage → Templates).** Templates managed in one place
+  instead of a modal buried in board settings: tabbed by consumer
+  (Tickets · Plans, with counts), deep-linked down to the selected
+  template (`/templates?tab=plan&t=…`), context menus, list + detail
+  layout with rendered skeleton preview, blur-saving name, and prompt-only
+  agent guidance behind tooltips. The body edits in the full workspace
+  editor — rich editing, Muse prompt-drafting, and NEW version history
+  (template bodies snapshot on save with author attribution, served
+  through /api/history like souls and skills). The old template library
+  modal is deleted; board settings links out. **Muse is harnessed for
+  skeletons**: hard structural rules (## sections only, 3–6 of them,
+  placeholder hints or empty stubs — never content, under 25 lines, and a
+  request for a finished document still returns only the skeleton) —
+  adversarially verified live: a "14-step process in full detail" ask and
+  a "fully written project plan" bait both came back as ~17-line
+  skeletons.
+
+- **The admin console's first five groups speak Rust**:
+  `/api/agent-role-templates` (built-in + own role templates, the shadowing
+  rules), `/api/admin/password-accounts` (create/reset/remove — the password
+  hashes itself never ride the audit log), `/api/admin/google-client` and its
+  `/login` sibling (status, sealed client config, login toggle), and
+  `/api/admin/instance` (the hosting domain and its self-fetch verification).
+  `/api/admin/permissions` joins them, and its PUT body is the port's first
+  zod union: probed against zod 4.3.6, only a string userId failing the uuid
+  format check surfaces its own message (`Invalid UUID`) — every other
+  both-branches-fail shape collapses to `Invalid input` — and that table is
+  pinned in the Rust tests. All five byte-diffed against TS across anon,
+  member, and admin callers, including the 405s with their `allow` headers,
+  the full 400 table, and restore-safe write cycles on both runtimes over the
+  same dev database. One recorded divergence (docs/RUST-MIGRATION.md):
+  clearing the instance domain works from Rust and cannot from TS, whose
+  driver writes JSON null as SQL NULL and answers the clear with a leaked
+  Postgres constraint sentence.
+
+- **The admin tail speaks Rust — all fifteen admin routes, the secrets
+  inventory, and the engine halves behind them.** Settings, users, the
+  secrets inventory, encryption, domains, invites, email, search, judge,
+  outreach, guardrails, platform-agents, storage, apps, and the
+  workspace-secrets admin console crossed together, carrying their engines:
+  `secret_health` (presence and provenance over every store that holds a
+  sealed value — never the value), the rotation engine (unit-verified, not
+  fired on a shared dev box), invites with their email half, the email
+  config and test send, search reachability, the apps discovery/enable
+  plane, and the nine-action workspace-secrets union. The slice's real work
+  was fidelity to zod's own rejections: every body was re-probed against the
+  TS oracle and rewritten onto the grown `body.rs` helper set (the enum's
+  `Invalid option: expected one of` with no received clause, `expected int,
+  received number`, the literal's `expected true`, custom grammar sentences,
+  and the tri-state `nullish_member` that tells an absent patch key from a
+  null one). Verified by a 60-case byte-diff; the diff caught a silent-200
+  bug (an invalid role enum value was dropped, not refused), a doubled
+  backslash in SQL that 500'd the encryption GET, and the guard findings'
+  float4 confidence decoding into an empty list. `talaria dev` now lifts
+  `SEARXNG_URL` for the Rust process so the search panel's env flag agrees
+  with its own probe.
+
+- **The adoption's live stage tells the truth about a dead edge.** The GET
+  answered `edge-ready` whenever the state row carried a port and blue was
+  still serving — a condition the first fleet adoption actually reached
+  with the edge container down (the bad tag above): a poller sailed past
+  the hold and repointed a proxy at a port nothing answered on. The stage
+  is now derived against the containers themselves: the edge running is
+  `edge-ready`, edge_port set but the edge down is `edge-pending`, and the
+  panel shows it with a Retry button (the adopt POST on blue replays the
+  edge's compose and waits — it cannot cut over, so no confirm).
+
+- **The API is moving to Rust, and the first slice is already serving**: a new `api/`
+  crate (axum + sqlx) ports the backend batch by batch while the app keeps working — a
+  loopback proxy in the TS server forwards migrated prefixes to it
+  (`TALARIA_RUST_API_URL`; unset is the byte-identical TS-serves-everything default, and
+  there is deliberately no fallback when it is set). Batch 1, the LLM gateway
+  (`/api/llm/v1/*`), is done: models and chat/completions — streaming included, with the
+  relay metering tokens and booking the ledger whichever end the stream comes to, so a
+  client that hangs up mid-stream is still recorded because the provider still bills —
+  per-key caps and throttling, rate limits, secretbox unseal pinned by two-way
+  cross-language vectors, and the confab guard riding the relay in all four postures
+  (observe records, annotate warns in-stream, strict scrubs). `talaria dev` gains
+  `TALARIA_API=on` to raise the api as a sidecar (adopting one already on the port,
+  degrading to a warn on a box without cargo), the devbox image carries the pinned
+  toolchain, and CI gates the crate (fmt + clippy + the pure unit suite —
+  service-dependent tests stay local, by the house rule). Roadmap and coexistence rules:
+  `docs/RUST-MIGRATION.md`. Verified: models byte-diffed against TS on the same dev DB;
+  live streaming and non-streaming completions through a real provider with
+  `usage_events` and `guard_findings` rows checked after each guard posture, including a
+  strict-mode redaction of a model-invented credential; the sidecar's spawn, adopt and
+  no-cargo paths; the devbox image building the whole crate, C toolchain and all.
+
+- **The api no longer times requests out.** The Rust router carried a 30s
+  `TimeoutLayer` (503 on expiry) that the TS server it replaced never had —
+  a port-scaffolding pick that broke every legitimately slow surface it
+  touched: long agent turns and tool-call chains, Google syncs, heavy reads.
+  Routes it broke had been getting carved out of it one at a time into a
+  second "streaming" stack until the split was mostly scar tissue. The layer
+  is gone and the two stacks are merged back into one: requests fail on
+  errors — panics, refused guards, upstream call budgets — never on a clock.
+
+- **The API reference is generated from the Rust sources again** — the #293
+  extractor port. `gen-docs` now reads the router table
+  (`api/src/routes/mod.rs`, cross-checking each registration's 405
+  allow-string against its parsed method set) and the handler modules under
+  `api/src/routes/**`: guards → the Auth column, `crate::body` member calls
+  → the body tables, `json!` literals → Returns, `StatusCode` literals →
+  Statuses, `// doc:` comment runs → notes. The three TS residents still
+  serving `healthz`, `admin/update` and the app dispatch keep their TS-extracted
+  rows, and a resident wins over any router twin (`/api/healthz` answers
+  direct-binary checks in Rust; the documented surface is the proxy's). The
+  frozen-at-cutover posture and its hand-maintenance are gone, and the
+  `--check` drift tripwire in `bun run check` is live again. Regenerating
+  against the freeze, every divergence fell into named classes: zod
+  spellings → `crate::body` vocabulary, the honest 400s the TS extractor
+  couldn't see (Rust spells body-parse refusals in the handler), error-shape
+  Returns fixed to the real payloads, `/api/mcp/gw/{server}` re-sourced to
+  its Rust module, and richer port response shapes (`{agent, registered}`,
+  muse POST now an SSE stream).
+
+### Fixed
+
+- **The app talks like a teammate now.** Every piece of user-facing copy was
+  swept: "command your fleet" language is gone (the login line is "Sign in
+  and get to work.", the brand tagline is "get things done together"), the
+  word "fleet" retired from anything a person reads in favor of your agents
+  and the team, em dashes came out of copy (~430 across components, routes,
+  and the server strings the UI shows, replaced with plain punctuation:
+  two sentences, a colon, a comma), and the stiffest sentences were
+  shortened and loosened. What was deliberately kept: the em dash as a
+  "no value" glyph in tables, en dashes in ranges, LLM prompt prose, and
+  code comments. Verified: svelte-check 0 errors, the full suite green
+  (2569 tests), and a residual scan shows no em dashes or fleet words left
+  in rendered copy.
+
+- **The app updates itself, from inside the app.** Admin → Security carries an
+  Updates panel: it shows the running commit, checks the remote, and an
+  Update now button that pulls the latest release, installs, builds into a
+  staging directory and swaps it in, then restarts the server with no shell
+  involved. Manual by default; an Update automatically toggle (off until
+  someone turns it on) has the scheduled check install updates on its own
+  every few hours. The restart is the careful part: the build lands in
+  `ui/dist-next` and is swapped for `dist` only when complete (a live server
+  never serves a half-built bundle), the old `dist` stays behind one
+  generation as a manual rollback, and a detached helper waits for the port,
+  boots the replacement, and waits for it to answer. The new server is the
+  one that marks the update done, and an update that never lands shows as
+  exactly that rather than a fake success. Safety rails: a dirty checkout on
+  the server is refused rather than pulled over, dev installs never update
+  (vite reloads on its own), and `TALARIA_UPDATER=off` is the kill switch for
+  deployments supervised some other way. Verified live: the panel's API
+  answers in dev with mode dev and refuses to apply there, a check against
+  the real remote reports behind/ahead honestly, the auto-update toggle
+  round-trips and persists, and 9 unit tests cover mode gating, dirty-tree
+  refusal, and the running → done/failed reconciliation across a restart.
+
+- **The assistant can actually read the mail it manages.** Two new fleet
+  tools: `read_email` (one full message by id — headers plus the complete
+  plain-text body, decoded from Gmail's nested MIME tree, capped at 20k
+  characters) because the listing tool only ever returned snippets, and
+  `search_drive` (find files by name in the Drive the agent acts for, with
+  links — read-only). Both are modelled and simulated in the fitness toolbox,
+  same as every tool in the kit, and both refuse a legacy shared-key caller
+  the way the existing Google tools do.
+
+- **The assistant panel answers with its tools now, steered by the view.** The
+  sidebar conversation used to open every detached turn with "Tools are
+  disabled" — disarming the owner's personal assistant made every live-state
+  question ("how many tickets are on Finance?") unanswerable except by
+  invention. The reply harness now arms the persona's own governed tool loop,
+  and the prompt tells it which tools to reach for FIRST: the ones that match
+  the view the panel is floating over (Boards → list_boards/list_tickets/
+  get_ticket/comment; Knowledge → search_knowledge and the KB reads; Comms →
+  channels and messaging; …), then its other tools when those cannot answer.
+  The surface tool lists are server-side, keyed by the same id the briefs use,
+  so a client cannot write tool names into the prompt. Inbox queue-card
+  sign-offs keep their own path: propose through the command branch, confirm
+  with a click — never the detached conversation. Three inbox-reply fixtures
+  were reworded to the new contract (unbacked action claims still fail;
+  Inbox-card action ids still fail; live-state answers must be grounded in
+  tools or hedged, never invented).
+
+- **The assistant panel follows the conversation again.** Two scroll fixes:
+  sending now jumps to your message (a reader parked up in history used to
+  stay parked while the reply streamed below the fold), and opening or
+  expanding the panel starts at the NEWEST turn — the transcript remounts at
+  scrollTop 0 on every expand, which used to open on the oldest of what
+  loaded.
+
+- **The assistant panel no longer runs past the app height when docked.** In
+  flow mode (≥1400px) the panel's aside turned `relative` with no height of
+  its own, and a block child of the collapse pane is auto-height — so the
+  flex-1 transcript stopped scrolling and grew to its full content height,
+  pushing the composer below the bottom of the app. The aside now carries the
+  nav rail's own methodology (`h-full` inside the `h-full` CollapsePane), so
+  header, scrolling transcript, and composer always compose to exactly the
+  pane's height. Overlay mode (below 1400px) was already definite
+  (`absolute inset-y-0`) and is unchanged.
+
+- **The assistant panel's composer rail matches the platform.** Attach sits
+  left, and the effort chip + send/stop tile are right-aligned (the rail had
+  no spacer, so everything packed against the left edge). The footer's
+  standing "No tools" readout is gone — it now says "Tools on", which since
+  the tools change above is the truth.
+
+- **The auth gate no longer flashes the dashboard before login.** The app shell
+  painted its skeleton (rail, strip, content cards) while the session read was
+  in flight and in the beat before the /login navigation landed — fine for a
+  signed-in reload, the dashboard flashing at every signed-out visitor. The
+  gate now holds on the Mercury ground with the brand mark centered until the
+  session resolves; a failed read keeps the real chrome with its retry, as
+  before.
+
+- **The bell: your notification inbox, finally openable — and clearable.** A
+  bell in the top strip counts what's unread (a failed read shows `!`, never
+  a silent 0) and drops the latest notifications: click a row to go there
+  and mark it read in one motion, or clear everything with **Mark all read**.
+  Until now nothing ever marked a notification read — the count could only
+  grow. Marking by href (everything pointing at the page you opened) joins
+  marking by id, and the inbox brief updates with the bell so the two can't
+  disagree.
+
+- **The boards list view's columns sit under their headers again.** Every
+  row carried the hover dither field (`dither-fill`), and the field's
+  canvas was inserted as a DIRECT child of the `<tr>` — but a table row
+  admits only cells, so the browser wrapped the stray canvas in an
+  anonymous cell of its own: a whole phantom column ahead of the checkbox,
+  walking every real column one to the right of its header. The header said
+  Status over nothing, the status pill sat under Priority, priorities under
+  Assignees, and the timestamps hung past the last header with none at all.
+  The canvas now hosts inside the row's first cell — it is absolutely
+  positioned against the row either way, so the full-row field is unchanged
+  (verified: 0 painted cells at rest, the full row painted on pointerenter).
+  One fix, every table that carries the field on a row: board list rows,
+  the fitness matrix's rows, and the public artifact tables.
+
+- **The brief family speaks Rust — the assistant's morning document crosses
+  with its reader.** Five routes under one proxy prefix: the document read
+  (sweep-if-due, then the fold), the line verdict (check/dismiss/restore
+  with its three 404 sentences), the read cursor (monotonic — it only ever
+  advances), the delegation pair (grant/revoke the reply-without-asking
+  privilege, where granting permission for an already-written reply means
+  sending it), and the draft verdict — the one route in the family that
+  causes something to leave, so it is the one that refuses on staleness
+  (409 "They have said something since this was written…" rather than a
+  400). The engine's reader plane crossed with them: the absent literal
+  `{absent, nextAt, agent}` across all three kinds, the fold as typed
+  structs in TS declaration order (a resolved line sinks but is never
+  dropped), and the delegation state machine. Verified by a 39-case
+  byte-diff against TS on the same sessions — the document read literally
+  (all three `tz` variants), every validation shape, the check-off
+  idempotence and the restore ladder, the grant→release(sent:1)→revoke
+  cycle, the foreign-channel 403, and the reply ladder. The brief is one
+  document per person per day, so the harness warms the shared document
+  first and then works per-side probe rows and seeded resolved pairs. The
+  diff caught four decode bugs on its first run — the same two families as
+  before (uuid columns decoded as `Option<String>` need `::text`; INT4 seq
+  columns decoded as i64 need `::int8`). The `pending` absent kind is
+  unreachable at the harness's hours and is pinned at the engine level
+  only.
+
+- **The browser tab carries the instance's company name.** Admins can name
+  the workspace (Admin → org tab, beside the hosting domain); until then
+  the tab reads "Talaria", and once named it reads "Talaria - <name>" — on
+  every route and the sign-in page too, because the name rides the public
+  identity beacon alongside the instance id rather than an authed read.
+  Purely cosmetic: nothing else derives from it. The name trims on save,
+  whitespace-only is refused (clearing is an explicit null an accidental
+  save can never perform), and every set lands in the audit log.
+
+- **The bundled Hermes github skill is pruned from fleet containers, and a
+  Talaria-authored `github` skill stands in its place.** The image ships a
+  gh-CLI-first github pack whose preflight (`gh auth status`) and auth
+  workflows pitch exactly what Talaria forbids — there is no `gh` in the
+  containers, and the credential is injected at git time, never visible.
+  Observed live on outcrop (2026-09-15): an agent opened the skill, noted it
+  "assumes gh CLI", and recovered only because its memory notes said
+  otherwise. The pack joins `CONFLICTING_SKILL_PACKS` (pruned on every
+  container roll, the same mechanism as the five note-tool packs), while
+  `scripts/skills/github` seeds the shared root with a signpost skill at the
+  exact name agents reach for — plain git over https, the workbench opens
+  the PR, no auth to set up — routing to the talaria-toolkit and
+  workbench-driving sections that carry the methodology. Verified in an
+  isolated worktree render: the skill seeds into the fleet shared root and
+  lists as a platform (admin-locked) skill beside the toolkit; the prune
+  path matches the live dogfood container's pack layout.
+
+- **The channels family speaks Rust — the comms plane crosses whole**: all
+  ten `/api/channels*` route files (list/create, `{id}` detail/rename/
+  archive/hard-delete, the agents pair, conclude, the SSE events stream, the
+  members pair, messages GET/POST, message PATCH/DELETE, reactions, read)
+  serve from Rust under one proxy prefix, which subsumes the plan-draft
+  mount's old path-shape entry. The engine crossed with them (the message
+  insert/list/edit/delete, members, agents, the reaction toggle, read
+  cursors, the relay-summary conclude, the hard-delete's detached qdrant
+  purge) plus the reply plane it drags along — @mention notifications, the
+  DM peer notify, and `trigger_agent_replies` with its streamed replies.
+  The POST's echo carries a different wire shape than the list (the insert's
+  RETURNING selects no guard/editedAt — the keys are absent, not null), so
+  the port serializes the page shape and projects the insert shape from it;
+  the agent GET strips `guard` outright, keeping findings — flagged
+  content's verbatim excerpt — out of model contexts. Verified by a
+  102-case byte-diff against TS on the same sessions (reads across the
+  channel kinds, a restore-safe write cycle through both runtimes, the 405
+  `allow` tables, the zod 400 table with its parse-order probes), which
+  caught three port bugs the unit tests hadn't — a mis-numbered bind that
+  500'd every message edit, the rename's min-length bound, and a fractional
+  `since` that floored where TS fails.
+
+- **The code probe's clock starts at the candidate, not the engine.** The
+  fitness code tasks ran inside a 250ms window that also covered building
+  the boa context evaluating them — on a loaded host (CI's runners proved
+  it) a cold context build ate the whole window and a correct solution
+  failed with "the code did not run". The evaluator now signals when the
+  engine is built and the window times only the candidate's script;
+  an infinite loop still costs its 250ms exactly as before.
+
+### Added
+
+- **The coding harness is the mandated path for code work — named, keyed,
+  unblocked, and skilled.** Four pieces, one contract: the agent that was
+  handed a harness drives it instead of hand-coding. The dispatch brief now
+  NAMES the agent's selected harness (the platform knows workbench_harness —
+  no "whichever is configured" hedging) and points at `doctor` for its guide;
+  hand-editing files is reserved for trivial one-line fixes, and a harness
+  the agent cannot drive is a report_gap, never a reason to silently
+  hand-code. Claude Code's auth finds the org's model access wherever it
+  lives, through a three-step lookup that never needs an "anthropic" endpoint
+  to be configured (the platform's endpoint rows are OpenAI-shaped by
+  construction): a REFERENCE TABLE of providers with known fixed
+  Anthropic-protocol surfaces (anthropic native; OpenRouter's first-party
+  /api/anthropic; DeepSeek's /anthropic) answers by slug with zero network;
+  otherwise a one-time probe of {base}/v1/messages — the row's own base URL,
+  or the origin of the provider's native base — verifies the surface and
+  CACHES the verdict on the endpoint row (llm_endpoints.anthropic_base), so
+  the network half runs at most once per endpoint for the life of the
+  install; the hit becomes ANTHROPIC_BASE_URL with the same key riding
+  ANTHROPIC_AUTH_TOKEN — no OAuth login — and the no-key-anywhere case now
+  WARNS at render instead of arming a harness that fails silently
+  (the silence that hid harness non-use across the fleet: zero Claude Code
+  sessions ever, zero workbench jobs ever, Hermes hand-coding everything).
+  Every armed harness also runs unattended-clean and skilled: onboarding
+  cleared and permissions bypassed via read-only policy files mounted at its
+  CLAUDE_CONFIG_DIR paths, the fleet skills HOST DIRECTORY bind-mounted
+  directly into Claude Code's and Codex's skill directories (a symlink to
+  the container-only /opt/skills dangles on the host, and the docker daemon
+  answers a dangling bind source with mkdir "file exists" — the first roll
+  after the initial merge 500'd every agent up; the direct mount is the
+  fix), and AGENTS.md/CLAUDE.md pointers in the workspace telling every
+  harness where the skills live.
+
+- **The Comms composer is one honest tile.** The gold send tile now becomes
+  the stop square while a reply streams (ChatComposer's `onStop`) instead of
+  stop appearing beside submit, the "⏎ send" key-hint chip is gone — the
+  component itself deleted, its three remaining uses (comms rail, the channel
+  composer, the research start bar) removed with it — and the effort picker
+  was rebuilt in the agent-chip anatomy: strong-border mono chip with the
+  3×12 bar meter marking where the pick sits on the model's ladder, opening
+  the §7 popover with a bar meter on every row.
+
+- **The conversations family speaks Rust — the durable chat crosses.**
+  `/api/chat` (whole-path, the family's only EXACT proxy entry), the
+  `/api/conversations` list and `{id}` detail/rename, and `/api/dms` serve
+  from Rust. The engine crossed as `chat_persist`: the gateway stream is
+  teed through a bounded channel whose receiver is the client's SSE body,
+  while the drain that persists history runs detached — an in-progress reply
+  survives a client hang-up. The persist half carries the throttle (400ms,
+  first event immediate), the token ledger (real usage or a char estimate),
+  the confab guard awaited AHEAD of the plan-brain index and the @mention
+  mail (strict mode redacts before either takes its copy), the Titler's
+  first-exchange rename, and the queued-message continuation chain — a
+  message that landed mid-stream starts the next turn, honoring the effort
+  stamped on its own row against the model that will actually run it. The
+  proxy's response-header allow-list gained `x-conversation-id` and
+  `x-message-id`: the SPA learns a new conversation's id from the header.
+  Verified by a 69-case byte-diff against TS (reads across chat/plan/
+  research access, the dms table, the zod 400 table, a write cycle through
+  both runtimes including a queued 202 and a collaborator's rename, and
+  the SSE streams byte-identical via a manifest-absent model's canned
+  reply), plus a live-agent turn proving stream → persist → ledger with
+  real token counts end to end. The diff caught three port bugs: the
+  detail select's one nullable column (`guard` — null on the wire, not
+  `[]`), the DM's foreign-key 400 carrying sqlx's decorated message where
+  TS answers the bare Postgres sentence, and the SSE header order
+  (`cache-control` belongs above `content-type`).
+
+- **The cutover lands — the TS API is deleted; the Rust api is the only
+  runtime.** The `cutover/remove-ts-api` branch takes the coexistence
+  posture the port left and finishes it, in waves: the proxy flip deletes
+  every migrated TS route file and their server halves (SvelteKit keeps the
+  SPA and the four permanent TS residents — healthz, `admin/update`, the
+  rule-10 `/api/apps/` dispatch, the app-MCP gateway); the server prune and
+  the scheduler crossing dissolve the flip predicate (`TALARIA_SCHEDULER`
+  shrinks to a kill switch: unset arms, `off` stands down, `rust` is the
+  retired handoff value that reads as unset — the api is the only thing left
+  to arm); `server-entry.js` owns the api binary in production, adopting an
+  instance already on the port or spawning one (`TALARIA_API_BIN`), wiring
+  the proxy hop itself, and dying with its child so the supervisor restarts
+  the pair; and the api ships **pre-built** — `api/package.Dockerfile`
+  compiles the musl-static binary in CI only, published as
+  `ghcr.io/outcrop-labs/talaria-api` (tag `main` on every api-touching
+  push — the same ref Dokploy's checkout builds build — plus immutable
+  `sha-<sha12>` provenance tags and channel tags mirroring the app image's),
+  and the app image consumes it with `COPY --from`, so no GitHub runner,
+  operator machine, or customer VM ever compiles Rust to build the app
+  image. healthz grew the third check (`rustApi`) and `talaria dev` now
+  spawns the api by default (`TALARIA_API=off` opts out). The generated API
+  reference froze at the cutover: its Source links point at the Rust modules
+  (`api/src/routes/**`), `gen-docs` skips `docs/api/**` until its extractor is
+  ported to the Rust router table (#293), and the CLI reference generates as
+  before.
+
+- **The dead TS engines go too — `ui/src/server` is down to its live tier.**
+  The cutover deleted the routes; this strip deletes what they left behind:
+  ~106 files (54 engines + their tests) removed by a reachability audit from
+  the live seeds (server-entry, `app.ts`, the four residents, the SDK, the
+  non-server `ui/src` tree, the CLI and mcp packages) — the boards/tasks/
+  statuses/approvals/notifications engines, the scheduler and its lease,
+  inbox-focus, research/outreach/work-dispatch/briefing, the Google engines,
+  fleet render/reconcile/preflight/brain/crons, storage/uploads, retrieval,
+  channels/comms, daily-brief, muse route halves, and more. Two near-misses
+  the audit caught before they shipped: `app.ts` itself (the SPA's SSR entry —
+  vite dev-middleware, the server build, and boot's `migrate` hook all reach
+  through it) was restored, and `scripts/gen-github-jwt-vectors.mjs` (wired
+  into `api:vectors`) imported the deleted signer, so it was deleted and the
+  fixture it generated is now frozen ground truth for
+  `api/tests/github_jwt.rs`. The TS updater's scheduled check went with the
+  scheduler: the job never registers, the manual check/apply halves and the
+  admin panel stay, and the hold is documented at both ends (the Rust api
+  cannot rebuild and restart its own binary — see `api/src/jobs.rs`). Two
+  invariant rules retired with the surfaces they watched (the
+  hand-written-harness census and the toolbox anchor re-pointed at the Rust
+  fitness toolbox); a new cross-language pin test reads
+  `OFF_BOARD_STATUSES` out of `api/src/statuses.rs` and fails if the TS
+  client's copy ever drifts (fail-closed: an unparseable literal parses to
+  an empty list and fails). The surviving ~54-file tier is everything the
+  residents, the SDK, and the SPA shell actually import — plus the comment
+  and doc citations across the tree re-pointed at their Rust twins.
+
+### Changed
+
+- **The default admin can still sign in when Google owns the login screen.**
+  With a Google client connected the login screen is now the clean
+  one-button experience it should be — Continue with Google centered, no
+  password card — and the fallback is a quiet "Admin sign-in" whisper in the
+  corner that unfolds a password card (Escape closes it). Verified live in
+  both themes: Google button centered, no centered password form, the corner
+  disclosure opens and closes, and the admin signs in through it.
+
+- **The dithered selector on segmented controls no longer washes out its
+  label.** The quiet band's ink weight is halved (0.78 → 0.5): the selection
+  still reads unmistakably against the tile, but the label reads through it.
+  Verified live on /agents — the highlighted option's label is clearly
+  legible over the texture.
+
+- **The edge container's image tag never existed.** The pinned default
+  `traefik:v3.6.7-alpine` was a tag nobody ever published — the 3.6 line
+  tops at `v3.6.25` and carries no `-alpine` variants — so adoption's
+  first fleet run brought green up and then silently never started the
+  edge at all. The default is now the real `v3.6.25` (the plain tag is
+  Alpine-based and carries the busybox `wget` the edge healthcheck needs).
+
+- **The effort picker now appears on deployments upgraded past its ship.** The
+  stored per-model catalog's only production writer is the model-adder modal,
+  so a catalog written before the effort extraction had no levels for anyone
+  and the chip stayed hidden until an admin re-opened the modal. An empty read
+  on `/api/models/efforts` now runs a one-time backfill — the serving
+  endpoints' catalogs are refreshed live (once per endpoint; a catalog written
+  by the current build never re-triggers, and a failed refresh retries no more
+  than every five minutes) — and the route answers from the fresh store. Also:
+  the agent chip is gone from the chat composer rails (Comms, Plan, Research) —
+  the sidebar owns the conversation partner, and the rail's right side is now
+  tier, effort, then the send/stop tile.
+
+- **The Files column headers breathe again.** The NAME/KIND/OWNER/MODIFIED
+  band sat flush under the toolbar with bottom-only padding — two borders
+  kissing and labels squeezed. It now carries its own margin from the
+  toolbar and even vertical padding, so the toolbar / column heads / rows
+  stack reads as three deliberate zones.
+
+### Added
+
+- **The Files view's selection is a first-class column, and the keyboard is a
+  first-class citizen.** The row checkbox used to float over the kind icon and
+  swap with it on hover — hovering a folder made it a checkbox and hid what the
+  thing WAS. Selection is now a permanent leading column: every row shows its
+  checkbox to the LEFT of its icon, always visible, and the column header
+  carries a select-all checkbox (⌘A's visible twin). The keyboard speaks the
+  desktop file-manager grammar: arrows move focus and select (Finder/Explorer
+  style), Shift extends from the anchor, ⌘/Ctrl+arrows move focus alone,
+  Space toggles, Enter or → opens, ← climbs a folder level, Home/End jump;
+  the grid view steps by tile instead. Rows carry a visible focus ring, focus
+  heals to the nearest surviving row after a delete, and modifier-clicks on a
+  row body select instead of opening. Verified end-to-end in a browser:
+  icons never disappear, select-all agrees with ⌘A, shift-ranges extend from
+  checkbox and body clicks alike, and every key above does what it says.
+
+### Fixed
+
+- **The first product reads speak Rust**: `/api/agents` (the fleet list with
+  tiers and per-agent access), `/api/apps` (the enabled-app manifest),
+  `/api/activity` (the merged feed with the admins-only audit kind), and
+  `/api/cost` (the full ledger overview — priced windows, per-model,
+  per-agent, per-day) all serve from the Rust api, byte-diffed against TS on
+  the same sessions for admin, member, and anonymous callers. The proxy gains
+  an exact-match list alongside its prefixes: `/api/agents` and `/api/apps`
+  are whole-path migrations because their sub-routes (`register`,
+  `heartbeat`, the app-server gateway) stay TS until their batches.
+
+- **The fitness plane speaks Rust — the probe/eval/adversarial battery,
+  its run engine, its archive, and the whole verdict surface.**
+  `/api/admin/model-fitness` crossed as one route over six engine
+  slices: the matrix (every gateway model against every harness),
+  capabilities, health, value (the money view — workload shares, the
+  USD-per-ready-run arithmetic), detail with its live-run block and
+  stale-run sweeping, estimate (fixture arithmetic over the last
+  archived report), and transcripts, plus the action union —
+  start/stop/clear/forget with the arming ladder (role checks, the
+  adversary-may-not-be-the-candidate refusal, concurrency 1..8).
+  Three port principles came out of it and now hold crate-wide. Stored
+  jsonb never rides a typed struct to the wire: Postgres keeps object
+  keys in its own canonical order and TS passes the parsed blob
+  through untouched, so every stored-object passthrough (the detail
+  `record`, run rows, both views' `index`) rides the raw
+  `serde_json::Value` while typed parses serve decisions only.
+  `JSON.stringify` prints whole floats as integers (`1`, not `1.0`),
+  so responses go through a `js_numberify` walk. And serde_json's
+  default float parse is best-effort — it can land one ULP off the
+  parsed digits, which a 456KB otherwise byte-identical body proved on
+  a stored `0.9090909090909091` — so the `float_roundtrip` feature is
+  on for every float the API parses. Verified by a 27-case byte-diff
+  against TS (all seven views × archived/unarchived/missing models,
+  the estimate query-param folds, the anon/member gates, and eleven
+  POST bodies): 21 byte-identical, 6 exactly the app-harness boundary
+  (app-shipped harnesses are TS-only by rule 10, so their counts and
+  arithmetic differ on any install with an enabled app — recorded
+  under divergences), 0 unexplained. The start body's zod union was
+  probed against the verbatim TS schema: any parse failure collapses
+  to the union's `"Invalid input"`, and only bound failures surface
+  the arm's own sentence, in field order. The diff also found a TS
+  bug, not a port one: `clear` 500s on TS for every model
+  (`setSetting(key, null)` writes SQL NULL into a NOT NULL column) —
+  Rust keeps the working behavior and the bug is flagged for the TS
+  side.
+
+- **The fitness suite measures what it claims, and an admin can see when it
+  is the suite that is wrong.** A sweep of the model-test results on the dev
+  and dogfood instances found a ton of gaps that were ours, not the models' —
+  checkers grading one wording of an answer they claimed to grade by
+  substance, fixtures that could not fail, and bugs wearing model names. Four
+  tranches, all landing here. **The health band is loud**: `ours` — fixtures
+  every tested model got wrong, which is a bug in the fixture wearing a
+  model's name — is stamped into one cached settings row whenever the archive
+  changes (a run finishing, Clear, Forget) and rides the matrix payload the
+  default tab already polls, so a poll stays one small row rather than a
+  re-fold; when it is above zero the matrix shows a line saying so, and the
+  line is a door to the health tab that names the fixtures. **New fixtures
+  grade behavior prose could not see**: the concluder must prefer the
+  benchmark it actually ran (concluder "benchmark"), the briefer must carry
+  the numbers forward rather than cite the text it was summarizing (briefer
+  "ledger"), a knowledge answer must surface the doc that was found
+  (hermes_knowledge title find), a spent secret handle must not be presented
+  as still spendable (secret_handles spent-position), and the long-context
+  needle is planted fresh per run so a cached answer cannot pass
+  (long-context fresh needle). **Graded behavior is stated where the model
+  reads it**: the Google harness states the calendar-conflict rule in its
+  system prompt and carries a silent-move trap for it; the muse taxonomy
+  grades refusal-vs-downgrade and is pinned by test; research plans can
+  discover prior runs. **The vision probe draws a shape**: solid colour
+  fields only sample a tint — a fourth trial (black square on white, named
+  against circle and triangle) is answered only by parsing spatial structure,
+  and the answer is in the pixels and nowhere else, so nothing in the prompt
+  lets a non-reading model fake it. **report_gap's kind is graded as the
+  contract states it**: the work-session gap fixture now fails a kind
+  written as a sentence or filed as "misc", because repeats are matched on
+  the slug and a sentence per phrasing means recurrence never accumulates.
+  Verified: 1952 lib tests green (surface 94, defs 396, probes 84, toolbox
+  78 among them), `bun run check` and svelte-check clean; the health band's
+  four tests cover stamp-on-run, restamp-on-clear, restamp-on-forget, and
+  the matrix reading the cached row without folding the archive.
+
+- **The fleet plane speaks Rust — every remaining `/api/fleet` route
+  plus the agents register/heartbeat pair.** Sixteen route files
+  crossed as one unit: the ops overview (`/api/fleet` — heartbeats
+  seeded from defs, container reality filling the liveness gap so the
+  online count can't disagree with the roster dots), containers, the
+  defs listing, crons fleet-wide and per-agent with the per-job trio
+  (delete/edit/pause-resume-run), the per-agent secrets vault door
+  (PUT set, DELETE with its query-param fallback when the body won't
+  parse), the seven-verb control union (up/stop/restart/roll/retire/
+  unretire/delete with the audit-before-act discipline and the catch
+  arm that flattens every interior failure into the generic 500),
+  render, endpoints CRUD (create/patch/delete/available), federate,
+  and reconcile — plus `/api/agents/register` and
+  `/api/agents/{id}/heartbeat`, the shared-key fleet plane, now
+  reading `TALARIA_AGENT_KEY` in the Rust process too. Two wire rules
+  the byte-diff pinned down and now hold crate-wide: pg `numeric`
+  columns ride the TS wire as STRINGS (postgres.js passes them through
+  unparsed — a stored 3 is `"3"` — so the endpoints listing selects
+  `::text`), and timestamptz-to-ms TRUNCATES where a pg cast would
+  round (JS `Date` drops the fractional millisecond — the overview's
+  last-used is `trunc(extract(epoch …)·1000)::bigint`). The heartbeat's
+  non-uuid path 500s on both sides for different reasons that meet in
+  the same envelope (postgres.js's throw vs the `$1::uuid` cast) —
+  byte-verified. Verified by a 64-case byte-diff against TS (every GET
+  × admin/member/anon gates, the zod 400 tables, the render POST, the
+  endpoints CRUD round-trip on per-side fixtures, `available` against
+  an unreachable baseUrl, fake-id 404s, and the register→heartbeat
+  round-trip with the real org key): 64 byte-identical, 0 normalized,
+  0 unexplained; lifecycle verbs on real agents stayed SKIP-listed
+  (container writes on the shared dev box). One divergence recorded:
+  a permissions-read failure at the crons/secrets gate answers
+  fail-closed 403 where TS would 500. The defs detail trio
+  (`defs/$id`, `/edit`, `/versions`) stays TS for the next slice.
+
+- **The fleet stops queueing on its own database.** Nothing in the API rate
+  limits agents — but four mechanical throttles made parallel load *feel*
+  throttled, and all four are gone. The pg pool grows from the inherited 10 to
+  40 (`TALARIA_PG_POOL_MAX`, clamp 1–200) with a 15s acquire timeout
+  (`TALARIA_PG_ACQUIRE_TIMEOUT_MS`) so bursts queue instead of 500ing at 5s;
+  the UI's own pool moves from a hardcoded 10 to `TALARIA_UI_PG_POOL_MAX`
+  (default 20), both wired through compose's environment block (api 40 + ui
+  20 + migration 1 = 61 of the sidecar's 100). A warm agent turn — the whole
+  reason for the Rust port — stops paying ~7 serial pool checkouts before the
+  upstream call: the endpoints table serves from a 15s window (every
+  in-process writer drops it), the endpoint key decrypts once per 60s
+  (rotation invalidates), `tlk_` identities resolve from a 15s cache that
+  negative-caches unknown keys (revoke/policy edits reset it in-process), and
+  the gateway's four hot `app_settings` reads serve from a 15s layer that
+  `set_setting` invalidates. The OpenRouter US-pool fetch is single-flight
+  with a 60s failure backoff — one TTL lapse under N concurrent turns makes
+  one external fetch, not N × 10s hangs — and the shared HTTP client gains a
+  10s connect timeout. healthz reports `pgPool` (size/idle/max) and warns when
+  the pg ping lands slow with the pool drained, so future saturation is
+  visible rather than guessed at. And the Inbox's per-user turn lock comes
+  off the panel's own reads and state writes: GET /conversations/{id} serves
+  mid-turn (MVCC snapshots can't read half a write; the page's `working` flag
+  renders the in-flight reply) and a snooze mid-stream is a state change, not
+  a conflict — the lock stays on command and action POSTs, where seq
+  allocation and decision execution actually race.
+
+### Fixed
+
+- **The golden-image (VM) deploy is retired.** `scripts/image/` — the Proxmox
+  build/bootstrap/firstboot scripts and their systemd units — and
+  `docs/SELF-HOSTING.md`, which documented only them, are deleted. The
+  container deploy (docs/CONTAINER.md) is the self-hosting path: same app,
+  same env-var contract, a compose file instead of a VM template, and it
+  doesn't need a Proxmox host to provision one. References repointed
+  (README self-hosting pointer, doc index, CONTAINER.md intro).
+
+- **The Google OAuth client is registered in the Admin UI, not a .env file.**
+  Admin → Org → Google Workspace · OAuth client: paste the client ID, secret,
+  and an optional Workspace domain restriction; the secret is sealed
+  (AES-256-GCM) in the database and never shown again. The panel lists the
+  exact redirect URIs to authorize in Google Cloud Console — account connect,
+  org connect, and login — with copy buttons, which was the step the .env
+  workflow never helped with. The env vars remain as a fallback for scripted
+  deployments; the Admin-UI record wins when one exists, and removing it hands
+  control back to the env. Google LOGIN stays env-flag-gated
+  (AUTH_GOOGLE_ENABLED) on purpose — registering a workspace client must not
+  silently open a new way into the instance — but the flag now works with
+  credentials from either source.
+
+- **The inbox.focus family speaks Rust — the assistant's attention plane
+  crosses whole.** The focus queue, badge summary, viewed/snooze state,
+  card actions (with their confirmation tokens), the SSE command stream
+  that runs an instruction through the focus assistant, and the segmented
+  conversation picker serve from Rust under one proxy prefix — the
+  family's per-user lock spans the command stream and the state route, so
+  the prefix carries all eight paths. The engine crossed with them: the
+  four-source queue builder (approvals, tasks, comms, notifications) with
+  buckets and briefs, the action policy, the timeline, and the approvals
+  read; the assistant itself is a harness def and became the streaming
+  seam's first caller (`dispatch_transport` — gateway or fleet persona by
+  kind — plus `StreamOptions`). One recorded divergence, documented at the
+  route: on a client disconnect TS leaves the assistant row `streaming`
+  while the port finishes and persists the reply (the chat family's tee
+  philosophy). Verified by a 31-case byte-diff against TS on the same
+  sessions — the reads across anon/member/admin, the validation shapes,
+  and the writes through per-side seeded rows (mark_read consumes its row,
+  so each runtime acts on its own notification), plus three SSE command
+  streams byte-identical via a manifest-absent model's canned reply. The
+  diff caught six port bugs, worst among them a member leak in the
+  approvals source: TS splices the admin arm out of the WHERE clause for
+  members entirely, and the port's first shape (`or is_org = $2`) matched
+  every other person's personal actions. Also fixed: SSE frames carrying
+  `conversationId` snake_case (an enum's `rename_all` camelCases only the
+  variant tags — `rename_all_fields` does the fields; pinned by a test
+  because the compiler cannot see the difference), two Postgres
+  param-type 500s and a UUID-decode 500 in the picker, the summary's key
+  order, and the command stream's header order.
+
+- **The Inbox is a console.** Home rebuilt as one tab per work area — Inbox ·
+  Boards · Comms · Plans · Research · Docs · Fleet (admin-only) — each
+  pairing the area's live state with its recent activity, badges marking
+  where attention is needed, quick-action cards gone. Boards gets a queue
+  SIDEBAR (triage / review / blocked) with the FULL list per queue; audit
+  trails (board/channel activity) and the notifications feed are collapsed
+  by default. Failed work is a first-class signal: a plan whose last turn
+  errored and an errored research run both show "failed — open to
+  re-run/retry →" in their tabs and deep-link straight to the spot.
+
+- **The inbox took ~5 seconds; every RAG call stalled 3.6s.** The embedding
+  client's configured docker-internal hostname fails DNS slowly before
+  falling back — and the fallback was never remembered, so EVERY embed
+  (search, indexing, health probes) paid the stall. The resolved base is
+  now sticky. On top: `computeAlerts` ran its eight probes serially (now
+  one Promise.all + a 15s cache; 4.3s → 7ms) and three surfaces shelled
+  out to `docker ps` in the same breath (now a 5s cache). Home: 4.8s →
+  ~40ms warm; KB search: 36ms.
+
+- **The inherit path's edge-boot helper was born blind to docker.** The
+  helper runs the app image as its own non-root user, and its `docker run`
+  carried no `--group-add` — so the 0660 root:docker socket denied its
+  every call. The first shape's `docker inspect … 2>/dev/null | grep -q
+  true` read that denial as *the old container already stopped*, the wait
+  skipped, the compose refused, and the helper exited before the port ever
+  freed: the old container stopped itself for the one-time cut, the edge
+  never rose, and nothing served the port (a client VPS took exactly this
+  outage). The helper now carries the same host group ids as the app
+  container, and its script treats an unreachable daemon as a loud failure
+  with a breadcrumb — `edge-boot.log` in the update dir — instead of a
+  confident answer it never had.
+
+- **The integrations/google family speaks Rust — the whole OAuth pair, the
+  org plane, the user surfaces, the approval queue, and the agent plane,
+  twenty-one routes under one prefix.** Every door reads the same
+  connection rows, so the family crossed whole: the personal
+  connect+callback ladder (five deterministic refusal rungs), the org
+  plane (its own connect pair, status/targets/disconnect, provisioning,
+  live health probes), the per-surface user reads with their query-param
+  folds, the three user writes that draft through the approval queue
+  rather than send, the pending decide, and the agent surfaces —
+  `refuse_legacy` first, the `x-agent-name` must-equal-model check, then
+  a resolution rule where a personal assistant acts strictly as its
+  owner's connection and a fleet agent as the shared org account. The
+  gmail engine crossed as its own module; verified by a 69-case byte-diff
+  against TS on the same sessions plus two agent keys, including live
+  reads against the real org connection (calendar, drive, gmail, labels,
+  one full message) and the one designed round-trip: an agent drafts a
+  send, a member's verdict is refused, the admin's reject retires it —
+  nothing leaves the building. The diff caught two port bugs: the
+  targets wire's key order (embed the typed struct — its declaration
+  order is the wire order) and the provisioning filter that seats only
+  org agents in the send-as table. Also the port's first silent-trait
+  lesson: a non-`Send` form serializer held across an await in an engine
+  fn fails every handler that awaits it with a bodyless E0277 — scoped
+  and finished before the await now.
+
+- **The knowledgebase's first-ever landing stopped swallowing doc clicks.**
+  Land on `/knowledge` with no saved selection and the sidebar rendered the
+  first space's tree — but every doc click was a no-op, until you opened a
+  second space and came back. Two defects, one scene. The canonicalising
+  effect (put the first space in the URL) had returned at `!restored` on its
+  first run, and a plain `let` latch can never re-run an effect: on a landing
+  with nothing to restore, nothing ever changed the URL, so it stayed bare.
+  And on a bare URL a doc click called `setLoc(null, doc)` — which navigates
+  to that same bare URL. The latch is `$state` now, so the effect wakes when
+  the restore answers, and the restore's answer (`restoredSpace`) keeps the
+  first-space default from racing a real saved selection. The doc click
+  names its own space — the tree renders under the active space whether or
+  not the URL carries one. Verified end-to-end in a browser: first-ever
+  landing canonicalises to the first space, a saved selection still restores
+  to ITS space, a deleted space's memory still falls to the first space,
+  and a doc click on a fresh landing opens the document.
+
+- **The knowledgebase speaks Rust — all twelve kb.* route files crossed
+  whole** (spaces, docs, comments, backlinks, move, presence, search, public
+  slugs) with the ACL engine they share. The 107-case byte-diff found four
+  port bugs the unit tests hadn't: uuid binds where the column wanted none,
+  the search hit's raw-row wire shape, the float4 rank decode (f32→f64
+  promotion prints `…584` where JS's parseFloat prints `…522` — the faithful
+  path is `::text` then parse), and PG's bare sentence where sqlx's Display
+  wraps it.
+
+- **The last plain-JS sources are TypeScript now: `server-entry`, the svelte
+  config, and the service worker.** `server-entry.ts` is the one that
+  matters — it was outside the tsconfig `include`, so the production server
+  (env loading, static serving, the SSE pump, boot migrations, the Rust-api
+  supervisor) had never been typechecked; it now carries full types (the
+  dist bundle import is typed from `src/server/app.ts`, the one module
+  whose exports survive into it). `svelte.config.ts` is supported natively
+  by vite-plugin-svelte 6. The service worker moved from `public/sw.js`
+  (served verbatim) to `src/sw.ts` as a second client-build entry emitted
+  unhashed at `/sw.js` — the registration URL in browser-notify.ts is
+  unchanged — with a small dev middleware serving the same URL so
+  dev-mode registration keeps working. `bun server-entry.ts` replaces
+  `bun server-entry.js` in the start script, the container entrypoint, and
+  the image's runtime COPY.
+  The stdlib-only `.mjs` under `scripts/` and `docker/` stay as they are:
+  they must run under any node with no install, which `.ts` would break.
+  Verified: `bun run verify` green (typecheck now covering the entry), a
+  built-from-scratch `dist/` emits `sw.js` at the client root, and a boot
+  of the built server against a scratch database listens, answers
+  `/api/healthz`, and serves `/sw.js` with a JavaScript content type.
+
+### Fixed
+
+- **The launcher's add-instance dialog rendered behind the content that
+  opened it** — the welcome content sits at `z-10` and the dialog had no
+  z-index. Both overlays are `z-50` now.
+
+- **The mcp family speaks Rust — the org registry, the per-user connect
+  plane, the OAuth pair, and the agent gateway that relays (or refuses)
+  every tool call.** Eleven route files crossed: the per-agent roster
+  (members get server names only), the registry pair with its
+  create-and-sniff (a 401 challenge with resource metadata flips OAuth on),
+  me/mcp connect/disconnect with credentials sealed at rest, the
+  fleet-defs versioned MCP hook, the OAuth start/callback ladder, the test
+  probe, the icon fallback, the library shelf, and `/api/mcp/gw/{server}`
+  POST+GET — registered on the streaming router, because a legitimate
+  tools/call holds up to 120s and the GET is a live SSE stream. The
+  gateway keeps the family's security lines: identity resolved from the
+  credential (never the claimed name), the caller's OAuth token spent only
+  through the effective-server resolver, secret handles resolved on the way
+  OUT and never on results, the per-assignment tools gate, in-process
+  dispatch for the workbench, and SSE tools/list filtering that
+  re-serializes only `data:` frames. App servers stay TS by the port's
+  rule 10 — a STAY_TS hole in the coexistence proxy carves
+  `/api/mcp/gw/app-*` back out of the family's prefix. Verified by a
+  75-case byte-diff against TS with every network touch pinned to a
+  deterministic answer (loopback refused, `.invalid` DNS, and the real
+  loopback services: the builtin toolkit relay and the workbench's
+  in-process dispatch). The diff caught five port bugs the unit tests
+  could not: unaliased computed columns in the registry's row read (every
+  full-row read 500'd — sqlx's derived FromRow matches by output column
+  name), `created_by` bound with a uuid cast against a text column (every
+  created agent version 500'd), zod's `Invalid URL` sentence casing, the
+  icon route's bare 404 (no body, no content-type), and org discovery's
+  transport errors, which must read undici's shapes (`fetch failed`) --
+  reqwest's messages never reach a TS caller.
+
+- **The model-identity plane speaks Rust, closing batch 3**: `/api/models`
+  (the picker catalog — gateway rows carrying label and blurb from
+  OpenRouter's public catalog, plus the persona-resolved `effective` model),
+  `/api/models/efforts` (the composer's effort ladder for a persona or
+  catalog id, with the agent-configured default held against the levels the
+  model actually publishes), and `/api/admin/model-roles` (the Model Roles
+  panel — assignments, fitness issues, per-role effort preference, GET and
+  PUT). The three stand on one harness persona engine, so they crossed as
+  one slice and the engine came with them: the persona index's two-pass
+  claim (base ids first; alias tiers second with NO main-configured gate; no
+  main, no keys; every pool carries the fallbacks the runner can land on),
+  the effort ladder (provider catalog plus the admin declaration, which
+  replaces and never merges, with the once-only backfill for catalogs stored
+  before effort extraction existed), the model-info matcher (6h
+  stale-on-failure cache, `model_blurbs` override whose read error
+  propagates exactly as TS's `Promise.all` does), and the resolution chains
+  behind `effective` (pin→role→utility→env→first-routable; the member
+  allowlist gates every link except pin and env). Verified by a 37-case
+  byte-diff against TS on the same sessions — the full zod 400 table behind
+  the PUT, restore-safe write cycles run through both runtimes with the
+  audit rows mirroring, the 405s with their `allow` headers, a duplicate
+  `?model=` (URLSearchParams.get is first-wins), and the persona-configured
+  default read through a live config mutation after both runtimes' persona
+  caches expired. Three cases differ in array order alone — the recorded
+  localeCompare divergence, seen for the first time now that an endpoint
+  name carries a capital letter (TS collates `Z.ai/glm-5.3` last, byte
+  order puts it first). Two divergences recorded: the org-voice blurb
+  sweep's only TS trigger was the `/api/models` handler the proxy now
+  shadows, so it is dark in proxied environments until it ports as a real
+  scheduler job (batch 4) — Rust reads the rows, never writes them — and
+  the blurb clamp cuts at a char boundary where TS's UTF-16 `slice` can
+  split a surrogate pair.
+
+- **The @ picker froze at editor creation — and ticket threads never
+  offered agents.** MentionSuggest captured the mentionables array at
+  mount, but every surface builds that list with `$derived` over async
+  queries: the picker showed whoever had resolved by editor creation
+  (cached users, typically) and never the agents that land with the
+  fleet — and a list still empty at mount installed no picker at all,
+  leaving the @ key dead. Candidates are read live on every keystroke
+  now, and a ticket's discussion offers the board's agents ahead of its
+  members, addressed by label — the same grammar the channels read. The
+  description editor stays humans-only: a mention there notifies a
+  person, and no agent reads a description.
+
+- **The port merges — the Rust API is the backend of record.** PR #290
+  landed on main (2026-09-01): 216 of 219 TS route files serve from the Rust
+  crate in any proxied environment, the parity battery closed at 370 route
+  pairs byte-diffed against the TS oracle on the shared dev DB (every pair
+  either byte-identical or a recorded divergence — that record is the
+  contract, `docs/RUST-MIGRATION.md`), and the scheduler flip is armed in
+  dev (`TALARIA_SCHEDULER=rust` — the whole job table from `api/src/jobs.rs`,
+  TS's `startScheduler` stood down on the same value). CI gained the `api`
+  job: rustfmt, clippy `-D warnings`, and the crate's tests on the pinned
+  1.97.1 toolchain (`bun run api:check` runs the same gates locally). The
+  three permanent residents stay TS (`admin/update`, the rule-10 app
+  dispatch, and `healthz`); cutover — deleting the TS API behind the proxy —
+  is the one remaining step.
+
+- **The port's end state corrected: Rust is the backend, not the UI host.**
+  The roadmap's cutover batch said Rust would serve the SPA and `bun run
+  start` would become the Rust binary — that was never the ask. SvelteKit
+  keeps serving the SPA, its pages, and routing (TanStack stays the client
+  layer, untouched). Cutover now deletes the TS API — `ui/src/routes/api`
+  and the backend of `ui/src/server` — while the SvelteKit server remains
+  the one public origin, handing every `/api/*` request to Rust on loopback
+  (same-origin cookies, so the proxy hop graduates from scaffolding to the
+  permanent architecture). The musl build stage stays: it builds the Rust
+  backend process the prod image runs alongside the frontend server.
+
+- **The port's text-vs-typed bind crashes: three statements that could never
+  execute, found by auditing every query in the API.** sqlx declares each
+  bind's wire type from the Rust value — a `String` bind crosses as TEXT —
+  while the TS original's postgres.js let Postgres infer types per call.
+  A text bind ASSIGNED into a typed column is coerced and harmless; a text
+  bind COMPARED against one is a prepare-time `operator does not exist`
+  that nothing catches at authoring time. Three carriers had been live-dead
+  since the cutover: the 15-minute RAG sweep's four window queries all
+  compared the ISO watermark against `timestamptz` columns, and
+  `.unwrap_or_default()` ate the error — the sweep indexed nothing for
+  weeks while its watermark advanced, silently burning every window (the
+  mark needs a one-time reset on each instance so the repaired sweep
+  re-covers them; indexing is content-hash idempotent); the daily brief's
+  48h recency read 500'd on every still-current brief; the reindex run's
+  artifacts page died whenever an artifact existed (`any($1)` of text ids
+  against uuid). The casts now ride the binds (`$1::timestamptz`,
+  `$1::uuid[]`), a live-DB suite (`api/tests/typed_binds.rs`, `#[ignore]`d)
+  executes the three real carriers against the real schema, and reverting
+  any one cast has been shown to fail its test with the exact fleet error.
+  The same audit left the rest of the corpus clean: 910 of 968 statements
+  proven legal by EXPLAIN against the live schema, the bind-cast and
+  TS-parity sweeps converging on exactly these three, and the row-mapping
+  sweep on one latent nullability fix — the inbox undo read mapped a
+  nullable `outcome` column into a non-Option type, which now tolerates a
+  completed-without-outcome row instead of 500ing the undo.
+
+- **The profile speaks Rust**: `/api/me` — the three preference reads
+  (preferred model, platform-default reasoning effort, IANA zone) and the
+  profile PUT: display name (users row AND the live session, via the
+  KEEPTTL patch — the SPA's corner never waits for a re-login), the member
+  model gate (enforced at the route, not just hidden in the picker), and the
+  zone check. The zone validator is a probed contract, not a regex: TS asks
+  Intl to resolve the name, and node's and bun's ICUs were probed on a
+  100+-spelling table where they agreed on every row — IANA names match
+  CASE-INSENSITIVELY ("utc", "Etc/gmt+5" resolve), offset forms `±HH`,
+  `±HH:MM`, `±HHMM` resolve up to hour 23 / minute 59, and `Factory` is
+  refused. The port mirrors that grammar (chrono-tz's tzdb + a hand-rolled
+  offset parser) and pins the same table in its tests. The route migrates
+  by EXACT pathname — the me.* siblings (mcp, assistant, events) are their
+  own planes that move whole with their batches. Byte-diffed against TS on
+  the same DB: the full zod 400 table, the trim corners (a spaces-only name
+  is legal to zod and stores ""; a padded zone trims before it validates),
+  the application order (a name in one PUT lands before a refused
+  model/zone answers the same PUT — TS applies fields in sequence and the
+  port invents no transaction), the member gate's exact 403 sentence with no
+  write behind it, and the 405s.
+
+- **The release pipeline ran for the first time, and the nightly feed came back
+  to life.** No `v*` tag had ever existed here, and every scheduled nightly for
+  at least the eleven runs before 2026-09-16 had died as a `startup_failure` —
+  a run with no jobs and no logs, which is why the channel could be dead for
+  eleven days without anyone noticing. Cutting `v0.1.0-rc.1` surfaced three
+  defects that only a real run could: **(1)** a called workflow's jobs may
+  request no more than the CALLING JOB grants, so `release.yml`'s nested
+  `api-package` call was refused for asking `packages: write` under a
+  `contents: read` caller — the grants now sit on the calls, not raised
+  workflow-wide; **(2)** the installers' `attach` job ran `gh release upload`
+  without ever checking the repository out, and `gh` resolves the repository
+  from a local clone, so the first run stopped at the very last step
+  (`failed to run git: not a git repository`) with every artifact correct and
+  in hand; **(3)** `testing`, the ref a nightly builds, was three weeks stale
+  (a 2026-08-26 tree with no `api/` and no `desktop/`), so the first nightly
+  that got as far as building found directories that did not exist. All three
+  are fixed, the channel was advanced, and `v0.1.0-rc.1` published: GHCR
+  `0.1.0-rc.1` + `rc` for both the app image and the api package, a GitHub
+  prerelease carrying every installer plus a `SHA256SUMS`
+  ([release](https://github.com/outcrop-labs/talaria/actions/runs/35111577866)),
+  and the first working nightly in the channel's recorded history —
+  `nightly` + `nightly-YYYYMMDD`
+  ([nightly](https://github.com/outcrop-labs/talaria/actions/runs/35111665940)).
+  `RELEASING.md` now names the two ways a nightly stops for good: the 60-day
+  schedule rule, and a startup failure whose reason lives only in the run page's
+  banner. A second desktop-installer workflow, merged from a parallel session
+  after that release (triggering on the same `v*` tags, uploading to the same
+  release with `--clobber`, and asking Tauri for a `flatpak` bundle type it does
+  not have), was removed in favour of the one `release.yml` actually calls: one
+  publisher per tag.
+
+- **The retrieval plane speaks Rust — the reindex pair, the admin console,
+  and the rag family.** rag-backfill/rag-reindex crossed with real deps (the
+  artifact routing and the health probe beside them), then `admin.rag`
+  (status + run projections, the reranker config, space↔brain bindings, the
+  enqueue kicks), then the `/api/rag` family whole — the collection registry
+  the MCP `search_knowledge` tool resolves principals against, the member's
+  blanked binding matrix, and the search itself. The upgrade-status cache
+  invalidates from inside the process that rebuilds it.
+
+- **The runs engine and the scheduler cross — the port's flip.** The
+  durable-run core (Redis leases with CAS renew/release, every `runs` write
+  a CAS on `(id, lease_owner, state)`, the step-budget lease TTL, the
+  `awaiting` guard that parks rather than fails), the six run kinds, the
+  boards family with its dispatch re-entry, the SSE streams, and the whole
+  registered job table — comms-decay, outreach-sweep, price-refresh,
+  daily-digest, approval-escalation, notification-mail, run-reclaim,
+  daily-brief, mcp-library-refresh, update-check, with `maybeRewriteBlurbs`
+  a REAL job at last (dark in every proxied environment until now — its
+  only TS trigger was the `/api/models` handler the proxy shadows).
+  `TALARIA_SCHEDULER=rust` hands the whole schedule over in one slice —
+  stop-TS, arm-Rust, never both — and the arm refuses to fire until the
+  census's run kinds all have definitions. Schema ownership handed to sqlx
+  with it: the same `schema_migrations` discipline (per-statement sha256
+  bookkeeping, the same advisory lock, growth-only re-arm) now lives in
+  `api/src/db.rs`, and the TS array is frozen. `update-check`'s apply half
+  is a deliberate hold — it rebuilds `ui/dist` and restarts the bun process
+  it runs in, choreography that cannot restart the Rust binary — so its
+  auto half returns at cutover.
+
+- **The secrets family speaks Rust — the working vault crosses whole, and
+  the port's first cross-runtime cipher proof lands with it.** Six routes
+  under one proxy prefix: the collection (list/create/file/move/delete),
+  the folders pair (create/rename/delete/share in one union body), the
+  reveal (with its refusal ladder and the no-store header triad), the
+  share pair for people and agents, the one-shot relay, and the git
+  credential helper — the agent's door to `git.example.com`, which spends
+  a workspace credential or a minted relay and falls through to the GitHub
+  app token. The engine crossed with them: the vault's seal/open, the
+  credential selection that makes a single-entry doc a token
+  (`x-access-token`), the relay burn, and the folders' reveal-vs-spend
+  asymmetry. Verified by a 127-case byte-diff against TS on the same
+  sessions, with the interop proof as its centerpiece: both runtimes share
+  one database, so the harness seals the same literal through each
+  runtime and reveals it through both — the same value back every time,
+  which is what the secretbox port was for. GitHub app JWTs gained a
+  cross-language vector file (a committed fixture key, three clock
+  instants, byte-equality both ways). The diff caught three port bugs:
+  the listing's `distinct`/`order by` (Postgres requires the ordered
+  column in the select list — every listing 500'd), the move route's
+  admin thread (owner-only even for admins, as TS passes no isAdmin),
+  and the union body sentence (zod unions flatten every failure — a
+  non-object body included — to plain "Invalid input").
+
+- **The session plane now speaks both runtimes**: the second port batch's first slice is
+  serving — Redis `sess:<sid>` sessions (the shared store both runtimes read while the
+  port runs), `GET /api/auth/session` (user + denied views + effective permissions, read
+  from the DB so an admin's change lands without re-login), `POST /api/auth/logout`, and
+  `GET /api/users` — the fleet-wide auth oracle every `mcp/` agent authenticates through,
+  ported with its agent-caller resolution: per-agent `tak_` keys where the key proves
+  identity and `x-agent-name` can only narrow it, and the org-wide legacy key resolving
+  identified-but-untrusted while refusing outright a name that carries human privilege.
+  The proxy now forwards `Set-Cookie` plural-safe (a comma-joined multi-cookie header is
+  a corrupt one, and an auth plane that cannot clear its cookie through the boundary is
+  not ported). Verified: `/api/auth/session` and `/api/users` responses byte-identical
+  across the TS and Rust servers against the same Redis sessions (admin, member,
+  anonymous); a Rust-served logout observed immediately by TS; the oracle's accept /
+  wrong-name-refusal / 401 paths against a real `tak_` key, `last_used_at` landing and
+  the row restored after.
+
+- **The sidebar carries live unread counts for Comms, Plan, and Research.**
+  One endpoint (`GET /api/unreads`) sums what's waiting in each part of the
+  app — rooms plus agent chats under Comms, shared-plan turns under Plan,
+  unseen research runs under Research — using the same predicates the pills
+  on each surface show, so a badge can never disagree with the pills it
+  summarizes. The counts move live over the shared event stream and
+  self-heal on a 30-second floor; a failed read renders `!`, never a silent
+  0. Opening a research run is the seen gesture: its notifications clear
+  with it, and the badge and the bell empty together.
+
+- **The stale-close fired on live adoption holds — and its wrong closes
+  never healed.** A run in flight past an hour closed as failed even when
+  *this container* was the run's own retired orchestrator, alive and
+  serving the hold: the canary sat eighty minutes at a green adoption
+  hold, both doors 200, and the row said failed. The exemption is the
+  retirement itself — that run is ours and we are its proof of life. And
+  for rows the close already marked failed while the containers finished
+  the handover anyway, the reconcile now heals them to `done` when it can
+  prove the landing (this container is the rolled-to digest, nothing
+  retired is running, and the edge answers) — by hand no longer.
+
+- **The tail crosses — the last 27 TS route files proxy to Rust; coverage
+  closes at 216 of 219.** The remaining singles and the fleet defs detail
+  trio crossed as one sweep: the alert feed, home cards, global search (the
+  hand-rolled SearXNG federation over a local FTS pass), the Muse, the
+  inference ledger read, the join-code claim, the instance card at
+  `well-known/talaria-instance`, `me/assistant` (the agent-start trio), the
+  gap ledger (list + `{id}` resolve), the template library (list/create +
+  `{id}` patch/delete), the skill registry (list + `{owner}/{name}` CRUD),
+  the plans doc/members pair (with the plan-engine trio
+  `ensure_plan_doc`/`plan_tier`/`sync_plan_doc`), the agent plane under one
+  character prefix (`agent/gap`, `agent/problem`, `agent/message-user` — the
+  refusal paths 403 on a fake taskId before any ticket/board write — plus
+  `agent-media` both files and the role templates), the image describer
+  `/api/vision/describe`, the remembered-facts plane `memory/{id}`, and the
+  hire editor's versioned trio (`defs/{id}`, `/edit`, `/versions` —
+  `revertTo` of the current version writes nothing and answers
+  `created:false`; a fake endpoint 400s before any write). With the sweep
+  the proxy's residents are exactly three, all permanent: `admin/update`
+  (it rebuilds `ui/dist` and restarts the bun process it runs in —
+  redesign at cutover), the rule-10 app dispatch, and `healthz` (served by
+  both, never proxied). The byte-diff harness — 85 rows, 0 fail, 3
+  documented world-dependent divergences (alerts/home read rows their own
+  loops wrote; search federates live engines) — found four port bugs, all
+  fixed: zod's enum message for template kinds (`Invalid option: expected
+  one of "ticket"|"plan"` via `enum_member`), the skills file order (node's
+  readdir SORTS where tokio's `read_dir` returns raw getdents order — both
+  listing sites now sort), `me/assistant` PATCH's render propagation
+  (`renderFleet()` has no catch in `updatePersonalAgent`, so a render
+  failure 400s the whole PATCH with the version row already written and
+  standing; only docker restart/up stays best-effort), and the bare
+  secretbox message (`ensureAgentApiKey` propagates `open(existing.keyEnc)`
+  unwrapped — no wrapper sentence).
+
+- **The token ledger counts what providers actually bill** (#243): cache-write, cache-read
+  and reasoning tokens get their own `usage_events` columns, and `normalizeUsage` detects
+  each provider's shape from the payload — Anthropic native reports cache tokens OUTSIDE
+  `input_tokens` (the flat model understated), OpenAI-compatible folds cached input INTO
+  `prompt_tokens` at full price (it overstated). Cache writes bill at 1.25× input, reads at
+  0.1×; reasoning rides inside output, recorded for visibility. Volume views and the cost
+  cards total every kind now, with a standing "rate-card estimates, not invoices" footnote.
+- Gateway metering no longer escapes on abort: the streaming ledger write settles exactly
+  once from flush, client-cancel, or the request's abort signal — a client that hangs up
+  mid-stream is still billed by the provider, so it is still recorded. Non-streaming metering
+  books usage from failed responses too (a rejection without usage books nothing — a
+  rejection can't invent spend).
+
+### Added
+
+- **The update dir lives under the state root, not a baked absolute path.**
+  The image baked `TALARIA_UPDATE_DIR=/var/lib/talaria/update` — outside
+  every deployment's bind (fleet VMs bind only their
+  `/var/lib/talaria-<customer>` state dir), so the updater-owned compose
+  and slot env files landed in the orchestrator's writable layer, gone on
+  its next redeploy and invisible to a host-side inspection. The default
+  is now `${TALARIA_STATE_DIR}/update`, the Dockerfile stamp is gone, and
+  the variable is denylisted in slot renders so a stale baked value cannot
+  propagate into the project it broke.
+
+- **The update engine learns to render its slots.** The updater-owned
+  compose project now has a shape: one derived from the LIVE container on
+  every roll (env verbatim minus a denylist — the new image's version and
+  install signal must win, and the updater kill switch is dropped because
+  adoption is what flips it — same-path binds, docker gid, dns, the
+  sidecar network joined as external so it stays owned by the project that
+  runs the sidecars), two flip-rendered app slots with the compose
+  healthcheck carried over byte-identical (the edge's docker provider
+  refuses starting/unhealthy containers — that check IS the roll gate) and
+  identical traefik labels so both slots merge into one health-gated
+  service, and a pinned traefik edge that owns the host port the slots no
+  longer publish. The docker verb set it drives ships beside it
+  (inspect-self, per-service slot up, digest pulls, health waits, graceful
+  stop-not-remove, alias attach). The image stops baking
+  `TALARIA_UPDATER=off` — it contradicted the install signal (an adopted
+  slot would have inherited it through the image's own env and the engine
+  could never act); dormancy is the adoption gate, and operators who want
+  the hard switch set the env themselves. Still nothing routes to any of
+  this: no behavior change for any running install.
+
+- **The update engine rolls — and its panel and schedule arrive with it.**
+  One update, start to finish, split across two processes by design: the
+  live container gates (mode, adoption, nothing in flight), takes the
+  fleet-wide roll lock (a redis lease held by heartbeat and never released
+  — the roller's last act stops its own container, so the TTL is what
+  bounds a dead one), pulls the digest-pinned image, renders, brings the
+  other slot up, health-gates it (the compose healthcheck IS the gate — an
+  unhealthy replacement is removed with the old container never disturbed),
+  moves the fleet alias, and only then records cutting-over and stops
+  ITSELF; the new container's boot reconcile verifies the edge actually
+  routes to it before the run lands done. Rollback restarts the kept old
+  slot by the same choreography, and a run whose roller died mid-roll is
+  closed as failed so no install spins forever. `/api/admin/updates`
+  surfaces all of it (running version + slot, available, history, the
+  auto-update toggle — default off) for an admin session or a per-instance
+  machine key minted for the deploy script and stored only as a hash.
+  The update-check job rides the scheduler table again (6h cadence; the
+  hold is retired) as the hands-off half: resolve, record, and — only
+  behind both the adoption and the toggle — roll. healthz now reports the
+  image's version so a deploy gate can tell two instances apart. Still
+  dormant everywhere: the engine acts only where an admin adopts it.
+
+- **The update engine's foundation lands — dormant by design.** `api/src/update/`
+  is the groundwork for the app rolling its own container: install modes
+  (image / checkout / dev / off — only an image install can ever roll, and
+  the image's own env now carries the signal), the layout of the
+  updater-owned compose project (slot names, env files, the pinned traefik
+  edge), the persisted state row (auto-update off by default, digest pins,
+  capped run history — corrupt rows fall back to the safe default), and the
+  registry reader that resolves the moving `main` tag to a digest the way
+  the distribution spec says (anonymous bearer token, manifest HEAD,
+  index-walked version label) — proven live against ghcr. Nothing routes to
+  any of it yet: no behavior changes for any running install in this drop.
+
+- **The update panel rolls with the engine — and the git-checkout updater
+  retires.** Admin → Security → Updates now answers against
+  /api/admin/updates: running version and slot, what's available, Check /
+  Update now / Roll back (the kept old slot is the target), the auto-update
+  toggle (image installs only, off by default), and the deploy key — minted
+  once, shown once, stored as a hash. Non-image installs show the engine's
+  own refusal sentence; un-adopted installs keep deploying the way they
+  always have, and the panel says that too. The TS git updater it replaces
+  (ui/src/server/updater.ts, the admin.update resident,
+  scripts/update-restart.mjs) is deleted — the proxy resident list drops to
+  three, and the routes/api reference carries the Rust surface instead.
+
+- **The workbench family speaks Rust — all seven routes, github's REST
+  half, and the MCP dispatcher the fleet's agents speak.** The profile
+  registry (member reads mask env values to `•••`, the image/mounts
+  infrastructure fields stay admin-only), the per-repo git flow, the org
+  GitHub connection's read plane, the harness registry (declarative
+  custom definitions stored in probed zod shape order, builtins
+  undeletable), the human side of workbench jobs (the ticket strip, the
+  approve/reject gate through board editors, merge-to-testing through
+  the engine with both failure flavors folded into the TS `.catch()`'s
+  one 400), the repo-creation approval queue, and the per-agent repo
+  grants. Verified by a 123-case byte-diff against TS — the largest
+  family harness yet: gate tables for anon/member/admin, the full zod
+  400 tables for all seven bodies, restore-safe mutation cycles, twelve
+  SQL-seeded jobs with fixed ids and timestamps (approve/reject ±note,
+  the re-approve's `job is started`, the null-task 403, both merge
+  refusals on the unconfigured connection), and the repo-request reject
+  ladder. The diff caught three things the unit tests could not: the
+  THROWN-500 shape — defineApi has no catch, so a TS handler that throws
+  answers SvelteKit's text/plain `Internal Server Error`, and all 498
+  port sites mirroring a TS throw were swept to that shape port-wide;
+  the profile autoAttach wire, which is the stored column's jsonb
+  canonical order, not the parser's shape order; and the harness list's
+  custom order, which no runtime orders at all (no ORDER BY) — the
+  harness pins the builtin prefix and compares the customs as a set.
+
+- **Ticket attachments.** Tickets now carry the same attachment chips as chat
+  messages: uploaded files plus knowledge-doc/artifact refs (ACL-checked
+  against the attacher, content clipped into the chip for models). Attach and
+  remove from the ticket detail; changes log to the ticket's activity. Agents
+  see attachment metadata in `GET /api/tasks/:id` and can now pull the bytes
+  from `/api/uploads/:id` with the fleet key; agent callers can attach uploads
+  but not refs (no session to ACL-check). Verified live end to end, 11/11
+  checks.
+
+- **Toasts, and a tap on the shoulder when you're elsewhere.** New
+  notifications (a mention, a DM, a share, an approval) now surface as
+  in-app toasts on every surface: a small stack bottom-right, click to go
+  there, six and a half seconds and gone. A watcher in the app shell rides
+  the same liveness the Home feed uses (the SSE firehose plus the 30s poll
+  as the floor), so a mention that lands while you're on Boards reaches you
+  there. The first read is the baseline: reloading never replays the inbox
+  as a burst of toasts, and past four stacked the oldest quietly goes. The
+  browser half is deliberate: an OS notification fires ONLY when Talaria is
+  not what you're looking at (another tab, another window, minimized) —
+  while you're looking at it, the in-app toast already said it. Permission
+  is asked from your click, never on load: Settings → Notifications gains a
+  Desktop notifications row (On/Off, with the blocked case explained), and
+  a local off switch stands in for the grant browsers won't let a page hand
+  back. Two open tabs each see the arrival; the OS shows it once (the
+  notification id doubles as the OS tag). This covers the open-but-
+  background case, which the plain Notification API does from a tab;
+  notifying a fully closed browser is Web Push and stays unmade. Verified
+  live: a row landing while focused toasts with no OS notification, the
+  toast click routes to its target, the same arrival with focus elsewhere
+  fires the OS notification with the right tag (headless Chromium denies
+  real notifications and reports every page focused, so that leg ran
+  against browser stubs plus unit tests of the gate), and a reload toasts
+  nothing. 11 new tests; full suite green (2580).
+
+- **Toolkit onboarding — agents get the playbook, not just the tools.** The
+  talaria MCP was attached to every agent but nothing taught them when to
+  reach for it. Now a fleet-wide `talaria-toolkit` skill (seeded from
+  `scripts/skills/` on render, admin-editable after, mounted read-only at
+  `/opt/skills` — a mount that was documented but never actually wired) walks
+  the reflexes: search before planning, keep the ticket alive, durable output
+  goes in Talaria, drafts await approval, report_problem on breakage. The
+  rendered SOUL header points at it.
+
+- **UI detail pass (live walkthrough, 2026-07-28).** A guided sweep of the
+  whole surface, in nine moves. **Typography, two voices**: IBM Plex Sans
+  for everything a person reads or types (markdown surfaces, editors, all
+  form controls, board cards/lists, home rows, both content browsers); mono
+  stays the chrome/identifier voice — the rule lives in UI-CONVENTIONS.
+  **Dialogs take over the screen** (`Modal takeover`): content-heavy
+  dialogs fill the viewport minus a gutter, constant height, content
+  scrolls inside; deep editors (skill/memory/soul/config-history) open as
+  ticket-style nested slide-ins INSIDE their dialog instead of stacking
+  modals, with Esc peeling one layer at a time. **Agent editing reworked**:
+  the skill editor no longer opens empty (it seeded from a still-loading
+  fetch), memory gains quick-add + rich display, and crons got a real
+  scheduling UI — pick daily/weekdays/weekly/monthly/interval with time
+  pickers, see it in plain English, cron syntax generated underneath — plus
+  in-place job EDITING via the never-wired `hermes cron edit`. **Retired
+  agents can be deleted** (admin, confirm-gated): def + versions + secrets
+  + rendered files + created-agent volumes; produced history and imported
+  legacy volumes are kept. **Admin is tabbed by concern** (Organization /
+  People / Agents / Retrieval / Storage / Security) and **Settings too**
+  (Profile / Assistant / Connections / API keys) — with every panel's
+  explanatory paragraph moved into ⓘ `InfoTip` tooltips. **The assistant
+  is fully editable in Settings**: identity, handle, personality, model
+  tier chips, start/stop, and inline Schedules/Skills/Memory — the
+  user-friendly cut of the admin config, all owner-scoped. **Buttons never
+  wrap** (`whitespace-nowrap` in the base). **Skeleton loading
+  everywhere**: `Skeleton`/`SkeletonRows`/`SkeletonCard` replace blank
+  panes and "Loading" strings across home, boards, tickets, agents, comms,
+  browsers, cost, inference, activity, alerts, research — and the app
+  shell itself now server-renders a skeleton frame instead of a blank
+  page, which was the real "no content, then BAM" (the whole app was
+  gated behind the client-side session fetch). Conventions for all of it
+  are recorded in docs/UI-CONVENTIONS.md.
+
+### Added
+
+- **UI primitives close their gaps**: new `Popover` shell (nine hand-rolled engines deleted onto
+  it), `IconButton size="tile"`, `Checkbox bare`, `StatCard href`, `StatusDot color`, Board's view
+  toggle on `Segmented`; one emoji picker (chat's hand-rolled grid deleted); ~80 icon-button,
+  checkbox, dot and input sites adopted. `SaveButton` deleted (0 uses; `useSavedFlash` stays — it
+  has 8 importers).
+
+- **ui's typecheck no longer sweeps gitignored subrepo apps.** Any machine
+  with `apps/leadworks`/`apps/waypoint` checked out sprayed ~100 phantom
+  "Cannot find module" errors into every svelte-check (subrepo imports
+  resolve against their own absent node_modules), which is why CI disagreed
+  with every local run. The subrepos are now excluded in `ui/tsconfig.json`,
+  and a new `bun run check` invariant (`subrepo-app-inside-the-ui-tsconfig`)
+  fails in seconds when a future subrepo appears unexcluded.
+
+- **Universal @mentions (#60).** Coverage holes closed so a mention behaves
+  the same no matter who writes it or where. Agent-authored mentions now
+  notify: an agent posting to a channel (the agent-key write path returned
+  before the notify call — "@jon can you check this" from an agent reached
+  nobody), a streamed agent channel reply, and an agent's plan turn all
+  notify @mentioned humans exactly like human messages. Ticket
+  DESCRIPTIONS notify board members on change, mirroring the comment
+  contract. Plan mentions got three fixes: the composer now suggests the
+  plan's actual members instead of the whole org (mentioning someone who
+  couldn't read the plan silently notified nobody), the notification
+  deep-links to `/plan?p=…` instead of `/artifacts`, and a plan whose doc
+  doesn't exist yet falls back to plan membership as the read boundary.
+  And mentions are finally VISIBLE: a shared remark pass in the Markdown
+  renderer highlights @tokens on every surface at once (chat, channels,
+  comments, descriptions, plan turns) — code spans untouched, emails don't
+  match. Still recorded as future threads: the TipTap @-suggestion (rich
+  composers), research/KB mention eligibility.
+
+### Changed
+
+- **Version history speaks Rust — and the port gained a byte-identical YAML
+  emitter.** `/api/history` serves both stores (`internal_versions` snapshots
+  and `agent_versions`) through the live items' own read models applied
+  backwards, every miss and every error reading 403 — fail-closed, or
+  history is a permission bypass. `kind=config` serves `stringifyYaml`
+  bytes, so the slice dragged `api/src/yaml_string.rs` across: a source port
+  of the npm `yaml` package's stringify pinned by 145 fixtures the REAL
+  package generates.
+
+- **Watch the work is a terminal now: the agent's own words and tool calls,
+  streaming live from the run — on the board card, not buried in the ticket.**
+  A work-session turn tees every parsed stream event (prose as it lands,
+  tool calls as they start, reasoning, failures) to `run-watch:<id>` with a
+  per-turn replay tail; `GET /api/runs/{id}/watch` (run-ACL-gated like the
+  run's event stream) answers an SSE of bounded replay then live frames.
+  The watch modal renders it as a pinned terminal — tool markers on their
+  own lines, flowing prose beneath, previous turn's reply tucked behind a
+  disclosure. Board cards with live sessions now wear the dither field
+  themselves (a working cell before the columns, one board-wide sessions
+  read), with the watch affordance ON THE CARD; the ticket strip keeps its
+  live phase. Turn counters show `turn N` — no invented "/12" denominator —
+  and the modal never skeleton-locks: the terminal opens with whatever the
+  turn has produced so far, or says it is waiting for the next output. One
+  new door verb, `getStream` (the GET twin of `postStream`), carries the
+  client side through the one-HTTP-door invariant (count 7).
+
+- **WYSIWYG everywhere (#46).** The remaining prose fields that still edited
+  as raw textareas now use the shared rich editor: template skeleton bodies
+  (the sections agents fill — now edited the way tickets render them),
+  the create-agent soul draft (parity with the post-creation editor),
+  assistant personality in both the wizard and the inline settings field,
+  and the plan modal's AI-drafted ticket descriptions. One long-standing
+  inconsistency fixed: YOUR chat bubbles now render markdown like every
+  other message surface (they were the one bubble showing raw text). The
+  plan document gains the fullscreen toggle (Esc exits) that artifacts and
+  KB docs already had. Deliberate leaves, now written into
+  docs/UI-CONVENTIONS.md → Editors: chat/channel composers stay plain
+  textareas (Enter-to-send + caret mentions beat a toolbar; porting
+  mentions to a TipTap suggestion is its own thread), and machine/prompt
+  text (YAML, raw HTML, AI instructions, template guidance) stays mono
+  Textarea on purpose.
+
+### Added
+
+- **Your Google Workspace account, connected to your assistant where you look
+  at your assistant.** Settings → Assistant now carries the connect card:
+  Gmail · Calendar · Drive, with the safety story beside the button — reads
+  are live, and every email or invite the assistant drafts waits in your
+  Inbox for your approval before anything sends. The Connections tab says the
+  same thing instead of "Google Drive & Docs", the connect callback lands on
+  the tab that interprets its result (it used to land on Profile, where the
+  outcome flash never rendered), and the Inbox assistant panel offers a
+  one-link "Connect Google" in its footer — right where a "can't reach your
+  mail" reply actually bites.
+
 ## Phase 7 — self-contained under Talaria (2026-07-09)
 
 Everything routes through Talaria, on one network, with no Dockerfiles and
