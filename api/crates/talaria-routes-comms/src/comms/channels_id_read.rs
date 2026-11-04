@@ -44,6 +44,12 @@ use talaria_notify::{
 use talaria_session::require_user;
 use talaria_state::AppState;
 
+// doc: Two arms, two cursors. Without `threadRootId`, the whole-channel
+// doc: cursor (`seq` required); with it, that thread's own cursor (`seq`
+// doc: optional: absent, the thread's newest complete reply). A root that is
+// doc: not this channel's message is 404. The bell rows clear once the person
+// doc: is caught up: the thread's own rows, or every row on the channel when
+// doc: nothing on it is unread. `cleared` counts them.
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -58,13 +64,14 @@ pub async fn post(
     }
     let parsed = talaria_body::parse(&body);
     let obj = object_or_400(&parsed)?;
+    // The thread to read (any message in it re-roots to its root); absent,
+    // the whole channel.
     let thread_root_id = match optional_uuid_member(obj, "threadRootId") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    // seq: integer, min 0, no schema max — the ceiling is the safe-integer
-    // bound itself. Optional in the thread arm (computed server-side when
-    // absent); required in the whole-channel arm.
+    // Integer, min 0, ceiling the safe-integer bound. Required without
+    // threadRootId; in a thread, absent reads to its newest complete reply.
     let seq = match optional_number_member(obj, "seq", NumKind::Int, 0.0, 9_007_199_254_740_991.0) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
