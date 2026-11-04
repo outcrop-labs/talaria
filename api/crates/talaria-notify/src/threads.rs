@@ -132,7 +132,6 @@ fn normalize_token(s: String) -> String {
 
 /// Tokens a person answers to: email localpart (in the scanner's grammar,
 /// see `normalize_token`), dashed full name, first name.
-
 pub fn user_mention_tokens(name: Option<&str>, email: Option<&str>) -> Vec<String> {
     let mut tokens: Vec<String> = Vec::new();
     // The localpart must speak the SAME grammar as the content scanner
