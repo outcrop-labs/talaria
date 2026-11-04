@@ -234,23 +234,25 @@ http {
   die('forgejo never answered')
 }
 
+function mintToken(stack, scopes) {
+  return sh('docker', [
+    'exec', '-u', '1000', stack.forgejoApp, 'forgejo', 'admin', 'user', 'generate-access-token',
+    '--username', REPO_OWNER, '--token-name', `fixture-${Date.now()}`, '--scopes', scopes, '--raw',
+  ])
+    .split('\n')
+    .pop()
+}
+
 /** Forgejo's token is shown once, so it is minted only when the stack holds none. */
 async function ensureForgejoToken(stack, api) {
   const secrets = (await api('GET', '/api/admin/workspace-secrets')).secrets ?? []
   if (secrets.some((s) => s.name === SECRET_NAME)) return null
-  const forgejo = (...args) =>
-    sh('docker', ['exec', '-u', '1000', stack.forgejoApp, 'forgejo', 'admin', 'user', ...args])
-  shOk('docker', [
+  sh('docker', [
     'exec', '-u', '1000', stack.forgejoApp, 'forgejo', 'admin', 'user', 'create',
     '--username', REPO_OWNER, '--password', randomBytes(16).toString('hex'),
     '--email', 'fixture@example.invalid', '--admin', '--must-change-password=false',
   ])
-  const token = forgejo(
-    'generate-access-token', '--username', REPO_OWNER,
-    '--token-name', `fixture-${Date.now()}`, '--scopes', 'all', '--raw',
-  )
-    .split('\n')
-    .pop()
+  const token = mintToken(stack, 'all')
   await api('POST', '/api/admin/workspace-secrets', {
     action: 'create',
     name: SECRET_NAME,
@@ -426,7 +428,7 @@ async function report(stack, api, task, readToken) {
   const job = JSON.parse(
     psql(
       stack,
-      `select coalesce(row_to_json(j), 'null') from (select id, status, branch, pr_url from workbench_jobs where task_id = '${task.id}' order by created_at desc limit 1) j`,
+      `select row_to_json(j) from (select id, status, branch, pr_url from workbench_jobs where task_id = '${task.id}' order by created_at desc limit 1) j`,
     ) || 'null',
   )
   const status = psql(stack, `select status from tasks where id = '${task.id}'`)
@@ -459,21 +461,12 @@ async function ticket(stack, slug, wait) {
     if (line !== last) say((last = line))
     if (/^(done|error|cancelled)\b/.test(line)) break
   }
-  const out = await report(stack, api, task, mintReadToken(stack))
+  const out = await report(stack, api, task, mintToken(stack, 'read:repository'))
   process.stdout.write(`${JSON.stringify(out)}\n`)
   const stepCount = Object.values(out.tools).reduce((a, b) => a + b, 0)
   const healthy =
     out.run.state === 'done' && out.ticket.category === 'review' && stepCount >= 4 && out.files.length >= 2
   if (!healthy) die(`the session did not finish healthy: run ${out.run.state}, ticket ${out.ticket.status}`)
-}
-
-function mintReadToken(stack) {
-  return sh('docker', [
-    'exec', '-u', '1000', stack.forgejoApp, 'forgejo', 'admin', 'user', 'generate-access-token',
-    '--username', REPO_OWNER, '--token-name', `read-${Date.now()}`, '--scopes', 'read:repository', '--raw',
-  ])
-    .split('\n')
-    .pop()
 }
 
 function teardown(stack) {
