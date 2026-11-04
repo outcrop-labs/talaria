@@ -1,10 +1,3 @@
-// Live-DB + live-Redis proof that a run's ledger keeps reply text out. A work
-// session's checkpoint holds slices of the agent's reply, and only the
-// transcript scrubs and prunes those, so neither the ledger nor the route that
-// reads it may repeat one.
-//
-// House rule: #[ignore]d, never CI.
-//
 //   source ui/.env && cargo test -p talaria-api --test it runs_checkpoints_live:: -- --ignored
 
 use axum::http::StatusCode;
@@ -17,8 +10,7 @@ use crate::support::{call_bytes, live_app_state, minted_member_with_email};
 const PREFIX: &str = "runs-checkpoints-live";
 const REPLY: &str = "reply slice that belongs to the transcript";
 
-/// A member's runs and their ledgers go with the member.
-async fn sweep(pg: &PgPool) {
+async fn sweep_members(pg: &PgPool) {
     sqlx::query("delete from users where sub like $1")
         .bind(format!("{PREFIX}:%"))
         .execute(pg)
@@ -30,7 +22,7 @@ async fn sweep(pg: &PgPool) {
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
 async fn the_ledger_and_its_route_hold_no_reply_text() {
     let state = live_app_state().await;
-    sweep(&state.pg).await;
+    sweep_members(&state.pg).await;
     let (owner, cookie) =
         minted_member_with_email(&state, PREFIX, "owner@runs-checkpoints-live.invalid").await;
     let store = PgRunStore::new(state.pg.clone());
@@ -104,5 +96,5 @@ async fn the_ledger_and_its_route_hold_no_reply_text() {
     .unwrap();
     assert!(!stored.contains(REPLY), "the ledger stored reply text: {stored}");
 
-    sweep(&state.pg).await;
+    sweep_members(&state.pg).await;
 }
