@@ -273,6 +273,7 @@ async fn ensure_fleet_network() -> Result<(), String> {
 /// started and was then stopped. And a stop asked while the image downloaded
 /// cancels the start ([`NOT_STARTED`]): the person's last word was stop.
 pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
+    let began = stop_clock(pg).await;
     let up = start_unless_stopped(department, pull_agent_image(pg, department), || async {
         compose_up(pg, department, &["up", "-d"], verb_timeout(120), false)
             .await
@@ -280,27 +281,54 @@ pub async fn fleet_up(pg: &PgPool, department: &str) -> Result<String, String> {
     })
     .await;
     if up.is_ok() {
-        record_stop(pg, department, false).await;
+        clear_stop_since(pg, department, began.as_deref()).await;
     }
     up
 }
 
-/// Record (or clear) a person's Stop of the department's agent, in Postgres
-/// so every api process and every restart agrees: the agent image channel
-/// trusts a stopped container as a person's choice only when this says so —
-/// a container down without it was left down by something else, and is
-/// started. A failed write is logged; the stop itself already happened.
-async fn record_stop(pg: &PgPool, department: &str, stopped: bool) {
+/// The database's clock now, as text: a start reads it before it begins, so
+/// it clears only a Stop recorded before then. None when it cannot be read.
+pub async fn stop_clock(pg: &PgPool) -> Option<String> {
+    sqlx::query_scalar::<_, String>("select now()::text")
+        .fetch_one(pg)
+        .await
+        .ok()
+}
+
+/// Record a person's Stop of the department's agent, in Postgres so every
+/// api process and every restart agrees: the agent image channel keeps an
+/// agent with a recorded Stop down, whatever happens to its container. A
+/// failed write is logged; the stop itself already happened.
+pub async fn record_stop(pg: &PgPool, department: &str) {
     if let Err(e) = sqlx::query(
-        "update agent_defs set stopped_at = case when $2 then now() else null end \
-         where department = $1 and (stopped_at is null) = $2",
+        // Always the latest Stop's time: a start that began before it never
+        // clears it.
+        "update agent_defs set stopped_at = now() where department = $1",
     )
     .bind(department)
-    .bind(stopped)
     .execute(pg)
     .await
     {
         tracing::warn!("[fleet] {department}: the stop could not be recorded: {e}");
+    }
+}
+
+/// The agent was started (or recreated) by a verb that began at `began` (the
+/// database's clock): a Stop recorded before then is over. One recorded
+/// since — a person pressing Stop while the verb waited for the agent's lock
+/// — stands, and the Stop runs after it. With no start time, any Stop is
+/// cleared.
+pub async fn clear_stop_since(pg: &PgPool, department: &str, began: Option<&str>) {
+    if let Err(e) = sqlx::query(
+        "update agent_defs set stopped_at = null where department = $1 \
+           and stopped_at is not null and ($2::timestamptz is null or stopped_at < $2::timestamptz)",
+    )
+    .bind(department)
+    .bind(began)
+    .execute(pg)
+    .await
+    {
+        tracing::warn!("[fleet] {department}: the stop could not be cleared: {e}");
     }
 }
 
@@ -344,6 +372,7 @@ pub const NOT_STARTED_SENTENCE: &str = "Not started: a stop was asked while the 
 /// recreate that fails or runs out its time cleans up after itself
 /// (`recover_failed_recreate`).
 pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, String> {
+    let began = stop_clock(pg).await;
     let up = compose_up(
         pg,
         department,
@@ -353,9 +382,10 @@ pub async fn fleet_recreate(pg: &PgPool, department: &str) -> Result<String, Str
     )
     .await
     .map(UpOutcome::into_stderr);
-    // It is running again, whoever stopped it.
+    // It is running again: a Stop from before this recreate is over (one
+    // pressed while it ran stands, and its stop follows).
     if up.is_ok() {
-        record_stop(pg, department, false).await;
+        clear_stop_since(pg, department, began.as_deref()).await;
     }
     up
 }
@@ -1803,7 +1833,7 @@ pub async fn fleet_stop(pg: &PgPool, department: &str) -> Result<String, String>
     // Before the move lock: a legacy agent's move home in progress reads it,
     // and leaves the agent in `-b` for this stop instead of starting it home.
     note_stop(department);
-    record_stop(pg, department, true).await;
+    record_stop(pg, department).await;
     compose_verb(
         pg,
         department,

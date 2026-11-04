@@ -637,6 +637,18 @@ pub async fn pin_with(
             let note = format!("{by} lifted the pin: following stable");
             e.patch(move |s| {
                 s.pinned = None;
+                // The move onto the pin stops with it (a halted one would
+                // otherwise hold the channel open): the agents it moved stay
+                // where they are, and stable's next rollout takes them on.
+                if let Some(r) = s
+                    .rollout
+                    .as_mut()
+                    .filter(|r| r.open() && r.kind == RolloutKind::Pin && r.agent.is_none())
+                {
+                    r.phase = Phase::Cancelled;
+                    r.detail = Some(note.clone());
+                    r.updated_at = now;
+                }
                 s.note(now, note);
                 Ok(())
             })
@@ -953,6 +965,33 @@ pub async fn window_zone(pg: &PgPool) -> WindowZone {
     )
 }
 
+/// Whether the channel has adopted the fleet as it found it (each agent's
+/// running image and its stop), or stands aside — so the deploy's fleet roll
+/// recreates every agent on the Hermes it runs, never moving it: the channel
+/// is the one thing that changes an agent's Hermes. An unreadable state
+/// answers no (the roll then waits out its bound).
+pub async fn fleet_adopted(pg: &PgPool) -> bool {
+    if off_reason().await.is_some() {
+        return true;
+    }
+    images::load_state(pg).await.is_ok_and(|s| {
+        s.extra
+            .get(engine::ADOPTED_KEY)
+            .is_some_and(|v| v.is_number())
+    })
+}
+
+/// How long the deploy's fleet roll waits for the channel to adopt the
+/// fleet before it goes ahead anyway (a channel that cannot run must not
+/// hold a Talaria update's roll forever).
+pub const DEPLOY_ROLL_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Whether the deploy's fleet roll may go now: once the fleet is adopted (or
+/// the channel stands aside), or after [`DEPLOY_ROLL_WAIT`] since boot.
+pub fn deploy_roll_may_go(adopted: bool, since_boot: std::time::Duration) -> bool {
+    adopted || since_boot >= DEPLOY_ROLL_WAIT
+}
+
 /// At boot: the env names the good images strip are in force before the
 /// first render, so a secret saved before it is judged by them too.
 pub async fn boot(pg: &PgPool) {
@@ -1252,6 +1291,14 @@ mod tests {
         for phase in [Phase::Canary, Phase::Rolling, Phase::Soaking] {
             assert!(!prune_may_run(&with(phase)), "{phase:?}");
         }
+    }
+
+    #[test]
+    fn the_deploy_roll_waits_for_the_fleet_to_be_adopted_but_not_for_ever() {
+        use std::time::Duration;
+        assert!(!deploy_roll_may_go(false, Duration::from_secs(60)));
+        assert!(deploy_roll_may_go(true, Duration::from_secs(60)));
+        assert!(deploy_roll_may_go(false, DEPLOY_ROLL_WAIT));
     }
 
     #[test]

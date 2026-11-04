@@ -102,6 +102,8 @@ try:
         f.write(base64.b64decode(os.environ["TALARIA_PROBE_MANIFEST"]).decode())
     from tools.environments.local_env_policy import _home_adapter_secret_env
     contract["sealedHidden"] = os.environ["TALARIA_PROBE_SECRET"] in set(_home_adapter_secret_env())
+except (OSError, MemoryError) as e:
+    contract["sandboxError"] = (type(e).__name__ + ": " + str(e))[:300]
 except Exception as e:
     contract["sealedError"] = (type(e).__name__ + ": " + str(e))[:300]
 want = int(os.environ.get("TALARIA_SCHEMA", "0"))
@@ -149,6 +151,8 @@ if isinstance(cv, int) and cv > want:
             contract["migratedTo"] = migrated.get("_config_version") if isinstance(migrated, dict) else None
         contract["migrationChecked"] = len(agents)
         contract["migrationChanged"] = changed[:40]
+    except (OSError, MemoryError) as e:
+        contract["sandboxError"] = (type(e).__name__ + ": " + str(e))[:300]
     except Exception as e:
         contract["migrationError"] = (type(e).__name__ + ": " + str(e))[:300]
 # How a running scheduled job looks: one made here, claimed as the scheduler
@@ -161,11 +165,15 @@ try:
     seen = [j for j in list_jobs(include_disabled=True) if j.get("id") == job["id"]]
     claim = seen[0].get("fire_claim") if seen else None
     contract["claimAt"] = claim.get("at") if isinstance(claim, dict) else None
+except (OSError, MemoryError) as e:
+    contract["sandboxError"] = (type(e).__name__ + ": " + str(e))[:300]
 except Exception as e:
     contract["claimError"] = (type(e).__name__ + ": " + str(e))[:300]
 try:
     from cron.scheduler import _RUN_CLAIM_HEARTBEAT_SECONDS
     contract["claimHeartbeat"] = _RUN_CLAIM_HEARTBEAT_SECONDS
+except (OSError, MemoryError) as e:
+    contract["sandboxError"] = (type(e).__name__ + ": " + str(e))[:300]
 except Exception as e:
     contract["claimHeartbeatError"] = (type(e).__name__ + ": " + str(e))[:300]
 out["contract"] = contract
@@ -191,6 +199,9 @@ pub enum Prepared {
 /// What the inspection read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inspected {
+    /// The inspection's sandbox failed (a full tmpfs, a read-only path, out
+    /// of memory): the host's to retry, never a contract change to hold.
+    pub sandbox_error: Option<String>,
     pub config_version: u64,
     pub image_version: Option<String>,
     pub stripped_env: Vec<String>,
@@ -359,7 +370,13 @@ pub fn parse_inspection(stdout: &str) -> Result<Inspected, String> {
         config_version,
         talaria_fleet_render::HERMES_CONFIG_VERSION,
     );
+    let sandbox_error = obj
+        .get("contract")
+        .and_then(|c| c.get("sandboxError"))
+        .and_then(Value::as_str)
+        .map(|e| e.chars().take(300).collect());
     Ok(Inspected {
+        sandbox_error,
         config_version,
         image_version,
         stripped_env,
@@ -383,25 +400,6 @@ pub async fn image_present(image: &str) -> bool {
 const REDACTED: &str = "${TALARIA_PROBE_REDACTED}";
 
 /// Whether a config key names a credential.
-fn credential_key(key: &str) -> bool {
-    let k = key.to_ascii_lowercase();
-    [
-        "key",
-        "token",
-        "secret",
-        "password",
-        "passwd",
-        "credential",
-        "auth",
-        "cookie",
-        "bearer",
-        "private",
-        "session",
-    ]
-    .iter()
-    .any(|w| k.contains(w))
-}
-
 /// Whether a string is only `${NAME}` handles (what Talaria writes for every
 /// sealed or gateway credential): nothing secret in it.
 fn only_handles(v: &str) -> bool {
@@ -421,29 +419,104 @@ fn only_handles(v: &str) -> bool {
     rest.trim().is_empty()
 }
 
-/// An agent's config with every literal credential replaced by a stand-in:
-/// any string under a credential-shaped key that is not just `${…}`
-/// handles, and any `Bearer …` value. The shape — every key Talaria writes —
-/// is kept, which is what the schema check compares.
+/// An agent's config with every literal credential replaced by a stand-in,
+/// by the one rule Talaria keeps a config's secrets with
+/// ([`talaria_agent_secrets::may_hold_credential`]: the seal's key names,
+/// and the shapes a credential takes under any name — URL userinfo and
+/// query tokens, provider token prefixes, JWTs, `Bearer`), anything under a
+/// credential-named key, and in a command line the word after a credential
+/// flag (`--token x`, `--token=x`). Only `${…}` handles are kept. The shape —
+/// every key — is kept, which is what the schema check compares.
 pub fn redact(v: &Value) -> Value {
-    fn walk(v: &Value, under_secret: bool) -> Value {
+    use talaria_agent_secrets::{credential_flag, may_hold_credential};
+    fn named(k: &str) -> bool {
+        may_hold_credential(k, "x")
+    }
+    fn walk(v: &Value, key: &str, under: bool) -> Value {
         match v {
             Value::Object(m) => Value::Object(
                 m.iter()
-                    .map(|(k, v)| (k.clone(), walk(v, under_secret || credential_key(k))))
+                    .map(|(k, v)| (k.clone(), walk(v, k, under || named(k))))
                     .collect(),
             ),
-            Value::Array(a) => Value::Array(a.iter().map(|x| walk(x, under_secret)).collect()),
-            Value::String(s)
-                if (under_secret && !only_handles(s))
-                    || (s.to_ascii_lowercase().starts_with("bearer ") && !only_handles(s)) =>
-            {
+            Value::Array(a) => {
+                let mut out = Vec::with_capacity(a.len());
+                let mut after_flag = false;
+                for x in a {
+                    let y = match x {
+                        Value::String(s) if after_flag && !only_handles(s) => {
+                            Value::String(REDACTED.into())
+                        }
+                        Value::String(s)
+                            if s.split_once('=').is_some_and(|(f, val)| {
+                                credential_flag(f) && !only_handles(val)
+                            }) =>
+                        {
+                            let (f, _) = s.split_once('=').expect("checked");
+                            Value::String(format!("{f}={REDACTED}"))
+                        }
+                        other => walk(other, key, under),
+                    };
+                    after_flag = matches!(x, Value::String(s) if credential_flag(s));
+                    out.push(y);
+                }
+                Value::Array(out)
+            }
+            Value::String(s) if !only_handles(s) && (under || may_hold_credential(key, s)) => {
                 Value::String(REDACTED.into())
             }
             other => other.clone(),
         }
     }
-    walk(v, false)
+    walk(v, "", false)
+}
+
+/// Every string value in the agents' configs long enough to matter: what a
+/// stored problem or a failure's text must never repeat.
+pub fn config_values(configs: &[(String, String)]) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => m.values().for_each(|x| walk(x, out)),
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            Value::String(s) if s.trim().len() >= 8 && !only_handles(s) => out.push(s.clone()),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for (_, text) in configs {
+        if let Some(c) = talaria_fleet_render::canary::rendered_config(text) {
+            walk(&Value::Object(c), &mut out);
+        }
+    }
+    out.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    out.dedup();
+    out
+}
+
+/// `text` with every config value in it replaced by `…`: an exception
+/// Hermes raised (or an image echoing what it was shown) never carries a
+/// config's value into a stored problem, the panel or a notification.
+pub fn scrub(text: &str, values: &[String]) -> String {
+    let mut out = text.to_string();
+    for v in values {
+        if out.contains(v.as_str()) {
+            out = out.replace(v.as_str(), "…");
+        }
+    }
+    out
+}
+
+/// A fingerprint of the configs the schema check ran on (FNV-1a over their
+/// redacted form): a digest is inspected again when the set changes — an
+/// agent hired since, a new toolkit or platform — before it is rolled out.
+pub fn configs_fingerprint(configs: &[(String, String)]) -> String {
+    let text = probe_configs(configs).to_string();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 /// The configs the schema check runs Hermes' migration on: every agent's
@@ -488,6 +561,9 @@ fn probe_env() -> Vec<String> {
     ]));
     vec![
         "HERMES_HOME=/tmp/talaria-probe-home".to_string(),
+        // A writable home for anything Hermes writes at import (the root is
+        // read-only, the user nobody).
+        "HOME=/tmp".to_string(),
         format!(
             "TALARIA_SCHEMA={}",
             talaria_fleet_render::HERMES_CONFIG_VERSION
@@ -498,7 +574,8 @@ fn probe_env() -> Vec<String> {
 }
 
 /// Run the inspection: a named container (so one a timeout left behind is
-/// removed), no network, bounded memory, processes and CPU, a read-only root
+/// removed — only one process inspects at a time, under the channel's step
+/// lock, so the name is never another run's), no network, bounded memory, processes and CPU, a read-only root
 /// with a small tmpfs, every capability dropped, no privilege gain, as
 /// nobody — and the configs it checks mounted read-only.
 pub async fn inspect(
@@ -598,31 +675,53 @@ pub struct Room {
     pub forced: bool,
 }
 
-/// Free bytes and size of the filesystem the docker root (and so every
-/// volume, Postgres's among them) lives on, or None when it cannot be read:
-/// through the host root when the api has one (`/host`), the docker root
-/// itself on a host-run api, the container's own `/` when the api runs in a
-/// container on the same daemon (an overlay reports its upper directory's
-/// filesystem). A daemon elsewhere (`DOCKER_HOST` over tcp/ssh) cannot be
-/// read from here.
-async fn docker_disk() -> Option<(u64, u64, String)> {
-    if std::env::var("DOCKER_HOST").is_ok_and(|h| !h.trim().is_empty() && !h.starts_with("unix://"))
-    {
-        return None;
+/// Which filesystems the disk check reads, from what docker says, or why it
+/// holds instead of reading the wrong one: a remote daemon (`DOCKER_HOST`
+/// not a socket, or a `DOCKER_CONTEXT` other than the default) is not this
+/// host's disk; devicemapper and zfs report free space that `statvfs` does
+/// not see. On the containerd image store, image content lives under
+/// containerd's root, not docker's: both are read, and the smaller free
+/// space counts. (A remote daemon chosen any other way, or a containerd root
+/// moved from its default, is not detected.)
+pub fn disk_plan(
+    docker_host: Option<&str>,
+    docker_context: Option<&str>,
+    root: &str,
+    driver: &str,
+    driver_status: &str,
+) -> Result<Vec<String>, String> {
+    if docker_host.is_some_and(|h| !h.trim().is_empty() && !h.starts_with("unix://")) {
+        return Err("docker is a remote daemon (DOCKER_HOST)".into());
     }
-    let (root, _) = docker(
-        &["info", "--format", "{{.DockerRootDir}}"],
-        Duration::from_secs(30),
-    )
-    .await
-    .ok()?;
-    let root = root.trim().to_string();
-    let path = std::path::Path::new(&root);
+    if docker_context.is_some_and(|c| !c.trim().is_empty() && c.trim() != "default") {
+        return Err(format!(
+            "docker is reached through the context {} (DOCKER_CONTEXT), which may be another host",
+            docker_context.unwrap_or_default().trim()
+        ));
+    }
+    if matches!(driver.trim(), "devicemapper" | "zfs") {
+        return Err(format!(
+            "docker stores images with {}, whose free space a filesystem check does not see",
+            driver.trim()
+        ));
+    }
+    let mut paths = vec![root.trim().to_string()];
+    if driver_status.contains("io.containerd.snapshotter") {
+        paths.push("/var/lib/containerd".into());
+    }
+    Ok(paths)
+}
+
+/// Free and total bytes of one of docker's paths, read through the host's
+/// root (`/host`) when the api runs in a container, else here, else (in a
+/// container on the same daemon) through this container's own root.
+fn path_space(root: &str) -> Option<(u64, u64, String)> {
+    let path = std::path::Path::new(root);
     if let Some((free, total)) = talaria_host_metrics::mount_space(path) {
-        return Some((free, total, root));
+        return Some((free, total, root.to_string()));
     }
     if path.exists() {
-        return talaria_host_metrics::local_space(path).map(|(f, t)| (f, t, root));
+        return talaria_host_metrics::local_space(path).map(|(f, t)| (f, t, root.to_string()));
     }
     if std::path::Path::new("/.dockerenv").exists() {
         return talaria_host_metrics::local_space(std::path::Path::new("/")).map(|(f, t)| {
@@ -634,6 +733,51 @@ async fn docker_disk() -> Option<(u64, u64, String)> {
         });
     }
     None
+}
+
+/// The docker disk's free and total bytes, and which one it is; None when it
+/// cannot be read, or must not be (see [`disk_plan`]).
+async fn docker_disk() -> Option<(u64, u64, String)> {
+    let (info, _) = docker(
+        &[
+            "info",
+            "--format",
+            "{{.DockerRootDir}}|{{.Driver}}|{{json .DriverStatus}}",
+        ],
+        Duration::from_secs(30),
+    )
+    .await
+    .ok()?;
+    let mut parts = info.trim().splitn(3, '|');
+    let (root, driver, status) = (
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+    );
+    let plan = disk_plan(
+        std::env::var("DOCKER_HOST").ok().as_deref(),
+        std::env::var("DOCKER_CONTEXT").ok().as_deref(),
+        root,
+        driver,
+        status,
+    );
+    let paths = match plan {
+        Ok(p) => p,
+        Err(why) => {
+            tracing::info!("[hermes] the docker disk is not read: {why}");
+            return None;
+        }
+    };
+    // The docker root must be read; containerd's, where it can be.
+    let mut best = path_space(&paths[0])?;
+    for p in &paths[1..] {
+        if let Some(found) = path_space(p)
+            && found.0 < best.0
+        {
+            best = found;
+        }
+    }
+    Some(best)
 }
 
 /// The image's own size: the one the fleet runs now (or a guess when that
@@ -785,12 +929,30 @@ pub async fn prepare(
             PullStatus::Done => {}
         }
     }
-    // Inspected once: a digest's content never changes.
-    if record.runnable() {
+    // A digest's content never changes, but the configs it is checked
+    // against do: inspected again when they have (and once for the seeded
+    // pin, and for an image adopted as found).
+    let fingerprint = configs_fingerprint(configs);
+    if record.runnable()
+        && record.inspected()
+        && record.inspect.get("configs").and_then(Value::as_str) == Some(fingerprint.as_str())
+    {
         return Prepared::Ready;
     }
+    let values = config_values(configs);
     match inspect(&image, &record.digest, configs).await {
-        Ok(found) => {
+        Ok(mut found) => {
+            if let Some(e) = &found.sandbox_error {
+                return Prepared::Failed {
+                    why: format!(
+                        "the inspection's sandbox failed ({}): the host's, tried again",
+                        scrub(e, &values)
+                    ),
+                    definitive: false,
+                };
+            }
+            found.problems = found.problems.iter().map(|p| scrub(p, &values)).collect();
+            found.checked = found.checked.iter().map(|p| scrub(p, &values)).collect();
             if !found.s6 {
                 return Prepared::Failed {
                     why: "the image has no s6-svc and s6-svwait under /command — Talaria drains an agent's gateway with them before every roll and stop, so this image would be hard-killed on each".into(),
@@ -798,11 +960,13 @@ pub async fn prepare(
                 };
             }
             let own_version = found.image_version.as_ref().map(|v| format!("v{v}"));
+            let mut stored = found.to_json();
+            stored["configs"] = json!(fingerprint);
             if let Err(e) = images::set_prepared(
                 pg,
                 &record.digest,
                 found.config_version,
-                &found.to_json(),
+                &stored,
                 false,
                 own_version.as_deref(),
             )
@@ -826,7 +990,10 @@ pub async fn prepare(
             );
             Prepared::Ready
         }
-        Err((why, definitive)) => Prepared::Failed { why, definitive },
+        Err((why, definitive)) => Prepared::Failed {
+            why: scrub(&why, &values),
+            definitive,
+        },
     }
 }
 
@@ -944,6 +1111,33 @@ mod tests {
     }
 
     #[test]
+    fn the_disk_check_reads_dockers_disks_or_holds() {
+        let local = disk_plan(None, None, "/var/lib/docker", "overlay2", "[]").unwrap();
+        assert_eq!(local, vec!["/var/lib/docker"]);
+        let containerd = disk_plan(
+            Some("unix:///var/run/docker.sock"),
+            Some("default"),
+            "/var/lib/docker",
+            "overlayfs",
+            r#"[["driver-type","io.containerd.snapshotter.v1"]]"#,
+        )
+        .unwrap();
+        assert_eq!(containerd, vec!["/var/lib/docker", "/var/lib/containerd"]);
+        for (host, ctx, driver) in [
+            (Some("tcp://10.0.0.2:2376"), None, "overlay2"),
+            (Some("ssh://ops@box"), None, "overlay2"),
+            (None, Some("prod-box"), "overlay2"),
+            (None, None, "devicemapper"),
+            (None, None, "zfs"),
+        ] {
+            assert!(
+                disk_plan(host, ctx, "/var/lib/docker", driver, "[]").is_err(),
+                "{host:?} {ctx:?} {driver}"
+            );
+        }
+    }
+
+    #[test]
     fn a_pull_keeps_a_tenth_of_the_disk_free_and_a_rollback_needs_less() {
         let gb = 1_000_000_000u64;
         let upgrade = Room::default();
@@ -992,6 +1186,63 @@ mod tests {
         assert_eq!(r["platform_toolsets"], config["platform_toolsets"]);
         assert_eq!(r["mcp_servers"]["talaria"]["url"], "http://x/mcp");
         assert!(only_handles("Bearer ${X}") && !only_handles("${X}tail") && only_handles(""));
+        // Shapes under neutral names, and command lines.
+        let more = json!({
+            "mcp_servers": {
+                "db": {
+                    "command": "npx",
+                    "args": ["-y", "@pg/mcp", "--token", "tok-live-9", "--api-key=ak-2", "--port", "5432"],
+                    "env": { "DATABASE_URL": "postgres://app:hunter2@db:5432/app", "LOG_LEVEL": "info" },
+                    "url": "https://api.example.com/v1?token=abc123",
+                    "headers": { "X-Access-Token": "xat-1", "X-Agent-Name": "relbot" }
+                }
+            }
+        });
+        let r = redact(&more);
+        let db = &r["mcp_servers"]["db"];
+        assert_eq!(
+            db["args"],
+            json!([
+                "-y",
+                "@pg/mcp",
+                "--token",
+                REDACTED,
+                format!("--api-key={REDACTED}"),
+                "--port",
+                "5432"
+            ])
+        );
+        assert_eq!(db["env"]["DATABASE_URL"], REDACTED);
+        assert_eq!(db["env"]["LOG_LEVEL"], "info");
+        assert_eq!(db["url"], REDACTED);
+        assert_eq!(db["headers"]["X-Access-Token"], REDACTED);
+        assert_eq!(db["headers"]["X-Agent-Name"], "relbot");
+        assert_eq!(db["command"], "npx");
+    }
+
+    #[test]
+    fn a_stored_problem_never_repeats_a_config_value() {
+        let configs = vec![(
+            "a".to_string(),
+            "model:\n  base_url: https://llm.internal.example/v1\nnote: hunter2-very-secret\n"
+                .to_string(),
+        )];
+        let values = config_values(&configs);
+        let raw = "KeyError: 'hunter2-very-secret' at https://llm.internal.example/v1";
+        let clean = scrub(raw, &values);
+        assert!(
+            !clean.contains("hunter2") && !clean.contains("llm.internal"),
+            "{clean}"
+        );
+        assert!(clean.starts_with("KeyError"), "{clean}");
+        // A new agent's config changes the fingerprint: the image is checked again.
+        let mut two = configs.clone();
+        two.push((
+            "b".into(),
+            "platform_toolsets:\n  api_server: [web]\n".into(),
+        ));
+        assert_ne!(configs_fingerprint(&configs), configs_fingerprint(&two));
+        assert_eq!(configs_fingerprint(&configs), configs_fingerprint(&configs));
     }
 
     #[test]

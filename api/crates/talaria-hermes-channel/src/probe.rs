@@ -229,6 +229,35 @@ pub async fn image_id(image: &str) -> Result<String, String> {
     .map(|(out, _)| out.trim().to_string())
 }
 
+/// The `repository@sha256:…` an image was pulled as: `prefer`'s first, else
+/// the first. None when docker has none (built here, never pulled) or will
+/// not answer.
+pub async fn repo_digest(image_id: &str, prefer: &str) -> Option<String> {
+    let (out, _) = docker(
+        &[
+            "image",
+            "inspect",
+            "--format",
+            "{{json .RepoDigests}}",
+            image_id,
+        ],
+        Duration::from_secs(30),
+    )
+    .await
+    .ok()?;
+    let digests: Vec<String> = serde_json::from_str(out.trim()).ok()?;
+    let ok = |d: &&String| {
+        d.split_once('@')
+            .is_some_and(|(_, dg)| talaria_hermes_images::is_digest(dg))
+    };
+    digests
+        .iter()
+        .filter(ok)
+        .find(|d| d.split_once('@').is_some_and(|(r, _)| r == prefer))
+        .or_else(|| digests.iter().find(ok))
+        .cloned()
+}
+
 /// Whether the drain's tools are where every roll and stop calls them, in a
 /// RUNNING container: the gateway's s6 service and `s6-svc`/`s6-svwait`. The
 /// test failing (an exit with nothing on stderr) is the image's; docker not

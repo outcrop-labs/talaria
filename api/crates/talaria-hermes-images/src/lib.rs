@@ -103,6 +103,29 @@ impl ImageRecord {
         self.prepared_at.is_some() && self.config_version.is_some()
     }
 
+    /// Whether the inspection read this image (its contract with Talaria
+    /// included): the compiled pin is seeded without one, and an adopted
+    /// image (one an agent ran before the channel) is recorded without one.
+    pub fn inspected(&self) -> bool {
+        self.inspect.get("contract").is_some()
+    }
+
+    /// An image an agent ran before this channel did — main's `:latest`, an
+    /// operator's — recorded as it was found so the render keeps naming it.
+    pub fn adopted(&self) -> bool {
+        self.inspect.get("adopted").and_then(|v| v.as_bool()) == Some(true)
+    }
+
+    /// Why the inspection of an adopted image could not run, if it could not.
+    pub fn adopt_error(&self) -> Option<&str> {
+        self.inspect.get("adoptError").and_then(|v| v.as_str())
+    }
+
+    /// The Hermes release, `(major, minor, patch)`, when the version is known.
+    pub fn release(&self) -> Option<(u64, u64, u64)> {
+        self.version.as_deref().and_then(release)
+    }
+
     /// The env names the image's Hermes strips from every command an agent
     /// runs, as the inspection read them.
     pub fn stripped_env(&self) -> Vec<String> {
@@ -205,6 +228,18 @@ pub fn image_ref(repository: &str, version: Option<&str>, digest: &str) -> Strin
         Some(v) => format!("{repository}:{v}@{digest}"),
         None => format!("{repository}@{digest}"),
     }
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// `v0.22.6` (or `0.22.6`) as `(0, 22, 6)`: how two releases compare.
+pub fn release(v: &str) -> Option<(u64, u64, u64)> {
+    let v = v.trim().strip_prefix('v').unwrap_or(v.trim());
+    let mut parts = v.split('.').map(|p| p.parse::<u64>().ok());
+    let (a, b, c) = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some((a, b, c))
 }
 
 /// `v0.22.6`, or `sha256:d27689bc6e85` for a digest with no known tag.
@@ -393,7 +428,9 @@ pub async fn set_prepared(
     own_version: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "update hermes_images set config_version = $2, inspect = $3, \
+        "update hermes_images set config_version = $2, \
+           inspect = $3 || jsonb_strip_nulls(jsonb_build_object('adopted', inspect->'adopted', \
+             'canaryOkAt', inspect->'canaryOkAt', 'contractAccepted', inspect->'contractAccepted')), \
            pulled_here = pulled_here or $4, prepared_at = now(), updated_at = now(), \
            version = coalesce(version, $5) \
          where digest = $1",
@@ -403,6 +440,45 @@ pub async fn set_prepared(
     .bind(inspect)
     .bind(pulled_here)
     .bind(own_version.filter(|v| is_version_tag(v)))
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Record an image an agent ran before this channel (main's `:latest`, an
+/// operator's), as it was found: runnable for the render at the config
+/// version the render stamps today, so a recreate keeps the agent on it,
+/// and inspected later. It came from this install, so it is this
+/// instance's to prune once nothing runs it (`docker image rm` is never
+/// forced: an image any container uses stays).
+pub async fn adopt(
+    pg: &PgPool,
+    digest: &str,
+    repository: &str,
+    config_version: u64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into hermes_images (digest, repository, config_version, inspect, pulled_here, prepared_at) \
+         values ($1, $2, $3, '{\"adopted\": true}'::jsonb, true, now()) \
+         on conflict (digest) do nothing",
+    )
+    .bind(digest)
+    .bind(repository)
+    .bind(config_version as i32)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// The inspection of an adopted image could not run: said once, not retried
+/// every step (it stays runnable as it was found).
+pub async fn note_adopt_failed(pg: &PgPool, digest: &str, why: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update hermes_images set inspect = inspect || jsonb_build_object('adoptError', $2::text), \
+           updated_at = now() where digest = $1",
+    )
+    .bind(digest)
+    .bind(why.chars().take(300).collect::<String>())
     .execute(pg)
     .await?;
     Ok(())
@@ -769,6 +845,13 @@ pub struct Rollout {
     /// Host failures in a row (each retry waits twice as long as the last,
     /// to six hours; the third tells a person). Cleared by progress.
     pub infra_failures: u32,
+    /// The agent the latest host failures came moving, and how many in a
+    /// row: a catch-up gives up on one the host fails three times, so one
+    /// agent never holds the channel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub infra_agent: Option<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub infra_agent_failures: u32,
     /// Image failures read as the host's because its disk was saturated
     /// (at most two; the next is judged as the image's).
     pub masked: u32,
@@ -855,6 +938,13 @@ pub struct ChannelState {
     /// that image: never moved onto it again until the fleet's image changes
     /// or an admin presses Roll now.
     pub catchup_failed: std::collections::BTreeMap<String, String>,
+    /// Agents (by slug) the channel has recreated, or tried to, and not yet
+    /// seen settled: one of these found down was left down by the channel,
+    /// and is started again. Any other agent found down (exited, created,
+    /// gone) was stopped by someone — Talaria's Stop, `docker stop`,
+    /// `compose down` — and stays down until someone starts it.
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub touched: std::collections::BTreeSet<String>,
     /// Fields a later release wrote, kept as they are.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -1283,6 +1373,17 @@ pub fn env_file_image(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn releases_compare_by_their_numbers() {
+        assert_eq!(super::release("v0.22.4"), Some((0, 22, 4)));
+        assert_eq!(super::release("0.21.4"), Some((0, 21, 4)));
+        assert!(super::release("v0.22.10") > super::release("v0.22.9"));
+        assert!(super::release("v0.21.4") < super::release("v0.22.4"));
+        for bad in ["latest", "v0.22", "v0.22.4.1", "v2026.9.24x", ""] {
+            assert_eq!(super::release(bad), None, "{bad}");
+        }
+    }
+
     use super::*;
 
     const D1: &str = "sha256:7a69201726bc64db2072a1371557137c23312d29705cda2b8ea2a0214a50a4cf";

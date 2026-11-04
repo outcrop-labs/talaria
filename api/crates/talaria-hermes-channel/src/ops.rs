@@ -97,11 +97,30 @@ impl Snapshot {
             && (!self.exists || matches!(self.status.as_str(), "exited" | "paused" | "created"))
     }
 
-    /// Meant to run and not running: crash-looping, left exited or created
-    /// by a roll that failed, or gone — with no Stop recorded. It is
-    /// recreated whatever it is doing; it cannot be doing anything.
-    pub fn down_unwillingly(&self, agent: &ChannelAgent) -> bool {
-        !self.running && !self.person_stopped(agent) && self.status != "removing"
+    /// Docker says it crashed: restarting (a crash loop under its restart
+    /// policy) or dead.
+    pub fn crashed(&self) -> bool {
+        matches!(self.status.as_str(), "restarting" | "dead")
+    }
+
+    /// Meant to run and not running, so the channel starts it: crashed, or
+    /// down after the channel itself recreated it (`touched`: a roll or a
+    /// put-back that did not finish) — never with a person's Stop recorded.
+    /// It is recreated whatever it is doing; it cannot be doing anything.
+    pub fn down_unwillingly(&self, agent: &ChannelAgent, touched: bool) -> bool {
+        !self.running
+            && self.status != "removing"
+            && !self.person_stopped(agent)
+            && (self.crashed() || touched)
+    }
+
+    /// Down, and not the channel's to start: stopped by someone — Talaria's
+    /// Stop, `docker stop`, `compose stop` — removed (`compose down`), or
+    /// left created. It is assigned and starts on the image when someone
+    /// starts it. (Under a chassis with `restart: no`, a crash also leaves a
+    /// container exited, and reads so: the stock chassis restarts a crash.)
+    pub fn left_down(&self, agent: &ChannelAgent, touched: bool) -> bool {
+        !self.running && self.status != "removing" && !self.down_unwillingly(agent, touched)
     }
 }
 
@@ -130,6 +149,13 @@ pub trait FleetOps: Send + Sync {
     fn snapshot<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<Snapshot, String>>;
     /// The id an image reference resolves to on this host.
     fn image_id<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<String, String>>;
+    /// The `repository@sha256:…` an image on this host was pulled as (its
+    /// first repo digest, the channel's repository first), or None for one
+    /// built here and never pulled.
+    fn repo_digest<'a>(&'a self, image_id: &'a str) -> BoxFuture<'a, Option<String>>;
+    /// Record that the agent was stopped (a stop the channel found, made
+    /// before it ran or outside Talaria's Stop), so it stays stopped.
+    fn record_stop<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<(), String>>;
     /// Recreate the agent on the render (its assignment already written),
     /// waiting out its health. `start_if_down` recreates one that is not
     /// running too — only for putting an agent back.
@@ -306,12 +332,30 @@ impl FleetOps for DockerOps {
         need: prepare::Room,
     ) -> BoxFuture<'a, prepare::Prepared> {
         Box::pin(async move {
-            // Every agent's rendered config, for the contract's schema check.
+            // Every agent's rendered config, for the contract's schema check
+            // — all of them, or the check is not made: an agent whose config
+            // cannot be read is not checked by default.
+            let agents = match channel_agents(&self.pg).await {
+                Ok(a) => a,
+                Err(e) => {
+                    return prepare::Prepared::Failed {
+                        why: format!("the agents could not be read for the contract check: {e}"),
+                        definitive: false,
+                    };
+                }
+            };
             let mut configs = Vec::new();
-            if let Ok(agents) = channel_agents(&self.pg).await {
-                for a in agents.iter().filter(|a| on_channel(a)) {
-                    if let Some(text) = base_config(a).await {
-                        configs.push((a.slug.clone(), text));
+            for a in agents.iter().filter(|a| on_channel(a)) {
+                match base_config(a).await {
+                    Some(text) => configs.push((a.slug.clone(), text)),
+                    None => {
+                        return prepare::Prepared::Failed {
+                            why: format!(
+                                "{}'s rendered config could not be read for the contract check",
+                                a.display_name
+                            ),
+                            definitive: false,
+                        };
                     }
                 }
             }
@@ -346,6 +390,26 @@ impl FleetOps for DockerOps {
 
     fn image_id<'a>(&'a self, image: &'a str) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move { probe::image_id(image).await })
+    }
+
+    fn repo_digest<'a>(&'a self, image_id: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let (_, _, repo) = talaria_fleet_render::compiled_pin_parts();
+            probe::repo_digest(image_id, repo).await
+        })
+    }
+
+    fn record_stop<'a>(&'a self, agent: &'a ChannelAgent) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            sqlx::query(
+                "update agent_defs set stopped_at = now() where id = $1::uuid and stopped_at is null",
+            )
+            .bind(&agent.id)
+                .execute(&self.pg)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
     }
 
     fn roll<'a>(

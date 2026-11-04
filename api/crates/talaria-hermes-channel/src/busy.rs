@@ -302,8 +302,11 @@ mod tests {
     const HEALTH_V0224: &str =
         include_str!("../tests/fixtures/hermes-v0.22.4-health-detailed.json");
     /// v0.21.4, the `:latest` main left its agents on (2026-11-03, a stack
-    /// on main's 805e6799): no `api_server`, but `background_queues` with
-    /// `active_api_runs`.
+    /// on main's 805e6799): no `api_server`, and a `background_queues` whose
+    /// `active_api_runs` counts only `/v1/runs` and session chat — not the
+    /// streaming `/v1/chat/completions` Talaria's chat uses, nor a cron. What
+    /// catches those on it is Talaria's own record (the streaming message,
+    /// a recent message: [`db_signals`]) and the job's `fire_claim`.
     const HEALTH_V0214: &str =
         include_str!("../tests/fixtures/hermes-v0.21.4-health-detailed.json");
     const JOBS_RUNNING: &str = include_str!("../tests/fixtures/hermes-v0.22.6-jobs-running.json");
@@ -344,11 +347,13 @@ mod tests {
         let strict = hermes_busy(&v, false).unwrap_err();
         assert!(strict.contains("api_server.active_runs"), "{strict}");
         assert_eq!(hermes_busy(&v, true), Ok(None), "idle as captured");
+        // Its queue count covers a `/v1/runs` run or a session chat; a
+        // Talaria chat turn reads 0 there and is caught by `db_signals`.
         v["readiness"]["checks"]["background_queues"]["active_api_runs"] = serde_json::json!(1);
         assert_eq!(
             hermes_busy(&v, true).unwrap().as_deref(),
             Some("Hermes reports 1 turn in flight"),
-            "its queue count still says a turn is in flight"
+            "a /v1/runs run"
         );
         v["readiness"]["checks"]["background_queues"]["active_api_runs"] = serde_json::json!(0);
         v["gateway_busy"] = serde_json::json!(true);

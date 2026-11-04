@@ -26,9 +26,10 @@ mod config_seal;
 mod env_file;
 pub use config_seal::{
     CONFIG_SECRET_PREFIX, ConfigLiteral, ConfigSeal, config_secret_handles, config_secret_paths,
-    copy_config_secrets, held_config_secrets, plan_config_seal,
-    plan_config_seal_dropping_undeliverable, seal_config_literals, withhold_config_secret,
-    withhold_config_secrets, withhold_unheld_config_secrets,
+    copy_config_secrets, credential_flag, credential_value, held_config_secrets,
+    may_hold_credential, plan_config_seal, plan_config_seal_dropping_undeliverable,
+    seal_config_literals, withhold_config_secret, withhold_config_secrets,
+    withhold_unheld_config_secrets,
 };
 
 /// Container-env name: UPPER_SNAKE, must not collide with the stamped vars.

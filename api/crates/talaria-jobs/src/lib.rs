@@ -144,8 +144,20 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
             async move { talaria_fleet_reconcile::apply_agent_changes(&pg, &sb, &depts).await },
         )
     }));
-    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
-        Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
+    // The deploy's fleet roll recreates every running agent on the new
+    // render. It waits until the agent image channel has adopted the fleet
+    // (each agent assigned the Hermes it runs), so the roll restarts agents
+    // on their own Hermes and the channel alone moves it, by its rules — or
+    // until the channel's bound, when it goes anyway.
+    let booted = std::time::Instant::now();
+    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(move |pg, sb| {
+        Box::pin(async move {
+            let adopted = talaria_hermes_channel::fleet_adopted(&pg).await;
+            if !talaria_hermes_channel::deploy_roll_may_go(adopted, booted.elapsed()) {
+                return Err("waiting for the agent image channel to keep each agent on the Hermes it runs, so this roll moves no agent's Hermes".to_string());
+            }
+            talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await
+        })
     }));
     // THE ANNOUNCE EDGE FOR A QUEUED GOOGLE WRITE. `queue_action` calls this
     // the instant a confirm-send lands, so the person who has to approve it
