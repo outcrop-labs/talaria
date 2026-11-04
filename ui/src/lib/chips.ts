@@ -207,6 +207,7 @@ export const TOOL_FIELDS: Record<string, { label: string; description: string; f
       { name: 'taskId', label: 'Ticket', type: 'string', required: true },
       { name: 'boardId', label: 'Board', type: 'string', required: true },
       { name: 'status', label: 'Status', type: 'string' },
+      { name: 'preview', label: 'Preview only (true: say what would change, move nothing)', type: 'string' },
     ],
   },
   comment: {
