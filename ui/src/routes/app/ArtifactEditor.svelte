@@ -145,16 +145,25 @@
       saving = false
     }
   }
+  /** The grid a sheet last tried to save — the sheet holds its own cells, so
+   *  this is its buffer as far as Keep mine is concerned. */
+  let sheetBuffer: string | null = null
   /** The text the editing surface holds — a document's editor, a page's
-   *  HTML. A sheet saves its own grid; its title saves alone. */
+   *  HTML, a sheet's last grid. A sheet nobody edited saves its title alone. */
   const bufferText = (): string | undefined =>
-    artifact?.kind === 'doc' ? (editorRef?.getMarkdown() ?? artifact.body) : artifact?.kind === 'microsite' ? html : undefined
+    artifact?.kind === 'doc'
+      ? (editorRef?.getMarkdown() ?? artifact.body)
+      : artifact?.kind === 'microsite'
+        ? html
+        : artifact?.kind === 'sheet'
+          ? (sheetBuffer ?? undefined)
+          : undefined
   const saveBody = () => {
     const body = bufferText()
     return save(body === undefined ? { title } : { title, body }, { guard: mode === 'edit' })
   }
   /** The conflict line's override: the buffer over the newer version (which
-   *  stays in version history). A sheet re-saves its grid on its next edit. */
+   *  stays in version history). */
   const keepMine = () => {
     const body = bufferText()
     return save(body === undefined ? { title } : { title, body })
@@ -176,8 +185,10 @@
         danger: true,
       })
       if (!discard) return
+      await qc.invalidateQueries({ queryKey: ['artifact', id] })
       saver.rebase(artifact)
-      void qc.invalidateQueries({ queryKey: ['artifact', id] })
+      sheetBuffer = null
+      seed += 1 // a sheet's grid reseeds from the version now on screen
     } else {
       void saveBody()
     }
@@ -545,7 +556,14 @@
       {/if}
     {:else if artifact.kind === 'sheet'}
       {#key `${id}-${seed}`}
-        <ArtifactSheetView value={artifact.body} editable={mode === 'edit'} onSave={(body) => void save({ body }, { guard: true })} />
+        <ArtifactSheetView
+          value={artifact.body}
+          editable={mode === 'edit'}
+          onSave={(body) => {
+            sheetBuffer = body
+            void save({ body }, { guard: true })
+          }}
+        />
       {/key}
     {:else if artifact.kind === 'file'}
       <div class="min-w-0 flex-1 overflow-y-auto p-8">
@@ -607,6 +625,7 @@
             // A deliberate replace: unguarded, and the surfaces reseed from it.
             if (!(await save({ title: t, body: b }))) return
             if (artifact.kind === 'microsite') html = b
+            sheetBuffer = null
             seed += 1
           }}
         />
