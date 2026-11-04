@@ -4,7 +4,7 @@
 // Forgejo. It is the fixture the checkpoint-rewind lanes run.
 //
 //   node scripts/rewind-fixture.mjs setup    --stack <checkout> [--agent atlas] [--model <id>]
-//   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait]
+//   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait] [--batched]
 //   node scripts/rewind-fixture.mjs teardown --stack <checkout>
 //
 // `<checkout>` is a checkout made by `bun talaria worktree`, with `talaria dev`
@@ -46,6 +46,19 @@ Do these in order, one at a time:
 5. Run \`python3 test_calc.py\` and confirm it passes.
 
 Commit on the job's branch, finish the job, then move this ticket to review.`,
+}
+
+// The same ticket with one step the agent is asked to do as a batch: several
+// tool calls in a single response. A lane that must see a batched turn files
+// this one; whether the model batches is its own choice, so the lane reads
+// the transcript to know.
+const BATCHED_TICKET = {
+  ...TICKET,
+  title: 'Add subtract and multiply to the fixture calculator (batched reads)',
+  description: TICKET.description.replace(
+    'Do these in order, one at a time:',
+    'First, in ONE response, make three tool calls at the same time: read `calc.py`, read `README.md`, and run `ls -la`. Do not make them one at a time. Then do these in order:',
+  ),
 }
 
 const sh = (cmd, args, opts = {}) => {
@@ -432,11 +445,12 @@ async function report(stack, api, task, readToken) {
   return { run, job, ticket: { id: task.id, ref: task.ticketRef, status, category }, tools, files }
 }
 
-async function ticket(stack, slug, wait) {
+async function ticket(stack, slug, wait, batched) {
   const api = apiClient(stack, mintSession(stack))
   const agent = agentRow(stack, slug)
   const board = await ensureBoard(stack, api, agent)
-  const { task } = await api('POST', `/api/boards/${board.id}/tasks`, { ...TICKET, assignees: [agent.model] })
+  const body = batched ? BATCHED_TICKET : TICKET
+  const { task } = await api('POST', `/api/boards/${board.id}/tasks`, { ...body, assignees: [agent.model] })
   say(`filed ${task.ticketRef} (${task.id})`)
   if (!wait) {
     process.stdout.write(`${JSON.stringify({ taskId: task.id, ticketRef: task.ticketRef, boardId: board.id })}\n`)
@@ -470,13 +484,14 @@ const { values, positionals } = parseArgs({
     agent: { type: 'string', default: 'atlas' },
     model: { type: 'string', default: DEFAULT_MODEL },
     'no-wait': { type: 'boolean', default: false },
+    batched: { type: 'boolean', default: false },
   },
 })
 const [command] = positionals
 if (!values.stack || !['setup', 'ticket', 'teardown'].includes(command)) {
-  die('usage: rewind-fixture.mjs setup|ticket|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait]')
+  die('usage: rewind-fixture.mjs setup|ticket|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait] [--batched]')
 }
 const stack = readStack(resolve(values.stack))
 if (command === 'setup') await setup(stack, values.agent, values.model)
-if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'])
+if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'], values.batched)
 if (command === 'teardown') teardown(stack)
