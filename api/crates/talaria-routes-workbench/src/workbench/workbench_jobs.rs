@@ -215,14 +215,24 @@ pub async fn put(
             },
         )
     };
-    if let Err(e) =
-        sqlx::query("update workbench_jobs set status = $1, updated_at = now() where id = $2::uuid")
-            .bind(status)
-            .bind(&job.0)
-            .execute(&state.pg)
-            .await
-    {
-        return Ok(internal("[workbench/jobs] job write failed", e));
+    let written = sqlx::query(
+        "update workbench_jobs set status = $1, updated_at = now() \
+         where id = $2::uuid and status = $3",
+    )
+    .bind(status)
+    .bind(&job.0)
+    .bind(&job.7)
+    .execute(&state.pg)
+    .await;
+    match written {
+        Ok(done) if done.rows_affected() == 0 => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "job is no longer awaiting approval",
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => return Ok(internal("[workbench/jobs] job write failed", e)),
     }
     if let Err(e) = log_activity(
         &state.pg,
