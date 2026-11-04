@@ -1084,9 +1084,12 @@ pub async fn record_step(
                          (select max(step_no) from run_checkpoints c \
                           where c.run_id = $1::uuid and c.kind = 'step' and c.turn = p.turn), \
                          0) + 1 end, \
-                  to_timestamp(least(greatest($12::bigint, 0), \
-                                     (extract(epoch from now()) * 1000)::bigint) \
-                               ::double precision / 1000.0) \
+                  case when $12::bigint between 0 \
+                                            and (extract(epoch from now()) * 1000)::bigint \
+                       then to_timestamp(least(greatest($12::bigint, 0), \
+                                               (extract(epoch from now()) * 1000)::bigint) \
+                                         ::double precision / 1000.0) \
+                       else now() end \
            from bumped b, place p \
            returning seq \
          ) \
