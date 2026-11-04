@@ -204,7 +204,6 @@ UI: ([`ui/`](./ui), Vite + Svelte 5 + strict TypeScript)
 MCP Server: ([`mcp/`](./mcp))
 App Platform/SDK: ([`apps/`](./apps))
 CLI: ([`cli/`](./cli))
-Hermes Plugin: ([`plugin/talaria/`](./plugin/talaria)
 
 New contributors start with [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 

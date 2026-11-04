@@ -18,6 +18,8 @@ sha2 = { workspace = true }
 sqlx = { workspace = true }
 # clip_chars: the house's one display clip (a label, a snippet).
 talaria-body = { workspace = true }
+talaria-conversations = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-params = { workspace = true }
 talaria-realtime = { workspace = true }
 tokio = { workspace = true }

@@ -1,10 +1,16 @@
-//! Shell settings — `settings.json` next to the instance registry. Today this
-//! is the window titlebar mode. Written atomically (tmp + rename), same as
-//! the registry, so a crash mid-write cannot truncate it.
+//! Shell settings — `settings.json` next to the instance registry: the window
+//! titlebar mode, how long an instance's page may stay off screen before the
+//! shell suspends it (suspend.rs), whether closing the window keeps Talaria
+//! running (background.rs), and the update Later put off (update.rs). Written atomically (tmp + rename), same
+//! as the registry, so a crash mid-write cannot truncate it.
+//!
+//! Reading it never stops the app: a value this build does not know (a newer
+//! build wrote it, then a downgrade) reads as the default, and a file that is
+//! not JSON at all is moved aside and replaced by defaults.
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -20,19 +26,125 @@ pub enum TitlebarMode {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// The suspend timeout when settings.json does not say: ten minutes.
+pub const DEFAULT_SUSPEND_MINUTES: u32 = 10;
+
+/// The longest timeout a file may ask for: a day. Anything above it, like
+/// anything that is not a whole number of minutes, reads as the default.
+pub const MAX_SUSPEND_MINUTES: u32 = 24 * 60;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopSettings {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub titlebar: TitlebarMode,
+    /// Minutes an instance's page may stay off screen before the shell frees
+    /// its webview (suspend.rs). `0` is Off. An older build ignores the field.
+    #[serde(default = "default_suspend", deserialize_with = "lenient_minutes")]
+    pub suspend_after_minutes: u32,
+    /// Closing the window keeps Talaria running, so notifications still
+    /// arrive (background.rs). On by default; ignored on Windows, where Close
+    /// still quits. An older build ignores the field.
+    #[serde(default = "default_true", deserialize_with = "lenient_true")]
+    pub close_to_background: bool,
+    /// The one-time "Talaria is still running" notice has been shown.
+    #[serde(default, deserialize_with = "lenient")]
+    pub background_notice_shown: bool,
+    /// The update Later put off, and until when (update.rs). An older build
+    /// ignores the field.
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub update_snooze: Option<crate::update::Snooze>,
 }
 
-pub fn load(path: &Path) -> Result<DesktopSettings, String> {
-    if !path.exists() {
-        return Ok(DesktopSettings::default());
+impl Default for DesktopSettings {
+    fn default() -> Self {
+        Self {
+            titlebar: TitlebarMode::default(),
+            suspend_after_minutes: DEFAULT_SUSPEND_MINUTES,
+            close_to_background: true,
+            background_notice_shown: false,
+            update_snooze: None,
+        }
     }
-    let raw = fs::read_to_string(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-    serde_json::from_str(&raw).map_err(|e| format!("parsing {}: {e}", path.display()))
+}
+
+impl DesktopSettings {
+    /// None when suspending is off.
+    pub fn suspend_after(&self) -> Option<Duration> {
+        (self.suspend_after_minutes > 0)
+            .then(|| Duration::from_secs(u64::from(self.suspend_after_minutes) * 60))
+    }
+}
+
+fn default_suspend() -> u32 {
+    DEFAULT_SUSPEND_MINUTES
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A boolean, or the default (on) for anything else.
+fn lenient_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_bool().unwrap_or(true))
+}
+
+/// A whole number of minutes from 0 (Off) to a day; anything else is the
+/// default, not a startup failure.
+fn lenient_minutes<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<u32>(value)
+        .ok()
+        .filter(|m| *m <= MAX_SUSPEND_MINUTES)
+        .unwrap_or(DEFAULT_SUSPEND_MINUTES))
+}
+
+/// Any value this build cannot read is the default, not a startup failure.
+fn lenient<'de, D: Deserializer<'de>, T: Default + serde::de::DeserializeOwned>(
+    d: D,
+) -> Result<T, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// The settings, plus a sentence for the launcher when the file had to be
+/// replaced.
+pub fn load(path: &Path) -> (DesktopSettings, Option<String>) {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return (DesktopSettings::default(), None);
+        }
+        Err(e) => {
+            return (
+                DesktopSettings::default(),
+                Some(format!(
+                    "The shell settings at {} could not be read ({e}); defaults are in use",
+                    path.display()
+                )),
+            );
+        }
+    };
+    match serde_json::from_str(&raw) {
+        Ok(settings) => (settings, None),
+        Err(e) => {
+            let moved = match crate::registry::set_aside(path) {
+                Ok(to) => format!("it was moved to {}", to.display()),
+                Err(err) => format!("it could not be moved aside ({err})"),
+            };
+            (
+                DesktopSettings::default(),
+                Some(format!(
+                    "The shell settings could not be read ({e}); {moved}, and defaults are in use"
+                )),
+            )
+        }
+    }
 }
 
 pub fn save(path: &Path, settings: &DesktopSettings) -> Result<(), String> {
@@ -54,32 +166,147 @@ pub fn apply(window: &tauri::Window, mode: TitlebarMode) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn missing_file_is_themed() {
+    fn temp_dir() -> std::path::PathBuf {
         let dir =
             std::env::temp_dir().join(format!("talaria-desktop-settings-{}", uuid::Uuid::new_v4()));
-        let path = dir.join("settings.json");
-        let loaded = load(&path).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn missing_file_is_themed() {
+        let dir = temp_dir();
+        let (loaded, notice) = load(&dir.join("settings.json"));
         assert_eq!(loaded.titlebar, TitlebarMode::Themed);
+        assert!(notice.is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn roundtrip() {
-        let dir =
-            std::env::temp_dir().join(format!("talaria-desktop-settings-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir();
         let path = dir.join("settings.json");
         let settings = DesktopSettings {
             titlebar: TitlebarMode::Os,
+            suspend_after_minutes: 0,
+            close_to_background: false,
+            background_notice_shown: true,
+            update_snooze: Some(crate::update::Snooze {
+                version: "0.13.0".into(),
+                until_ms: 1_800_000_000_000,
+            }),
         };
         save(&path, &settings).unwrap();
-        assert_eq!(load(&path).unwrap(), settings);
+        assert_eq!(load(&path), (settings, None));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_snooze_is_kept_by_version_and_a_bad_one_reads_as_none() {
+        let parsed: DesktopSettings = serde_json::from_str(
+            r#"{"updateSnooze":{"version":"0.13.0","untilMs":1800000000000}}"#,
+        )
+        .unwrap();
+        let snooze = parsed.update_snooze.unwrap();
+        assert_eq!(snooze.version, "0.13.0");
+        assert_eq!(snooze.until_ms, 1_800_000_000_000);
+        for junk in [
+            r#"{"updateSnooze":"0.13.0"}"#,
+            r#"{"updateSnooze":{"version":"0.13.0"}}"#,
+            r#"{"updateSnooze":{"version":"0.13.0","untilMs":-1}}"#,
+            r#"{"updateSnooze":null}"#,
+        ] {
+            let parsed: DesktopSettings = serde_json::from_str(junk).unwrap();
+            assert_eq!(parsed.update_snooze, None, "{junk}");
+        }
+        // Nothing put off writes nothing, so an older build's file is unchanged.
+        let json = serde_json::to_string(&DesktopSettings::default()).unwrap();
+        assert!(!json.contains("updateSnooze"), "{json}");
+        // And a snooze never costs the titlebar beside it.
+        let parsed: DesktopSettings =
+            serde_json::from_str(r#"{"titlebar":"os","updateSnooze":7}"#).unwrap();
+        assert_eq!(parsed.titlebar, TitlebarMode::Os);
     }
 
     #[test]
     fn unknown_file_still_defaults_titlebar() {
         let parsed: DesktopSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(parsed.titlebar, TitlebarMode::Themed);
+    }
+
+    #[test]
+    fn a_value_from_a_newer_build_reads_as_the_default() {
+        let parsed: DesktopSettings = serde_json::from_str(r#"{"titlebar":"fancy"}"#).unwrap();
+        assert_eq!(parsed.titlebar, TitlebarMode::Themed);
+        let parsed: DesktopSettings = serde_json::from_str(r#"{"titlebar":7}"#).unwrap();
+        assert_eq!(parsed.titlebar, TitlebarMode::Themed);
+        let parsed: DesktopSettings =
+            serde_json::from_str(r#"{"titlebar":"none","later":true}"#).unwrap();
+        assert_eq!(parsed.titlebar, TitlebarMode::None);
+    }
+
+    #[test]
+    fn the_suspend_timeout_defaults_to_ten_minutes_and_zero_is_off() {
+        let parsed: DesktopSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.suspend_after_minutes, DEFAULT_SUSPEND_MINUTES);
+        assert_eq!(parsed.suspend_after(), Some(Duration::from_secs(600)));
+        let off: DesktopSettings = serde_json::from_str(r#"{"suspendAfterMinutes":0}"#).unwrap();
+        assert_eq!(off.suspend_after(), None);
+        let one: DesktopSettings = serde_json::from_str(r#"{"suspendAfterMinutes":1}"#).unwrap();
+        assert_eq!(one.suspend_after(), Some(Duration::from_secs(60)));
+        let day: DesktopSettings = serde_json::from_str(r#"{"suspendAfterMinutes":1440}"#).unwrap();
+        assert_eq!(day.suspend_after_minutes, 1440);
+    }
+
+    #[test]
+    fn a_suspend_timeout_this_build_cannot_read_is_the_default() {
+        for raw in [
+            r#"{"suspendAfterMinutes":-5}"#,
+            r#"{"suspendAfterMinutes":2.5}"#,
+            r#"{"suspendAfterMinutes":"10"}"#,
+            r#"{"suspendAfterMinutes":null}"#,
+            r#"{"suspendAfterMinutes":1441}"#,
+        ] {
+            let parsed: DesktopSettings = serde_json::from_str(raw).unwrap();
+            assert_eq!(
+                parsed.suspend_after_minutes, DEFAULT_SUSPEND_MINUTES,
+                "{raw}"
+            );
+        }
+        // And a timeout never costs the titlebar mode beside it.
+        let parsed: DesktopSettings =
+            serde_json::from_str(r#"{"titlebar":"os","suspendAfterMinutes":"x"}"#).unwrap();
+        assert_eq!(parsed.titlebar, TitlebarMode::Os);
+    }
+
+    #[test]
+    fn closing_to_the_background_is_on_unless_the_file_says_false() {
+        let parsed: DesktopSettings = serde_json::from_str("{}").unwrap();
+        assert!(parsed.close_to_background);
+        assert!(!parsed.background_notice_shown);
+        let off: DesktopSettings =
+            serde_json::from_str(r#"{"closeToBackground":false,"backgroundNoticeShown":true}"#)
+                .unwrap();
+        assert!(!off.close_to_background);
+        assert!(off.background_notice_shown);
+        for junk in [
+            r#"{"closeToBackground":"no"}"#,
+            r#"{"closeToBackground":0}"#,
+        ] {
+            let parsed: DesktopSettings = serde_json::from_str(junk).unwrap();
+            assert!(parsed.close_to_background, "{junk}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_not_json_is_set_aside_with_a_notice() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        fs::write(&path, "{titlebar:").unwrap();
+        let (loaded, notice) = load(&path);
+        assert_eq!(loaded, DesktopSettings::default());
+        assert!(notice.unwrap().contains("moved to"));
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

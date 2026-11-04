@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { modelAllowedFor } from '@/server/model-access'
-import { resolveHarnessModelWith, type HarnessModelDeps, type ModelChainStep, type ModelSpec } from '@/server/harness/model'
+import { chainWithSlot, resolveHarnessModelWith, type HarnessModelDeps, type ModelChainStep, type ModelSpec } from '@/server/harness/model'
 import type { GatewayModel } from '@/server/llm-gateway'
 import type { ModelRole } from '@/server/model-roles'
 import type { PlatformAgentId } from '@/server/platform-agents'
@@ -20,6 +20,8 @@ import type { Role } from '@/server/users'
 interface World {
   catalog?: GatewayModel[]
   pins?: Partial<Record<PlatformAgentId, string>>
+  /** App harness slot → assigned model (`app_harness_models`). */
+  slots?: Record<string, string>
   roles?: Partial<Record<ModelRole, string>>
   env?: string | null
   preferred?: string | null
@@ -39,6 +41,10 @@ const deps = (w: World): HarnessModelDeps => {
     // while it still routes (platform-agents.ts, model-roles.ts).
     platformAgentModel: async (id) => {
       const m = w.pins?.[id]
+      return m && routes(m) ? m : null
+    },
+    appHarnessModel: async (slot) => {
+      const m = w.slots?.[slot]
       return m && routes(m) ? m : null
     },
     resolveRoleModel: async (role) => {
@@ -212,5 +218,44 @@ describe('the declared chain is the whole chain', () => {
 describe('nothing to run on', () => {
   it('returns null when the gateway serves nothing', async () => {
     expect(await resolve({ pin: 'titler', role: 'code-light', userId: 'u1' }, { catalog: [], env: 'env-model', preferred: 'p' })).toBeNull()
+  })
+})
+
+describe("an app harness's own slot (app:<slug>/<harnessId>)", () => {
+  const SLOT = 'app:helpdesk/triage'
+  const withSlot: World = { ...FULL, catalog: [...(FULL.catalog ?? []), ...bare('slot-model')], slots: { [SLOT]: 'slot-model' } }
+
+  it('wins over the harness role and the utility model', async () => {
+    expect(await resolve({ slot: SLOT, role: 'code-light' }, withSlot)).toEqual({ model: 'slot-model', step: 'slot' })
+  })
+
+  it('still loses to an admin pin, which is earlier in the chain', async () => {
+    expect(await resolve({ pin: 'titler', slot: SLOT, role: 'code-light' }, withSlot)).toEqual({ model: 'pinned-model', step: 'pin' })
+  })
+
+  it('runs before the role even in a chain written without it', async () => {
+    expect(await resolve({ slot: SLOT, role: 'code-light', chain: ['role', 'first-routable'] }, withSlot)).toEqual({ model: 'slot-model', step: 'slot' })
+    expect(await resolve({ slot: SLOT, chain: [] }, withSlot)).toEqual({ model: 'slot-model', step: 'slot' })
+  })
+
+  it('falls through when unassigned, or when its model stopped routing', async () => {
+    expect(await resolve({ slot: SLOT, role: 'code-light' }, FULL)).toEqual({ model: 'assigned-role', step: 'role' })
+    expect(await resolve({ slot: SLOT, role: 'code-light' }, { ...FULL, slots: { [SLOT]: 'deleted-model' } })).toEqual({
+      model: 'assigned-role',
+      step: 'role',
+    })
+  })
+
+  it('is not gated by the member allowlist — an admin assigned it', async () => {
+    expect(await resolve({ slot: SLOT, userId: 'u1' }, { ...withSlot, allow: ['aardvark'] })).toEqual({ model: 'slot-model', step: 'slot' })
+  })
+
+  it('is placed before role, else after pin, else first — the Rust chain_with_slot rule', () => {
+    const steps = (c: ModelChainStep[]) => chainWithSlot(c, SLOT)
+    expect(steps(['pin', 'role', 'env'])).toEqual(['pin', 'slot', 'role', 'env'])
+    expect(steps(['pin', 'env'])).toEqual(['pin', 'slot', 'env'])
+    expect(steps(['utility'])).toEqual(['slot', 'utility'])
+    expect(steps(['role', 'slot'])).toEqual(['role', 'slot'])
+    expect(chainWithSlot(['role'], undefined)).toEqual(['role'])
   })
 })

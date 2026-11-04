@@ -7,4 +7,4 @@ Icon=app.talaria.desktop
 Terminal=false
 Categories=Office;ProjectManagement;
 Keywords=Talaria;agents;workspace;collaboration;
-StartupWMClass=talaria-desktop
+StartupWMClass=app.talaria.desktop

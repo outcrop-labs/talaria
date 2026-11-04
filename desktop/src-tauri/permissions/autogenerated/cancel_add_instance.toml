@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-add-instance"
+description = "Enables the cancel_add_instance command without any pre-configured scope."
+commands.allow = ["cancel_add_instance"]
+
+[[permission]]
+identifier = "deny-cancel-add-instance"
+description = "Denies the cancel_add_instance command without any pre-configured scope."
+commands.deny = ["cancel_add_instance"]

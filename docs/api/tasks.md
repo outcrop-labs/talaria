@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-12 routes.
+13 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -19,9 +19,9 @@
 | [`/api/tasks/{id}/comments`](#apitasksidcomments) | POST | `dual` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | POST | `dual` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | DELETE | `session` |
+| [`/api/tasks/{id}/move`](#apitasksidmove) | POST | `dual` |
 | [`/api/tasks/{id}/review`](#apitasksidreview) | POST | `session` |
 | [`/api/tasks/{id}/usage`](#apitasksidusage) | GET | `dual` |
-| [`/api/tasks/{id}/usage`](#apitasksidusage) | POST | `agent` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | POST | `session` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | DELETE | `session` |
 | [`/api/tasks/{id}/work-session`](#apitasksidwork-session) | GET | `session` |
@@ -133,6 +133,28 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs`](
 | :--- | :--- | :--- |
 | `dependsOnId` | `string(1, 200)` |  |
 
+## `/api/tasks/{id}/move`
+
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs)
+
+> POST /api/tasks/{id}/move { boardId, status?, preview? }. Move a ticket to
+> another board — an ACTION, so POST (API-CONVENTIONS "Methods").
+>
+> The decisions live in talaria-tasks `move_task` (permission on both
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `dual` | [body](#post-apitasksidmove-body) | `{task, moved}` | 200, 400, 403, 404, 409 | — |
+
+### POST `/api/tasks/{id}/move` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `boardId` | `uuid` |  |
+| `status` | `string?(40)` |  |
+| `preview` | `bool?` |  |
+
 ## `/api/tasks/{id}/review`
 
 Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs)
@@ -156,24 +178,15 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs`](../../
 
 Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs)
 
-> /api/tasks/{id}/usage. Per-ticket token spend. POST (agents, via MCP
-> log_usage): report tokens burned working this ticket — attributed to the
-> agent's serving endpoint and priced like every other ledger row. GET: the
-> rollup shown on the ticket.
+> GET /api/tasks/{id}/usage. Per-ticket token spend: the rollup shown on the
+> ticket, read from the `usage_events` rows that carry this ticket's id — the
+> work-session flow's metered rows, priced like every other ledger row.
+>
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `…` | 200, 400, 403, 404, 409 | — |
-| POST | `agent` | [body](#post-apitasksidusage-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
-
-### POST `/api/tasks/{id}/usage` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `promptTokens` | `number(0, 100000)` |  |
-| `completionTokens` | `number(0, 100000)` |  |
-| `tier` | `nullish` | Model tier the work ran on (alias name); defaults to the agent's main. |
-| `estimated` | `bool?` |  |
 
 ## `/api/tasks/{id}/watchers`
 
@@ -273,15 +286,15 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/workflows.rs`](../../api/cr
 Source: [`api/crates/talaria-routes-boards/src/tasks/workflows_id.rs`](../../api/crates/talaria-routes-boards/src/tasks/workflows_id.rs)
 
 > /api/workflows/{id}. PUT patch and DELETE, both agents.manage. Gate
-> order: perm, body, then the SQL bind — so a member with a bad body gets
-> the 403, and a non-uuid id only reaches the bind when a field is PRESENT
-> (an empty patch runs no SQL and answers ok even for a non-uuid id).
+> order: perm, body, then the id — so a member with a bad body gets the 403,
+> a non-uuid id the house 400 ("not a uuid"), and a well-formed id that
+> names no workflow a 404 on the PUT, an empty patch included: a write to
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkflowsid-body) | `{ok}` | 200, 400 | — |
-| DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200 | — |
+| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkflowsid-body) | `{ok}` | 200, 400, 404 | — |
+| DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200, 404 | — |
 
 ### PUT `/api/workflows/{id}` body
 

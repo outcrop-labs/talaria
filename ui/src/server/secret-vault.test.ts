@@ -123,68 +123,10 @@ describe('unsealing', () => {
   })
 })
 
-// ── The chokepoint, end to end ───────────────────────────────────────────────
-
-describe('buildUpstream seals before the request leaves the process', () => {
-  it('seals the TEXT PART of an image-carrying turn, not just prose turns', async () => {
-    // An image turn's content is an array of OpenAI parts. The string-only
-    // sealing this file used to prove left exactly those turns traveling
-    // whole (audit 2026-08-26, P0-2) — and channel replies build this shape
-    // whenever attachments ride along.
-    const { buildUpstream, sealedSecretsOf } = await import('./llm-gateway')
-    const route = { endpoint: { name: 'e', provider: 'openai', baseUrl: 'https://api.test' }, upstreamModel: 'm' }
-    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSU'
-    const call = await buildUpstream(route as never, {
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: `screenshot of the deploy — the token in it is ${PAT}` },
-            { type: 'image_url', image_url: { url: dataUrl } },
-          ],
-        },
-      ],
-    })
-
-    const wire = JSON.stringify(call.body)
-    expect(wire).not.toContain(PAT)
-    expect(wire).toContain(dataUrl) // the image part passes through unmangled
-    expect(sealedSecretsOf(call).map((s) => s.label)).toEqual(['GitHub fine-grained token'])
-  })
-
-  it('replaces a credential in the outbound body, and keeps the vault on the call', async () => {
-    // THE CLAIM THIS FILE EXISTS TO MAKE, asserted against the function every
-    // gateway call in the tree actually goes through — the blocking transport,
-    // the streamed one, the tool turn, the image turn, `completeViaGateway`.
-    // A test on `sealText` alone would prove the sealer works and say nothing
-    // about whether anything uses it.
-    const { buildUpstream, sealedSecretsOf } = await import('./llm-gateway')
-    const route = { endpoint: { name: 'e', provider: 'openai', baseUrl: 'https://api.test' }, upstreamModel: 'm' }
-    const call = await buildUpstream(route as never, {
-      messages: [
-        { role: 'system', content: 'you are helpful' },
-        { role: 'user', content: `deploy with ${PAT} please` },
-      ],
-    })
-
-    const wire = JSON.stringify(call.body)
-    expect(wire).not.toContain(PAT)
-    expect(wire).toContain('«secret:1»')
-    // The audit line names the KIND and never the value.
-    expect(sealedSecretsOf(call).map((s) => s.label)).toEqual(['GitHub fine-grained token'])
-    expect(JSON.stringify(sealedSecretsOf(call))).not.toContain(PAT)
-    // And the value is still recoverable at a genuine boundary.
-    expect(unsealText('«secret:1»', call.vault!)).toBe(PAT)
-  })
-
-  it('leaves an ordinary conversation byte-for-byte alone', async () => {
-    // A layer on the hot path of every model call has to be invisible when there
-    // is nothing to do, or it becomes the thing somebody switches off.
-    const { buildUpstream } = await import('./llm-gateway')
-    const route = { endpoint: { name: 'e', provider: 'openai', baseUrl: 'https://api.test' }, upstreamModel: 'm' }
-    const messages = [{ role: 'user', content: 'summarise the ledger migration thread' }]
-    const call = await buildUpstream(route as never, { messages })
-    expect(call.body.messages).toEqual(messages)
-    expect(call.vault?.sealed).toEqual([])
-  })
-})
+// ── The chokepoint ───────────────────────────────────────────────────────────
+//
+// Every model call this process makes now goes to the Rust relay (harness/
+// transport.ts), whose `build_upstream` seals each message on the way out and
+// whose persona door (`proxy_chat`) seals an agent turn — both proven in
+// api/crates/talaria-gateway (vault.rs and its callers). The sealer here is
+// still what the guard and the workspace-secret surfaces use.

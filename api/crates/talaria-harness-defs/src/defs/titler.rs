@@ -458,6 +458,7 @@ pub fn titler_harness() -> HarnessDefinition {
         // of its own.
         ModelSpec {
             pin: Some("titler"),
+            slot: None,
             role: None,
             chain: None,
             user_id: None,

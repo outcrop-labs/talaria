@@ -15,7 +15,8 @@
   import { getJson, postJson } from '@/lib/fetch-json'
   import type { AgentDef } from '@/lib/fleet-defs'
   import { listStagger } from '@/lib/motion'
-  import { toastError } from '@/lib/toast.svelte'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
+  import { noteStillApplying } from '@/routes/app/agents.svelte'
   import { p } from '@/router'
   import McpAddServerModal from '@/routes/app/McpAddServerModal.svelte'
   import McpMarketplaceModal from '@/routes/app/McpMarketplaceModal.svelte'
@@ -86,9 +87,22 @@
 
   const edit = async (body: { assign?: Array<{ serverId: string; tools: string[] | null }>; unassign?: string[]; removeLegacy?: string[] }) => {
     busy = true
+    // Before the call: the roster's note reads only a roll that began after
+    // the request went out as this change's.
+    const sentAt = Date.now()
     try {
-      const r = await postJson<{ ok: true; applied: boolean; warning?: string }>(`/api/fleet/defs/${def.id}/mcp`, body)
+      const r = await postJson<{ ok: true; applied: boolean; warning?: string; pending?: boolean }>(`/api/fleet/defs/${def.id}/mcp`, body)
       if (r.warning) toastError('Applied to the config; the roll did not finish', new Error(r.warning))
+      // A 202: the change is written, and its apply (a render, a roll) was
+      // still going when the route stopped waiting. It goes on — never a
+      // failure — and the roster notes the agent `still applying`.
+      if (r.pending) {
+        noteStillApplying(def.id, sentAt)
+        pushToast({
+          title: `${def.displayName} · MCP change saved, still applying`,
+          body: 'Applying it is taking longer than this tab waits (a roll’s recreate and health check), and it goes on: the roster shows the agent when it lands.',
+        })
+      }
       await invalidate()
     } catch (e) {
       toastError('MCP change failed', e)
@@ -232,7 +246,7 @@
 
 <div class="space-y-4">
   {#if busy}
-    <Generating site="fleet/mcp-apply" label={`Applying MCP change: rolling ${def.displayName} so the new version takes effect`} lines={2} />
+    <Generating site="fleet/mcp-apply" label={`Applying MCP change to ${def.displayName}: it reaches the running agent within a few minutes, without a restart`} lines={2} />
   {/if}
   <QueryState {query} errorTitle="Could not load MCP servers" errorVariant="compact" isEmpty={() => false}>
     {#snippet skeleton()}<SkeletonRows rows={3} class="py-2" />{/snippet}

@@ -19,7 +19,7 @@
     working = false,
   }: {
     model: string
-    fleet: { id: string; label: string; tiers?: string[] }[]
+    fleet: { id: string; label: string; tiers?: string[]; pinnedSessions?: boolean }[]
     conversationId: string | null
     newChatSignal: number
     onNewThread: () => void
@@ -57,6 +57,7 @@
         agentModel={model}
         agentLabel={agent.label}
         tiers={agent.tiers ?? []}
+        pinned={agent.pinnedSessions ?? false}
         {conversationId}
         {newChatSignal}
         {onCreated}

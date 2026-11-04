@@ -1,7 +1,10 @@
 // POST /api/fleet/federate. Federate outside agents into Talaria: read a
 // Hermes-format directory and create each agent natively (Talaria def,
 // fresh key + state volume, our chassis, skills copied in). One-way and
-// re-runnable. Admin.
+// re-runnable. Admin. A roster that would put a second agent in a department
+// (one another agent holds, or an earlier entry claims) is refused whole with
+// a 409 that names each entry, and nothing is written: a department names one
+// agent's container and memory.
 
 use axum::Json;
 use axum::extract::State;
@@ -12,7 +15,7 @@ use talaria_api_facades::fleet::federate::federate_from_dir;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
 use talaria_error::{house_error, object_or_400};
-use talaria_session::{actor_of, require_admin};
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
 pub async fn post(
@@ -34,7 +37,18 @@ pub async fn post(
         .clone()
         .or_else(|| user.name.clone())
         .unwrap_or_else(|| "admin".into());
-    let result = federate_from_dir(&state.pg, &dir, &actor).await;
+    // A source config's literal credentials are sealed as per-agent secrets
+    // on the way in.
+    let sb = secretbox_or_500(&state, "[fleet/federate] secretbox failed").await?;
+    let result = federate_from_dir(&state.pg, &sb, &dir, &actor).await;
+    // A roster that would put two agents in one department imported nothing:
+    // the conflict is the answer, each entry named.
+    if !result.conflicts.is_empty() {
+        return Ok(house_error(
+            StatusCode::CONFLICT,
+            &format!("nothing was federated — {}", result.conflicts.join("; ")),
+        ));
+    }
     if result.agents.iter().any(|a| a.status == "federated") {
         let actor = actor_of(&user);
         let label = dir.clone();

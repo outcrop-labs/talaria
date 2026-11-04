@@ -25,17 +25,37 @@ ACL is checked, so roster changes apply immediately.
   actions inside.
 - **App views** (`/x/<slug>`, `/x/<slug>/manage` — tagged `app` in the checklist) behave like
   Manage views: **explicit-grant only**. Enabling an app gives members nothing until an admin adds
-  it per person.
+  it per person or per team. Each surface is its own grant: the work view and the manage view are
+  granted apart, and a grant for only the manage view opens it on its own. An app's settings tab
+  follows its manage view, so an app with settings but no manage surface still offers
+  `/x/<slug>/manage` to grant. App views match exactly, while core views also deny everything
+  nested under them. The app's API (`/api/apps/<slug>/*`) and its compiled client
+  (`/app-builds/<slug>/…`) admit a member who holds any of the app's views. The API tells the
+  app which views the member holds (`ctx.access`).
+- An app view opens only on a **listed grant**. `GET /api/auth/session` serves `appGrants`, the
+  app views the person holds, and the gates, the nav and the route gate admit on that list. An
+  app view missing from `deniedViews` is not a grant. When the enabled apps can't be read (a
+  malformed `apps_enabled` setting, an apps directory that can't be listed), a member's session
+  still answers with their core `deniedViews` and `perms`, and serves `appGrants: null` with
+  `appsUnreadable: true`. Every app reader treats that as no app at all: the nav and the
+  settings tabs show none, the route gate sends app routes home, and the app doors answer 503.
+  The rest of Talaria stays open, and `requireView` still answers for core views. An admin holds
+  every app by role; their session reads neither, so Admin → Apps stays reachable to rewrite a
+  broken setting.
 
 Denied views aren't just hidden: the route bounces, the nav omits them, and the APIs that power
-them enforce the same resolution server-side (`requireView`).
+them enforce the same resolution server-side (`requireView`). The resolution is the Rust api's
+(`talaria_users::view_grants`, served at `GET /api/auth/session`); the TS host asks it with the
+caller's cookie rather than keeping a copy. The TS rule that reads it (`ui/src/lib/app-grants.ts`)
+and the Rust rule that writes it are pinned to one fixture,
+`api/tests/it/fixtures/app-grants.json`.
 
 A team may carry the same two arrays (`denied_views`, `allowed_manage_views`). Effective views:
 
 - work denials = the person's denials ∪ every team they belong to;
 - manage grants = the person's grants ∪ every team they belong to.
 
-Admins set team view grants on Manage → Teams (not the roster owner).
+Admins set team view grants on Manage → Teams (not the roster owner), app views included.
 
 ## The permission catalog
 

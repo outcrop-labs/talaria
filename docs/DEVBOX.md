@@ -26,7 +26,18 @@ branch on the host.
 ## What `new` actually does
 
 1. Ensures the primary dev stack is up (its Postgres is the seed source; the
-   shared embeddings are started non-fatally, the `talaria dev` posture).
+   shared embeddings are started non-fatally, the `talaria dev` posture). It
+   starts a stopped service and creates a missing one, and never recreates a
+   running one (`up --no-recreate`): the checkout running `box new` is often not
+   the one that started the primary, and a compose file that differs from that
+   one would otherwise recreate the owner's Postgres. `box start` brings the
+   embeddings up the same way.
+   Main's containers are the dev-compose names, or the shell's
+   `TALARIA_*_CONTAINER` override. An override that names a worktree's or a box's
+   container is refused before anything is created, for `box seed` too. A
+   worktree's `talaria dev` exports its own `TALARIA_PG_CONTAINER` to everything it
+   starts, so a box made from a shell under it would otherwise be seeded from that
+   worktree ([`WORKTREES.md`](./WORKTREES.md), "Rules of the road").
 2. Builds `talaria-devbox:latest` if missing (`docker/devbox.Dockerfile` —
    node 22 + bun + git + the docker CLI/compose + Claude Code + opencode).
 3. Clones the repo **locally** (hardlinked objects, near-free on btrfs) into
@@ -44,7 +55,20 @@ branch on the host.
 6. Writes the box's `ui/.env`: its own service-DNS URLs, its own state dirs,
    `TALARIA_AGENT_DIAL=container`, `TALARIA_FLEET_PROJECT=devbox-<name>-fleet`
    — and the primary's `TALARIA_SECRET_KEY`/`AUTH_*` verbatim, so sealed
-   secrets decrypt and your primary login works unchanged.
+   secrets decrypt and your primary login works unchanged. Every line the box
+   writes is dropped from the copied file first, and so is everything that names
+   a worktree's stack (`TALARIA_WORKTREE`, its api, toolkit, auth-bridge and
+   gateway ports): `box new` run with a worktree's CLI copies that worktree's
+   `ui/.env`, and the first match wins. So are `TALARIA_APP_DATA_DIR` and
+   `TALARIA_APP_BUILDS_DIR`, which a primary may set by hand: the box derives
+   both from its own `TALARIA_APPS_DIR`, as `state/app-data` and
+   `state/app-builds`. `TALARIA_EMBED_URL` names the embeddings container step 1
+   started, the shell's `TALARIA_EMBED_CONTAINER` when it sets one. The Rust api
+   reads no `.env` file, so the box's `talaria dev` hands it every line of this
+   block it reads: the dial, the fleet, apps and uploads dirs, the gateway URLs,
+   and the qdrant, embeddings and storage addresses. It does that only for the
+   box's own stack, a `ui/.env` with the block's `TALARIA_DEVBOX` and no
+   `TALARIA_WORKTREE`: a primary's or a worktree's api is handed none of them.
 7. Seeds starter data from the primary (below).
 8. Runs any `--setup` hooks inside the fresh box (provisioning; `npm i -g`
    hooks land in the shared tools layer, below), then installs deps and
@@ -98,10 +122,20 @@ the symlink spelling never leaks into config the box must resolve.
 - **default** — the box's own project network. The app reaches its sidecars
   by service DNS (`postgres:5432`, `redis:6379`, …). Nothing is published:
   several of these services are unauthenticated, the box network is the
-  boundary.
+  boundary. The app databases the box's app starts join it too
+  (`TALARIA_APP_DB_NETWORK`), dialled by container name,
+  `talaria-appdb-<box>-<slug>` ([`APPS.md`](./APPS.md)): a port they published
+  would be on the host's loopback, which the box cannot reach.
 - **talaradev** — the primary dev stack's network, joined read-only in
   spirit. Boxes only dial the one stateless service on it
   (`TALARIA_EMBED_URL` by container name).
+- **packages** — `talaria-mcp-<name>`, joined on demand. An MCP package
+  served over HTTP (an oci package with an http transport) runs on its own
+  network, never the box's default one, where postgres and redis are. The
+  box's api joins that network by the box container's own hostname and dials
+  the package by container name, as the product image does
+  (`api/crates/talaria-mcp/src/pkg.rs`, `dials_by_name`): the loopback port
+  the package publishes is the host's, not the box's.
 - **fleet** — `devbox-<name>-fleet`, this box's private agent network.
   Spawned agents attach to it and reach the box container-to-container:
   `devbox:5273` for the MCP gateway (`TALARIA_MCP_GW_URL`), `devbox:5274` for
@@ -220,10 +254,28 @@ with no prompt, run it from a TTY.
 
 `bun talaria box rm demo` refuses while the clone has uncommitted changes or
 commits no remote has (`--force` overrides) — those are the only things in a
-box that can't be recreated. A box left behind is the sweep's business too:
+box that can't be recreated. It removes the box's app databases with the box:
+those on the box's network, and those with a mount in its state (a box made
+before the network named them `talaria-appdb-1-<slug>`, on the default
+bridge). It empties the box's state from a root container on the box's image,
+never pulled: an app database's files belong to the postgres image's user,
+which yours cannot delete. If the directory still outlives that, `box rm` says
+so and exits 1. A box left behind is the sweep's business too:
 [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags a stopped box
 untouched for a week, and `--apply` removes it only when the clone is clean and
-pushed. The shared tools layer (`../devboxes/shared`) is a cache — it stays.
+pushed. A box whose containers went without `box rm` (or an interrupted `box new`)
+can leave its two networks, `devbox-<name>_default` and `devbox-<name>-fleet`, each
+holding a subnet from docker's address pools: `--apply` removes such a network once
+nothing names it, its project has no container left, `../devboxes/<name>/box.env` is
+gone, and it is at least ten minutes old. Its app databases (`talaria-appdb-*`,
+which run on `restart: unless-stopped`) outlive it the same way: `--apply` removes one
+whose cluster is mounted from a box whose `box.env` is gone, and leaves its data
+directory. Its MCP packages do too: a package container and its `talaria-mcp-<box>`
+network are made outside any compose project, so the api labels both with their owner
+(`talaria.mcp.owner=devbox`), and `--apply` removes them once the box's `box.env` is
+gone, the network only when nothing else names it. One made before the labels is named
+in the report and left alone. The shared tools layer (`../devboxes/shared`) is a
+cache — it stays.
 
 ## Troubleshooting
 

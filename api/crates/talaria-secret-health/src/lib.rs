@@ -452,9 +452,10 @@ pub async fn secret_health(
     .bind(vec![
         "email_config".to_string(),
         "storage_config".to_string(),
-        "github_config".to_string(),
         "rag_rerank_config".to_string(),
         "app_db_passwords".to_string(),
+        "app_llm_keys".to_string(),
+        "agent_web_search".to_string(),
     ])
     .fetch_all(pg)
     .await;
@@ -563,20 +564,38 @@ pub async fn secret_health(
         }
     }
 
-    let github = settings.get("github_config");
-    let github_mode = dig(github, &["mode"]);
-    if let Some(mode) = github_mode.as_deref() {
+    // Each GitHub host's sealed credential (talaria-git-hosts keeps the
+    // connection on its `git_hosts` row; other kinds name a workspace
+    // secret, which the workspace-secret store above already covers).
+    let github_hosts: Vec<(String, String, serde_json::Value, Option<i64>)> = sqlx::query_as(
+        "select id, name, auth, (trunc(extract(epoch from updated_at) * 1000))::bigint \
+         from git_hosts where kind = 'github' order by created_at, id",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    for (id, name, auth, at) in github_hosts {
+        let dig_auth = |path: &[&str]| -> Option<String> {
+            let mut cur = auth.get(path[0])?;
+            for p in &path[1..] {
+                cur = cur.get(p)?;
+            }
+            cur.as_str().filter(|s| !s.is_empty()).map(String::from)
+        };
+        let Some(mode) = dig_auth(&["mode"]) else {
+            continue;
+        };
         let is_app = mode == "app";
         let cipher = if is_app {
-            dig(github, &["app", "privateKeyEnc"])
+            dig_auth(&["app", "privateKeyEnc"])
         } else {
-            dig(github, &["pat", "tokenEnc"])
+            dig_auth(&["pat", "tokenEnc"])
         };
         let mut f = serde_json::Map::new();
         f.insert(
             "id".into(),
             format!(
-                "setting:github_config:{}",
+                "git-host:{id}:{}",
                 if is_app {
                     "app.privateKeyEnc"
                 } else {
@@ -588,22 +607,25 @@ pub async fn secret_health(
         f.insert("group".into(), "platform".into());
         f.insert(
             "label".into(),
-            if is_app {
-                "GitHub App private key"
-            } else {
-                "GitHub access token"
-            }
+            format!(
+                "{} — {name}",
+                if is_app {
+                    "GitHub App private key"
+                } else {
+                    "GitHub access token"
+                }
+            )
             .into(),
         );
         f.insert(
             "unlocks".into(),
             "Workbench: cloning repos, pushing branches, opening pull requests".into(),
         );
-        f.insert("surface".into(), "Admin → Organization".into());
-        f.insert("href".into(), "/admin".into());
+        f.insert("surface".into(), "Admin → Git hosts".into());
+        f.insert("href".into(), "/admin/git".into());
         f.insert("state".into(), state_of(sb, cipher.as_deref(), None).into());
         f.insert("scope".into(), "instance".into());
-        f.insert("setAt".into(), opt_iso(github.and_then(|(_, at)| *at)));
+        f.insert("setAt".into(), opt_iso(at));
         f.insert("clearable".into(), true.into());
         rows.push(row(f));
     }
@@ -627,6 +649,40 @@ pub async fn secret_health(
         rows.push(row(f));
     }
 
+    // One row per vendor key the agent web-search setting holds — the
+    // setting keeps a key only for a vendor that is picked.
+    let web = settings.get("agent_web_search");
+    if let Some((val, at)) = web
+        && let Some(keys) = val.get("keys").and_then(|k| k.as_object())
+    {
+        for (vendor, cipher) in keys {
+            let Some(c) = cipher.as_str().filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            let mut f = serde_json::Map::new();
+            f.insert(
+                "id".into(),
+                format!("setting:agent_web_search:keys.{vendor}").into(),
+            );
+            f.insert("group".into(), "platform".into());
+            f.insert(
+                "label".into(),
+                format!("Agent web search key ({vendor})").into(),
+            );
+            f.insert(
+                "unlocks".into(),
+                "Agents' web search through Hermes, on the provider picked for them".into(),
+            );
+            f.insert("surface".into(), "Admin → Search".into());
+            f.insert("href".into(), "/admin/search".into());
+            f.insert("state".into(), state_of(sb, Some(c), None).into());
+            f.insert("scope".into(), "instance".into());
+            f.insert("setAt".into(), opt_iso(*at));
+            f.insert("clearable".into(), true.into());
+            rows.push(row(f));
+        }
+    }
+
     let app_dbs = settings.get("app_db_passwords");
     if let Some((val, at)) = app_dbs
         && let Some(obj) = val.as_object()
@@ -646,6 +702,36 @@ pub async fn secret_health(
             f.insert(
                 "unlocks".into(),
                 "The app's own Postgres — clearing this locks the volume".into(),
+            );
+            f.insert("surface".into(), "Manage → Apps".into());
+            f.insert("href".into(), "/apps".into());
+            f.insert("state".into(), state_of(sb, c, None).into());
+            f.insert("scope".into(), "instance".into());
+            f.insert("setAt".into(), opt_iso(*at));
+            f.insert("clearable".into(), false.into());
+            rows.push(row(f));
+        }
+    }
+
+    // Each enabled app's gateway key (talaria-apps `llm_key`). Not
+    // clearable: one that no longer opens is rotated on the app host's next
+    // ask, and disabling the app revokes it.
+    let app_keys = settings.get("app_llm_keys");
+    if let Some((val, at)) = app_keys
+        && let Some(obj) = val.as_object()
+    {
+        for (slug, entry) in obj {
+            let c = entry
+                .get("sealed")
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty());
+            let mut f = serde_json::Map::new();
+            f.insert("id".into(), format!("setting:app_llm_keys:{slug}").into());
+            f.insert("group".into(), "platform".into());
+            f.insert("label".into(), format!("App gateway key ({slug})").into());
+            f.insert(
+                "unlocks".into(),
+                "The app's model calls through the gateway — re-minted on the app host's next ask when it cannot be opened".into(),
             );
             f.insert("surface".into(), "Manage → Apps".into());
             f.insert("href".into(), "/apps".into());
@@ -817,8 +903,29 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
         )
         .await
         .map_err(ClearError::from),
-        "setting" if n(0) == "app_db_passwords" => Err(ClearError::Unknown),
+        "setting" if n(0) == "app_db_passwords" || n(0) == "app_llm_keys" => {
+            Err(ClearError::Unknown)
+        }
         "setting" => clear_setting_leaf(pg, n(0), &rest[1..].join(":")).await,
+        // A GitHub host's sealed leaf (`git-host:<id>:app.privateKeyEnc` or
+        // `…:pat.tokenEnc`) — the only two this store inventories.
+        "git-host" => {
+            let path: Vec<String> = match rest[1..].join(":").as_str() {
+                "app.privateKeyEnc" => vec!["app".into(), "privateKeyEnc".into()],
+                "pat.tokenEnc" => vec!["pat".into(), "tokenEnc".into()],
+                _ => return Err(ClearError::Unknown),
+            };
+            sqlx::query(
+                "update git_hosts set auth = jsonb_set(auth, $2::text[], 'null'::jsonb), \
+                 updated_at = now() where id = $1 and (auth #>> $2::text[]) is not null",
+            )
+            .bind(n(0))
+            .bind(&path)
+            .execute(pg)
+            .await
+            .map(|r| r.rows_affected() > 0)
+            .map_err(ClearError::from)
+        }
         _ => Err(ClearError::Unknown),
     }
 }

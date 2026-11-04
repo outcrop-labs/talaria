@@ -58,9 +58,9 @@ describe('summarizeChange', () => {
     )
   })
 
-  it('keeps the singular exactly where agent-refine keeps it', () => {
-    // `summarize` in lib/agent-refine.ts says "line" only for a pure
-    // one-line addition. The refine notice and this card report the same fact
+  it('keeps the singular exactly where change-summary keeps it', () => {
+    // `summarize` in lib/change-summary.ts says "line" only for a pure
+    // one-line addition. The Muse receipt and this card report the same fact
     // about the same document, so they say it in the same words.
     expect(summarizeChange({ label: 'Appended a line', added: 1, removed: 0 })).toBe(
       'Appended a line · 1 added · 0 removed line',

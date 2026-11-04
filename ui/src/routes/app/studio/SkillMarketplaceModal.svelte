@@ -1,8 +1,9 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { ArrowLeft, Check, ExternalLink, Plus, Store } from '@lucide/svelte'
+  import { ArrowLeft, Check, ExternalLink, Plus, ShieldAlert, Store } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
+  import type { ChipTone } from '@/components/ui/chip'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -15,20 +16,24 @@
   import { slide } from '@/lib/motion'
   import {
     SKILLS_KEY,
-    installMarketplaceSkills,
+    installMarketplaceSkill,
     marketplaceDetail,
     marketplaceKey,
     type InstallOutcome,
     type MarketplaceEntry,
     type MarketplaceSkill,
+    type ScanFinding,
     type SkillOwner,
   } from '@/lib/skills'
 
-  /** The skills marketplace, on the MCP marketplace's pattern: the ranked
-   *  catalog searched live, one-click install when a repo is a single skill,
-   *  a pick-list when it is a pack (every skill preselected — one click
-   *  still installs the lot). The destination is an owner — one agent, or
-   *  the shared root every agent carries. */
+  /** The skills marketplace, on the MCP marketplace's pattern: Hermes'
+   *  official skills index searched from the local mirror. A click fetches
+   *  the skill and runs Hermes' own Skills Guard over it. A clean scan
+   *  installs straight away. A scan with findings opens the report first,
+   *  as Hermes' own install prints it and asks before writing: a skill
+   *  Hermes' policy allows installs only on a second, explicit click, and
+   *  one it blocks cannot be installed at all. The destination is an owner —
+   *  one agent, or the shared root every agent carries. */
   let { owner, owners, onClose }: { owner: string; owners: SkillOwner[]; onClose: () => void } = $props()
 
   const qc = useQueryClient()
@@ -41,14 +46,14 @@
   let destination = $state(editable.some((o) => o.owner === owner) ? owner : (editable[0]?.owner ?? 'shared'))
   let q = $state('')
   let error = $state<string | null>(null)
-  // The repo a click is resolving (fetching its skill list), keyed by repo.
-  let busyRepo = $state<string | null>(null)
-  // The pack opened for picking, with its discovered skills.
-  let open = $state<{ entry: MarketplaceEntry; skills: MarketplaceSkill[] } | null>(null)
-  let picking = $state<Set<string>>(new Set())
-  // Per-repo install state, and per-skill statuses of the last install.
-  let installed = $state<Map<string, true>>(new Map())
-  let statuses = $state<Map<string, InstallOutcome['status']>>(new Map())
+  // The skill a click is resolving (fetch + scan + install), by catalog id.
+  let busyId = $state<string | null>(null)
+  // A skill whose scan report is open: one Hermes' policy blocked, or one
+  // it allows whose scan still found something. The entry and its preview.
+  let report = $state<{ entry: MarketplaceEntry; skill: MarketplaceSkill } | null>(null)
+  const reportBlocked = $derived(report !== null && report.skill.scan.allowed !== true)
+  // Per-skill outcomes of this session's installs, by catalog id.
+  let outcomes = $state<Map<string, InstallOutcome['status']>>(new Map())
 
   const resultsQuery = createQuery(() => ({
     queryKey: marketplaceKey(q),
@@ -62,122 +67,138 @@
   const results = $derived(resultsQuery.data)
 
   // A destination's existing skills — the honest "already installed" check
-  // for the common single-skill shape (repo name == skill name).
+  // for the common shape (the skill's directory is its catalog name).
   const existingNames = $derived(new Set(owners.find((o) => o.owner === destination)?.skills.map((s) => s.name) ?? []))
+  const isDone = (e: MarketplaceEntry) => outcomes.has(e.id) || existingNames.has(e.name.toLowerCase())
+  const destinationLabel = $derived(destinations.find((o) => o.owner === destination)?.label ?? destination)
 
-  const repoDone = (e: MarketplaceEntry) => installed.has(e.repo) || existingNames.has(e.name)
+  const TRUST_TONE: Record<string, ChipTone> = { builtin: 'accent', trusted: 'success', community: 'neutral' }
+  const TRUST_NOTE: Record<string, string> = {
+    builtin: 'Official — maintained by Nous Research with Hermes itself',
+    trusted: 'From a repo Hermes trusts (OpenAI, Anthropic, Hugging Face, NVIDIA): installs unless the scan finds something critical',
+    community: 'Community — installs only when the scan finds nothing high-risk',
+  }
+  const VERDICT_TONE: Record<string, ChipTone> = { safe: 'success', caution: 'warn', dangerous: 'danger' }
+  const SEVERITY_TONE: Record<string, ChipTone> = { critical: 'danger', high: 'warn', medium: 'neutral', low: 'neutral' }
+  // Worst first, as Hermes' own scan report orders them.
+  const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
+  const worstFirst = (findings: ScanFinding[]) =>
+    [...findings].sort((a, b) => (SEVERITY_RANK[a.severity] ?? 4) - (SEVERITY_RANK[b.severity] ?? 4))
+  const githubUrl = (e: MarketplaceEntry) => `https://github.com/${e.repo}${e.path ? `/tree/HEAD/${e.path}` : ''}`
 
-  const runInstall = async (entry: MarketplaceEntry, skills?: string[]) => {
-    busyRepo = entry.repo
-    error = null
-    try {
-      const { results } = await installMarketplaceSkills(destination, entry.repo, skills)
-      for (const r of results) statuses = new Map(statuses).set(`${entry.repo}/${r.name}`, r.status)
-      installed = new Map(installed).set(entry.repo, true)
-      open = null
-      await qc.invalidateQueries({ queryKey: SKILLS_KEY })
-    } catch (e) {
-      error = errorMessage(e)
-    } finally {
-      busyRepo = null
-    }
+  const write = async (entry: MarketplaceEntry) => {
+    const outcome = await installMarketplaceSkill(destination, entry.id)
+    outcomes = new Map(outcomes).set(entry.id, outcome.status)
+    await qc.invalidateQueries({ queryKey: SKILLS_KEY })
   }
 
-  /** One click: resolve the repo, then either install straight away (a
-   *  single skill) or open the pick-list (a pack). */
+  /** The card's click: fetch and scan. A clean scan installs; any finding
+   *  opens the report, whether the policy allows the skill or blocks it. */
   const install = async (entry: MarketplaceEntry) => {
-    busyRepo = entry.repo
+    busyId = entry.id
     error = null
     try {
-      const { skills } = await marketplaceDetail(entry.repo)
-      if (skills.length <= 1) {
-        await runInstall(entry)
-      } else {
-        picking = new Set(skills.map((s) => s.name))
-        statuses = new Map()
-        open = { entry, skills }
+      const skill = await marketplaceDetail(destination, entry.id)
+      if (skill.scan.allowed !== true || skill.scan.findings.length > 0) {
+        report = { entry, skill }
+        return
       }
+      await write(entry)
     } catch (e) {
       error = errorMessage(e)
     } finally {
-      busyRepo = entry.repo === busyRepo ? null : busyRepo
+      busyId = null
     }
   }
 
-  const installPicked = () => {
-    if (!open || busyRepo) return
-    const names = open.skills.map((s) => s.name).filter((n) => picking.has(n))
-    if (names.length) void runInstall(open.entry, names)
+  /** The report's own button, for a skill the policy allows: the member has
+   *  read the findings and installs anyway. The api re-scans (from its
+   *  cache) and still refuses anything the policy blocks. */
+  const installReviewed = async () => {
+    if (!report || reportBlocked) return
+    const { entry } = report
+    busyId = entry.id
+    error = null
+    try {
+      await write(entry)
+      report = null
+    } catch (e) {
+      error = errorMessage(e)
+    } finally {
+      busyId = null
+    }
   }
 </script>
 
 <Modal open {onClose} title="Skills marketplace" takeover>
   <div class="flex h-full min-h-0 flex-col gap-4">
-    {#if open}
-      <!-- The pack picker: every skill the repo carries, preselected. -->
+    {#if report}
+      {@const scan = report.skill.scan}
+      {@const count = `${scan.findings.length} ${scan.findings.length === 1 ? 'pattern' : 'patterns'}`}
+      <!-- The scan report: a skill Hermes' install policy blocked, or one it
+           allows whose scan still found something. -->
       <div class="flex items-center gap-3">
-        <Button size="sm" variant="ghost" onclick={() => (open = null)}>
+        <Button size="sm" variant="ghost" onclick={() => ((report = null), (error = null))}>
           <ArrowLeft size={14} />
           Browse
         </Button>
         <div class="min-w-0 flex-1">
-          <div class="truncate font-sans text-sm font-semibold text-fg">{open.entry.repo}</div>
-          <div class="truncate text-xs text-muted">{open.skills.length} skills in this pack</div>
+          <div class="truncate font-sans text-sm font-semibold text-fg">{report.entry.name}</div>
+          <div class="truncate font-mono text-[11px] text-muted">{report.skill.upstream ?? report.entry.repo}</div>
         </div>
-        <Button size="sm" onclick={installPicked} disabled={busyRepo === open.entry.repo || picking.size === 0}>
-          {#if busyRepo === open.entry.repo}
-            <WaitingMark site="skills/marketplace-install" size={12} />
-          {/if}
-          Install {picking.size || ''} to {destinations.find((o) => o.owner === destination)?.label ?? destination}
-        </Button>
       </div>
-      {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}
+      <div class={cn('rounded-lg border p-4', reportBlocked ? 'border-danger/40' : 'border-warning/40')}>
+        <div class="flex items-center gap-2">
+          <ShieldAlert size={16} class={reportBlocked ? 'text-danger' : 'text-warning'} />
+          <span class="font-sans text-sm font-semibold text-fg">{reportBlocked ? 'Not installed' : 'Read before installing'}</span>
+          <Chip tone={VERDICT_TONE[scan.verdict] ?? 'neutral'}>{scan.verdict}</Chip>
+          <Chip tone={TRUST_TONE[scan.trustLevel] ?? 'neutral'} title={TRUST_NOTE[scan.trustLevel]}>{scan.trustLevel}</Chip>
+        </div>
+        {#if reportBlocked}
+          <p class="mt-2 font-sans text-sm leading-relaxed text-muted">
+            Hermes' Skills Guard ({scan.scanner}) found {count} in this skill, and Hermes' install policy blocks a
+            {scan.trustLevel} skill with a {scan.verdict} verdict. Nothing was written to {destinationLabel}.
+          </p>
+        {:else}
+          <p class="mt-2 font-sans text-sm leading-relaxed text-muted">
+            Hermes' Skills Guard ({scan.scanner}) found {count} in this skill. Hermes' install policy allows a
+            {scan.trustLevel} skill with a {scan.verdict} verdict, so it can be installed, but Hermes' own install shows
+            this report and asks first. Nothing has been written to {destinationLabel} yet.
+          </p>
+          <div class="mt-3 flex items-center gap-2">
+            <Button size="sm" onclick={() => void installReviewed()} disabled={busyId !== null}>
+              {#if busyId === report.entry.id}<WaitingMark site="skills/marketplace-install" size={12} />{:else}<Plus size={14} />{/if}
+              Install into {destinationLabel}
+            </Button>
+            <Button size="sm" variant="ghost" onclick={() => ((report = null), (error = null))} disabled={busyId !== null}>
+              Cancel
+            </Button>
+          </div>
+        {/if}
+        {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 text-sm text-danger">{error}</div>{/if}
+      </div>
       <div class="min-h-0 flex-1 overflow-y-auto">
         <div class="space-y-2">
-          {#each open.skills as s (s.name)}
-            {@const status = statuses.get(`${open.entry.repo}/${s.name}`)}
-            <label
-              class={cn(
-                'flex cursor-pointer items-start gap-3 rounded-lg border border-line-subtle p-3 transition-colors',
-                status ? 'cursor-default opacity-80' : 'hover:border-line dither-fill',
-              )}
-            >
-              <Checkbox
-                bare
-                checked={status ? status === 'exists' ? false : true : picking.has(s.name)}
-                disabled={!!status}
-                title={`Include ${s.name}`}
-                onChange={(v) => {
-                  const next = new Set(picking)
-                  if (v) next.add(s.name)
-                  else next.delete(s.name)
-                  picking = next
-                }}
-              />
-              <span class="min-w-0 flex-1">
-                <span class="flex items-center gap-2">
-                  <span class="truncate text-sm font-medium text-fg">{s.name}</span>
-                  {#if status === 'installed'}
-                    <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-success">installed</span>
-                  {:else if status === 'exists'}
-                    <span
-                      class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted"
-                      title="A skill with this name is already there — it was left exactly as it was"
-                    >
-                      already present
-                    </span>
-                  {/if}
-                  <span class="shrink-0 font-mono text-[10px] text-ink-dim">{s.fileCount} files</span>
+          {#each worstFirst(scan.findings) as f, i (i)}
+            <div class="rounded-lg border border-line-subtle p-3">
+              <div class="flex items-center gap-2">
+                <Chip tone={SEVERITY_TONE[f.severity] ?? 'neutral'}>{f.severity}</Chip>
+                <span class="font-mono text-[11px] text-muted">{f.category}</span>
+                <span class="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-ink-dim">
+                  {f.file}{f.line ? `:${f.line}` : ''}
                 </span>
-                <span class="mt-0.5 block text-sm leading-snug text-muted">{s.summary || '…'}</span>
-              </span>
-            </label>
+              </div>
+              <div class="mt-1.5 font-sans text-sm text-fg">{f.description}</div>
+              {#if f.match}
+                <div class="mt-1 truncate font-mono text-[11px] text-muted" title={f.match}>{f.match}</div>
+              {/if}
+            </div>
           {/each}
         </div>
       </div>
     {:else}
       <div class="flex items-center gap-3">
-        <Input autofocus bind:value={q} placeholder="Search the catalog: superpowers, drawio, cybersecurity…" class="max-w-md" />
+        <Input autofocus bind:value={q} placeholder="Search Hermes' skills index: 1password, pdf, kubernetes…" class="max-w-md" />
         {#if resultsQuery.isFetching}<WaitingMark site="skills/marketplace-search" size={12} class="text-muted" />{/if}
         <span class="flex-1"></span>
         <span class="flex items-center gap-1.5 text-xs text-muted">
@@ -190,8 +211,8 @@
         </span>
       </div>
       <div class="flex items-center gap-1.5">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Top skills</span>
-        <InfoTip text="Hermes Atlas's ranking of the Hermes ecosystem's skill repos by GitHub stars. Installing copies the repo's SKILL.md directories into the destination — support files ride along, and the agent reads them live. Install only what you trust." />
+        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Hermes skills index</span>
+        <InfoTip text="Hermes' official skills index: its own optional skills, the GitHub repos it curates, and skills.sh. Every install is fetched from GitHub and scanned first by Hermes' Skills Guard, with Hermes' rules — a community skill with any high-risk finding is not installed, a trusted one only when nothing critical turns up. A clean scan installs on the click; anything the scan found is shown first, and an allowed skill then installs only when you confirm. Support files ride along and the agent reads them live. Install only what you trust." />
       </div>
       {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}
       <div class="min-h-0 flex-1 overflow-y-auto">
@@ -199,7 +220,7 @@
           <EmptyState
             icon="⚠"
             title="Marketplace didn't load"
-            hint="The skills catalog could not be reached. Close and reopen the marketplace to retry."
+            hint={errorMessage(resultsQuery.error) || 'The skills catalog could not be read. Close and reopen the marketplace to retry.'}
           />
         {:else if !results}
           <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -213,45 +234,42 @@
             {/each}
           </div>
         {:else if results.entries.length === 0}
-          <EmptyState
-            icon="✦"
-            title="No skills match"
-            hint="The catalog ranks the Hermes ecosystem's skill repos. Try a broader search."
-          />
+          <EmptyState icon="✦" title="No skills match" hint="The index lists Hermes' installable skills by name, tag and description. Try a broader search." />
         {:else}
           <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {#each results.entries as e (e.repo)}
-              {@const done = repoDone(e)}
-              {@const busy = busyRepo === e.repo}
+            {#each results.entries as e (e.id)}
+              {@const done = isDone(e)}
+              {@const busy = busyId === e.id}
+              {@const outcome = outcomes.get(e.id)}
               <div class="group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line dither-fill">
                 <div class="flex items-center gap-3">
                   <span class="grid h-[34px] w-[34px] shrink-0 place-items-center rounded-lg border border-line-subtle bg-surface text-muted">
                     <Store size={16} />
                   </span>
-                  <div class="min-w-0 flex-1">
+                  <div class="min-w-0 flex-1 pr-8">
                     <div class="truncate font-sans text-sm font-semibold text-fg">{e.name}</div>
                     <div class="flex items-center gap-1.5">
-                      <span class="truncate font-mono text-[11px] text-muted">{e.org}</span>
-                      <span
-                        title={`${e.repo} is #${e.rank} on Hermes Atlas's ranking`}
-                        class="shrink-0 rounded border border-line-subtle px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim"
-                      >
-                        ★ {e.stars}
-                      </span>
+                      <span class="truncate font-mono text-[11px] text-muted">{e.source === 'official' ? 'Hermes official' : e.repo}</span>
+                      <Chip tone={TRUST_TONE[e.trustLevel] ?? 'neutral'} title={TRUST_NOTE[e.trustLevel]}>{e.trustLevel}</Chip>
                     </div>
                   </div>
                 </div>
                 <p class="mt-2.5 line-clamp-3 min-h-12 font-sans text-xs leading-relaxed text-muted">
                   {e.description || 'No description.'}
                 </p>
+                {#if outcome === 'exists'}
+                  <span class="mt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted" title="A skill with this name is already there — it was left exactly as it was">
+                    already present
+                  </span>
+                {/if}
                 <a
-                  href="https://github.com/{e.repo}"
+                  href={githubUrl(e)}
                   target="_blank"
                   rel="noreferrer"
                   class="mt-1 inline-flex items-center gap-1 self-start font-mono text-[10px] text-muted opacity-0 transition-opacity hover:text-accent group-hover:opacity-100"
                 >
                   <ExternalLink size={10} />
-                  {e.repo}
+                  {e.repo}{e.path ? `/${e.path}` : ''}
                 </a>
                 <!-- The install control: quiet until the card is engaged. -->
                 <div class="absolute right-3 top-3">
@@ -262,8 +280,8 @@
                   {:else}
                     <button
                       type="button"
-                      title={busy ? 'Reading the repo' : `Install into ${destinations.find((o) => o.owner === destination)?.label ?? destination}`}
-                      disabled={busy}
+                      title={busy ? 'Fetching and scanning the skill' : `Scan and install into ${destinationLabel}`}
+                      disabled={busy || busyId !== null}
                       onclick={() => void install(e)}
                       class={cn(
                         'grid h-7 w-7 place-items-center rounded-full border transition-all',

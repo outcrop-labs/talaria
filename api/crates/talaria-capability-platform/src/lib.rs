@@ -56,10 +56,8 @@ pub struct PlatformToolResult {
 }
 
 /// RUN ONE OF TALARIA'S OWN TOOLS. `web_search` is the one tool dispatched
-/// here; `describe_image` is advertised when the vision role is filled but is
-/// served by the vision route, never this dispatcher — so its branch below is
-/// a loud refusal (an advertisement that cannot dispatch is the exact bug
-/// this file exists to prevent); anything else is not ours to run.
+/// here, and the one the platform advertises (`platform_supply`); anything
+/// else is not ours to run.
 ///
 /// The search engine edge is injected rather than hard-wired so the tool is
 /// testable against a scripted SearXNG; the caller that has no opinion passes
@@ -104,18 +102,6 @@ pub async fn call_platform_tool(
             .join("\n\n");
         let structured = Some(serde_json::to_value(&results).expect("SearchResult is plain data"));
         return Ok(PlatformToolResult { text, structured });
-    }
-
-    if tool == "describe_image" {
-        // The vision harness (vision.rs, serving /api/vision/describe)
-        // is never dispatched through here — a caller reaching this branch routed
-        // a supplier to the wrong surface, so the honest answer is a refusal
-        // that names the gap rather than a half-answer.
-        return Err(
-            "describe_image runs on the vision harness, never through the platform tools — \
-             this supplier should not have been reachable from this stage"
-                .into(),
-        );
     }
 
     Err(format!("\"{tool}\" is not one of Talaria's own tools"))
@@ -217,8 +203,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn describe_image_refuses_loudly_and_nothing_else_is_ours() {
+    async fn nothing_but_web_search_is_ours() {
         let deps = engine(r#"{"results":[]}"#);
+        // `describe_image` included: fleet agents read images through
+        // Hermes' own `vision_analyze`, and nothing here serves one.
         let err = call_platform_tool(
             &lazy_pg(),
             "describe_image",
@@ -227,8 +215,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.contains("vision harness"), "{err}");
-        assert!(err.contains("never through the platform tools"), "{err}");
+        assert_eq!(err, "\"describe_image\" is not one of Talaria's own tools");
         let err = call_platform_tool(
             &lazy_pg(),
             "make_coffee",

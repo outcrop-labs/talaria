@@ -33,6 +33,9 @@ pub async fn put(
             "status must be one of open, dismissed, resolved",
         ));
     }
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match set_gap_status(&state.pg, &id, &status).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => internal("[gaps] status set failed", e),

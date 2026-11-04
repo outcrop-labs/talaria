@@ -23,7 +23,7 @@
 // key rotation can NEVER decrypt with the wrong key or orphan a secret: open()
 // loads exactly the version the token was sealed with. All parts are base64url.
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Sql } from 'postgres'
 
@@ -252,6 +252,22 @@ export function rootSource(): { via: 'env' | 'file' | 'fallback' | 'absent'; nam
   if (process.env.TALARIA_SECRET_KEY_FILE) return { via: 'file', name: process.env.TALARIA_SECRET_KEY_FILE }
   if (process.env.AUTH_SECRET) return { via: 'fallback', name: 'AUTH_SECRET' }
   return { via: 'absent', name: '' }
+}
+
+/** What the internal service credential is an HMAC of — the api's
+ *  `INTERNAL_TOKEN_CONTEXT` (talaria-config). Versioned, so a new derivation is
+ *  a new context rather than a silent collision. */
+export const INTERNAL_TOKEN_CONTEXT = 'talaria.internal.v1'
+
+/** THE APP HOST'S SERVICE CREDENTIAL for the api's `/api/internal/*` routes:
+ *  hex HMAC-SHA256 of `INTERNAL_TOKEN_CONTEXT` keyed by the root secret. The
+ *  api derives the same value from the same root (`SecretRoot::internal_token`),
+ *  so nothing is minted, stored or handed between the two processes, and it
+ *  holds whether this process spawned the api or adopted one. Only a holder of
+ *  the root can compute it; the value says nothing about the root. Throws when
+ *  no root is configured, like everything else that needs one. */
+export function internalToken(): string {
+  return createHmac('sha256', kekMaterial()).update(INTERNAL_TOKEN_CONTEXT).digest('hex')
 }
 
 /** The active DEK version, or null when there isn't one. Unlike

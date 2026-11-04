@@ -10,7 +10,7 @@
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
   import { popRow, popRowSelected } from '@/components/chat/chat-chrome'
-  import { controlSizes, type ControlSize } from './control'
+  import { controlSizes, disabledControl, type ControlSize } from './control'
   import { fuzzy, type ComboOption } from './combobox'
 
   // A searchable dropdown for picking option(s). Fuzzy filter as you type.
@@ -205,7 +205,8 @@
     }}
     class={cn(
       controlSizes[size],
-      'flex w-full items-center gap-2 rounded-md font-sans text-sm outline-none transition-colors disabled:opacity-50',
+      'flex w-full items-center gap-2 rounded-md font-sans text-sm outline-none transition-colors',
+      disabledControl,
       bare
         ? // A cluster segment: the cluster owns the frame, so the trigger
           // draws no border of its own and only surfaces on hover/focus.

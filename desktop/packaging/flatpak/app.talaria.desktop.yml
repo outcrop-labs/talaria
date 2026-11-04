@@ -24,12 +24,27 @@ finish-args:
   # that ships an older binary.
   - --env=WEBKIT_DISABLE_DMABUF_RENDERER=1
   - --talk-name=org.freedesktop.portal.* # browser-based OAuth, when it lands
-  # notify.rs posts through notify-rust, which speaks the legacy
-  # org.freedesktop.Notifications interface straight over the session bus —
-  # it has no portal path, so the portal grant above does not cover it and
-  # `show()` fails inside the sandbox. Without this line the flatpak build is
-  # the one package where notifications silently never appear.
+  # notify/linux.rs speaks the org.freedesktop.Notifications interface
+  # straight over the session bus — it has no portal path (yet), so the
+  # portal grant above does not cover it and every post fails inside the
+  # sandbox. Without this line the flatpak build is the one package where
+  # notifications never appear.
   - --talk-name=org.freedesktop.Notifications
+  # The tray host (background.rs): with a watcher on the bus and the
+  # appindicator library, Close hides Talaria to the tray. The GNOME runtime
+  # carries no appindicator library, so in the flatpak the probe finds none
+  # and Close minimizes instead; the grant is here for a runtime or an
+  # extension that does carry one.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # The launcher badge (notify/linux.rs emits com.canonical.Unity.LauncherEntry).
+  - --talk-name=com.canonical.Unity
+  # The OS idle time a desktop client's presence is computed from (I-22,
+  # notify/linux.rs os_idle): mutter's idle monitor on GNOME, the session's
+  # screensaver service elsewhere (KDE on X11).
+  - --talk-name=org.gnome.Mutter.IdleMonitor
+  - --talk-name=org.freedesktop.ScreenSaver
+  # The single-instance name is app.talaria.desktop.Shell: under the app id,
+  # which a flatpak may own with no grant.
 
 modules:
   - name: talaria-desktop

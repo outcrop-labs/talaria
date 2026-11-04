@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   caveatFor,
@@ -8,6 +9,7 @@ import {
   redactSecrets,
   runGuardrails,
   RULES,
+  semanticRulesOn,
   type Finding,
   type GuardConfig,
   type GuardContext,
@@ -541,11 +543,47 @@ describe('runGuardrails', () => {
 
   it('exposes rule metadata matching the registry', () => {
     expect(guardRuleMeta()).toEqual(RULES.map((r) => ({ id: r.id, label: r.label, severity: r.severity, defaultOn: r.defaultOn })))
-    expect(RULES.every((r) => r.defaultOn)).toBe(true)
+    // Every structural rule is on out of the box; a judged one is off until an
+    // admin chooses to send reply text to a decision model.
+    expect(RULES.every((r) => r.defaultOn === !r.semantic)).toBe(true)
   })
 
   it('marks exactly the content rules gate-safe (the rest need a tool record)', () => {
     expect(RULES.filter((r) => r.gateSafe).map((r) => r.id)).toEqual(['secret_leak', 'pii_leak'])
+  })
+})
+
+// ── The semantic rules: declared here, judged in the api ────────────────────
+
+describe('semantic rules', () => {
+  /** The rule table in the api's guard (talaria-gateway guard.rs `RULES`):
+   *  each entry's id, and whether it is `semantic: true`. */
+  const rustRules = (): Array<{ id: string; semantic: boolean }> => {
+    const src = readFileSync(new URL('../../../api/crates/talaria-gateway/src/guard.rs', import.meta.url), 'utf8')
+    const table = src.slice(src.indexOf('const RULES: &[RuleDef]'), src.indexOf('/// The context one guarded completion runs against'))
+    return [...table.matchAll(/RuleDef \{[^}]*?id: "([a-z_]+)"[\s\S]*?semantic: (true|false),/g)].map((m) => ({ id: m[1]!, semantic: m[2] === 'true' }))
+  }
+
+  it('declares the same rules as the api, judged ones marked judged', () => {
+    // A rule the api judges and this registry does not list is a rule no app
+    // harness can name in guard.rules (the load check refuses an unknown id),
+    // and one listed here as structural would run with no evaluator.
+    const rust = rustRules()
+    expect(rust.length).toBeGreaterThanOrEqual(6)
+    expect(RULES.map((r) => ({ id: r.id, semantic: r.semantic === true }))).toEqual(rust)
+  })
+
+  it('never runs a judged rule here, even switched on', () => {
+    const c = ctx('Staging is on the new key and the deploy is green.')
+    const on = config({ checks: { implied_completion: true } })
+    expect(checks(runGuardrails(c, on))).not.toContain('implied_completion')
+  })
+
+  it('asks for a judged rule only while an admin has it on and the guard runs', () => {
+    expect(semanticRulesOn(config())).toEqual([])
+    expect(semanticRulesOn(config({ checks: { implied_completion: true } }))).toEqual(['implied_completion'])
+    expect(semanticRulesOn(config({ mode: 'off', checks: { implied_completion: true } }))).toEqual([])
+    expect(semanticRulesOn(config({ checks: { implied_completion: false } }))).toEqual([])
   })
 })
 

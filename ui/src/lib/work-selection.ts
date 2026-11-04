@@ -1,6 +1,6 @@
 // WHICH SESSION THE WORK HARNESS HAS OPEN — read off the URL, and nothing else.
 //
-// The harness answers at three addresses (see router.ts): `/work/<id>` is a
+// The harness answers at three addresses (see route-table.ts): `/work/<id>` is a
 // session, `/plan/<id>` is that same row at the address it was linked and
 // bookmarked under before Work, Plan and Research became one surface, and
 // `/research/<runId>` names a RUN rather than a conversation — the harness

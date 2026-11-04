@@ -8,10 +8,10 @@ plugins {
 }
 
 // THE VERSION IS INJECTED, NEVER COMMITTED — the same rule the rest of the repo
-// follows (RELEASING.md: git tags are the version authority, and releasing never
-// edits a file). `-PmobileVersion=X.Y.Z` arrives from mobile-package.yml, which
-// resolved it from the tag it is minting; a local build gets the decorative
-// default and never has to be bumped.
+// follows (RELEASING.md: git tags are the version authority, and no release
+// writes its version into a file). `-PmobileVersion=X.Y.Z` arrives from
+// mobile-package.yml, which resolved it from the tag it is minting; a local
+// build gets the decorative default and never has to be bumped.
 val mobileVersion =
     (findProperty("mobileVersion") as String?)?.takeIf { it.isNotBlank() } ?: "0.1.0"
 

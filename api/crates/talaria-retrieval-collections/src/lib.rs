@@ -399,10 +399,15 @@ async fn add_binding(
     Ok(())
 }
 
-/// Ok(()) on deleted-or-absent; Err carries the refusal sentence.
-pub async fn delete_collection_by_id(pg: &PgPool, qd: &QdrantDeps, id: &str) -> Result<(), String> {
+/// Ok(true) once deleted, Ok(false) when no collection has this id (the
+/// route's 404); Err carries the refusal sentence.
+pub async fn delete_collection_by_id(
+    pg: &PgPool,
+    qd: &QdrantDeps,
+    id: &str,
+) -> Result<bool, String> {
     let Some(col) = get_collection(pg, id).await.map_err(|e| e.to_string())? else {
-        return Ok(());
+        return Ok(false);
     };
     if col.auto {
         return Err("auto collections cannot be deleted".into());
@@ -413,7 +418,7 @@ pub async fn delete_collection_by_id(pg: &PgPool, qd: &QdrantDeps, id: &str) -> 
         .execute(pg)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
 pub async fn set_bindings(

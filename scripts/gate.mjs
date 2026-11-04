@@ -29,7 +29,7 @@
 // Unknown arguments are a usage error. There is no flag that widens this gate.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ROOT = process.cwd()
@@ -95,6 +95,63 @@ function isMobileSource(file) {
 }
 
 /**
+ * The files the ui suite reads, imports or compiles in, ui/ and apps/
+ * included: the SDK docs' examples and every file `talaria app new` writes
+ * (ui/src/sdk/client-docs.test.ts, server.test.ts), the fixtures it shares
+ * with the api, the Rust sources its tests hold their tables to, the chassis
+ * template and workbench image files, check-invariants.mjs and the secretbox
+ * vector generator. An edit to one of them alone can turn the ui suite red,
+ * so it runs the suite. This IS ci.yml's `surface ui` list, minus the workflow
+ * file and the composite actions (they pick CI jobs, not a local compile);
+ * ci.yml's `x/*` is the prefix `x/` here. --self-test reads ci.yml and fails
+ * when the two differ, so a file added there and not here is caught.
+ * Exact paths match exactly; a trailing `/` is a prefix.
+ */
+const UI_SURFACE = [
+  'ui/',
+  'apps/',
+  'docs/sdk/',
+  'cli/src/cmd/app/',
+  'api/tests/it/fixtures/',
+  'api/crates/talaria-harness-defs/src/registry.rs',
+  'api/crates/talaria-gateway/src/guard.rs',
+  'api/crates/talaria-platform-agents/src/lib.rs',
+  'scripts/chassis.template.yml',
+  'scripts/workbench.Dockerfile',
+  'scripts/build-workbench-image.sh',
+  'scripts/check-invariants.mjs',
+  'scripts/gen-secretbox-vectors.mjs',
+]
+
+/** @param {string} file */
+function onUiSurface(file) {
+  return UI_SURFACE.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p))
+}
+
+/** The launcher bundles this one ui file as `@dither` (desktop/vite.config.ts,
+ *  tsconfig.json), so the desktop typecheck reads it, as ci.yml's desktop
+ *  surface says. */
+const DESKTOP_READS_FROM_UI = 'ui/src/lib/dither-engine.ts'
+
+/**
+ * ci.yml's `surface ui` globs, as UI_SURFACE spells them, or null when the
+ * line is gone. A glob this cannot turn into a prefix or an exact path stays
+ * as it is, so the comparison fails on it.
+ * @param {string} text  .github/workflows/ci.yml
+ */
+function ciUiSurface(text) {
+  const lines = text.split('\n')
+  let i = lines.findIndex((l) => /^\s*surface ui\s/.test(l))
+  if (i === -1) return null
+  let joined = lines[i]
+  while (/\\\s*$/.test(lines[i]) && i + 1 < lines.length) joined = joined.replace(/\\\s*$/, ' ') + lines[++i]
+  return [...joined.matchAll(/'([^']+)'/g)]
+    .map((m) => m[1])
+    .filter((g) => !g.startsWith('.github/'))
+    .map((g) => (g.endsWith('/*') ? g.slice(0, -1) : g))
+}
+
+/**
  * @param {string[]} files
  * @param {(rel: string) => string | null} readPkg
  */
@@ -112,6 +169,11 @@ function classify(files, readPkg) {
   }
   const pkgs = new Set()
   for (const file of files) {
+    // A file the ui suite reads from outside ui/ runs it (UI_SURFACE). It is
+    // also whatever the chain below makes of it: a scaffolder file is cli
+    // source, a Rust file compiles its package.
+    if (onUiSurface(file)) plan.ui = true
+    if (file === DESKTOP_READS_FROM_UI) plan.desktopTypecheck = true
     if (file.startsWith('ui/') || file.startsWith('apps/')) {
       plan.ui = true
     } else if (file.startsWith('mcp/')) {
@@ -141,6 +203,47 @@ function classify(files, readPkg) {
   }
   plan.apiPackages = [...pkgs].sort()
   return plan
+}
+
+/** The packages this plan runs bun scripts in (typecheck, test), in order. */
+function bunPackages(plan) {
+  const pkgs = []
+  if (plan.ui) pkgs.push('ui')
+  if (plan.mcp) pkgs.push('mcp')
+  if (plan.cli) pkgs.push('cli')
+  if (plan.desktopTypecheck) pkgs.push('desktop')
+  return pkgs
+}
+
+/**
+ * The ones with NO node_modules at all, which the gate installs before it
+ * typechecks them. A fresh `talaria worktree` had no cli/node_modules (and
+ * often no mcp/), so the gate's first `tsc` in every new worktree failed on a
+ * missing binary — a red gate that said nothing about the change. `bun
+ * install --frozen-lockfile` is the branch's own lockfile and bun's hardlink
+ * cache: seconds, and no drift. A SYMLINK counts as present, dangling or not:
+ * a worktree's ui/node_modules links the primary's, and an install through it
+ * would write into another checkout.
+ *
+ * @param {string[]} pkgs
+ * @param {(rel: string) => boolean} lexists
+ */
+function missingInstalls(pkgs, lexists) {
+  return pkgs.filter((pkg) => !lexists(`${pkg}/node_modules`))
+}
+
+function lexistsInRoot(rel) {
+  try {
+    lstatSync(join(ROOT, rel))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** @param {string[]} installs */
+function installLines(installs) {
+  return installs.map((pkg) => `gate: run bun install --frozen-lockfile in ${pkg}/ (no ${pkg}/node_modules)`)
 }
 
 function selfTest() {
@@ -193,11 +296,65 @@ function selfTest() {
   assert(surfaces.desktopTypecheck && surfaces.desktopCargo, 'desktop svelte and rust select separately')
   assert(surfaces.mobile, 'a kotlin source file selects the mobile surface')
 
+  const sdkDocs = classify(['docs/sdk/client.md'], stub)
+  assert(sdkDocs.ui && !sdkDocs.cli, 'an SDK doc runs the ui suite, which compiles its examples')
+
+  const scaffold = classify(['cli/src/cmd/app/skeleton.ts'], stub)
+  assert(scaffold.ui && scaffold.cli, 'the app scaffolder runs the ui suite (it compiles the scaffold) and the cli')
+
+  const cliOnly = classify(['cli/src/ports.ts'], stub)
+  assert(cliOnly.cli && !cliOnly.ui, 'other cli source does not run the ui suite')
+
+  // What the ui suite reads from outside ui/ runs it, as ci.yml's ui surface does.
+  for (const f of [
+    'scripts/check-invariants.mjs',
+    'scripts/gen-secretbox-vectors.mjs',
+    'scripts/chassis.template.yml',
+    'api/tests/it/fixtures/app-grants.json',
+    'api/crates/talaria-gateway/src/guard.rs',
+  ]) {
+    assert(classify([f], stub).ui, `${f} runs the ui suite (ci.yml's ui surface lists it)`)
+  }
+  const guard = classify(['api/crates/talaria-error/src/lib.rs', 'scripts/check-docs.mjs'], stub)
+  assert(!guard.ui, 'a crate or script the ui suite does not read leaves it alone')
+  const dither = classify(['ui/src/lib/dither-engine.ts'], stub)
+  assert(dither.ui && dither.desktopTypecheck, 'the dither engine runs the ui suite and the desktop typecheck')
+
+  // The list is ci.yml's, read from ci.yml: one edited without the other fails here.
+  const ci = ciUiSurface(readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8'))
+  if (ci === null) {
+    assert(false, "ci.yml has no `surface ui` line to hold UI_SURFACE to")
+  } else {
+    const want = [...ci].sort().join(' ')
+    const have = [...UI_SURFACE].sort().join(' ')
+    assert(want === have, `UI_SURFACE differs from ci.yml's ui surface\n  ci.yml: ${want}\n  gate:   ${have}`)
+  }
+  const sample = ["          surface ui      'ui/*' 'docs/sdk/*' \\", "                          'scripts/x.mjs' '.github/actions/**'"].join('\n')
+  assert(ciUiSurface(sample)?.join() === 'ui/,docs/sdk/,scripts/x.mjs', 'the ci.yml reader joins continuation lines and drops the workflow globs')
+
   const mobileDocs = classify(['mobile/README.md', 'mobile/tools/devbox-install.sh'], stub)
   assert(!mobileDocs.mobile, 'a mobile readme or provisioner script is not a gradle build')
 
   const mobileBuild = classify(['mobile/gradle/libs.versions.toml'], stub)
   assert(mobileBuild.mobile, 'the version catalog selects the mobile surface')
+
+  // A fresh worktree: ui/ linked to the primary's, cli/ and mcp/ not
+  // installed. The install lands in the plan for exactly the packages the
+  // diff typechecks, and never through the ui symlink.
+  const fresh = (rel) => rel === 'ui/node_modules'
+  const cliPlan = classify(['cli/src/ports.ts'], stub)
+  const cliInstalls = missingInstalls(bunPackages(cliPlan), fresh)
+  assert(cliInstalls.join() === 'cli', 'a missing cli/node_modules is installed before the cli typecheck')
+  assert(
+    installLines(cliInstalls).join('\n') === 'gate: run bun install --frozen-lockfile in cli/ (no cli/node_modules)',
+    'the dry-run plan names the install',
+  )
+  assert(
+    missingInstalls(bunPackages(classify(['ui/src/a.ts', 'mcp/src/index.ts'], stub)), fresh).join() === 'mcp',
+    'a linked ui/node_modules is present; mcp/ is installed',
+  )
+  assert(missingInstalls(bunPackages(docs), fresh).length === 0, 'a docs-only diff installs nothing')
+  assert(missingInstalls(['cli'], () => true).length === 0, 'an installed package is left alone')
 
   const real = classify(['api/crates/talaria-error/src/lib.rs'], readPackageName)
   assert(real.apiPackages[0] === 'talaria-error', 'the real talaria-error manifest names talaria-error')
@@ -274,6 +431,8 @@ if (plan.apiUnmapped.length) {
 say(plan.desktopCargo, 'desktop cargo (talaria-desktop only)')
 say(plan.desktopTypecheck, 'desktop typecheck')
 say(plan.mobile, 'mobile (shared tests + android assemble)')
+const installs = missingInstalls(bunPackages(plan), lexistsInRoot)
+for (const line of installLines(installs)) console.log(line)
 
 if (dry) process.exit(0)
 
@@ -287,6 +446,8 @@ function run(cmd, args, cwd = ROOT) {
 }
 
 run('bun', ['run', 'check'])
+
+for (const pkg of installs) run('bun', ['install', '--frozen-lockfile'], join(ROOT, pkg))
 
 if (plan.ui) {
   run('bun', ['run', 'typecheck'], join(ROOT, 'ui'))

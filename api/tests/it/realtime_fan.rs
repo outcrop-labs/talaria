@@ -1,6 +1,7 @@
 // Live-DB proof of the two rail fans (cargo test -- --ignored): who a
 // channel event reaches (every member, nobody else) and who a conversation
-// event reaches (the owner, plus a plan's members). The publish edge is the
+// event reaches (everyone who can read it; talaria-conversations'
+// audience_live covers teams, research and chats). The publish edge is the
 // same fake the realtime suite uses — captured topics, no Redis — because
 // the question is ROUTING, not delivery. House rule: #[ignore]d, never CI.
 //
@@ -9,7 +10,8 @@
 use crate::support::pg;
 use futures_util::FutureExt;
 use std::sync::{Arc, Mutex};
-use talaria_api::notify::{NotifyDeps, fan_channel_event, fan_conversation_event};
+use talaria_api::conversations::fan_conversation_event;
+use talaria_api::notify::{NotifyDeps, fan_channel_event};
 use talaria_api::realtime::RealtimeDeps;
 /// Delete the throwaway people; the cascade takes their channels and plans.
 async fn cleanup(pg: &sqlx::PgPool) {

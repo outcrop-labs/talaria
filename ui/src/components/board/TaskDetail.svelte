@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, ArchiveRestore, Check, Eye, SlidersHorizontal, Trash2 } from '@lucide/svelte'
+  import { Archive, ArchiveRestore, ArrowRightLeft, Check, Eye, SlidersHorizontal, Trash2 } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -77,6 +77,7 @@
   import { useBoardWorkchains } from '@/lib/workchain-client'
   import type { Workchain, WorkchainStep } from '@/lib/workchain-rules'
   import TicketMuseBar from './TicketMuseBar.svelte'
+  import MoveTicketDialog from './MoveTicketDialog.svelte'
   import TicketWorkTab from './TicketWorkTab.svelte'
   import WorkbenchJobsStrip from './WorkbenchJobsStrip.svelte'
   import WorkbenchTicker from './WorkbenchTicker.svelte'
@@ -244,6 +245,16 @@
     refresh()
   }
   const t = $derived(data?.task)
+  // "Move to board…" (the footer button), and where a moved ticket lives.
+  let moveOpen = $state(false)
+  const goToBoard = (boardId: string) =>
+    void navigate('/boards/:boardId/:taskId', { params: { boardId, taskId }, replace: true })
+  // A LINK THAT OUTLIVED A MOVE. /boards/<old>/<ticket> still names the
+  // ticket (its id never changes), but the ticket answers from its new
+  // board: follow it there rather than render it over a board it left.
+  $effect(() => {
+    if (t && t.boardId !== board.id) goToBoard(t.boardId)
+  })
   // The room's empty state: what an untouched discussion should say. The
   // assigned agent answers un-mentioned messages the relevance gate passes;
   // everything else is an @mention away — the hint teaches exactly that.
@@ -889,7 +900,7 @@
             </Prop>
           </PropGroup>
 
-          <!-- Agent-reported token spend (MCP log_usage) — priced like the ledger. -->
+          <!-- Token spend metered against this ticket — priced like the ledger. -->
           {#if data!.usage.promptTokens + data!.usage.completionTokens > 0}
             <PropGroup label="Spend">
               <Prop label="Tokens">
@@ -902,7 +913,7 @@
                   {#each data!.usage.perModel as m (m.llmModel ?? '?')}
                     <div class="truncate text-xs text-muted">
                       {m.llmModel ?? 'unattributed'} · {formatTokens(m.tokens)}
-                      {m.cost !== null && m.cost > 0 ? ` · ${formatUsd(m.cost)}` : ''}
+                      {m.cost !== null && m.cost > 0 ? ` · ${formatUsd(m.cost)}` : ''}{(m.includedTokens ?? 0) > 0 ? ' · included in a plan' : ''}
                     </div>
                   {/each}
                 </div>
@@ -939,7 +950,13 @@
         </div>
 
         {#if canEdit}
-          <div class="flex shrink-0 items-center gap-2 border-t border-line-subtle p-3">
+          <div class="shrink-0 border-t border-line-subtle px-3 pt-3">
+            <Button variant="outline" size="xs" class="w-full gap-1.5 py-1.5" onclick={() => (moveOpen = true)}>
+              <ArrowRightLeft size={14} />
+              Move to board…
+            </Button>
+          </div>
+          <div class="flex shrink-0 items-center gap-2 p-3">
             <!-- Secondary: raised tile + hairline + readout mono (spec §8). -->
             <Button variant="outline" size="xs" class="flex-1 gap-1.5 py-1.5" onclick={async () => {
                 await archiveTask(taskId, !t!.archivedAt)
@@ -1001,6 +1018,15 @@
 <!-- The one shared run-detail modal: the header eye (the live run) and the
      work log's View-log buttons (any retained run) both land here. Modal
      portals itself, so nesting inside the ticket modal's tree is safe. -->
+{#if moveOpen && t}
+  <MoveTicketDialog
+    task={t}
+    boardId={board.id}
+    open={moveOpen}
+    onClose={() => (moveOpen = false)}
+    onMoved={(moved) => goToBoard(moved.boardId)}
+  />
+{/if}
 {#if watchRun}
   <RunDetailModal open={!!watchRun} onClose={() => (watchRun = null)} runId={watchRun} {taskId} focus={watchFocus} />
 {/if}

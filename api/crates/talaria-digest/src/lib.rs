@@ -48,14 +48,14 @@ use talaria_agent_auth::now_ms as wall_ms;
 use talaria_agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
 use talaria_approvals::{
     ApprovalCensus, ApprovalDeps, ApprovalKind, Disclosure, PendingApproval, approval_census,
-    kind_label, may_decide, sweep_unannounced,
+    approval_meta, kind_label, may_decide, sweep_unannounced,
 };
 use talaria_daily_brief::config::zone_for;
 use talaria_email::{email_button, email_escape, email_shell};
 use talaria_gateway::settings::{get_setting, set_setting};
 use talaria_home::{WorkItem, home_queues};
 use talaria_notify::{
-    GatedMail, NOTIFY_SETTINGS_PATH, NotificationInput, NotifyDeps, add_notification,
+    GatedMail, NOTIFY_SETTINGS_PATH, NotificationInput, NotifyDeps, add_notification_with,
     digest_enabled, instance_base_url, send_gated_mail,
 };
 use talaria_runs_define::run_definition;
@@ -944,8 +944,14 @@ fn age_minutes(iso: &str, now_ms: i64) -> Option<f64> {
     iso_to_epoch_ms(iso).map(|ms| (now_ms - ms) as f64 / 60_000.0)
 }
 
+/// One SLA stage's rows (nag, escalation, stall report) for one approval.
+/// They file into the row each person already holds for it
+/// (`approval_meta`): a nag RE-ALERTS that row — the newest words, `count +
+/// 1`, a fresh banner — rather than adding a second row about one question,
+/// and the decision reads it with the rest.
 async fn tell(
     deps: &NotifyDeps,
+    key: &str,
     user_ids: &[String],
     title: &str,
     body: &str,
@@ -953,11 +959,12 @@ async fn tell(
 ) -> usize {
     let mut told = 0;
     let mut seen: HashSet<&str> = HashSet::new();
+    let meta = approval_meta(key);
     for id in user_ids {
         if !seen.insert(id.as_str()) {
             continue;
         }
-        match add_notification(
+        match add_notification_with(
             deps,
             id,
             &NotificationInput {
@@ -966,10 +973,11 @@ async fn tell(
                 body: Some(body),
                 href,
             },
+            &meta,
         )
         .await
         {
-            Ok(()) => told += 1,
+            Ok(_) => told += 1,
             Err(e) => tracing::error!("[approval-sla] could not notify {id}: {e}"),
         }
     }
@@ -1172,6 +1180,7 @@ pub async fn run_approval_escalation(
                 // detail, no deep link they would be 403'd from.
                 let told = tell(
                     &deps.notify,
+                    &approval.key,
                     &who.fact,
                     &stall_title(approval, &waited_for(age)),
                     &format!(
@@ -1198,6 +1207,7 @@ pub async fn run_approval_escalation(
             let others: Vec<&String> = deciders.iter().filter(|id| !owners.contains(id)).collect();
             let told = tell(
                 &deps.notify,
+                &approval.key,
                 deciders,
                 &format!("Escalated after {}: {}", waited_for(age), approval.title),
                 &format!(
@@ -1246,6 +1256,7 @@ pub async fn run_approval_escalation(
             let wider = deciders.len() > owners.len();
             let told = tell(
                 &deps.notify,
+                &approval.key,
                 &owners.iter().map(|s| (*s).clone()).collect::<Vec<_>>(),
                 &format!("Still waiting on you: {}", approval.title),
                 &format!(

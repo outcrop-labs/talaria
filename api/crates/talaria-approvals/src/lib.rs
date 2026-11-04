@@ -2,8 +2,8 @@
 // in one shape, with the person who owes the answer attached.
 //
 // WHY THIS FILE EXISTS
-//   "Approvals" is not one queue in Talaria. It is six, and they were written
-//   at six different times by six different features:
+//   "Approvals" is not one queue in Talaria. It is eight, and they were written
+//   at eight different times by eight different features:
 //
 //     google_action    google_pending_actions — an agent drafted something that
 //                      LEAVES the building (an email, an invite).
@@ -20,6 +20,12 @@
 //     board_access     board_agent_requests — a personal assistant asked to be
 //                      let onto a board its owner cannot see, and self-service
 //                      is not available to it for exactly that reason.
+//     app_install      app_install_requests — a Developer Agent asked for the
+//                      app it built to be installed. Admin-only: installing
+//                      adds code to the deployment.
+//     app_update       app_update_requests — a plugin's branch moved past the
+//                      commit installed (a PR merged) and the new version
+//                      waits for an admin. Admin-only, for the same reason.
 //
 //   Each of those has its own table, its own surface and its own idea of who
 //   decides. None of them had an idea of how OLD it was, which is the whole
@@ -74,7 +80,10 @@ use std::collections::HashMap;
 use serde_json::Value;
 use sqlx::PgPool;
 use talaria_agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
+    add_notification_with, entity, group_key, resolve_entity,
+};
 use talaria_realtime::RealtimeDeps;
 use talaria_runs_define::{Authority, RunRow, RunState};
 use talaria_runs_run::{DefinitionForFn, NowFn, clamp_text};
@@ -84,7 +93,7 @@ use talaria_tasks_types::human_assignee_ids;
 
 const LOG: &str = "[approvals]";
 
-/// The six queues. Serialized as its snake_case strings (`google_action`, …),
+/// The eight queues. Serialized as its snake_case strings (`google_action`, …),
 /// which is what the announce marks' failed-kind log lines and the digest's
 /// counters are written in terms of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -96,6 +105,8 @@ pub enum ApprovalKind {
     RepoRequest,
     RunDecision,
     BoardAccess,
+    AppInstall,
+    AppUpdate,
 }
 
 impl ApprovalKind {
@@ -107,6 +118,8 @@ impl ApprovalKind {
             ApprovalKind::RepoRequest => "repo_request",
             ApprovalKind::RunDecision => "run_decision",
             ApprovalKind::BoardAccess => "board_access",
+            ApprovalKind::AppInstall => "app_install",
+            ApprovalKind::AppUpdate => "app_update",
         }
     }
 }
@@ -123,7 +136,7 @@ pub struct Disclosure {
     pub fact: Vec<String>,
 }
 
-/// The census row — the same shape for all six kinds, so the digest and the
+/// The census row — the same shape for all eight kinds, so the digest and the
 /// SLA are looking at exactly what the decision route authorizes against.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -522,6 +535,128 @@ async fn board_access_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sql
         .collect())
 }
 
+/// One pending `app_install_requests` row, in column order — the ticket's
+/// board is nullable (the ticket may have been deleted since).
+type AppInstallRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    i64,
+    Option<String>,
+);
+
+/// `app_install_requests`: a Developer Agent asked for the app it built to be
+/// installed. Like `repo_request` it is an ADMIN's to decide (the decision
+/// route is admin-gated: installing adds code to the deployment), and the
+/// agent's `why` quotes the board it was working, so `on_board` narrows who
+/// may read the words.
+async fn app_install_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
+    let rows: Vec<AppInstallRow> = sqlx::query_as(
+        "select r.id::text, r.agent_model, r.repo, r.git_ref, r.why, \
+                (trunc(extract(epoch from r.created_at) * 1000))::bigint, r.board_id::text \
+         from app_install_requests r \
+         where r.status = 'pending'",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, agent_model, repo, git_ref, why, created_ms, board_id)| {
+            let at = git_ref.map(|r| format!(" @ {r}")).unwrap_or_default();
+            let detail = {
+                let trimmed = why.trim();
+                if trimmed.is_empty() {
+                    format!(
+                        "Approving installs it from {repo}{at}, disabled; enabling it and granting its surfaces stay with you."
+                    )
+                } else {
+                    clamp_text(trimmed, 240)
+                }
+            };
+            PendingApproval {
+                kind: ApprovalKind::AppInstall,
+                key: format!("app_install:{id}"),
+                id: id.clone(),
+                title: format!("{agent_model} asked to install the app in {repo}{at}"),
+                detail,
+                href: "/apps".into(),
+                waiting_since: epoch_ms_to_iso(created_ms),
+                owner_user_ids: Vec::new(),
+                authority: Authority::Admin { on_board: board_id },
+            }
+        })
+        .collect())
+}
+
+/// One pending `app_update_requests` row, in column order — the installed
+/// commit and the plugin's board are nullable.
+type AppUpdateRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Value,
+    i64,
+    Option<String>,
+    Option<String>,
+);
+
+/// `app_update_requests`: a plugin's branch moved past the installed commit
+/// and the update waits for an admin (the route is admin-gated: an update
+/// adds code). Bounded to the plugin's board — the board of the ticket that
+/// started it — like the install request that made it a plugin.
+async fn app_update_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
+    let rows: Vec<AppUpdateRow> = sqlx::query_as(
+        "select r.id::text, r.app_slug, r.target_sha, r.git_ref, r.prs, \
+                (trunc(extract(epoch from r.created_at) * 1000))::bigint, \
+                p.board_id::text, s.sha \
+         from app_update_requests r \
+         join plugins p on p.app_slug = r.app_slug \
+         left join app_sources s on s.slug = r.app_slug \
+         where r.status = 'pending'",
+    )
+    .fetch_all(pg)
+    .await?;
+    let short = |s: &str| s.chars().take(7).collect::<String>();
+    Ok(rows
+        .into_iter()
+        .map(|(id, slug, target, git_ref, prs, created_ms, board_id, from)| {
+            let prs: Vec<String> = prs
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|n| n.as_i64().map(|n| format!("#{n}")))
+                .collect();
+            PendingApproval {
+                kind: ApprovalKind::AppUpdate,
+                key: format!("app_update:{id}"),
+                id: id.clone(),
+                title: format!(
+                    "Plugin \"{slug}\" has an update waiting: {} → {}",
+                    from.as_deref().map(short).unwrap_or_else(|| "—".into()),
+                    short(&target)
+                ),
+                detail: format!(
+                    "{} moved to {}{}. Approving builds and probes the new version beside the live one, switches to it, and rolls back if it fails.",
+                    git_ref.as_deref().unwrap_or("Its default branch"),
+                    short(&target),
+                    if prs.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (merged: {})", prs.join(", "))
+                    }
+                ),
+                href: "/apps".into(),
+                waiting_since: epoch_ms_to_iso(created_ms),
+                owner_user_ids: Vec::new(),
+                authority: Authority::Admin { on_board: board_id },
+            }
+        })
+        .collect())
+}
+
 /// ONE description of what a parked run is as an approval — the census reader
 /// below and the decide route's authorization check both go through this
 /// function, because the only correct way to answer "may this person decide
@@ -663,7 +798,7 @@ async fn run_decision_approvals(
 
 /// Every pending approval in the workspace, oldest first.
 ///
-/// One kind failing must not hide the other five — an escalation sweep that
+/// One kind failing must not hide the others — an escalation sweep that
 /// reports nothing because one table was locked is the silence this whole
 /// module is about. Each kind is settled independently — the contract is
 /// the independence; a rejection is logged and recorded in `failed_kinds` so the
@@ -678,13 +813,15 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
     let mut failed_kinds = Vec::new();
     // The newest source is also the one most likely to fail on a tree that has
     // not migrated yet (no `runs` table at all), which is precisely what
-    // `failed_kinds` is for: a workspace mid-deploy still gets its other five
+    // `failed_kinds` is for: a workspace mid-deploy still gets its other
     // queues, and the sweep knows not to prune marks it could not see.
-    let reads: [(ApprovalKind, Result<Vec<PendingApproval>, sqlx::Error>); 6] = [
+    let reads: [(ApprovalKind, Result<Vec<PendingApproval>, sqlx::Error>); 8] = [
         (
             ApprovalKind::GoogleAction,
             google_action_approvals(pg).await,
         ),
+        (ApprovalKind::AppInstall, app_install_approvals(pg).await),
+        (ApprovalKind::AppUpdate, app_update_approvals(pg).await),
         (
             ApprovalKind::WorkbenchPlan,
             workbench_plan_approvals(pg).await,
@@ -1110,6 +1247,8 @@ pub fn kind_label(kind: ApprovalKind) -> &'static str {
             "a long-running job parked on a question only a person can answer"
         }
         ApprovalKind::BoardAccess => "a board a personal assistant asked to join",
+        ApprovalKind::AppInstall => "an app an agent asked to install",
+        ApprovalKind::AppUpdate => "an update to an app an agent maintains",
     }
 }
 
@@ -1183,6 +1322,11 @@ fn announce_to_named_only(kind: ApprovalKind) -> bool {
         // attached to the request is the owner who CANNOT see the board.
         // Narrowing to the named would silence every one of them.
         ApprovalKind::BoardAccess => false,
+        // Admin-only and ownerless, like repo_request: narrowing would
+        // silence it, and an agent's finished plugin waits behind it.
+        ApprovalKind::AppInstall => false,
+        // Same: admin-only and ownerless, and a merged fix waits behind it.
+        ApprovalKind::AppUpdate => false,
     }
 }
 
@@ -1292,16 +1436,47 @@ struct Told {
     fact: usize,
 }
 
+/// How every row about one approval files — the first contact here, and the
+/// SLA's nag, escalation and stall report (talaria-digest): ONE open row per
+/// approval per person (`group_key::approval`), so a nag re-alerts the row
+/// the person already has instead of adding a second one; about the approval
+/// (`entity::APPROVAL`, its stable key), so a decision reads every
+/// recipient's row at once (`resolve_approval`, SE-10). Pure.
+pub fn approval_meta(key: &str) -> NotifyMeta {
+    NotifyMeta {
+        group_key: Some(group_key::approval(key)),
+        entity: Some(NotifyEntity::new(entity::APPROVAL, key)),
+        actor: Some(NotifyActor {
+            kind: ActorKind::System,
+            id: "approvals".into(),
+            label: "Approvals".into(),
+        }),
+        ..Default::default()
+    }
+}
+
+/// An approval was decided (or withdrawn): every recipient's row about it
+/// reads now, and each of their devices hears the read (`readIds`). The
+/// decision routes call it; the announce sweep is the floor for the ones that
+/// do not (a key it announced that the census no longer lists). Failures are
+/// logged.
+pub async fn resolve_approval(notify: &NotifyDeps, key: &str) {
+    if let Err(e) = resolve_entity(notify, &NotifyEntity::new(entity::APPROVAL, key)).await {
+        tracing::error!("{LOG} could not read the rows for decided {key}: {e}");
+    }
+}
+
 async fn announce(
     deps: &ApprovalDeps,
     approval: &PendingApproval,
     target: &AnnounceTarget,
 ) -> Told {
     let mut told = Told::default();
+    let meta = approval_meta(&approval.key);
     for user_id in dedup(target.to.clone()) {
         // A per-person failure is logged and skipped, never the whole
         // announcement's: one bad row must not silence the other recipients.
-        let written = add_notification(
+        let written = add_notification_with(
             &deps.notify,
             &user_id,
             &NotificationInput {
@@ -1313,10 +1488,11 @@ async fn announce(
                 )),
                 href: Some(&approval.href),
             },
+            &meta,
         )
         .await;
         match written {
-            Ok(()) => told.content += 1,
+            Ok(_) => told.content += 1,
             Err(e) => {
                 tracing::error!(
                     "{LOG} could not announce {} to {user_id}: {e}",
@@ -1333,7 +1509,7 @@ async fn announce(
         if target.to.contains(&user_id) {
             continue;
         }
-        let written = add_notification(
+        let written = add_notification_with(
             &deps.notify,
             &user_id,
             &NotificationInput {
@@ -1345,10 +1521,11 @@ async fn announce(
                 // act on is on a screen they can already find.
                 href: None,
             },
+            &meta,
         )
         .await;
         match written {
-            Ok(()) => told.fact += 1,
+            Ok(_) => told.fact += 1,
             Err(e) => {
                 tracing::error!(
                     "{LOG} could not tell {user_id} that {} exists: {e}",
@@ -1549,6 +1726,14 @@ pub async fn sweep_unannounced(
                 return result;
             }
         }
+        // THE FLOOR UNDER SE-10. A key this module announced that the
+        // complete census no longer lists was decided (or withdrawn) — by a
+        // route that resolved it at once, or by one that does not know to.
+        // Either way its rows read now, for every recipient; a second resolve
+        // of an already-read approval reads nothing.
+        for key in already.keys().filter(|k| !live.contains(k)) {
+            resolve_approval(&deps.notify, key).await;
+        }
         if let Err(e) = prune_announced(pg, &live, &now).await {
             tracing::error!("{LOG} could not prune the announce marks: {e}");
         }
@@ -1561,6 +1746,24 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use talaria_runs_define::RunDecision;
+
+    // One row per approval per person, about the approval: the first contact
+    // and every SLA stage share the key, so a nag re-alerts the same row.
+    #[test]
+    fn every_row_about_an_approval_shares_its_key() {
+        let m = approval_meta("board_access:b-1:dex");
+        assert_eq!(
+            m.group_key.as_deref(),
+            Some("approval:board_access:b-1:dex")
+        );
+        assert_eq!(
+            m.entity,
+            Some(NotifyEntity::new("approval", "board_access:b-1:dex"))
+        );
+        assert_eq!(m.coalesce, talaria_notify::Coalesce::Realert);
+        assert!(!m.quiet && !m.adopt_legacy && m.group_window_secs.is_none());
+        assert_eq!(m.actor.unwrap().kind, ActorKind::System);
+    }
 
     fn approval(kind: ApprovalKind, authority: Authority) -> PendingApproval {
         PendingApproval {

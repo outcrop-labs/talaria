@@ -781,7 +781,7 @@ pub async fn clear_task_pin(pg: &PgPool, task_id: &str) -> Result<(), sqlx::Erro
 // ── Resolution: which plan, which models ────────────────────────────────────
 
 /// The provider id omp knows the Talaria gateway by — the one
-/// `talaria-workbench-harnesses` declares in each agent's `models.json`.
+/// `talaria-workbench-harnesses` declares in each agent's `models.yml`.
 pub const GATEWAY_PROVIDER: &str = "talaria";
 
 /// The plan a job will actually run on, with its models resolved.

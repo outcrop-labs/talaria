@@ -303,6 +303,7 @@ async fn a_notification_event_is_id_shaped_too() {
         "user-3",
         &UserEvent::Notification {
             notification_id: "n-1".into(),
+            seq: None,
         },
     );
 
@@ -365,6 +366,7 @@ async fn a_stream_opens_with_connected_then_frames_each_payload_as_sse_data() {
         "user-1",
         &UserEvent::Notification {
             notification_id: "n-1".into(),
+            seq: None,
         },
     );
     // End the subscription so the body can finish; the frames already
@@ -377,7 +379,7 @@ async fn a_stream_opens_with_connected_then_frames_each_payload_as_sse_data() {
         .expect("frames are bounded");
     assert_eq!(
         std::str::from_utf8(&bytes).unwrap(),
-        ": connected\n\ndata: {\"type\":\"notification\",\"notificationId\":\"n-1\"}\n\n"
+        ": connected\nretry: 3000\n\ndata: {\"type\":\"notification\",\"notificationId\":\"n-1\"}\n\n"
     );
     let headers = {
         // rebuilt only to assert the header the stream sets
@@ -394,6 +396,47 @@ async fn a_stream_opens_with_connected_then_frames_each_payload_as_sse_data() {
         headers.get(axum::http::header::CACHE_CONTROL).unwrap(),
         "no-cache, no-transform"
     );
+    // The edge's flush switch (Cloudflare and the nginx family honor it).
+    assert_eq!(headers.get("x-accel-buffering").unwrap(), "no");
+}
+
+// I-19: a notification frame that carries its seq gets it as the SSE `id:`
+// (an EventSource then resumes with `Last-Event-ID`); every other frame —
+// a seq-less notification from an older writer included — has none.
+#[tokio::test]
+async fn a_notification_with_a_seq_is_framed_with_its_id() {
+    let hub = Hub::new();
+    let deps = hub.deps();
+    let response = user_event_stream(&deps, "user-id").await;
+    for seq in [Some(7), None] {
+        publish_user(
+            &deps,
+            "user-id",
+            &UserEvent::Notification {
+                notification_id: "n-7".into(),
+                seq,
+            },
+        );
+    }
+    publish_user(
+        &deps,
+        "user-id",
+        &UserEvent::Resync {
+            seq: 7,
+            complete: true,
+        },
+    );
+    hub.close_topic("user:user-id");
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::str::from_utf8(&bytes).unwrap(),
+        ": connected\nretry: 3000\n\n\
+         id: 7\ndata: {\"type\":\"notification\",\"notificationId\":\"n-7\",\"seq\":7}\n\n\
+         data: {\"type\":\"notification\",\"notificationId\":\"n-7\"}\n\n\
+         data: {\"type\":\"resync\",\"seq\":7,\"complete\":true}\n\n"
+    );
 }
 
 #[tokio::test]
@@ -409,7 +452,10 @@ async fn a_quiet_subscriber_still_gets_the_connected_preamble() {
     let bytes = axum::body::to_bytes(response.into_body(), 1024)
         .await
         .expect("one frame");
-    assert_eq!(std::str::from_utf8(&bytes).unwrap(), ": connected\n\n");
+    assert_eq!(
+        std::str::from_utf8(&bytes).unwrap(),
+        ": connected\nretry: 3000\n\n"
+    );
 }
 
 // ── The gate ─────────────────────────────────────────────────────────────────

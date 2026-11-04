@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-26 routes.
+29 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -45,12 +45,16 @@
 | [`/api/fleet/endpoints/{id}`](#apifleetendpointsid) | DELETE | `admin` |
 | [`/api/fleet/endpoints/{id}/available`](#apifleetendpointsidavailable) | GET | `admin` |
 | [`/api/fleet/federate`](#apifleetfederate) | POST | `admin` |
+| [`/api/fleet/hermes`](#apifleethermes) | GET | `admin` |
+| [`/api/fleet/hermes`](#apifleethermes) | POST | `admin` |
 | [`/api/fleet/hires`](#apifleethires) | GET | `session` + `perm:agents.manage` |
+| [`/api/fleet/hires/{id}/retry`](#apifleethiresidretry) | POST | `session` + `perm:agents.manage` |
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
 | [`/api/fleet/render`](#apifleetrender) | POST | `admin` |
 | [`/api/fleet/resources`](#apifleetresources) | GET | `admin` |
 | [`/api/fleet/roll`](#apifleetroll) | GET | `admin` |
 | [`/api/fleet/roll`](#apifleetroll) | POST | `admin` |
+| [`/api/fleet/seal-configs`](#apifleetseal-configs) | POST | `admin` |
 
 ## `/api/fleet`
 
@@ -70,12 +74,12 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 > POST /api/fleet/agents/{id}/control. Lifecycle control for one agent —
 > this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 >   up | stop | restart   the managed service (renders first on `up`)
->   roll                  zero-downtime replacement — detached
+>   roll                  recreate the container in place — detached
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 404, 409, 500 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok, rolling} or {ok, pending, state} or {ok, warming} or {ok} or {ok, render} or {ok, removedVolume}` | 200, 202, 400, 404, 409, 500, … | audit |
 
 ### POST `/api/fleet/agents/{id}/control` body
 
@@ -88,13 +92,13 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`]
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs)
 
 > /api/fleet/agents/{id}/crons. One agent's native Hermes cron jobs. GET →
-> jobs (read from the container's jobs.json). POST → create. Admin, or the
+> jobs (read from the agent's own `/api/jobs`). POST → create. Admin, or the
 > owner of a personal assistant.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{jobs}` | 200, 400 | — |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcrons-body) | `{ok, id}` | 200, 400 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcrons-body) | `{ok, id}` | 200, 400, 503 | audit |
 
 ### POST `/api/fleet/agents/{id}/crons` body
 
@@ -102,7 +106,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](.
 | :--- | :--- | :--- |
 | `name` | `string trimmed(1, 80)` |  |
 | `schedule` | `string trimmed(1, 120)` |  |
-| `prompt` | `string trimmed(1, 20000)` |  |
+| `prompt` | `string trimmed(1, 5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/agents/{id}/crons/{jobId}`
 
@@ -110,14 +114,15 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 
 > /api/fleet/agents/{id}/crons/{jobId}. One cron job: DELETE → remove. POST
 > { action } → pause | resume | run ("run" queues it for the next scheduler
-> tick, ≤60s). PUT { name? schedule? prompt? } → edit in place. Admin or
-> owner.
+> tick, ≤60s; a paused job is refused, because Hermes's run would resume it
+> for good). PUT { name? schedule? prompt? } → edit in place. Admin or
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400 | audit |
-| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400 | audit |
-| DELETE | `session` + `agent-manager` | — | `{ok}` | 200, 400 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 503 | audit |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 503 | audit |
+| DELETE | `session` + `agent-manager` | — | `{ok}` | 200, 400, 503 | audit |
 
 ### POST `/api/fleet/agents/{id}/crons/{jobId}` body
 
@@ -131,23 +136,23 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 | :--- | :--- | :--- |
 | `name` | `string?(80)` |  |
 | `schedule` | `string?(120)` |  |
-| `prompt` | `string?(20000)` |  |
+| `prompt` | `string?(5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/agents/{id}/secrets`
 
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs)
 
 > /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
-> names + timestamps (never values). PUT { name, value } → set/replace.
-> DELETE { name } → remove. Admin, or the owner of a personal assistant.
-> Takes effect on the next start from Talaria. Every write audits — secret
+> names + timestamps (never values), and for a CONFIG_* secret where the
+> current config names it (usedAt). PUT { name, value } → set/replace.
+> A well-formed id that names no agent is a 404 on all three, and the
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `agent-manager` | — | `{secrets}` | 200 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
-| DELETE | `session` + `agent-manager` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
+| GET | `session` + `agent-manager` | — | `{secrets}` | 200, 404 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400, 404 | — |
+| DELETE | `session` + `agent-manager` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400, 404, 409 | audit |
 
 ### PUT `/api/fleet/agents/{id}/secrets` body
 
@@ -158,9 +163,10 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs`]
 
 ### DELETE `/api/fleet/agents/{id}/secrets` body
 
-Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
-through the `crate::body` member vocabulary — the field set lives in the route
-source.
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 64)` |  |
+| `removeSetting` | `bool?` |  |
 
 ## `/api/fleet/containers`
 
@@ -223,7 +229,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_crons.rs`](../../api/c
 | `agentIds` | `uuid[](64)` | agentIds: min(1).max(64) — the helper carries the max; the min (a fleet cron with no agents is nothing) is checked here. |
 | `name` | `string trimmed(1, 80)` |  |
 | `schedule` | `string trimmed(1, 120)` |  |
-| `prompt` | `string trimmed(1, 20000)` |  |
+| `prompt` | `string trimmed(1, 5000)` | The agent's own cap: Hermes's /api/jobs refuses a longer prompt (talaria_agent_crons::MAX_PROMPT_CHARS). |
 
 ## `/api/fleet/defs`
 
@@ -239,7 +245,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/cr
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{defs, endpoints, brains, canHire, toolsets}` | 200 | — |
 
-**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (28 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
+**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (21 names, alphabetical); `mandatoryDisabled`, the whole floor the renderer closes on every agent whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees, plus the org-wide floor an admin sets on `PUT /api/admin/settings` (`mandatoryDisabledToolsets`) or pins with `TALARIA_MANDATORY_DISABLED_TOOLSETS`; and `orgDisabled`, that org part alone, so the editor can say an admin closed a row rather than Talaria. `governed` is the constant the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
 
 ## `/api/fleet/defs/{id}`
 
@@ -262,9 +268,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 | `ticketTemplateId` | `uuid? nullable` | Template overrides: uuid binds, null clears, omitted leaves unchanged. |
 | `planTemplateId` | `uuid? nullable` |  |
 | `developer` | `bool?` | The Developer Agent switch: on sets the agent up end to end (sandbox, Oh My Pi, Workbench tools); the roll below applies it. |
-| `maxChildren` | `number?(0, 16)` | How many subagents this agent may run at once; 0 means it delegates to nobody. The ceiling is the box's, not the agent's — the roll applies it. |
+| `maxChildren` | `number?(0, 16)` | How many subagents this agent may run at once; 0 means it delegates to nobody. The ceiling is the box's, not the agent's. Applied in place: a running agent reads it on its next delegate call. |
 | `pinnedSessions` | `bool?` | Pinned sessions: one Hermes session per conversation, Hermes holding the history, so its compaction and session search see the whole thread. Talaria-side only — no roll. |
-| `disabledToolsets` | `string[]?(1, 40, 40)` | The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass: a stranger reaches the rendered config, is ignored in silence, and the toolset stays open. It rolls. |
+| `disabledToolsets` | `string[]?(1, 40, 40)` | The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass (a stranger is ignored in silence and the toolset stays open). Applied in place: a running agent reads it on its next turn. |
 
 ## `/api/fleet/defs/{id}/edit`
 
@@ -277,7 +283,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied, notes}` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied, notes}` | 200, 202, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/edit` body
 
@@ -288,7 +294,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 | `aliases` | `target_array` |  |
 | `fallbacks` | `target_array` |  |
 | `note` | `string?(300)` |  |
-| `apply` | `bool?` | Re-render + restart the managed container so the edit takes effect now. |
+| `apply` | `bool?` | Apply the edit to the running agent now: re-render (config and soul land in place) and restart the managed container only if the edit changed something it reads only at start. |
 | `compression` | `parse_compression` | The compaction knobs, and what the answer owes the caller about them. note: `compression` — `{ threshold?: number|null (0.1..1), thresholdTokens?: number|null (1000..10000000) }`; null clears a knob, absent leaves it; a threshold under 0.75 saves and the answer's `notes` says Hermes raises it for models under 512K context |
 
 ## `/api/fleet/defs/{id}/google`
@@ -361,7 +367,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../..
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{agent, canInstall, servers, legacy}` | 200, 404 | — |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `…` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `…` | 200, 202, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/mcp` body
 
@@ -393,7 +399,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_versions.rs`](
 > /api/fleet/defs/{id}/versions. GET → an agent definition's full version
 > history (admin). POST { revertTo } → re-publish an old version's payload
 > as a NEW version (history is append-only; a revert is itself a tracked
-> change).
+> change). A setting the old version read from a sealed credential
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -426,7 +433,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints.rs`](../../a
 | `provider` | `string(2, 40)` |  |
 | `baseUrl` | `url` |  |
 | `class` | `enum(local|cloud)` |  |
-| `apiKeyEnv` | `nullish_key_env` | Provider-key-shaped names only (see provider-catalog KEY_ENV_RE) — the catalog fetch sends this var's VALUE to the endpoint's base URL. |
+| `apiKeyEnv` | `nullish_key_env` | Provider-key-shaped names only (see talaria-gateway key_env_allowed) — the catalog fetch sends this var's VALUE to the endpoint's base URL. |
 | `apiKey` | `string?(400)` | Raw provider API key — sealed (secretbox) server-side, never stored or returned in the clear. |
 | `models` | `string[]?(1, 120, 100)` |  |
 
@@ -443,7 +450,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints_id.rs`](../.
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | PUT | `admin` | [body](#put-apifleetendpointsid-body) | `{needsForce, affected}` | 200, 400, 404, 409 | audit |
-| DELETE | `admin` | — | `{needsForce, affected}` | 200, 400, 409 | audit |
+| DELETE | `admin` | — | `{needsForce, affected}` | 200, 400, 404, 409 | audit |
 
 ### PUT `/api/fleet/endpoints/{id}` body
 
@@ -477,17 +484,45 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_federate.rs`](../../ap
 > POST /api/fleet/federate. Federate outside agents into Talaria: read a
 > Hermes-format directory and create each agent natively (Talaria def,
 > fresh key + state volume, our chassis, skills copied in). One-way and
-> re-runnable. Admin.
+> re-runnable. Admin. A roster that would put a second agent in a department
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `admin` | [body](#post-apifleetfederate-body) | `{result}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apifleetfederate-body) | `{result}` | 200, 400, 409 | audit |
 
 ### POST `/api/fleet/federate` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `dir` | `string trimmed(1, 500)` | trim, 1..500 — a server-side path to a Hermes-format directory (admin trust model). |
+
+## `/api/fleet/hermes`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hermes.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_hermes.rs)
+
+> /api/fleet/hermes — the agent image's Hermes stable channel. Admin.
+>   GET   where the channel stands: following stable, pinned to a version,
+>         or off because the operator chose the image (HERMES_IMAGE, or a
+>         chassis image of their own) and why; the Hermes version each agent
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{ok, status}` | 200, 409 | — |
+| POST | `admin` | [body](#post-apifleethermes-body) | `{ok, message, status}` | 200, 400, 409 | audit |
+
+### POST `/api/fleet/hermes` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `enum(check|roll|rollback|pin|unpin|allow|accept|reset|window)?` |  |
+| `digest` | `string?(80)` |  |
+| `version` | `string?(16)` |  |
+| `digest` | `string?(80)` |  |
+| `digest` | `string?(80)` |  |
+| `start` | `string?(5)` |  |
+| `end` | `string?(5)` |  |
 
 ## `/api/fleet/hires`
 
@@ -503,6 +538,20 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hires.rs`](../../api/c
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `perm:agents.manage` | — | `…` | 200 | — |
 
+## `/api/fleet/hires/{id}/retry`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hires_id_retry.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_hires_id_retry.rs)
+
+> POST /api/fleet/hires/{id}/retry. Run a FAILED hire again, on the same
+> agent — the Retry on the roster's red hire row.
+>
+> WHY THIS EXISTS. A hire that fails after its create stage (the image would
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` + `perm:agents.manage` | — | `{ok, hire}` | 200, 403, 404, 409, 500, 503 | — |
+
 ## `/api/fleet/reconcile`
 
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs)
@@ -510,17 +559,20 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs`](../../a
 > POST /api/fleet/reconcile. Render + start every enabled managed agent
 > that isn't running. One button to bring the fleet to desired state
 > (drift, cold start). Admin.
+>
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `admin` | — | `…` | 200, 500 | audit |
+| POST | `admin` | — | `{pending, started, alreadyRunning}` | 200, 202, 500 | audit |
 
 ## `/api/fleet/render`
 
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_render.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_render.rs)
 
 > POST /api/fleet/render. Render every managed agent's config + the fleet
-> compose + the gateway manifest (the bridge hot-reloads the manifest).
+> compose + the gateway manifest (the persona door re-reads the manifest on
+> each attempt).
 > Admin.
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -546,9 +598,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_resources.rs`](../../a
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs)
 
 > /api/fleet/roll — roll every agent container at once, in-platform. Admin.
->   POST  queue a blue/green roll of every managed, enabled agent that is
->         running (`{"all": true}`: every managed enabled agent). Answers at
->         once; the rolls run detached, TALARIA_FLEET_ROLL_CONCURRENCY
+>   POST  queue an in-place roll of every managed, enabled agent that is
+>         running (`{"all": true}`: every managed enabled agent), once per
+>         department — the agent that runs in its container. Answers at
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -561,4 +613,27 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_roll.rs`](../../api/cr
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `all` | `bool?` | Every managed enabled agent, the stopped ones brought up too. |
+
+## `/api/fleet/seal-configs`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_seal_configs.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_seal_configs.rs)
+
+> POST /api/fleet/seal-configs. Seal the credential literals agent configs
+> stored before federation sealed them on the way in: each becomes one of
+> that agent's CONFIG_* secrets and every version row keeps a handle in its
+> place, rewritten in place. A running agent that gains secrets is rolled
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apifleetseal-configs-body) | `{result}` | 200, 400 | audit |
+
+### POST `/api/fleet/seal-configs` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `dryRun` | `bool?` | Default true: report what sealing would do, write nothing. |
+| `dropUndeliverable` | `bool?` | Take a literal no secret can carry (multi-line, over 8 KB) out of the config instead of skipping its agent. |
+| `agentId` | `uuid?` | One agent; with agentIds, added to them. Neither: every agent. |
+| `agentIds` | `uuid[]?(1000)` | These agents: an apply sends the ones its dry run listed. |
 

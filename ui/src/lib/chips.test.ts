@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from '@/components/ui/markdown'
 import {
+  AGENT_APPROVAL,
+  agentApprovalView,
   chipsBesideProse,
   classifyPlatformHref,
+  clockText,
   findPlatformLinks,
   invokeText,
+  isAgentApproval,
   toolsUnlockedBy,
   type ChatChip,
 } from '@/lib/chips'
@@ -105,6 +109,69 @@ describe('chipsBesideProse', () => {
       detail: 'A budget caps the retries a request may spend.',
     }
     expect(chipsBesideProse([source], 'see https://example.com/retry')).toEqual([source])
+  })
+})
+
+describe('the agent approval card', () => {
+  const OWNER = 'u-owner'
+  const card: ChatChip = {
+    id: 'approval:a-1',
+    kind: 'approval',
+    actionId: 'a-1',
+    actionKind: AGENT_APPROVAL,
+    summary: 'Write to protected agent-instruction file(s): AGENTS.md.',
+    command: '<write to AGENTS.md>',
+    deciderId: OWNER,
+    expiresAt: 1_000_000,
+    status: 'pending',
+  }
+
+  it('is told apart from a protected action Talaria queued', () => {
+    expect(isAgentApproval(card)).toBe(true)
+    expect(isAgentApproval({ id: 'a', kind: 'approval', actionKind: 'gmail_send' })).toBe(false)
+    expect(isAgentApproval({ id: 't', kind: 'tool', actionKind: AGENT_APPROVAL })).toBe(false)
+  })
+
+  it('gives the buttons to its decider alone, while it is open', () => {
+    const now = 1_000_000 - 90_500
+    expect(agentApprovalView(card, OWNER, now)).toEqual({
+      heading: 'Agent is asking',
+      waiting: true,
+      canAnswer: true,
+      secondsLeft: 91,
+    })
+    // Another reader of the thread, an admin included: read-only.
+    expect(agentApprovalView(card, 'u-someone-else', now)).toMatchObject({ waiting: true, canAnswer: false })
+    // Signed out, or the session not loaded yet.
+    expect(agentApprovalView(card, null, now).canAnswer).toBe(false)
+    expect(agentApprovalView(card, undefined, now).canAnswer).toBe(false)
+  })
+
+  it('reads expired once its time is up, before the server repaints it', () => {
+    expect(agentApprovalView(card, OWNER, 1_000_000)).toEqual({
+      heading: 'Expired',
+      waiting: false,
+      canAnswer: false,
+      secondsLeft: null,
+    })
+    expect(agentApprovalView({ ...card, status: 'expired' }, OWNER, 0).heading).toBe('Expired')
+  })
+
+  it('says what became of it once answered', () => {
+    expect(agentApprovalView({ ...card, status: 'approved' }, OWNER, 0)).toMatchObject({
+      heading: 'Allowed once',
+      canAnswer: false,
+    })
+    expect(agentApprovalView({ ...card, status: 'denied' }, OWNER, 0)).toMatchObject({
+      heading: 'Denied',
+      canAnswer: false,
+    })
+  })
+
+  it('counts down in minutes and seconds', () => {
+    expect(clockText(115)).toBe('1:55')
+    expect(clockText(9)).toBe('0:09')
+    expect(clockText(-3)).toBe('0:00')
   })
 })
 

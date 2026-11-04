@@ -112,6 +112,19 @@ pub enum JobName {
     AgentResourceSample,
     WorkbenchJobSweep,
     WorkbenchQueueSweep,
+    SkillsIndexRefresh,
+    AppTriggers,
+    CronOutputPull,
+    // The notification delivery engine (talaria-notify, docs/notifications/delivery.md):
+    // the presence-deferred push, the missed-activity mail batcher, row retention,
+    // and the push-subscription prune.
+    NotifyDeferredPush,
+    NotifyMissedMail,
+    NotifyRetention,
+    PushPrune,
+    /// The agent image's Hermes stable channel (talaria-hermes-channel):
+    /// the check, the preparation and the rollout, one step a minute.
+    HermesChannel,
 }
 
 impl JobName {
@@ -137,6 +150,14 @@ impl JobName {
             JobName::AgentResourceSample => "agent-resource-sample",
             JobName::WorkbenchJobSweep => "workbench-job-sweep",
             JobName::WorkbenchQueueSweep => "workbench-queue-sweep",
+            JobName::SkillsIndexRefresh => "skills-index-refresh",
+            JobName::AppTriggers => "app-triggers",
+            JobName::CronOutputPull => "cron-output-pull",
+            JobName::NotifyDeferredPush => "notify-deferred-push",
+            JobName::NotifyMissedMail => "notify-missed-mail",
+            JobName::NotifyRetention => "notify-retention",
+            JobName::PushPrune => "push-prune",
+            JobName::HermesChannel => "hermes-channel",
         }
     }
 }

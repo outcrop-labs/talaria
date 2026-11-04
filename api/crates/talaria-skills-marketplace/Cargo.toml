@@ -11,9 +11,14 @@ workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
 flate2 = { workspace = true }
+futures-util = { workspace = true }
+sqlx = { workspace = true }
 tar = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-talaria-agent-skills = { workspace = true }
+talaria-fleet-layout = { workspace = true }
 talaria-safe-fetch = { workspace = true }
+talaria-scheduler = { workspace = true }
+talaria-settings = { workspace = true }

@@ -30,6 +30,11 @@ export function useModelEfforts(model: MaybeModel) {
         getJson<{ efforts: string[]; default: string | null }>(`/api/models/efforts?model=${encodeURIComponent(id!)}`),
     }
   })
+  // DO NOT DESTRUCTURE THIS. Every field is a getter over the live query, so
+  // `const { efforts } = useModelEfforts(...)` reads the query once, at mount
+  // — `[]` on a fresh page — and the chip never appears. Keep the object and
+  // read through it (`const efforts = $derived(x.efforts)`);
+  // model-efforts.svelte.test.ts holds every caller to that.
   return {
     /** The levels this model supports, or `[]` while unknown/unavailable —
      *  see the file header for why empty is the only failure shape. */
@@ -40,6 +45,13 @@ export function useModelEfforts(model: MaybeModel) {
      * hint needs to distinguish "none published" from "not asked yet". */
     get isLoading(): boolean {
       return query.isLoading
+    },
+    /** Whether THIS model's answer is in: read, and not failed. A caller that
+     *  clears a saved level the model does not publish waits for it, because
+     *  `efforts` is `[]` while the read is in flight (and after a failed one),
+     *  and judged against that every saved level reads as retired. */
+    get answered(): boolean {
+      return query.isSuccess
     },
     /** The AGENT-CONFIGURED default for this model id (the pick saved beside
      *  the model in the agent editor), when the id is a persona whose config

@@ -13,9 +13,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-defs = { workspace = true }
+talaria-agent-secrets = { workspace = true }
 talaria-fleet-create = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-secretbox = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde_yaml_ng = { workspace = true }

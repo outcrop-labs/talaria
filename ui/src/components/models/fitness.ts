@@ -48,6 +48,7 @@ import type {
   ProbeReport,
   ProvocationScore,
   RunEstimate,
+  SlotKind,
   SlotValue,
   SpeedReading,
   Suspicion,
@@ -123,9 +124,9 @@ export interface Thresholds {
 }
 
 export interface SlotView {
-  /** 'fleet' is the model behind a Hermes persona — see `SlotKind` in
-   *  `./fitness-wire` for why it had to exist. */
-  kind: 'role' | 'agent' | 'fleet'
+  /** 'fleet' is the model behind a Hermes persona, 'app' one harness an
+   *  enabled app ships — see `SlotKind` in `./fitness-wire`. */
+  kind: SlotKind
   id: string
   key: string
   label: string

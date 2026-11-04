@@ -33,7 +33,7 @@ Once the proof line is green, tear it down.
 | `bun talaria worktree <name>` | from the **primary** checkout, not from inside it: `docker compose -p talaria-wt-<name> down -v && git worktree remove --force ../talaria-<name> && git branch -D wt/<name>` |
 | `bun talaria box new <name>` | `bun talaria box rm <name>` (it refuses a dirty or unpushed clone; `--force` is a human decision) |
 | a scratch checkout or throwaway download | put it under `/tmp/talaria-<name>` when you create it, and `rm -rf` it when you are done |
-| a one-off `CARGO_TARGET_DIR` or cold build dir | same prefix, `/tmp/talaria-*`, so the sweep can see it |
+| a one-off `CARGO_TARGET_DIR` or cold build dir | same prefix, `/tmp/talaria-*`, so the sweep can see it. Never point two checkouts at one `CARGO_TARGET_DIR`: their workspace crates share unit hashes, and one runs the other's code |
 
 If you are still inside the worktree, the sweep will not delete the checkout it is running in.
 Leave, then run the teardown from the primary. The next stop gate, in any checkout, will
@@ -48,16 +48,28 @@ flag it once it is stale.
   sweep **always names them and their size**, at any disk reading, because an artifact
   nobody can see is the one that fills the disk; it never deletes them on a timer.
   `cargo clean --manifest-path api/Cargo.toml` is a human decision.
-  A *side* worktree's build dir is different: untouched for 14 days it is spent, and
-  `--apply` reclaims it. Reclaiming is cheap to undo — `mise.toml` puts every cargo
-  behind a shared **sccache**, so the rebuild is a cache hit rather than an hour
+  A *side* worktree's build dir is different. `--apply` reclaims it when its pull
+  request has finished (merged, or closed unmerged, at the checkout's HEAD), after 14
+  idle days, or, with the disk over the line, idle ones (unseeded, then least recently
+  used, first; at most three per run, and it stops once a drop frees under 512 MiB).
+  It never takes one a cargo holds the lock on, one built in within the hour, one
+  whose stack runs, one in a dirty or unpushed tree, or one a `.talaria-keep` holds,
+  at any disk reading. Those are flagged for a human. Where the lock check cannot be
+  trusted (btrfs, or no `/proc/locks`) it deletes nothing and flags instead. The checkout stays. Reclaiming is cheap to undo:
+  `bun talaria seed-target` reflinks the registry crates back from an idle checkout,
+  and sccache keeps the rest cheap. The sweep lists every linked checkout's build dirs,
+  including the worktrees whose branch was renamed (known by `TALARIA_WORKTREE` in
+  their `ui/.env`). A seeded target's `du` counts extents it shares, so it frees less
+  than it measures. docs/WORKTREES.md, "The Rust build cache", has the rules
 - docker images, volumes and exited containers outside a swept project. The sweep reports
   what docker says is reclaimable; `docker system prune` is a human's call, because an
   exited container is as often a one-shot init sidecar as it is garbage
 - another session's checkout. A worktree is ours only when it is the `wt/<name>` +
   `../talaria-<name>` pair `talaria worktree` creates. A long-lived checkout on another
   branch is not yours to remove
-- anything with a `.talaria-keep` file in its root
+- anything with a `.talaria-keep` file in its root, and the compose projects and volumes of
+  the worktree or box it sits in. A `../talaria-<name>` directory that holds only a
+  `.talaria-keep` keeps that worktree's stack after its checkout is gone
 
 A dirty tree or commits no remote has are flagged, not removed. Read the flag. Do not
 `--force` someone else's uncommitted work.
@@ -69,9 +81,28 @@ bun talaria cleanup            # report. Prints even when under the line
 bun talaria cleanup --apply    # remove the safe set, then report what remains
 ```
 
-`--apply` removes stale clean worktrees, stopped clean boxes, old `/tmp/talaria-*`, and
-compose projects whose directory is already gone. It will not remove the primary, the
-checkout you are in, a running stack, a dirty or unpushed tree, or a `.talaria-keep`.
+`--apply` removes stale clean worktrees, stopped clean boxes, old `/tmp/talaria-*`,
+compose projects whose directory is already gone (a `talaria-wt-<x>-fleet` project is
+worktree `<x>`'s agents or worktree `<x>-fleet`'s own stack, and either checkout keeps it),
+and **orphan networks**: a
+`talaria-*` or `devbox-*` compose project's network with nothing attached (running or
+stopped), no container left in its project, no live worktree or box owning it (a box
+lives while its `../devboxes/<name>/box.env` does), and at least ten minutes old.
+Each such network holds a subnet from docker's ~30 predefined address pools, and when
+they run out every `compose up` fails with `all predefined address pools have been fully
+subnetted` — the CLI names that error and points here. It also removes **orphan app
+databases**: a `talaria-appdb-*` container whose cluster is mounted from a sibling
+`talaria-<name>` directory that is gone, or from a box whose `box.env` is gone. A
+directory still on disk keeps its databases, checkout or not. A box removed without `talaria box rm`, or a worktree removed while its app ran,
+leaves them running, and each one holds the network it joined. The container goes; its
+data directory stays (postgres's uid owns it). And **orphan MCP packages**: a
+`talaria-mcp-*` container, and its package network once nothing else names it, whose
+owner labels name a sibling `talaria-<name>` checkout that is gone or a box whose
+`box.env` is gone. One without labels (made before the api wrote them) is named in the
+report and left alone. It will not remove the primary,
+the checkout you are in, a running stack, a dirty or unpushed tree, a `.talaria-keep`,
+the shared external `talaria` network, any network outside a `talaria-*` or
+`devbox-*` project, or an app database mounted from anywhere else.
 
 `talaria dev` prints one line when disk use crosses the threshold. It does not refuse
 to start — you may need the stack to finish the task that will free the space.

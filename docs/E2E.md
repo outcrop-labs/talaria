@@ -36,7 +36,7 @@ fleet env is readable, the suite falls back to the org-wide key, `E2E_AGENT_KEY`
 itself was not made.
 
 **No container is ever started.** An MCP edit on an agent defaults to `apply: true`,
-which re-renders the fleet and then *rolls* the agent: a blue-green container swap that
+which re-renders the fleet and then *rolls* the agent: an in-place container recreate that
 pulls the Hermes image and joins the `talaria` docker network. That is fleet
 reconciliation, not the MCP surface, and in CI it has neither the image nor the network.
 So chapter 5 adds `apply: false` to each request its MCP tab sends (`page.route`), and
@@ -162,8 +162,10 @@ cd ui && E2E_BASE_URL=http://localhost:<app port> \
 ## In CI
 
 The `e2e` job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs when its
-surface moves: `ui/`, `scripts/e2e/`, the `talaria-mcp*` crates, `talaria-routes-fleet`,
-`api/Cargo.lock`, or the workflow itself. It:
+surface moves: `ui/`, `scripts/e2e/`, anything that goes into the api binary it boots
+(every crate under `api/crates/`, since the binary depends on all of them, plus `api/src/`,
+the workspace manifest and lockfile, `api/.cargo/` and the toolchain pin), the chassis
+template, or the workflow itself. It:
 
 1. writes the run's directories under `$RUNNER_TEMP` into `$GITHUB_ENV` (job-level `env:`
    cannot use the `runner` context) and seeds the fleet tree (`chassis.yml` from

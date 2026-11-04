@@ -17,6 +17,7 @@
 // string, which the Work section doesn't even have.
 
 import { activeAmong } from '@/lib/route-tabs'
+import { appManageView, appWorkView, isViewDenied, type ViewerGrants } from '@/lib/app-grants'
 import type { NavItem, NavSection } from '@/lib/nav'
 
 /** An app's injected nav entry: a manifest's work or manage surface turned
@@ -28,7 +29,7 @@ export type AppNavItem = NavItem & { icon: string }
  *  work surface. */
 export function appWorkItem(app: AppManifestLike): AppNavItem | null {
   const work = app.surfaces.work
-  return work ? { to: `/x/${app.slug}`, label: work, icon: app.icon } : null
+  return work ? { to: appWorkView(app.slug), label: work, icon: app.icon } : null
 }
 
 /** An app's MANAGE surface as a nav entry, or null when the app publishes no
@@ -36,7 +37,7 @@ export function appWorkItem(app: AppManifestLike): AppNavItem | null {
  *  view — same grant model as any core Manage view. */
 export function appManageItem(app: AppManifestLike): AppNavItem | null {
   const manage = app.surfaces.manage
-  return manage ? { to: `/x/${app.slug}/manage`, label: manage, icon: app.icon } : null
+  return manage ? { to: appManageView(app.slug), label: manage, icon: app.icon } : null
 }
 
 /** The manifest fields the derivation reads. Structural, so tests can build
@@ -70,14 +71,15 @@ export function navSections(
   core: NavSection[],
   appWork: AppNavItem[],
   appManage: AppNavItem[],
-  opts: { isAdmin: boolean; denied: readonly string[] },
+  opts: ViewerGrants,
 ): NavSection[] {
-  const { isAdmin, denied } = opts
+  const { isAdmin } = opts
 
   // Denied-view + role filtering, shared by both modes and by the app items
-  // wherever they land.
-  const passes = (i: NavItem) =>
-    (!i.adminOnly || isAdmin) && !denied.includes(i.to) && !denied.some((d) => i.to.startsWith(d + '/'))
+  // wherever they land. Core views deny by prefix; an app's views are each
+  // their own grant, shown only when the session lists it (app-grants.ts), so
+  // a manage-only grant keeps its entry and an unlisted one never shows.
+  const passes = (i: NavItem) => (!i.adminOnly || isAdmin) && !isViewDenied(i.to, opts)
 
   const merged = core.flatMap((section) => {
     if (section.adminOnly && !isAdmin) return []

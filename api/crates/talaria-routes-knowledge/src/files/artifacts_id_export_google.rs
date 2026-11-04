@@ -66,6 +66,9 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
         Err(e) => return Ok(internal("[artifacts] read failed", e)),

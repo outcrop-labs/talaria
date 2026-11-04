@@ -28,7 +28,27 @@ pub struct PublishedPrice {
     pub variant: String,
     pub price_in_per_mtok: Option<f64>,
     pub price_out_per_mtok: Option<f64>,
+    /// The published cache rates, when the source carries them (OpenRouter's
+    /// `input_cache_write` / `input_cache_read`). None falls back to the
+    /// input rate times the multipliers in the priced view.
+    pub price_cache_write_per_mtok: Option<f64>,
+    pub price_cache_read_per_mtok: Option<f64>,
     pub source: &'static str,
+    /// For a catalog match: the catalog entry the price came from, and how
+    /// the model's id reached it (`exact` / `alias` / `segment`). None for a
+    /// provider's own price list, which names the model itself.
+    pub matched_id: Option<String>,
+    pub match_kind: Option<&'static str>,
+}
+
+/// A `pricing` object's per-token cache rates, scaled to $/MTok: OpenRouter's
+/// `input_cache_write` and `input_cache_read` (observed on both `/models`
+/// and `/models/{author}/{slug}/endpoints`, 2026-11-03).
+pub(crate) fn cache_rates(pricing: &Value) -> (Option<f64>, Option<f64>) {
+    (
+        f64_of(pricing.get("input_cache_write")).map(|p| p * 1_000_000.0),
+        f64_of(pricing.get("input_cache_read")).map(|p| p * 1_000_000.0),
+    )
 }
 
 /// Account credit snapshot. Cumulative usage, not a window.
@@ -118,12 +138,17 @@ pub fn parse_openrouter_endpoints(model: &str, body: &Value) -> Vec<PublishedPri
             if variant.is_empty() {
                 return None;
             }
+            let (write, read) = cache_rates(pricing);
             Some(PublishedPrice {
                 model: model.to_string(),
                 variant,
                 price_in_per_mtok: inn,
                 price_out_per_mtok: out,
+                price_cache_write_per_mtok: write,
+                price_cache_read_per_mtok: read,
                 source: "openrouter.endpoints",
+                matched_id: None,
+                match_kind: None,
             })
         })
         .collect()
@@ -145,12 +170,17 @@ pub fn parse_provider_models(body: &Value) -> Vec<PublishedPrice> {
             if inn.is_none() && out.is_none() {
                 return None;
             }
+            let (write, read) = cache_rates(pricing);
             Some(PublishedPrice {
                 model: id.to_string(),
                 variant: String::new(),
                 price_in_per_mtok: inn,
                 price_out_per_mtok: out,
+                price_cache_write_per_mtok: write,
+                price_cache_read_per_mtok: read,
                 source: "provider.models",
+                matched_id: None,
+                match_kind: None,
             })
         })
         .collect()
@@ -343,6 +373,34 @@ mod tests {
         assert_eq!(prices[0].price_in_per_mtok, Some(30.0));
         assert_eq!(prices[1].price_in_per_mtok, Some(10.0));
         assert_eq!(prices[0].source, "openrouter.endpoints");
+        // No cache keys in the payload: no cache rates, never a guess.
+        assert_eq!(prices[0].price_cache_write_per_mtok, None);
+        assert_eq!(prices[0].price_cache_read_per_mtok, None);
+    }
+
+    #[test]
+    fn an_endpoint_price_carries_its_published_cache_rates() {
+        // Trimmed from the live /models/anthropic/claude-sonnet-4.5/endpoints
+        // answer of 2026-11-03.
+        let body = json!({
+            "data": {
+                "id": "anthropic/claude-sonnet-4.5",
+                "endpoints": [{
+                    "provider_name": "Anthropic",
+                    "tag": "anthropic",
+                    "pricing": {
+                        "prompt": "0.000003", "completion": "0.000015", "web_search": "0.01",
+                        "input_cache_read": "0.0000003", "input_cache_write": "0.00000375",
+                        "input_cache_write_1h": "0.000006", "discount": 0
+                    }
+                }]
+            }
+        });
+        let prices = parse_openrouter_endpoints("anthropic/claude-sonnet-4.5", &body);
+        let near = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() < 1e-9);
+        assert!(near(prices[0].price_in_per_mtok, 3.0));
+        assert!(near(prices[0].price_cache_write_per_mtok, 3.75));
+        assert!(near(prices[0].price_cache_read_per_mtok, 0.3));
     }
 
     #[test]

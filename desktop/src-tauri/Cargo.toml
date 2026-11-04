@@ -18,19 +18,97 @@ name = "talaria_desktop"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "=2.11.5", features = ["unstable"] }
+# `tray-icon`: the tray (Linux) and menu-bar (macOS) presence that keeps the
+# app reachable after its window closes (background.rs, tray.rs). Already in
+# the lock as tauri's optional dependency; the Linux tray library is loaded by
+# dlopen at run time, so building needs no -devel package.
+tauri = { version = "=2.11.5", features = ["unstable", "tray-icon"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-# 4.18's default backend is zbus, so the desktop build does not grow a
-# libdbus-dev dependency. The Tauri notification plugin drops clicks on
-# desktop; this crate owns the post so a click can open the path.
-notify-rust = "4.18"
+# Links an instance page sends out of the app (links.rs): another site to the
+# default browser, mailto:/tel:/app links to the OS. Only its free `open_url`
+# is used — the plugin is not registered, so no page gets a command, a
+# permission or its click-intercepting init script. 2.5: 2.6 and later need
+# tauri 2.12, and tauri is pinned below.
+tauri-plugin-opener = "~2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# The update chip's version order (update.rs): a newer version than the one
+# Later put off is offered at once. The updater's own semver, already in the
+# lock.
+semver = "1"
+# `system-proxy`: the probe and the watcher take the Windows (WinINet) and
+# macOS proxy settings, as the webview does. The updater's default features
+# already turn it on for the one reqwest in the build, so naming it compiles
+# nothing new; it says what the shell relies on. PAC/WPAD is still not read.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "system-proxy"] }
 webpki-root-certs = "1.0.9"
+# Already Tauri's runtime: these are the features it builds with, so naming
+# them adds no compile. `time` bounds the notification post, `rt` gives the
+# add's probe an abort handle.
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+
+# WebKitGTK's `load-failed` signal (commands.rs::watch_load_failures). The
+# same crate and version wry links; Tauri exposes the WebView, not its signals.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
+# The OS titlebar's GtkHeaderBar (commands.rs::set_header_title). The version
+# tauri itself links, already in the lock: no new compile.
+gtk = "0.18"
+# The notification service, the launcher badge and the single-instance name,
+# on one session-bus connection (notify/linux.rs). The version and the one
+# feature notify-rust built it with, so dropping notify-rust from Linux adds
+# no compile.
+zbus = { version = "5.19", default-features = false, features = ["async-io"] }
+futures-lite = { version = "2", default-features = false, features = ["std"] }
+# The tray probe (background.rs): open the appindicator library the way
+# libappindicator-sys does, BEFORE any tray call, because that crate panics
+# when the library is missing. Its own loader, already in the lock.
+libloading = "0.7"
+
+# UNUserNotificationCenter, with a delegate of our own (notify/macos.rs):
+# banners while Talaria is frontmost, and every click routed by request id.
+# All already in the lock (objc2-user-notifications through objc2-ui-kit);
+# default features off so nothing new is pulled in.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSArray",
+  "NSBundle",
+  "NSError",
+  "NSObject",
+  "NSString",
+] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+  "std",
+  "bitflags",
+  "block2",
+  "UNNotification",
+  "UNNotificationContent",
+  "UNNotificationRequest",
+  "UNNotificationResponse",
+  "UNNotificationSettings",
+  "UNNotificationSound",
+  "UNNotificationTrigger",
+  "UNUserNotificationCenter",
+] }
+# The unbundled dev run only (`tauri dev`, a bare binary): UN needs a real
+# .app, so that run posts through the legacy center, attributed to Terminal.
+# notify-rust's own macOS dependency, at its version.
+mac-notification-sys = "0.6.15"
+
+# Toasts under the app's own AUMID (notify/windows.rs). 4.18's Windows backend.
+[target.'cfg(target_os = "windows")'.dependencies]
+notify-rust = "4.18"
+# WebView2's NavigationCompleted (loading::webview2): Tauri exposes the
+# controller, not its events. The webview2-com wry links, and its windows-core,
+# at the versions in the lock: no new compile.
+webview2-com = "=0.38.2"
+windows-core = "0.61"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

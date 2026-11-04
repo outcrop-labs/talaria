@@ -26,6 +26,12 @@ export type ChatEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'tool'; id?: string; name: string; label: string; status?: ToolStatus }
   | { type: 'usage'; promptTokens: number; completionTokens: number }
+  // The turn failed, and this is why: the agent's own failure frame, or the
+  // agent's error status after the server had already opened the answer (the
+  // chat route opens it itself when the agent is slow to, then says a late
+  // error status in the stream: talaria-chat-persist `edge`). The server lands
+  // the reply as `(agent error: <message>)`; a reader shows the same at once.
+  | { type: 'error'; message: string }
   // Not produced by the parser below — `streamChat` yields it when the server
   // answers with JSON instead of a stream because the reply joined history
   // rather than streaming. It belongs in the union anyway: this is the type
@@ -173,6 +179,25 @@ export async function* sseFrames(body: ReadableStream<Uint8Array>): AsyncGenerat
   }
 }
 
+/** A failure frame's sentence, or null for a frame that is not one. The same
+ *  reading as the gateway's `error_message_of` (talaria-gateway
+ *  `fleet_chat.rs`), so what a reader shows is the text the reply row lands
+ *  with: an `error` member, a `finish_reason` of `error`, or Hermes' own
+ *  `hermes.failed`; the sentence is `error.message`, else `hermes.error`. */
+export function failureMessageOf(json: unknown): string | null {
+  if (!json || typeof json !== 'object') return null
+  const j = json as {
+    error?: unknown
+    choices?: Array<{ finish_reason?: unknown }>
+    hermes?: { failed?: unknown; error?: unknown }
+  }
+  const failed = j.error !== undefined || j.choices?.[0]?.finish_reason === 'error' || j.hermes?.failed === true
+  if (!failed) return null
+  const error = j.error as { message?: unknown } | null | undefined
+  const said = (error && typeof error === 'object' ? str(error.message) : '') || str(j.hermes?.error)
+  return said || 'the agent reported an error'
+}
+
 /** Parse a raw agent SSE body into typed chat events. */
 export async function* parseAgentStream(body: ReadableStream<Uint8Array>): AsyncGenerator<ChatEvent> {
   // One counter per stream: the ordinal in a session tool id counts the calls
@@ -196,6 +221,10 @@ export async function* parseAgentStream(body: ReadableStream<Uint8Array>): Async
         choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>
         usage?: { prompt_tokens?: number; completion_tokens?: number }
       }
+      // The failure first, as the gateway reads it: the turn is over the
+      // moment it lands, whatever else the chunk carries.
+      const failure = failureMessageOf(json)
+      if (failure !== null) yield { type: 'error', message: failure }
       const d = json.choices?.[0]?.delta
       if (d?.content) yield { type: 'content', text: d.content }
       else if (d?.reasoning || d?.reasoning_content) {

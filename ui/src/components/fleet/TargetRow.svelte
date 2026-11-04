@@ -38,12 +38,18 @@
   // catalog spelling — the row holds endpoint + model separately, and the
   // server resolves exactly this shape. The control appears only for models
   // that publish a ladder: a model without one has no effort to default.
-  const { efforts } = useModelEfforts(() => (value.endpoint && value.model ? `${value.endpoint}/${value.model}` : null))
+  // Kept whole and read through its getters: destructured, the levels would be
+  // the query's answer at mount and never move.
+  const modelEfforts = useModelEfforts(() => (value.endpoint && value.model ? `${value.endpoint}/${value.model}` : null))
+  const efforts = $derived(modelEfforts.efforts)
   // A model swap can retire the saved level (tiers spread `{ ...x, ...t }`, so
   // the old effort survives the model change in the form state). Reset to
-  // unset rather than saving a level the new model would refuse.
+  // unset rather than saving a level the new model would refuse — judged
+  // against the model's ANSWER only. While the read is in flight `efforts` is
+  // `[]`, and on a fresh page every saved level would read as retired and be
+  // cleared before its levels arrived.
   $effect(() => {
-    if (allowEffort && value.effort && !efforts.includes(value.effort)) onChange({ ...value, effort: null })
+    if (allowEffort && modelEfforts.answered && value.effort && !efforts.includes(value.effort)) onChange({ ...value, effort: null })
   })
 
   // The effort chip's shape: its rows, the rung the saved level sits on ('' is

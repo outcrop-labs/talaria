@@ -40,5 +40,8 @@
   style:mask-composite="exclude"
   style:-webkit-mask-composite="xor"
 >
-  <DitherLayer {sources} {...opts} />
+  <!-- Only the ring shows, so only the ring's cells are painted: the engine
+       skips every cell past `edgeBand` (plus two device pixels of slack),
+       which the mask above would have hidden anyway. -->
+  <DitherLayer {sources} edgeBand={ring} {...opts} />
 </div>

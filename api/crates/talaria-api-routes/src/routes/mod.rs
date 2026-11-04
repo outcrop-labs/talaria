@@ -94,20 +94,10 @@ pub fn router(state: AppState) -> Router {
             "/api/agents",
             get(talaria_routes_fleet::agents::agents::get).fallback(|| async { method_not_allowed("GET") }),
         )
-        // The fleet-plane pair agents themselves call (MC-compatible):
-        // register with the org key, then heartbeat for assigned work.
-        .route(
-            "/api/agents/register",
-            post(talaria_routes_fleet::agents::agents_register::post).fallback(|| async { method_not_allowed("POST") }),
-        )
         .route(
             "/api/agents/{id}/conversations",
             get(talaria_routes_comms::comms::agents_id_conversations::get)
                 .fallback(|| async { method_not_allowed("GET") }),
-        )
-        .route(
-            "/api/agents/{id}/heartbeat",
-            get(talaria_routes_fleet::agents::agents_id_heartbeat::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/apps",
@@ -128,6 +118,21 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/cost",
             get(talaria_routes_comms::activity::cost::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/cost/unpriced",
+            get(talaria_routes_comms::activity::cost_unpriced::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/cost/unpriced/lookup",
+            post(talaria_routes_comms::activity::cost_unpriced_lookup::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/cost/prices",
+            put(talaria_routes_comms::activity::cost_prices::put)
+                .delete(talaria_routes_comms::activity::cost_prices::delete)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         .route(
             "/api/keys",
@@ -260,6 +265,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
+            "/api/tasks/{id}/move",
+            axum::routing::post(talaria_routes_boards::tasks::tasks_id_move::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/tasks/{id}/review",
             axum::routing::post(talaria_routes_boards::tasks::tasks_id_review::post)
                 .fallback(|| async { method_not_allowed("POST") }),
@@ -267,8 +277,7 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/{id}/usage",
             get(talaria_routes_boards::tasks::tasks_id_usage::get)
-                .post(talaria_routes_boards::tasks::tasks_id_usage::post)
-                .fallback(|| async { method_not_allowed("GET, POST") }),
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/tasks/{id}/watchers",
@@ -358,9 +367,26 @@ pub fn router(state: AppState) -> Router {
                 .patch(talaria_routes_comms::activity::notifications::patch)
                 .fallback(|| async { method_not_allowed("GET, PUT, PATCH") }),
         )
+        // The notification contract's doors (docs/notifications/contract.md):
+        // a client's ack that it surfaced rows (I-18), and the per-device test
+        // push (a stub that answers 501 until W2-E, rate-limited already).
+        .route(
+            "/api/notifications/ack",
+            post(talaria_routes_comms::activity::notifications_ack::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/notifications/test",
+            post(talaria_routes_comms::activity::notifications_test::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/unreads",
             get(talaria_routes_comms::activity::unreads::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/working",
+            get(talaria_routes_comms::activity::working::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // The closed-tab plane's door: the VAPID public key a browser needs
         // to subscribe, and the subscribe/unsubscribe pair that files and
@@ -377,6 +403,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/push/unsubscribe",
             post(talaria_routes_comms::activity::push::unsubscribe).fallback(|| async { method_not_allowed("POST") }),
+        )
+        // The caller's own device browsers, for the status panel.
+        .route(
+            "/api/push/devices",
+            get(talaria_routes_comms::activity::push::devices).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/push/devices/{id}",
+            delete(talaria_routes_comms::activity::push::device_delete)
+                .fallback(|| async { method_not_allowed("DELETE") }),
         )
         .route(
             "/api/history",
@@ -447,6 +483,12 @@ pub fn router(state: AppState) -> Router {
             "/api/channels/{id}/typing",
             post(talaria_routes_comms::comms::channels_id_typing::post).fallback(|| async { method_not_allowed("POST") }),
         )
+        // The caller's notify level and timed mute for one channel — their own
+        // membership row, UPDATE only (C24).
+        .route(
+            "/api/channels/{id}/notify",
+            put(talaria_routes_comms::comms::channels_id_notify::put).fallback(|| async { method_not_allowed("PUT") }),
+        )
         .route(
             "/api/channels/{id}/plan",
             get(talaria_routes_comms::comms::channels_id_plan::get)
@@ -466,6 +508,13 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/chat/chips/approvals/{id}",
             post(talaria_routes_comms::comms::chips_approvals_id::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        // A stop that names the page's own send rather than a thread: a new
+        // thread's first turn, before its id is known.
+        .route(
+            "/api/chat/turns/{id}/stop",
+            post(talaria_routes_comms::comms::chat_turns_id_stop::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/conversations",
@@ -914,8 +963,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/me/presence",
-            put(talaria_routes_integrations::account::me_presence::put)
-                .fallback(|| async { method_not_allowed("PUT") }),
+            get(talaria_routes_integrations::account::me_presence::get)
+                .put(talaria_routes_integrations::account::me_presence::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workflows/{id}",
@@ -958,12 +1008,66 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, POST") }),
         )
         .route(
+            "/api/admin/app-harness-models",
+            get(talaria_routes_admin::admin::admin_app_harness_models::get)
+                .put(talaria_routes_admin::admin::admin_app_harness_models::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
             "/api/admin/apps",
             get(talaria_routes_admin::admin::admin_apps::get)
                 .put(talaria_routes_admin::admin::admin_apps::put)
                 .post(talaria_routes_admin::admin::admin_apps::post)
                 .delete(talaria_routes_admin::admin::admin_apps::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
+        )
+        .route(
+            "/api/admin/apps/catalogs",
+            get(talaria_routes_admin::admin::admin_apps_catalogs::get)
+                .post(talaria_routes_admin::admin::admin_apps_catalogs::post)
+                .put(talaria_routes_admin::admin::admin_apps_catalogs::put)
+                .delete(talaria_routes_admin::admin::admin_apps_catalogs::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/admin/apps/install-requests",
+            get(talaria_routes_admin::admin::admin_apps_install_requests::get)
+                .put(talaria_routes_admin::admin::admin_apps_install_requests::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/apps/update-requests",
+            get(talaria_routes_admin::admin::admin_apps_update_requests::get)
+                .put(talaria_routes_admin::admin::admin_apps_update_requests::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/apps/change-request",
+            post(talaria_routes_admin::admin::admin_apps_change_request::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        // Service-to-service: the app host's own calls, under the
+        // root-derived credential (require_internal). The host's proxy never
+        // forwards /api/internal/* from outside.
+        .route(
+            "/api/internal/apps/mcp-sync",
+            post(talaria_routes_admin::admin::internal_apps_mcp_sync::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/internal/apps/agent-turn",
+            post(talaria_routes_admin::admin::internal_apps_agent_turn::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/internal/apps/{slug}/guard",
+            post(talaria_routes_admin::admin::internal_apps_guard::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/internal/apps/{slug}/llm-key",
+            post(talaria_routes_admin::admin::internal_apps_llm_key::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/admin/domains",
@@ -1035,6 +1139,12 @@ pub fn router(state: AppState) -> Router {
             "/api/admin/search",
             get(talaria_routes_admin::admin::admin_search::get)
                 .put(talaria_routes_admin::admin::admin_search::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/admin/search/agents",
+            get(talaria_routes_admin::admin::admin_search_agents::get)
+                .put(talaria_routes_admin::admin::admin_search_agents::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
@@ -1306,9 +1416,8 @@ pub fn router(state: AppState) -> Router {
         )
         // The fleet family. The hire lifecycle (create + the hire queue),
         // the read plane (overview, containers, defs, endpoints, crons), the
-        // admin verbs (render, reconcile, federate), the per-agent control
-        // surface (lifecycle, crons, secrets), and the fleet-plane pair
-        // agents call themselves (register + heartbeat, registered above).
+        // admin verbs (render, reconcile, federate), and the per-agent
+        // control surface (lifecycle, crons, secrets).
         .route(
             "/api/fleet/create",
             post(talaria_routes_fleet::fleet::fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
@@ -1316,6 +1425,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/fleet/hires",
             get(talaria_routes_fleet::fleet::fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/fleet/hires/{id}/retry",
+            post(talaria_routes_fleet::fleet::fleet_hires_id_retry::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet",
@@ -1340,8 +1454,18 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
+            "/api/fleet/hermes",
+            get(talaria_routes_fleet::fleet::fleet_hermes::get)
+                .post(talaria_routes_fleet::fleet::fleet_hermes::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
             "/api/fleet/federate",
             post(talaria_routes_fleet::fleet::fleet_federate::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/fleet/seal-configs",
+            post(talaria_routes_fleet::fleet::fleet_seal_configs::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/fleet/defs",
@@ -1400,8 +1524,9 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         // The workbench family, the agent sandbox plane: the per-repo git
-        // flow, the org GitHub connection (status/installations/patch/
-        // disconnect; admin, it holds org credentials), the human side of
+        // flow, the operator's git hosts (talaria-git-hosts — list/add,
+        // read/patch/remove, test connection; admin, they hold org
+        // credentials), the human side of
         // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
         // the repo-creation approval queue, and the per-agent repo grants.
         // Who is a developer is the agent's own switch (fleet/defs PATCH).
@@ -1412,11 +1537,22 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
-            "/api/workbench/github",
-            get(talaria_routes_workbench::workbench::workbench_github::get)
-                .put(talaria_routes_workbench::workbench::workbench_github::put)
-                .delete(talaria_routes_workbench::workbench::workbench_github::delete)
+            "/api/workbench/git-hosts",
+            get(talaria_routes_workbench::workbench::workbench_git_hosts::get)
+                .post(talaria_routes_workbench::workbench::workbench_git_hosts::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/workbench/git-hosts/{id}",
+            get(talaria_routes_workbench::workbench::workbench_git_hosts_id::get)
+                .put(talaria_routes_workbench::workbench::workbench_git_hosts_id::put)
+                .delete(talaria_routes_workbench::workbench::workbench_git_hosts_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/workbench/git-hosts/{id}/test",
+            post(talaria_routes_workbench::workbench::workbench_git_hosts_id_test::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/workbench/jobs",
@@ -1550,6 +1686,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
         .route(
+            "/api/mcp/servers/{id}/oauth",
+            delete(talaria_routes_fleet::mcp::mcp_servers_id_oauth::delete)
+                .fallback(|| async { method_not_allowed("DELETE") }),
+        )
+        .route(
             "/api/me/mcp",
             get(talaria_routes_integrations::account::me_mcp::get)
                 .put(talaria_routes_integrations::account::me_mcp::put)
@@ -1647,6 +1788,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::cron_output::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/agents/affinity",
+            post(talaria_routes_fleet::agents::affinity::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/agents/uploads",
             // A screenshot rides as base64 in the body, so this route owns its
             // own cap: the extractor's hidden 2 MB default would refuse every
@@ -1714,18 +1859,13 @@ pub fn router(state: AppState) -> Router {
             "/api/join",
             get(talaria_routes_integrations::account::join::get).fallback(|| async { method_not_allowed("GET") }),
         )
-        // The agent-memory surface (admin or the assistant's owner), the
-        // live web-search door both agents and sessions reach, and the
+        // The agent-memory surface (admin or the assistant's owner) and the
         // org's template library with its one-template verbs.
         .route(
             "/api/memory/{id}",
             get(talaria_routes_knowledge::knowledge::memory_id::get)
                 .put(talaria_routes_knowledge::knowledge::memory_id::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
-        )
-        .route(
-            "/api/search",
-            post(talaria_routes_knowledge::knowledge::search::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/templates",
@@ -1768,9 +1908,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_fleet::agents::skills_owner_name::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
-        // The skills marketplace (Hermes Atlas's ranked catalog): the list,
-        // one repo's discovered skills, and the per-owner install. Static
-        // "marketplace" segments outrank the {owner}/{name} captures above.
+        // The skills marketplace (Hermes' official skills index, mirrored):
+        // the list, one skill's fetched files and Skills Guard verdict, and
+        // the scanned per-owner install. Static "marketplace" segments
+        // outrank the {owner}/{name} captures above.
         .route(
             "/api/skills/marketplace",
             get(talaria_routes_fleet::agents::skills_marketplace::get_list)
@@ -1843,15 +1984,11 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::agent_message_user::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
-        // The Muse, the image describer, the personal assistant, and the
-        // local-inference observability plane.
+        // The Muse, the personal assistant, and the local-inference
+        // observability plane.
         .route(
             "/api/muse",
             post(talaria_routes_fleet::agents::muse::post).fallback(|| async { method_not_allowed("POST") }),
-        )
-        .route(
-            "/api/vision/describe",
-            post(talaria_routes_fleet::agents::vision_describe::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/me/assistant",

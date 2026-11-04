@@ -15,8 +15,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use talaria_api_facades::mcp::apply::{
-    carriers_for_server, enqueue_rolls, roll_agent_for_model, roll_agent_for_user,
-    roll_agents_for_server,
+    apply_agent_for_model, apply_agent_for_user, apply_agents_for_server, bump_tool_lists,
+    carriers_for_server, enqueue_applies, roll_agents_for_server,
 };
 use talaria_api_facades::mcp::oauth::{
     ManualClient, ensure_oauth_config, redetect_oauth_config, set_manual_oauth_client,
@@ -388,33 +388,45 @@ pub async fn put(
         }
     }
     spawn_render(&state.pg, &sb);
-    // Live cutover for the agents this change touches: a running Hermes
-    // only wires MCP servers at start, so carriers roll blue/green. Rolls
-    // are fire-and-forget — never awaited, never the caller's problem. The
-    // timeout rides config.yaml (`timeout`), so it rolls like access does.
-    let touched_access = patch.enabled.is_some()
-        || patch.all_agents.is_some()
-        || patch.auth_mode.is_some()
-        || patch.timeout_secs.is_some();
-    if touched_access {
+    // Getting the change to the agents it touches (talaria-mcp-apply). The
+    // render above rewrites their config.yaml in place and a running Hermes
+    // reconciles `mcp_servers` by name about once a minute, which covers a
+    // server granted, revoked, enabled or disabled; a tool list that changes
+    // under a name an agent keeps (a subset, a grant, a refreshed catalog)
+    // reaches it as the gateway's list-changed notice on its next keepalive,
+    // which the count below arms. Those carriers APPLY — render, restart
+    // only a container that moved. A changed timeout or auth mode is
+    // neither: Hermes does not reconnect a server whose entry changed under
+    // the same name, and a session minted under the old credentials stays
+    // the old session, so those carriers still ROLL. Fire-and-forget —
+    // never awaited, never the caller's problem.
+    bump_tool_lists(&state.pg, std::slice::from_ref(&server.name)).await;
+    let reconnects = patch.auth_mode.is_some() || patch.timeout_secs.is_some();
+    let touched_grant = patch.enabled.is_some() || patch.all_agents.is_some();
+    if reconnects {
         let (pg, sb_, id) = (state.pg.clone(), sb.clone(), server.id.clone());
         spawn_roll(async move {
             roll_agents_for_server(&pg, &sb_, &id).await;
         });
+    } else if touched_grant {
+        let (pg, sb_, id) = (state.pg.clone(), sb.clone(), server.id.clone());
+        spawn_roll(async move {
+            apply_agents_for_server(&pg, &sb_, &id).await;
+        });
     } else if let Some(assign) = &patch.assign {
         let (pg, sb_, model) = (state.pg.clone(), sb.clone(), assign.agent_model.clone());
         spawn_roll(async move {
-            roll_agent_for_model(&pg, &sb_, &model).await;
+            apply_agent_for_model(&pg, &sb_, &model).await;
         });
     } else if let Some(unassign) = patch.unassign.clone() {
         let (pg, sb_) = (state.pg.clone(), sb.clone());
         spawn_roll(async move {
-            roll_agent_for_model(&pg, &sb_, &unassign).await;
+            apply_agent_for_model(&pg, &sb_, &unassign).await;
         });
     } else if let Some(user_access) = &patch.user_access {
         let (pg, sb_, user_id) = (state.pg.clone(), sb.clone(), user_access.user_id.clone());
         spawn_roll(async move {
-            roll_agent_for_user(&pg, &sb_, &user_id).await;
+            apply_agent_for_user(&pg, &sb_, &user_id).await;
         });
     } else if let Some(team_access) = &patch.team_access {
         let (pg, sb_, team_id) = (state.pg.clone(), sb.clone(), team_access.team_id.clone());
@@ -431,7 +443,7 @@ pub async fn put(
             .await
             .unwrap_or_default();
             let departments = rows.into_iter().map(|(d,)| d).collect::<Vec<_>>();
-            enqueue_rolls(&departments, &pg, &sb_);
+            enqueue_applies(&departments, &pg, &sb_);
         });
     }
     let mut out = Map::new();
@@ -464,7 +476,10 @@ pub async fn delete(
         return Ok(house_error(StatusCode::BAD_REQUEST, &e));
     }
     let sb = secretbox_or_500(&state, "[mcp] secretbox unavailable").await?;
-    enqueue_rolls(&carriers, &state.pg, &sb);
+    // A deleted server is a name gone from its carriers' configs: the
+    // render drops it, the gateway already refuses it, and a running Hermes
+    // disconnects it on its next reconcile — an apply, not a roll.
+    enqueue_applies(&carriers, &state.pg, &sb);
     log_audit(
         &state.pg,
         AuditEntry {
@@ -486,11 +501,11 @@ fn spawn_render(pg: &sqlx::PgPool, sb: &talaria_secretbox::SecretBox) {
     let pg = pg.clone();
     let sb = sb.clone();
     tokio::spawn(async move {
-        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb, None).await;
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
     });
 }
 
-/// Fire-and-forget: the roll future resolves (or dies) on its own.
+/// Fire-and-forget: the queued apply or roll resolves (or dies) on its own.
 fn spawn_roll(fut: impl std::future::Future<Output = ()> + Send + 'static) {
     tokio::spawn(async move {
         let _ = fut.await;

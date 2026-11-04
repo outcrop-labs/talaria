@@ -1,7 +1,8 @@
 // Model Roles — which model handles each CLASS of activity. Customers tailor
 // their stack in depth: the search model behind research, the utility model
-// behind background chores (catalog blurbs, chat distills), and — as those
-// surfaces land — vision, image generation, embeddings, and reranking.
+// behind background chores (catalog blurbs, chat distills), the image reader
+// behind agents that cannot see, and — as those surfaces land — image
+// generation, embeddings, and reranking.
 //
 // Resolution contract: an assignment only wins while it still ROUTES on the
 // gateway; otherwise callers fall back to their own heuristics (env default →
@@ -117,8 +118,8 @@ export const MODEL_ROLES: Array<{
   {
     role: 'vision',
     label: 'Image understanding',
-    hint: 'Reserved: image inference for surfaces that analyze uploads without an agent persona.',
-    wired: false,
+    hint: "Reads images for agents whose own model is not known to see: each such agent's Hermes gets it as its image reader, for attached images, fetched attachments and screenshots. Saving it re-renders the fleet. Auto: none, and those agents cannot read images.",
+    wired: true,
     requires: ['vision'],
   },
   {

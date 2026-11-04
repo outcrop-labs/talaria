@@ -22,7 +22,10 @@
 // This box OPENS, SEALS, and ROTATES, but never CREATES the first key: an
 // empty secret_keys is a recorded failure, not a migration write this crate
 // performs. The failure is recorded rather than thrown so nothing that
-// doesn't need a key ever learns about it.
+// doesn't need a key ever learns about it — and it records whether it can
+// heal (`failure_is_transient`): a table not created yet, or not given its
+// first key yet, is the migration pass still running; keys the root cannot
+// unwrap are a different root, and no retry fixes that.
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -75,7 +78,14 @@ pub struct SecretBox {
     deks: HashMap<u32, Key>,
     active: Option<u32>,
     failure: Option<String>,
+    /// Whether `failure` can heal without anyone touching the root secret:
+    /// the table was not readable yet, or held no key yet. See
+    /// [`SecretBox::failure_is_transient`].
+    failure_transient: bool,
 }
+
+/// One `secret_keys` row as `load` reads it: (version, wrapped_dek, active).
+type KeyRow = (i32, String, bool);
 
 /// Low-level AES-256-GCM with an explicit IV (production callers generate a
 /// random one; tests inject a fixed one to make fixtures deterministic).
@@ -156,23 +166,49 @@ impl SecretBox {
     /// KEK derived from `root_material`. `load` never writes — not even to
     /// create a first key on an empty table.
     pub async fn load(pg: &PgPool, root_material: &str) -> SecretBox {
-        let mut sb = SecretBox {
-            kek: Some(derive_kek(root_material)),
-            ..Default::default()
-        };
-        let kek = sb.kek.expect("just set");
+        Self::load_with_kek(pg, derive_kek(root_material)).await
+    }
 
-        let rows: Vec<(i32, String, bool)> = match sqlx::query_as(
+    /// Read `secret_keys` again under this box's own KEK — the retry for a
+    /// box whose failure [is transient](SecretBox::failure_is_transient).
+    /// Same rules as `load`, minus the scrypt derivation: the root has not
+    /// changed, only the table has.
+    pub async fn reload(&self, pg: &PgPool) -> SecretBox {
+        match self.kek {
+            Some(kek) => Self::load_with_kek(pg, kek).await,
+            None => self.clone(),
+        }
+    }
+
+    async fn load_with_kek(pg: &PgPool, kek: Key) -> SecretBox {
+        let rows = sqlx::query_as::<_, KeyRow>(
             "select version, wrapped_dek, active from secret_keys order by version asc",
         )
         .fetch_all(pg)
         .await
-        {
+        .map_err(|e| e.to_string());
+        Self::from_rows(kek, rows)
+    }
+
+    /// The box `load` builds from what the `secret_keys` read returned —
+    /// pure, so every failure class is a unit test with no database.
+    fn from_rows(kek: Key, rows: Result<Vec<KeyRow>, String>) -> SecretBox {
+        let mut sb = SecretBox {
+            kek: Some(kek),
+            ..Default::default()
+        };
+
+        let rows = match rows {
             Ok(rows) => rows,
             Err(e) => {
                 // A read failure is a diagnosis, not a crash: nothing that
-                // doesn't need a key should learn about it.
+                // doesn't need a key should learn about it. TRANSIENT: the
+                // usual cause is a process that asked before the app's
+                // migration pass created the table (`talaria dev` starts the
+                // api first; a fresh or reset database), or a Postgres still
+                // coming up — both heal on their own.
                 sb.failure = Some(format!("secret_keys unreadable: {e}"));
+                sb.failure_transient = true;
                 return sb;
             }
         };
@@ -189,6 +225,10 @@ impl SecretBox {
                  creates key material — see docs/ENCRYPTION.md.)"
                     .into(),
             );
+            // TRANSIENT too: the migration pass writes the first key moments
+            // after it creates the table, and a box loaded in between would
+            // otherwise refuse every seal until the process restarted.
+            sb.failure_transient = true;
             return sb;
         }
 
@@ -239,11 +279,22 @@ impl SecretBox {
             deks,
             active,
             failure: None,
+            failure_transient: false,
         }
     }
 
     pub fn failure(&self) -> Option<&str> {
         self.failure.as_deref()
+    }
+
+    /// A failure that a later read can clear: `secret_keys` was unreadable
+    /// (not created yet, or Postgres not answering) or empty (the first key
+    /// not written yet). The process that holds the box retries those
+    /// (AppState::secretbox, throttled). A key set that will not unwrap is
+    /// NOT transient — the root secret differs from the one that sealed this
+    /// database, and that stays loud until a person fixes it.
+    pub fn failure_is_transient(&self) -> bool {
+        self.failure.is_some() && self.failure_transient
     }
 
     fn dek(&self, version: u32) -> Result<&Key, SecretboxError> {
@@ -515,6 +566,7 @@ mod tests {
             deks: HashMap::new(),
             active: None,
             failure: Some("root changed".into()),
+            failure_transient: false,
         };
         assert!(sb.seal("x").is_err());
         // legacy-unversioned v2 needs the ACTIVE key → blocked by the diagnosis
@@ -523,5 +575,65 @@ mod tests {
         let (ivs, tag, data) = enc_raw(&kek_for("r"), &[0u8; IV_LEN], "still-readable").unwrap();
         let v1 = ["v1", &ivs, &tag, &data].join(":");
         assert_eq!(sb.open(&v1).unwrap(), "still-readable");
+    }
+
+    // ── Which failures heal (follow-up A6) ──────────────────────────────────
+    // The api loads the box once and keeps it; `talaria dev` starts the api
+    // BEFORE the app's migration pass creates `secret_keys` and its first key.
+    // A box loaded in that window used to refuse every seal — the first hire's
+    // agent key included — until someone restarted the api. These pin which
+    // failures the holder may retry and which must stay loud.
+
+    fn wrapped_row(kek: &Key, version: i32, dek: &Key, active: bool) -> KeyRow {
+        (
+            version,
+            SecretBox::wrap_dek_with_iv(kek, dek, &[version as u8; IV_LEN]).unwrap(),
+            active,
+        )
+    }
+
+    #[test]
+    fn an_unreadable_table_is_a_transient_failure() {
+        let sb = SecretBox::from_rows(
+            kek_for("root"),
+            Err("relation \"secret_keys\" does not exist".into()),
+        );
+        assert!(
+            sb.failure()
+                .unwrap()
+                .starts_with("secret_keys unreadable: ")
+        );
+        assert!(sb.failure_is_transient());
+        assert!(sb.seal("x").is_err());
+    }
+
+    #[test]
+    fn an_empty_table_is_a_transient_failure() {
+        let sb = SecretBox::from_rows(kek_for("root"), Ok(vec![]));
+        assert!(sb.failure().unwrap().starts_with("secret_keys is empty"));
+        assert!(sb.failure_is_transient());
+    }
+
+    #[test]
+    fn keys_the_root_cannot_unwrap_are_not_transient() {
+        // Sealed under another root: the one failure no retry can fix.
+        let other = kek_for("the-root-that-sealed-this-db");
+        let sb = SecretBox::from_rows(
+            kek_for("root"),
+            Ok(vec![wrapped_row(&other, 1, &[4u8; 32], true)]),
+        );
+        assert!(sb.failure().unwrap().contains("none can be unwrapped"));
+        assert!(!sb.failure_is_transient());
+    }
+
+    #[test]
+    fn a_healthy_box_has_no_failure_to_retry() {
+        let kek = kek_for("root");
+        let sb = SecretBox::from_rows(kek, Ok(vec![wrapped_row(&kek, 1, &[4u8; 32], true)]));
+        assert!(sb.failure().is_none());
+        assert!(!sb.failure_is_transient());
+        let token = sb.seal("agent-key").unwrap();
+        assert_eq!(sb.open(&token).unwrap(), "agent-key");
+        assert!(!SecretBox::from_parts(kek, HashMap::new(), None).failure_is_transient());
     }
 }

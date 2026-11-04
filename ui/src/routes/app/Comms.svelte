@@ -20,12 +20,13 @@
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import { useFleet, type AgentStatus } from '@/lib/fleet'
-  import { useConversations } from '@/lib/conversations.svelte'
+  import { loadConversation, useConversations } from '@/lib/conversations.svelte'
   import {
     commsSelectionFromPath,
     isCommsPath,
     readCommsSelection,
     restorableSelection,
+    threadAwaitingVerdict,
     writeCommsSelection,
     type CommsSelection,
   } from '@/lib/comms-selection'
@@ -52,8 +53,9 @@
   import AgentDmPane from './comms/AgentDmPane.svelte'
   import ProfileDrawer from './comms/ProfileDrawer.svelte'
   import StarButton from './comms/StarButton.svelte'
+  import ChannelNotifyMenu from '@/components/chat/ChannelNotifyMenu.svelte'
   import NewMessagePane from './comms/NewMessagePane.svelte'
-  import { groupDmCount, groupDmLabel, isGroupDm } from '@/lib/comms-dm'
+  import { dmZeroState, groupDmCount, groupDmLabel, isGroupDm } from '@/lib/comms-dm'
   import { channelStarKey } from '@/lib/comms-stars'
   import ConversationsWithView from './comms/ConversationsWithView.svelte'
   import type { ProfileSubject } from '@/lib/comms-profile'
@@ -173,6 +175,23 @@
     if (sel) writeCommsSelection(sel)
   })
 
+  // A REMEMBERED THREAD OUTSIDE YOUR CHAT LIST IS ASKED ABOUT, NOT DROPPED. A
+  // plan or work session (yours, or one you are a member of) opens here as
+  // /comms/agent/<model>/<thread>, and the chat list below never has it. The
+  // server is the one that knows who may read a conversation — owner, member,
+  // team — so the restore asks it (the same read the pane makes) and keeps
+  // the thread only on a yes. Without this, coming back through the nav rail
+  // dropped a member into a fresh thread instead of the one they were in.
+  let threadVerdicts = $state<Record<string, boolean>>({})
+  const askedAbout = new Set<string>()
+  const askAboutThread = (id: string) => {
+    if (askedAbout.has(id)) return
+    askedAbout.add(id)
+    void loadConversation(id).then((res) => {
+      threadVerdicts = { ...threadVerdicts, [id]: res !== null }
+    })
+  }
+
   // Default selection; heal a selection that vanished (archived). All are
   // replace-navigations — housekeeping shouldn't pollute history.
   // /chat lands here with ?t=agent: the chat workspace must be directly
@@ -190,10 +209,18 @@
       // memory and fall straight through to the first channel.
       if (saved?.t === 'agent' && fleetQuery.isLoading) return
       if (channels.length === 0 && channelsQuery.isLoading) return
+      const conversationIds = conversationsQuery.isLoading ? null : conversations.map((c) => c.id)
+      const ask = threadAwaitingVerdict(saved, conversationIds, threadVerdicts)
+      if (ask) {
+        // The answer lands in threadVerdicts, which re-runs this effect.
+        askAboutThread(ask)
+        return
+      }
       const restorable = restorableSelection(saved, {
         channelIds: channels.map((c) => c.id),
         agentModels: fleet.map((a) => a.id),
-        conversationIds: conversationsQuery.isLoading ? null : conversations.map((c) => c.id),
+        conversationIds,
+        verdicts: threadVerdicts,
       })
       // An explicit ?t=agent (the /chat entry) asked for the chat workspace, so
       // a remembered CHANNEL does not get to answer it.
@@ -315,6 +342,8 @@
         : selected.name
       : '',
   )
+  // An empty DM's own words: ChannelView's default is a #channel's (ui-7).
+  const dmZero = $derived(selected?.kind === 'dm' ? dmZeroState(selected, title) : null)
   // A DM's header carries the other person's presence and status (R13).
   const peer = $derived(
     selected?.kind === 'dm' && selected.peer ? (users.find((u) => u.id === selected.peer?.userId) ?? null) : null,
@@ -394,6 +423,10 @@
           <!-- The star leads the header: star, avatar, name, then status.
                Starred conversations move to the Starred section of the rail. -->
           <StarButton starKey={channelStarKey(selected.id)} class="-ml-2" />
+          <!-- How much of this conversation the person hears, and a timed
+               mute (hidden on an api without channel levels); its "Muted
+               until …" line follows the name and the topic. -->
+          <ChannelNotifyMenu channelId={selected.id} {detail} />
           {#if groupDm}
             <!-- A group DM: the rail's count badge, then who's in it. -->
             <span
@@ -433,6 +466,7 @@
             </span>
           {/if}
           {#if selected.topic}<span class="truncate text-xs text-muted">{selected.topic}</span>{/if}
+          <ChannelNotifyMenu channelId={selected.id} {detail} part="status" />
           <span class="ml-auto"></span>
           <!-- Pill-shaped placeholders while membership loads — the header
                holds its shape instead of the pickers popping in. -->
@@ -499,6 +533,9 @@
               {fleet}
               onOpenProfile={openProfile}
               composerPlaceholder={selected.kind === 'dm' ? `Message ${groupDm ? title : title.split(' ')[0]}` : undefined}
+              zeroIcon={dmZero?.icon}
+              zeroTitle={dmZero?.title}
+              zeroHint={dmZero?.hint}
             />
           {/key}
         </div>

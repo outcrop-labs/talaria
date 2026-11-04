@@ -58,7 +58,10 @@ use sqlx::PgPool;
 
 pub use talaria_mcp_oauth::REFRESH_REJECTED;
 use talaria_mcp_oauth::{has_oauth_tokens, oauth_token_for};
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, Coalesce, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
+    add_notification_with, entity, group_key, reopen_notifications, resolve_entity,
+};
 use talaria_realtime::RealtimeDeps;
 use talaria_secretbox::SecretBox;
 
@@ -78,6 +81,11 @@ pub const KIND_SERVER_DOWN: &str = "mcp_server_down";
 
 /// Where the alert and the notification send the admin.
 pub const HREF: &str = "/mcp/external";
+
+/// A server that goes down again this soon after it recovered is FLAPPING:
+/// the row its recovery read is reopened and re-alerted (`count + 1`) rather
+/// than a second row filed about the same server. Past it, a fresh row.
+pub const FLAP_WINDOW_SECS: i64 = 3600;
 
 /// How many servers are asked at once. With CHECK_DEADLINE bounding each
 /// conversation, eight in flight keeps a registry of forty — every one of
@@ -339,8 +347,10 @@ pub async fn run_health_pass(
                     "{}. Agents calling its tools get errors until it is fixed.",
                     v.detail.trim_end_matches('.')
                 );
+                let meta = down_meta(&s.id);
                 for admin in &admins {
-                    match add_notification(
+                    reopen_flapping(pg, admin, &s.id).await;
+                    match add_notification_with(
                         &notify,
                         admin,
                         &NotificationInput {
@@ -349,15 +359,28 @@ pub async fn run_health_pass(
                             body: Some(&body),
                             href: Some(HREF),
                         },
+                        &meta,
                     )
                     .await
                     {
-                        Ok(()) => report.notified += 1,
+                        Ok(_) => report.notified += 1,
                         Err(e) => tracing::warn!("{LOG} notification failed for {admin}: {e}"),
                     }
                 }
             }
-            Some(HealthEvent::Recovered) => report.recovered += 1,
+            Some(HealthEvent::Recovered) => {
+                report.recovered += 1;
+                // Back up: every admin's "down" row about it reads now, and
+                // each of their devices hears the read (`readIds`).
+                if let Err(e) = resolve_entity(
+                    &notify,
+                    &NotifyEntity::new(entity::MCP_SERVER, s.id.as_str()),
+                )
+                .await
+                {
+                    tracing::warn!("{LOG} could not read the down rows for {}: {e}", s.name);
+                }
+            }
             None => {}
         }
         report.servers.push(ServerHealth {
@@ -378,6 +401,56 @@ pub async fn run_health_pass(
     }
     report.servers.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(report)
+}
+
+/// How a "server down" row files: one open row per server per admin
+/// (`group_key::mcp_down`), re-alerting, about the server, from the health
+/// pass. Pure.
+fn down_meta(server_id: &str) -> NotifyMeta {
+    NotifyMeta {
+        group_key: Some(group_key::mcp_down(server_id)),
+        coalesce: Coalesce::Realert,
+        entity: Some(NotifyEntity::new(entity::MCP_SERVER, server_id)),
+        actor: Some(NotifyActor {
+            kind: ActorKind::System,
+            id: "mcp-health".into(),
+            label: "MCP health".into(),
+        }),
+        ..Default::default()
+    }
+}
+
+/// Down again within `FLAP_WINDOW_SECS` of a recovery: reopen the admin's
+/// newest down row for this server that was read in the window, so the write
+/// that follows coalesces into it (`count + 1`, a re-alert) — one row per
+/// flapping server, not one per flap. Through `reopen_notifications`, the one
+/// door that sets `read_at` back to null (it gives the key up if another open
+/// row holds it). Best-effort: a failure leaves the write to file fresh.
+async fn reopen_flapping(pg: &PgPool, admin: &str, server_id: &str) {
+    let recent: Vec<(String,)> = match sqlx::query_as(
+        "select id::text from notifications \
+         where user_id = $1::uuid and group_key = $2 and kind = $3 \
+           and read_at is not null and archived_at is null \
+           and read_at > now() - $4::int * interval '1 second' \
+         order by created_at desc limit 1",
+    )
+    .bind(admin)
+    .bind(group_key::mcp_down(server_id))
+    .bind(KIND_SERVER_DOWN)
+    .bind(FLAP_WINDOW_SECS as i32)
+    .fetch_all(pg)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("{LOG} flap lookup failed for {admin}: {e}");
+            return;
+        }
+    };
+    let ids: Vec<String> = recent.into_iter().map(|(id,)| id).collect();
+    if let Err(e) = reopen_notifications(pg, admin, &ids, None).await {
+        tracing::warn!("{LOG} could not reopen the flapping row for {admin}: {e}");
+    }
 }
 
 async fn check_server(pg: &PgPool, sb: &SecretBox, s: &McpServer) -> Verdict {
@@ -707,6 +780,15 @@ pub fn mcp_health_job_spec(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_down_row_files_into_its_servers_group() {
+        let m = down_meta("s-1");
+        assert_eq!(m.group_key.as_deref(), Some("mcp:s-1:down"));
+        assert_eq!(m.coalesce, Coalesce::Realert);
+        assert_eq!(m.entity, Some(NotifyEntity::new("mcp_server", "s-1")));
+        assert_eq!(m.actor.unwrap().kind, ActorKind::System);
+    }
+
     fn names(v: &[&str]) -> BTreeSet<String> {
         v.iter().map(|s| s.to_string()).collect()
     }
@@ -927,6 +1009,7 @@ mod tests {
             package: None,
             env_enc: None,
             last_probe: None,
+            app_off: None,
         };
         over(&mut s);
         s

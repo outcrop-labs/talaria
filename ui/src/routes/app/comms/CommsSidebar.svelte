@@ -413,7 +413,8 @@
   // Nothing starred (or every star's conversation gone): no section at all.
   const showStarred = $derived(view.searching ? view.starred.length > 0 : view.starredTotal > 0)
   const showDms = $derived(!view.searching || view.people.length > 0 || view.groupDms.length > 0 || usersFailed)
-  const showAgents = $derived(!view.searching || view.agents.length > 0 || fleetFailed || threadsFailed)
+  // Both reads' flags are read before they are combined (query-state.ts, anyLoading).
+  const showAgents = $derived(!view.searching || view.agents.length > 0 || [fleetFailed, threadsFailed].includes(true))
 </script>
 
 <!-- One rail row's silhouette (RailRow anatomy: glyph lane + name, px-2
@@ -558,10 +559,14 @@
   <RowHoverCard>
     {#snippet card()}{@render threadCard(a, c)}{/snippet}
     <div class="group/row relative rounded-md hover:bg-card2">
+      <!-- Flat threads have no trailing meta, so the title alone must stop
+           short of the hover buttons — right-1 + two 24px buttons + their
+           2px gap is 54px, hence pr-13.5. Nested rows keep their meta box
+           reserving that side, so they pay nothing. -->
       <RailRow
         active={activeThread}
         onClick={() => onSelect({ t: 'agent', model: a.id, conversationId: c.id })}
-        class={cn(nested && 'pl-7', unreadName(c.unreadCount))}
+        class={cn(nested && 'pl-7', !nested && 'pr-13.5', unreadName(c.unreadCount))}
       >
         <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
         <span class="contents" oncontextmenu={(e) => menu.openMenu(e, threadRowMenu(a.id, c))}>
@@ -624,7 +629,10 @@
         </div>
       {/snippet}
       <div class="group/row relative rounded-md hover:bg-card2">
-        <RailRow active={freshThread} onClick={() => toggleExpanded(a.id)}>
+        <!-- The agent label has no trailing box of its own either (its meta
+             hides on hover), so the same 54px pr-13.5 keeps the hover's More
+             and New-thread buttons off the name's tail. -->
+        <RailRow active={freshThread} onClick={() => toggleExpanded(a.id)} class="pr-13.5">
           <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
           <span
             class="contents"
@@ -713,7 +721,7 @@
   </div>
   <div role="separator" class="mx-2 my-3 border-t border-line-subtle"></div>
 
-  {#if view.noMatches && !channelsFailed && !usersFailed && !fleetFailed}
+  {#if view.noMatches && ![channelsFailed, usersFailed, fleetFailed].includes(true)}
     <EmptyState variant="inline" class="px-2 py-1" title="No conversations match" />
   {/if}
 

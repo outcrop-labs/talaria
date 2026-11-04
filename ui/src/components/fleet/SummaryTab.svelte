@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import { AlertTriangle } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -17,6 +18,9 @@
 
   const qc = useQueryClient()
   const cfg = $derived(def.latest?.config)
+  const share = $derived(def.departmentShare ?? null)
+  const sharedWith = $derived((share?.others ?? []).map((o) => o.displayName).join(', '))
+  const sharedOr = $derived((share?.others ?? []).map((o) => o.displayName).join(' or '))
   const fleetQuery = useFleet()
   const stat = $derived(fleetQuery.data?.agents.find((a) => a.id === def.model))
   // svelte-ignore state_referenced_locally -- reason: seed-once meta drafts; the refetch after save must not clobber in-progress edits
@@ -115,6 +119,31 @@
 {/snippet}
 
 <div class="space-y-4 text-sm">
+  <!-- A department another agent holds too (a pair from before a department
+       became one agent's). It names one container and one memory volume, so
+       the render runs the older agent there and leaves the other out — said
+       here, on the page of each, with who runs and what to do. -->
+  {#if share}
+    <div class="rounded-lg border border-warning/40 bg-warning/5 p-3" data-testid="department-share">
+      <div class="flex items-center gap-2 text-xs font-medium text-fg">
+        <AlertTriangle size={13} class="text-warning" /> Shares the department “{def.department}”
+      </div>
+      <p class="mt-1.5 text-xs text-muted">
+        {#if share.runs}
+          This agent runs in the department’s container and keeps its memory.
+          {sharedWith} {share.others.length === 1 ? 'holds' : 'hold'} the same department and {share.others.length === 1 ? 'is' : 'are'} left out of the fleet.
+          If the container still runs {sharedOr} (an install upgraded with the pair in place), Roll this agent to put it back in its container.
+        {:else if share.runner}
+          {share.runner.displayName} runs in this department’s container, so this agent has none of its own and is left out of the fleet:
+          starting, stopping or rolling it is refused, its memory is not read or written from here, and a saved config is not applied.
+          If the container still runs this agent (an install upgraded with the pair in place), Roll {share.runner.displayName} to put {share.runner.displayName} back in it.
+        {:else}
+          {sharedWith} {share.others.length === 1 ? 'holds' : 'hold'} the same department, and none of them is running.
+        {/if}
+        A department is one container and one memory volume — retire and delete one of the agents to untie it. Talaria never merges two agents into one.
+      </p>
+    </div>
+  {/if}
   <!-- Editable role — the human-readable title shown on the roster. -->
   <div>
     <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</div>

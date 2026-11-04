@@ -685,6 +685,7 @@ pub fn plan_doc_harness() -> HarnessDefinition {
         // loudly" if a caller ever forgets (see `ModelSpec.chain`).
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

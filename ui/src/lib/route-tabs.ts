@@ -107,3 +107,27 @@ export function pathId(pathname: string, base: string): string | null {
   if (!rest || rest.includes('/')) return null
   return decodeURIComponent(rest)
 }
+
+/** An in-app href's parts as the router's `navigate` takes them — the path,
+ *  then the query and the hash, each with its leading `?` / `#` ('' when
+ *  absent) — resolved against `base` (the current address) exactly as the
+ *  browser resolves a link.
+ *
+ *  THE PARTS. sv-router's `navigate` matches its whole first argument as a
+ *  path, so `navigate('/artifacts?a=1')` matched no route — the last segment
+ *  was `artifacts?a=1` — rendered Not Found, and wrote the `?` into the
+ *  address as `%3F`. A query or hash has to ride in its options instead.
+ *
+ *  THE RESOLVING. The router matches the path it is handed, then writes it to
+ *  the address through the URL parser, which resolves `..` and `.` (spelled
+ *  `%2e` too), turns `\` into `/`, drops tabs and newlines and encodes other
+ *  control characters. The route gate reads that address. Unresolved, the two
+ *  read different paths: `/x/crm/manage/../items` mounted the manage surface
+ *  at /x/crm/items, an address the gate judges as the work view. Resolving
+ *  here hands the router the path the address will show. An href to another
+ *  origin is not a route of this app: it throws. */
+export function resolveHref(href: string, base: string): { pathname: string; search: string; hash: string } {
+  const url = new URL(href, base)
+  if (url.origin !== new URL(base).origin) throw new Error(`not a route of this app: ${href}`)
+  return { pathname: url.pathname, search: url.search, hash: url.hash }
+}

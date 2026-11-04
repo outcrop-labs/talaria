@@ -1,4 +1,4 @@
-// The agent fleet: defs, versions, crons, secrets, containers, hires, render/reconcile.
+// The agent fleet: defs, versions, crons, secrets, containers, hires, render/reconcile, the stored-config seal.
 pub mod fleet;
 pub mod fleet_agents_id_control;
 pub mod fleet_agents_id_crons;
@@ -19,8 +19,11 @@ pub mod fleet_endpoints;
 pub mod fleet_endpoints_id;
 pub mod fleet_endpoints_id_available;
 pub mod fleet_federate;
+pub mod fleet_hermes;
 pub mod fleet_hires;
+pub mod fleet_hires_id_retry;
 pub mod fleet_reconcile;
 pub mod fleet_render;
 pub mod fleet_resources;
 pub mod fleet_roll;
+pub mod fleet_seal_configs;

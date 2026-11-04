@@ -3,6 +3,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
+  import { anyFailed, anyPending } from '@/components/ui/query-state'
   import { toastError } from '@/lib/toast.svelte'
   import CategoryDetail from '@/components/models/CategoryDetail.svelte'
   import { slotState, type ModelRoleRow, type PlatformAgentRow, type RoleIssue, type Slot } from '@/components/models/slot'
@@ -93,10 +94,16 @@
       ids: ['agent:judge'],
     },
     {
+      id: 'eyes',
+      label: 'Agents’ eyes',
+      blurb: 'The model every agent reads images through when its own model is not known to see, set in each agent’s Hermes config.',
+      ids: ['role:vision'],
+    },
+    {
       id: 'reserved',
       label: 'Reserved',
       blurb: 'Slots for surfaces that haven’t landed yet. Assign now; the pick takes effect the day the surface does.',
-      ids: ['role:vision', 'role:image-generation', 'role:embedding', 'role:reranker'],
+      ids: ['role:image-generation', 'role:embedding', 'role:reranker'],
     },
   ]
   const categories = $derived.by(() => {
@@ -143,7 +150,7 @@
 
   // Both reads green or neither has data — one load-failed state for the
   // pane, not two competing banners.
-  const loadFailed = $derived((rolesQuery.isError && !rolesQuery.data) || (agentsQuery.isError && !agentsQuery.data))
+  const loadFailed = $derived(anyFailed(rolesQuery, agentsQuery))
 </script>
 
 <!-- Templates' pane height minus this view's ViewHeader row and its gap —
@@ -156,7 +163,7 @@
     labelOf={(c: (typeof categories)[number]) => c.label}
     selectedId={selected?.id ?? null}
     onSelect={(c: (typeof categories)[number]) => (selectedId = c.id)}
-    pending={rolesQuery.isPending || agentsQuery.isPending}
+    pending={anyPending(rolesQuery, agentsQuery)}
     notice={loadFailed
       ? {
           error: rolesQuery.error ?? agentsQuery.error,

@@ -74,6 +74,7 @@
   const startLine = $derived.by(() => {
     if (!startResult) return null
     if (startResult.error) return { tone: 'danger', text: `Could not start agents: ${startResult.error}` }
+    if (startResult.pending) return { tone: 'ok', text: 'Still starting (a first start downloads the agent image) — the roster shows each agent as it comes up.' }
     const started = startResult.started ?? []
     const warn = startResult.warnings?.length ? ` ${startResult.warnings.join(' ')}` : ''
     return {
@@ -137,7 +138,7 @@
       <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div class="min-w-0 flex-1 basis-56">
           <div class="font-sans text-sm text-fg">Roll every agent</div>
-          <div class="font-sans text-xs text-muted">A fresh container each; the old one finishes its replies first.</div>
+          <div class="font-sans text-xs text-muted">A fresh container each, in place: a minute or so offline per agent while it restarts.</div>
         </div>
         <Button
           variant="outline"

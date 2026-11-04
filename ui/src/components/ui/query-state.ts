@@ -122,5 +122,73 @@ export function listQuery<T>(
   }
 }
 
+/** Is any of these queries still on its first load (`isLoading`)? The way to
+ *  gate one surface on several reads.
+ *
+ *  It reads EVERY query's flag before it combines them, and that is the whole
+ *  point. `a.isLoading || b.isLoading` stops at `a` while `a` loads, so `b`'s
+ *  flag is never read. svelte-query tells a component about a change only
+ *  when it touches a prop the component has read (TanStack's tracked
+ *  results), and a prop first read later comes from the last result the
+ *  component was sent. So when `b` answered first, and nothing changed in
+ *  what had been read from `b`, the component was not told. When `a` answered
+ *  and the `||` finally read `b.isLoading`, it got `true` from before `b`
+ *  answered. Nothing else would change after that, so the surface stayed on
+ *  its skeletons for good. That was the agent roster whenever
+ *  /api/fleet/containers answered before /api/fleet/defs. (A query nothing
+ *  has read from yet is told about every change; it bit where something else
+ *  read `b`, as the roster's banner reads the containers' `isError`. The
+ *  reactive proof is query-state.svelte.test.ts.) */
+export function anyLoading(...queries: ReadonlyArray<{ readonly isLoading: boolean }>): boolean {
+  const flags = queries.map((q) => q.isLoading)
+  return flags.includes(true)
+}
+
+/** `anyLoading` for `isPending` (a disabled query is pending too): read
+ *  every flag, then combine, for the same reason. */
+export function anyPending(...queries: ReadonlyArray<{ readonly isPending: boolean }>): boolean {
+  const flags = queries.map((q) => q.isPending)
+  return flags.includes(true)
+}
+
+/** `anyLoading` for `isError`: did any of these reads fail? Every flag is read
+ *  before they are combined. `a.isError || b.isError` leaves `b.isError`
+ *  unread while `a` has failed, so when `a` recovers the `||` reads `b`'s
+ *  flag from whatever result the component was last sent. `undefined` stands
+ *  for a read the surface does not have (an optional prop). */
+export function anyError(...queries: ReadonlyArray<{ readonly isError: boolean } | undefined>): boolean {
+  const flags = queries.map((q) => q?.isError === true)
+  return flags.includes(true)
+}
+
+/** Did any of these reads fail with nothing to show (`isError` and no
+ *  `data`)? The "render the error instead of the surface" test for a
+ *  surface gated on several reads, read whole for each query before any
+ *  is judged (`anyLoading` says why). */
+export function anyFailed(...queries: ReadonlyArray<{ readonly isError: boolean; readonly data: unknown }>): boolean {
+  const failed = queries.map((q) => [q.isError, q.data === undefined] as const)
+  return failed.some(([isError, none]) => isError && none)
+}
+
+/** The first of these reads that failed, or null — every flag read first.
+ *  For a surface that shows ONE failure (its error and its retry). */
+export function firstError<Qs extends ReadonlyArray<{ readonly isError: boolean }>>(...queries: Qs): Qs[number] | null {
+  const flags = queries.map((q) => q.isError)
+  const i = flags.indexOf(true)
+  return i === -1 ? null : queries[i]!
+}
+
+/** The first of these notices (`listQuery(...).notice`), or null. The
+ *  arguments are evaluated before the call, so every list's notice is read
+ *  before one is picked: `a.notice || b.notice` and `a.notice ?? b.notice`
+ *  leave `b` unread while `a` has one, the same stale read `anyLoading`
+ *  describes. A `listQuery` result's `pending`, `failed`, `stale` and
+ *  `notice` are its query's flags under other names, so they follow the same
+ *  rule: read every list's flag first, as `[a.pending, b.pending].includes(true)`
+ *  or `firstNotice(a.notice, b.notice)`. */
+export function firstNotice(...notices: ReadonlyArray<QueryErrorProps | null>): QueryErrorProps | null {
+  return notices.find((n) => n !== null) ?? null
+}
+
 /** Default emptiness test for QueryState: "empty array or null". */
 export const isEmptyValue = (d: unknown): boolean => (Array.isArray(d) ? d.length === 0 : d === null)

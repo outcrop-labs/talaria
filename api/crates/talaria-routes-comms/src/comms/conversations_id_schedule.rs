@@ -19,11 +19,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_agent_crons::schedule_from_conversation;
+use talaria_agent_crons::{may_still_land, schedule_from_conversation};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
 use talaria_conversations::accessible_conversation;
-use talaria_error::{house_error, internal, object_or_400};
+use talaria_error::{house_error, internal, object_or_400, store_answer};
 use talaria_session::{actor_of, require_agent_manager_by_model, require_user};
 use talaria_state::AppState;
 
@@ -78,49 +78,67 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let prompt = match trimmed_string_member(obj, "prompt", 1, 20_000) {
+    // The agent's own cap: Hermes's /api/jobs refuses a longer prompt
+    // (talaria_agent_crons::MAX_PROMPT_CHARS).
+    let prompt = match trimmed_string_member(obj, "prompt", 1, 5_000) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    // The same action the fleet door logs, so one audit filter finds every
+    // cron anyone created; the target is the THREAD, which is the thing that
+    // gained a schedule, and the agent rides along in the after block. The
+    // prompt does not: it is somebody's words to their own agent, and the job
+    // itself is where they are readable.
+    let audit = |job_id: Option<&str>| {
+        let actor = actor_of(&user);
+        let mut after = json!({
+            "name": name,
+            "schedule": schedule,
+            "agentModel": conv.agent_model,
+            "jobId": job_id,
+        });
+        // A create that may still land is audited too, as unconfirmed: the
+        // job can appear after the answer, and the log is where someone
+        // looks for who made it.
+        if job_id.is_none() {
+            after["confirmed"] = json!(false);
+        }
+        let target = id.clone();
+        let pg = state.pg.clone();
+        tokio::spawn(async move {
+            log_audit(
+                &pg,
+                AuditEntry {
+                    actor: &actor,
+                    action: "cron.create",
+                    target_type: "conversation",
+                    target_id: Some(&target),
+                    target_label: None,
+                    before: None,
+                    after: Some(after),
+                },
+            )
+            .await;
+        });
     };
     Ok(
         match schedule_from_conversation(&state.pg, &id, &user.id, &name, &schedule, &prompt).await
         {
             Ok(job_id) => {
-                // The same action the fleet door logs, so one audit filter
-                // finds every cron anyone created; the target is the THREAD,
-                // which is the thing that gained a schedule, and the agent
-                // rides along in the after block. The prompt does not: it is
-                // somebody's words to their own agent, and the job itself is
-                // where they are readable.
-                let actor = actor_of(&user);
-                let after = json!({
-                    "name": name,
-                    "schedule": schedule,
-                    "agentModel": conv.agent_model,
-                    "jobId": job_id,
-                });
-                let target = id.clone();
-                let pg = state.pg.clone();
-                tokio::spawn(async move {
-                    log_audit(
-                        &pg,
-                        AuditEntry {
-                            actor: &actor,
-                            action: "cron.create",
-                            target_type: "conversation",
-                            target_id: Some(&target),
-                            target_label: None,
-                            before: None,
-                            after: Some(after),
-                        },
-                    )
-                    .await;
-                });
+                audit(Some(&job_id));
                 Json(json!({ "ok": true, "jobId": job_id })).into_response()
+            }
+            // A create still running at its deadline, or one the agent took
+            // and never answered, may still make the job: the 503 the fleet
+            // door answers (fleet_agents_id_crons.rs), whose sentence says to
+            // check the list before trying again.
+            Err(e) if may_still_land(&e) => {
+                audit(None);
+                house_error(StatusCode::SERVICE_UNAVAILABLE, &e)
             }
             // Hermes is the validator for the schedule's own grammar and the
             // frequency floor, and its refusal is the one worth reading.
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )
 }

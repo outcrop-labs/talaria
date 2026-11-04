@@ -81,18 +81,39 @@ fn key(sid: &str) -> String {
     format!("sess:{sid}")
 }
 
-/// Create a session in Redis; returns the opaque id for the cookie.
+/// The session's LIVENESS MARKER: `sesshash:<session_hash(sid)>`, written
+/// beside `sess:<sid>` with the same TTL and deleted with it. A row that must
+/// die with its session stores only the hash (a push subscription's
+/// `session_hash`), and the hash alone cannot find `sess:<sid>` — so the
+/// marker is how a sweep asks "is this session still alive" without the
+/// bearer id (C26: talaria-notify's push prune reads it, and backfills it for
+/// any live session that lacks one).
+pub fn session_marker(sid: &str) -> String {
+    format!("sesshash:{}", session_hash(sid))
+}
+
+/// Create a session in Redis; returns the opaque id for the cookie. The
+/// session and its liveness marker are written in one MULTI.
 pub async fn create_session(
     state: &AppState,
     user: &SessionUser,
 ) -> Result<String, redis::RedisError> {
     let sid = random_token();
     let mut conn = state.redis().await?;
-    redis::cmd("SET")
+    redis::pipe()
+        .atomic()
+        .cmd("SET")
         .arg(key(&sid))
         .arg(serde_json::to_string(user).expect("SessionUser serializes"))
         .arg("EX")
         .arg(SESSION_TTL_SECONDS)
+        .ignore()
+        .cmd("SET")
+        .arg(session_marker(&sid))
+        .arg("1")
+        .arg("EX")
+        .arg(SESSION_TTL_SECONDS)
+        .ignore()
         .query_async::<()>(&mut conn)
         .await?;
     Ok(sid)
@@ -146,6 +167,25 @@ pub async fn update_session_user(
         .arg("KEEPTTL")
         .query_async::<()>(&mut conn)
         .await?;
+    // The marker follows the session's remaining life (it may predate the
+    // marker, or have lost it): best-effort, the session write is what
+    // matters to this caller.
+    let ttl: i64 = redis::cmd("PTTL")
+        .arg(key(&sid))
+        .query_async(&mut conn)
+        .await
+        .unwrap_or(-2);
+    if ttl > 0
+        && let Err(e) = redis::cmd("SET")
+            .arg(session_marker(&sid))
+            .arg("1")
+            .arg("PX")
+            .arg(ttl)
+            .query_async::<()>(&mut conn)
+            .await
+    {
+        tracing::warn!("[session] could not refresh the session marker: {e}");
+    }
     Ok(Some(
         serde_json::from_value(next).map_err(|_| invalid("session json"))?,
     ))
@@ -205,7 +245,8 @@ pub async fn update_sessions_for_user(
     }
 }
 
-/// Delete the session behind the request's cookie (logout).
+/// Delete the session behind the request's cookie (logout), and its
+/// liveness marker with it.
 pub async fn destroy_session(
     state: &AppState,
     headers: &HeaderMap,
@@ -214,10 +255,33 @@ pub async fn destroy_session(
         let mut conn = state.redis().await?;
         redis::cmd("DEL")
             .arg(key(&sid))
+            .arg(session_marker(&sid))
             .query_async::<()>(&mut conn)
             .await?;
     }
     Ok(())
+}
+
+/// The request's session as a STABLE, NON-SECRET handle: the hex SHA-256 of
+/// the cookie's opaque id. A row that must die with this session (a push
+/// subscription) stores this, never the id itself — the id is a bearer
+/// credential, and a database dump must not hand out live sessions. `None`
+/// when the request carries no session cookie.
+pub fn session_hash_of(headers: &HeaderMap) -> Option<String> {
+    let sid = parse_cookies(headers).and_then(|c| c.get(SESSION_COOKIE).cloned())?;
+    if sid.is_empty() {
+        return None;
+    }
+    Some(session_hash(&sid))
+}
+
+/// The hash `session_hash_of` stores, for one id.
+pub fn session_hash(sid: &str) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(sid.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn invalid(what: &'static str) -> redis::RedisError {
@@ -432,6 +496,30 @@ pub async fn secretbox_or_500(
     }
 }
 
+/// The app host, or the 403. `/api/internal/*` is service-to-service: the
+/// caller presents the root-derived credential
+/// (`SecretRoot::internal_token`) in `x-talaria-internal`, which only a
+/// process holding the root can compute. No session, agent key or app
+/// identity is ever enough, and the host's proxy never forwards the prefix
+/// from outside (ui/src/server/rust-proxy.ts).
+// The Err IS the response to send, as for every guard here — clippy's size
+// heuristic only fires because this one is not async (`object_or_400` too).
+#[allow(clippy::result_large_err)]
+pub fn require_internal(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    let presented = headers
+        .get(talaria_config::INTERNAL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .unwrap_or("");
+    if state.cfg.secret_root.admits_internal(presented) {
+        return Ok(());
+    }
+    Err(talaria_error::house_error(
+        StatusCode::FORBIDDEN,
+        "internal route: only the app host may call it",
+    ))
+}
+
 /// Signed-in user or the 401 Response — return the gate when it is a
 /// Response.
 pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {
@@ -454,10 +542,13 @@ pub async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<Sess
     Ok(user)
 }
 
-/// Signed-in user whose view is NOT DENIED. Denial-based, so a member sees a
-/// view by default and only a deniedViews entry (or a prefix of one — 'x'
-/// denies 'x/anything') takes it away; admins are exempt. The same
-/// resolution the nav and route gates use.
+/// Signed-in user whose view is NOT DENIED. Denial-based for a core view, so
+/// a member sees it by default and only a deniedViews entry (or a prefix of
+/// one — 'x' denies 'x/anything') takes it away; an app route opens only on
+/// the app view that governs it, held by grant (`ViewGrants::denies`).
+/// Admins are exempt. The same resolution the nav and route gates use. When
+/// the enabled apps cannot be read, a core view still answers as ever and an
+/// app route answers 503: a broken app setting shuts the apps, not the rest.
 pub async fn require_view(
     state: &AppState,
     headers: &HeaderMap,
@@ -465,17 +556,23 @@ pub async fn require_view(
 ) -> Result<SessionUser, Response> {
     let user = require_user(state, headers).await?;
     if user.role != "admin" {
-        let denied = talaria_users::denied_views(&state.pg, &user.id, &user.role)
+        let grants = talaria_users::view_grants(&state.pg, &user.id, &user.role)
             .await
             .map_err(|e| internal("[session] view-denial read failed", e))?;
-        if denied
-            .iter()
-            .any(|v| v == view || view.starts_with(&format!("{v}/")))
-        {
-            return Err(talaria_error::house_error(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-            ));
+        match grants.denies(view) {
+            Some(false) => {}
+            Some(true) => {
+                return Err(talaria_error::house_error(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                ));
+            }
+            None => {
+                return Err(talaria_error::house_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "could not check your access to this app — try again",
+                ));
+            }
         }
     }
     Ok(user)
@@ -586,6 +683,74 @@ pub fn json_with_cookies(body: impl IntoResponse, cookies: &[String]) -> Respons
 mod tests {
     use super::*;
 
+    // The marker is the contract with talaria-notify's push prune
+    // (retention::session_marker_for_sid): the prefix, then the same hex
+    // SHA-256 a push subscription stores as its session_hash.
+    #[test]
+    fn the_liveness_marker_is_keyed_by_the_session_hash() {
+        assert_eq!(
+            session_marker("abc"),
+            "sesshash:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            session_marker("abc"),
+            format!("sesshash:{}", session_hash("abc"))
+        );
+    }
+
+    /// A state with a test root and a pool that never connects: the guard
+    /// answers from the header alone, before any query.
+    fn internal_state() -> AppState {
+        let cfg = talaria_config::Config::from_parts(
+            "postgres://t:t@127.0.0.1:1/unused".into(),
+            "redis://127.0.0.1:1".into(),
+            "test-root".into(),
+            String::new(),
+            String::new(),
+            String::new(),
+        )
+        .expect("test config assembles");
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy(&cfg.database_url)
+            .expect("a lazy pool needs no database");
+        AppState::new(pg, std::sync::Arc::new(cfg))
+    }
+
+    fn with(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    /// `/api/internal/*` admits the root-derived credential and nothing else:
+    /// no header, a person's session cookie, an agent's bearer key, a wrong or
+    /// truncated token, or the token under another header name.
+    #[tokio::test]
+    async fn require_internal_admits_only_the_root_derived_token() {
+        let state = internal_state();
+        let token = state.cfg.secret_root.internal_token();
+        let header = talaria_config::INTERNAL_HEADER;
+        let refused = |h: HeaderMap| {
+            let r = require_internal(&state, &h).expect_err("refused");
+            assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        };
+        refused(HeaderMap::new());
+        refused(with(&[("cookie", "talaria_session=an-admins-session")]));
+        refused(with(&[("authorization", "Bearer tak_an-agents-key")]));
+        refused(with(&[(header, "")]));
+        refused(with(&[(header, "not-the-token")]));
+        refused(with(&[(header, &token[..63])]));
+        refused(with(&[("x-talaria-internal-token", &token)]));
+        assert!(require_internal(&state, &with(&[(header, &token)])).is_ok());
+        // The host may pad it; the guard trims, as it reads every header.
+        assert!(require_internal(&state, &with(&[(header, &format!(" {token} "))])).is_ok());
+    }
+
     #[test]
     fn uri_component_round_trips_the_js_way() {
         // The unreserved set survives; everything else escapes as %XX.
@@ -602,6 +767,20 @@ mod tests {
         assert_eq!(percent_decode("%ZZ"), None);
         // Broken UTF-8 after decode: decline rather than throw.
         assert_eq!(percent_decode("%FF"), None);
+    }
+
+    #[test]
+    fn the_session_hash_is_stable_hex_and_never_the_id() {
+        // SHA-256("abc"), the FIPS 180-2 vector.
+        assert_eq!(
+            session_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let h = session_hash_of(&with(&[("cookie", "a=1; talaria_session=sess-123")])).unwrap();
+        assert_eq!(h, session_hash("sess-123"));
+        assert!(!h.contains("sess-123"));
+        assert!(session_hash_of(&with(&[("cookie", "a=1")])).is_none());
+        assert!(session_hash_of(&HeaderMap::new()).is_none());
     }
 
     #[test]

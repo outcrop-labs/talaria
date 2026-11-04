@@ -17,7 +17,7 @@ use talaria_teams::{
     get_team, get_team_access, set_team_allowed_manage_views, set_team_denied_views,
     set_team_perm_override,
 };
-use talaria_users::MANAGE_VIEW_ROUTES;
+use talaria_users::grantable_manage_views;
 
 pub async fn get(
     State(state): State<AppState>,
@@ -65,15 +65,22 @@ pub async fn put(
             Err(e) => return Ok(internal("[teams] denied views write failed", e)),
         }
     }
-    if let Some(allowed) = match optional_string_array_member(obj, "allowedManageViews", 1, 60, 10)
+    // The person route's bounds (admin_users.rs): a view is at most `/x/` + a
+    // 64-character slug + `/manage`, and the list holds the eight core views
+    // plus up to two per app — ten refused any member with three app grants.
+    if let Some(allowed) = match optional_string_array_member(obj, "allowedManageViews", 1, 80, 200)
     {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     } {
-        let valid: Vec<String> = allowed
-            .into_iter()
-            .filter(|v| MANAGE_VIEW_ROUTES.iter().any(|r| r == v))
-            .collect();
+        // The same whitelist a person's grants pass through: the core manage
+        // views plus every enabled app's views. App views were filtered out
+        // here once, so a team could never be granted an app.
+        let views = match grantable_manage_views(&state.pg).await {
+            Ok(v) => v,
+            Err(e) => return Ok(internal("[teams] grantable views read failed", e)),
+        };
+        let valid: Vec<String> = allowed.into_iter().filter(|v| views.contains(v)).collect();
         if let Err(e) = set_team_allowed_manage_views(&state.pg, &id, &valid).await {
             return Ok(internal("[teams] manage views write failed", e));
         }

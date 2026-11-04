@@ -14,6 +14,25 @@ export const controlSizes: Record<ControlSize, string> = {
 export const focusRing =
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 
+// The one disabled reading for a control that is not a gold fill: dim the
+// whole control. Text on a transparent or raised ground stays legible at half
+// opacity in both themes. Button's non-fill variants draw it from here, and
+// the field primitives and the chat chrome's rail chips (`chat-chrome`) through
+// `disabledControl` below, so a disabled field or chip reads the way a
+// disabled button does. The primary gold fill must NOT use it:
+// dimming the fill and its surface-toned label together leaves a ~1.5:1
+// washed-gold/near-white pair in light mode.
+export const dimDisabled = 'disabled:opacity-50'
+
+// The disabled reading for a control the pointer still reaches: the dim
+// above, plus a not-allowed cursor. Input, Textarea, Select, Combobox's
+// trigger and the chat chrome's rail chips take it. Without it a disabled
+// field drew exactly like an editable one: the field primitives had no
+// disabled state at all, so a viewer's task title, a locked setting, or a
+// field held during a save all looked like they took typing. Button keeps
+// `dimDisabled` alone, because it also sets `pointer-events-none`.
+export const disabledControl = `${dimDisabled} disabled:cursor-not-allowed`
+
 // The one key-affordance vocabulary (#49). Every single-line control pairs
 // with one of these instead of hand-rolling `e.key === …` at the call site.
 

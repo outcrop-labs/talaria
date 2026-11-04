@@ -17,7 +17,7 @@
   import { BOARD_MENU_GROUP, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { listQuery } from '@/components/ui/query-state'
+  import { anyLoading, firstError, firstNotice, listQuery } from '@/components/ui/query-state'
   import Input from '@/components/ui/Input.svelte'
   import FieldPill from '@/components/ui/FieldPill.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -143,10 +143,16 @@
   const me = $derived(meQuery.data)
   const boardsQuery = useBoards()
   const boards = $derived(boardsQuery.data ?? [])
-  const isLoading = $derived(boardsQuery.isLoading)
   const archivedQuery = useArchivedBoards()
   const archivedBoards = $derived(archivedQuery.data ?? [])
-  const archivedLoading = $derived(archivedQuery.isLoading)
+  // The page waits on both board lists, so both flags are read before they
+  // are combined (query-state.ts, anyLoading). `isLoading || archivedLoading`
+  // never read the archived list's flag while the active one loaded, and the
+  // board lookup had already read the archived list's `data`: an archived read
+  // that FAILED first changed nothing that had been read, so nothing told the
+  // page, and the later read got `isLoading: true` from before it failed. The
+  // page stayed on its skeleton.
+  const listsLoading = $derived(anyLoading(boardsQuery, archivedQuery))
   const board = $derived(boards.find((b) => b.id === boardId) ?? archivedBoards.find((b) => b.id === boardId))
 
   const showArchived = $derived(search.archived ?? false)
@@ -155,10 +161,10 @@
   const tasksLoading = $derived(tasksQuery.isLoading)
   const agentsQuery = useAgents()
   const fleet = $derived(agentsQuery.data)
-  const fleetLoading = $derived(agentsQuery.isLoading)
   const boardCfgQuery = useBoardAgents(() => (board ? boardId : null))
   const boardCfg = $derived(boardCfgQuery.data)
-  const cfgLoading = $derived(boardCfgQuery.isLoading)
+  // The filter bar waits on both (anyLoading, as above).
+  const agentsLoading = $derived(anyLoading(agentsQuery, boardCfgQuery))
   // Four supporting reads. Defaulted to `[]` each one furnished the toolbar
   // with a confident absence: no teammates to filter by, no labels on this
   // board, no columns (so the board silently drew the built-in ones), and no
@@ -307,7 +313,10 @@
   // offers a retry. The archived list matters too: this board may be an
   // archived one, and a failed archived read would otherwise land on the same
   // false "not found".
-  const boardListQuery = $derived(boardsQuery.isError ? boardsQuery : archivedQuery)
+  // `firstError` reads both lists' flags before it picks one (query-state.ts):
+  // `boardsQuery.isError ? boardsQuery : archivedQuery` read the archived
+  // list's flags only while the active list was fine.
+  const boardListQuery = $derived(firstError(boardsQuery, archivedQuery) ?? archivedQuery)
 
   // ── The layout you picked, per board ────────────────────────────────────
   //
@@ -374,7 +383,7 @@
      — It may have been deleted" for as long as that request takes: the exact
      false-deletion sentence this whole path exists to prevent. Neither list has
      spoken until both have. -->
-{#if isLoading || archivedLoading || (board && !showArchived && tasksLoading)}
+{#if [listsLoading, !!board && !showArchived && tasksLoading].includes(true)}
   <BoardSkeleton {view} />
 {:else if !board && boardListQuery.isError && boardListQuery.data === undefined}
   <QueryError
@@ -496,14 +505,14 @@
     {#if view !== 'workchains'}
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-1.5">
       <Input value={q} oninput={(e) => setSearch({ q: e.currentTarget.value }, true)} placeholder="Search" size="sm" class="w-40" />
-      {#if fleetLoading || cfgLoading}
+      {#if agentsLoading}
         <Skeleton class="h-9 w-64" />
       {:else}
         <FilterBar value={filters} onChange={setFilters} {members} agents={boardAgents} labels={boardLabels} statuses={boardStatuses} meId={me?.id} />
       {/if}
       <!-- A filter bar with a facet missing looks like a board that has no
            such thing. These say which read is the one that is missing. -->
-      {#if membersList.notice || labelsList.notice || statusesList.notice}
+      {#if firstNotice(membersList.notice, labelsList.notice, statusesList.notice)}
         <div class="flex flex-wrap items-center gap-3">
           {#if membersList.notice}<QueryError {...membersList.notice} />{/if}
           {#if labelsList.notice}<QueryError {...labelsList.notice} />{/if}

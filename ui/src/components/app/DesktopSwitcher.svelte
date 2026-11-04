@@ -1,17 +1,22 @@
 <script lang="ts">
   import { ChevronDown } from '@lucide/svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
-  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useInstanceBranding } from '@/lib/instance-branding.svelte'
   import { cn } from '@/lib/cn'
   import {
     inDesktopShell,
     shellActivateInstance,
     shellListInstances,
+    shellQuit,
+    shellReload,
+    shellSetBadge,
     shellShowWelcome,
     type ShellInstance,
   } from '@/lib/desktop-shell'
-  import { findCurrentInstance, instanceDisplayLabel } from '@/lib/desktop-instance'
+  import { badgeCount, createBadgeReporter } from '@/lib/desktop-badge'
+  import { findCurrentInstance, instanceDisplayLabel, switcherMenu } from '@/lib/desktop-instance'
+  import type { NotificationsPayload } from '@/lib/notifications'
 
   // The desktop instance switcher — exists ONLY inside the Talaria desktop
   // shell, where the shell grants this origin three commands. In a browser
@@ -32,6 +37,33 @@
     void refresh()
   })
 
+  // The dock and launcher badge (interface I-5): this instance's For you
+  // count (Needs you + Direct, EB-11; `unread` from an instance that predates
+  // it). Read from the query cache the bell and the toasts already keep
+  // fresh, rather than through a query of its own, so a signed-out page (the
+  // login screen mounts this too) fetches nothing; lib/desktop-badge
+  // debounces it and reports 0 when signed out. The shell keeps a share per
+  // instance and shows the sum.
+  const queries = inDesktopShell() ? useQueryClient() : null
+  $effect(() => {
+    if (!queries) return
+    const badge = createBadgeReporter((count) => void shellSetBadge(count))
+    const report = () =>
+      badge.update(
+        badgeCount(queries.getQueryData<NotificationsPayload>(['notifications'])),
+        queries.getQueryData<{ user?: unknown }>(['session'])?.user === null,
+      )
+    report()
+    const stop = queries.getQueryCache().subscribe((event) => {
+      const key = event.query.queryKey[0]
+      if (key === 'notifications' || key === 'session') report()
+    })
+    return () => {
+      stop()
+      badge.stop()
+    }
+  })
+
   const current = $derived(
     findCurrentInstance(
       instances,
@@ -45,15 +77,14 @@
   // A function, so the menu re-reads the live list on every open — switching
   // elsewhere (or adding) shouldn't leave this dropdown stale. Labels fall
   // back to the host so an instance with no company name still has a row.
-  const items = (): ContextMenuEntry[] => [
-    ...instances.map((instance): ContextMenuEntry => ({
-      label: instanceDisplayLabel(instance),
-      checked: instance.id === current?.id,
-      onSelect: () => void shellActivateInstance(instance.id),
-    })),
-    ...(instances.length ? ['sep' as const] : []),
-    { label: 'Add or manage instances', onSelect: () => void shellShowWelcome() },
-  ]
+  // What it holds and in what order: lib/desktop-instance `switcherMenu`.
+  const items = () =>
+    switcherMenu(instances, current?.id, navigator.userAgent, {
+      activate: (id) => void shellActivateInstance(id),
+      reload: () => void shellReload(),
+      manage: () => void shellShowWelcome(),
+      quit: () => void shellQuit(),
+    })
 </script>
 
 {#if inDesktopShell()}

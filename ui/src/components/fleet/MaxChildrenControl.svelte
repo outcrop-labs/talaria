@@ -9,12 +9,13 @@
   // How many subagents this agent may run at once. The cap is an operator's
   // decision about the box the fleet runs on, not the agent's about its own
   // work — the renderer writes it from the column every render, so a def
-  // cannot author its way past it, and the change needs a roll to land.
+  // cannot author its way past it. A running Hermes reads it from the
+  // rewritten config.yaml on its next turn, so a change needs no restart.
   //
-  // EXPLICIT APPLY, like the toolsets beside it: a write rolls the container,
-  // and a number field passes through 1 on its way to 16 — one PATCH and one
-  // roll per spinner click is exactly what UI-CONVENTIONS' "restarts
-  // containers" exemption exists to prevent. Apply appears only when the
+  // EXPLICIT APPLY, like the toolsets beside it: a write re-renders the fleet
+  // and lands on a running agent's next turn — a deploy, which UI-CONVENTIONS
+  // keeps behind Apply — and a number field passes through 1 on its way to
+  // 16, one PATCH and one render per spinner click. Apply appears only when the
   // field holds a valid number that differs from the saved one; an empty or
   // unparseable field is a slip, not an instruction (0 is the one value that
   // silently stops the agent delegating), so it can never be applied.
@@ -63,7 +64,7 @@
   <div class="mb-1 flex items-center gap-1.5">
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Subagents</span>
     <InfoTip
-      text="How many helpers this agent may run at once, at most {MAX}. 0 means it delegates to nobody and does every job in its own turn. Applying a change rolls the agent so the new cap takes effect."
+      text="How many helpers this agent may run at once, at most {MAX}. 0 means it delegates to nobody and does every job in its own turn. An applied change reaches the running agent on its next turn, without a restart."
     />
   </div>
   {#if canManage}

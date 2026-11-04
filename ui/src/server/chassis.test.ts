@@ -26,6 +26,7 @@ const TEMPLATE = join(REPO, 'scripts', 'chassis.template.yml')
 
 interface Service {
   image?: string
+  stop_grace_period?: string
   cap_drop?: string[]
   cap_add?: string[]
   security_opt?: string[]
@@ -119,5 +120,31 @@ describe('the chassis template', () => {
       'no explicit dns: entries — external name resolution silently depends on ' +
         'the host resolver the day the network was created',
     ).toBeGreaterThanOrEqual(1)
+  })
+
+  it('pins the Hermes image to a tag and a digest, overridable by HERMES_IMAGE', () => {
+    // A floating `:latest` meant every host ran whatever it cached first and
+    // CI booted a different image than production. The default is the pin.
+    const m = /^\$\{HERMES_IMAGE:-(nousresearch\/hermes-agent:[^@}]+@sha256:[0-9a-f]{64})\}$/.exec(service.image ?? '')
+    expect(m, `image must be \${HERMES_IMAGE:-nousresearch/hermes-agent:<tag>@sha256:<digest>}, got ${service.image}`).toBeTruthy()
+  })
+
+  it('builds the workbench image FROM the same Hermes pin', () => {
+    // A Developer Agent must run the Hermes every other agent runs — a second
+    // floating base would be a second version axis.
+    const pin = /^\$\{HERMES_IMAGE:-(.+)\}$/.exec(service.image ?? '')?.[1]
+    expect(pin).toBeTruthy()
+    const dockerfile = readFileSync(join(REPO, 'scripts', 'workbench.Dockerfile'), 'utf8')
+    expect(dockerfile).toContain(`ARG HERMES_IMAGE=${pin}\n`)
+    const build = readFileSync(join(REPO, 'scripts', 'build-workbench-image.sh'), 'utf8')
+    expect(build).toContain(`\${HERMES_IMAGE:-${pin}}`)
+  })
+
+  it('gives a stop long enough for Hermes to drain cron and /v1 runs', () => {
+    // A roll recreates the container in place; docker's default 10s grace
+    // SIGKILLs a Hermes still inside its 30s cron drain (+10s cleanup).
+    const grace = /^(\d+)s$/.exec(service.stop_grace_period ?? '')
+    expect(grace, `stop_grace_period must be set in seconds, got ${service.stop_grace_period}`).toBeTruthy()
+    expect(Number(grace?.[1])).toBeGreaterThanOrEqual(45)
   })
 })

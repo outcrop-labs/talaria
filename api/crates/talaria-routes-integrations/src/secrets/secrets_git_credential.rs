@@ -24,7 +24,7 @@ use serde_json::json;
 use talaria_agent_auth::require_agent;
 use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_github as github;
+use talaria_git_hosts as hosts;
 use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
 use talaria_workspace_secrets::{HostCredential, credential_for_host};
@@ -67,8 +67,8 @@ pub async fn post(
     }
 
     // TWO SOURCES, workspace store first. A credential somebody deliberately
-    // granted for this host is a more specific answer than the platform's
-    // own GitHub token, and an operator who pinned one expects it used.
+    // granted for this host is a more specific answer than the registered
+    // git host's own login, and an operator who pinned one expects it used.
     let sb = secretbox_or_500(&state, "[secrets] credential read failed").await?;
     let mut cred = match credential_for_host(&state.pg, &sb, &caller.model, &host).await {
         Ok(c) => c,
@@ -77,23 +77,25 @@ pub async fn post(
     if cred.is_none()
         && let Some(agent_id) = &caller.id
     {
-        // Talaria's GitHub installation token, scoped to a repo on THIS
-        // agent's grant list — the credential a workbench job needs to push,
-        // and the one that used to ride into the model's context inside the
-        // clone URL. `id` is None for a LEGACY org-wide key, which names
-        // nobody — and a caller we cannot identify is one we cannot scope to
-        // a repo grant. The workspace store above already refuses those for
-        // the same reason, so this only makes the two sources agree.
-        match github::agent_git_credential(&state.pg, &sb, agent_id, &host, path.as_deref()).await {
+        // The login of the git host registered at the host git named
+        // (talaria-git-hosts: on GitHub, an installation token scoped to the
+        // one repo), for a repo on THIS agent's grant list on THAT host — the
+        // credential a workbench job needs to push, and the one that used to
+        // ride into the model's context inside the clone URL. `id` is None
+        // for a LEGACY org-wide key, which names nobody — and a caller we
+        // cannot identify is one we cannot scope to a repo grant. The
+        // workspace store above already refuses those for the same reason,
+        // so this only makes the two sources agree.
+        match hosts::agent_git_credential(&state.pg, &sb, agent_id, &host, path.as_deref()).await {
             Ok(Some(g)) => {
                 cred = Some(HostCredential {
-                    username: g.username,
-                    password: g.password,
-                    name: format!("github:{}", g.repo),
+                    username: g.login.username,
+                    password: g.login.password,
+                    name: format!("{}:{}", g.host_id, g.repo),
                 });
             }
             Ok(None) => {}
-            Err(e) => return Ok(internal("[secrets] github credential failed", e)),
+            Err(e) => return Ok(internal("[secrets] git host credential failed", e)),
         }
     }
     let Some(cred) = cred else {

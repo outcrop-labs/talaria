@@ -9,6 +9,8 @@
 #   03:17 UTC daily     rc's tip    → image `nightly` + `nightly-YYYYMMDD`, no Release
 #   push vX.Y.Z-rc.N    (tag cut on rc)   → image `X.Y.Z-rc.N` + moving `rc` + GitHub PRERELEASE
 #   push vX.Y.Z         (tag cut on main) → image `X.Y.Z` + moving `latest` + GitHub Release
+#                       (never marked the repo's Latest release: that is the desktop
+#                       updater feed, a desktop-v release — see the GitHub Release step)
 #   dispatch            manual re-run of a channel (nightly from rc; `rc` pushes the
 #                       moving tag from the rc tip — a dispatch cannot invent a version,
 #                       only a tag carries one)
@@ -18,15 +20,19 @@
 #   app image — the api never compiles inside an image build. api-package.yml
 #   owns that story.
 #
-#   Every TAG publish also builds the DESKTOP INSTALLERS — linux deb/rpm/
-#   AppImage plus pacman and flatpak, macOS dmg, windows nsis/msi — and attaches
-#   them to the GitHub Release with a SHA256SUMS. Nightlies open no Release, so
-#   they carry none. desktop-package.yml owns that story.
+#   No publish here builds the DESKTOP INSTALLERS. Talaria Desktop ships only as
+#   desktop-vX.Y.Z releases, which desktop-package.yml mints on a main push (or
+#   a publish dispatch). Desktop has its own version line, and the updater offers
+#   an update only to a higher number. A 0.13.0 Desktop stamped from a server tag
+#   beside desktop-v0.12.0 would never be offered one until Desktop passed 0.13.
+#   A vX.Y.Z release carries the images, and nothing for the desktop.
 #
 # WHY GIT IS THE AUTHORITY AND THE package.json FILES ARE NOT. Every version
 #   field in this repo says "0.1.0" decoratively and nothing reads them; the
 #   TAG is the version. The workflow never edits a file to release — there is
-#   no version-bump commit, no changelog commit, nothing to merge afterwards.
+#   no version-bump commit and nothing to merge afterwards. The one file a
+#   release changes is CHANGELOG.md, and that lands BEFORE the tag, as the
+#   changelog roll's pull request against rc (RELEASING.md), never from here.
 #   A malformed tag (v1.0, v1.0.0-beta.1) fails loudly in `resolve` rather
 #   than falling through to `latest`, because a tag that silently published
 #   as stable is the one mistake here that cannot be undone by deleting it.
@@ -292,6 +298,18 @@ jobs:
       # opening a release for a ref that isn't there. The notes body is a
       # printf with pre-computed vars — single-quoted, so the markdown
       # backticks are literal and no shell logic runs inside the string.
+      #
+      # NEVER "LATEST", stable or not: GitHub's Latest release is the desktop
+      # updater feed. The shell reads /releases/latest/download/latest.json
+      # (desktop/src-tauri/tauri.conf.json), and desktop-package.yml marks each
+      # desktop-v release it mints Latest once that file is on it. A stable
+      # release created here would take the flag by default the moment it
+      # opens, and it carries no latest.json at all (no desktop installers
+      # ride a vX.Y.Z release), so every installed app's update check would
+      # 404. So the create and the re-run's edit both say
+      # --latest=false; a prerelease can never be Latest anyway.
+      # check-invariants.mjs (`release-latest-is-the-desktop-feed`) holds
+      # both flags.
       - name: GitHub Release
         if: needs.resolve.outputs.release == 'true'
         env:
@@ -314,31 +332,7 @@ jobs:
           if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release for $TAG exists — refreshing notes (re-run of the same tag)"
-            gh release edit "$TAG" --title "$TAG" --notes "$notes" "${pre[@]}"
+            gh release edit "$TAG" --title "$TAG" --notes "$notes" --latest=false "${pre[@]}"
           else
-            gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" "${pre[@]}"
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" --latest=false "${pre[@]}"
           fi
-
-  # The desktop installers, attached to the release the publish job just
-  # opened. Needs publish rather than running beside it: the assets land on an
-  # existing Release, and a tag whose image push failed has nothing to attach
-  # to — the ordering is the guarantee, not a retry loop.
-  #
-  # Nightlies are absent by construction (`release == true` is tag runs only):
-  # RELEASING.md's standing decision is that a nightly opens no Release, so
-  # there is nothing for an installer to attach to. Trunk installers come from
-  # desktop-package.yml's own main-push runs instead, as workflow artifacts.
-  desktop-package:
-    needs: [resolve, ci, publish]
-    if: needs.resolve.outputs.release == 'true'
-    # Same nesting rule as the api-package call above: desktop-package.yml's
-    # `attach` job writes release assets, so the call has to grant it. Its build
-    # jobs ask for nothing beyond reads.
-    permissions:
-      contents: write
-    uses: ./.github/workflows/desktop-package.yml
-    secrets: inherit
-    with:
-      ref: ${{ needs.resolve.outputs.ref }}
-      version: ${{ needs.resolve.outputs.version }}
-      release_tag: ${{ needs.resolve.outputs.ref }}

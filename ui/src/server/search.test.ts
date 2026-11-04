@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resultsFrom, searchReachable, searchWeb } from './search'
+import { envSearchUrl, resultsFrom, searchReachable, searchWeb } from './search'
 
 // The client for Talaria's own search engine. What matters here is not the happy
 // path — it is that a payload from a dozen aggregated engines cannot break the
@@ -13,6 +13,18 @@ const reply = (body: unknown, status = 200): Response =>
 const deps = (res: Response | (() => Promise<Response>)) => ({
   url: async () => 'http://search.test',
   fetch: (typeof res === 'function' ? res : async () => res) as unknown as typeof globalThis.fetch,
+})
+
+describe('envSearchUrl', () => {
+  it('reads a blank SEARXNG_URL as unset, the Rust twin\'s rule', () => {
+    // SET BUT BLANK used to win over the stored setting while Admin → Search
+    // read it as "not from the environment": a URL saved there was ignored.
+    expect(envSearchUrl({})).toBeNull()
+    expect(envSearchUrl({ SEARXNG_URL: '' })).toBeNull()
+    expect(envSearchUrl({ SEARXNG_URL: '   ' })).toBeNull()
+    expect(envSearchUrl({ SEARXNG_URL: 'http://env.test' })).toBe('http://env.test')
+    expect(envSearchUrl({ SEARXNG_URL: ' http://env.test/ ' })).toBe('http://env.test/')
+  })
 })
 
 describe('resultsFrom', () => {

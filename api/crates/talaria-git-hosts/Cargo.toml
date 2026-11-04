@@ -1,0 +1,24 @@
+[package]
+name = "talaria-git-hosts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-forgejo = { workspace = true }
+talaria-git-host-types = { workspace = true }
+talaria-github = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-workspace-secrets = { workspace = true }

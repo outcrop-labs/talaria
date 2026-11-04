@@ -42,7 +42,7 @@
       <AgentBrainChip {brain} />
       <!-- The row has the width for the failure sentence beside the chip. -->
       <AgentRollChip {roll} sentence />
-      <AgentControls def={d} {containers} {running} {rolling} onManage={openManage} {onDuplicate} />
+      <AgentControls def={d} {containers} {running} {rolling} {roll} onManage={openManage} {onDuplicate} />
     </div>
   {/snippet}
 </AgentItem>

@@ -28,13 +28,18 @@
 #            .exe while claiming no version they are not. The CLI downloads and
 #            drives both toolchains itself.
 #
-# EVERY ARTIFACT A RUNNER CAN EXERCISE IS EXERCISED. macOS mounts the dmg and
+# EVERY ARTIFACT A RUNNER CAN EXERCISE IS EXERCISED. macOS verifies the dmg and
 # launches the app; windows installs the installer it just built and launches
-# what it installed; both fail the job if the app is not still running twenty
-# seconds later, before anything is attached to a release. The linux AppImage
-# was run on a real Arch host while this file was written (it is the artifact
-# whose first build aborted there — see repack-appimage.sh), and the deb, rpm
-# and pacman packages were installed in clean containers of their own distros.
+# what it installed; linux installs its deb. Each then runs the connect smoke
+# (desktop/packaging/connect-smoke.mjs) on that shipped binary: a fake instance
+# has to be opened, its page requested and its script run, with the shell still
+# up. "Still running twenty seconds later", the check this file started with,
+# is what a frozen app passes, and the Windows shell once froze on every first
+# open. All of it fails the job before anything is attached to a release. The
+# linux AppImage was run on a real Arch host while this file was written (it is
+# the artifact whose first build aborted there — see repack-appimage.sh), and
+# the deb, rpm and pacman packages were installed in clean containers of their
+# own distros.
 # What no runner here can test: Gatekeeper and SmartScreen as a USER meets them
 # (an artifact built on a runner is never quarantined, and nothing is signed),
 # and macOS session isolation, which `data_directory` does not provide
@@ -44,14 +49,22 @@
 # (RELEASING.md) and every version field in the repo still says 0.1.0
 # decoratively — so the tag arrives as `tauri build --config`, which merges the
 # version into the config for this build only. A release therefore stamps the
-# real version into every installer without a version-bump commit.
+# real version into every installer without a version-bump commit. The file
+# names carry it as the tag spells it; inside, the Linux packages spell a
+# pre-release so it sorts BELOW its release, or the release would not install
+# over its RC: the deb and rpm Version `0.2.0~rc.1` (recommend-tray.sh), the
+# pacman pkgver `0.2.0rc.1` (pack-pacman.sh).
 #
 # THE AUTO-MINOR CHANNEL. A push to main that touches desktop/ is a RELEASE:
 # `resolve` computes the next minor — the highest suffix-free X.Y.Z across BOTH
 # the `v*` (app) and `desktop-v*` tags, minor+1, patch 0 — and after every
 # platform job is green, `attach` mints the `desktop-vX.Y.0` tag and a regular
-# (non-prerelease) Release carrying latest.json: the LIVE updater feed, because
-# /releases/latest resolves to it and installed apps update themselves. The
+# (non-prerelease) Release carrying latest.json, and marks it Latest once that
+# file is on it: the LIVE updater feed, because the shell reads
+# /releases/latest/download/latest.json (tauri.conf.json). Installed apps read
+# it when someone checks for updates (Check for updates in the launcher or
+# Settings); nothing installs an update unasked. GitHub's Latest is ONLY ever
+# a desktop-v release: release.yml opens every vX.Y.Z release --latest=false. The
 # `desktop-v*` namespace keeps desktop automation from ever firing release.yml
 # (its tag trigger is `v[0-9]*`). Auto never crosses a major: a manual major —
 # or any stable vX.Y.Z cut — raises the baseline and the +1 resumes from there.
@@ -62,7 +75,11 @@
 # NOT SIGNED, DELIBERATELY. There is no Apple Developer certificate and no
 # Windows signing key in this repo, so macOS builds are not notarized
 # (Gatekeeper wants a right-click → Open the first time) and Windows builds
-# carry no publisher signature (SmartScreen warns). The honest answer to "is
+# carry no publisher signature (SmartScreen warns). The macOS app IS ad-hoc
+# signed (tauri.macos.conf.json `signingIdentity: "-"`): no identity vouches
+# for it, but the signature binds it to `app.talaria.desktop`, which is what
+# UNUserNotificationCenter ties notification permission to. The macOS job
+# asserts that identity, and runs the notification self-test against it. The honest answer to "is
 # this installer really Talaria's?" is to build it from the tag or to read the
 # workflow run that produced it — which is why the assets ship with a
 # SHA256SUMS. Signing is a provisioning decision, recorded with the other
@@ -72,11 +89,14 @@
 # linux-flatpak consume the binary the `linux` job built rather than compiling
 # again: the artifact is the app, and a packager only arranges files around it.
 #
-# WHY THE ATTACH STEP LIVES HERE AND NOT IN release.yml. The assets are this
-# file's artifacts; release.yml hands over the tag and the work follows. A
-# re-run of this workflow alone re-attaches everything (--clobber), and the
-# release body — which release.yml owns — never has to name files this file
-# decides the names of.
+# ONLY desktop-v RELEASES CARRY INSTALLERS. release.yml's vX.Y.Z and
+# vX.Y.Z-rc.N tags used to call this file and attach installers stamped with
+# the server version; they no longer do. A Desktop numbered 0.13.0 beside
+# desktop-v0.12.0 would never be offered an update until Desktop passed 0.13,
+# because the updater offers only a higher number. The `workflow_call` trigger
+# below has no caller now and stays as an inert door. The assets are this
+# file's artifacts, and a re-run of this workflow alone re-attaches everything
+# (--clobber).
 #
 # WHY CANCEL-IN-PROGRESS IS SAFE HERE, unlike in release.yml's publish: nothing
 # below moves a channel tag, and the updater feed flips LAST — latest.json is
@@ -93,8 +113,12 @@ on:
     # Paths are safe here (chassis.yml's argument: nothing in this file is a
     # required check) and they keep the trunk build meaningful — a desktop push
     # rebuilds the installers, anything else leaves the last artifacts alone.
+    # The launcher also bundles one file from ui/: the dither field, imported
+    # as `@dither` (desktop/vite.config.ts), so an edit to it changes what the
+    # installers ship as surely as a desktop/ edit does.
     paths:
       - 'desktop/**'
+      - 'ui/src/lib/dither-engine.ts'
       - '.github/workflows/desktop-package.yml'
       - '.github/actions/**'
   workflow_dispatch:
@@ -115,11 +139,11 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: 'the ref to build (release.yml passes the tag it is publishing)'
+        description: 'the ref to build (no caller today: server tags carry no installers)'
         type: string
         required: true
       version:
-        description: 'version to stamp (release.yml passes the tag minus v)'
+        description: 'version to stamp'
         type: string
         required: true
       release_tag:
@@ -249,10 +273,16 @@ jobs:
       # desktop job says the same), and `rpm` is the only extra: its
       # /usr/bin/rpmbuild is what Tauri's rpm bundler shells out to. dpkg is
       # NOT needed — the deb bundler writes its own ar members.
+      # libayatana-appindicator3-dev: the shell has a tray (background.rs), and
+      # with tauri's tray-icon feature the bundler asks pkg-config where the
+      # appindicator library lives — it puts it in the AppImage, and makes the
+      # deb and rpm depend on it — and aborts the build when it cannot find one.
+      # rpm2cpio and cpio: the step after the build rewrites that dependency
+      # into a recommendation (packaging/linux/recommend-tray.sh).
       - name: Tauri system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev rpm
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev rpm rpm2cpio cpio
 
       # The bundle targets come from tauri.linux.conf.json (tauri merges the
       # platform file automatically); --config adds the version on top. The
@@ -261,6 +291,20 @@ jobs:
       - name: Build bundles
         working-directory: desktop
         run: bun run build -- --config "{\"version\":\"$VERSION\"}"
+
+      # The shell opens the tray library with dlopen and runs without it
+      # (Close minimizes instead of hiding to a tray nobody can see), but the
+      # bundler makes it a hard dependency of the deb and the rpm. The config
+      # lists it under `recommends`; this takes it out of Depends and
+      # Requires, and checks both packages afterwards (the script's header).
+      # The same rewrite spells a pre-release Version with `~`, which dpkg and
+      # rpm sort below the release (tauri writes the tag's `-`, which both
+      # sort above it).
+      - name: The tray library is recommended, not required; an RC sorts below its release
+        working-directory: desktop
+        run: |
+          set -eu
+          packaging/linux/recommend-tray.sh src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm
 
       # The AppImage gets one more pass, on this same runner: linuxdeploy's gtk
       # plugin bundles the build distro's libwayland-client, which aborts on a
@@ -287,9 +331,55 @@ jobs:
             *webkit2gtk*gtk-3*) ;;
             *) echo "::error::the deb declares no webkit2gtk/gtk dependency — see docs/DESKTOP.md (installers)"; exit 1 ;;
           esac
+          # The window's Wayland app_id (and X11 WM_CLASS) is the GTK
+          # application id, app.talaria.desktop: the deb and rpm desktop file
+          # (Talaria.desktop, never renamed) must name it, or a dock cannot
+          # group the window under its pin.
+          for pkg in deb/*.deb; do
+            dpkg-deb --fsys-tarfile "$pkg" | tar -xO --wildcards '*usr/share/applications/Talaria.desktop' | tee "$RUNNER_TEMP/Talaria.desktop"
+            grep -qx 'StartupWMClass=app.talaria.desktop' "$RUNNER_TEMP/Talaria.desktop" \
+              || { echo "::error::$pkg's Talaria.desktop does not name StartupWMClass=app.talaria.desktop"; exit 1; }
+          done
+          # The stamped version, as the packages spell it: the pre-release `-`
+          # is `~` (recommend-tray.sh), so `0.2.0-rc.1` is `0.2.0~rc.1`.
+          want=$(printf '%s' "$VERSION" | sed 's/-/~/; s/-/./g')
+          deb_version=$(dpkg-deb -f deb/*.deb Version)
+          rpm_version=$(rpm -qp --qf '%{VERSION}' rpm/*.rpm)
+          echo "stamped $VERSION: deb Version $deb_version, rpm Version $rpm_version"
+          [ "$deb_version" = "$want" ] && [ "$rpm_version" = "$want" ] \
+            || { echo "::error::the deb and rpm should carry Version $want for $VERSION"; exit 1; }
           mkdir -p "$RUNNER_TEMP/assets"
           cp deb/*.deb rpm/*.rpm appimage/*.AppImage "$RUNNER_TEMP/assets/"
           ls -l "$RUNNER_TEMP/assets"
+
+      # The deb this run built, installed with apt, and the connect smoke the
+      # windows job runs (see there) against the binary it installed, under a
+      # private X display and session bus with software rendering, as ci.yml's
+      # desktop job does. This proves the installed binary opens an instance.
+      # It does not prove the deb's Depends resolve on a clean system: the
+      # build's -dev packages (Tauri system deps, above) already satisfy them.
+      # The install also relies on that step's `apt-get update`.
+      # The rpm, pacman and flatpak packages carry the same binary; the
+      # AppImage bundles its own libraries and is not run here (its first
+      # build aborted only on a host whose Wayland stack differed from the
+      # runner's, which this runner cannot be).
+      - name: Install the deb and run the connect smoke on it
+        timeout-minutes: 10
+        env:
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -eu
+          deb=$(ls "$RUNNER_TEMP"/assets/*.deb)
+          sudo apt-get install -y --no-install-recommends xvfb xauth dbus "$deb"
+          # The package's name and its binary's path, read from what was
+          # installed rather than assumed: both are the bundler's to choose.
+          pkg=$(dpkg-deb -f "$deb" Package)
+          exe=$(dpkg -L "$pkg" | grep -m1 '^/usr/bin/' || true)
+          [ -n "$exe" ] && [ -x "$exe" ] \
+            || { echo "::error::the $pkg deb installed no executable under /usr/bin:"; dpkg -L "$pkg"; exit 1; }
+          echo "installed $pkg; its binary is $exe"
+          xvfb-run -a dbus-run-session -- node desktop/packaging/connect-smoke.mjs "$exe" --wait 90 --force
 
       - name: Sign the AppImage for the updater
         env:
@@ -427,6 +517,27 @@ jobs:
         working-directory: desktop
         run: bun run build -- --target universal-apple-darwin --config "{\"version\":\"$VERSION\"}"
 
+      # The identity notifications hang on (D5): an ad-hoc signature over the
+      # whole bundle, identifier app.talaria.desktop, and the binary linked
+      # against UserNotifications. A bundle that loses any of these posts
+      # nothing, or posts as someone else.
+      - name: Check the signature and the bundle identity
+        working-directory: desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos
+        run: |
+          set -eu
+          codesign -dv --verbose=4 Talaria.app 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -qx 'Identifier=app.talaria.desktop' "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::the bundle is not signed as app.talaria.desktop"; exit 1; }
+          grep -qx 'Signature=adhoc' "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::the bundle is not ad-hoc signed (signingIdentity in tauri.macos.conf.json)"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 Talaria.app
+          otool -L Talaria.app/Contents/MacOS/talaria-desktop | tee "$RUNNER_TEMP/otool.txt"
+          grep -q 'UserNotifications.framework' "$RUNNER_TEMP/otool.txt" \
+            || { echo "::error::the binary does not link UserNotifications"; exit 1; }
+          id=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' Talaria.app/Contents/Info.plist)
+          echo "CFBundleIdentifier=$id"
+          [ "$id" = app.talaria.desktop ] || { echo "::error::CFBundleIdentifier is $id"; exit 1; }
+
       - name: Collect installers
         working-directory: desktop/src-tauri/target/universal-apple-darwin/release/bundle
         run: |
@@ -455,6 +566,9 @@ jobs:
       # bundle, so nothing quarantined it; what this proves is that the dmg
       # mounts, the binary starts, and it is still running twenty seconds later.
       - name: Smoke test the app bundle
+        # A backstop for its waits on the app (the self-test, the 20 s run):
+        # minutes when healthy, never the job's 60.
+        timeout-minutes: 10
         run: |
           set -eu
           # The dmg is VERIFIED rather than mounted: hdiutil refuses to attach on
@@ -476,6 +590,44 @@ jobs:
             exit 1
           fi
 
+          # The notification self-test (notify/macos.rs), launched through
+          # LaunchServices so it runs as the bundle a person opens: backend
+          # "un", the bundle id, the authorization (notDetermined on a fresh
+          # runner), and a post that AGREES with it — an error unless
+          # authorized, never a silent success. Direct exec is the fallback
+          # when this runner has no session for `open`.
+          st=$RUNNER_TEMP/st.json
+          rm -f "$st"
+          open -n "$app/Talaria.app" --args "--notify-selftest=$st" || true
+          for _ in $(seq 1 30); do [ -s "$st" ] && break; sleep 1; done
+          if [ ! -s "$st" ]; then
+            echo "open did not run the self-test; running the bundle's binary directly"
+            "$exe" "--notify-selftest=$st"
+          fi
+          cat "$st"
+          python3 - "$st" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          assert r["backend"] == "un", r
+          assert r["bundleId"] == "app.talaria.desktop", r
+          auth = r["authorization"]
+          assert auth and not auth.startswith("error"), r
+          granted = auth in ("authorized", "provisional", "ephemeral")
+          assert (r["post"] == "ok") == granted, f"post {r['post']!r} disagrees with authorization {auth!r}"
+          # Read-sync's removal and presence's idle time (I-16, I-22).
+          close = str(r.get("close", ""))
+          assert close == "ok" or close.startswith("error"), r
+          assert isinstance(r.get("osIdle"), (int, float)) and not isinstance(r.get("osIdle"), bool), r
+          print(f"self-test: un, {r['bundleId']}, {auth}, post: {r['post']}, close: {close}, osIdle: {r['osIdle']} ms")
+          PY
+          # The same flag on the binary outside its bundle: UN cannot run
+          # there, and the status must say which path it took instead.
+          cp "$exe" "$RUNNER_TEMP/talaria-desktop-bare"
+          "$RUNNER_TEMP/talaria-desktop-bare" "--notify-selftest=$RUNNER_TEMP/st-bare.json"
+          cat "$RUNNER_TEMP/st-bare.json"
+          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["backend"] == "ns-legacy (unbundled dev run)", r' \
+            "$RUNNER_TEMP/st-bare.json"
+
           "$exe" >"$RUNNER_TEMP/app.log" 2>&1 &
           pid=$!
           sleep 20
@@ -487,7 +639,22 @@ jobs:
           echo "app still running after 20s (pid $pid)"
           lsappinfo list 2>/dev/null | grep -i -m1 talaria \
             || echo "(not registered with LaunchServices — the process is alive regardless)"
+          # Gone before the connect smoke below starts another one, and bounded:
+          # an app that ignores or defers SIGTERM gets 10 s, then SIGKILL,
+          # never a wait that holds the job to its timeout.
           kill "$pid" || true
+          for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          kill -9 "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+
+      # The same connect smoke the windows job runs on its installed exe (see
+      # there): the bundle's own binary, extracted from the zip above, opens a
+      # fake instance or fails, which "still running after 20 s" cannot tell
+      # apart from a hang. The script bounds itself (90 s, then SIGKILL to the
+      # app's process group); the step timeout is the backstop.
+      - name: Connect smoke on the shipped app
+        timeout-minutes: 5
+        run: node desktop/packaging/connect-smoke.mjs "$RUNNER_TEMP/app/Talaria.app/Contents/MacOS/talaria-desktop" --wait 90 --force
 
       - uses: actions/upload-artifact@v4
         with:
@@ -569,6 +736,9 @@ jobs:
       # setup otherwise. PowerShell drives it because the parts that matter
       # (msiexec, Start-Process, finding the installed exe) are its native work.
       - name: Smoke test the installer
+        # A backstop for Start-Process -Wait on the installer and the
+        # self-test: minutes when healthy, never the job's 60.
+        timeout-minutes: 15
         run: |
           set -eu
           cat >"$RUNNER_TEMP/smoke.ps1" <<'PS'
@@ -587,13 +757,48 @@ jobs:
           $exe = Get-ChildItem -Path $env:LOCALAPPDATA, $env:ProgramFiles -Filter talaria-desktop.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) { throw 'talaria-desktop.exe was not installed where an installer should have put it' }
           Write-Host "installed at $($exe.FullName)"
+          # For the connect smoke after this step. AppendAllText writes UTF-8
+          # with no BOM, which GITHUB_ENV needs (Windows PowerShell's Out-File
+          # -Encoding utf8 writes one).
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "INSTALLED_EXE=$($exe.FullName)`n")
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe.FullName))
+          if (-not $text.Contains('app.talaria.desktop')) { throw 'the installed exe does not carry app.talaria.desktop' }
+          # The notification self-test (notify/windows.rs): toasts must be
+          # attributed to Talaria's own AUMID, by the installer's shortcut or
+          # the registry entry, never PowerShell's.
+          $st = Join-Path $env:RUNNER_TEMP 'st.json'
+          Start-Process $exe.FullName -ArgumentList "--notify-selftest=$st" -Wait
+          $report = Get-Content $st -Raw
+          Write-Host $report
+          $r = $report | ConvertFrom-Json
+          if ($r.attribution -notin @('shortcut', 'registry')) { throw "toasts are attributed by $($r.attribution)" }
+          if ($r.aumid -ne 'app.talaria.desktop') { throw "the AUMID is $($r.aumid)" }
           $app = Start-Process $exe.FullName -PassThru
           Start-Sleep -Seconds 20
           if ($app.HasExited) { throw "the app exited within 20s (code $($app.ExitCode))" }
           Write-Host "app still running after 20s (pid $($app.Id))"
-          Stop-Process -Id $app.Id -Force
+          # The whole tree, WebView2's msedgewebview2.exe children included, so
+          # the connect smoke below starts a shell with nothing of this one left.
+          taskkill /PID $app.Id /T /F | Out-Null
+          Wait-Process -Id $app.Id -Timeout 30 -ErrorAction SilentlyContinue
           PS
           powershell -NoProfile -ExecutionPolicy Bypass -File "$RUNNER_TEMP/smoke.ps1"
+
+      # "Still running after 20 s" is what a FROZEN app passes: the first open of
+      # an instance froze the Windows shell for good (a webview created inside a
+      # WebView2 IPC callback), and the process stayed up and kept repainting.
+      # The connect smoke (desktop/packaging/connect-smoke.mjs; ci.yml runs it on
+      # every desktop pull request against a debug build) passes only when the
+      # shell actually opens an instance: a fake one on 127.0.0.1 is the last
+      # view in the registry, and its page has to be requested and its script
+      # run within 90 s, with the shell still up. Here it runs against the exe
+      # the installer put on the runner, the build a user gets. --force: this
+      # runner is thrown away, and the launches above may have written the
+      # registry the smoke replaces. The script prints which step happened last
+      # on a failure.
+      - name: Connect smoke on the installed app
+        timeout-minutes: 5
+        run: node desktop/packaging/connect-smoke.mjs "$INSTALLED_EXE" --wait 90 --force
 
       - uses: actions/upload-artifact@v4
         with:
@@ -604,9 +809,9 @@ jobs:
   # The only job that writes to anything outside the run: every installer, a
   # checksum list, and latest.json for the in-app updater, onto the release.
   # It runs last so a half-built release never looks complete. The release is
-  # either release.yml's (a vX.Y.Z cut, via workflow_call) or one this job
-  # opens itself for a minted desktop-v tag — the gate is simply "a
-  # release_tag exists".
+  # either one this job opens itself for a minted desktop-v tag, or an existing
+  # release a dispatch names in `release_tag` (a re-attach) — the gate is simply
+  # "a release_tag exists".
   attach:
     name: attach installers to the release
     needs: [resolve, linux, linux-pacman, linux-flatpak, macos, windows]
@@ -626,7 +831,11 @@ jobs:
       # broken build. --target mints the lightweight tag in the same call; no
       # git push, and nothing re-triggers (this workflow has no tags trigger
       # and desktop-v* cannot match release.yml's v[0-9]*). NOT --prerelease:
-      # /releases/latest must resolve to this release for the updater feed.
+      # /releases/latest must resolve to this release for the updater feed,
+      # and a prerelease can never be Latest. But not Latest YET either
+      # (--latest=false): GitHub makes a new release Latest by default, and
+      # this one has no latest.json until the Upload step, so the feed would
+      # 404 for every installed app in between. Upload marks it Latest, last.
       # Create-not-clobber: a losing racer fails loudly instead of stacking a
       # second build's assets onto the winner's release.
       - name: Open the desktop release
@@ -641,7 +850,7 @@ jobs:
             echo "$TAG already exists — attaching into it (a re-run or a finished mint)"
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$SHA" --title "$TAG" \
+              --target "$SHA" --title "$TAG" --latest=false \
               --notes "Desktop auto-minor build at ${SHA:0:12}. What changed: CHANGELOG.md."
           fi
 
@@ -653,8 +862,10 @@ jobs:
           merge-multiple: true
           path: assets
 
-      # Suffix-free versions only: /releases/latest is GitHub's moving stable
-      # pointer, so an RC must not publish latest.json. Missing signatures
+      # Suffix-free versions only: the feed is GitHub's Latest release, and an
+      # RC must never reach it. A re-attach into a release that is not Latest
+      # gets the file too, though nothing serves it: only a desktop-v mint is
+      # made Latest (the Upload step). Missing signatures
       # fail the job — shipping a release the installed app cannot update to
       # is worse than a red attach. On a minted desktop-v release the manifest
       # is the point of the channel, so its absence is an error, not a skip.
@@ -700,6 +911,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.release_tag }}
+          MINT: ${{ needs.resolve.outputs.mint }}
         run: |
           set -eu
           ls -l assets
@@ -711,6 +923,24 @@ jobs:
           if [ -f ./latest.json ]; then
             gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" latest.json --clobber
           fi
+          # ...and only now does a minted desktop-v release become GitHub's
+          # Latest, which is what /releases/latest/download/latest.json
+          # resolves through: the previous desktop release stays the feed until
+          # this one carries its own latest.json. Explicit, never GitHub's
+          # automatic pick, because the feed must be a DESKTOP release: the one
+          # this run minted, which is the newest on the auto-minor path (a
+          # dispatch that finishes an older version's mint moves the feed back
+          # to it). Only on the mint path: a dispatch that re-attaches into an
+          # existing release (`release_tag` without `publish`) must not move the
+          # feed, and the guard below is what keeps it off Latest. A vX.Y.Z
+          # server release never reaches this job, and release.yml opens it
+          # --latest=false.
+          # check-invariants.mjs (`release-latest-is-the-desktop-feed`) holds
+          # this flag and release.yml's.
+          if [ "$MINT" = true ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest
+            echo "$TAG is now the Latest release: the updater feed"
+          fi
           echo "attached $(ls assets | wc -l) files to $TAG"
   # A published desktop release has to move omapak's pin, or the store keeps
   # shipping the previous tag. Called from here rather than left to
@@ -720,8 +950,8 @@ jobs:
   # desktop-v0.7.0 through v0.10.0 all shipped without a submission. Same gate
   # as `attach`, and it runs after it, so the store is only pointed at a tag
   # whose installers are already on the release. omapak-submit re-checks the
-  # tag shape and refuses prereleases itself, so an RC coming through
-  # release.yml cannot move the pin.
+  # tag shape and refuses prereleases itself, so a prerelease named by a
+  # dispatch cannot move the pin.
   omapak:
     name: submit to omapak
     needs: [resolve, attach]

@@ -46,11 +46,13 @@
 //   - `def.tools: 'own'`   the model's own tool loop, for the three turns whose
 //                          whole feature IS the tool loop
 //   - `def.holdMs`         how long to hold for a persona that is restarting
-//   - `ctx.ledger`         source / refId / taskId, so a turn's spend reaches
-//                          the ticket, the channel or the research run
-//   - `ctx.tier`           an alias tier, routed AND priced (a routed id with a
-//                          null tier misses both of recordUsage's lookups and
-//                          the turn costs nothing)
+//   - `ctx.ledger`         refId / taskId, so a turn's spend reaches the
+//                          ticket, the channel or the research run. A
+//                          `source` given there is read by nothing: the relay
+//                          books every call on an app's key as `app`
+//   - `ctx.tier`           an alias tier: the turn calls `<model>-<tier>`. The
+//                          relay prices the call it routed and books a tier's
+//                          turn under its base agent, from that id alone
 //   - `runHarnessStreamed` a streaming transport, so a surface where tokens
 //                          landing on a screen is the feature keeps streaming
 //                          and still gets the guard pass
@@ -67,7 +69,9 @@
 // the real thing and overridable per call. `run.test.ts` exercises the whole
 // runner against recorded replies with no database, no gateway and no fleet,
 // which is also exactly how the model-fitness suite will replay eval fixtures.
-import { extractToolRecord, getGuardConfig, groundingTextOf, needsRedaction, recordFindings, redactSecrets, RULES, runGuardrails, guardText, type Available, type Finding, type GuardConfig, type ToolRecord } from '../guardrails'
+import { extractToolRecord, getGuardConfig, groundingTextOf, needsRedaction, recordFindings, redactSecrets, RULES, runGuardrails, guardText, semanticRulesOn, type Available, type Finding, type GuardConfig, type ToolRecord } from '../guardrails'
+import { judgeAppRun, type SemanticJudging } from '../internal-api'
+import { appInScope } from '../app-scope'
 import { routingFor } from '../llm-gateway'
 import { reachFor, type Reach } from '../capability-reach'
 import { db } from '../db/pg'
@@ -75,10 +79,11 @@ import { capabilityKey, missingCapabilities, getCapabilities, type Capability, t
 import { promptShape, wireSchemaOf, type WireSchema } from './json-schema'
 import { personaCapabilityKeys } from './persona'
 import { parseJson, repairPrompt } from './json'
-import { resolveHarnessModel, type ModelChainStep, type ModelSpec } from './model'
+import { resolveHarnessModel, strayPin, strayPinSentence, type ModelChainStep, type ModelSpec } from './model'
 import { agentSlot, roleSlot, slotEffortForModel } from '../effort-prefs'
 import { defaultTransport, type LedgerAttribution, type StreamingTransport, type Transport, type TransportKind, type TransportRequest } from './transport'
-import type { Grounding, HarnessDefinition, Message, RenderContext } from './define'
+import type { EvalContext, Grounding, HarnessDefinition, HarnessTool, Message, RenderContext } from './define'
+import type { ToolCall, ToolDefinition, TransportReply } from './transport'
 
 // The transports moved to harness/transport.ts when `TransportRequest` grew the
 // four slots the five hand-written shims existed to supply (tools, ledger
@@ -94,10 +99,7 @@ export {
   gatewayImageTurn,
   gatewayStream,
   gatewayTransport,
-  ledgerOf,
-  meterPersonaTurn,
   personaPayload,
-  personaProbeTurn,
   offersToolDefinitions,
   pickTransport,
   pumpPersonaStream,
@@ -196,6 +198,52 @@ export interface HarnessResult<O> {
    *  a caller that will silently stop escalating the day the wording changes. */
   escalate: boolean
   error?: string
+  /** A TOOL-LOOP RUN'S RECORD (`def.loop`) — absent on every other run.
+   *
+   *  `toolCalls` is every call the model made, in order, as the provider
+   *  reported it (the arguments the raw string it sent). `calls` is the same
+   *  list with what each call got back — the `EvalContext.calls` shape a
+   *  fixture asserts over, so production and the fitness sweep read one
+   *  record. `exhausted` is true when the loop hit its turn bound with the
+   *  model still calling tools. */
+  toolCalls?: ToolCall[]
+  calls?: LoopCall[]
+  exhausted?: boolean
+}
+
+/** One dispatched call of a tool loop: the tool, the arguments it was given,
+ *  what it answered (its structured value when it had one, else its text), and
+ *  the error sentence when it failed. */
+export type LoopCall = EvalContext['calls'][number]
+
+/** What a loop tool answered, before the model sees it. */
+export interface ToolOutcome {
+  text: string
+  structured?: unknown
+  isError: boolean
+}
+
+/** WHERE A LOOP TOOL'S CALL CAN GO — supplied by the host that runs the
+ *  harness, never by app code (`ctx.harness` builds it; the free runner and a
+ *  platform harness have none, so `mcp` and `org` tools answer the model with
+ *  an error saying why). */
+export interface LoopEdges {
+  /** The app the harness belongs to. */
+  app: string | null
+  /** The person the run acts for. */
+  actingUserId: string | null
+  /** The app's own MCP tool, through the app MCP dispatch. */
+  mcp?: (tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<ToolOutcome>
+  /** An org MCP tool, through the gateway as the agent the run acts for. */
+  org?: (server: string, tool: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<ToolOutcome>
+  /** Why `org` is absent, said to the model when it calls one. */
+  orgUnavailable?: string
+  /** A DRY RUN: every tool answers through its `simulate`, nothing real is
+   *  touched. A tool with no `simulate` answers the model with an error. */
+  simulate?: boolean
+  /** Handlers run for real, but `mcp` and `org` tools answer through their
+   *  `simulate` — an offline test, with no host to dispatch them through. */
+  simulateExternal?: boolean
 }
 
 // ── Injected edges ───────────────────────────────────────────────────────────
@@ -253,6 +301,14 @@ export interface HarnessDeps {
    *  assignable; the real `guardText` has always taken it. */
   guardText: (text: string, input?: string) => Promise<Finding[]>
   recordFindings: (findings: Finding[], meta: { caller: string; model: string; endpoint: string | null; mode: GuardConfig['mode'] }) => Promise<void>
+  /** THE SEMANTIC HALF OF THE GUARD PASS — the rules the api's decision model
+   *  judges (`implied_completion`), which this process has no model or key to
+   *  run. Handed the run's final reply, the tool record the structural pass
+   *  read and the semantic rules the harness keeps, ONCE PER RUN and never
+   *  awaited: the judgment lands as a finding after the run has answered, so
+   *  it can never change what the run answered. A benchmark replay swaps it
+   *  out, as it swaps `recordFindings`. */
+  judgeSemantic: (judging: SemanticJudging) => void
   recordRun: (row: HarnessRunRow) => Promise<void>
   now: () => number
 }
@@ -272,6 +328,12 @@ const REAL_DEPS: HarnessDeps = {
   guardConfig: getGuardConfig,
   guardText,
   recordFindings,
+  // As the app whose code is running — the same scope the transport signs
+  // its relay calls with. Outside every app there is no run to judge.
+  judgeSemantic: (judging) => {
+    const slug = appInScope()
+    if (slug) void judgeAppRun(slug, judging)
+  },
   recordRun: async (row) => {
     const sql = await db()
     await sql`
@@ -306,13 +368,16 @@ export async function capabilityKeysFor(model: string): Promise<string[]> {
   return keys.length > 0 ? keys : await REAL_DEPS.personaKeys(model).catch(() => [])
 }
 
-/** What the CALLER knows about where this turn's spend belongs. The runner
- *  fills in the rest of `LedgerAttribution` — `agentModel` is the resolved base
- *  model and `tier` is `RunContext.tier`, neither of which a caller should have
- *  to restate. Omitted entirely means the default a harness turn on a persona
- *  has always had: `source: 'chat'`, belonging to no conversation. */
+/** What the CALLER knows about where this turn's spend belongs: the refs the
+ *  runner hands the transport as `LedgerAttribution`. Omitted entirely, the
+ *  turn belongs to no conversation, run or ticket. */
 export interface RunLedger {
-  source?: LedgerAttribution['source']
+  /** @deprecated Read by nothing. The relay books every call on an app's key
+   *  under source `app`, and every call this process makes is an app's, so a
+   *  source named here never reached a row. Kept so a free-runner call written
+   *  before `ctx.harness` (`ledger: { source: 'chat', refId: null }`) still
+   *  type-checks; `ctx.harness.run` takes no source. */
+  source?: 'chat' | 'channel' | 'ticket' | 'research' | 'app'
   /** The conversation, channel or research run. */
   refId?: string | null
   /** The ticket, so the turn reaches the ticket's cost and not just the ledger. */
@@ -351,12 +416,16 @@ export interface RunContext {
    *
    *  `pickTransport` can already INFER a tier from a routed id by splitting at
    *  the last hyphen, and it still does, because a caller may arrive with an id
-   *  it built itself. But inference cannot recover the two facts the ledger
-   *  needs: `recordUsage` prices a row by finding `agent_defs.model =
-   *  agentModel` and then the alias named by `tier`, so a routed id handed over
-   *  with a null tier misses BOTH lookups and the turn is priced at nothing.
-   *  Naming the tier here is how a caller says it deliberately, once, and gets
-   *  the routing and the price together. */
+   *  it built itself. Naming the tier here is how a caller says it
+   *  deliberately, once: the runner spells `<model>-<tier>` in one place, calls
+   *  it, and asks the capability index about it.
+   *
+   *  The price does not depend on it. The Rust relay books every call it
+   *  serves, priced from the endpoint it routed, and finds a tier's base agent
+   *  from the routed id itself (talaria-gateway `persona_base`, `turn_subject`),
+   *  so a routed id with no tier named here is booked the same. The ledger
+   *  writer that once needed the pair named here (ui/src/server/usage.ts) is
+   *  deleted. */
   tier?: string
   /** THE REASONING EFFORT THIS TURN RUNS AT, when the caller's surface let a
    *  human pick one. A model id, not a harness, decides whether the level is
@@ -372,6 +441,9 @@ export interface RunContext {
   /** Override any edge. Tests supply a `transport` and no-op recorders; the
    *  fitness suite supplies a transport that records prompts and replies. */
   deps?: Partial<HarnessDeps>
+  /** Where a `def.loop` tool's call goes (see `LoopEdges`). Host-supplied:
+   *  the SDK's free runner does not accept it. */
+  loop?: LoopEdges
 }
 
 /** What `runHarnessStreamed` needs beyond a normal run. */
@@ -587,6 +659,124 @@ function groundingFor<I, O>(def: HarnessDefinition<I, O>, input: I): Grounding |
   return material
 }
 
+/** Two grounding records as one: the tools of both, the results of both, and
+ *  an error when either saw one (unknown only when neither can say). */
+function mergeGrounding(a: Grounding | null, b: Grounding | null): Grounding | null {
+  if (!a) return b
+  if (!b) return a
+  const errored = a.errored === true || b.errored === true ? true : a.errored === null || b.errored === null ? null : false
+  return { tools: [...new Set([...a.tools, ...b.tools])], results: `${a.results}\n\n${b.results}`, errored }
+}
+
+// ── The tool loop ────────────────────────────────────────────────────────────
+//
+// GENERALIZED FROM THE ONE RUNNER-HELD LOOP THE PLATFORM HAD — research's
+// tool-search transport (talaria-harness-defs `tool_search_transport`) and the
+// fitness dry run (talaria-fitness-toolbox `sandbox_transport`) — and it keeps
+// their hard-won rules rather than re-deciding them:
+//
+//   - the model's own turn goes into the transcript FIRST, prose included, and
+//     its calls go on the TOOL CHANNEL, never narrated into its text (models
+//     imitate whatever transcript they are shown);
+//   - at most three calls are honored per turn; the rest are not run;
+//   - a call made on the last turn is still dispatched — the budget bounds how
+//     often the model thinks, never what it already decided to do;
+//   - a failure is a tool RESULT the model sees and adapts to, not a failed run;
+//   - a call to a tool it was not offered is answered with an error, never
+//     dispatched under another name;
+//   - a loop that ends with calls made and nothing said gets one closing turn
+//     with the tools taken away, asking for what it did when it ran out of
+//     turns and for the answer when it simply stopped.
+//
+// It lives HERE, in the TS runner, because an app harness's tools are app code
+// (handlers, mcp.ts) that only the app host can run (RUST-MIGRATION rule 10).
+
+/** Model turns a loop takes when the harness does not say. */
+export const DEFAULT_LOOP_TURNS = 6
+/** The most a harness may ask for — the dry run's `MAX_TURN_CEILING`. */
+export const MAX_LOOP_TURNS = 12
+/** Calls honored per model turn (`MAX_CALLS_PER_TURN` in the dry run). */
+export const MAX_LOOP_CALLS_PER_TURN = 3
+/** What of a tool's result the model sees. */
+const LOOP_RESULT_CAP = 8_000
+
+export const loopTurnsOf = (asked: number | undefined): number =>
+  Math.min(MAX_LOOP_TURNS, Math.max(1, Math.floor(typeof asked === 'number' && Number.isFinite(asked) ? asked : DEFAULT_LOOP_TURNS)))
+
+const LOOP_CLOSING_EXHAUSTED =
+  'You have run out of turns. Do not call any more tools. Answer now from the results above, and say what is still left to do.'
+const LOOP_CLOSING_DONE = 'Stop here and give your answer from the results above. Do not call any more tools.'
+
+/** The model's view of a tool's definition — what `toolDefs` offers. */
+const loopToolDef = (t: HarnessTool<unknown>): ToolDefinition => ({ name: t.name, description: t.description, parameters: t.parameters })
+
+/** A value a tool returned, as the model will read it. */
+function shapeToolValue(value: unknown): ToolOutcome {
+  if (typeof value === 'string') return { text: value, isError: false }
+  if (value === undefined || value === null) return { text: 'null', isError: false }
+  try {
+    return { text: JSON.stringify(value), structured: value, isError: false }
+  } catch {
+    return { text: String(value), isError: false }
+  }
+}
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+/** Send one call where its tool says it goes. Never throws: a tool that fails
+ *  answers the model with the sentence. */
+async function dispatchLoopTool<I>(
+  harness: string,
+  tool: HarnessTool<I>,
+  args: Record<string, unknown>,
+  input: I,
+  edges: LoopEdges | undefined,
+  turn: number,
+  signal: AbortSignal,
+): Promise<ToolOutcome> {
+  const fail = (text: string): ToolOutcome => ({ text, isError: true })
+  const name = tool.name
+  try {
+    if (edges?.simulate || (edges?.simulateExternal && typeof tool.handler !== 'function')) {
+      if (typeof tool.simulate !== 'function') return fail(`tool "${tool.name}" has no simulate, so a dry run cannot answer it`)
+      return shapeToolValue(await tool.simulate(args, { input }))
+    }
+    if (typeof tool.handler === 'function') {
+      return shapeToolValue(await tool.handler(args, { app: edges?.app ?? null, harness, actingUserId: edges?.actingUserId ?? null, turn, signal }))
+    }
+    if (typeof tool.mcp === 'string') {
+      if (!edges?.mcp) return fail(`tool "${tool.name}" calls the app's own MCP tool "${tool.mcp}", and this run has no app to dispatch it through — run the harness with ctx.harness`)
+      return await edges.mcp(tool.mcp, args, signal)
+    }
+    if (typeof tool.org === 'string') {
+      if (!edges?.org) return fail(edges?.orgUnavailable ?? `tool "${tool.name}" calls the org MCP tool "${tool.org}", and this run has no agent to call it as`)
+      const cut = tool.org.indexOf('/')
+      return await edges.org(tool.org.slice(0, cut), tool.org.slice(cut + 1), args, signal)
+    }
+    return fail(`tool "${name}" has nowhere to go: it declares no handler, mcp or org`)
+  } catch (e) {
+    return fail(`tool "${name}" failed: ${errText(e)}`)
+  }
+}
+
+/** The arguments a call carried, as the object a tool can act on. A string
+ *  that is not a JSON object is an empty object — the dry run's rule. */
+function argsOf(raw: string): Record<string, unknown> {
+  try {
+    const v: unknown = JSON.parse(raw || '{}')
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** The turn's grounding material from what the loop's tools really returned —
+ *  the record `ungrounded_ref` and `fabricated_outage` check a reply against. */
+function loopGrounding(calls: readonly LoopCall[], results: readonly string[]): Grounding | null {
+  if (calls.length === 0) return null
+  return { tools: [...new Set(calls.map((c) => c.tool))], results: results.join('\n\n'), errored: calls.some((c) => c.error !== null) }
+}
+
 // ── The runner ───────────────────────────────────────────────────────────────
 
 /** One harness run: resolve, floor, widen, render, call, parse, repair, guard,
@@ -636,6 +826,9 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   const deps: HarnessDeps = { ...REAL_DEPS, ...ctx.deps }
   const started = deps.now()
   const findings: Finding[] = []
+  /** A tool-loop run's record, once the loop has run — every exit after it
+   *  carries it (see `HarnessResult.toolCalls`). */
+  let loopOut: { toolCalls: ToolCall[]; calls: LoopCall[]; exhausted: boolean } | null = null
 
   // Every exit writes a harness_runs row, including the ones that never reach a
   // model. A harness that resolves nothing, or refuses on a capability, is
@@ -664,7 +857,7 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
         error: runError(r.error),
       })
       .catch(() => {})
-    return { ...r, findings, latencyMs }
+    return { ...r, findings, latencyMs, ...(loopOut ?? {}) }
   }
 
   /** THE FAILURE POLICY ON A RETURN PATH, which is the other half of what
@@ -699,6 +892,16 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   const RAW_CAP = 8_000
   const rawOf = (t: string): string | null => (t ? t.slice(0, RAW_CAP) : null)
 
+  // A TOOL LOOP DOES NOT STREAM. Its turns are tool calls and results the
+  // runner dispatches between model turns; a stream would hand the screen the
+  // interstitial prose of a turn that was not the answer.
+  if (def.loop && streaming) {
+    return fail({ ...empty, error: `harness "${def.id}" runs a tool loop, and a tool loop does not stream — run it, don't stream it` })
+  }
+  if (def.loop && def.tools === 'own') {
+    return fail({ ...empty, error: `harness "${def.id}" declares both its own loop (loop) and the model's own tools (tools: 'own') — a turn has one loop` })
+  }
+
   // 1 ─ Resolve the model. Null is an ANSWER, not an exception: on an install
   // whose gateway serves nothing this spec can reach, the harness has no model
   // and the caller keeps what it had. Nothing throws out of here.
@@ -714,16 +917,25 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
       .resolveModel({ ...def.model, ...(ctx.userId ? { userId: ctx.userId } : {}) })
       .catch(() => null)
     if (!resolved) {
-      return fail({ ...empty, error: `no model available for harness "${def.id}" - nothing in its chain routes on this gateway` })
+      // A pin that names no agent is the likelier story than an empty
+      // gateway — `pin: '<endpoint>/<model>'` reads as "pin this model" — so
+      // the run says which, rather than only that nothing routed.
+      const stray = strayPin(def.model)
+      return fail({
+        ...empty,
+        error: stray
+          ? `${strayPinSentence(def.id, stray, def.model.slot)}; nothing else in its chain routes on this gateway`
+          : `no model available for harness "${def.id}" - nothing in its chain routes on this gateway`,
+      })
     }
     model = resolved.model
     step = resolved.step
   }
 
-  // THE ID ACTUALLY CALLED. `model` stays the BASE persona — it is what the
-  // ledger has to name, because `recordUsage` prices a row by finding
-  // `agent_defs.model = agentModel` and then the alias named by `tier`, and a
-  // routed id matches neither. `routed` is what goes on the wire, what the
+  // THE ID ACTUALLY CALLED. `model` stays the BASE persona, the agent the
+  // turn is for. `routed` is what goes on the wire,
+  // and so all the relay prices and books by (a tier's turn lands under its
+  // base agent, talaria-gateway `persona_base`). It is also what the
   // capability lookup asks about (a tier is a different, usually larger model
   // than its agent's main, and `persona.ts` resolves it as one), and what the
   // result and the run row name, because it is the model that answered.
@@ -983,15 +1195,74 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   let kind: TransportKind = 'gateway'
   let toolNames: string[] = []
 
-  /** The ledger row this turn belongs to, resolved ONCE. `agentModel` is the
-   *  base persona and `tier` the alias name, because that is the pair
-   *  `recordUsage` prices from; `RunContext` carries the rest. */
+  /** Every loop tool's result text, labelled by tool — the grounding the guard
+   *  checks the final answer against. */
+  const loopResults: string[] = []
+
+  /** THE LOOP, as the first attempt of a `def.loop` run: offer the tools,
+   *  dispatch each call, hand the results back, until the model answers or the
+   *  turns run out — then the closing turn when there is no answer to parse.
+   *  Resolves to the reply the contract is applied to, like any transport, and
+   *  leaves the conversation in `sent` so a repair turn continues it. */
+  const runLoop = async (request: TransportRequest): Promise<TransportReply> => {
+    const loop = def.loop!
+    const tools = loop.tools as HarnessTool<I>[]
+    const offered = [...(def.toolDefs ?? []), ...tools.map((t) => loopToolDef(t as HarnessTool<unknown>))]
+    const maxTurns = loopTurnsOf(loop.maxTurns)
+    const signal = ctx.signal ?? new AbortController().signal
+    const convo: Message[] = [...request.messages]
+    const toolCalls: ToolCall[] = []
+    const calls: LoopCall[] = []
+    let text = ''
+    let exhausted = false
+    let kind: TransportKind = 'gateway'
+    let contractDropped = false
+    loopOut = { toolCalls, calls, exhausted }
+    for (let turn = 0; turn < maxTurns; turn++) {
+      const reply = await deps.transport({ ...request, messages: [...convo], tools: 'none', toolDefs: offered })
+      kind = reply.kind
+      contractDropped ||= reply.contractDropped
+      text = reply.text
+      const made = (reply.toolCalls ?? []).slice(0, MAX_LOOP_CALLS_PER_TURN)
+      if (made.length === 0) break
+      convo.push({ role: 'assistant', content: reply.text, toolCalls: made })
+      for (const call of made) {
+        toolCalls.push(call)
+        const args = argsOf(call.args)
+        const tool = tools.find((t) => t.name === call.name)
+        const out: ToolOutcome = tool
+          ? await dispatchLoopTool(def.id, tool, args, input, ctx.loop, turn, signal)
+          : { text: `"${call.name}" is not a tool you have here; your tools are ${tools.map((t) => t.name).join(', ')}`, isError: true }
+        calls.push({ tool: call.name, args, result: out.structured ?? out.text, error: out.isError ? out.text : null })
+        loopResults.push(`${call.name}: ${out.text}`)
+        convo.push({ role: 'tool', content: out.text.slice(0, LOOP_RESULT_CAP), toolCallId: call.id })
+      }
+      if (turn === maxTurns - 1) exhausted = true
+    }
+    // THE CLOSING TURN. A loop that ran out of turns ends mid-work — its last
+    // turn was more calls, and any prose beside them is not the answer — and a
+    // model that called tools and then said nothing has given nothing to parse.
+    // Both get one turn with the loop's tools taken away and the results in
+    // front of it.
+    if (exhausted || (!text.trim() && calls.length > 0)) {
+      const ask = exhausted ? LOOP_CLOSING_EXHAUSTED : LOOP_CLOSING_DONE
+      convo.push({ role: 'user', content: structured ? `${ask}\n\n${jsonAnchorFor(wire)}` : ask })
+      const closing = await deps.transport({ ...request, messages: [...convo] })
+      kind = closing.kind
+      contractDropped ||= closing.contractDropped
+      text = closing.text
+    }
+    loopOut = { toolCalls, calls, exhausted }
+    sent = convo
+    return { kind, text, toolNames: toolCalls.map((c) => c.name), toolCalls, usage: null, contractDropped }
+  }
+
+  /** Where this turn's spend also belongs, resolved ONCE: the refs that
+   *  leave this process as relay headers (transport.ts `relay`). The relay
+   *  prices and books the call from the routed id, under the app's key. */
   const ledger: LedgerAttribution = {
-    agentModel: model,
-    source: ctx.ledger?.source ?? 'chat',
     refId: ctx.ledger?.refId ?? null,
     taskId: ctx.ledger?.taskId ?? null,
-    tier: ctx.tier ?? null,
   }
 
   try {
@@ -1029,7 +1300,9 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
             streamed += delta
             streaming.onDelta?.(delta)
           })
-        : await deps.transport(request)
+        : def.loop && repairs === 0
+          ? await runLoop(request)
+          : await deps.transport(request)
       text = reply.text || streamed
       answered = text.trim().length > 0
       kind = reply.kind
@@ -1137,7 +1410,10 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
   //            on a persona, and the search hits it is grounded against are
   //            external to that persona's own tool loop entirely.
   const config = await deps.guardConfig().catch(() => null)
-  const material = groundingFor(def, input)
+  // A tool loop's results ARE the turn's tool record, held by this runner, so
+  // the guard grounds the answer in them — beside whatever the harness's own
+  // `ground` declared.
+  const material = mergeGrounding(groundingFor(def, input), loopOut ? loopGrounding(loopOut.calls, loopResults) : null)
   if (config && config.mode !== 'off' && text) {
     const overflowed = material !== null && material.results.length > GROUND_RESULTS_CAP
     // NAMES WITHOUT RESULTS — true on the fleet path always, and on the gateway
@@ -1169,12 +1445,21 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
           overflowed,
         }
       : derived
+    const narrowed = narrowGuardConfig(config, def.guard?.rules)
     const hits = runGuardrails(
       { answer: text, toolRecord, userMessage: lastUserMessage(sent), inputText: groundText, policedHosts: config.policedHosts },
-      narrowGuardConfig(config, def.guard?.rules),
+      narrowed,
       available,
     )
     mergeFindings(findings, hits)
+    // THE SEMANTIC RULES, judged where the decision model lives: the run's
+    // final reply, against the SAME tool record the structural rules just
+    // read — the loop's calls, the harness's own grounding, a persona's tool
+    // names — which no single relay call can see. Exactly the rules the
+    // harness keeps and an admin has on; the relay runs none for an app's
+    // key, so each rule is judged once.
+    const judged = semanticRulesOn(narrowed)
+    if (judged.length > 0) deps.judgeSemantic({ answer: text, tools: toolRecord.backingTools, model: routed, caller: ctx.caller, rules: judged })
   }
   if (findings.length && config) {
     await deps.recordFindings(findings, { caller: ctx.caller, model: routed, endpoint: kind === 'fleet' ? 'fleet' : endpoint, mode: config.mode }).catch(() => {})
@@ -1234,9 +1519,10 @@ async function execute<I, O>(def: HarnessDefinition<I, O>, input: I, ctx: RunCon
     }
   }
 
-  // 9 ─ Meter. The transports own the token ledger (the gateway writes its own
-  // row inside completeViaGateway; the fleet transport writes one itself), so
-  // all that is left here is the harness_runs row - the production ground truth
-  // behind contract rate and repair rate per harness per model over time.
+  // 9 ─ Meter. The gateway owns the token ledger (the Rust relay books every
+  // call, a fleet agent's turn included, as the app's spend — see
+  // harness/transport.ts), so all that is left here is the harness_runs row -
+  // the production ground truth behind contract rate and repair rate per
+  // harness per model over time.
   return finish({ value, model: routed, step, widened, repairs, schemaValid, escalate, answered, refused: false, raw: rawOf(text), ...(error ? { error } : {}) })
 }

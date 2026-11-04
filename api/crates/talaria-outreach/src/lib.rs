@@ -299,7 +299,11 @@ pub async fn agent_message_user(
         talaria_body::percent_encode(agent_model),
         conv_id
     );
-    let _ = talaria_notify::add_notification(
+    // ONE row per agent per day per person (`group_key::outreach`, the UTC
+    // day): a second check-in the same day re-alerts that row with the newest
+    // words and `count + 1` instead of stacking a second one.
+    let day = talaria_agent_auth::epoch_ms_to_iso(talaria_agent_auth::now_ms());
+    let _ = talaria_notify::add_notification_with(
         deps,
         target_id,
         &talaria_notify::NotificationInput {
@@ -308,6 +312,7 @@ pub async fn agent_message_user(
             body: Some(&notified_body),
             href: Some(&href),
         },
+        &outreach_meta(agent_model, &label, &conv_id, &day[..10]),
     )
     .await;
 
@@ -670,9 +675,46 @@ pub fn register_outreach_job(deps: Arc<OutreachDeps>) {
     talaria_scheduler::register_job(outreach_job_spec(deps));
 }
 
+/// How an outreach row files: one open row per agent per day
+/// (`group_key::outreach`), re-alerting, about the DM thread, from the agent.
+/// Pure.
+fn outreach_meta(
+    agent_model: &str,
+    label: &str,
+    conversation_id: &str,
+    day: &str,
+) -> talaria_notify::NotifyMeta {
+    use talaria_notify::{ActorKind, NotifyActor, NotifyEntity, NotifyMeta, entity, group_key};
+    NotifyMeta {
+        group_key: Some(group_key::outreach(agent_model, day)),
+        entity: Some(NotifyEntity::new(entity::CONVERSATION, conversation_id)),
+        actor: Some(NotifyActor {
+            kind: ActorKind::Agent,
+            id: agent_model.to_string(),
+            label: label.to_string(),
+        }),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outreach_files_one_row_per_agent_per_day() {
+        let m = outreach_meta("margaret-marketing", "Margaret", "c-1", "2026-11-01");
+        assert_eq!(
+            m.group_key.as_deref(),
+            Some("outreach:margaret-marketing:2026-11-01")
+        );
+        assert_eq!(m.coalesce, talaria_notify::Coalesce::Realert);
+        assert_eq!(
+            m.entity,
+            Some(talaria_notify::NotifyEntity::new("conversation", "c-1"))
+        );
+        assert_eq!(m.actor.unwrap().id, "margaret-marketing");
+    }
 
     // These pin the pure halves the sweep stands on. The queries and the
     // harness turn are exercised by the boot wiring, never by CI (no

@@ -9,7 +9,7 @@
   // was (208px, sidebar ground, right border), with the BoardsSublist living
   // inside it — groups, drag-to-team, archived, footer actions all unchanged,
   // only their address changed. It is a LAYOUT at the '/boards' level
-  // (router.ts), so the board, the index, and the ticket overlay all get it
+  // (route-table.ts), so the board, the index, and the ticket overlay all get it
   // while every other view keeps the whole width.
   //
   // The create modal rides here because its trigger (the sublist footer's

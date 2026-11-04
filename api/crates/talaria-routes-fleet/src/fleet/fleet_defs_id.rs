@@ -13,7 +13,7 @@ use talaria_agent_defs::{
     AgentMetaPatch, apply_developer_toolsets, set_disabled_toolsets, set_max_children,
     set_pinned_sessions, update_agent_meta, validate_toolsets,
 };
-use talaria_api_facades::mcp::apply::roll_agent_for_model;
+use talaria_api_facades::mcp::apply::{apply_agent_for_model, roll_agent_for_model};
 use talaria_api_facades::workbench::set_developer;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -106,8 +106,8 @@ pub async fn patch(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    // How many subagents this agent may run at once; 0 means it delegates to
-    // nobody. The ceiling is the box's, not the agent's — the roll applies it.
+    // How many subagents this agent may run at once; 0 means it delegates to nobody. The ceiling is the
+    // box's, not the agent's. Applied in place: a running agent reads it on its next delegate call.
     let max_children = match optional_number_member(obj, "maxChildren", NumKind::Int, 0.0, 16.0) {
         // Narrowed here, once: the member reader speaks f64 for every numeric
         // shape, and the column, the audit and the renderer all want the int.
@@ -120,8 +120,8 @@ pub async fn patch(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    // The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass:
-    // a stranger reaches the rendered config, is ignored in silence, and the toolset stays open. It rolls.
+    // The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass (a stranger
+    // is ignored in silence and the toolset stays open). Applied in place: a running agent reads it on its next turn.
     let disabled_toolsets = match optional_string_array_member(obj, "disabledToolsets", 1, 40, 40)
         .and_then(|names| names.map(|n| validate_toolsets(&n)).transpose())
     {
@@ -129,6 +129,9 @@ pub async fn patch(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     // The def read: the columns this route touches. The body parses BEFORE
     // the lookup, so a bad body on an unknown id is the 400, not the 404.
     let def: Option<(String, String, String, i32, Value)> = match sqlx::query_as(
@@ -259,18 +262,19 @@ pub async fn patch(
     // The pinned flip changes how TALARIA drives the agent — which Hermes
     // endpoint the next turn goes to — and nothing in the container, so it
     // takes effect on the next turn with no roll. The Developer switch is
-    // the one that rolls: a running Hermes wires its MCP servers and
-    // container env at start, so that change lands by re-rendering the
-    // incoming slot (blue/green). Fire-and-forget, never the caller's
-    // problem.
+    // the one that rolls: it changes the container's env and image, which
+    // only a recreate delivers. Fire-and-forget, never the caller's problem.
     //
-    // A toolset change rolls for the same reason and in the same stroke: the
-    // disabled list is read into the harness at start, and opening `browser`
-    // also has to pay for the Chromium install the post-health step runs on a
-    // fresh container. Both switches in one PATCH are still ONE roll.
+    // A toolset or max-children change APPLIES: the render rewrites
+    // config.yaml in place, and Hermes reads `agent.disabled_toolsets` on
+    // every turn and `delegation.max_concurrent_children` on every delegate
+    // call, so the running agent has it from its next turn with no restart.
+    // (The apply still recreates a container the render moved for some
+    // other reason.) A PATCH carrying the Developer switch as well is one
+    // roll, which renders too.
     //
-    // THE ROLL NEVER FAILS THE PATCH. The switch is already stored by the
-    // time the roll is queued, and a box the api cannot open is the roll's
+    // NEITHER EVER FAILS THE PATCH. The switch is already stored by the
+    // time the work is queued, and a box the api cannot open is the queue's
     // problem to log, not the caller's to see as a 500 for a change that
     // landed — the next render picks the stored value up regardless.
     if developer_changed || toolsets_changed || max_children_changed {
@@ -278,11 +282,15 @@ pub async fn patch(
             Ok(sb) => {
                 let (pg, model) = (state.pg.clone(), def_model.clone());
                 tokio::spawn(async move {
-                    roll_agent_for_model(&pg, &sb, &model).await;
+                    if developer_changed {
+                        roll_agent_for_model(&pg, &sb, &model).await;
+                    } else {
+                        apply_agent_for_model(&pg, &sb, &model).await;
+                    }
                 });
             }
             Err(e) => tracing::warn!(
-                "[fleet/defs] {def_id}: switch stored but the roll could not start — secretbox unavailable: {e}"
+                "[fleet/defs] {def_id}: switch stored but it could not be applied — secretbox unavailable: {e}"
             ),
         }
     }

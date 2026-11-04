@@ -12,6 +12,7 @@
   import { archiveTask, prefetchTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards.svelte'
   import { assigneeInfo, userAssignee } from '@/lib/assignees'
   import { ticketMenuEntries } from '@/components/board/ticket-menu'
+  import MoveTicketDialog from '@/components/board/MoveTicketDialog.svelte'
   import AssigneesPill from './AssigneesPill.svelte'
   import DuePill from './DuePill.svelte'
   import EstimatePill from './EstimatePill.svelte'
@@ -78,6 +79,8 @@
 
   const qc = useQueryClient()
   const menu = useContextMenu()
+  // The card/row menu's 'Move to board…' — one dialog, opened on a ticket.
+  let movingTask = $state<Task | null>(null)
   // Live work per card: one board-wide read; the working rows wear the
   // dither and carry the watch affordance.
   const work = useBoardWorkSessions(() => boardId)
@@ -121,6 +124,7 @@
         onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
         working: !!working(t.id),
         onStop: () => void stopWork(t.id),
+        onMoveBoard: () => (movingTask = t),
       }),
     )
   const label = (id: string) => assigneeInfo(id, fleetQuery.data?.agents ?? [], members).label
@@ -542,29 +546,33 @@
                           <!-- The trace: the strip's own field masked to a
                                hairline ring while a session is LIVE —
                                additive with the wash, same z, under the
-                               row's controls. -->
+                               row's controls. Both are tuned to the median
+                               look they had across browsers, DPRs and sub-pixel
+                               positions while their dots built up (N11): see
+                               LIVE_FIELD_TUNING in lib/dither-engine.ts. -->
                           {#if working(t.id)}
                             <DitherBorder
                               radius="rounded-md"
                               sources={[
-                                { id: 'trace', kind: 'edge', side: 'left', depth: 22, strength: 0.3 },
-                                { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.6 },
+                                { id: 'trace', kind: 'edge', side: 'left', depth: 22, strength: 0.15 },
+                                { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.9 },
+                                { id: 'grain', kind: 'uniform', strength: 0.135 },
                               ]}
                               pitch={3}
                               dot={1.2}
-                              alphaFloor={0.08}
-                              maxAlpha={0.55}
+                              alphaFloor={0.1138}
+                              maxAlpha={0.782}
                             />
                           {/if}
                           <DitherLayer
                             sources={[
-                              { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 0.4 },
-                              { id: 'drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.5 },
+                              { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 1 },
+                              { id: 'drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.75 },
                             ]}
                             pitch={3}
                             dot={1.2}
-                            alphaFloor={0.06}
-                            maxAlpha={0.4}
+                            alphaFloor={0.2092}
+                            maxAlpha={0.996}
                           />
                           <div class="relative flex min-w-0 flex-1 items-center gap-2">
                             {#if working(t.id)}
@@ -655,5 +663,8 @@
       </div>
     {/if}
     <ContextMenu {menu} />
+  {#if movingTask}
+    <MoveTicketDialog task={movingTask} boardId={boardId} open={!!movingTask} onClose={() => (movingTask = null)} />
+  {/if}
   </div>
 {/if}

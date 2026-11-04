@@ -51,7 +51,9 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let prompt = match trimmed_string_member(obj, "prompt", 1, 20_000) {
+    // The agent's own cap: Hermes's /api/jobs refuses a longer prompt
+    // (talaria_agent_crons::MAX_PROMPT_CHARS).
+    let prompt = match trimmed_string_member(obj, "prompt", 1, 5_000) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };

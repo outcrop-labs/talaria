@@ -283,12 +283,13 @@ Two docker networks, one socket — this is the "right shape"
   host-loopback ports the dev stack publishes — and in this mode the renderer
   doesn't publish those ports at all (the manifest never dials them, and
   installs sharing a host would collide on the identical allocations).
-  Memory, media and crons go through `docker exec` and never touched the
-  network anyway.
+  Crons ride the same manifest dial as chat (Hermes's `/api/jobs` on the
+  agent's API server); memory and media go through `docker exec` and never
+  touch the network.
 - **Isolation**: only the app joins the fleet network. Agent containers are
   model-driven and semi-trusted; they can reach the app, never postgres,
   redis, or storage.
-- **Preflight** follows the renderer (api/src/fleet/preflight.rs derives its probe
+- **Preflight** follows the renderer (`talaria-fleet-preflight` derives its probe
   target from `MCP_GW_BASE`), so it probes the name agents actually use.
 
 The `talaria` network is compose-managed with a fixed name so a fresh host
@@ -362,6 +363,11 @@ checkout-driven hosts.
   authentication at all — the network is the boundary.
 - The only published port is the app itself (`TALARIA_HTTP_PORT`). Put TLS in
   front of it for anything beyond a trusted LAN (see the Dokploy section).
+- Desktop alerts (browser notifications, Web Push, the service worker) need
+  HTTPS: browsers withhold them from plain-http origins. An instance behind
+  Cloudflare or any TLS proxy has it; a plain-http dev stack says so in the bell
+  and in Settings rather than offering a switch that cannot work
+  ([`NOTIFICATIONS.md`](./NOTIFICATIONS.md)).
 
 ## State & backups
 

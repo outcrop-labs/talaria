@@ -39,6 +39,12 @@ async fn gate(
         Ok(u) => u,
         Err(gate) => return Err(gate),
     };
+    // A mangled id names no artifact: the miss below, not the read's
+    // `$1::uuid` cast failing as a 500 — and only once who may ask is
+    // answered, so a caller with no session still hears 401 first.
+    if let Some(miss) = talaria_params::uuid_gate_404(id) {
+        return Err(miss);
+    }
     let artifact = match get_artifact(&state.pg, id).await {
         Ok(a) => a,
         Err(e) => return Err(internal("[artifacts] read failed", e)),

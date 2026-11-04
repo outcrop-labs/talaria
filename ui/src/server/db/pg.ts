@@ -93,8 +93,13 @@ const MIGRATIONS: string[] = [
      unique (conversation_id, seq)
    )`,
   `create index if not exists messages_conv_idx on messages(conversation_id, seq)`,
-  // Fleet agent registry — Talaria's own "brain" (ripped from mission-control's
-  // agents table). Agents register + heartbeat to Talaria, not MC.
+  // Fleet agent registry — the retired mission-control heartbeat's table.
+  // Nothing reads or writes it any more: the heartbeat routes went in #566
+  // and the last writers (the fleet-create delete and the personal-agent
+  // rename) in the 2026-10-27 roll follow-up. It stays until the contract
+  // migration that drops it, which by the expand-contract rule
+  // (docs/UPDATES.md) ships at least one release after a release carrying
+  // both: an app from before #566 still heartbeats into it during a drain.
   `create table if not exists fleet_agents (
      id uuid primary key default gen_random_uuid(),
      name text unique not null,
@@ -496,8 +501,8 @@ const MIGRATIONS: string[] = [
      ) x
    ) t
    where u.endpoint is null and u.agent_model = t.agent_model and u.llm_model = t.llm_model`,
-  // Per-ticket token spend: agents report usage against the ticket they're
-  // working (MCP log_usage → POST /api/tasks/:id/usage).
+  // Per-ticket token spend: the ticket a metered row was spent working on.
+  // (Agents once self-reported here through MCP log_usage; that tool is gone.)
   `alter table usage_events add column if not exists task_id uuid`,
   `create index if not exists usage_events_task_idx on usage_events(task_id) where task_id is not null`,
   // ── Talaria LLM gateway: one org endpoint over the whole model stack ────────
@@ -1141,7 +1146,8 @@ const MIGRATIONS: string[] = [
   // Custom board statuses. category carries the workflow semantics: open
   // (intake), active (working), review (the agent-review catch), done
   // (terminal). agent_start marks columns that constitute assignment approval
-  // for agents (heartbeat pickup). BLOCKED is a system status — always
+  // for agents (the pickup columns work dispatch starts sessions from).
+  // BLOCKED is a system status — always
   // present, never stored here. No rows = the shipped default set.
   `create table if not exists board_statuses (
     id uuid primary key default gen_random_uuid(),
@@ -3677,7 +3683,8 @@ alter table tasks drop column if exists conversation_id`,
   //
   // Per agent, off by default: for a pinned agent Talaria no longer sends the
   // transcript, so a message deleted or relayed on the Talaria side is not
-  // mirrored into Hermes' copy until that is built. The switch is a roll.
+  // mirrored into Hermes' copy until that is built. The switch is Talaria-side
+  // only (which Hermes endpoint the next turn goes to), so it restarts nothing.
   `alter table agent_defs add column if not exists pinned_sessions boolean not null default false`,
   // The Hermes run that produced an assistant row, kept so a running turn can
   // be steered or stopped by the id Hermes knows it by — a stop today only
@@ -3691,8 +3698,10 @@ alter table tasks drop column if exists conversation_id`,
   // Talaria already pins `todo` and `clarify` shut for every agent (its own
   // versions are the ones a person can see and answer); this column is the
   // operator's list ON TOP of that pair, and the first thing it governs is
-  // `browser`: a browsing agent costs a multi-minute Chromium install on
-  // every roll, so an agent that should not browse says so here and skips it.
+  // `browser`: an agent that should not browse says so here. (Until
+  // 2026-10-22 that also skipped a multi-minute Chromium install Talaria ran
+  // after every roll; that step is gone, because Hermes v0.22.4 ships its
+  // browser in the image.)
   //
   // jsonb and not text[]: the def wire carries the list as a JSON array and
   // the renderer merges it as one, so the column stores the shape both ends
@@ -3990,6 +3999,837 @@ alter table tasks drop column if exists conversation_id`,
   // agent's next write stamps them.
   `alter table agent_created_google_docs
      add column if not exists last_agent_write_at timestamptz`,
+  // ── Toolset vocabulary: Hermes' own switches only (2026-10-22) ──────────
+  // The governed toolset list carried Hermes composites (safe, debugging,
+  // search), a posture (coding) and GUI-only surfaces (project, desktop_ui).
+  // Hermes disables tool by tool, so a closed composite closed its MEMBERS
+  // while their own rows read open, and the other three closed nothing on an
+  // API-server agent. The list is now Hermes' CONFIGURABLE_TOOLSETS; a stored
+  // retired name becomes the governed names it closed (search reads as web,
+  // the stricter of the two), so the editor shows what the agent really has
+  // and nothing that was closed opens. The api expands the same names on
+  // read and write for anything this misses (the env twin, an older tab).
+  `-- deliberate: rewrites agent_defs.disabled_toolsets in place, expanding retired toolset
+   -- names into the governed names they closed; what Hermes closes stays the same or stricter.
+   update agent_defs d set disabled_toolsets = (
+     select coalesce(jsonb_agg(m.name order by m.first), '[]'::jsonb)
+     from (
+       select x.name, min(x.pos) as first
+       from (
+         select e.ord * 10 + u.ord as pos, u.name
+         from jsonb_array_elements_text(d.disabled_toolsets) with ordinality as e(raw, ord)
+         cross join lateral unnest(case e.raw
+             when 'debugging' then array['terminal', 'web', 'file']
+             when 'safe' then array['web', 'vision', 'image_gen']
+             when 'search' then array['web']
+             when 'coding' then array[]::text[]
+             when 'project' then array[]::text[]
+             when 'desktop_ui' then array[]::text[]
+             else array[e.raw] end) with ordinality as u(name, ord)
+       ) x
+       group by x.name
+     ) m
+   )
+   where jsonb_typeof(d.disabled_toolsets) = 'array'
+     and d.disabled_toolsets ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
+  `-- deliberate: the org-wide toolset floor gets the same expansion; it is stored sorted and
+   -- without the todo/clarify pair, so the rewrite keeps both properties.
+   update app_settings s set value = (
+     select coalesce(jsonb_agg(m.name order by m.name), '[]'::jsonb)
+     from (
+       select distinct u.name
+       from jsonb_array_elements_text(s.value) as e(raw)
+       cross join lateral unnest(case e.raw
+             when 'debugging' then array['terminal', 'web', 'file']
+             when 'safe' then array['web', 'vision', 'image_gen']
+             when 'search' then array['web']
+             when 'coding' then array[]::text[]
+             when 'project' then array[]::text[]
+             when 'desktop_ui' then array[]::text[]
+             else array[e.raw] end) as u(name)
+       where u.name not in ('todo', 'clarify')
+     ) m
+   ), updated_at = now()
+   where s.key = 'agents.mandatory_disabled_toolsets'
+     and jsonb_typeof(s.value) = 'array'
+     and s.value ?| array['debugging', 'safe', 'search', 'coding', 'project', 'desktop_ui']`,
+  // ── Skills marketplace: Hermes' official index, mirrored (2026-10-22) ───
+  // The marketplace scraped a third-party site's HTML for a ranked list of
+  // repos. Hermes publishes its own skills index (the JSON its own skills
+  // search reads, rebuilt daily): one row per skill with its source, trust
+  // level and GitHub location. The skills-index-refresh job mirrors the rows
+  // Talaria can install into this table and the picker searches it here.
+  // identifier is Hermes' own and the install's only input; path is the
+  // skill directory inside repo (exact = false marks a skills.sh slug the
+  // index never resolved, found by name at fetch time); rank is the index's
+  // own order, which lists Hermes' official skills first.
+  `create table if not exists skills_index_entries (
+     identifier text primary key,
+     name text not null,
+     description text not null default '',
+     source text not null,
+     trust_level text not null default 'community',
+     repo text not null,
+     path text not null default '',
+     exact boolean not null default true,
+     tags jsonb not null default '[]'::jsonb,
+     rank integer not null default 0,
+     synced_at timestamptz not null default now(),
+     search tsvector generated always as (
+       setweight(to_tsvector('simple', coalesce(name, '')), 'A') ||
+       setweight(to_tsvector('simple', tags), 'B') ||
+       setweight(to_tsvector('simple', replace(replace(repo, '/', ' '), '-', ' ')), 'B') ||
+       setweight(to_tsvector('simple', coalesce(description, '')), 'C')
+     ) stored
+   )`,
+  `create index if not exists skills_index_entries_search_idx on skills_index_entries using gin (search)`,
+  `create index if not exists skills_index_entries_rank_idx on skills_index_entries (rank)`,
+  // ── Every agent call is metered at the relay (2026-10-22) ──────────────
+  // THE CONVERSATION A CALL BELONGS TO. Hermes stamps every LLM call it makes
+  // with `x-talaria-session` (the rendered `providers.talaria`
+  // `session_affinity_header`): the main loop, compression, titles, vision,
+  // a delegated subagent (its parent's key) and a cron (`cron_<job id>`).
+  // The relay books one row per upstream call and keeps that key on it, so a
+  // cron's spend is per job and a turn's rows can be joined to the flow that
+  // drove it. Null on rows from before, on operator keys, and on an agent
+  // call made outside any conversation.
+  `alter table usage_events add column if not exists affinity_key text`,
+  `create index if not exists usage_events_affinity_idx
+     on usage_events (agent_model, affinity_key) where affinity_key is not null`,
+  // WHICH FLOW A KEY BELONGS TO. The chat transport writes one row per key
+  // a Talaria-driven turn runs under — a pinned conversation's id, a work
+  // session's run id, the completions arm's `X-Hermes-Session-Id` — and the
+  // relay copies `source`/`ref_id`/`task_id` from it onto every row it books
+  // under that key. This replaced the flow-level ledger rows (one per turn,
+  // from Hermes' main-loop counters) and the Redis turn register that made
+  // the relay skip every call while a turn was open.
+  `create table if not exists usage_attributions (
+     agent_model text not null,
+     affinity_key text not null,
+     source text not null,
+     ref_id uuid,
+     task_id uuid,
+     updated_at timestamptz not null default now(),
+     primary key (agent_model, affinity_key)
+   )`,
+  // WHICH CONVERSATION A HERMES KEY NAMES. On v0.22 the key Hermes stamps on
+  // a Talaria-driven turn's calls is its own digest (`gwk_…`) of the session's
+  // route, computable only inside Hermes. The agent's talaria-events plugin
+  // reads it at the start of each turn and reports it with the conversation's
+  // own id (POST /api/agents/affinity); the relay follows this row to the
+  // conversation's `usage_attributions` row.
+  `create table if not exists usage_affinity_keys (
+     agent_model text not null,
+     affinity_key text not null,
+     conversation_key text not null,
+     updated_at timestamptz not null default now(),
+     primary key (agent_model, affinity_key)
+   )`,
+  // TALARIA'S OWN ENTRY LEAVES `gateway_unmetered_keys`. Every render used to
+  // force the personas' fleet-wide key (`fleet-gateway`) onto that list, so
+  // the relay would skip the calls a chat flow ledgered as one row. No flow
+  // ledgers an agent's spend now, and that key is still what agents run on
+  // for a render whose per-agent keys could not be minted. Left on the list,
+  // those calls would be booked nowhere. Only that one entry goes; an
+  // operator's own entries stand. The relay reads this key through its 15s
+  // hot-settings window, which bounds how long a running api serves the old
+  // list after boot.
+  `update app_settings
+     set value = coalesce((
+       select jsonb_agg(v)
+       from jsonb_array_elements(value) as t(v)
+       where v #>> '{}' <> 'fleet-gateway'
+     ), '[]'::jsonb),
+     updated_at = now()
+   where key = 'gateway_unmetered_keys'
+     and jsonb_typeof(value) = 'array'
+     and value @> '["fleet-gateway"]'::jsonb`,
+  // ── The workbench's PR and repo-request fixes (2026-10-22) ──────────────
+  // THE PR A JOB OPENED, BY NUMBER. finish_job returned prNumber and kept
+  // only the URL, so pr_status and a revise round (which reuses the open PR
+  // instead of asking GitHub for a second one) had to parse it back out.
+  // Null on older rows; readers fall back to the URL.
+  `alter table workbench_jobs add column if not exists pr_number bigint`,
+  // WHAT A REPO REQUEST ASKS FOR, AND WHO IT IS FOR. `visibility` is what
+  // the approval creates (private unless the agent or the approver says
+  // public); `app_slug` names the Talaria app the repo will hold, when it
+  // will; `responsible_user_id` is the human the agent answered to when it
+  // asked (the attribution ladder), so a repo minted for an agent has a
+  // person behind it; `decision_note` is the approver's reason, which a
+  // rejection also posts on the requesting ticket and list_repos reports.
+  `alter table workbench_repo_requests add column if not exists visibility text not null default 'private'`,
+  `alter table workbench_repo_requests add column if not exists app_slug text`,
+  `alter table workbench_repo_requests
+     add column if not exists responsible_user_id uuid references users(id) on delete set null`,
+  `alter table workbench_repo_requests add column if not exists decision_note text`,
+  // WHY AN APP'S MCP SERVER IS NOT SERVING. An app that is turned off, fails
+  // its build or loses its mcp.ts used to have its server row DELETED, and the
+  // delete cascaded every agent assignment, team grant and user grant on it:
+  // a build that broke for an hour cost an admin every grant they had made.
+  // Now the row stays and this column says why it is off; agents stop
+  // carrying it, and it serves again, grants intact, when the app does.
+  // Written only by talaria-apps `sync_app_mcp_servers`. Kept apart from
+  // `enabled`, which is the admin's own switch and which the sync no longer
+  // touches on an existing row. Null = serving (always null for a non-app row).
+  `alter table mcp_servers add column if not exists app_off text`,
+  // WHERE EACH INSTALLED APP'S CODE CAME FROM, AND WHICH COMMIT RUNS. Install
+  // from git records the repository (host + path), the ref asked for (null =
+  // the default branch) and the commit fetched; update moves sha and keeps
+  // the commit it replaced in previous_sha (the tree apps/.<slug>.prev
+  // holds). secret names the workspace secret a host other than the GitHub
+  // connection's is read with — a name, never a value. Written only by
+  // talaria-apps (install_app, update_app, uninstall_app); replaces the
+  // apps_installed setting, which kept a URL and a time and no commit.
+  `create table if not exists app_sources (
+     slug text primary key,
+     url text not null,
+     host text not null,
+     repo text not null,
+     git_ref text,
+     sha text,
+     previous_sha text,
+     secret text,
+     installed_at timestamptz not null default now(),
+     installed_by text,
+     updated_at timestamptz not null default now(),
+     updated_by text
+   )`,
+  // ── App triggers (2026-10-26) ─────────────────────────────────────────────
+  // WHEN EACH SCHEDULED TRIGGER WAS ARMED, AND THE LAST MINUTE IT FIRED FOR.
+  // One row per `cron` trigger of an enabled app with a ready build, written
+  // only by talaria-app-triggers' tick: a trigger seen for the first time is
+  // armed now, so installing a nightly job at noon does not fire the 3am it
+  // "missed"; a changed schedule (an update) re-arms; a row whose app was
+  // disabled, failed or uninstalled is deleted, so turning it back on re-arms
+  // rather than catching up. `last_due_at` is the claim: an instance fires a
+  // minute only by moving it forward, so two api processes never fire one
+  // minute twice.
+  `create table if not exists app_trigger_state (
+     app_slug text not null,
+     trigger_id text not null,
+     cron text not null,
+     armed_at timestamptz not null default now(),
+     last_due_at timestamptz,
+     primary key (app_slug, trigger_id)
+   )`,
+  // EVERY RUN OF AN APP'S TRIGGER: what started it (a schedule's minute, or a
+  // platform event and its ids), how it went, and the app's own sentence or
+  // the error. Manage → Apps shows each trigger's latest runs from here. A
+  // run is queued, then running while the app host runs the handler, then
+  // ok, failed or skipped (the app was turned off before it ran). `due_at`
+  // is the schedule's minute, unique per trigger as a second guard against a
+  // double fire; null for an event's run. Kept two weeks; an uninstalled
+  // app's go with it.
+  `create table if not exists app_trigger_runs (
+     id uuid primary key default gen_random_uuid(),
+     app_slug text not null,
+     trigger_id text not null,
+     kind text not null check (kind in ('cron', 'event')),
+     event text,
+     payload jsonb not null default '{}'::jsonb,
+     due_at timestamptz,
+     state text not null default 'queued' check (state in ('queued', 'running', 'ok', 'failed', 'skipped')),
+     queued_at timestamptz not null default now(),
+     started_at timestamptz,
+     finished_at timestamptz,
+     detail text,
+     error text,
+     attempts integer not null default 0
+   )`,
+  `create unique index if not exists app_trigger_runs_due_idx
+     on app_trigger_runs (app_slug, trigger_id, due_at) where due_at is not null`,
+  `create index if not exists app_trigger_runs_recent_idx
+     on app_trigger_runs (app_slug, trigger_id, queued_at desc)`,
+  `create index if not exists app_trigger_runs_open_idx
+     on app_trigger_runs (queued_at) where state in ('queued', 'running')`,
+  // ── Plugins: installed apps an agent maintains (2026-10-26) ─────────────
+  // A PLUGIN is an installed app with people and an agent behind it: the
+  // Developer Agent that maintains it, the user it was built for, and the
+  // board the ticket that started it lives on (where maintenance tickets
+  // go). Where its code comes from is NOT repeated here: repo, ref and the
+  // installed commit are the app's `app_sources` row, and this row goes with
+  // it when the app is uninstalled. `git_host_id` names the git host ('github'
+  // today; the git-host registry fills it in later). `update_policy` is the
+  // admin's: 'approve' (every update waits for an admin) or 'auto'. Written
+  // only by talaria-plugins.
+  `create table if not exists plugins (
+     app_slug text primary key references app_sources(slug) on delete cascade,
+     git_host_id text,
+     maintainer_agent_id uuid references agent_defs(id) on delete set null,
+     owner_user_id uuid references users(id) on delete set null,
+     board_id uuid references boards(id) on delete set null,
+     task_id uuid references tasks(id) on delete set null,
+     update_policy text not null default 'approve' check (update_policy in ('approve', 'auto')),
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // AN AGENT ASKS FOR ITS APP TO BE INSTALLED (`request_app_install`), and an
+  // admin decides. Approval installs and nothing more: enabling the app and
+  // granting its surfaces stay admin steps. `result` is the sentence the
+  // decision left on the ticket (the install's outcome or its error);
+  // `status` is pending | approved | failed | rejected.
+  `create table if not exists app_install_requests (
+     id uuid primary key default gen_random_uuid(),
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     agent_model text not null,
+     repo text not null,
+     url text not null,
+     git_ref text,
+     why text not null default '',
+     task_id uuid references tasks(id) on delete set null,
+     board_id uuid references boards(id) on delete set null,
+     owner_user_id uuid references users(id) on delete set null,
+     status text not null default 'pending',
+     decided_by text,
+     decision_note text,
+     result text,
+     app_slug text,
+     installed_sha text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // WHETHER A REPO TALARIA CREATED HAS ITS DEFAULT BRANCH PROTECTED. The
+  // approver chooses (on by default); `protected` is what GitHub answered
+  // (null: not asked, or approved before the choice existed) and
+  // `protection_note` says why it is not, when it is not.
+  `alter table workbench_repo_requests add column if not exists protected boolean`,
+  `alter table workbench_repo_requests add column if not exists protection_note text`,
+  // ── Plugin upkeep: the maintenance pass in the workbench job sweep ──────
+  // WHAT THE PASS LAST SAW OF A PLUGIN, so a change it reports is reported
+  // once: `okHost` is the host build the app last built on (a later failure
+  // on another host build is a break after the host upgrade), `bands` the
+  // plugin's harness columns in Models → Fitness at the last pass (a worse
+  // band is an eval regression). Written only by talaria-plugins.
+  `alter table plugins add column if not exists upkeep jsonb not null default '{}'::jsonb`,
+  // EACH OPEN PR ON A PLUGIN'S REPO, as the pass last read it. The two
+  // `*_signalled` markers are what was already reported to the maintainer —
+  // the head commit whose checks failed, the change request by when it was
+  // submitted — so the same failure never wakes the agent twice, and a fix
+  // pushed under a standing change request does not wake it either.
+  // `update_named` marks a merged PR an update approval has already named.
+  `create table if not exists plugin_pr_watch (
+     app_slug text not null references plugins(app_slug) on delete cascade,
+     pr_number bigint not null,
+     head_sha text,
+     state text not null default 'open',
+     checks text,
+     review text,
+     checks_signalled text,
+     review_signalled text,
+     update_named boolean not null default false,
+     task_id uuid references tasks(id) on delete set null,
+     seen_at timestamptz not null default now(),
+     primary key (app_slug, pr_number)
+   )`,
+  // AN UPDATE WAITING FOR AN ADMIN (the `app_update` approval), raised when a
+  // plugin's branch moves past the installed commit. One open per plugin —
+  // it follows the branch while it waits. `status` is pending | updating |
+  // applied | failed | rejected | superseded; an `auto` plugin's updates are
+  // recorded here already decided (`decided_by` 'auto'), so a commit that
+  // failed to apply is not retried every ten minutes.
+  `create table if not exists app_update_requests (
+     id uuid primary key default gen_random_uuid(),
+     app_slug text not null references plugins(app_slug) on delete cascade,
+     target_sha text not null,
+     git_ref text,
+     prs jsonb not null default '[]'::jsonb,
+     status text not null default 'pending',
+     decided_by text,
+     decision_note text,
+     result text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists app_update_requests_one_open
+     on app_update_requests (app_slug) where status in ('pending', 'updating')`,
+  // THE TICKETS THE PASS FILED, and the "Request a change" tickets people
+  // filed, per plugin. The pass files at most one OPEN ticket per plugin per
+  // kind (build_failed, host_upgrade, eval_regression); change_request is a
+  // person's and is never deduplicated.
+  `create table if not exists plugin_notices (
+     id uuid primary key default gen_random_uuid(),
+     app_slug text not null references plugins(app_slug) on delete cascade,
+     kind text not null,
+     task_id uuid references tasks(id) on delete set null,
+     detail text not null default '',
+     created_by text,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists plugin_notices_by_kind on plugin_notices (app_slug, kind)`,
+  // THE MARKETPLACE CATALOGS, a list the operator fills (talaria-apps
+  // `catalog`). Discover read ONE url, `apps_catalog_url`, defaulting to
+  // Outcrop's registry. The insert below moves that url in as the first row —
+  // or, with none set, seeds Outcrop's registry — so no install loses what its
+  // Discover tab showed. It is the ONLY place a catalog is ever added for the
+  // operator: no code re-seeds, so an operator who removes every catalog gets
+  // an empty Discover tab that says so. The old setting is left where it was
+  // and nothing reads it.
+  `create table if not exists app_catalogs (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     url text not null unique,
+     enabled boolean not null default true,
+     position integer not null default 0,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `insert into app_catalogs (name, url, position, created_by)
+   select case when c.url = 'https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json'
+               then 'Outcrop Labs'
+               else coalesce(nullif(split_part(split_part(c.url, '://', 2), '/', 1), ''), 'Catalog') end,
+          c.url, 0, 'migration'
+     from (select coalesce(
+             (select nullif(btrim(value #>> '{}'), '') from app_settings
+               where key = 'apps_catalog_url' and jsonb_typeof(value) = 'string'),
+             'https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json') as url) c
+    where not exists (select 1 from app_catalogs)`,
+  // ── The Hermes thread a conversation's completions turns open on ────────
+  // Hermes files a header-less /v1/chat/completions turn under a session it
+  // derives from the turn's opening (the system rows and the first user
+  // message), so a conversation keeps one derived session for life. When the
+  // agent dies mid-turn, v0.22 fences that session's head as `unknown` and
+  // refuses every later turn on it, keeping each refusal queued behind it.
+  // The gateway's repair sends the refused turn again with one more system
+  // row in its opening (talaria-gateway `fleet_chat::Thread`), which lands it
+  // on a fresh derived session, and this is the number in that row: 0 is the
+  // opening as Talaria sends it, so every conversation that never lost a
+  // turn keeps the session it always had. Kept here so the conversation's
+  // next turn opens on the fresh session instead of being refused once more.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `alter table conversations add column if not exists hermes_epoch integer not null default 0`,
+  // A THREAD SCHEDULE'S QUIET RUNS. The cron prompt tells an agent to answer
+  // exactly [SILENT] when there is nothing new, and Hermes then skips its own
+  // delivery; Talaria's two roads for a thread schedule's report (the
+  // talaria-events push and the cron-output pull) see the text before or
+  // without that decision, so they read the sentinel themselves, land no
+  // message, and record the run here as delivered silent. The pull reads
+  // these rows as "already delivered", exactly like a message row, so a quiet
+  // run is never taken for a report the push lost.
+  //
+  // KEYED (conversation_id, run_key): run_key is what the two roads dedupe
+  // on, the Hermes session id, or the push's own marker when the plugin sent
+  // no session. job_id serves the pull's window check for those. Rows older
+  // than the pull's look-back can never be consulted again; the pull drops
+  // them each pass (created_at index). Cascade-deleted with the thread.
+  //
+  // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
+  `create table if not exists cron_silent_runs (
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     run_key text not null,
+     job_id text not null,
+     agent_model text not null,
+     via text not null,
+     created_at timestamptz not null default now(),
+     primary key (conversation_id, run_key)
+   )`,
+  `create index if not exists cron_silent_runs_created_idx on cron_silent_runs (created_at)`,
+  // ── Git hosts: the git providers an operator chose (2026-10-27) ─────────
+  // OPERATORS CHOOSE THEIR PROVIDERS. Each row is one git host Talaria works
+  // repositories on (talaria-git-hosts): a kind with an adapter ('github' —
+  // github.com or an Enterprise Server — or 'forgejo', which serves Gitea
+  // too), a display name, the web origin git and the credential helper name
+  // it by (one row per origin), an optional REST origin override, the orgs
+  // agents may ask for new repositories under, and `auth`. A GitHub row's
+  // `auth` is its App / PAT config with the secrets SEALED (the shape
+  // `app_settings.github_config` held); every other kind names a workspace
+  // secret there (`{"secret": "<name>"}`) and the token stays in the secret
+  // store. `id` is the short slug the workbench tables reference.
+  `create table if not exists git_hosts (
+     id text primary key check (id ~ '^[a-z0-9][a-z0-9-]{0,39}$'),
+     kind text not null check (kind in ('github', 'forgejo')),
+     name text not null,
+     base_url text not null,
+     api_url text,
+     auth jsonb not null default '{}'::jsonb,
+     repo_creation_orgs text[] not null default '{}',
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // EXISTING INSTALLS KEEP WORKING WITH NO OPERATOR ACTION: the one GitHub
+  // connection becomes the `github` row — its sealed config moved as is, its
+  // repo-creation orgs into the column — and a fresh install gets the same
+  // row unconfigured, which is what the GitHub panel always showed before it
+  // was connected. An operator who works only elsewhere removes it.
+  `insert into git_hosts (id, kind, name, base_url, auth, repo_creation_orgs)
+   select 'github', 'github', 'GitHub', 'https://github.com',
+          coalesce((select case when jsonb_typeof(value) = 'object' then value - 'repoCreationOrgs' end
+                      from app_settings where key = 'github_config'), '{}'::jsonb),
+          coalesce((select array(select jsonb_array_elements_text(value -> 'repoCreationOrgs'))
+                      from app_settings where key = 'github_config'
+                       and jsonb_typeof(value -> 'repoCreationOrgs') = 'array'), '{}')
+   on conflict (id) do nothing`,
+  // The credential lives in exactly one place: the row now holds it.
+  `delete from app_settings where key = 'github_config'`,
+  // EVERY WORKBENCH ROW THAT NAMES A REPO NAMES ITS HOST — the same owner/name
+  // on two hosts is two repositories. Backfilled to the `github` row (every
+  // repo before the registry was on GitHub), then the default is dropped: a
+  // new row says which host it means.
+  `alter table workbench_repos add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table workbench_repos alter column host_id drop default`,
+  `alter table workbench_repos drop constraint if exists workbench_repos_pkey`,
+  `alter table workbench_repos add constraint workbench_repos_pkey primary key (agent_id, host_id, repo)`,
+  `alter table workbench_repo_flow add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table workbench_repo_flow alter column host_id drop default`,
+  `alter table workbench_repo_flow drop constraint if exists workbench_repo_flow_pkey`,
+  `alter table workbench_repo_flow add constraint workbench_repo_flow_pkey primary key (host_id, repo)`,
+  `alter table workbench_jobs add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table workbench_jobs alter column host_id drop default`,
+  `alter table workbench_repo_requests add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table workbench_repo_requests alter column host_id drop default`,
+  `alter table app_install_requests add column if not exists host_id text not null default 'github' references git_hosts(id)`,
+  `alter table app_install_requests alter column host_id drop default`,
+  // A plugin's `git_host_id` (filled 'github' or null before the registry)
+  // now references a real row.
+  `update plugins set git_host_id = null
+    where git_host_id is not null and git_host_id not in (select id from git_hosts)`,
+  `alter table plugins add constraint plugins_git_host_id_fkey foreign key (git_host_id) references git_hosts(id)`,
+  // ── Push subscriptions know their session and their health (2026-10-31) ──
+  // `session_hash` is the hex SHA-256 of the session that filed the row (the
+  // id itself is a credential and is never stored): signing out deletes this
+  // browser's row and no other. `failures` counts consecutive failed
+  // deliveries (2xx resets it; three refusals in a row prune the row), and
+  // `last_status` / `last_error` / `last_attempt_at` record the latest
+  // attempt — what a devices panel reads to say why a browser stopped
+  // getting alerts. ADD COLUMN with a constant default is metadata-only on
+  // PG 11+, so this does not rewrite the table.
+  //
+  // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
+  `alter table push_subscriptions
+     add column if not exists session_hash text,
+     add column if not exists failures int not null default 0,
+     add column if not exists last_status int,
+     add column if not exists last_error text,
+     add column if not exists last_attempt_at timestamptz`,
+  `create index if not exists push_subscriptions_session_idx
+     on push_subscriptions (session_hash) where session_hash is not null`,
+  // ── The notification contract (2026-10-31) ───────────────────────────────
+  // Wave 2's one DDL block (docs/notifications/contract.md). NO BACKFILL, on
+  // purpose: `seq` stays NULL on every row filed before it (those rows keep
+  // wave 1's arrival rule), the class is derived from `kind` at read time (a
+  // stored class would need a full-table UPDATE and go stale on a remap), and
+  // an open pre-contract row joins a group by adoption at write time. So every
+  // ADD COLUMN below is metadata-only on PG 11+ (constant or NULL defaults),
+  // and the cost is five CREATE INDEX scans, each under a SHARE lock that
+  // holds writers — measured at 1,000,000 rows / 200 users before this
+  // landed: under a second each, the whole block under 4 s, the longest
+  // writer stall under 0.9 s.
+  //
+  // 1 · users.notify_seq — the per-user, COMMIT-ORDERED cursor. Every alerting
+  //     write bumps it in its own transaction (the row lock serializes one
+  //     person's writers), so a snapshot that sees notify_seq = N sees every
+  //     row with seq <= N.
+  `alter table users add column if not exists notify_seq bigint not null default 0`,
+  // 2 · the row, v2: its seq, the coalescing key and count, the alert level
+  //     ('banner' | 'feed'; NULL = a legacy row = banner), who and what it is
+  //     about, Done (archived_at), the client ack (surfaced_at), and the
+  //     due/done pairs the deferred push and the missed-activity mail scan.
+  `alter table notifications
+     add column if not exists seq bigint,
+     add column if not exists group_key text,
+     add column if not exists count int not null default 1,
+     add column if not exists updated_at timestamptz,
+     add column if not exists alert text,
+     add column if not exists actor_kind text,
+     add column if not exists actor_id text,
+     add column if not exists actor_label text,
+     add column if not exists entity_type text,
+     add column if not exists entity_id text,
+     add column if not exists archived_at timestamptz,
+     add column if not exists surfaced_at timestamptz,
+     add column if not exists push_due_at timestamptz,
+     add column if not exists pushed_at timestamptz,
+     add column if not exists email_due_at timestamptz,
+     add column if not exists emailed_at timestamptz,
+     add column if not exists email_attempts int not null default 0`,
+  // 3 · seq is unique per person — and a writer bug that reused one fails loud.
+  `create unique index if not exists notifications_user_seq_idx
+     on notifications (user_id, seq) where seq is not null`,
+  // 4 · the coalescing target: at most one OPEN row per (person, group key).
+  //     A read or archived row leaves the predicate, so the next write files
+  //     a fresh row.
+  `create unique index if not exists notifications_open_group_idx
+     on notifications (user_id, group_key)
+     where group_key is not null and read_at is null and archived_at is null`,
+  // 5 · resolve_entity across recipients (an approval decided, an MCP server
+  //     back up).
+  `create index if not exists notifications_entity_open_idx
+     on notifications (entity_type, entity_id) where entity_id is not null and read_at is null`,
+  // 6, 7 · the two due-work scans.
+  `create index if not exists notifications_push_due_idx
+     on notifications (push_due_at) where push_due_at is not null and pushed_at is null`,
+  `create index if not exists notifications_email_due_idx
+     on notifications (email_due_at) where email_due_at is not null and emailed_at is null`,
+  // 8 · a channel's notify level (NULL = the channel type's default: DMs all,
+  //     channels mentions) and its timed mute.
+  `alter table channel_members
+     add column if not exists notify_level text,
+     add column if not exists muted_until timestamptz`,
+  // 9 · a device's name in the devices list.
+  `alter table push_subscriptions add column if not exists user_agent text`,
+  // ── The git-hosts move, made roll-safe (2026-11-02) ──────────────────────
+  // The 2026-10-27 block above shipped contract steps WITH the code that
+  // stopped reading the old shapes: it deleted `app_settings.github_config`
+  // after moving it into the `github` row, dropped the 'github' default from
+  // every host_id, and re-keyed workbench_repos and workbench_repo_flow. The
+  // previous release serves on this schema during a roll's drain, after an
+  // aborted roll (its migrations stay applied) and after Roll back
+  // (docs/UPDATES.md, the overlap contract), and it reads that setting and
+  // inserts workbench rows without a host. So it saw GitHub as not connected
+  // and every grant, job and repo request it filed failed NOT NULL. These
+  // statements put back what it reads, for one release. The contract (drop
+  // the two mirrors below, delete the setting, drop the defaults) ships in
+  // the release after this one.
+  //
+  // One thing stays broken on the previous release and is documented
+  // instead: its flow edit upserts ON CONFLICT (repo), and a unique index on
+  // the repo alone would refuse the same owner/name on two hosts.
+  //
+  // 1 · The previous release's GitHub config, copied back from the row it
+  //     moved to. The sealed values are the same tokens (each one names the
+  //     DEK version that sealed it, and every version is kept), and the
+  //     repo-creation orgs fold back into the object they came out of. Only a
+  //     configured row is copied: an empty one reads the same as no setting.
+  `insert into app_settings (key, value, updated_at)
+   select 'github_config',
+          auth || jsonb_build_object('repoCreationOrgs', to_jsonb(repo_creation_orgs)),
+          now()
+     from git_hosts
+    where id = 'github' and kind = 'github'
+      and jsonb_typeof(auth) = 'object' and auth <> '{}'::jsonb
+   on conflict (key) do nothing`,
+  // 2 · A workbench row the previous release files names no host. Every repo
+  //     it knew was on GitHub, so the default is the `github` row again. This
+  //     release names the host on every insert, so the default changes
+  //     nothing here.
+  `alter table workbench_repos alter column host_id set default 'github'`,
+  `alter table workbench_repo_flow alter column host_id set default 'github'`,
+  `alter table workbench_jobs alter column host_id set default 'github'`,
+  `alter table workbench_repo_requests alter column host_id set default 'github'`,
+  // 3 · The two copies stay one value while both releases can run. A write
+  //     to the `github` row (this release: connect, rotate, clear) rewrites
+  //     the setting, and removing the row empties it. A write to the setting
+  //     (the previous release's GitHub panel) rewrites the row, or creates it
+  //     when an operator had removed it. pg_trigger_depth() stops the
+  //     ping-pong: a write made by one mirror does not fire the other. Each
+  //     copy is rewritten only when it differs.
+  `create or replace function talaria_github_host_to_setting() returns trigger as $$
+     begin
+       if pg_trigger_depth() > 1 then
+         return null;
+       end if;
+       if tg_op = 'DELETE' then
+         if old.id = 'github' then
+           update app_settings set value = '{}'::jsonb, updated_at = now()
+            where key = 'github_config' and value <> '{}'::jsonb;
+         end if;
+         return null;
+       end if;
+       if new.id = 'github' and new.kind = 'github' and jsonb_typeof(new.auth) = 'object' then
+         insert into app_settings (key, value, updated_at)
+         values ('github_config',
+                 new.auth || jsonb_build_object('repoCreationOrgs', to_jsonb(new.repo_creation_orgs)),
+                 now())
+         on conflict (key) do update set value = excluded.value, updated_at = now()
+          where app_settings.value is distinct from excluded.value;
+       end if;
+       return null;
+     end;
+   $$ language plpgsql`,
+  `create or replace function talaria_github_setting_to_host() returns trigger as $$
+     begin
+       if pg_trigger_depth() > 1 or jsonb_typeof(new.value) <> 'object' then
+         return null;
+       end if;
+       insert into git_hosts (id, kind, name, base_url, auth, repo_creation_orgs)
+       values ('github', 'github', 'GitHub', 'https://github.com',
+               new.value - 'repoCreationOrgs',
+               case when jsonb_typeof(new.value -> 'repoCreationOrgs') = 'array'
+                    then array(select jsonb_array_elements_text(new.value -> 'repoCreationOrgs'))
+                    else '{}'::text[] end)
+       on conflict (id) do update
+          set auth = excluded.auth, repo_creation_orgs = excluded.repo_creation_orgs, updated_at = now()
+        where git_hosts.kind = 'github'
+          and (git_hosts.auth, git_hosts.repo_creation_orgs)
+              is distinct from (excluded.auth, excluded.repo_creation_orgs);
+       return null;
+     end;
+   $$ language plpgsql`,
+  `drop trigger if exists git_hosts_github_mirror on git_hosts`,
+  `create trigger git_hosts_github_mirror
+     after insert or update or delete on git_hosts
+     for each row execute function talaria_github_host_to_setting()`,
+  `drop trigger if exists app_settings_github_mirror on app_settings`,
+  `create trigger app_settings_github_mirror
+     after insert or update on app_settings
+     for each row when (new.key = 'github_config')
+     execute function talaria_github_setting_to_host()`,
+  // ── Unpriced cloud usage (2026-11-03) ────────────────────────────────────
+  // The priced view (api talaria-gateway usage.rs) reads all three.
+  //
+  // 1 · A published price's own cache rates. OpenRouter's catalog and its
+  //     per-endpoint lists publish `input_cache_write` / `input_cache_read`
+  //     beside prompt/completion; the view bills cache tokens at them and
+  //     falls back to the 1.25x / 0.1x multipliers only when a rate is null.
+  `alter table provider_prices
+     add column if not exists price_cache_write_per_mtok numeric,
+     add column if not exists price_cache_read_per_mtok numeric`,
+  // 2 · An admin's pricing decision for usage no published price covers:
+  //     'manual' (a rate per 1M input / output / cache-write / cache-read
+  //     tokens) or 'included' (a plan or free tier — $0, labelled, never a
+  //     silent zero). Keyed by the ledger's own (endpoint, model) text, '' for
+  //     a row booked with no endpoint, so it prices history whose endpoint was
+  //     since deleted or never recorded. No foreign key on purpose: the usage
+  //     it prices outlives the endpoint row.
+  `create table if not exists model_price_overrides (
+     endpoint text not null,
+     model text not null,
+     mode text not null check (mode in ('manual', 'included')),
+     price_in_per_mtok numeric,
+     price_out_per_mtok numeric,
+     price_cache_write_per_mtok numeric,
+     price_cache_read_per_mtok numeric,
+     note text,
+     set_by text,
+     updated_at timestamptz not null default now(),
+     primary key (endpoint, model),
+     check (mode = 'included' or (price_in_per_mtok is not null and price_out_per_mtok is not null))
+   )`,
+  // 3 · What the price oracle last concluded for one endpoint's model, and
+  //     why: 'priced', 'no_match' (detail = the ids it tried) or
+  //     'source_failed' (detail = the source's own error). The unpriced list
+  //     reads it as each model's reason.
+  `create table if not exists price_lookups (
+     endpoint_id uuid not null references llm_endpoints(id) on delete cascade,
+     model text not null,
+     outcome text not null check (outcome in ('priced', 'no_match', 'source_failed')),
+     detail text,
+     source text not null,
+     checked_at timestamptz not null default now(),
+     primary key (endpoint_id, model)
+   )`,
+  // Per-thread read cursors — the thread-panel twin of channel_members'
+  // last_read_seq. Reading a thread is not reading the channel: replies share
+  // the channel's own seq counter (insert_channel_message draws every seq
+  // from channels.msg_seq), but the channel cursor advances only on the main
+  // feed the panel is opened from. This row says "this person has read this
+  // thread this far": monotonic by contract (greatest, never backwards —
+  // mark_channel_thread_read), and a missing row means no thread cursor, so
+  // the reply counts unread the way it always did.
+  `create table if not exists channel_thread_reads (
+     thread_root_id uuid not null references channel_messages(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     last_read_seq integer not null default 0,
+     updated_at timestamptz not null default now(),
+     primary key (thread_root_id, user_id)
+   )`,
+  // The viewer's own thread cursors, as the unread predicates read them: the
+  // rail's queries negate `thread_read_covers_sql!` as a top-level `not
+  // exists`, which Postgres plans as an anti-join against this person's rows.
+  // Keyed (user_id, thread_root_id) with the cursor included, that side is an
+  // index-only read. The PK leads with the thread, so it cannot serve it, nor
+  // the users ON DELETE cascade, which otherwise scans the whole table.
+  `create index if not exists channel_thread_reads_user_idx
+     on channel_thread_reads (user_id, thread_root_id) include (last_read_seq)`,
+  // ── Negative "prices" (2026-11-03, follow-up to #682) ───────────────────────
+  // OpenRouter's catalog prices its routers (openrouter/auto, /fusion,
+  // nvidia/switchyard …) at "-1" — "variable", not -$1 per token — and the
+  // price oracle stored that as a model-level row. #682 let the priced view
+  // read model-level rows on OpenRouter, so those rows priced calls at about
+  // minus their token count in dollars and drove every USD budget negative.
+  // The oracle now refuses a negative or non-finite number and the view
+  // reads none; this removes the rows already stored.
+  `-- deliberate: a negative rate is never a price (OpenRouter's "-1" means variable); the
+   -- next price pass records those models as variable-priced instead
+   delete from provider_prices
+    where price_in_per_mtok < 0 or price_out_per_mtok < 0
+       or price_cache_write_per_mtok < 0 or price_cache_read_per_mtok < 0`,
+  // The oracle's new outcome for them: the catalog lists the model with a
+  // variable price, so it stays unpriced and the panel says why.
+  `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
+  `alter table price_lookups add constraint price_lookups_outcome_check
+     check (outcome in ('priced', 'no_match', 'source_failed', 'variable'))`,
+  // A ticket's old ref, after it moved boards (POST /api/tasks/{id}/move).
+  // A move re-keys the ticket on its new board's counter; the (board,
+  // number) it carried stays here so `PLAT-118` pasted into a doc, a chat or
+  // an agent's memory still opens it (talaria-tasks `resolve_task_id` reads
+  // this when no live ticket holds the ref). The board's CURRENT prefix
+  // spells the ref, as for a live ticket. Both sides cascade: a deleted board
+  // retires its old refs, a deleted ticket its aliases.
+  `create table if not exists task_ref_aliases (
+     board_id uuid not null references boards(id) on delete cascade,
+     ticket_no integer not null,
+     task_id uuid not null references tasks(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (board_id, ticket_no)
+   )`,
+  `create index if not exists task_ref_aliases_task_idx on task_ref_aliases (task_id)`,
+  // ── How sure a catalog match is (2026-11-03, #682 review) ─────────────────
+  // A catalog price records the entry it came from and how the model's id
+  // reached it: 'exact', 'alias' (a stripped :tag, date or -latest) or
+  // 'segment' (the last path segment). The priced view lets an admin's
+  // manual rate beat a fuzzy match but not an exact one; null (a provider's
+  // own price list, or a row from before this) reads as exact.
+  `alter table provider_prices
+     add column if not exists matched_id text,
+     add column if not exists match_kind text`,
+  // A match the oracle will not apply (another host's model found by its
+  // last segment) is offered instead: the entry and its rates.
+  `alter table price_lookups
+     add column if not exists matched_id text,
+     add column if not exists suggest_in_per_mtok numeric,
+     add column if not exists suggest_out_per_mtok numeric,
+     add column if not exists suggest_cache_write_per_mtok numeric,
+     add column if not exists suggest_cache_read_per_mtok numeric`,
+  `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
+  `alter table price_lookups add constraint price_lookups_outcome_check
+     check (outcome in ('priced', 'no_match', 'source_failed', 'variable', 'suggested'))`,
+  //
+  // The agent image follows Hermes' stable channel (talaria-hermes-channel,
+  // docs/ARCHITECTURE.md "The fleet"). One row per image digest this instance
+  // has seen on the channel: the version tag that shares the digest, the
+  // image's own config schema version (read from the image, never assumed),
+  // and whether it ran well here. A digest marked bad is never rolled out
+  // again. Additive only: main never reads either table, so a rollback to it
+  // leaves them unread.
+  `create table if not exists hermes_images (
+     digest text primary key,
+     repository text not null,
+     version text,
+     config_version integer,
+     status text not null default 'candidate'
+       check (status in ('candidate', 'good', 'bad')),
+     reason text,
+     inspect jsonb not null default '{}'::jsonb,
+     pulled_here boolean not null default false,
+     first_seen timestamptz not null default now(),
+     prepared_at timestamptz,
+     good_since timestamptz,
+     updated_at timestamptz not null default now()
+   )`,
+  // Which digest each agent's container was last told to run. An agent with
+  // no row runs the channel's current image (the compiled pin until the
+  // channel has moved). The rollout writes one row per agent it moves.
+  `create table if not exists hermes_agent_images (
+     agent_id uuid primary key references agent_defs(id) on delete cascade,
+     digest text not null,
+     updated_at timestamptz not null default now()
+   )`,
+  // When the agent was last stopped: Talaria's Stop, or a stop the agent image
+  // channel found when it first ran (an agent stopped before it, by hand, or
+  // by compose down). A start clears only a Stop older than its own start.
+  // The channel never starts an agent that is down this way.
+  `alter table agent_defs add column if not exists stopped_at timestamptz`,
+  // The Hermes run id of a work session's newest turn. Dropping the stream
+  // does not end a turn in the agent; a stop has to name it, and the api
+  // process that read the id may be gone by the time a person presses Stop.
+  `alter table runs add column if not exists agent_run_id text`,
+  //
+  // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

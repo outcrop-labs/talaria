@@ -28,17 +28,32 @@
 import { gatewayModels, resolveRoute, type GatewayModel } from '../llm-gateway'
 import { memberModelAllowlist, modelAllowedFor } from '../model-access'
 import { resolveRoleModel, type ModelRole } from '../model-roles'
-import { platformAgentModel, type PlatformAgentId } from '../platform-agents'
+import { PLATFORM_AGENTS, platformAgentModel, type PlatformAgentId } from '../platform-agents'
+import { appHarnessModel } from '../app-harness-models'
 import { getPreferredModel, getUserRole, type Role } from '../users'
 
-export type ModelChainStep = 'pin' | 'role' | 'utility' | 'env' | 'preferred' | 'first-routable'
+export type ModelChainStep = 'pin' | 'slot' | 'role' | 'utility' | 'env' | 'preferred' | 'first-routable'
 
 export interface ModelSpec {
   /** Admin assignment slot on Models -> Platform (server/platform-agents.ts). */
   pin?: PlatformAgentId
+  /** AN APP HARNESS'S OWN MODEL SETTING — `app:<slug>/<harnessId>`, the key
+   *  an admin assigns a model to in Admin → Models → Fitness (stored in the
+   *  `app_harness_models` setting, which the Rust resolver reads too).
+   *
+   *  SET BY THE HOST, NEVER BY THE APP. The bound runner (`ctx.harness`)
+   *  stamps it from the app's slug and the harness id on every run; a value an
+   *  app wrote here is overwritten, because a slot an app could name is a slot
+   *  it could borrow — another app's, or one an admin set for something else.
+   *
+   *  Resolved by the 'slot' step, which runs BEFORE 'role' whatever the chain
+   *  says: an admin's explicit pick for this harness outranks the class of
+   *  work the harness declared. Ungated by the member allowlist, like 'pin':
+   *  an admin's assignment is org policy, not a member's choice. */
+  slot?: string
   /** The model role this harness belongs to (server/model-roles.ts). */
   role?: ModelRole
-  /** Order to try. Default: ['pin','role','utility','env','first-routable'].
+  /** Order to try. Default: ['pin','slot','role','utility','env','first-routable'].
    *
    *  AN EMPTY CHAIN IS A DECLARATION, NOT AN OVERSIGHT, and it is the right one
    *  for every harness whose model comes from the SUBJECT of the call — the
@@ -68,7 +83,50 @@ export interface ModelSpec {
 
 export interface ResolvedHarnessModel { model: string; step: ModelChainStep }
 
-const DEFAULT_CHAIN: ModelChainStep[] = ['pin', 'role', 'utility', 'env', 'first-routable']
+const DEFAULT_CHAIN: ModelChainStep[] = ['pin', 'slot', 'role', 'utility', 'env', 'first-routable']
+
+/** THE SLOT RUNS BEFORE THE ROLE, in any chain. A spec that carries a slot and
+ *  a chain written without one (an app harness declaring `['role',
+ *  'first-routable']`, or `[]`) still gets the admin's pick first: 'slot' goes
+ *  in front of 'role' when the chain has one, else right after 'pin', else
+ *  first. A chain that names 'slot' itself is taken as written. */
+export function chainWithSlot(chain: readonly ModelChainStep[], slot: string | undefined): ModelChainStep[] {
+  if (!slot || chain.includes('slot')) return [...chain]
+  const role = chain.indexOf('role')
+  if (role >= 0) return [...chain.slice(0, role), 'slot', ...chain.slice(role)]
+  const pin = chain.indexOf('pin')
+  return pin >= 0 ? [...chain.slice(0, pin + 1), 'slot', ...chain.slice(pin + 1)] : ['slot', ...chain]
+}
+
+// ── A pin that names no agent ────────────────────────────────────────────────
+//
+// `pin` names a PLATFORM AGENT (Models → Platform), never a model. The two read
+// alike — `pin: 'mockep/mock-1'` looks like "pin this model" — and the chain
+// treats an unknown name as an unassigned agent: the 'pin' step answers
+// nothing, the run falls through to the rest of its chain, and when that
+// routes nothing either the run says only "no model available". So an app
+// harness that pins a model is warned about where it loads (app-harnesses.ts,
+// and the kit's `talaria-app build`, which runs the same check), and a run
+// that finds nothing names the pin. It is a warning, not a refusal: the
+// harness keeps loading and keeps running on whatever else its chain holds.
+
+/** The ids `pin` may name. */
+export const PLATFORM_AGENT_IDS: readonly string[] = PLATFORM_AGENTS.map((a) => a.id)
+
+/** The pin, when it names no platform agent; null when the spec pins nothing
+ *  or pins one. Read off an app's definition, so any value may be here. */
+export function strayPin(spec: { pin?: unknown } | null | undefined): string | null {
+  const pin = spec?.pin
+  return typeof pin === 'string' && !PLATFORM_AGENT_IDS.includes(pin) ? pin : null
+}
+
+/** What to say about a stray pin: what it named, what `pin` takes, and the
+ *  two ways to give an app harness a model. `slot` is the harness's own
+ *  model setting (`app:<slug>/<id>`) when it has one. */
+export function strayPinSentence(harnessId: string, pin: string, slot: string | null | undefined): string {
+  const fix = slot ? `declare model.role, or have an admin assign a model to its slot ${slot} (Admin → Models → Fitness)` : 'declare model.role'
+  return `harness "${harnessId}" pins "${pin}", which names no platform agent — model.pin takes one of ${PLATFORM_AGENT_IDS.join(', ')}, not a model id. To choose a model, ${fix}`
+}
 
 // The reference deployment names its main endpoint model 'pl-main'. Preferring
 // it in the last-resort step reproduces today's behavior on that install
@@ -82,6 +140,10 @@ const LAST_RESORT_PREFERENCE: string[] = ['pl-main']
  *  policy is the part that keeps getting re-derived wrong, and it is pure. */
 export interface HarnessModelDeps {
   platformAgentModel: (id: PlatformAgentId) => Promise<string | null>
+  /** The admin's model for an app harness slot (`app_harness_models`), only
+   *  while it routes. Optional so a test world without app slots needs no
+   *  stub; absent answers null. */
+  appHarnessModel?: (slot: string) => Promise<string | null>
   resolveRoleModel: (role: ModelRole) => Promise<string | null>
   /** Does this model id land on an endpoint right now? */
   routes: (model: string) => Promise<boolean>
@@ -96,6 +158,7 @@ export interface HarnessModelDeps {
 
 const REAL_DEPS: HarnessModelDeps = {
   platformAgentModel,
+  appHarnessModel,
   resolveRoleModel,
   routes: async (m) => (await resolveRoute(m)) !== null,
   gatewayModels,
@@ -144,8 +207,9 @@ export async function resolveHarnessModelWith(spec: ModelSpec, deps: HarnessMode
   const gated = async (model: string | null): Promise<string | null> => (model && (await gate())(model) ? model : null)
 
   // Where each step's routability check lives:
-  //  - 'pin' and 'role'/'utility' are validated INSIDE platformAgentModel and
-  //    resolveRoleModel, which is their documented contract. We do not re-check:
+  //  - 'pin', 'slot' and 'role'/'utility' are validated INSIDE
+  //    platformAgentModel, appHarnessModel and resolveRoleModel, which is their
+  //    documented contract. We do not re-check:
   //    resolveRoute advances a per-model round-robin cursor, so a second
   //    validating call would skew endpoint distribution for every harness run.
   //  - 'env' and 'preferred' are raw strings from config and from a user row.
@@ -156,6 +220,10 @@ export async function resolveHarnessModelWith(spec: ModelSpec, deps: HarnessMode
     switch (step) {
       case 'pin':
         return spec.pin ? await deps.platformAgentModel(spec.pin) : null
+      case 'slot':
+        // Validated inside `appHarnessModel`, as 'pin' is inside
+        // `platformAgentModel`: an assignment wins only while it routes.
+        return spec.slot && deps.appHarnessModel ? await deps.appHarnessModel(spec.slot) : null
       case 'role':
         return spec.role ? await gated(await deps.resolveRoleModel(spec.role)) : null
       case 'utility':
@@ -185,7 +253,7 @@ export async function resolveHarnessModelWith(spec: ModelSpec, deps: HarnessMode
   // an operator which fallback actually carried a harness in production. A
   // subsystem limping along on 'first-routable' for a month is a real finding,
   // and today it is invisible.
-  for (const step of spec.chain ?? DEFAULT_CHAIN) {
+  for (const step of chainWithSlot(spec.chain ?? DEFAULT_CHAIN, spec.slot)) {
     const model = await attempt(step)
     if (model) return { model, step }
   }

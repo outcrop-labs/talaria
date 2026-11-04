@@ -1,5 +1,5 @@
 // /api/fleet/agents/{id}/crons. One agent's native Hermes cron jobs. GET →
-// jobs (read from the container's jobs.json). POST → create. Admin, or the
+// jobs (read from the agent's own `/api/jobs`). POST → create. Admin, or the
 // owner of a personal assistant.
 
 use axum::Json;
@@ -7,10 +7,10 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_agent_crons::{create_cron_job, list_cron_jobs};
+use talaria_agent_crons::{create_cron_job, list_cron_jobs, may_still_land};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
-use talaria_error::{house_error, object_or_400};
+use talaria_error::{house_error, object_or_400, store_answer};
 use talaria_session::{actor_of, require_agent_manager, require_agent_reader};
 use talaria_state::AppState;
 pub async fn get(
@@ -19,9 +19,12 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     require_agent_reader(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(match list_cron_jobs(&state.pg, &id).await {
         Ok(jobs) => Json(json!({ "jobs": jobs })).into_response(),
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
     })
 }
 
@@ -42,36 +45,59 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let prompt = match trimmed_string_member(obj, "prompt", 1, 20_000) {
+    // The agent's own cap: Hermes's /api/jobs refuses a longer prompt
+    // (talaria_agent_crons::MAX_PROMPT_CHARS).
+    let prompt = match trimmed_string_member(obj, "prompt", 1, 5_000) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
+    let audit = |confirmed: bool| {
+        let actor = actor_of(&user);
+        let mut after = json!({ "name": name, "schedule": schedule });
+        // A create that may still land is audited too, as unconfirmed: the
+        // job can appear after the answer, and the log is where someone
+        // looks for who made it.
+        if !confirmed {
+            after["confirmed"] = json!(false);
+        }
+        let id_for_audit = id.clone();
+        let pg = state.pg.clone();
+        tokio::spawn(async move {
+            log_audit(
+                &pg,
+                AuditEntry {
+                    actor: &actor,
+                    action: "cron.create",
+                    target_type: "agent",
+                    target_id: Some(&id_for_audit),
+                    target_label: None,
+                    before: None,
+                    after: Some(after),
+                },
+            )
+            .await;
+        });
     };
     Ok(
         match create_cron_job(&state.pg, &id, &name, &schedule, &prompt).await {
             Ok(created) => {
-                let actor = actor_of(&user);
-                let after = json!({ "name": name, "schedule": schedule });
-                let id_for_audit = id.clone();
-                let pg = state.pg.clone();
-                tokio::spawn(async move {
-                    log_audit(
-                        &pg,
-                        AuditEntry {
-                            actor: &actor,
-                            action: "cron.create",
-                            target_type: "agent",
-                            target_id: Some(&id_for_audit),
-                            target_label: None,
-                            before: None,
-                            after: Some(after),
-                        },
-                    )
-                    .await;
-                });
+                audit(true);
                 // wire shape — { ok, id }, id after ok.
                 Json(json!({ "ok": true, "id": created })).into_response()
             }
-            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+            // A create the agent took and never answered may still make the
+            // job: the 503 `cron_failure` answers for the job routes
+            // (fleet_agents_id_crons_jobid.rs), whose sentence says to check
+            // the list before trying again — a second create would make a
+            // second job.
+            Err(e) if may_still_land(&e) => {
+                audit(false);
+                house_error(StatusCode::SERVICE_UNAVAILABLE, &e)
+            }
+            Err(e) => store_answer(StatusCode::BAD_REQUEST, &e),
         },
     )
 }

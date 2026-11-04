@@ -18,7 +18,10 @@ use talaria_boards::{board_allows_agent, board_info, board_role};
 use talaria_gateway::usage::task_usage;
 use talaria_judge::list_judge_reviews;
 use talaria_labels::ensure_labels;
-use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{
+    ActorKind, Coalesce, Filed, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity,
+    NotifyMeta, add_notification_with, entity, group_key,
+};
 use talaria_realtime::{BoardEvent, RealtimeDeps, publish_board};
 use talaria_retrieval::sources::{
     ActivityField, CommentSrc, comment_doc, index_activity, purge_activity_by_field,
@@ -26,6 +29,12 @@ use talaria_retrieval::sources::{
 use talaria_retrieval::{embed, qdrant};
 use talaria_statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
 use talaria_tasks_types::DispatchTicket;
+
+mod moving;
+pub use moving::{
+    MoveError, MoveOutcome, MoveRequest, MoveSummary, Mover, PickRefusal, StatusHow, StatusPick,
+    map_labels, move_task, pick_move_status,
+};
 
 pub use talaria_tasks_types::{
     Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
@@ -254,9 +263,24 @@ pub async fn resolve_task_id(pg: &PgPool, raw: &str) -> Result<ResolvedTaskId, s
             .bind(no)
             .fetch_all(pg)
             .await?;
+            // LIVE REFS AND OLD REFS ANSWER TOGETHER. A move re-keys the
+            // ticket on its new board and leaves its old (board, number) in
+            // `task_ref_aliases`, so a ref pasted into a doc, a chat or an
+            // agent's memory still opens it. Prefixes are not unique (two
+            // boards' initials can match), so the alias is not a fallback
+            // behind the live ref: a ref that names a live ticket on one
+            // board and a moved one from another is AMBIGUOUS, exactly as it
+            // was before the move — never silently the other board's
+            // ticket (review N1). Without a collision one id comes back.
+            let mut rows: Vec<String> = rows.into_iter().map(|(id,)| id).collect();
+            for id in moving::aliased_task_ids(pg, &prefix, no).await? {
+                if !rows.contains(&id) {
+                    rows.push(id);
+                }
+            }
             Ok(match rows.len() {
                 0 => ResolvedTaskId::Missing,
-                1 => ResolvedTaskId::One(rows.into_iter().next().expect("len checked").0),
+                1 => ResolvedTaskId::One(rows.into_iter().next().expect("len checked")),
                 _ => ResolvedTaskId::Ambiguous,
             })
         }
@@ -319,12 +343,121 @@ pub async fn get_task_full(pg: &PgPool, id: &str) -> Result<Option<TaskFull>, sq
 // ── Notifications: who hears about a ticket ──────────────────────────────────
 
 /// The notification payload a ticket fan-out files (kind, title, body,
-/// href).
+/// href), and what it is about.
 struct TaskNotification {
     kind: String,
     title: String,
     body: Option<String>,
     href: Option<String>,
+    /// The ticket (the row's entity, so the center groups by it).
+    task_id: String,
+    /// A status move, carrying the new column's words: the row coalesces into
+    /// the person's open status row for this ticket (`group_key::task_status`,
+    /// a window of `status_window_secs`), quietly — the first move alerts, a
+    /// later one in the window updates the count and the body ("Moved 4 times
+    /// — now in review") without ringing again. Past the window: a fresh row.
+    status_burst: Option<String>,
+}
+
+/// How long a ticket's status moves keep coalescing into one row: ten
+/// minutes, or `TALARIA_NOTIFY_STATUS_WINDOW_SECS` (a live check shortens it).
+pub fn status_window_secs() -> u32 {
+    std::env::var("TALARIA_NOTIFY_STATUS_WINDOW_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(600)
+}
+
+/// The body a status row carries: the ticket's own line for the first move,
+/// then the burst ("Moved 4 times — now in review"). Pure.
+fn status_body(first: Option<&str>, moves: i64, now: &str) -> Option<String> {
+    if moves <= 1 {
+        first.map(str::to_string)
+    } else {
+        Some(format!("Moved {moves} times — now {now}"))
+    }
+}
+
+/// The body a status row should carry once its write landed, when it differs
+/// from the one written: `None` when the written body already names the row's
+/// own count. Pure.
+fn status_reword(
+    first: Option<&str>,
+    count: i32,
+    now: &str,
+    wrote: Option<&str>,
+) -> Option<Option<String>> {
+    let want = status_body(first, i64::from(count), now);
+    (want.as_deref() != wrote).then_some(want)
+}
+
+/// A status row's body names the row's OWN count. The count read before the
+/// write is a guess: each move's fan-out runs detached, so moves close together
+/// can word the body from the same count (the wave-2 integration run: `count`
+/// 4, "Moved 3 times"; `count` 5 still worded as the first move). When the
+/// write's count says otherwise, the body is reworded — but only while the row
+/// still holds this write's seq, so a later write keeps the last word with its
+/// own count, in whatever order the fan-outs land.
+async fn reword_status_row(
+    pg: &PgPool,
+    filed: &Filed,
+    first: Option<&str>,
+    now: &str,
+    wrote: Option<&str>,
+) {
+    let Some(want) = status_reword(first, filed.count, now, wrote) else {
+        return;
+    };
+    if let Err(e) =
+        sqlx::query("update notifications set body = $3 where id = $1::uuid and seq = $2")
+            .bind(&filed.id)
+            .bind(filed.seq)
+            .bind(want.as_deref())
+            .execute(pg)
+            .await
+    {
+        tracing::error!("tasks: rewording status row {} failed: {e}", filed.id);
+    }
+}
+
+/// Who a ticket row says caused it (I-11): a person by their users.id when the
+/// actor string names one, the judge as the system, otherwise an agent by its
+/// model id.
+fn task_actor(actor: &str, self_id: Option<&str>) -> NotifyActor {
+    match self_id {
+        Some(id) => NotifyActor {
+            kind: ActorKind::User,
+            id: id.to_string(),
+            label: actor.to_string(),
+        },
+        None if actor.starts_with("judge:") => NotifyActor {
+            kind: ActorKind::System,
+            id: actor.to_string(),
+            label: "Judge".to_string(),
+        },
+        None => NotifyActor {
+            kind: ActorKind::Agent,
+            id: actor.to_string(),
+            label: actor.to_string(),
+        },
+    }
+}
+
+/// A person's actor string (email, else name — what the ticket and room rows
+/// store) as their users.id, or None for an agent or the judge.
+async fn actor_user_id(pg: &PgPool, actor: &str) -> Option<String> {
+    if actor.contains('@') {
+        sqlx::query_as::<_, (String,)>("select id::text from users where lower(email) = $1 limit 1")
+            .bind(actor.to_lowercase())
+            .fetch_optional(pg)
+            .await
+            .ok()
+            .flatten()
+            .map(|(id,)| id)
+    } else {
+        None
+    }
 }
 
 async fn notify_task_users(
@@ -339,17 +472,9 @@ async fn notify_task_users(
     // Self-exclusion by actor EMAIL: the actor id is an email for humans, a
     // model id for agents and `judge:<model>` for the platform, and only the
     // email names a row in users.
-    let self_id: Option<String> = if actor.contains('@') {
-        sqlx::query_as::<_, (String,)>("select id::text from users where lower(email) = $1 limit 1")
-            .bind(actor.to_lowercase())
-            .fetch_optional(&notify.pg)
-            .await
-            .ok()
-            .flatten()
-            .map(|(id,)| id)
-    } else {
-        None
-    };
+    let self_id = actor_user_id(&notify.pg, actor).await;
+    let who = task_actor(actor, self_id.as_deref());
+    let window = status_window_secs();
     let mut seen: HashSet<String> = HashSet::new();
     for user_id in user_ids {
         if !seen.insert(user_id.clone()) {
@@ -358,23 +483,63 @@ async fn notify_task_users(
         if Some(user_id.as_str()) == self_id.as_deref() {
             continue;
         }
+        let mut meta = NotifyMeta {
+            entity: Some(NotifyEntity::new(entity::TASK, n.task_id.as_str())),
+            actor: Some(who.clone()),
+            ..Default::default()
+        };
+        let mut body = n.body.clone();
+        if let Some(now) = &n.status_burst {
+            let key = group_key::task_status(&n.task_id);
+            // How many moves the open row already holds inside the window —
+            // the body's count. The row's own `count` is the writer's and
+            // exact; this read only words the line.
+            let held: i64 = sqlx::query_scalar(
+                "select count::bigint from notifications \
+                 where user_id = $1::uuid and group_key = $2 \
+                   and read_at is null and archived_at is null \
+                   and coalesce(updated_at, created_at) >= now() - $3::int * interval '1 second'",
+            )
+            .bind(user_id)
+            .bind(&key)
+            .bind(window as i32)
+            .fetch_optional(&notify.pg)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+            body = status_body(n.body.as_deref(), held + 1, now);
+            meta.group_key = Some(key);
+            meta.group_window_secs = Some(window);
+            meta.coalesce = Coalesce::Quiet;
+        }
         let input = NotificationInput {
             kind: &n.kind,
             title: &n.title,
-            body: n.body.as_deref(),
+            body: body.as_deref(),
             href: n.href.as_deref(),
         };
-        if let Err(e) = add_notification(notify, user_id, &input).await {
-            tracing::error!("tasks: notification for {user_id} failed: {e}");
+        match add_notification_with(notify, user_id, &input, &meta).await {
+            Ok(filed) => {
+                if let Some(now) = &n.status_burst {
+                    reword_status_row(&notify.pg, &filed, n.body.as_deref(), now, body.as_deref())
+                        .await;
+                }
+            }
+            Err(e) => tracing::error!("tasks: notification for {user_id} failed: {e}"),
         }
     }
 }
 
+/// Who hears about a ticket's moves: its watchers, its assigned humans and
+/// its creator (SE-9) — each re-checked against the board at THIS moment, so
+/// someone removed from the board since stops hearing about it.
 async fn ticket_audience(
     pg: &PgPool,
     task_id: &str,
     board_id: &str,
     assignees: &[String],
+    created_by: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
     let mut audience: Vec<String> = resolve_watchers(pg, task_id, Some(board_id))
         .await?
@@ -386,7 +551,288 @@ async fn ticket_audience(
             audience.push(user_id);
         }
     }
+    if let Some(creator) = author_user_id(pg, created_by).await?
+        && board_role(pg, &creator, board_id).await?.is_some()
+    {
+        audience.push(creator);
+    }
     Ok(audience)
+}
+
+/// What an update owes people once its write has committed: the status move
+/// (watchers, assigned humans and the creator), the newly assigned, the
+/// workchain hand-off, and a decided review.
+struct UpdateNotices {
+    cur: Task,
+    next_status: String,
+    assignees: Vec<String>,
+    assignees_patched: bool,
+    archived_now: bool,
+    review_keys: Vec<String>,
+    actor: String,
+}
+
+/// Spawn everything `update_task` tells people, in one detached task — see
+/// the call site for why it must leave before the next await.
+fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
+    let deps = deps.clone();
+    tokio::spawn(async move {
+        let UpdateNotices {
+            cur,
+            next_status,
+            assignees,
+            assignees_patched,
+            archived_now,
+            review_keys,
+            actor,
+        } = n;
+        let id = cur.id.clone();
+        let href = format!("/boards/{}/{}", cur.board_id, id);
+        let newly: Vec<String> = if assignees_patched && assignees != cur.assignees {
+            human_assignee_ids(&assignees)
+                .into_iter()
+                .filter(|uid| !human_assignee_ids(&cur.assignees).contains(uid))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let moved = next_status != cur.status;
+        if moved {
+            // THE WORKCHAIN ENGINE. A status write is the one trigger the
+            // workchain handoff engine has (TALA-30): a step's ticket landing
+            // in a terminal column advances or pauses its chain. The chain
+            // re-derives from the DB inside the call, so a retried write
+            // re-derives the same answer and files nothing new, and a
+            // notification failure never costs the ticket write it rode in
+            // on. Human sign-off is the only trigger by construction: agents
+            // cannot land a terminal column (agent_safe_patch), so the chain
+            // advances only when a person moves the column. The successors it
+            // made ready are offered to work dispatch.
+            let chain = deps.clone();
+            let board_id = cur.board_id.clone();
+            let task_id = id.clone();
+            let status = next_status.clone();
+            tokio::spawn(async move {
+                match talaria_workchains::advance_workchains(
+                    &chain.pg,
+                    &chain.notify,
+                    &board_id,
+                    &task_id,
+                    &status,
+                )
+                .await
+                {
+                    Ok(ready) => dispatch_ready_steps(&chain, ready),
+                    Err(e) => tracing::error!("[workchains] advance on status write failed: {e}"),
+                }
+            });
+            // Watchers, assigned humans and the creator hear about status
+            // moves (never the actor), and `ticket_audience` re-reads board
+            // membership at this moment — the write-time checks are not
+            // enough, access changes after a watch is stored.
+            match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
+                Ok(mut audience) => {
+                    // ONE ACTION, ONE ROW. A person this same patch assigns is
+                    // told by the `task-assigned` row below; the promotion's
+                    // status move was a second row for the same click. They
+                    // leave this audience — every other watcher still hears
+                    // the move.
+                    audience.retain(|uid| !newly.contains(uid));
+                    let now = next_status.replacen('_', " ", 1);
+                    notify_task_users(
+                        &deps.notify,
+                        &audience,
+                        &actor,
+                        &TaskNotification {
+                            kind: "task-status".into(),
+                            title: format!(
+                                "{}: {now}",
+                                cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
+                            ),
+                            body: Some(cur.title.clone()),
+                            href: Some(href.clone()),
+                            task_id: id.clone(),
+                            status_burst: Some(now),
+                        },
+                    )
+                    .await;
+                }
+                Err(e) => tracing::error!("tasks: status audience read failed: {e}"),
+            }
+        }
+        // NEWLY added humans get an inbox nudge.
+        if !newly.is_empty() {
+            notify_task_users(
+                &deps.notify,
+                &newly,
+                &actor,
+                &TaskNotification {
+                    kind: "task-assigned".into(),
+                    title: format!("Assigned: {}", cur.title),
+                    body: cur.ticket_ref.clone(),
+                    href: Some(href.clone()),
+                    task_id: id.clone(),
+                    status_burst: None,
+                },
+            )
+            .await;
+        }
+        // Left review — moved out, or archived: the sign-off is decided, and
+        // every recipient's approval row for it reads (SE-10).
+        let was_review = review_keys.contains(&cur.status);
+        if was_review && ((moved && !review_keys.contains(&next_status)) || archived_now) {
+            resolve_review_approval(&deps.notify, &id);
+        }
+    });
+}
+
+/// The people among `ids` a body @mentions (the mention producers' token
+/// rules, `talaria_notify::mention_tokens`). One read, whatever the count.
+async fn mentioned_among(pg: &PgPool, ids: &[String], content: &str) -> HashSet<String> {
+    let tokens = talaria_notify::mention_tokens(content);
+    if tokens.is_empty() || ids.is_empty() {
+        return HashSet::new();
+    }
+    let rows: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("select id::text, name, email from users where id = any($1::uuid[])")
+            .bind(ids)
+            .fetch_all(pg)
+            .await
+            .unwrap_or_default();
+    rows.into_iter()
+        .filter(|(_, name, email)| {
+            talaria_notify::answers_to_tokens(name.as_deref(), email.as_deref(), &tokens)
+        })
+        .map(|(id, _, _)| id)
+        .collect()
+}
+
+/// What a comment row calls its author: a person's name, else the author
+/// string the room stored (an email, or an agent's label).
+async fn author_label(pg: &PgPool, author: &str, author_id: Option<&str>) -> String {
+    let Some(id) = author_id else {
+        return author.to_string();
+    };
+    sqlx::query_scalar::<_, Option<String>>("select name from users where id = $1::uuid")
+        .bind(id)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or_else(|| author.to_string())
+}
+
+/// A ticket left review (its sign-off is decided, either way): every
+/// recipient's `approval_pending` row for it reads at once, and each of their
+/// devices hears the read (SE-10). Detached; a failure is logged.
+fn resolve_review_approval(notify: &NotifyDeps, task_id: &str) {
+    let notify = notify.clone();
+    let entity = NotifyEntity::new(entity::APPROVAL, format!("ticket_review:{task_id}"));
+    tokio::spawn(async move {
+        if let Err(e) = talaria_notify::resolve_entity(&notify, &entity).await {
+            tracing::error!("tasks: resolving the review approval failed: {e}");
+        }
+    });
+}
+
+/// A comment landed on a ticket: tell the people taking part (SE-9) — its
+/// assigned humans, its creator, its watchers and everyone who commented
+/// before — minus the author, and minus anyone the comment @mentions (their
+/// `mention` row is the louder one). ONE open `task-comment` row per ticket
+/// per person (`group_key::task_comments`), re-alerting with the newest
+/// comment. Every recipient's board access is re-checked now (C24): someone
+/// removed from the board since gets nothing.
+pub async fn notify_comment_participants(
+    notify: &NotifyDeps,
+    meta: &talaria_ticket_chat::TicketMeta,
+    author: &str,
+    content: &str,
+) {
+    let pg = &notify.pg;
+    let Ok(Some(task)) = get_task(pg, &meta.task_id).await else {
+        return;
+    };
+    let author_id = author_user_id(pg, author).await.ok().flatten();
+    // Prior commenters: the room's human authors, by the author string the
+    // room stores (`coalesce(email, name, 'user')`).
+    let commenters: Vec<(String,)> = sqlx::query_as(
+        "select distinct u.id::text from channels c \
+         join channel_messages m on m.channel_id = c.id \
+         join users u on coalesce(u.email, u.name, 'user') = m.author \
+         where c.task_id = $1::uuid and m.author_type = 'user'",
+    )
+    .bind(&meta.task_id)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    let mut people: Vec<String> = match ticket_audience(
+        pg,
+        &meta.task_id,
+        &meta.board_id,
+        &task.assignees,
+        &task.created_by,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!("tasks: comment audience read failed: {e}");
+            return;
+        }
+    };
+    people.extend(commenters.into_iter().map(|(id,)| id));
+    // Whoever the comment @mentions is told by the mention producer; their
+    // mention row is the louder one, so they are left out here — asked with
+    // the mention producers' own token rules.
+    let mentioned = mentioned_among(pg, &people, content).await;
+    let mut seen: HashSet<String> = HashSet::new();
+    let title = format!(
+        "{} commented on {}",
+        author_label(pg, author, author_id.as_deref()).await,
+        meta.head
+            .ticket_ref
+            .clone()
+            .unwrap_or_else(|| task.title.clone())
+    );
+    let body = if content.chars().count() > 200 {
+        format!("{}…", content.chars().take(200).collect::<String>())
+    } else {
+        content.to_string()
+    };
+    let href = format!("/boards/{}/{}", meta.board_id, meta.task_id);
+    let input = NotificationInput {
+        kind: "task-comment",
+        title: &title,
+        body: Some(&body),
+        href: Some(&href),
+    };
+    let row_meta = NotifyMeta {
+        group_key: Some(group_key::task_comments(&meta.task_id)),
+        coalesce: Coalesce::Realert,
+        entity: Some(NotifyEntity::new(entity::TASK, meta.task_id.as_str())),
+        actor: Some(task_actor(author, author_id.as_deref())),
+        ..Default::default()
+    };
+    for user in people {
+        if !seen.insert(user.clone())
+            || Some(user.as_str()) == author_id.as_deref()
+            || mentioned.contains(&user)
+        {
+            continue;
+        }
+        match board_role(pg, &user, &meta.board_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::error!("tasks: comment access check failed: {e}");
+                continue;
+            }
+        }
+        if let Err(e) = add_notification_with(notify, &user, &input, &row_meta).await {
+            tracing::error!("tasks: task-comment row for {user} failed: {e}");
+        }
+    }
 }
 
 // ── Sub-task structure ───────────────────────────────────────────────────────
@@ -570,6 +1016,12 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     // agents. Detached: the row is the record, the push is a
     // delivery.
     spawn_dispatch(deps, task.clone(), None);
+    // Apps whose triggers name it hear that a ticket exists — its id and its
+    // board, never its text (talaria-platform-events).
+    talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketCreated {
+        ticket_id: id.clone(),
+        board_id: input.board_id.to_string(),
+    });
     {
         let notify = deps.notify.clone();
         let actor = input.created_by.to_string();
@@ -587,6 +1039,8 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
                     title: format!("Assigned: {title_for_note}"),
                     body: ticket_ref,
                     href: Some(format!("/boards/{board_id}/{id_for_href}")),
+                    task_id: id_for_href.clone(),
+                    status_burst: None,
                 },
             )
             .await;
@@ -619,15 +1073,17 @@ const BLOCKED_STATUS: &str = "blocked";
 
 // ── THE agent-authority question, as ONE exported predicate ──────────────────
 //
-// ONE PREDICATE, MANY GATES. The patch gate, the work-session loop, the
-// heartbeat and the MCP tool surface all ask the same question — may THIS
-// agent act on THIS ticket — and before this consolidation they asked four
-// private approximations of it that each omitted a clause. It returns the
-// REASON rather than a boolean so the refusal is the same sentence wherever
-// the write arrived, and a new caller cannot invent a vaguer one.
+// ONE PREDICATE, MANY GATES. The patch gate, the work-session loop, both
+// dispatch sides and the MCP tool surface all ask the same question — may
+// THIS agent act on THIS ticket — and before this consolidation they asked
+// four private approximations of it that each omitted a clause. It returns
+// the REASON rather than a boolean so the refusal is the same sentence
+// wherever the write arrived, and a new caller cannot invent a vaguer one.
+// `agent_work_refusal` below is the same question with the one clause that
+// only STARTING work adds: the workchain order.
 
 /// The ticket shape the predicate needs. `get_task` returns it; so does the
-/// row the heartbeat query selects.
+/// row the dispatch sweep selects.
 pub struct AgentWriteTarget {
     pub board_id: String,
     pub status: String,
@@ -707,6 +1163,71 @@ pub async fn agent_ticket_refusal(
     Ok(None)
 }
 
+// ── The work question: the workchain order ───────────────────────────────────
+//
+// A workchain step whose predecessor is still live is nobody's work yet,
+// whatever its own column says: the agent assigned to step B must not start B
+// while A is in flight. That is the chain's whole contract, and it is asked
+// HERE, by everything that starts or drives work — `maybe_dispatch_ticket`
+// (task writes and the sixty-second sweep both arrive there), the
+// work-session loop on every turn, and the workbench binding a job to a
+// ticket — from `talaria_workchains::chain_readiness`, the same derive the
+// board's chain view reads. `agent_safe_patch` asks it for the one write that
+// IS work: an agent's status move into a working column or review. It is not
+// a general WRITE clause: agents still triage, comment on and report against
+// a step that is waiting its turn, exactly as before. Only the work waits.
+
+/// The refusal for a workchain step whose turn has not come. One sentence,
+/// so the dispatch log, the session's stop line and any future caller say
+/// the same thing.
+pub const WORKCHAIN_WAIT: &str =
+    "agents cannot work this ticket yet: an earlier step of its workchain is still open";
+
+/// Of `ids`, the tickets that are workchain steps behind a live predecessor.
+/// `metas` carries each candidate board's status meta (the terminal
+/// predicate is per board); a ticket in no chain is never in the answer.
+/// ONE batch read for the whole set, so the sweep asks it once per pass.
+pub async fn workchain_blocked(
+    pg: &PgPool,
+    metas: &HashMap<String, StatusMeta>,
+    ids: &[String],
+) -> Result<HashSet<String>, sqlx::Error> {
+    let readiness = talaria_workchains::chain_readiness(pg, metas, ids).await?;
+    Ok(readiness
+        .into_iter()
+        .filter(|(_, r)| *r == talaria_workchains::Readiness::Blocked)
+        .map(|(id, _)| id)
+        .collect())
+}
+
+/// Why an agent may not START or keep DRIVING work on this ticket, or None
+/// when it may: `agent_ticket_refusal`'s Write question, plus the workchain
+/// order. The dispatch gate, the work-session loop and the workbench's
+/// `taskId` binding ask this; writes that are not work (fields, comments,
+/// problem and gap reports, dependency edges) keep asking
+/// `agent_ticket_refusal` alone.
+pub async fn agent_work_refusal(
+    pg: &PgPool,
+    task_id: &str,
+    task: &AgentWriteTarget,
+    agent: &AgentSubject,
+) -> Result<Option<String>, sqlx::Error> {
+    if let Some(refusal) = agent_ticket_refusal(pg, task, agent, AgentIntent::Write).await? {
+        return Ok(Some(refusal));
+    }
+    let metas = HashMap::from([(
+        task.board_id.clone(),
+        status_meta(pg, &task.board_id).await?,
+    )]);
+    if workchain_blocked(pg, &metas, &[task_id.to_string()])
+        .await?
+        .contains(task_id)
+    {
+        return Ok(Some(WORKCHAIN_WAIT.into()));
+    }
+    Ok(None)
+}
+
 impl From<&Task> for AgentWriteTarget {
     fn from(t: &Task) -> Self {
         AgentWriteTarget {
@@ -719,8 +1240,8 @@ impl From<&Task> for AgentWriteTarget {
 
 // A misconfigured board is an OPERATOR problem, and the only party that sees
 // the API response is the agent that got refused. So log it too — on a slow
-// cadence per board (same idiom as agent-auth's legacy warning): a heartbeat
-// loop must not bury the log, but one line from whenever the server started
+// cadence per board (same idiom as agent-auth's legacy warning): a retrying
+// agent must not bury the log, but one line from whenever the server started
 // can't answer "is this still happening?".
 static BOARD_WARNED_AT: LazyLock<Mutex<HashMap<String, i64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -816,8 +1337,8 @@ async fn agent_safe_patch(
     //
     // That, the board-level twin, the board's agent policy and the
     // closed-status rule are all `agent_ticket_refusal` now — the same
-    // question the side doors, the heartbeat and both dispatch sides ask,
-    // from the one definition above.
+    // question the side doors and both dispatch sides ask, from the one
+    // definition above.
     let shut =
         agent_ticket_refusal(pg, &AgentWriteTarget::from(cur), agent, AgentIntent::Write).await?;
     if let Some(sentence) = shut {
@@ -856,6 +1377,28 @@ async fn agent_safe_patch(
             "\"{}\" is no longer a column on this board — a person has to place this ticket",
             cur.status
         )));
+    }
+    // A workchain step behind a live predecessor is not the agent's work yet
+    // (`agent_work_refusal`'s clause), so the agent may not move it to where
+    // work happens or is delivered: a working column, review, or a terminal
+    // move that the coercion below would land in review. Triage stays open —
+    // an open column, or raising Blocked for a person. Asked only for those
+    // moves, so a field edit or a comment pays no chain read.
+    if let Some(dest) = patch
+        .status
+        .as_ref()
+        .filter(|_| status_present_and_moving(&patch))
+        && (meta.working_keys.contains(dest)
+            || meta.review_keys.contains(dest)
+            || meta.terminal(dest))
+    {
+        let metas = HashMap::from([(cur.board_id.clone(), meta.clone())]);
+        if workchain_blocked(pg, &metas, std::slice::from_ref(&cur.id))
+            .await?
+            .contains(&cur.id)
+        {
+            return Err(TaskError::ApprovalRequired(WORKCHAIN_WAIT.into()));
+        }
     }
     // Assignment stays human; so do the planning fields (estimate, sub-task
     // structure) and archival, which hides work from the people watching it.
@@ -1075,6 +1618,26 @@ pub async fn update_task(
     .execute(pg)
     .await?;
 
+    // ── THE NOTIFY WORK GOES OUT NOW (C30) ──────────────────────────────────
+    // The write above has committed. Everything a person is told about it is
+    // spawned HERE, before this function's next await: a caller that hangs up
+    // after the commit (a direct-api agent with a short timeout) drops the
+    // future at its next await, and every notification that was still behind
+    // the activity-log writes went with it. Detached tasks are not the
+    // caller's to cancel.
+    spawn_update_notices(
+        deps,
+        UpdateNotices {
+            cur: cur.clone(),
+            next_status: next_status.clone(),
+            assignees: assignees.clone(),
+            assignees_patched: patch.assignees.is_some(),
+            archived_now: patch.archived == Some(true) && cur.archived_at.is_none(),
+            review_keys: meta.review_keys.clone(),
+            actor: who.id.clone(),
+        },
+    );
+
     if patch.archived.is_some() && patch.archived != Some(cur.archived_at.is_some()) {
         log_activity(
             pg,
@@ -1110,66 +1673,17 @@ pub async fn update_task(
             format!("moved to {next_status} ({why})")
         };
         log_activity(pg, id, &who.id, "status", &moved).await?;
-        // Watchers + assigned humans hear about status moves (never the
-        // actor), and `ticket_audience` re-reads board membership for both
-        // halves at this moment — see its doc for why the write-time checks
-        // are not enough. The audience read is awaited; the notification
-        // writes are detached.
-        let audience = ticket_audience(pg, id, &cur.board_id, &assignees).await?;
-        {
-            let notify = deps.notify.clone();
-            let actor = who.id.clone();
-            let title = format!(
-                "{}: {}",
-                cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
-                next_status.replacen('_', " ", 1)
-            );
-            let body = cur.title.clone();
-            let href = format!("/boards/{}/{}", cur.board_id, id);
-            tokio::spawn(async move {
-                notify_task_users(
-                    &notify,
-                    &audience,
-                    &actor,
-                    &TaskNotification {
-                        kind: "task-status".into(),
-                        title,
-                        body: Some(body),
-                        href: Some(href),
-                    },
-                )
-                .await;
-            });
-        }
-        // ── THE WORKCHAIN ENGINE ─────────────────────────────────────────
-        // A status write is the one trigger the workchain handoff engine
-        // has (TALA-30): a step's ticket landing in a terminal column
-        // advances or pauses its chain. Detached like every other fan-out
-        // — the chain re-derives from the DB inside the call, so a retried
-        // write re-derives the same answer and files nothing new, and a
-        // notification failure never costs the ticket write it rode in on.
-        // Human sign-off is the only trigger by construction: agents
-        // cannot land a terminal column (agent_safe_patch above), so the
-        // chain advances only when a person moves the column.
-        {
-            let deps = deps.clone();
-            let board_id = cur.board_id.clone();
-            let task_id = id.to_string();
-            let status = next_status.clone();
-            tokio::spawn(async move {
-                if let Err(e) = talaria_workchains::advance_workchains(
-                    &deps.pg,
-                    &deps.notify,
-                    &board_id,
-                    &task_id,
-                    &status,
-                )
-                .await
-                {
-                    tracing::error!("[workchains] advance on status write failed: {e}");
-                }
-            });
-        }
+        // Apps whose triggers name the move hear it: ids and column keys,
+        // never the ticket's text (talaria-platform-events).
+        talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
+            ticket_id: id.to_string(),
+            board_id: cur.board_id.clone(),
+            from: cur.status.clone(),
+            to: next_status.clone(),
+            closed: meta.terminal(&next_status),
+        });
+        // The watchers' notice and the workchain hand-off went out with the
+        // commit (`spawn_update_notices`).
     }
     // ── ONE push-side call ─────────────────────────────────────────────────
     // Two things mean "this is now someone's work": the ticket ENTERED a
@@ -1205,32 +1719,8 @@ pub async fn update_task(
             format!("assigned to {}", assignees.join(", "))
         };
         log_activity(pg, id, &who.id, "assigned", &what).await?;
-        // NEWLY added humans get an inbox nudge.
-        let added: Vec<String> = human_assignee_ids(&assignees)
-            .into_iter()
-            .filter(|uid| !human_assignee_ids(&cur.assignees).contains(uid))
-            .collect();
-        {
-            let notify = deps.notify.clone();
-            let actor = who.id.clone();
-            let title = format!("Assigned: {}", cur.title);
-            let body = cur.ticket_ref.clone();
-            let href = format!("/boards/{}/{}", cur.board_id, id);
-            tokio::spawn(async move {
-                notify_task_users(
-                    &notify,
-                    &added,
-                    &actor,
-                    &TaskNotification {
-                        kind: "task-assigned".into(),
-                        title,
-                        body,
-                        href: Some(href),
-                    },
-                )
-                .await;
-            });
-        }
+        // NEWLY added humans got their inbox nudge with the commit
+        // (`spawn_update_notices`).
     }
     if patch.priority.is_some() && patch.priority != Some(cur.priority.clone()) {
         log_activity(
@@ -1381,6 +1871,16 @@ fn spawn_dispatch(deps: &TaskDeps, task: Task, only_agents: Option<Vec<String>>)
         )
         .await;
     });
+}
+
+/// The workchain hand-off's agent half: each successor a sign-off just made
+/// ready is offered to dispatch, re-read fresh. A step already sitting in a
+/// pickup column with an agent assignee starts now instead of waiting for
+/// the sweep; anything else is the gate's quiet no.
+fn dispatch_ready_steps(deps: &TaskDeps, ready: Vec<String>) {
+    for id in ready {
+        spawn_dispatch_id(deps, id, None);
+    }
 }
 
 fn spawn_dispatch_id(deps: &TaskDeps, id: String, only_agents: Option<Vec<String>>) {
@@ -1576,6 +2076,20 @@ pub async fn room_comment_fanout(
     );
     if content.trim().is_empty() {
         return;
+    }
+    // The people taking part hear about it — whichever door the comment came
+    // through. Detached, like the brain leg below.
+    {
+        let notify = NotifyDeps {
+            pg: pg.clone(),
+            realtime: realtime.clone(),
+        };
+        let meta = meta.clone();
+        let author = author.to_string();
+        let content = content.to_string();
+        tokio::spawn(async move {
+            notify_comment_participants(&notify, &meta, &author, &content).await;
+        });
     }
     let doc = comment_doc(&CommentSrc {
         id: message_id,
@@ -2136,6 +2650,17 @@ pub async fn complete_quality_review(
     }
     tx.commit().await?;
 
+    // A rejection moves the ticket; an approval leaves it where it is.
+    if next_status != current.status {
+        talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
+            ticket_id: task_id.to_string(),
+            board_id: current.board_id.clone(),
+            from: current.status.clone(),
+            to: next_status.to_string(),
+            closed: meta.terminal(next_status),
+        });
+    }
+
     if meta.agent_start_keys.iter().any(|k| k == next_status)
         && !meta.agent_start_keys.contains(&current.status)
     {
@@ -2154,7 +2679,7 @@ pub async fn complete_quality_review(
         let task_id = task_id.to_string();
         let status = next_status.to_string();
         tokio::spawn(async move {
-            if let Err(e) = talaria_workchains::advance_workchains(
+            match talaria_workchains::advance_workchains(
                 &deps.pg,
                 &deps.notify,
                 &board_id,
@@ -2163,13 +2688,25 @@ pub async fn complete_quality_review(
             )
             .await
             {
-                tracing::error!("[workchains] advance on review sign-off failed: {e}");
+                Ok(ready) => dispatch_ready_steps(&deps, ready),
+                Err(e) => tracing::error!("[workchains] advance on review sign-off failed: {e}"),
             }
         });
     }
+    // A rejection moved it out of review: the sign-off is decided.
+    if next_status != current.status && !meta.review_keys.iter().any(|k| k == next_status) {
+        resolve_review_approval(&deps.notify, task_id);
+    }
     // Same audience question as the status move in update_task, same one
     // answer.
-    let audience = ticket_audience(pg, task_id, &current.board_id, &current.assignees).await?;
+    let audience = ticket_audience(
+        pg,
+        task_id,
+        &current.board_id,
+        &current.assignees,
+        &current.created_by,
+    )
+    .await?;
     {
         let notify = deps.notify.clone();
         let actor = reviewer.to_string();
@@ -2183,6 +2720,8 @@ pub async fn complete_quality_review(
         );
         let body = current.title.clone();
         let href = format!("/boards/{}/{}", current.board_id, task_id);
+        let id = task_id.to_string();
+        let now = next_status.replacen('_', " ", 1);
         tokio::spawn(async move {
             notify_task_users(
                 &notify,
@@ -2193,6 +2732,8 @@ pub async fn complete_quality_review(
                     title,
                     body: Some(body),
                     href: Some(href),
+                    task_id: id,
+                    status_burst: Some(now),
                 },
             )
             .await;
@@ -2390,184 +2931,44 @@ pub async fn list_activity(pg: &PgPool, task_id: &str) -> Result<Vec<TaskActivit
         .collect())
 }
 
-// ── The pull side ────────────────────────────────────────────────────────────
-/// One servable ticket on the heartbeat's pull channel, with the workflows
-/// matched to it riding along (plugin-side dispatch).
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AssignedWork {
-    pub id: String,
-    pub title: String,
-    pub description: Option<String>,
-    pub tags: Vec<String>,
-    pub board_id: String,
-    /// True when this ticket is the READY HEAD of a workchain — the chain's
-    /// first non-done, non-archived step, served to the agent because it is
-    /// genuinely next. Absent otherwise (a chain-free ticket keeps the feed
-    /// item shape it always had; a blocked chain ticket is not in the feed
-    /// at all).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workchain_ready: Option<bool>,
-    pub workflows: Vec<talaria_workflows::WorkflowDelivery>,
-}
-
-/// Work assigned to an agent (by name), across all boards, for the
-/// heartbeat.
-///
-/// THE PULL SIDE ASKS THE SAME QUESTIONS THE WRITE SIDE ASKS. Both of them,
-/// and neither in its own words. The history of this one query is the whole
-/// lesson: it once selected on `agent_start` alone, so it handed an agent
-/// work every write route would then refuse; then it asked only
-/// "closed to agents", which said nothing about the board's AGENT POLICY,
-/// so a board owner revoking a grant 403'd every write while the heartbeat
-/// kept serving; and the SQL still carried a status predicate of its own,
-/// which DISAGREED with `working_keys` — an agent that obeyed step 2 of its
-/// own dispatch prompt and moved the ticket into the board's active column
-/// fell off the heartbeat mid-session. So the SQL states NO rule. It
-/// narrows by ASSIGNMENT, and by a (board, key) pair list built from
-/// `working_keys` itself — the SQL is a projection of the one predicate,
-/// not a rival to it.
-pub async fn assigned_work(
-    pg: &PgPool,
-    agent_name: &str,
-) -> Result<Vec<AssignedWork>, sqlx::Error> {
-    let subject = AgentSubject::Model(agent_name.to_string());
-    let boards: Vec<(String,)> =
-        sqlx::query_as("select distinct board_id::text from tasks where assignees @> $1::jsonb")
-            .bind(serde_json::json!([agent_name]))
-            .fetch_all(pg)
-            .await?;
-    // ONE pass over board facts for the whole heartbeat — columns, archival
-    // AND agent policy, each resolved once per distinct board rather than
-    // once per ticket. A board the agent is not allowed on is dropped HERE,
-    // before its tickets are ever fetched.
-    let mut pair_boards: Vec<String> = Vec::new();
-    let mut pair_keys: Vec<String> = Vec::new();
-    let mut metas: HashMap<String, StatusMeta> = HashMap::new();
-    for (board_id,) in &boards {
-        if !board_allows_agent(pg, board_id, &subject).await? {
-            continue;
-        }
-        let meta = status_meta(pg, board_id).await?;
-        // Kept for the workchain readiness pass below — its terminal
-        // predicate comes from the same per-board meta, not a restatement.
-        metas.insert(board_id.clone(), meta.clone());
-        for key in &meta.working_keys {
-            pair_boards.push(board_id.clone());
-            pair_keys.push(key.clone());
-        }
-    }
-    if pair_boards.is_empty() {
-        return Ok(Vec::new());
-    }
-    // The narrowed row: assignment plus the working-key join, before the
-    // authority question is re-asked per ticket below.
-    type WorkRow = (
-        String,
-        String,
-        Option<String>,
-        serde_json::Value,
-        String,
-        String,
-        Option<i64>,
-    );
-    let rows: Vec<WorkRow> = sqlx::query_as(
-        "select t.id::text, t.title, t.description, t.tags, t.board_id::text, t.status, \
-                    (trunc(extract(epoch from t.archived_at) * 1000))::bigint \
-             from tasks t \
-             join unnest($1::text[], $2::text[]) as w(board_id, status) \
-               on w.board_id = t.board_id::text and w.status = t.status \
-             where t.assignees @> $3::jsonb \
-             order by t.created_at asc",
-    )
-    .bind(&pair_boards)
-    .bind(&pair_keys)
-    .bind(serde_json::json!([agent_name]))
-    .fetch_all(pg)
-    .await?;
-    // The pairs above already answered "is this column in play?"; this is
-    // the TICKET half of the same authority question — its own archival,
-    // and the board's, re-asked from the one predicate rather than restated
-    // in SQL.
-    // ── THE WORKCHAIN ORDERING GUARANTEE ────────────────────────────────────
-    // A ticket that lives in a workchain behind an earlier live step is NOT
-    // servable, whatever its own column says — the agent assigned to step B
-    // must not see B while A is in flight (the chain's own contract), and
-    // a ready head IS servable and carries `workchainReady: true` so the
-    // harness can prioritize chain work. One batch query for the whole
-    // heartbeat, asked here so the answer keys on the candidates the
-    // column join already narrowed to.
-    let candidates: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
-    let readiness = talaria_workchains::chain_readiness(pg, &metas, &candidates).await?;
-    let mut servable = Vec::new();
-    for (id, title, description, tags, board_id, status, archived_ms) in rows {
-        let target = AgentWriteTarget {
-            board_id: board_id.clone(),
-            status,
-            archived_at: archived_ms.map(epoch_ms_to_iso),
-        };
-        if agent_ticket_refusal(pg, &target, &subject, AgentIntent::Write)
-            .await?
-            .is_some()
-        {
-            continue;
-        }
-        // Blocked chain position: the chain decides, not the column. A
-        // ready head rides with its flag; a chain-free ticket stays the
-        // shape it always was.
-        match readiness.get(&id) {
-            Some(talaria_workchains::Readiness::Blocked) => continue,
-            ready => servable.push((
-                id,
-                title,
-                description,
-                json_strings(&tags),
-                board_id,
-                ready.and_then(|r| r.ready_flag()),
-            )),
-        }
-    }
-    // Matched workflows ride with the pull channel too (plugin-side
-    // dispatch). ONE read of the workflow list for the whole heartbeat:
-    // calling `workflows_for_task` per ticket re-read the table each time.
-    // Workflows are org-wide, not board-scoped, so there is nothing to key a
-    // cache by; the list is read once and handed to `workflows_from`, which
-    // is the SAME match the one-off path uses. Spelling the filter out here
-    // instead would make this the round's own counter-example: a second
-    // expression of a rule, free to drift.
-    let flows = if servable.is_empty() {
-        Vec::new()
-    } else {
-        talaria_workflows::list_workflows(pg).await?
-    };
-    Ok(servable
-        .into_iter()
-        .map(
-            |(id, title, description, tags, board_id, workchain_ready)| {
-                let target = talaria_workflows::MatchTarget {
-                    title: &title,
-                    description: description.as_deref(),
-                    tags: &tags,
-                    board_id: &board_id,
-                };
-                let workflows = talaria_workflows::workflows_from(&flows, &target);
-                AssignedWork {
-                    id,
-                    title,
-                    description,
-                    tags,
-                    board_id,
-                    workchain_ready,
-                    workflows,
-                }
-            },
-        )
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_status_row_is_reworded_to_its_own_count() {
+        // The guess matched the row: nothing to do.
+        assert_eq!(
+            status_reword(
+                Some("Burst"),
+                3,
+                "in progress",
+                Some("Moved 3 times — now in progress")
+            ),
+            None
+        );
+        // Two fan-outs read the same count: the row says 4, the body 3.
+        assert_eq!(
+            status_reword(
+                Some("Burst"),
+                4,
+                "in progress",
+                Some("Moved 3 times — now in progress")
+            ),
+            Some(Some("Moved 4 times — now in progress".into()))
+        );
+        // A coalesce worded as the first move (it read no open row).
+        assert_eq!(
+            status_reword(Some("Burst"), 5, "inbox", Some("Burst")),
+            Some(Some("Moved 5 times — now inbox".into()))
+        );
+        // A fresh row worded as a burst (the open row it read had just expired).
+        assert_eq!(
+            status_reword(Some("Burst"), 1, "inbox", Some("Moved 2 times — now inbox")),
+            Some(Some("Burst".into()))
+        );
+        assert_eq!(status_reword(None, 1, "inbox", None), None);
+    }
     #[test]
     fn ticket_address_accepts_a_uuid_and_the_board_ref() {
         assert!(matches!(

@@ -53,7 +53,7 @@ bold throughout the guides resolve here.
 | **Relay** | A gathering that concludes: summary posted and indexed, then archived | [Comms](./comms.md) |
 | **Review (column)** | Where agent work lands for sign-off — an agent may not sign off its own | [Boards](./boards.md) |
 | **Role templates** | Starter personas for agents (the Agents page) — not ticket/plan templates | [Admin: Agents](./admin-agents.md) |
-| **Roll** | Zero-downtime replacement: fresh container, the old one finishes its replies | [Admin: Agents](./admin-agents.md) |
+| **Roll** | Replace the agent's container in place on its current settings: it stops, a fresh one starts | [Admin: Agents](./admin-agents.md) |
 | **Roster** | The Agents page's list of the org's agents | [Admin: Agents](./admin-agents.md) |
 | **Schedules (crons)** | Recurring jobs an agent runs on its own scheduler | [Your assistant](./personal-assistant.md) |
 | **Secrets** | The sealed vault in Files — no preview, no export, no public tier | [Files](./files.md) |

@@ -4,8 +4,8 @@
   import TaskDetail from '@/components/board/TaskDetail.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { listQuery } from '@/components/ui/query-state'
-  import { useBoards, useArchivedBoards } from '@/lib/boards.svelte'
+  import { firstNotice, listQuery } from '@/components/ui/query-state'
+  import { useBoards, useArchivedBoards, useTask } from '@/lib/boards.svelte'
 
   // Directly-linkable ticket route — the OVERLAY only. BoardLayout (the
   // persistent sv-router layout above this route) draws the board, so this
@@ -24,6 +24,21 @@
     boardsList.rows.find((b) => b.id === boardId) ?? archivedList.rows.find((b) => b.id === boardId),
   )
 
+  // A LINK THAT OUTLIVED A MOVE, for someone who cannot see the OLD board.
+  // The ticket id never changes, so /boards/<old>/<ticket> still names it;
+  // but this route looks the board up in the viewer's own lists, and a
+  // person who is only on the NEW board finds no board here, so TaskDetail
+  // (whose redirect covers everyone else) never mounts. Ask the ticket where
+  // it lives — its read is gated on the board it is on NOW — and follow it.
+  // Only once both lists answered and neither failed: a failure has its own
+  // notice below, and a still-loading list may yet hold the board.
+  const settled = $derived(![boardsList.pending, archivedList.pending, boardsList.failed, archivedList.failed].includes(true))
+  const lookup = useTask(() => (!board && settled ? taskId : null))
+  $effect(() => {
+    const at = lookup.data?.task?.boardId
+    if (at && at !== boardId) void navigate('/boards/:boardId/:taskId', { params: { boardId: at, taskId }, replace: true })
+  })
+
   // Closing keeps the board's current view/filter state (the search travels).
   const close = () => void navigate('/boards/:boardId', { params: { boardId }, search: searchParams.toString() })
 </script>
@@ -34,9 +49,10 @@
      broke. `&&` here meant a failed archived read fell through to the silent
      render-nothing below — the same blank modal this branch exists to replace.
      The board page behind this modal reports the failure for itself; this says
-     why the ticket did not open. -->
-{#if !board && (boardsList.failed || archivedList.failed)}
-  {@const notice = boardsList.notice ?? archivedList.notice}
+     why the ticket did not open. Both lists' flags are read before they are
+     combined (query-state.ts, anyLoading). -->
+{#if !board && [boardsList.failed, archivedList.failed].includes(true)}
+  {@const notice = firstNotice(boardsList.notice, archivedList.notice)}
   <Modal open onClose={close} width="max-w-sm">
     {#if notice}<QueryError {...notice} />{/if}
   </Modal>

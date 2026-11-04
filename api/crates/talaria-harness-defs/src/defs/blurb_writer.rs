@@ -518,6 +518,7 @@ pub fn blurb_writer_harness() -> HarnessDefinition {
         // `chain_step` label — see the note in titler.rs.
         ModelSpec {
             pin: Some("blurb-writer"),
+            slot: None,
             role: None,
             chain: None,
             user_id: None,

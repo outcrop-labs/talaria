@@ -1,0 +1,20 @@
+[package]
+name = "talaria-app-harnesses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+talaria-config = { workspace = true }
+talaria-harness = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-harness-model = { workspace = true }
+talaria-harness-schema = { workspace = true }
+tracing = { workspace = true }

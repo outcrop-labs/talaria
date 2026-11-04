@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "enableGTKAppId": true,
     "windows": [
       {
         "label": "main",
@@ -17,8 +18,9 @@
         "width": 1280,
         "height": 800,
         "minWidth": 760,
-        "minHeight": 600,
-        "decorations": false
+        "minHeight": 480,
+        "decorations": false,
+        "backgroundColor": "#090a09"
       }
     ]
   },

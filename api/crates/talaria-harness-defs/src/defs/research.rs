@@ -387,6 +387,7 @@ pub fn queries_harness() -> HarnessDefinition {
         // stranger planning the research.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,
@@ -564,6 +565,7 @@ pub fn scope_harness() -> HarnessDefinition {
         // missing pin is a loud no-op rather than a stranger scoping the run.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,
@@ -765,6 +767,7 @@ pub fn search_harness() -> HarnessDefinition {
         // exists to keep out.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,
@@ -1019,6 +1022,7 @@ pub fn synthesis_harness() -> HarnessDefinition {
         // marketer. Empty chain for the same reason as the planner above.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-os-idle"
+description = "Enables the desktop_os_idle command without any pre-configured scope."
+commands.allow = ["desktop_os_idle"]
+
+[[permission]]
+identifier = "deny-desktop-os-idle"
+description = "Denies the desktop_os_idle command without any pre-configured scope."
+commands.deny = ["desktop_os_idle"]

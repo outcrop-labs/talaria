@@ -290,6 +290,7 @@ pub async fn post(
         // `x-muse-model` on headers it can no longer take back.
         let user_spec = ModelSpec {
             pin: Some("muse"),
+            slot: None,
             role: None,
             chain: Some(&MUSE_CHAIN),
             user_id: Some(&user.id),
@@ -421,6 +422,7 @@ pub async fn post(
     // finding, and pinning `RunContext.model` alone would erase it.
     let user_spec = ModelSpec {
         pin: Some("muse"),
+        slot: None,
         role: None,
         chain: Some(&MUSE_CHAIN),
         user_id: Some(&user.id),

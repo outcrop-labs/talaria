@@ -509,6 +509,7 @@ pub fn hermes_knowledge_harness() -> HarnessDefinition {
         // model would still be filed as this agent's own work.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

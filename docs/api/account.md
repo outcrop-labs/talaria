@@ -27,6 +27,7 @@
 | [`/api/me/events`](#apimeevents) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | PUT | `session` |
+| [`/api/me/presence`](#apimepresence) | GET | `session` |
 | [`/api/me/presence`](#apimepresence) | PUT | `session` |
 | [`/api/me/sent`](#apimesent) | GET | `session` |
 | [`/api/me/threads`](#apimethreads) | GET | `session` |
@@ -87,7 +88,11 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_google_callbac
 
 Source: [`api/crates/talaria-routes-integrations/src/account/auth_logout.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_logout.rs)
 
-> POST /api/auth/logout. Delete the Redis session and clear the cookie.
+> POST /api/auth/logout. Delete the Redis session and clear the cookie — and,
+> first, every push subscription this session filed: a browser that signed
+> out must stop receiving the signed-out person's notifications. Rows filed
+> by the person's OTHER sessions (another browser, another device) stay.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -131,10 +136,10 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_providers.rs`]
 
 Source: [`api/crates/talaria-routes-integrations/src/account/auth_session.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_session.rs)
 
-> GET /api/auth/session. The current user + their denied views + effective
-> permissions, read from the DB each time so an admin's access change applies
-> without re-login. The user's face — effective picture, status emoji and
-> text — is read fresh from the users row the same way, so a photo or status
+> GET /api/auth/session. The current user + their denied views + the app
+> views they hold + effective permissions, read from the DB each time so an
+> admin's access change applies without re-login. The user's face —
+> effective picture, status emoji and text — is read fresh from the users row
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -195,9 +200,9 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_assistant.rs`](.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `…` | 200 | — |
-| POST | `session` | [body](#post-apimeassistant-body) | `…` | 200, 400 | — |
-| PATCH | `session` | [body](#patch-apimeassistant-body) | `…` | 200, 400 | — |
+| GET | `session` | — | `{assistant}` | 200 | — |
+| POST | `session` | [body](#post-apimeassistant-body) | `{assistant}` | 200, 400, 409 | — |
+| PATCH | `session` | [body](#patch-apimeassistant-body) | `{assistant}` | 200, 400 | — |
 
 ### POST `/api/me/assistant` body
 
@@ -226,6 +231,8 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_events.rs`](../.
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200 | SSE |
 
+**GET** — `?since=<seq>` or `Last-Event-ID` replays missed notification frames (each with `id: <seq>`), then `resync`; past 100 rows only `resync` with `complete: false`. Ends with `{"type":"session","state":"ended"}` when the session does. See docs/notifications/live-and-inbox.md.
+
 ## `/api/me/mcp`
 
 Source: [`api/crates/talaria-routes-integrations/src/account/me_mcp.rs`](../../api/crates/talaria-routes-integrations/src/account/me_mcp.rs)
@@ -251,14 +258,24 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_mcp.rs`](../../a
 
 Source: [`api/crates/talaria-routes-integrations/src/account/me_presence.rs`](../../api/crates/talaria-routes-integrations/src/account/me_presence.rs)
 
-> PUT /api/me/presence. The signed-in person's heartbeat: the client calls it
-> every 30s while a Talaria tab is visible, and it sets
-> `user:presence:{id}` with a 90s TTL. `GET /api/users` reads those keys to
-> mark people online. Answers { ok: true }.
+> /api/me/presence. The signed-in person's heartbeat.
+>
+> PUT with NO BODY (or one without a `clientId`) is wave 1's online ping,
+> exactly: the client calls it every
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PUT | `session` | — | `{ok}` | 200 | — |
+| GET | `session` | — | `…` | 200 | — |
+| PUT | `session` | [body](#put-apimepresence-body) | `{ok, looking, active}` | 200, 400 | — |
+
+### PUT `/api/me/presence` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `clientId` | `string(8, 64)` |  |
+| `kind` | `enum(web|desktop)` |  |
+| `state` | `enum(looking|active|idle|hidden)` |  |
 
 ## `/api/me/sent`
 

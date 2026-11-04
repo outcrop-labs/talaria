@@ -47,15 +47,22 @@
 
 {#if live || wait}
   <div class="relative overflow-hidden rounded-lg border border-line">
+    <!-- Tuned to the median look it had across browsers, DPRs and sub-pixel
+         positions while its dots built up (N11): see LIVE_FIELD_TUNING in
+         lib/dither-engine.ts. A 1 px dot: at its 1.2 px one the strip covered a
+         quarter more pixels than the median did for the same ink. 48 alpha
+         levels keep its crest's rewrites under rc's canvas calls; at 64 the
+         strip cost 1.19 times rc's. -->
     <DitherLayer
       sources={[
-        { id: 'lull', kind: 'edge', side: 'top', depth: 30, strength: 0.14 },
-        { id: 'drift', kind: 'wave', axis: 'x', wavelength: 190, speed: 16, strength: 0.34 },
+        { id: 'lull', kind: 'edge', side: 'top', depth: 30, strength: 0.28 },
+        { id: 'drift', kind: 'wave', axis: 'x', wavelength: 190, speed: 16, strength: 0.68 },
       ]}
       pitch={4}
-      dot={1.4}
-      alphaFloor={0.04}
-      maxAlpha={0.3}
+      dot={1}
+      alphaFloor={0.1067}
+      maxAlpha={0.8}
+      alphaSteps={48}
     />
     <div class="relative flex flex-wrap items-center gap-2 px-3 py-2">
       <WaitingMark site="ticket/work-watch" class="text-accent" size={13} />

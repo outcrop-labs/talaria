@@ -2,7 +2,7 @@
 // dispatched agent work. Managed on /workflows.
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { delJson, getList, postJson, putJson } from '@/lib/fetch-json'
+import { delJsonGone, getList, postJson, putJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -39,7 +39,9 @@ export const updateWorkflow = (
   patch: Partial<Pick<TaskWorkflow, 'name' | 'description' | 'enabled' | 'match' | 'skills' | 'toolkits'>>,
 ) => putJson<{ ok: true }>(`/api/workflows/${id}`, patch)
 
-export const deleteWorkflow = (id: string) => delJson<{ ok: true }>(`/api/workflows/${id}`)
+/** A workflow someone else already deleted is a 404, and gone is what this
+ *  asked for. */
+export const deleteWorkflow = (id: string) => delJsonGone(`/api/workflows/${id}`)
 
 // ── Skill structural ops (Studio row controls) ──────────────────────────────
 

@@ -16,6 +16,8 @@
     "@tauri-apps/api": "^2"
   },
   "devDependencies": {
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
     "@sveltejs/vite-plugin-svelte": "^6.2.0",
     "@types/node": "^22.10.0",
     "@tailwindcss/vite": "^4.1.18",

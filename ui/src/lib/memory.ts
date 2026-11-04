@@ -59,6 +59,15 @@ export function useMemory(id: () => string, file: () => MemoryFile = () => 'memo
       // The agent is either reachable or it is not; retrying a 403 just delays
       // the sentence that explains it.
       retry: false,
+      // Every change reaches the component, not only changes to what it has
+      // read so far. MemoryEditor reads `isError` on mount but `data` only in
+      // the Whole file view, and svelte-query tells a component about a
+      // change only when it touches a prop already read (anyLoading in
+      // components/ui/query-state.ts says why). So a read that landed while
+      // Entries was on screen was never passed on, and Whole file sat on its
+      // skeleton for good. One document, no polling: notifying on every
+      // change costs nothing here.
+      notifyOnChangeProps: 'all',
     }
   })
 }

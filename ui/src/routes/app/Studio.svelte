@@ -14,6 +14,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import WorkflowDetail from '@/components/workflows/WorkflowDetail.svelte'
   import SkillEditor from '@/components/skills/SkillEditor.svelte'
   import StudioGuide, { type GuidePrefill } from '@/components/workflows/StudioGuide.svelte'
@@ -143,7 +144,13 @@
 
   const removeWorkflow = async (w: TaskWorkflow) => {
     if (!(await confirm({ title: 'Delete workflow', message: `Delete "${w.name}"? Matching tickets dispatch without its skills.`, confirmLabel: 'Delete', danger: true }))) return
-    await deleteWorkflow(w.id)
+    try {
+      // Already gone (another admin deleted it) resolves: close and refresh.
+      await deleteWorkflow(w.id)
+    } catch (e) {
+      toastError('Delete failed', e)
+      return
+    }
     closeOverlay()
     await qc.invalidateQueries({ queryKey: ['workflows'] })
   }

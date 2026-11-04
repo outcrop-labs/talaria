@@ -189,8 +189,11 @@ impl StatusMeta {
 }
 
 /// The resolution, split out of status_meta so the rules are testable against
-/// a synthetic list.
-fn meta_of(list: &[BoardStatus]) -> StatusMeta {
+/// a synthetic list. Public for the one caller that holds TWO boards' lists at
+/// once: a ticket moving between boards maps its column from one to the other
+/// (talaria-tasks `pick_move_status`), and asking the database twice for what
+/// it already read would be the only reason to go async.
+pub fn meta_of(list: &[BoardStatus]) -> StatusMeta {
     let agent_start: Vec<String> = list
         .iter()
         .filter(|s| s.agent_start)

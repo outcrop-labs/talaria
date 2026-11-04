@@ -15,7 +15,7 @@ use serde_json::json;
 use talaria_agent_crons::unschedule_from_conversation;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_conversations::accessible_conversation;
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, store_answer};
 use talaria_session::{actor_of, require_agent_manager_by_model, require_user};
 use talaria_state::AppState;
 
@@ -57,7 +57,7 @@ pub async fn delete(
         } else {
             StatusCode::BAD_REQUEST
         };
-        return Ok(house_error(status, &msg));
+        return Ok(store_answer(status, &msg));
     }
     let actor = actor_of(&user);
     let pg = state.pg.clone();

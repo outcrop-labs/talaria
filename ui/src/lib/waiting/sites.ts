@@ -40,6 +40,23 @@ export const WAITING_SITES = {
     note: "Fallback for a <Generating> that carries a label but hasn't claimed a site.",
   },
 
+  /* ── Tab bar ──────────────────────────────────────────────────────────── */
+  'nav/tab-comms': {
+    role: 'background',
+    slot: 'tab',
+    note: 'The Comms tab while an agent replies in a chat or a room. Also the readout when Comms leads it.',
+  },
+  'nav/tab-work': {
+    role: 'background',
+    slot: 'tab',
+    note: 'The Work tab while a session, plan or research thread streams or a research run is in flight.',
+  },
+  'nav/tab-boards': {
+    role: 'background',
+    slot: 'tab',
+    note: 'The Boards tab while an agent runs a work session on a ticket the viewer can see.',
+  },
+
   /* ── Chat ─────────────────────────────────────────────────────────────── */
   'chat/first-token': {
     role: 'submitting',
@@ -113,14 +130,14 @@ export const WAITING_SITES = {
   'fleet/agent-create': { role: 'submitting', slot: 'button', note: 'Create-agent modal submitting.' },
   'fleet/agent-design': { role: 'reasoning', slot: 'inline', note: 'Designing an agent: identity, soul, starter skills.' },
   'fleet/agent-hire': { role: 'tool', slot: 'inline', note: 'Rendering config, starting the container, waiting for health.' },
-  'fleet/agent-apply': { role: 'tool', slot: 'inline', note: 'Rolling a new container up beside the old one.' },
+  'fleet/agent-apply': { role: 'tool', slot: 'inline', note: 'Applying an edit in place; the container restarts only if the edit needs it.' },
   'fleet/cron-save': { role: 'submitting', slot: 'button', note: 'Cron form submitting.' },
 
   /* ── Boards ──────────────────────────────────────────────────────────── */
   'ticket/work-watch': { role: 'reasoning', slot: 'inline', note: 'An agent is working this ticket right now.' },
   'fleet/cron-design': { role: 'reasoning', slot: 'inline', note: 'Designing a job: name, schedule, prompt.' },
   'fleet/federate': { role: 'submitting', slot: 'button', note: 'Federating with another instance.' },
-  'fleet/mcp-roll': { role: 'tool', slot: 'inline', note: 'An MCP server rolling in the agent detail tab.' },
+  'fleet/seal-configs': { role: 'tool', slot: 'inline', note: 'Sealing the credentials stored configs hold as written: a dry run, then the seal and its rolls.' },
   'fleet/mcp-apply': { role: 'tool', slot: 'inline', note: 'Applying an MCP change across an agent.' },
   'fleet/version-revert': { role: 'tool', slot: 'inline', note: 'Reverting to an earlier agent version.' },
 
@@ -134,8 +151,10 @@ export const WAITING_SITES = {
   'manage/fleet-roll': { role: 'tool', slot: 'button', note: 'Rolling every agent from the Manage overview.' },
   'manage/fleet-start': { role: 'tool', slot: 'button', note: 'Starting every stopped agent from the Manage overview.' },
   'manage/mcp-check': { role: 'tool', slot: 'button', note: 'Re-probing every MCP server from the Manage overview.' },
+  'manage/hermes-check': { role: 'tool', slot: 'button', note: 'Checking Hermes stable for a new agent image.' },
+  'manage/hermes-rollout': { role: 'tool', slot: 'inline', note: 'The agent image rollout moving agents onto a new Hermes.' },
   'skills/marketplace-search': { role: 'tool', slot: 'inline', note: 'Catalog search in flight.' },
-  'skills/marketplace-install': { role: 'submitting', slot: 'button', note: 'Reading a repo or writing its skills into a destination.' },
+  'skills/marketplace-install': { role: 'submitting', slot: 'button', note: "Fetching a skill, scanning it with Hermes' Skills Guard, or writing it into a destination." },
 
   /* ── The brief ────────────────────────────────────────────────────────── */
   'brief/writing': { role: 'reasoning', slot: 'inline', note: 'The daily brief being opened for this reader — lede first, then the day.' },

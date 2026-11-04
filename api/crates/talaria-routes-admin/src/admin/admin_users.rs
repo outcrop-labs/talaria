@@ -76,7 +76,11 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         agent_models: string_array("agentModels", 200, 100)?,
         can_mint_keys: optional_boolean_member(obj, "canMintKeys")?,
         denied_views: string_array("deniedViews", 60, 40)?,
-        allowed_manage_views: string_array("allowedManageViews", 60, 10)?,
+        // A view is at most `/x/` + a 64-character slug + `/manage` (74), and
+        // the list holds the eight core views plus up to two per app; the old
+        // 60/10 refused a long slug, and any member with three app grants.
+        // The team route (teams_id_access.rs) takes the same bounds.
+        allowed_manage_views: string_array("allowedManageViews", 80, 200)?,
         assistant_elevated: optional_boolean_member(obj, "assistantElevated")?,
     })
 }

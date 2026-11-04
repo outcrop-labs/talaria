@@ -3,6 +3,7 @@
   import PlatformLinkChip from './PlatformLinkChip.svelte'
   import TodoPlan from './TodoPlan.svelte'
   import AskCard from './AskCard.svelte'
+  import AgentApprovalCard from './AgentApprovalCard.svelte'
   import { cardKindFor, sourceLabel, subagentGoal, subagentTone, summarizeChange } from './tool-cards'
   import Button from '@/components/ui/Button.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
@@ -15,6 +16,7 @@
     chipsBesideProse,
     decideChip,
     invokeText,
+    isAgentApproval,
     toolDescription,
     toolFields,
     toolLabel,
@@ -23,9 +25,9 @@
   } from '@/lib/chips'
 
   // Persisted chips that are not already painted from the prose: exposed
-  // tools, protected-action approvals, unlocks, notices about the row itself,
-  // screenshots, delegated children, web sources, and links the agent produced
-  // without pasting the URL. Clicking a tool (or an unlocked tool name) opens
+  // tools, protected-action approvals, an agent's own approval requests,
+  // unlocks, notices about the row itself, screenshots, delegated children,
+  // web sources, and links the agent produced without pasting the URL. Clicking a tool (or an unlocked tool name) opens
   // its inputs inline. Approve/deny stay on the approval chip; a notice has
   // nothing to click.
   //
@@ -229,6 +231,11 @@
           options={chip.options ?? []}
           onAnswer={onInvoke}
         />
+      {:else if isAgentApproval(chip)}
+        <!-- The agent itself asking before it goes on (a Developer Agent's
+             protected write, say), answered once or denied by the one person
+             the card names, and closing itself if nobody does. -->
+        <AgentApprovalCard {chip} {onDecided} />
       {:else if chip.kind === 'approval'}
         <div
           class="w-full rounded-lg border border-line bg-surface px-3 py-2"

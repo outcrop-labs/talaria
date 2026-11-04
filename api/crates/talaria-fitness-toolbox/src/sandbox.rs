@@ -54,7 +54,7 @@ use talaria_harness::transport::ToolDefinition;
 
 use talaria_fitness_talaria_tools::{SandboxTool, TALARIA_TOOLS, tools_named};
 use talaria_fitness_world::{
-    AGENT_STATUSES, BLOCKED, IN_PROGRESS, INBOX, QUALITY_REVIEW, SandboxAsked, SandboxBoard,
+    AGENT_STATUSES, BLOCKED, DONE, IN_PROGRESS, INBOX, QUALITY_REVIEW, SandboxAsked, SandboxBoard,
     SandboxComment, SandboxDm, SandboxDocument, SandboxDriveFile, SandboxEmailDraft,
     SandboxEventDraft, SandboxKbDoc, SandboxKbSpace, SandboxLabel, SandboxMember, SandboxOutcome,
     SandboxTicket, SandboxTodoItem, SandboxWorld, base_world,
@@ -413,6 +413,85 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             Ok(json!({ "ok": true, "id": id, "status": INBOX }))
         }
 
+        // The board move, with production's refusals in production's words
+        // (talaria-tasks `move_task` / `pick_move_status`): both boards must
+        // allow this agent, review and blocked are a person's to move, a
+        // closed column is never a destination. The sandbox boards share the
+        // default columns and keep no label registry, so the column carries
+        // and nothing is dropped; an agent assignee the destination does not
+        // allow is unassigned, as production does. The id stays the address
+        // (production keeps the uuid; the old ref resolves through an alias).
+        "move_ticket" => {
+            let t_idx = live_index(w, &a["taskId"])?;
+            let dest = board_of(w, &a["boardId"])?.clone();
+            if !dest.agents.iter().any(|m| m == &w.agent) {
+                return Err(refuse(format!(
+                    "agent \"{}\" is not allowed on that board — you can only move a ticket between boards you are on (list_boards); a board editor adds agents to a board",
+                    w.agent
+                )));
+            }
+            let t = &w.tickets[t_idx];
+            if t.board_id == dest.id {
+                return Err(refuse(format!(
+                    "the ticket is already on \"{}\"",
+                    dest.name
+                )));
+            }
+            if t.status == DONE {
+                return Err(refuse("agents cannot change a closed ticket"));
+            }
+            if t.status == QUALITY_REVIEW {
+                return Err(refuse(
+                    "agents cannot take a ticket out of review — a person signs it off, or moves it",
+                ));
+            }
+            if t.status == BLOCKED {
+                return Err(refuse(
+                    "agents cannot move a blocked ticket — a person unblocks it first",
+                ));
+            }
+            let status = match opt_str(&a["status"]) {
+                Some(s) if s == DONE => {
+                    return Err(refuse(
+                        "agents cannot move a ticket into a closed column — a person signs work off. Leave status out and the move keeps the ticket open",
+                    ));
+                }
+                Some(s) => s.to_string(),
+                None => t.status.clone(),
+            };
+            let (kept, unassigned): (Vec<String>, Vec<String>) = t
+                .assignees
+                .iter()
+                .cloned()
+                .partition(|x| dest.agents.contains(x));
+            if unassigned.iter().any(|a| a.starts_with("user:")) {
+                return Err(refuse(
+                    "agents cannot unassign people — a person on this ticket is not on that board. A person can move it, or add them to that board first",
+                ));
+            }
+            let from = t.board_id.clone();
+            let preview = a["preview"].as_bool() == Some(true);
+            let moved = json!({
+                "preview": preview,
+                "fromBoardId": from,
+                "toBoardId": dest.id,
+                "toBoardName": dest.name,
+                "fromRef": t.id,
+                "status": status,
+                "labelsDropped": [],
+                "unassigned": unassigned,
+            });
+            if preview {
+                return Ok(json!({ "preview": true, "moved": moved }));
+            }
+            let t = &mut w.tickets[t_idx];
+            t.board_id = dest.id.clone();
+            t.status = status;
+            t.assignees = kept;
+            Ok(
+                json!({ "task": { "id": t.id, "boardId": t.board_id, "status": t.status }, "moved": moved }),
+            )
+        }
         "triage_ticket" => {
             let t_idx = live_index(w, &a["taskId"])?;
             let t = &mut w.tickets[t_idx];
@@ -538,16 +617,6 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             Ok(json!({ "ok": true }))
         }
 
-        "log_usage" => {
-            live_index(w, &a["taskId"])?;
-            if a["promptTokens"].as_f64().is_none() || a["completionTokens"].as_f64().is_none() {
-                return Err(refuse(
-                    "\"promptTokens\" and \"completionTokens\" are required token counts",
-                ));
-            }
-            Ok(json!({ "ok": true }))
-        }
-
         // ── Knowledge ────────────────────────────────────────────────────────
         "search_knowledge" => {
             let query = req_str(&a["query"], "query")?;
@@ -570,34 +639,6 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 .collect();
             hits.extend(docs);
             Ok(json!({ "hits": hits }))
-        }
-
-        "describe_image" => {
-            let id = req_str(&a["uploadId"], "uploadId")?;
-            req_str(&a["question"], "question")?;
-            let file = w
-                .attachments
-                .iter()
-                .find(|x| x.upload_id == id)
-                .ok_or_else(|| {
-                    refuse(format!(
-                        "no attachment \"{id}\" — upload ids come from a ticket's attachments array"
-                    ))
-                })?;
-            if !file.mime.starts_with("image/") {
-                return Err(refuse(format!(
-                    "\"{}\" is {}, not an image — use fetch_attachment for that one",
-                    file.filename, file.mime
-                )));
-            }
-            // THE DESCRIPTION IS ATTRIBUTED, exactly as production attributes
-            // it. A fixture can then measure the thing worth measuring: does the
-            // model quote it as somebody else's reading, or absorb it as its
-            // own observation?
-            let description = file.content.clone().unwrap_or_else(|| {
-                "a screenshot of a terminal; the last line reads \"2 failing, 14 passed\".".into()
-            });
-            Ok(json!({ "model": "vision-model", "description": description }))
         }
 
         "web_search" => {
@@ -1967,15 +2008,14 @@ pub const BACKED_TOOLS: &[&str] = &[
     "fetch_attachment",
     "create_ticket",
     "triage_ticket",
+    "move_ticket",
     "comment",
     "report_outcome",
     "report_gap",
     "add_time",
     "add_dependency",
-    "log_usage",
     // ── Knowledge ────────────────────────────────────────────────────────
     "search_knowledge",
-    "describe_image",
     "web_search",
     "list_kb_spaces",
     "list_kb_docs",
@@ -2270,6 +2310,50 @@ mod tests {
     }
 
     #[test]
+    fn moves_a_ticket_between_boards_it_is_on_and_refuses_what_production_refuses() {
+        let mut s = sb();
+        // Preview moves nothing.
+        let r = s.dispatch(
+            "move_ticket",
+            r#"{"taskId":"PLAT-118","boardId":"b-helpdesk","preview":true}"#,
+        );
+        assert!(!r.is_error, "{}", r.text);
+        assert!(r.text.contains("\"preview\":true"), "{}", r.text);
+        // A closed destination is refused, in production's words.
+        let r = s.dispatch(
+            "move_ticket",
+            r#"{"taskId":"PLAT-118","boardId":"b-helpdesk","status":"done"}"#,
+        );
+        assert!(r.is_error);
+        assert!(
+            r.text.contains("cannot move a ticket into a closed column"),
+            "{}",
+            r.text
+        );
+        // A blocked ticket is a person's to move.
+        let r = s.dispatch("move_ticket", r#"{"taskId":"t-41","boardId":"b-helpdesk"}"#);
+        assert!(r.is_error && r.text.contains("blocked"), "{}", r.text);
+        // A board the agent is not on.
+        let r = s.dispatch(
+            "move_ticket",
+            r#"{"taskId":"PLAT-118","boardId":"b-nowhere"}"#,
+        );
+        assert!(r.is_error, "{}", r.text);
+        // The move itself: the ticket lands on the destination.
+        let r = s.dispatch(
+            "move_ticket",
+            r#"{"taskId":"PLAT-118","boardId":"b-helpdesk"}"#,
+        );
+        assert!(!r.is_error, "{}", r.text);
+        assert!(r.text.contains("b-helpdesk"), "{}", r.text);
+        let r = s.dispatch(
+            "move_ticket",
+            r#"{"taskId":"PLAT-118","boardId":"b-helpdesk"}"#,
+        );
+        assert!(r.is_error && r.text.contains("already on"), "{}", r.text);
+    }
+
+    #[test]
     fn refuses_a_status_no_agent_may_set_exactly_as_production_does() {
         let mut s = sb();
         let r = s.dispatch("triage_ticket", r#"{"taskId":"PLAT-118","status":"done"}"#);
@@ -2504,23 +2588,7 @@ mod tests {
         assert!((s.world.tickets[0].minutes_logged - 1.5).abs() < 1e-9);
     }
 
-    // ── image understanding and the fixed web ────────────────────────────────
-
-    #[test]
-    fn reads_an_image_and_attributes_the_reading_to_another_model() {
-        let mut s = sb();
-        let r = s.dispatch(
-            "describe_image",
-            r#"{"uploadId":"up-failing-tests","question":"what failed?"}"#,
-        );
-        assert!(r.text.contains("\"model\":\"vision-model\""));
-        assert!(r.text.contains("2 failing, 14 passed"));
-        let not_image = s.dispatch(
-            "describe_image",
-            r#"{"uploadId":"up-arch-pdf","question":"?"}"#,
-        );
-        assert!(not_image.text.contains("not an image"));
-    }
+    // ── the fixed web ────────────────────────────────────────────────────────
 
     #[test]
     fn returns_a_fixed_tiny_web_and_nothing_for_a_query_it_has_no_page_for() {
@@ -3557,7 +3625,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            85,
+            84,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

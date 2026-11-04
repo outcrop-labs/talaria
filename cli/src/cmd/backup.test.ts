@@ -113,3 +113,23 @@ describe('runBackup — guards', () => {
     }
   })
 })
+
+describe('runBackup — which checkout', () => {
+  test("the shim run from inside another checkout refuses before anything: every source would be the shim's", async () => {
+    const mk = (): string => {
+      const r = mkdtempSync(join(tmpdir(), 'talaria-bk-co-'))
+      mkdirSync(join(r, '.git'))
+      mkdirSync(join(r, 'cli/bin'), { recursive: true })
+      writeFileSync(join(r, 'cli/bin/talaria.ts'), '')
+      return r
+    }
+    const primary = mk()
+    const standing = mk()
+    const ctx = fakeCtx({ cwd: standing })
+    ctx.root = primary
+    const msg = await attempt(() => runBackup(ctx, join(standing, 'backups'), 7))
+    expect(msg).toContain(`cd ${standing} && bun talaria backup`)
+    expect(ctx.calls).toHaveLength(0)
+    expect(existsSync(join(standing, 'backups'))).toBe(false)
+  })
+})

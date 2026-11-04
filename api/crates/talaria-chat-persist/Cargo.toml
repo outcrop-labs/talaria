@@ -20,6 +20,7 @@ talaria-fleet-agents = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-params = { workspace = true }
 talaria-plan-doc = { workspace = true }
 talaria-retrieval-embed = { workspace = true }
 talaria-retrieval-index = { workspace = true }
@@ -34,3 +35,8 @@ tracing = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 talaria-model-efforts = { workspace = true }
+
+[dev-dependencies]
+redis = { workspace = true }
+reqwest = { workspace = true }
+talaria-config = { workspace = true }

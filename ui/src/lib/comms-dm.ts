@@ -35,6 +35,29 @@ export function groupDmLabel(c: DmLike, agentLabel: (model: string) => string): 
 export const groupDmCount = (c: DmLike): number => (c.members?.length ?? 0) + (c.agents?.length ?? 0)
 
 /**
+ * What an EMPTY direct message says. ChannelView's own zero state is a
+ * channel's — a `#` mark, "Welcome to #<name>", "add people & agents" — and a
+ * DM is neither a #channel nor a room people are added to (Comms hides the
+ * people and agents pickers on one), so an empty DM with Dana read "Welcome
+ * to #Dana Okafor" (ui-7). `title` is the name the DM's header shows. `hint`
+ * is left to ChannelView when the DM seats agents: its "@mention … to bring
+ * the agents in" is the right sentence there.
+ */
+export function dmZeroState(c: DmLike, title: string): { icon: string; title: string; hint?: string } {
+  const named = isGroupDm(c) && c.name.trim() !== ''
+  return {
+    icon: '◈',
+    title: named ? `Welcome to ${c.name.trim()}` : `The start of your conversation with ${title}`,
+    hint:
+      (c.agents?.length ?? 0) > 0
+        ? undefined
+        : c.peer
+          ? `Say something to ${firstName(c.peer.name, c.peer.email)}.`
+          : 'Say something to everyone here.',
+  }
+}
+
+/**
  * The DM these recipients already have, if any: the exact same people (you
  * aside) and the exact same agents. One person and no agents is their plain
  * DM.

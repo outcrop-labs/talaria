@@ -1,7 +1,8 @@
 // /api/artifact-folders/{id}. One artifact folder. GET → the
 // folder + its grants (what the Share dialog reads). PUT → rename / icon /
 // reparent / re-share. DELETE → remove (its artifacts and child folders fall
-// back to the root).
+// back to the root). A well-formed id that names no folder is a 404 on all
+// three.
 //
 // The folder Patch's editors differ from every other surface's: principalId
 // has NO max and role has NO default — a stricter, older shape than the
@@ -84,6 +85,9 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
         Err(e) => return Ok(internal("[folders] read failed", e)),
@@ -128,6 +132,9 @@ pub async fn put(
         Ok(b) => b,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
         Err(e) => return Ok(internal("[folders] read failed", e)),
@@ -211,12 +218,15 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_perm(&state, &headers, "artifacts.create").await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
         Err(e) => return Ok(internal("[folders] read failed", e)),
     };
     let Some(folder) = folder else {
-        return Ok(Json(json!({ "ok": true })).into_response());
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     // Deleting a folder scatters everything inside it to the root — a bigger
     // act than an edit, so it takes the same rights as re-sharing rather than

@@ -9,6 +9,7 @@
 | [`talaria setup`](#talaria-setup) | first-run dev bootstrap (secrets, fleet config, images, deps); re-run on a live install refreshes only the PATH shim + git wiring |
 | [`talaria dev`](#talaria-dev) | run the dev stack: infra, readiness waits, then the app on :5273 |
 | [`talaria worktree`](#talaria-worktree) | spin up an isolated worktree stack (own DB seeded from main) |
+| [`talaria seed-target`](#talaria-seed-target) | seed this checkout's empty Rust build cache from an idle checkout's (reflink; registry crates only) |
 | [`talaria cleanup`](#talaria-cleanup) | flag or sweep stale dev artifacts and report disk pressure |
 | [`talaria reset`](#talaria-reset) | destructive resets for a wedged dev stack (typed confirm, no -y by design) |
 | [`talaria box new`](#talaria-box-new) | create a devbox: clone + own sidecars, seeded from the primary stack |
@@ -164,6 +165,7 @@ Positional `<slug>` (required) — lowercase kebab, same rule as install
 | :--- | :--- | :--- | :--- |
 | `--name` | value | — | display name (default: title-cased slug) |
 | `--icon` | value | — | nav icon (default: ⬡) |
+| `--harness` | bool | — | add a starter harness under harnesses/, with a recorded reply for its fixture |
 
 ## `talaria deploy`
 
@@ -278,10 +280,29 @@ talaria dev
 spin up an isolated worktree stack (own DB seeded from main)
 
 ```
-talaria worktree <name> [base-ref]
+talaria worktree <name> [base-ref] [--no-seed] [--seed-from <checkout>] [--desktop]
 ```
 
 Positional `<name>` (required) (takes the rest of the arguments) — then optionally a base ref (default: HEAD)
+
+| Flag | Kind | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--no-seed` | bool | — | start with an empty api/target (a cold build) instead of reflinking an idle checkout's registry crates |
+| `--seed-from` | value | — | the checkout whose target to seed from (default: the idle one whose Cargo.lock shares the most entries) |
+| `--desktop` | bool | — | seed desktop/src-tauri/target too |
+
+### `talaria seed-target`
+
+seed this checkout's empty Rust build cache from an idle checkout's (reflink; registry crates only)
+
+```
+talaria seed-target [--from <checkout>] [--desktop]
+```
+
+| Flag | Kind | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--from` | value | — | the checkout to seed from (default: the idle one whose Cargo.lock shares the most entries) |
+| `--desktop` | bool | — | seed desktop/src-tauri/target as well as api/target |
 
 ### `talaria cleanup`
 
@@ -293,7 +314,7 @@ talaria cleanup [--apply]
 
 | Flag | Kind | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--apply` | bool | — | remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects) |
+| `--apply` | bool | — | remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects, networks, app databases and MCP packages) |
 
 ### `talaria reset`
 

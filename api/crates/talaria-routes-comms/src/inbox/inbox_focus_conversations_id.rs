@@ -38,6 +38,11 @@ pub async fn get(
     let requested = if id == "current" {
         None
     } else {
+        // Any other id names an instance by its uuid, and the read casts it:
+        // a mangled one is a miss, not the 500 the cast answered.
+        if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+            return Ok(gate);
+        }
         Some(id.as_str())
     };
     Ok(
@@ -54,6 +59,9 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     Ok(
         match archive_inbox_conversation(&state.pg, &user.id, &id).await {
             Ok(true) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),

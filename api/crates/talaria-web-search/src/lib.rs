@@ -1,25 +1,18 @@
-// HOW THIS DEPLOYMENT SEARCHES THE WEB — one answer, for every caller.
+// A REGISTERED SEARCH TOOL'S PAYLOAD, NORMALISED — the walker research's
+// search loop runs over whatever an org's registered MCP search supplier
+// (Exa, Tavily, …) sends back.
 //
-// THE PROBLEM THIS ENDS. Search is resolved the way the whole capability
-// model says it should be — the org's registered MCP servers first,
-// Talaria's own SearXNG as the floor underneath — and every caller goes
-// through that resolution: the `web_search` tool every agent reaches,
-// research, and the fitness sweep alike. Nobody is nailed to the
-// self-hosted instance while better keys sit registered — the working
-// agents are the last callers who should be stuck on it.
+// WHAT THIS CRATE IS NOT ANY MORE. It used to hold a resolver too
+// (`search_the_web`, behind `POST /api/search`), the door the agent-side
+// `web_search` MCP tool called. That tool went on 2026-10-16: a fleet agent
+// searches with Hermes's own `web_search`, which Talaria configures (Admin →
+// Search sets `search_url`, rendered into every agent as `SEARXNG_URL`)
+// rather than duplicates. Nothing else called the resolver, so it went too.
+// Research resolves its own supplier (`talaria_capability_reach` plus the
+// research harness's dispatch hook) and only borrows this walker.
 //
-// SEARXNG IS THE FLOOR, NOT THE CEILING, and that is the whole design. A
-// fresh install with no keys and no registry has working web search on day
-// one. An org that registers a real provider upgrades every caller at once
-// — agents, research, the fitness sweep — with no code change and nothing
-// to migrate, because they all ask this file.
-//
-// THE WALKER (`results_from_payload`) normalises a registered tool's
-// payload into `SearchResult`s, shape-agnostically. The resolver AROUND it
-// (`search_the_web`, which asks the capability model who supplies search
-// and routes to SearXNG or a registered server) lives here too. SearXNG's
-// own rows go through `search::results_from` instead — its shape is known,
-// so it is narrowed rather than walked.
+// SearXNG's own rows go through `search::results_from` instead — its shape is
+// known, so it is narrowed rather than walked.
 
 use std::collections::HashSet;
 
@@ -27,25 +20,6 @@ use serde_json::Value;
 
 use talaria_body::truncate_utf16;
 use talaria_search::SearchResult;
-
-use futures_util::future::BoxFuture;
-use std::sync::{Arc, OnceLock};
-use talaria_secretbox::SecretBox;
-
-/// Wired from the api binary so this crate does not depend on mcp/registry.
-pub static CALL_MCP_TOOL: OnceLock<
-    Arc<
-        dyn Fn(
-                sqlx::PgPool,
-                SecretBox,
-                String,
-                String,
-                serde_json::Map<String, Value>,
-            ) -> BoxFuture<'static, Result<(Option<Value>, String), String>>
-            + Send
-            + Sync,
-    >,
-> = OnceLock::new();
 
 /// A REGISTERED TOOL'S PAYLOAD, NORMALISED — and it has to be shape-agnostic,
 /// because every provider spells a result differently and none of them owes us
@@ -136,108 +110,6 @@ fn is_http_url(s: &str) -> bool {
         .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
         || s.get(..8)
             .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
-}
-
-// ── The resolver half ───────────────────────────────────────────────────────
-//
-// The pieces it composes: DbReach reads servers + providers + platform,
-// `search::search_web` is the SearXNG client, and `call_mcp_tool` speaks to
-// a registered server.
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct WebSearch {
-    pub results: Vec<SearchResult>,
-    /// WHO ACTUALLY ANSWERED. Reported rather than hidden because "we
-    /// searched" and "we searched with Exa" are different claims, and an
-    /// admin debugging a thin result set needs to know which engine to go and
-    /// look at. Null means Talaria's own instance.
-    pub via: Option<talaria_capability_reach::Supplier>,
-}
-
-/// Search the web with whatever this deployment has, best first.
-///
-/// ERRS RATHER THAN RETURNING EMPTY when nothing can search, because the
-/// caller is a tool handler and its error text lands in an agent's transcript.
-/// A model handed an empty result set answers from memory in a confident
-/// voice; a model handed a sentence saying search is unavailable says so.
-pub async fn search_the_web(
-    state: &talaria_state::AppState,
-    query: &str,
-    limit: Option<f64>,
-) -> Result<WebSearch, String> {
-    use talaria_capability_platform::is_platform_server;
-    use talaria_capability_reach::{
-        DbReach, PROVIDERS_KEY, Providers, ReachDeps, platform_supply, supplier_for,
-    };
-    use talaria_gateway::settings::get_setting;
-    use talaria_search::{DEFAULT_LIMIT, real_deps, search_web};
-
-    let pg = &state.pg;
-    let reach = DbReach { pg };
-    let (servers, providers, platform) = tokio::join!(
-        reach.servers(),
-        async {
-            let raw = get_setting(pg, PROVIDERS_KEY, serde_json::json!({})).await;
-            serde_json::from_value::<Providers>(raw).unwrap_or_default()
-        },
-        platform_supply(pg)
-    );
-    let supplier = supplier_for("search", &servers, &providers, &platform);
-
-    // Nothing registered and nothing of our own that works — `platform_supply`
-    // withholds SearXNG when its canary query comes back empty, which is what
-    // a CAPTCHA-walled instance looks like. Refusing here is the honest answer.
-    let Some(supplier) = supplier else {
-        return Err(
-            "live web search is not available in this workspace: no search provider is registered and this deployment has no working search engine of its own. Tell whoever asked that you could not search rather than answering from memory."
-                .to_string(),
-        );
-    };
-
-    // OUR OWN ENGINE GOES STRAIGHT TO THE CLIENT, not out through
-    // `call_mcp_tool` — Talaria is in nobody's MCP registry, so routing it
-    // there is the exact bug that made the platform supplier a lie the first
-    // time.
-    if is_platform_server(&supplier.server) {
-        let results = search_web(
-            pg,
-            query,
-            Some(limit.unwrap_or(DEFAULT_LIMIT as f64)),
-            &real_deps(),
-        )
-        .await?;
-        return Ok(WebSearch { results, via: None });
-    }
-
-    let mut args = serde_json::Map::new();
-    args.insert("query".into(), Value::String(query.to_string()));
-    args.insert(
-        "limit".into(),
-        Value::from(limit.unwrap_or(DEFAULT_LIMIT as f64) as i64),
-    );
-    let sb = state
-        .secretbox()
-        .await
-        .map_err(|e| format!("secretbox unavailable: {e}"))?;
-    let call = CALL_MCP_TOOL
-        .get()
-        .ok_or_else(|| "MCP tool dispatch is not wired".to_string())?;
-    let (structured, text) = call(
-        pg.clone(),
-        sb,
-        supplier.server.clone(),
-        supplier.tool.clone(),
-        args,
-    )
-    .await?;
-    let payload = structured.unwrap_or(Value::String(text));
-    let mut results = results_from_payload(&payload, &supplier.server, 25);
-    let cap = limit.unwrap_or(DEFAULT_LIMIT as f64).max(0.0) as usize;
-    results.truncate(cap);
-    Ok(WebSearch {
-        results,
-        via: Some(supplier),
-    })
 }
 
 #[cfg(test)]

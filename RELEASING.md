@@ -10,9 +10,12 @@ lives in [`.github/workflows/release.yml`](./.github/workflows/release.yml).
 **Git tags are the version authority.** Every `package.json` in this repo
 says `"0.1.0"` decoratively and nothing reads them; the running version of
 any install is the commit it runs (the Updates panel shows it), and the
-version of any published image is the tag that built it. Releasing never
-edits a file — no version-bump commit, no changelog commit, nothing to
-merge afterwards.
+version of any published image is the tag that built it. No release writes
+its version into a file — there is no version-bump commit, and nothing to
+merge afterwards. The one file a release changes is `CHANGELOG.md`: the
+roll (`scripts/changelog-roll.mjs`) folds the `changelog/` entries into a
+section for the version, and that commit reaches rc the way every change
+does — through a pull request — before the tag (see "Cutting an RC").
 
 Two long-lived branches, both already deployed before a version is cut:
 [`docs/BRANCHES.md`](./docs/BRANCHES.md) is the model in full.
@@ -29,20 +32,45 @@ call is the one thing that should be: whether a version exists.
 
 ## Cutting an RC
 
+Two steps, in this order: the changelog roll, as a pull request, then the tag.
+
 ```bash
+# 1. roll the changelog on a branch from rc, and open the pull request
+git fetch origin && git switch -c release/roll-0.2.0-rc.1 origin/rc
+bun scripts/changelog-roll.mjs 0.2.0-rc.1     # folds changelog/*.md into a section
+git add CHANGELOG.md changelog/
+git commit -m "changelog: roll 0.2.0-rc.1 — the entries since the last release"
+git push -u origin release/roll-0.2.0-rc.1
+gh pr create --base rc --title "changelog: roll 0.2.0-rc.1"
+#    merge it as a merge commit once CI is green; rc-deploy deploys the merge
+# 2. tag that merge
 git switch rc && git pull                     # the tip you mean to cut
 git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 ```
 
-Nothing needs advancing first: `rc` is where the work already is, and its tip
-has been deployed and smoke-tested by `rc-deploy.yml` on the way in — which is
-the guarantee an RC is supposed to carry. Tag the tip whose deploy you watched
-(`git log --oneline -1` against the run list under Actions → rc-deploy).
+The roll comes first because the tagged tree must carry the version's
+section: a checkout of the tag then says what it holds, and the promotion
+carries the same section to main. The release's notes link is not pinned to
+the tag: `release.yml` points it at `blob/main/CHANGELOG.md`, so an RC's
+section shows behind that link only once rc is promoted, and until then it is
+in rc's CHANGELOG.md. It is a pull
+request because rc moves only by merges — `scripts/flow-guard.mjs` refuses a
+hand-made commit pushed to rc, in the pre-push hook and in `flow.yml` alike.
+Hold other merges to rc until the tag is cut: a pull request that lands in
+between ships in the tag with its entry still under `changelog/`, outside the
+section.
+
+Nothing else needs advancing first: `rc` is where the work already is, and its
+tip has been deployed and smoke-tested by `rc-deploy.yml` on the way in — which
+is the guarantee an RC is supposed to carry. Tag the tip whose deploy you
+watched (`git log --oneline -1` against the run list under Actions →
+rc-deploy).
 
 The tag push runs the release workflow: the full CI suite against the tag,
 then the image builds and lands on GHCR as `0.2.0-rc.1` and (moving) `rc`,
-the desktop installers are built for linux, macOS and Windows and attached to
-the release, and a GitHub **prerelease** opens with a stub body. The changelog is the
+and a GitHub **prerelease** opens with a stub body. No desktop installers ride
+it: Talaria Desktop ships only as `desktop-v*` releases ("The desktop
+installers", below). The changelog is the
 record — edit the release notes afterwards if you want them to say more,
 or leave the stub pointing at CHANGELOG.md.
 
@@ -68,12 +96,13 @@ installs and each needs a version an installer can compare:
 
 | Surface | Namespace | Auto | Manual door |
 |---|---|---|---|
-| Desktop | `desktop-v*` | a `desktop/` push to main mints `desktop-vX.Y.0` (minor+1 across **both** `v*` and `desktop-v*`) and attaches the installers | dispatch `desktop-package.yml` with `version` + `publish=true` |
+| Desktop | `desktop-v*` | a `desktop/` push to main (or one to `ui/src/lib/dither-engine.ts`, which the launcher bundles) mints `desktop-vX.Y.0` (minor+1 across **both** `v*` and `desktop-v*`) and attaches the installers | dispatch `desktop-package.yml` with `version` + `publish=true` |
 | Mobile | `mobile-v*` | a `mobile/` push to main mints `mobile-vX.Y.0` (minor+1 within `mobile-v*` only; first is `0.1.0`) and attaches the Android APK | dispatch `mobile-package.yml` with `version` + `publish=true` |
 
-Neither edits a file to do it: both inject the resolved version into the build
-the same way a platform release does, so the rule above holds — **releasing
-never edits a file.**
+Neither writes its version into a file: both inject the resolved version into
+the build the same way a platform release does, so the rule above holds — **no
+release writes its version into a file.** Neither rolls the changelog either:
+that belongs to the platform release.
 
 The one place they differ from each other is what they count. Desktop tracks
 the platform's version line, so its auto-minor reads the app's `v*` tags too.
@@ -100,13 +129,35 @@ git switch main && git pull
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
-`latest` moves on nothing else — only a `vX.Y.Z` tag with no suffix.
+A stable's notes come from the same roll. If entries landed on rc after the
+last RC's roll, roll them the same way — a pull request against rc — before
+step 1, under the stable's own version: `bun scripts/changelog-roll.mjs 0.2.0`
+writes a `## 0.2.0 (date)` section above the `0.2.0-rc.N` ones, which hold
+everything before it. If `changelog/` is empty, the roll refuses ("no
+changelog/*.md entries to roll"). That is the usual case right after an RC,
+and it means nothing has landed since the RC's roll: the RC sections already
+describe everything the stable carries, so there is nothing to roll. Skip it
+and go to step 1. A roll can never go to main directly: main takes rc's
+content and nothing else (flow-guard).
 
-A stable desktop release also attaches `latest.json` and `.sig` files so
-installed copies can update in-app. That needs the
-`TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey is in
-`desktop/src-tauri/tauri.conf.json`). An RC does not publish `latest.json`.
+Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
+`latest`, the image tag, moves on nothing else — only a `vX.Y.Z` tag with no
+suffix.
+
+**The GitHub Release is never marked "Latest".** GitHub's Latest release is
+the desktop updater feed: the shell reads
+`/releases/latest/download/latest.json`, and the release behind that is the
+newest `desktop-v*` one (the next section). GitHub would make a new stable
+release Latest by default, and a `v*` release carries no `latest.json`, so
+every installed app's update check would 404.
+So `release.yml` creates and edits every `v*` release with `--latest=false`,
+and `scripts/check-invariants.mjs` (`release-latest-is-the-desktop-feed`)
+fails a workflow that drops the flag. Leave it that way in the Releases page
+too.
+
+A stable tag attaches no desktop installers and no `latest.json`: installed
+apps keep updating from the newest `desktop-v*` release, and Desktop ships
+nowhere else (below).
 
 ## Nightlies
 
@@ -185,32 +236,40 @@ compile being ~8 minutes instead of ~16.
 
 ## The desktop installers
 
-Every tag publish also attaches the desktop app's installers to the GitHub
-Release (`desktop-package.yml`, called by `release.yml` once the image push is
-done — the assets land on a release that exists): linux
+Talaria Desktop ships **only** as `desktop-vX.Y.Z` releases, minted by
+`desktop-package.yml`. A server tag — `vX.Y.Z` or `vX.Y.Z-rc.N` — builds and
+attaches no installers, and neither does a nightly. Desktop has its own version
+line, and the in-app updater offers only a higher number: a Desktop stamped
+0.13.0 from a server tag beside `desktop-v0.12.0` would never be offered an
+update until Desktop passed 0.13. A `desktop-v*` release carries linux
 `.deb`/`.rpm`/`AppImage`/`.pkg.tar.zst`/`.flatpak`, macOS a universal `.dmg`
-(and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, plus a
-`SHA256SUMS` over all of them.
+(and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, a `SHA256SUMS`
+over all of them, and the `latest.json` and `.sig` files the updater reads,
+which need the `TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey
+is in `desktop/src-tauri/tauri.conf.json`).
 
-Nightlies open no Release (above), so they carry no installers. A trunk build
-that touches `desktop/` IS a desktop release — the auto-minor channel: once
+A trunk build that touches `desktop/` IS a desktop release — the auto-minor channel: once
 every platform job is green, `desktop-package.yml` mints `desktop-vX.Y.0`
 (highest suffix-free X.Y.Z across the `v*` and `desktop-v*` tags, minor+1,
 patch 0) and opens a regular Release for it carrying the installers and
-`latest.json` — the LIVE in-app updater feed, because `/releases/latest`
-resolves to it and installed desktop apps update themselves. The `desktop-v*`
+`latest.json` — the LIVE in-app updater feed. The release is created with
+`--latest=false` and marked GitHub's **Latest** explicitly once its
+`latest.json` is uploaded, so `/releases/latest` (the only URL the updater
+reads) moves to it only when there is a feed to serve, and never to anything
+but a desktop release. Installed apps read it when someone checks for updates;
+they do not update unasked. The `desktop-v*`
 namespace keeps a desktop auto-minor from ever firing `release.yml` (its tag
 trigger is `v[0-9]*`). Auto never crosses a major: **majors (and any
 hand-picked number) are manual** — dispatch `desktop-package` with
 `version=1.0.0` and `publish=true`. A stable `vX.Y.Z` cut raises the baseline
 the same way; before cutting one, check it exceeds the highest `desktop-v*`
 tag (the auto math resumes from whichever is higher). To re-attach installers
-to an existing release, re-run that release's `desktop-package` job, or
+to an existing `desktop-v*` release, re-run its `desktop-package` run, or
 dispatch with `version` and `release_tag` filled in — also the way to finish a
 mint whose run was cancelled mid-attach; `--clobber` makes either idempotent.
 A plain dispatch without `publish` builds artifacts only, nothing minted.
 
-A published stable release — `desktop-v*` or a suffix-free `v*` — also opens
+A published `desktop-v*` release also opens
 a pull request on [omapak](https://github.com/outcrop-labs/omapak) that moves
 `app.talaria.desktop` to that tag and regenerates the vendored cargo and bun
 sources (`omapak-submit.yml`). The store judge still scores it; the workflow
@@ -218,7 +277,7 @@ does not merge. That needs a repository secret `OMAPAK_SUBMIT_TOKEN` (a
 fine-grained PAT or GitHub App token with contents and pull-requests write
 on `outcrop-labs/omapak`). Without it the job fails on purpose: a rolled
 release that never reaches the store is a red run, not a quiet success.
-RCs do not submit.
+A server `v*` release does not submit: it carries no desktop build.
 
 Nothing is signed or notarized yet. That is a provisioning decision, not an
 oversight: it takes an Apple Developer certificate and a Windows signing key.
@@ -270,4 +329,6 @@ itself, and it pushes to the package release.yml already made public.
 - No signed attestations, and no signed or notarized desktop installers (see
   "The desktop installers" above).
 - No nightly-tag pruning (see above: negligible growth).
-- No auto-changelog; CHANGELOG.md is hand-maintained, and PRs update it.
+- No generated changelog. Every pull request writes its own entry under
+  `changelog/`, and the roll folds them into CHANGELOG.md through a pull
+  request before a tag (see "Cutting an RC").

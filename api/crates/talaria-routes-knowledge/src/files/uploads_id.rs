@@ -46,7 +46,10 @@ pub async fn get(
         )
         .await
     };
-    if !allowed {
+    // An admin passes the access check without a read, so a mangled id
+    // reached the blob read's `$1::uuid` cast and answered 500: it names no
+    // upload, the same miss as one that is gone.
+    if !allowed || !talaria_params::uuid_shaped(&id) {
         return Ok(upload_not_found());
     }
     let sb = state.secretbox().await.unwrap_or_default();

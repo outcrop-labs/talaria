@@ -1,5 +1,7 @@
-// The user's notification inbox — polled here (30s), made live by the SSE
-// subscription in NotificationToasts; refetches also piggyback on route changes.
+// The user's notification inbox — polled here (30s, hidden tabs included),
+// made live by the firehose (user-events.svelte.ts invalidates it on every
+// `notification` and `notifications` event and on every stream reopen);
+// refetches also piggyback on route changes.
 //
 // The routing/digest vocabulary lives in `lib/notify-classes.ts` (framework-
 // free, shared with the server) and is re-exported here so client call sites
@@ -8,17 +10,27 @@ import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { errorMessage, getJson, patchJson, putJson } from '@/lib/fetch-json'
 import { toastError } from '@/lib/toast.svelte'
 import type { DigestPref, NotifyDelivery, NotifyPrefs, NotifySettings, Notification } from './notify-classes'
+import type { PromptMemory } from './notify-prompt'
+import type { NotificationsPayloadV2Fields } from './notify-wire'
 
 export * from './notify-classes'
 
 // ── Queries ──────────────────────────────────────────────────────────────────
 
-export interface NotificationsPayload extends NotifySettings {
+/** The bell's one read. Since the notification contract it also carries the
+ *  v2 fields (`NotificationsPayloadV2Fields`: unreadForYou, seq, classes,
+ *  channels, dnd, emailFrequency, features, next) and each row carries the v2
+ *  row fields (`NotificationRowV2` in notify-wire.ts) — all optional here, and
+ *  read by nothing yet: the wave-2 streams gate on `features`. */
+export interface NotificationsPayload extends NotifySettings, NotificationsPayloadV2Fields {
   notifications: Notification[]
   unread: number
   delivery: NotifyDelivery
   /** Whether this user may change `delivery` — admins only. */
   canSetDelivery: boolean
+  /** The desktop-alerts soft ask's memory (notify-prompt.ts). Absent from an
+   *  api that predates it — and then the card never shows. */
+  prompt?: PromptMemory
 }
 
 export function useNotifications() {
@@ -26,7 +38,29 @@ export function useNotifications() {
     queryKey: ['notifications'],
     queryFn: (): Promise<NotificationsPayload> => getJson<NotificationsPayload>('/api/notifications'),
     refetchInterval: 30_000,
+    // THE ONE QUERY THAT POLLS HIDDEN. It feeds the OS banner, and a banner
+    // is for exactly the moment Talaria is not on screen — a poll that slept
+    // in a background tab meant an event lost in an SSE gap reached nobody
+    // until the person came back. Browsers throttle a page hidden for more
+    // than five minutes to about one timer a minute; Web Push is the
+    // hidden-page path, this is the floor under it.
+    refetchIntervalInBackground: true,
   }))
+}
+
+/** Record the person's answer to the soft ask, on the account: "Not now"
+ *  (counted and spaced: 7 days, 30 days, then never) or the browser's grant
+ *  (never again). Fails quiet — the card's answer is a courtesy, and the
+ *  worst case is being asked once more. */
+export async function saveNotifyPrompt(action: 'dismissed' | 'granted'): Promise<PromptMemory | null> {
+  try {
+    const j = await patchJson<{ prompt?: PromptMemory }>('/api/notifications', {
+      prompt: action === 'dismissed' ? { dismissed: true } : { granted: true },
+    })
+    return j.prompt ?? null
+  } catch {
+    return null
+  }
 }
 
 /** Mark notifications read: by ids, by href (everything pointing at the place
@@ -50,6 +84,7 @@ export function useMarkNotificationsRead() {
     }
     await qc.invalidateQueries({ queryKey: ['notifications'] })
     await qc.invalidateQueries({ queryKey: ['home'] })
+    await qc.invalidateQueries({ queryKey: ['unreads'] })
   }
 }
 

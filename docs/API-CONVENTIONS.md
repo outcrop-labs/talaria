@@ -1,13 +1,14 @@
 # API conventions — one dialect for every route
 
 The contract that keeps every `/api/*` route predictable, on both sides of the origin. The runtime of
-record is the Rust crate (`api/`): it serves every route except the four permanent TS residents
-(`healthz`, `/api/admin/update`, the `/api/apps/` dispatch subtree, the app-MCP gateway), and a new
+record is the Rust crate (`api/`): it serves every route except the permanent TS residents
+(`healthz`, the `/api/apps/` dispatch subtree, the host's own app routes under `/api/app-host/`,
+the app-MCP gateway), and a new
 route lands as a Rust file under `api/src/routes/<group>/`, in this dialect, with its tests (the
 Rust-side authoring rules and the recorded divergences are
 [`RUST-MIGRATION.md`](./RUST-MIGRATION.md)).
 
-The TS route dialect below still governs everything that writes a route the TS way — the four
+The TS route dialect below still governs everything that writes a route the TS way — the
 residents, and app servers through the host gateway. A resident route lives in `ui/src/routes/api/`;
 its path is the string in its `defineApi('…')` call, the filename is convention that mirrors it, and
 its server logic lives in `ui/src/server/`. Every module under `routes/api/` that exports `Route`
@@ -53,23 +54,9 @@ credential is a 403. `agent.legacy` marks a caller authenticated by the org-wide
 — the pre-per-agent-key path; identity asserted, not proven, so anything granting privilege must
 refuse it.
 
-Fleet-plane endpoints carry their subject in the URL or body, and they take one of two guards — not
-the same one:
-
-```ts
-if (!(await checkFleetKey(request))) return …   // agents/register: ANY fleet credential.
-                                                // An agent registers before it has its own.
-
-const caller = await fleetCaller(request)       // agents/$id/heartbeat: same validation as
-if (caller instanceof Response) return caller   // agentCaller, but an UNNAMED legacy caller
-if (!caller) return …                           // resolves to { model: null } instead of a 400.
-if (caller.model && caller.model !== name)      // A caller we CAN name must match the subject —
-  return json({ error: … }, { status: 403 })    // that's what stops A reading B's work queue.
-```
-
-`checkFleetKey` answers "does this credential belong to the fleet" and nothing else, so it is only
-correct where the response carries no per-agent data. Public routes say so in a comment; `llm.v1.*`
-follows the OpenAI wire contract and is exempt from all of this.
+There is no "any fleet credential" guard: every agent door resolves the caller to a named, enabled
+agent. Public routes say so in a comment; `llm.v1.*` follows the OpenAI wire contract and is exempt
+from all of this.
 
 A helper that takes an agent but isn't threaded everywhere yet accepts `AgentSubject`
 (`AgentCaller | string`) and asks `subjectProven(subject)` / `subjectModel(subject)` rather than
@@ -114,9 +101,16 @@ because archival withdraws the work rather than closing it, and a channel nobody
 channel. Reads are not this question: an agent that passes `board_allows_agent` may read the ticket,
 because reading changes nothing.
 
-The same predicate answers the *pull* side too — `assigned_work` asks it before serving an agent
-its queue — so the heartbeat and the write routes agree by construction rather than by two people
-remembering.
+The same predicate answers the *push* side too. `agent_work_refusal` is the work verb: the `Write`
+question plus the one clause only work adds — a workchain step whose predecessor is still open
+waits its turn (`workchain_blocked`, over the same derive the board's chain view reads). Every door
+that starts or drives work asks it: the work-session loop on every turn, the workbench when a job
+or repo request binds a `taskId`, and work dispatch (the same two halves, the chain order once per
+ticket before any per-agent side effect). The ticket patch asks the chain clause for the one write
+that *is* work — an agent's status move into a working column or review, terminal moves included,
+since those land in review. So the dispatcher and the write routes agree on authority by
+construction, and on the chain order wherever the write starts or delivers the work. The rest stays
+open: agents still triage, comment on, edit fields of and report against a step that is waiting.
 
 > **Do not copy it into your route.** Four TS routes once hand-rolled their own copies, because
 > parallel work split file ownership and nothing exported one. All four checked only the
@@ -233,6 +227,14 @@ they are wire contract, pinned by its tests.
 - Mutations: `{ ok: true }`, or the created/updated object (`{ folder }`).
 - Never leak `(e as Error).message` with a 500: `console.error('[route]', e)` server-side, return a
   generic line. 400-level messages may carry the business reason.
+- A database error is never a 400's message either. In the Rust api, a store whose `Err` is a
+  sentence a route puts on the wire hands a database failure up as `talaria_error::store_fault`
+  (logged where it happened, with the sqlx text), and the route answers that sentence with
+  `store_answer`: the house 500. Every other sentence keeps its 400. The fleet's render and
+  apply chain (`render_fleet`, the apply, the roll) does the same at every database read and
+  write, so a store fault reaches an apply's `warning`, the roll picture and the endpoints
+  route's *re-render failed (…)* as that sentence; a file path, a YAML or a docker error stays
+  the operator's own text.
 - Secrets: sealed at rest, **never echoed** — GETs return set-flags (`passSet`) or masked keys.
   An empty string on a round-tripped masked field means "keep", not "clear".
 
@@ -241,6 +243,18 @@ they are wire contract, pinned by its tests.
 - **GET** reads. **POST** creates and *actions* (verify, test-send, install, rotate).
 - **PUT/PATCH** config and edits — config writes are PUT, not POST.
 - **DELETE** takes ids in the path, small selectors in a JSON body (matching the PUT transport).
+- **A well-formed path id that names nothing is a 404** (`not found`): on a GET, on a PUT/PATCH,
+  and on a DELETE that addresses the row by its own id. The exception is a family whose rule is
+  *forbidden, not hidden* (boards, channels, teams, workchains, kb comments, the run views): a
+  caller who may not see a row gets 403 whether it exists or not, so an absent id gets that 403
+  too. A client deleting something that turns out to be gone reads that 404 as done (ui's
+  `delJsonGone`): another tab or another person deleted it first.
+- **A malformed path id is a 404 as well**, on a new route and on every route that casts it with
+  `$N::uuid` unguarded: gate it with `talaria_params::uuid_gate_404`, after the route's auth (and
+  after its body checks, where those come first). No row can carry it, so the 404 hides nothing,
+  even in a 403 family. The older families that gate with `talaria_params::uuid_gate` (boards,
+  teams, plans, research, workchains, workflows, rag collections and keys) answered its 400
+  *not a uuid* first and keep it; a route added to one of them follows its siblings.
 - Authorization comes BEFORE body parsing unless the decision depends on the body (say so in a
   comment).
 

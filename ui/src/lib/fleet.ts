@@ -1,15 +1,15 @@
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
-export type AgentStatus = 'offline' | 'idle' | 'busy' | 'error'
+/** Container reality: `idle` while the agent's container runs, `offline`
+ *  otherwise — the same source as the roster's status dots. */
+export type AgentStatus = 'offline' | 'idle'
 
 export interface FleetAgentStat {
   id: string
   label: string
   role: string
   status: AgentStatus
-  lastSeen: string | null
-  lastActivity: string | null
   conversations: number
   messages: number
   lastUsed: string | null

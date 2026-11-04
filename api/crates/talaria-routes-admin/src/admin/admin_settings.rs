@@ -7,7 +7,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
-use talaria_agent_defs::{GOVERNED_TOOLSETS, MANDATORY_DISABLED, ORG_FLOOR_ENV, ORG_FLOOR_SETTING};
+use talaria_agent_defs::{
+    GOVERNED_TOOLSETS, MANDATORY_DISABLED, ORG_FLOOR_ENV, ORG_FLOOR_SETTING, toolset_names,
+};
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, utf16_len, zod_type_name};
@@ -95,16 +97,22 @@ fn split_org_floor(names: &[String]) -> (Vec<String>, Vec<String>) {
     let mut strangers: Vec<String> = Vec::new();
     for raw in names {
         let name = raw.trim();
-        if name.is_empty() || MANDATORY_DISABLED.contains(&name) {
+        if name.is_empty() {
             continue;
         }
-        if !GOVERNED_TOOLSETS.contains(&name) {
+        // A retired name (`safe`, `debugging`, …) stands for the governed
+        // toolsets it closed — read as those, never refused or dropped, so a
+        // stored floor keeps closing what it closed.
+        let Some(expanded) = toolset_names(name) else {
             if !strangers.iter().any(|s| s == name) {
                 strangers.push(name.to_string());
             }
             continue;
-        }
-        if !kept.iter().any(|k| k == name) {
+        };
+        for name in expanded {
+            if MANDATORY_DISABLED.contains(&name) || kept.iter().any(|k| k == name) {
+                continue;
+            }
             kept.push(name.to_string());
         }
     }
@@ -451,14 +459,33 @@ pub async fn put(
 
     if let Some(names) = &body.mandatory_disabled_toolsets {
         // A toolset closed for the whole fleet is a governance control: who
-        // moved it, and from what. The write rolls NOTHING — the renderer
-        // reads this key on every render, so the floor lands on each agent's
-        // next render or roll, and the panel says so. A roll from here would
-        // restart every container for an edit that may be a single checkbox.
+        // moved it, and from what. The write RENDERS and rolls nothing: the
+        // floor is merged into every agent's `agent.disabled_toolsets`, which
+        // a running Hermes reads on each turn from the config.yaml the
+        // render rewrites in place — so it lands on every agent's next turn.
+        // (Without the render it waited for some unrelated one.) A roll from
+        // here would restart every container for what may be one checkbox.
         let before = org_toolset_floor(&state.pg).await;
         if let Err(e) = set_setting(&state.pg, ORG_FLOOR_SETTING, &serde_json::json!(names)).await {
             return Ok(internal("[admin/settings] toolset floor write failed", e));
         }
+        let pg = state.pg.clone();
+        let sb = state.secretbox().await.ok();
+        tokio::spawn(async move {
+            match sb {
+                Some(sb) => {
+                    if let Err(e) = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await
+                    {
+                        tracing::warn!(
+                            "[admin/settings] toolset floor stored but the render failed: {e}"
+                        );
+                    }
+                }
+                None => tracing::warn!(
+                    "[admin/settings] toolset floor stored but not rendered — secretbox unavailable; the next render carries it"
+                ),
+            }
+        });
         log_audit(
             &state.pg,
             AuditEntry {
@@ -481,15 +508,21 @@ pub async fn put(
             body.org_about.as_deref(),
         )
         .await;
-        // The org lives in every rendered soul — propagate by ROLLING running
-        // agents (new container up + healthy before the old one retires), so
-        // an identity edit never kills anyone's in-flight conversation.
-        // Detached, failures swallowed; the setting write already succeeded.
+        // The org lives in every rendered soul, and a soul is rewritten in
+        // place — it reaches each agent's next new session without a
+        // restart (a session with history keeps the prompt it stored,
+        // restart or not). So the edit APPLIES to the running fleet: one
+        // render, and a roll only for an agent whose container the render
+        // moved, which an org edit alone moves for nobody. Detached; the
+        // setting write already succeeded.
         let pg = state.pg.clone();
         let sb = state.secretbox().await.ok();
         tokio::spawn(async move {
-            if let Some(sb) = sb {
-                let _ = talaria_api_facades::fleet::reconcile::roll_running_agents(&pg, &sb).await;
+            if let Some(sb) = sb
+                && let Err(e) =
+                    talaria_api_facades::fleet::reconcile::apply_running_agents(&pg, &sb).await
+            {
+                tracing::warn!("[admin/settings] org profile stored but not applied: {e}");
             }
         });
         log_audit(
@@ -545,6 +578,13 @@ mod tests {
         assert_eq!(
             floor(json!({ "mandatoryDisabledToolsets": ["todo", "clarify"] })).unwrap(),
             Some(vec![])
+        );
+        // A retired composite stores as the governed toolsets it closed, so
+        // an older panel tab cannot write a name the editor no longer shows
+        // and the floor still closes what it closed.
+        assert_eq!(
+            floor(json!({ "mandatoryDisabledToolsets": ["safe", "coding", "web"] })).unwrap(),
+            Some(vec!["image_gen".into(), "vision".into(), "web".into()])
         );
     }
 

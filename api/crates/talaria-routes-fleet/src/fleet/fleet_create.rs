@@ -158,6 +158,14 @@ pub async fn post(
             &format!("an agent with the handle \"{}\" already exists", body.slug),
         ));
     }
+    // The department, too: it names the agent's container and memory, so it
+    // is one agent's (talaria-agent-defs, "A department is one agent's key").
+    // The run's write asks again under a lock, which is what a race meets.
+    match talaria_agent_defs::department_holder(&state.pg, &body.department, &body.slug).await {
+        Ok(Some(taken)) => return Ok(house_error(StatusCode::CONFLICT, &taken.to_string())),
+        Ok(None) => {}
+        Err(e) => return Ok(internal("[fleet] taken-department check failed", e)),
+    }
 
     // Registration only: a process that enqueues a hire can also be the
     // process a reclaim sweep asks to resume one. actorOf: email, else

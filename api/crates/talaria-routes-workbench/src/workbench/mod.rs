@@ -1,4 +1,4 @@
-// The workbench surface: flows, github, jobs, repos, and coding accounts.
+// The workbench surface: flows, git hosts, jobs, repos, and coding accounts.
 //
 // Coding accounts come in two halves. The `workbench_coding_*` routes are the
 // human side (sign in, choose a plan, pin a ticket); the `workbench_auth_*`
@@ -19,7 +19,9 @@ pub mod workbench_coding_pin_task_id;
 pub mod workbench_coding_services;
 pub mod workbench_env_repo;
 pub mod workbench_flow;
-pub mod workbench_github;
+pub mod workbench_git_hosts;
+pub mod workbench_git_hosts_id;
+pub mod workbench_git_hosts_id_test;
 pub mod workbench_jobs;
 pub mod workbench_repo_requests;
 pub mod workbench_repos_agent_id;

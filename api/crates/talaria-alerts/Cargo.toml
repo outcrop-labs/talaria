@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 talaria-agent-auth = { workspace = true }
+talaria-agent-defs = { workspace = true }
 redis = { workspace = true }
 serde = { workspace = true }
 sqlx = { workspace = true }
@@ -28,3 +29,6 @@ talaria-state = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
+[dev-dependencies]
+# The unpriced-alert live test saves a price the way the admin panel does.
+talaria-price-oracle = { workspace = true }

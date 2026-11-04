@@ -1008,6 +1008,7 @@ pub fn distiller_harness() -> HarnessDefinition {
         // whoever owns the decaying chat.
         ModelSpec {
             pin: Some("distiller"),
+            slot: None,
             role: None,
             chain: Some(&MUSE_CHAIN),
             user_id: None,

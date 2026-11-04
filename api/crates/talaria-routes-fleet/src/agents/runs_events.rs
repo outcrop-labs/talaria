@@ -41,6 +41,9 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&run_id) {
+        return Ok(gate);
+    }
     let verdict = match may_watch_run(&user.id, &run_id, &real_watch_deps(state.pg.clone())).await {
         Ok(v) => v,
         Err(e) => {

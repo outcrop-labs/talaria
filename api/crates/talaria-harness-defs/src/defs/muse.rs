@@ -368,6 +368,7 @@ const TEMPERATURE: f64 = 0.4;
 pub fn muse_model() -> ModelSpec<'static> {
     ModelSpec {
         pin: Some("muse"),
+        slot: None,
         role: None,
         chain: Some(&MUSE_CHAIN),
         user_id: None,

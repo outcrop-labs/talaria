@@ -29,6 +29,11 @@ export function useIsAdmin(user: SessionUser | null | undefined): boolean {
 interface SessionResult {
   user: SessionUser | null
   deniedViews: string[]
+  /** The app views this person holds (lib/app-grants.ts). Empty for an
+   *  admin, who holds every app by role. `null` when the api could not read
+   *  the enabled apps (`appsUnreadable`): no app view is held, and the core
+   *  views above answer as ever. */
+  appGrants: string[] | null
   perms: string[]
 }
 
@@ -45,9 +50,20 @@ interface SessionResult {
 // used to. getList already refuses to read a missing wrapper key as an empty
 // list; this refuses to read a missing `user` key as a logout.
 const fetchSession = async (): Promise<SessionResult> => {
-  const data = await getJson<{ user?: SessionUser | null; deniedViews?: string[]; perms?: string[] }>('/api/auth/session')
+  const data = await getJson<{
+    user?: SessionUser | null
+    deniedViews?: string[]
+    appGrants?: string[] | null
+    appsUnreadable?: boolean
+    perms?: string[]
+  }>('/api/auth/session')
   if (data.user === undefined) throw new Error('malformed response from /api/auth/session: no "user" field')
-  return { user: data.user, deniedViews: data.deniedViews ?? [], perms: data.perms ?? [] }
+  // A missing `appGrants` holds no app: the nav and the route gate admit an
+  // app view only on a listed grant, so the default fails closed. When the
+  // api could not read the enabled apps it says so (`appsUnreadable`,
+  // `appGrants: null`), and null holds no app either.
+  const appGrants = data.appsUnreadable === true || data.appGrants === null ? null : (data.appGrants ?? [])
+  return { user: data.user, deniedViews: data.deniedViews ?? [], appGrants, perms: data.perms ?? [] }
 }
 
 export function useSession() {
@@ -87,6 +103,20 @@ export function useDeniedViews(): { readonly current: string[] } {
   }
 }
 
+/** The app views the current user holds — what an app's nav entry, route and
+ *  settings tab open on (lib/app-grants.ts). Empty for admins, who hold every
+ *  app by role; `null` when the api could not read the enabled apps, which
+ *  every reader holds as no app. Same `{ current }` box as `useDeniedViews`. */
+export function useAppGrants(): { readonly current: readonly string[] | null } {
+  const query = createQuery(() => ({ queryKey: ['session'], queryFn: fetchSession, select: (d: SessionResult) => d.appGrants }))
+  return {
+    get current() {
+      // Still loading: nothing held yet. `null` passes through as itself.
+      return query.data === undefined ? [] : query.data
+    },
+  }
+}
+
 export function useProviders() {
   return createQuery(() => ({
     queryKey: ['auth-providers'],
@@ -102,6 +132,17 @@ export function useProviders() {
 export function useLogout() {
   const qc = useQueryClient()
   return async () => {
+    // THIS BROWSER STOPS RECEIVING FIRST. A signed-out browser kept getting
+    // the signed-out person's pushes. Retired at both ends while the session
+    // still authorizes the unsubscribe, and bounded at 2 s: a sign-out must
+    // never hang on a push service. The server also deletes every row this
+    // session filed, so a browser that could not answer is covered too.
+    // Imported here, not at the top: the SDK kit re-exports this module's
+    // session hooks, and the push plane is no app's business.
+    // Its banners go with it: the next person at this machine must not read
+    // the last one's mentions in the notification centre.
+    const { closeShownNotifications, stopPushSubscription } = await import('@/lib/browser-notify')
+    await Promise.all([stopPushSubscription(2000), closeShownNotifications()])
     // The nav button fires and forgets this, so a refused sign-out surfaces
     // here rather than as an unhandled rejection — and the session is
     // re-checked either way, because the person is still signed in.

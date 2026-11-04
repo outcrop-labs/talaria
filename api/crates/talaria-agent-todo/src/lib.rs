@@ -17,6 +17,27 @@
 // request, which is exactly why it is replaced wholesale rather than
 // accumulated.
 //
+// WHY NOT HERMES' OWN `todo_list`, YET. Hermes ships one, and it is closed
+// for every agent (talaria-agent-defs' `MANDATORY_DISABLED`). Its list lives in
+// an in-memory store on the agent, and v0.22's API server builds a fresh agent
+// per request, so the list survives a turn only through the transcript: the
+// newest todo tool result in the history is replayed into the store
+// (`_hydrate_todo_store`). On a Hermes SESSION that works, because the history
+// is the session's own and holds the tool rows. On the COMPLETIONS arm, which is
+// every chat of an agent without pinned sessions and the default, the history
+// is the request body: Talaria sends content only, and Hermes' parser keeps
+// only system/user/assistant content anyway. The list would reset every turn.
+// Enabling it for pinned agents alone is no answer either: the same agent's
+// work sessions and its chats would then carry two todo tools.
+//
+// UNBLOCKED WHEN the session arm is the chat default (`pinned_sessions`
+// defaulting on). Then: drop `todo` from `MANDATORY_DISABLED` (Rust and the
+// UI mirror); have the talaria-events plugin PUT each `todo_list` result to
+// `/api/agent/todo` for its conversation, unclamped up to `MAX_ITEMS`
+// (`in_progress` → active, `completed` → done, `cancelled` dropped, `parent`
+// flattened); keep `conversation_todos`, the read route and the plan strip as
+// the projection; and retire the MCP `todo` tool a release later.
+//
 // REPLACE, NOT PATCH. Every call carries the whole list. A patch protocol
 // (complete item 3, add an item after 2) is more state for a model to track
 // across turns and one more thing for it to get wrong — and it buys nothing,

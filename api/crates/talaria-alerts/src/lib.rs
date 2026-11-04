@@ -88,6 +88,45 @@ pub async fn compute_alerts(state: &AppState, user_id: &str) -> Vec<Alert> {
     value
 }
 
+/// The alert for a department two or more agents hold.
+fn shared_department_alert(share: &talaria_agent_defs::SharedDepartment) -> Alert {
+    let d = &share.department;
+    let detail = match share.runner() {
+        Some(runner) => {
+            let others: Vec<&str> = share
+                .members
+                .iter()
+                .filter(|m| m.id != runner.id)
+                .map(|m| m.display_name.as_str())
+                .collect();
+            // The render's rule (the older agent runs) is not the one the
+            // render kept before it (the slug that sorted last): on an
+            // install upgraded with the pair in place, the container can
+            // still hold the other agent until something recreates it. A
+            // deploy's fleet roll does; on a checkout, the admin's Roll does.
+            format!(
+                "{runner} runs in its container (agent-{d}) and keeps its memory; {} {} left out of the fleet. Retire and delete one of them — Talaria never merges two agents into one. If agent-{d} still runs {} (an install upgraded with the pair in place), Roll {runner} to put it back in its container.",
+                others.join(", "),
+                if others.len() == 1 { "is" } else { "are" },
+                others.join(" or "),
+                runner = runner.display_name,
+            )
+        }
+        None => format!(
+            "None of them is running. A department is one container (agent-{d}) and one memory volume: retire and delete all but one before starting it."
+        ),
+    };
+    Alert {
+        severity: AlertSeverity::Warning,
+        title: format!(
+            "{} agents share the department \"{d}\"",
+            share.members.len()
+        ),
+        detail,
+        href: "/agents",
+    }
+}
+
 /// en-US grouping (1,234,567) via the crate's shared grouping helper.
 fn fmt(n: i64) -> String {
     group(n)
@@ -219,6 +258,16 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
                 _ => {}
             }
         }
+    }
+
+    // ── Fleet: one agent per department ─────────────────────────────────────────
+    // A department is one container and one memory volume, so two agents in
+    // one are one agent in practice. New hires cannot make such a pair; one
+    // that predates the rule is said here, every read, until somebody unties
+    // it — the render quietly running the older one is exactly the kind of
+    // silence this file exists for.
+    if let Ok(shared) = talaria_agent_defs::shared_departments(pg).await {
+        alerts.extend(shared.iter().map(shared_department_alert));
     }
 
     // ── Gateway plane reachability ──────────────────────────────────────────────
@@ -561,16 +610,13 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
 
     // ── Ledger blind spots ──────────────────────────────────────────────────────
     if let Some(cost) = cost.as_ref() {
-        if cost.totals.unpriced_cloud_tokens > 0 {
-            alerts.push(Alert {
-                severity: AlertSeverity::Warning,
-                title: "Unpriced cloud usage".into(),
-                detail: format!(
-                    "{} cloud tokens (30d) have no rate, so spend is understated. Set prices on /models.",
-                    fmt(cost.totals.unpriced_cloud_tokens)
-                ),
-                href: "/models",
-            });
+        // Admins only: the fix (a price, "included in a plan", a retried
+        // lookup) is an admin's to make, on an admin-only panel — the line
+        // used to send everyone to /models, where no price can be set.
+        if let Some(alert) = unpriced_alert(cost.totals.unpriced_cloud_tokens)
+            && is_admin(pg, user_id).await
+        {
+            alerts.push(alert);
         }
         let share = cost.totals.estimated_share.as_f64().unwrap_or(0.0);
         if cost.totals.month.generations >= 5 && share > 0.5 {
@@ -727,6 +773,24 @@ fn mcp_attention_alert(labels: &[String]) -> Option<Alert> {
     })
 }
 
+/// Where the unpriced alert sends an admin: the Cost tab's unpriced panel.
+pub const UNPRICED_HREF: &str = "/observability/cost#unpriced";
+
+/// The "Unpriced cloud usage" warning for the window's unpriced cloud tokens,
+/// or None when there are none — the whole decision, so a test can hold the
+/// alert to the ledger number that clears it.
+pub fn unpriced_alert(unpriced_cloud_tokens: i64) -> Option<Alert> {
+    (unpriced_cloud_tokens > 0).then(|| Alert {
+        severity: AlertSeverity::Warning,
+        title: "Unpriced cloud usage".into(),
+        detail: format!(
+            "{} cloud tokens (30d) have no price, so spend is understated. Set a price, mark the model included in a plan, or retry the price lookup.",
+            fmt(unpriced_cloud_tokens)
+        ),
+        href: UNPRICED_HREF,
+    })
+}
+
 async fn is_admin(pg: &sqlx::PgPool, user_id: &str) -> bool {
     sqlx::query_scalar::<_, String>("select role from users where id::text = $1")
         .bind(user_id)
@@ -773,6 +837,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_unpriced_alert_names_the_tokens_and_links_the_panel_that_fixes_them() {
+        assert!(unpriced_alert(0).is_none(), "nothing unpriced, no alert");
+        let alert = unpriced_alert(1_234_567).expect("unpriced tokens raise it");
+        assert_eq!(alert.severity, AlertSeverity::Warning);
+        assert_eq!(alert.title, "Unpriced cloud usage");
+        assert_eq!(alert.href, "/observability/cost#unpriced");
+        assert!(alert.detail.starts_with(&fmt(1_234_567)));
+        // It no longer sends anyone to /models, where no price can be set.
+        assert!(!alert.detail.contains("/models"));
+    }
+
+    fn member(id: &str, name: &str, renders: bool) -> talaria_agent_defs::DepartmentMember {
+        talaria_agent_defs::DepartmentMember {
+            id: id.into(),
+            slug: id.into(),
+            display_name: name.into(),
+            renders,
+        }
+    }
+
+    #[test]
+    fn a_shared_department_is_a_warning_that_names_who_runs_and_who_is_left_out() {
+        let share = talaria_agent_defs::SharedDepartment {
+            department: "research".into(),
+            members: vec![member("a", "Ava", true), member("z", "Zed", true)],
+        };
+        let alert = shared_department_alert(&share);
+        assert_eq!(alert.severity, AlertSeverity::Warning);
+        assert_eq!(alert.title, "2 agents share the department \"research\"");
+        assert_eq!(
+            alert.detail,
+            "Ava runs in its container (agent-research) and keeps its memory; Zed is left out of the fleet. Retire and delete one of them — Talaria never merges two agents into one. If agent-research still runs Zed (an install upgraded with the pair in place), Roll Ava to put it back in its container."
+        );
+        assert_eq!(alert.href, "/agents");
+
+        let idle = talaria_agent_defs::SharedDepartment {
+            department: "ops".into(),
+            members: vec![
+                member("a", "Ava", false),
+                member("b", "Bo", false),
+                member("c", "Cy", false),
+            ],
+        };
+        let alert = shared_department_alert(&idle);
+        assert_eq!(alert.title, "3 agents share the department \"ops\"");
+        assert!(
+            alert.detail.starts_with("None of them is running."),
+            "{}",
+            alert.detail
+        );
+    }
+
+    #[test]
     fn mcp_attention_is_one_warning_naming_every_server() {
         assert!(mcp_attention_alert(&[]).is_none());
         let one = mcp_attention_alert(&["DeepWiki".into()]).expect("one server alerts");
@@ -795,5 +912,98 @@ mod tests {
         assert_eq!(minutes(0), 0);
         assert_eq!(minutes(89_999), 1); // round(1.4999) = 1
         assert_eq!(minutes(90_000), 2); // round(1.5) = 2
+    }
+}
+
+/// LIVE: the unpriced alert clears for HISTORY, not only new usage, the
+/// moment a price lands — rows booked through the relay's own writer, the
+/// real priced view, the real `cost_overview`. `#[ignore]`d; the
+/// api-integration job runs it with the workspace's ignored lib tests.
+///
+///   DATABASE_URL=postgres://… cargo test -p talaria-alerts --lib -- --ignored live
+#[cfg(test)]
+mod live {
+    use super::*;
+    use talaria_gateway::usage::{
+        AdminPricing, RELAY_SOURCE, StatedFlow, TokenCounts, record_relay_usage,
+    };
+    use talaria_price_oracle::unpriced::{PriceInput, set_price};
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn the_unpriced_alert_clears_for_history_when_a_price_lands() {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        let pg = sqlx::PgPool::connect(&url).await.expect("connect");
+        let ep = format!("alerts-live-{}", now_ms());
+        let model = "gpt-4.1-2025-04-14";
+        // Rows already in the window, booked before anyone priced the model.
+        for prompt in [40_000, 2_000] {
+            record_relay_usage(
+                &pg,
+                RELAY_SOURCE,
+                "alerts-live:caller",
+                None,
+                &StatedFlow::default(),
+                &ep,
+                "cloud",
+                model,
+                &TokenCounts {
+                    prompt_tokens: prompt,
+                    completion_tokens: 1_000,
+                    ..TokenCounts::default()
+                },
+                false,
+                None,
+            )
+            .await
+            .expect("the relay's insert");
+        }
+        let mine = 40_000 + 2_000 + 2 * 1_000;
+        let before = cost_overview(&pg)
+            .await
+            .unwrap()
+            .totals
+            .unpriced_cloud_tokens;
+        // Anything else in this database that is unpriced stays counted; the
+        // claim is about these rows only.
+        let others = before - mine;
+        assert!(others >= 0, "the window counts our {mine} tokens");
+        let alert = unpriced_alert(before).expect("our rows raise the alert");
+        assert_eq!(alert.href, UNPRICED_HREF);
+
+        set_price(
+            &pg,
+            &PriceInput {
+                endpoint: ep.clone(),
+                model: model.into(),
+                mode: AdminPricing::Manual,
+                price_in_per_mtok: Some(2.0),
+                price_out_per_mtok: Some(8.0),
+                price_cache_write_per_mtok: None,
+                price_cache_read_per_mtok: None,
+                note: None,
+            },
+            "alerts-live",
+        )
+        .await
+        .unwrap();
+        let after = cost_overview(&pg)
+            .await
+            .unwrap()
+            .totals
+            .unpriced_cloud_tokens;
+        assert_eq!(after, others, "every past row of the model is priced now");
+        assert_eq!(
+            unpriced_alert(after).is_some(),
+            others > 0,
+            "the alert is gone unless something else is still unpriced"
+        );
+        for sql in [
+            "delete from usage_events where endpoint = $1",
+            "delete from model_price_overrides where endpoint = $1",
+        ] {
+            sqlx::query(sql).bind(&ep).execute(&pg).await.unwrap();
+        }
     }
 }

@@ -1035,6 +1035,7 @@ pub fn channel_plan_harness() -> HarnessDefinition {
         // than reading a fallback. See `ModelSpec.chain`.
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

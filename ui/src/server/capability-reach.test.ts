@@ -83,6 +83,26 @@ describe('supplierFor', () => {
     expect(supplierFor('search', [searchServer()], { search: null })).toBeNull()
   })
 
+  it('never picks an app’s tool, however well it matches — the api’s platform caller cannot reach it', () => {
+    // App rows sort ahead of `exa`, and `crm_web_search` described as searching
+    // "online" matches the rule by name and description. Picked, it failed
+    // every agent search; the api drops app rows the same way.
+    const app = server({
+      name: 'app-crm',
+      url: 'talaria-app://crm',
+      appSlug: 'crm',
+      tools: [{ name: 'crm_web_search', description: 'Search the web for contacts online.' }],
+    })
+    expect(supplierFor('search', [app, searchServer()])).toEqual({ server: 'exa', tool: 'web_search' })
+    expect(supplierFor('search', [app])).toBeNull()
+    // A pin to it is a pin to nothing callable: the platform's own tool is the floor.
+    const platform = [{ capability: 'search' as const, server: 'talaria', tool: 'web_search' }]
+    expect(supplierFor('search', [app], { search: { server: 'app-crm', tool: 'crm_web_search' } }, platform)).toEqual({
+      server: 'talaria',
+      tool: 'web_search',
+    })
+  })
+
   it('ignores an admin pin whose server or tool has since gone away', () => {
     expect(supplierFor('search', [], { search: { server: 'gone', tool: 'web_search' } })).toBeNull()
     expect(supplierFor('search', [server({ name: 'exa', tools: [] })], { search: { server: 'exa', tool: 'web_search' } })).toBeNull()

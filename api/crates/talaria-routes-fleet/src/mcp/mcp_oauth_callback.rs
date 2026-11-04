@@ -11,7 +11,9 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use talaria_api_facades::mcp::apply::{roll_agent_for_user, roll_agents_for_server};
+use talaria_api_facades::mcp::apply::{
+    apply_agent_for_user, apply_agents_for_server, bump_tool_lists_for_ids,
+};
 use talaria_api_facades::mcp::oauth::{CallbackActor, handle_oauth_callback};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_session::require_user;
@@ -129,18 +131,24 @@ pub async fn get(
     let subject = subject.clone();
     let server_id = server_id.clone();
     tokio::spawn(async move {
-        // Connected servers appear in configs…
-        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb, None).await;
-        // Running agents wire MCP at start — roll the affected ones so the
-        // connection is usable without anyone bouncing containers.
+        // The gateway answers for the server as soon as the account is
+        // stored: until now it answered in-house (a handshake and the cached
+        // catalog), from now on it relays. A running agent keeps the server
+        // it already holds, re-lists its tools on the gateway's list-changed
+        // notice at its next keepalive (the count below), and reconnects by
+        // itself when the upstream refuses the in-house session — so the
+        // change APPLIES: render, restart only a container the render moved
+        // (talaria-mcp-apply).
+        let _ = talaria_api_facades::fleet::render::render_fleet(&pg, &sb).await;
+        bump_tool_lists_for_ids(&pg, std::slice::from_ref(&server_id)).await;
         if subject == "org" {
-            roll_agents_for_server(&pg, &sb, &server_id).await;
+            apply_agents_for_server(&pg, &sb, &server_id).await;
         } else {
-            roll_agent_for_user(&pg, &sb, &subject).await;
+            apply_agent_for_user(&pg, &sb, &subject).await;
         }
     });
     page(
         "Connected",
-        "Connected — your agents are picking it up now (a graceful restart runs behind the scenes).",
+        "Connected — your agents pick it up within a few minutes, without a restart.",
     )
 }

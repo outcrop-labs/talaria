@@ -160,6 +160,10 @@ export function useChannelEvents(
   $effect(() => {
     const cid = resolve(id);
     if (!cid) return;
+    const catchUp = () => {
+      void qc.invalidateQueries({ queryKey: ["channel-messages", cid] });
+      void qc.invalidateQueries({ queryKey: ["channel", cid] });
+    };
     return openStream(`/api/channels/${cid}/events`, (data) => {
       const ev = JSON.parse(data) as
         | { type: "message" | "channel" }
@@ -179,6 +183,20 @@ export function useChannelEvents(
       });
       if (ev.type === "channel")
         void qc.invalidateQueries({ queryKey: ["channels"] });
+    }, {
+      // Reconnecting (lib/sse.ts): a deploy's 502 no longer leaves the room
+      // silently frozen, and a REopen refetches what the gap may have dropped.
+      // Paused while the tab is hidden (BT-3): the stream closes after 30 s
+      // out of sight. Coming back refetches the room at once, reopens, and
+      // refetches again once the stream is live (subscribe, then read: a
+      // message landing between the two is not left for the next event).
+      reconnect: true,
+      pauseWhenHidden: true,
+      onResume: catchUp,
+      onOpen: ({ first, resumed }) => {
+        if (first && !resumed) return;
+        catchUp();
+      },
     });
   });
 }
@@ -220,6 +238,20 @@ export const markChannelRead = async (
   seq: number,
 ): Promise<void> => {
   await postJson<{ ok: true }>(`/api/channels/${id}/read`, { seq });
+};
+
+/** Mark ONE thread read — the thread-panel twin of `markChannelRead`. `seq`
+ * optional: the server advances to the thread's newest complete reply when
+ * absent, so an open panel catches up in one post. */
+export const markChannelThreadRead = async (
+  id: string,
+  threadRootId: string,
+  seq?: number,
+): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/channels/${id}/read`, {
+    threadRootId,
+    ...(seq !== undefined ? { seq } : {}),
+  });
 };
 
 export const sendChannelMessage = async (

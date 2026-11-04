@@ -30,6 +30,7 @@
   import FitnessRunModal from '@/components/models/FitnessRunModal.svelte'
   import FitnessHealth from '@/components/models/FitnessHealth.svelte'
   import FitnessValue from '@/components/models/FitnessValue.svelte'
+  import FitnessAppModels from '@/components/models/FitnessAppModels.svelte'
   import { TIER_META, usd, valueVersion, worthRetrying } from '@/components/models/fitness'
   import { useFitnessDetail, useFitnessHealth, useFitnessValue, useModelFitness } from '@/components/models/fitness-queries'
 
@@ -332,6 +333,13 @@
                   They are invisible to this matrix rather than passing it.
                 </p>
               {/if}
+              <!-- The app columns' own model settings, under the columns that
+                   measure them. -->
+              <FitnessAppModels
+                slots={data.slots.filter((s) => s.kind === 'app')}
+                assigned={data.appModels ?? {}}
+                models={data.models.map((m) => m.id)}
+              />
             {:else if view === 'health'}
               {#if healthQuery.isPending}
                 <SkeletonRows rows={4} />

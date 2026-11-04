@@ -12,9 +12,11 @@
 // says is for it. Everything else is the room being a channel, which is
 // the point.
 //
-// The other two exports are the post's fan-out: DM peer notifications (deduped
-// while one sits unread) and human @mention notifications. Both are fired
-// detached by the messages route.
+// The other export is the post's notification fan-out (`notify_channel_post`):
+// the DM row (one per conversation, coalescing every message), @mentions,
+// thread replies to the people in the thread, and a channel's `all` level —
+// each person's level and timed mute obeyed (docs/notifications/producers.md).
+// It is fired detached by the messages route and the agent reply path.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -33,9 +35,15 @@ use talaria_gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, chat_payl
 use talaria_gateway::guard::{
     GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
-use talaria_gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
-use talaria_mentions::{Mentionee, notify_mentions};
-use talaria_notify::NotifyDeps;
+use talaria_gateway::usage::TurnAttribution;
+/// Who wrote a post (`ChannelPost::sender`), re-exported so a route that
+/// files posts needs no edge of its own to talaria-mentions.
+pub use talaria_mentions::MentionSender;
+use talaria_mentions::{MentionOpts, Mentionee, mentioned_ids, notify_mentions_with};
+use talaria_notify::{
+    ActorKind, ChannelLevel, ChannelListener, Coalesce, NotificationInput, NotifyActor, NotifyDeps,
+    NotifyEntity, NotifyMeta, add_notification_with, channel_listeners, entity, group_key,
+};
 use talaria_refs::ref_blocks;
 use talaria_secretbox::SecretBox;
 use talaria_sender_identity::SenderIdentity;
@@ -66,83 +74,79 @@ pub static ROOM_COMMENT_FANOUT: OnceLock<
 
 // ── Notification fan-out ─────────────────────────────────────────────────────
 
-/// Notify the other side of a DM about a new message. Deduped: while a DM
-/// notification for this channel sits unread, further messages fold into it —
-/// no pile-up from a fast back-and-forth.
-pub async fn notify_dm_message(
-    deps: &NotifyDeps,
-    channel_id: &str,
-    sender_user_id: &str,
-    sender_label: &str,
-    content: &str,
-) {
-    let href = format!("/comms/channel/{channel_id}");
-    let members = list_channel_members(&deps.pg, channel_id)
-        .await
-        .unwrap_or_default();
-    for m in members {
-        if m.user_id == sender_user_id {
-            continue;
-        }
-        let pending: Option<i32> =
-            sqlx::query_scalar(
-                "select 1 from notifications \
-                 where user_id = $1::uuid and kind = 'dm' and href = $2 and read_at is null limit 1",
-            )
-            .bind(&m.user_id)
-            .bind(&href)
-            .fetch_optional(&deps.pg)
-            .await
-            .ok()
-            .flatten();
-        if pending.is_some() {
-            continue;
-        }
-        // 200 UTF-16 units, '…' added only past the bound.
-        let body = if talaria_body::utf16_len(content) > 200 {
-            format!("{}…", talaria_body::truncate_utf16(content, 200))
-        } else {
-            content.to_string()
-        };
-        let _ = talaria_notify::add_notification(
-            deps,
-            &m.user_id,
-            &talaria_notify::NotificationInput {
-                kind: "dm",
-                title: &format!("{sender_label} sent you a message"),
-                body: Some(&body),
-                href: Some(&href),
-            },
-        )
-        .await;
-    }
+/// One message posted in a channel or DM, as its notification fan-out sees
+/// it.
+#[derive(Clone, Copy, Debug)]
+pub struct ChannelPost<'a> {
+    pub channel_id: &'a str,
+    pub channel_name: &'a str,
+    pub sender: MentionSender<'a>,
+    /// The body AS SAVED (an agent's comes back redacted in strict mode).
+    pub content: &'a str,
+    /// The thread it replies in, when it is a thread reply.
+    pub thread_root_id: Option<&'a str>,
+    /// The message itself, when the caller has it. A thread reply's
+    /// followers whose thread cursor already covers it file no
+    /// `thread-reply` row (see `notify_channel_post`); without it, they do.
+    pub message_id: Option<&'a str>,
 }
 
-/// Notify channel members the message @mentions (never the sender).
-pub async fn notify_user_mentions(
-    deps: &NotifyDeps,
-    channel_id: &str,
-    channel_name: &str,
-    sender_user_id: &str,
-    sender_label: &str,
-    content: &str,
-) {
+/// THE post's notification fan-out. Every producer below reads each member's
+/// level and timed mute from ONE query (`channel_listeners`):
+///
+/// - **A DM** files one row per conversation per person (`group_key::dm`):
+///   each message coalesces into the open row, re-alerting with the newest
+///   line and `count + 1`; a read row means the next message files fresh. A
+///   DM defaults to level `all`; `mentions` files only a message that
+///   @mentions them; `none` files nothing.
+/// - **A task room** has no member rows — its roster is the board's — so its
+///   @mentions land on the ticket; its comment participants are the board's
+///   edges (`talaria_tasks::room_comment_fanout`).
+/// - **A channel** files @mentions (level `none` silences them too, O-14);
+///   a thread reply tells the thread's root author and earlier repliers
+///   (`thread-reply`, one row per thread), each re-checked against the
+///   channel at notify time; and a member at level `all` gets one
+///   `channel-message` row per channel that counts later messages quietly.
+///
+/// Nobody gets two rows for one message: a mention wins over a thread reply,
+/// which wins over the channel's activity row. A muted person's rows land
+/// quietly (counted, never toasted, bannered, pushed or mailed). Per-person
+/// failures are logged, never the rest's.
+pub async fn notify_channel_post(deps: &NotifyDeps, post: &ChannelPost<'_>) {
+    // One channel's fan-outs file in the order their messages landed, so the
+    // row a burst coalesces into carries the NEWEST line (the writer keeps
+    // the last write's words). Taken before anything else is awaited.
+    let _turn = channel_turn(post.channel_id).lock_owned().await;
     // A task room has no member rows — its roster is the board's, and the
     // notification lands on the ticket, never on the rail the room isn't in.
-    if let Some(room) = room_notify_shape(&deps.pg, channel_id, channel_name).await {
-        notify_mentions(
+    if let Some(room) = room_notify_shape(&deps.pg, post.channel_id, post.channel_name).await {
+        let opts = MentionOpts {
+            entity: Some(NotifyEntity::new(entity::TASK, room.task_id.as_str())),
+            ..Default::default()
+        };
+        notify_mentions_with(
             deps,
             &room.members,
-            sender_user_id,
-            sender_label,
-            content,
+            &post.sender,
+            post.content,
             &room.where_,
             &room.href,
+            &opts,
         )
         .await;
         return;
     }
-    let members = list_channel_members(&deps.pg, channel_id)
+    let (kind, listeners) = match channel_listeners(&deps.pg, post.channel_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[channels] notify levels read failed: {e}");
+            return;
+        }
+    };
+    let Some(kind) = kind else {
+        return;
+    };
+    let members: Vec<Mentionee> = list_channel_members(&deps.pg, post.channel_id)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -151,19 +155,384 @@ pub async fn notify_user_mentions(
             name: m.name,
             email: m.email,
         })
-        .collect::<Vec<_>>();
-    notify_mentions(
+        .collect();
+    if kind == "dm" {
+        if post.sender.user_id.is_empty() {
+            // An agent seated in a DM answers the person who asked, who is
+            // in the conversation: as in wave 1 its reply rings only the
+            // people it @mentions, never a DM row for every member.
+            let hearing: Vec<Mentionee> = members
+                .into_iter()
+                .filter(|m| {
+                    listener(&listeners, &m.user_id).map(|l| l.level) != Some(ChannelLevel::Nothing)
+                })
+                .collect();
+            let opts = MentionOpts {
+                entity: Some(NotifyEntity::new(entity::CHANNEL, post.channel_id)),
+                quiet: muted_ids(&listeners),
+            };
+            notify_mentions_with(
+                deps,
+                &hearing,
+                &post.sender,
+                post.content,
+                "a direct message",
+                &channel_href(post.channel_id),
+                &opts,
+            )
+            .await;
+            return;
+        }
+        dm_rows(deps, post, &listeners, &members).await;
+        return;
+    }
+    let href = channel_href(post.channel_id);
+    let level = |user: &str| listener(&listeners, user).map(|l| l.level);
+    let channel_entity = NotifyEntity::new(entity::CHANNEL, post.channel_id);
+    // @mentions — not to anyone at level `none`.
+    let hearing: Vec<Mentionee> = members
+        .into_iter()
+        .filter(|m| level(&m.user_id) != Some(ChannelLevel::Nothing))
+        .collect();
+    let opts = MentionOpts {
+        entity: Some(channel_entity.clone()),
+        quiet: muted_ids(&listeners),
+    };
+    let mut told = notify_mentions_with(
         deps,
-        &members,
-        sender_user_id,
-        sender_label,
-        content,
-        &format!("#{channel_name}"),
+        &hearing,
+        &post.sender,
+        post.content,
+        &format!("#{}", post.channel_name),
         // THE CHANNEL, not the index: `/channels` is a redirect to the comms
         // root, so a mention that lands there lands nowhere — the reader has
         // to go find the channel the notification was about, which is the
         // work the notification was supposed to save.
-        &format!("/comms/channel/{channel_id}"),
+        &href,
+        &opts,
+    )
+    .await;
+    told.push(post.sender.user_id.to_string());
+    let body = clip_body(post.content);
+    let actor = post_actor(&post.sender);
+    if let Some(root) = post.thread_root_id {
+        // A thread reply tells the people in the thread.
+        let people = match thread_participants(&deps.pg, post.channel_id, root).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!("[channels] thread participants read failed: {e}");
+                Vec::new()
+            }
+        };
+        let title = format!(
+            "{} replied in a thread in #{}",
+            post.sender.label, post.channel_name
+        );
+        let input = NotificationInput {
+            kind: "thread-reply",
+            title: &title,
+            body: Some(&body),
+            href: Some(&href),
+        };
+        // ALREADY READ IN ITS THREAD. A follower whose thread cursor covers
+        // this reply's seq watched it land: an agent's reply is inserted
+        // `streaming`, with its seq, and an open thread panel posts the read
+        // while it streams, but this fan-out runs only at completion. A row
+        // filed now would stay lit beside a badge that reads 0. A failed read
+        // files as before, so nobody misses a reply.
+        let covered: Vec<String> = match post.message_id {
+            Some(message_id) => sqlx::query_scalar(
+                "select tr.user_id::text from channel_thread_reads tr \
+                 join channel_messages m on m.id = $2::uuid \
+                 where tr.thread_root_id = $1::uuid and tr.last_read_seq >= m.seq",
+            )
+            .bind(root)
+            .bind(message_id)
+            .fetch_all(&deps.pg)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!("[channels] thread-reply cursor read failed: {e}");
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+        for user in people {
+            if told.contains(&user)
+                || level(&user) == Some(ChannelLevel::Nothing)
+                || covered.contains(&user)
+            {
+                continue;
+            }
+            // ACCESS AT NOTIFY TIME (C24): a member row is access; anyone
+            // else (a team grant, or someone who has since left) is asked.
+            let muted = match listener(&listeners, &user) {
+                Some(l) => l.muted,
+                None => {
+                    match talaria_channels::channel_role(&deps.pg, &user, post.channel_id).await {
+                        Ok(Some(_)) => false,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            tracing::error!("[channels] thread-reply access check failed: {e}");
+                            continue;
+                        }
+                    }
+                }
+            };
+            let meta = NotifyMeta {
+                quiet: muted,
+                group_key: Some(group_key::channel_thread(root)),
+                coalesce: Coalesce::Realert,
+                entity: Some(channel_entity.clone()),
+                actor: Some(actor.clone()),
+                ..Default::default()
+            };
+            match add_notification_with(deps, &user, &input, &meta).await {
+                Ok(_) => told.push(user),
+                Err(e) => tracing::error!("[channels] thread-reply row for {user} failed: {e}"),
+            }
+        }
+        // A reply's channel-wide news is the thread's: the `all` row below
+        // follows the channel's own timeline, not its threads.
+        return;
+    }
+    // Level `all`: ONE row per channel per person, counting quietly after
+    // the first (`Coalesce::Quiet`): the first message alerts, the rest
+    // update the count and the newest line without ringing again.
+    let title = format!("New messages in #{}", post.channel_name);
+    let line = format!("{}: {body}", post.sender.label);
+    let input = NotificationInput {
+        kind: "channel-message",
+        title: &title,
+        body: Some(&line),
+        href: Some(&href),
+    };
+    for l in &listeners {
+        if l.level != ChannelLevel::All || told.contains(&l.user_id) {
+            continue;
+        }
+        let meta = NotifyMeta {
+            quiet: l.muted,
+            group_key: Some(group_key::channel_activity(post.channel_id)),
+            coalesce: Coalesce::Quiet,
+            entity: Some(channel_entity.clone()),
+            actor: Some(actor.clone()),
+            ..Default::default()
+        };
+        if let Err(e) = add_notification_with(deps, &l.user_id, &input, &meta).await {
+            tracing::error!(
+                "[channels] channel-message row for {} failed: {e}",
+                l.user_id
+            );
+        }
+    }
+}
+
+/// One in-process FIFO lock per channel with a fan-out in flight. Each post's
+/// fan-out is spawned after its message commits, and two fan-outs racing
+/// for one person's coalescing row would otherwise leave it holding the
+/// OLDER line whenever the second finished its reads first; tokio's mutex
+/// is fair, so they take their turns in the order they first asked.
+/// Entries are dropped once no fan-out holds them.
+fn channel_turn(channel_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static TURNS: LazyLock<
+        std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    > = LazyLock::new(Default::default);
+    let mut turns = TURNS.lock().unwrap_or_else(|p| p.into_inner());
+    turns.retain(|_, w| w.strong_count() > 0);
+    if let Some(turn) = turns.get(channel_id).and_then(std::sync::Weak::upgrade) {
+        return turn;
+    }
+    let turn = Arc::new(tokio::sync::Mutex::new(()));
+    turns.insert(channel_id.to_string(), Arc::downgrade(&turn));
+    turn
+}
+
+/// The DM half of `notify_channel_post`: one row per conversation per
+/// person, every message coalescing into it (a re-alert with the newest line
+/// and `count + 1`). A row filed before the contract is adopted (same id, so
+/// a snooze on it stays). The race wave 1's look-then-refresh had — a read
+/// between the look and the refresh — is the writer's now: a row read in
+/// between is no longer open, and the message files a fresh one.
+async fn dm_rows(
+    deps: &NotifyDeps,
+    post: &ChannelPost<'_>,
+    listeners: &[ChannelListener],
+    members: &[Mentionee],
+) {
+    let href = channel_href(post.channel_id);
+    let body = clip_body(post.content);
+    let title = format!("{} sent you a message", post.sender.label);
+    let input = NotificationInput {
+        kind: "dm",
+        title: &title,
+        body: Some(&body),
+        href: Some(&href),
+    };
+    let mentioned = mentioned_ids(members, post.sender.user_id, post.content);
+    let actor = post_actor(&post.sender);
+    for l in listeners {
+        if l.user_id == post.sender.user_id {
+            continue;
+        }
+        let hears = match l.level {
+            ChannelLevel::All => true,
+            ChannelLevel::Mentions => mentioned.contains(&l.user_id),
+            ChannelLevel::Nothing => false,
+        };
+        if !hears {
+            continue;
+        }
+        let meta = dm_meta(post.channel_id, l.muted, actor.clone());
+        if let Err(e) = add_notification_with(deps, &l.user_id, &input, &meta).await {
+            tracing::error!("[dm] the DM row for {} failed: {e}", l.user_id);
+        }
+    }
+}
+
+/// How a DM row files. Pure, so the shape is pinned by a test.
+fn dm_meta(channel_id: &str, muted: bool, actor: NotifyActor) -> NotifyMeta {
+    NotifyMeta {
+        quiet: muted,
+        group_key: Some(group_key::dm(channel_id)),
+        coalesce: Coalesce::Realert,
+        adopt_legacy: true,
+        entity: Some(NotifyEntity::new(entity::CHANNEL, channel_id)),
+        actor: Some(actor),
+        ..Default::default()
+    }
+}
+
+fn listener<'a>(listeners: &'a [ChannelListener], user: &str) -> Option<&'a ChannelListener> {
+    listeners.iter().find(|l| l.user_id == user)
+}
+
+fn muted_ids(listeners: &[ChannelListener]) -> std::collections::HashSet<String> {
+    listeners
+        .iter()
+        .filter(|l| l.muted)
+        .map(|l| l.user_id.clone())
+        .collect()
+}
+
+/// Where a channel's rows point — the same href its read sweep clears
+/// (`talaria_notify::clear_channel_notifications`).
+fn channel_href(channel_id: &str) -> String {
+    format!("/comms/channel/{channel_id}")
+}
+
+/// 200 UTF-16 units, '…' added only past the bound — the DM body contract.
+/// A post with no text is an attachment (or a ref chip) on its own: the row
+/// says so rather than ringing with an empty line.
+fn clip_body(content: &str) -> String {
+    if content.trim().is_empty() {
+        ATTACHMENT_ONLY.to_string()
+    } else if talaria_body::utf16_len(content) > 200 {
+        format!("{}…", talaria_body::truncate_utf16(content, 200))
+    } else {
+        content.to_string()
+    }
+}
+
+/// The body of a row about a post that carried no text.
+const ATTACHMENT_ONLY: &str = "Sent an attachment";
+
+fn post_actor(sender: &MentionSender<'_>) -> NotifyActor {
+    if sender.user_id.is_empty() {
+        NotifyActor {
+            kind: ActorKind::Agent,
+            id: sender.agent_model.unwrap_or(sender.label).to_string(),
+            label: sender.label.to_string(),
+        }
+    } else {
+        NotifyActor {
+            kind: ActorKind::User,
+            id: sender.user_id.to_string(),
+            label: sender.label.to_string(),
+        }
+    }
+}
+
+/// The people in a thread: its root's author and everyone who has replied in
+/// it, as user ids. A human message's `author` is the poster's
+/// `coalesce(email, name, 'user')` — the spelling the Threads view matches
+/// on; agents are not people to notify.
+async fn thread_participants(
+    pg: &PgPool,
+    channel_id: &str,
+    root_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "select distinct u.id::text from channel_messages m \
+         join users u on coalesce(u.email, u.name, 'user') = m.author \
+         where m.channel_id = $1::uuid and m.author_type = 'user' \
+           and (m.id = $2::uuid or m.thread_root_id = $2::uuid)",
+    )
+    .bind(channel_id)
+    .bind(root_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Notify the other side of a DM about a new message — `notify_channel_post`
+/// for a DM, kept for the Home inbox's reply door.
+pub async fn notify_dm_message(
+    deps: &NotifyDeps,
+    channel_id: &str,
+    sender_user_id: &str,
+    sender_label: &str,
+    content: &str,
+) {
+    let _turn = channel_turn(channel_id).lock_owned().await;
+    let (_, listeners) = match channel_listeners(&deps.pg, channel_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[dm] notify levels read failed: {e}");
+            return;
+        }
+    };
+    let members: Vec<Mentionee> = list_channel_members(&deps.pg, channel_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| Mentionee {
+            user_id: m.user_id,
+            name: m.name,
+            email: m.email,
+        })
+        .collect();
+    let post = ChannelPost {
+        channel_id,
+        channel_name: "",
+        sender: MentionSender::of(sender_user_id, sender_label),
+        content,
+        thread_root_id: None,
+        message_id: None,
+    };
+    dm_rows(deps, &post, &listeners, &members).await;
+}
+
+/// Notify channel members the message @mentions (never the sender), and the
+/// channel's `all` level — `notify_channel_post` for a top-level message,
+/// kept for the Home inbox's reply door.
+pub async fn notify_user_mentions(
+    deps: &NotifyDeps,
+    channel_id: &str,
+    channel_name: &str,
+    sender_user_id: &str,
+    sender_label: &str,
+    content: &str,
+) {
+    notify_channel_post(
+        deps,
+        &ChannelPost {
+            channel_id,
+            channel_name,
+            sender: MentionSender::of(sender_user_id, sender_label),
+            content,
+            thread_root_id: None,
+            message_id: None,
+        },
     )
     .await;
 }
@@ -175,6 +544,7 @@ struct RoomNotify {
     members: Vec<Mentionee>,
     where_: String,
     href: String,
+    task_id: String,
 }
 
 async fn room_notify_shape(
@@ -203,6 +573,7 @@ async fn room_notify_shape(
             .clone()
             .unwrap_or_else(|| channel_name.to_string()),
         href: format!("/boards/{}/{}", meta.board_id, meta.task_id),
+        task_id: meta.task_id.clone(),
     })
 }
 
@@ -785,6 +1156,7 @@ pub async fn trigger_agent_replies(
         let channel_name = channel_name.to_string();
         let message_id = row.id;
         let sender = sender.clone();
+        let reply_root = thread_root_id.map(str::to_string);
         tokio::spawn(async move {
             let transcript = transcript_for(&task_deps.pg, &task_sb, &model, &history).await;
             let mut messages = vec![json!({"role": "system", "content": system})];
@@ -808,37 +1180,14 @@ pub async fn trigger_agent_replies(
                 &model,
                 &routed,
                 &Value::Array(messages),
+                reply_root,
             )
             .await;
         });
     }
 }
 
-/// Data-URL image parts are excluded from the char estimate — they'd wildly
-/// inflate it and providers meter images separately anyway.
-fn prompt_chars(messages: &Value) -> usize {
-    let mut n = 0usize;
-    let Some(list) = messages.as_array() else {
-        return n;
-    };
-    for m in list {
-        match m.get("content") {
-            Some(Value::String(s)) => n += talaria_body::utf16_len(s),
-            Some(Value::Array(parts)) => {
-                for p in parts {
-                    if p.get("type").and_then(|t| t.as_str()) == Some("text")
-                        && let Some(t) = p.get("text").and_then(|t| t.as_str())
-                    {
-                        n += talaria_body::utf16_len(t);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    n
-}
-
+#[allow(clippy::too_many_arguments)] // one reply's inputs — each names a part of it
 async fn stream_reply(
     deps: &NotifyDeps,
     channel_id: &str,
@@ -847,9 +1196,24 @@ async fn stream_reply(
     model: &str,
     routed_model: &str,
     messages: &Value,
+    thread_root_id: Option<String>,
 ) {
-    // the comms loop picks no effort level
-    let upstream = proxy_chat(&chat_payload(routed_model, messages, None), None).await;
+    // The comms loop picks no effort level. Every call the agent makes for
+    // this reply is metered at the relay as this channel's spend.
+    let attribution = TurnAttribution {
+        pg: deps.pg.clone(),
+        agent_model: model.to_string(),
+        source: "channel".into(),
+        ref_id: Some(channel_id.to_string()),
+        task_id: None,
+        attended: false,
+    };
+    let upstream = proxy_chat(
+        &chat_payload(routed_model, messages, None),
+        None,
+        Some(attribution),
+    )
+    .await;
     if !(200..300).contains(&upstream.status) {
         let _ = update_channel_message(
             deps,
@@ -861,47 +1225,11 @@ async fn stream_reply(
         .await;
         return;
     }
-    let prompt_chars = prompt_chars(messages);
     let mut content = String::new();
     let mut tool_names: Vec<String> = Vec::new();
-    let mut usage: Option<(i64, i64)> = None;
     let mut last_flush: i64 = 0;
     let mut parser = AgentStreamParser::new();
     let mut stream = upstream.body;
-    let ledger = |usage: Option<(i64, i64)>, content: &str| {
-        let counts = TokenCounts {
-            prompt_tokens: usage
-                .map(|u| u.0)
-                .unwrap_or_else(|| estimate_tokens(prompt_chars)),
-            completion_tokens: usage
-                .map(|u| u.1)
-                .unwrap_or_else(|| estimate_tokens(talaria_body::utf16_len(content))),
-            ..TokenCounts::default()
-        };
-        let tier = if routed_model != model {
-            routed_model.get(model.len() + 1..).map(str::to_string)
-        } else {
-            None
-        };
-        let pg = deps.pg.clone();
-        let model = model.to_string();
-        let ref_id = channel_id.to_string();
-        tokio::spawn(async move {
-            let _ = record_usage(
-                &pg,
-                &UsageInput {
-                    agent_model: &model,
-                    source: "channel",
-                    ref_id: Some(&ref_id),
-                    task_id: None,
-                    tier: tier.as_deref(),
-                    counts,
-                    estimated: usage.is_none(),
-                },
-            )
-            .await;
-        });
-    };
 
     let outcome: Result<(), String> = async {
         use futures_util::StreamExt;
@@ -913,10 +1241,8 @@ async fn stream_reply(
             for ev in parser.feed(&chunk) {
                 match ev {
                     AgentStreamEvent::Content { text } => content.push_str(&text),
-                    AgentStreamEvent::Usage {
-                        prompt_tokens,
-                        completion_tokens,
-                    } => usage = Some((prompt_tokens, completion_tokens)),
+                    // The relay metered every call behind these counts.
+                    AgentStreamEvent::Usage { .. } => {}
                     AgentStreamEvent::Tool { name, .. } => tool_names.push(name),
                     AgentStreamEvent::Reasoning { .. } => {}
                     // A channel reply is one request with no steer or stop, so
@@ -939,10 +1265,7 @@ async fn stream_reply(
         for ev in parser.finish() {
             match ev {
                 AgentStreamEvent::Content { text } => content.push_str(&text),
-                AgentStreamEvent::Usage {
-                    prompt_tokens,
-                    completion_tokens,
-                } => usage = Some((prompt_tokens, completion_tokens)),
+                AgentStreamEvent::Usage { .. } => {}
                 AgentStreamEvent::Tool { name, .. } => tool_names.push(name),
                 AgentStreamEvent::Reasoning { .. } => {}
                 AgentStreamEvent::RunStarted { .. } | AgentStreamEvent::Stopped => {}
@@ -966,7 +1289,6 @@ async fn stream_reply(
 
     match outcome {
         Ok(()) => {
-            ledger(usage, &content);
             // Confab guard. annotate/strict pin findings onto the message
             // (republished, so viewers see the caveat live); strict also
             // redacts leaked secrets from the saved copy.
@@ -1014,33 +1336,36 @@ async fn stream_reply(
                     .await;
                 }
             }
-            // An agent reply @mentioning a human notifies like a human message
-            // would. In a task room the roster is the board's and the link is
-            // the ticket. Detached.
+            // An agent reply notifies like a human message would — its
+            // @mentions, the thread it replies in, the channel's `all` level;
+            // in a task room the roster is the board's and the link is the
+            // ticket. Detached.
             if !content.is_empty() {
-                let (members, where_, href) =
-                    match room_notify_shape(&deps.pg, channel_id, channel_name).await {
-                        Some(room) => (room.members, room.where_, room.href),
-                        None => (
-                            list_channel_members(&deps.pg, channel_id)
-                                .await
-                                .unwrap_or_default()
-                                .into_iter()
-                                .map(|m| Mentionee {
-                                    user_id: m.user_id,
-                                    name: m.name,
-                                    email: m.email,
-                                })
-                                .collect::<Vec<_>>(),
-                            format!("#{channel_name}"),
-                            "/channels".to_string(),
-                        ),
-                    };
-                let label = describe_agent(model).label;
                 let notify = deps.clone();
                 let body = content.clone();
+                let channel_id = channel_id.to_string();
+                let channel_name = channel_name.to_string();
+                let model = model.to_string();
+                let thread_root_id = thread_root_id.clone();
+                let message_id = message_id.to_string();
                 tokio::spawn(async move {
-                    notify_mentions(&notify, &members, "", &label, &body, &where_, &href).await;
+                    let label = describe_agent(&model).label;
+                    notify_channel_post(
+                        &notify,
+                        &ChannelPost {
+                            channel_id: &channel_id,
+                            channel_name: &channel_name,
+                            sender: MentionSender {
+                                user_id: "",
+                                label: &label,
+                                agent_model: Some(&model),
+                            },
+                            content: &body,
+                            thread_root_id: thread_root_id.as_deref(),
+                            message_id: Some(&message_id),
+                        },
+                    )
+                    .await;
                 });
             }
             // A task-room reply is a comment like any other: the board is
@@ -1066,7 +1391,41 @@ async fn stream_reply(
         Err(e) => {
             tracing::warn!("[channels] agent reply stream failed: {e}");
             let _ = update_channel_message(deps, channel_id, message_id, &content, "error").await;
-            ledger(usage, &content);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // One open row per DM per person, re-alerting, adopting a pre-contract
+    // row, about the channel, from the sender; quiet only while muted.
+    #[test]
+    fn a_dm_row_files_into_its_conversation_group() {
+        let actor = NotifyActor {
+            kind: ActorKind::User,
+            id: "u-1".into(),
+            label: "Ada".into(),
+        };
+        let m = dm_meta("c-1", false, actor.clone());
+        assert_eq!(m.group_key.as_deref(), Some("dm:c-1"));
+        assert_eq!(m.coalesce, Coalesce::Realert);
+        assert!(m.adopt_legacy && !m.quiet && m.group_window_secs.is_none());
+        assert_eq!(m.entity, Some(NotifyEntity::new("channel", "c-1")));
+        assert_eq!(m.actor, Some(actor.clone()));
+        assert!(dm_meta("c-1", true, actor).quiet);
+    }
+
+    #[test]
+    fn a_post_body_is_clipped_and_an_empty_one_names_the_attachment() {
+        assert_eq!(clip_body("hello"), "hello");
+        assert_eq!(clip_body(""), "Sent an attachment");
+        assert_eq!(clip_body("  \n"), "Sent an attachment");
+        let long = "x".repeat(250);
+        let clipped = clip_body(&long);
+        assert_eq!(clipped.chars().count(), 201);
+        assert!(clipped.ends_with('…'));
+        assert_eq!(clip_body(&"y".repeat(200)), "y".repeat(200));
     }
 }

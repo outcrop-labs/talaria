@@ -57,6 +57,12 @@ fleet.json
 ui/.uploads/
 .uploads/
 
+# The app platform's runtime state in dev (TALARIA_APP_DATA_DIR and
+# TALARIA_APP_BUILDS_DIR default here): each app's database files and
+# db.env password file, and its compiled builds. Never source.
+/app-data/
+/app-builds/
+
 # Reference repos studied but not vendored
 .reference/
 .inspect/
@@ -64,6 +70,10 @@ ui/.tanstack/
 
 # Vite dep-optimizer cache (created when the dev server runs from ui/)
 ui/.vite/
+
+# Scratch workspace ui/src/sdk/client-docs.test.ts typechecks the doc
+# examples in; removed after the run, ignored in case a run is killed.
+ui/.sdk-doc-examples-*/
 
 # OMC agent state (never commit)
 .omc/
@@ -74,6 +84,12 @@ ui/.omc/
 .claude/settings.local.json
 .claude/worktrees/
 
+# Legacy generated file: the removed SearXNG setup rendered it per install,
+# holding that instance's generated secret_key. Nothing in this repo writes
+# it any more (f47d821b), but dev stacks set up before that commit still
+# bind-mount it into their own SearXNG container, so it lives on in old
+# checkouts — and must never be committed from one.
+docker/searxng/settings.local.yml
 
 # Client POC apps — true subrepos with their own history (see apps/leadworks/README.md).
 # Gitignore does not affect the build-time apps glob; the apps compile and run

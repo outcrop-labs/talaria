@@ -2,16 +2,9 @@
 // estimate, the priced rolling-window spend read (budget check's read side),
 // and the gateway's usage_events insert.
 
-use redis::AsyncCommands;
-use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use serde_json::Value;
 use sqlx::PgPool;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 use talaria_body::js_num;
-use talaria_state::redis_response_timeout;
 
 /// Set from the api binary so an unpriced cloud row can nudge the oracle
 /// without this crate depending on price_oracle (scheduler still lives
@@ -105,55 +98,145 @@ pub struct SpendWindow {
     pub unpriced_tokens: i64,
 }
 
-// The priced view. Local rows are $0. A provider-reported dollar amount on the
-// row wins — that is the charge, including whichever upstream endpoint served
-// an OpenRouter call. Otherwise a cloud row is derived from `provider_prices`
-// (the provider's published rate, stored with source and fetched-at). Editable
-// `model_prices` / `price_in_per_mtok` / `auto_prices` are not read.
+// The priced view — THE PRICE DECISION, one CASE, first match wins:
 //
-// OpenRouter publishes a different price per endpoint and that price moves.
-// A derived fallback there requires the variant that served the call. A
-// model-level published price (variant '') is a fallback only for providers
-// that do not route across priced endpoints.
+//   1. local                         $0                          'local'
+//   2. the provider's own charge     provider_cost               'provider'
+//   3. an admin's "included"         $0, labelled                'included'
+//   4. an EXACT published price      provider_prices             'derived'
+//   5. an admin's manual rate        model_price_overrides       'manual'
+//   6. a FUZZY published price       provider_prices             'derived'
+//   7. nothing                       null — unpriced, and the alert counts it
+//
+// A catalog match is exact when the model's own id found the entry, fuzzy
+// when a stripped tag, date or path segment did (`match_kind`); the row
+// carries which entry it was priced as (`cost_matched_id`) so the cost page
+// can say so, and an admin who knows the real rate can override a guess but
+// not the provider's published number.
+//
+// 2 is the charge itself (OpenRouter's `usage.cost`, or a `/generation`
+// backfill), so nothing an admin types can contradict it. 3 beats 4 because
+// a public catalog cannot know the account pays a flat plan: a Z.ai Coding
+// Plan's GLM ids all match OpenRouter's pay-as-you-go GLM entries, and
+// pricing them there overstates a subscription. 4 beats 5 because a manual
+// rate is the fallback for what no source publishes, never a second card
+// that drifts from the provider's own number (the reason ef2948a9 stopped
+// reading the editable `model_prices` / `price_in_per_mtok` / `auto_prices`,
+// which this view still does not read).
+//
+// A published price is the serving variant's when the row names one (an
+// OpenRouter endpoint), else the model-level price (variant '') — for EVERY
+// provider, OpenRouter included. That last clause used to exclude OpenRouter
+// ("its catalog price is not the endpoint that served the call"), which left
+// every OpenRouter row without a variant unpriced for good: main's per-turn
+// agent rows never carry one, nor does a streamed call cut off before its
+// usage chunk. OpenRouter's own `/models` price for the model is the
+// provider's published number; it is the best known price for a call whose
+// serving endpoint nobody recorded, and the exact variant still wins when
+// there is one.
+//
+// Cache tokens bill at the price's own cache rates when it carries them
+// (OpenRouter publishes `input_cache_write` / `input_cache_read`), else at
+// the input rate times the multipliers. The admin row joins on the ledger's
+// own endpoint text ('' for a row booked with none), so it prices history
+// whose endpoint was deleted or never recorded.
 //
 // Multipliers per input KIND are VALUES interpolated into this text, not
 // binds: the view is spliced into larger statements whose callers bind their
 // own $1/$2.
+//
+// NO ROW EVER PRICES BELOW ZERO. Every rate the view reads is taken only when
+// it is zero or more, and every token count is floored at zero, so a bad
+// number anywhere — OpenRouter's `-1` "variable" marker stored by a release
+// that did not refuse it, a hand-edited row — leaves that row unpriced (or on
+// the next source down) instead of sinking every USD budget below zero. The
+// writers refuse the same numbers; this is the read side's half, and it is
+// what stops the rows already stored on an instance from counting.
 static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    // A rate the view may use: the column when it is >= 0, else null (a null
+    // input/output rate rules the source out; a null cache rate falls back
+    // to the multiplier).
+    //
+    // "Usable" is a finite number, zero or more: Postgres' numeric takes NaN
+    // and Infinity, and sorts NaN above everything, so `>= 0` alone would let
+    // a hand-stored NaN through. `< 'Infinity'` refuses both.
+    let fin = |col: &str| format!("({col} >= 0 and {col} < 'Infinity'::numeric)");
+    let usable = |col: &str| format!("(case when {} then {col} end)", fin(col));
+    let rate = |input: &str, output: &str, write: &str, read: &str| {
+        format!(
+            "(greatest(u.prompt_tokens, 0) * {input} \
+             + greatest(u.cache_write_tokens, 0) * coalesce({write}, {input} * {CACHE_WRITE_MULTIPLIER}) \
+             + greatest(u.cache_read_tokens, 0) * coalesce({read}, {input} * {CACHE_READ_MULTIPLIER}) \
+             + greatest(u.completion_tokens, 0) * {output}) / 1e6"
+        )
+    };
+    let published = rate("pp.in_tok", "pp.out_tok", "pp.cw_tok", "pp.cr_tok");
+    let manual = rate(
+        "o.price_in_per_mtok",
+        "o.price_out_per_mtok",
+        &usable("o.price_cache_write_per_mtok"),
+        &usable("o.price_cache_read_per_mtok"),
+    );
+    let manual_ok = format!(
+        "o.mode = 'manual' and {} and {}",
+        fin("o.price_in_per_mtok"),
+        fin("o.price_out_per_mtok")
+    );
+    let charged = fin("u.provider_cost");
+    let published_ok = format!(
+        "{} and {}",
+        fin("p.price_in_per_mtok"),
+        fin("p.price_out_per_mtok")
+    );
+    let exact = "pp.in_tok is not null and pp.kind = 'exact'";
+    let cw = usable("p.price_cache_write_per_mtok");
+    let cr = usable("p.price_cache_read_per_mtok");
     format!(
         "select u.*, \
         case \
           when u.endpoint_class = 'local' then 0 \
-          when u.provider_cost is not null then u.provider_cost \
-          when u.endpoint_class = 'cloud' \
-               and pp.in_tok is not null and pp.out_tok is not null then \
-            ((u.prompt_tokens + u.cache_write_tokens * {CACHE_WRITE_MULTIPLIER} + u.cache_read_tokens * {CACHE_READ_MULTIPLIER}) \
-           * pp.in_tok + u.completion_tokens * pp.out_tok) / 1e6 \
+          when {charged} then u.provider_cost \
+          when u.endpoint_class = 'cloud' and o.mode = 'included' then 0 \
+          when u.endpoint_class = 'cloud' and {exact} then {published} \
+          when u.endpoint_class = 'cloud' and {manual_ok} then {manual} \
+          when u.endpoint_class = 'cloud' and pp.in_tok is not null then {published} \
           else null \
         end as cost, \
         case \
           when u.endpoint_class = 'local' then 'local' \
-          when u.provider_cost is not null then 'provider' \
-          when u.endpoint_class = 'cloud' \
-               and pp.in_tok is not null and pp.out_tok is not null then 'derived' \
+          when {charged} then 'provider' \
+          when u.endpoint_class = 'cloud' and o.mode = 'included' then 'included' \
+          when u.endpoint_class = 'cloud' and {exact} then 'derived' \
+          when u.endpoint_class = 'cloud' and {manual_ok} then 'manual' \
+          when u.endpoint_class = 'cloud' and pp.in_tok is not null then 'derived' \
           else null \
-        end as cost_basis \
+        end as cost_basis, \
+        case \
+          when u.endpoint_class = 'local' or {charged} or o.mode = 'included' then null \
+          when u.endpoint_class = 'cloud' and {exact} then pp.kind \
+          when u.endpoint_class = 'cloud' and {manual_ok} then null \
+          when u.endpoint_class = 'cloud' and pp.in_tok is not null then pp.kind \
+        end as cost_match_kind, \
+        case \
+          when u.endpoint_class = 'local' or {charged} or o.mode = 'included' then null \
+          when u.endpoint_class = 'cloud' and {exact} then pp.matched_id \
+          when u.endpoint_class = 'cloud' and {manual_ok} then null \
+          when u.endpoint_class = 'cloud' and pp.in_tok is not null then pp.matched_id \
+        end as cost_matched_id \
       from usage_events u \
       left join llm_endpoints e on e.name = u.endpoint \
+      left join model_price_overrides o \
+        on o.endpoint = coalesce(u.endpoint, '') and o.model = u.llm_model \
       left join lateral ( \
-        select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok \
+        select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok, \
+               {cw} as cw_tok, {cr} as cr_tok, \
+               coalesce(p.match_kind, 'exact') as kind, p.matched_id \
         from provider_prices p \
         where p.endpoint_id = e.id \
           and p.model = u.llm_model \
-          and ( \
-            (coalesce(u.cost_variant, '') <> '' and p.variant = u.cost_variant) \
-            or ( \
-              coalesce(u.cost_variant, '') = '' \
-              and p.variant = '' \
-              and e.provider is distinct from 'openrouter' \
-            ) \
-          ) \
-        order by p.fetched_at desc \
+          and (p.variant = '' or p.variant = coalesce(u.cost_variant, '')) \
+          and {published_ok} \
+        order by (p.variant <> '') desc, p.fetched_at desc \
         limit 1 \
       ) pp on true"
     )
@@ -161,20 +244,35 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 
 /// The priced view as &str, for format! interpolation.
 fn priced() -> &'static str {
+    priced_view()
+}
+
+/// The priced view's SQL — every usage_events column plus `cost` and
+/// `cost_basis` — for a caller that wraps it in its own statement (the
+/// unpriced list, the live tests). One text, so nothing re-derives the price
+/// decision.
+pub fn priced_view() -> &'static str {
     &PRICED_STR
 }
 
 /// Billable spend over a rolling window, optionally for one caller
 /// (`agent_model` — a fleet model id for persona rows, `api:<key>` for
-/// gateway rows). Called before every budgeted call and
-/// cached by budget.rs.
+/// gateway rows, `app:<slug>` for an app's, which sums every caller stamp
+/// under it). Called before every budgeted call and cached by budget.rs.
 pub async fn spend_since(
     pg: &PgPool,
     window_hours: i64,
     agent_model: Option<&str>,
 ) -> Result<SpendWindow, sqlx::Error> {
     let priced = priced();
-    let hours = window_hours.clamp(1, 24 * 365);
+    // An i32, not the i64 it arrives as: sqlx sends an i64 as `bigint`, and
+    // `make_interval` has only an `int4` signature — the bigint bind failed
+    // every read ("function make_interval(hours => bigint) does not exist"),
+    // and `check_budget` fails open on a failed read, so no budget ever bound.
+    let hours = window_hours.clamp(1, 24 * 365) as i32;
+    // An app's subject (`app:<slug>`) is the app's whole spend: every row its
+    // runs booked under their caller stamps (`app:<slug>:…`, app_keys.rs).
+    let family = agent_model.and_then(crate::app_keys::app_family_prefix);
     // sqlx can't interpolate the interval literal as a bind for `now() - $1`
     // with unit attached — build `make_interval(hours => $1)` instead, which
     // stays a bound parameter.
@@ -185,13 +283,15 @@ pub async fn spend_since(
                 coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where cost is null), 0)::bigint as unpriced \
          from priced \
          where created_at > now() - make_interval(hours => $1) \
-           and ($2::text is null or agent_model = $2)"
+           and ($2::text is null or agent_model = $2 \
+                or ($3::text is not null and left(agent_model, length($3)) = $3))"
     );
     // AssertSqlSafe: the only interpolation is the PRICED const above — no
-    // caller text reaches this string, and both runtime values stay binds.
+    // caller text reaches this string, and every runtime value stays a bind.
     let row: Option<(i64, f64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(hours)
         .bind(agent_model)
+        .bind(family)
         .fetch_optional(pg)
         .await?;
     Ok(row
@@ -201,6 +301,70 @@ pub async fn spend_since(
             unpriced_tokens: unpriced,
         })
         .unwrap_or_default())
+}
+
+/// Which measure of a window's spend a ceiling counts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpendUnit {
+    Tokens,
+    Usd,
+}
+
+/// WHEN A ROLLING WINDOW'S SPEND FALLS BACK UNDER `cap`, if nothing more is
+/// spent: the epoch second the oldest rows have aged out far enough. Each row
+/// leaves the window `window_hours` after it was written, so walking the
+/// window's rows oldest-first, the answer is the moment the first row whose
+/// running total takes the rest under the cap leaves. The rows, the subject
+/// and the priced figures are `spend_since`'s, so the total this walks is the
+/// one the budget just refused on. `None` when the window is already under
+/// the cap, or empty.
+///
+/// It is the honest answer to "when can this caller spend again" for a 24h
+/// window — usually hours, not the minutes a fixed `Retry-After` implies.
+pub async fn spend_clears_at(
+    pg: &PgPool,
+    window_hours: i64,
+    agent_model: Option<&str>,
+    unit: SpendUnit,
+    cap: f64,
+) -> Result<Option<i64>, sqlx::Error> {
+    let priced = priced();
+    let hours = window_hours.clamp(1, 24 * 365) as i32;
+    let family = agent_model.and_then(crate::app_keys::app_family_prefix);
+    let sql = format!(
+        "with priced as ({priced}), \
+         w as ( \
+           select id, created_at, \
+                  case when $4 then coalesce(cost, 0)::float8 \
+                       else (prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens)::float8 \
+                  end as amount \
+           from priced \
+           where created_at > now() - make_interval(hours => $1) \
+             and ($2::text is null or agent_model = $2 \
+                  or ($3::text is not null and left(agent_model, length($3)) = $3)) \
+         ), \
+         r as ( \
+           select created_at, \
+                  sum(amount) over (order by created_at, id rows between unbounded preceding and current row) as aged, \
+                  sum(amount) over () as used \
+           from w \
+         ) \
+         select ceil(extract(epoch from created_at + make_interval(hours => $1)))::bigint \
+         from r \
+         where used >= $5 and used - aged < $5 \
+         order by created_at \
+         limit 1"
+    );
+    // AssertSqlSafe: the only interpolation is the PRICED const — every
+    // runtime value is a bind.
+    sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(hours)
+        .bind(agent_model)
+        .bind(family)
+        .bind(unit == SpendUnit::Usd)
+        .bind(cap)
+        .fetch_optional(pg)
+        .await
 }
 
 // ── The token ledger overview (GET /api/cost) ────────────────────────────────
@@ -231,6 +395,12 @@ pub struct CostTotals {
     pub estimated_share: serde_json::Number,
     pub split: CostSplit,
     pub unpriced_cloud_tokens: i64,
+    /// Cloud tokens priced at $0 because an admin marked the model included
+    /// in a plan — counted as priced, and labelled where spend is shown.
+    pub included_cloud_tokens: i64,
+    /// Of the 30-day dollars, those derived from a published price (an
+    /// estimate) rather than the provider's own charge or an admin's rate.
+    pub derived_cost: serde_json::Number,
     /// Provider activity/cost-report total for the last 30 days, when a
     /// provider returned one. The month tile uses this number.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -266,6 +436,16 @@ pub struct CostPerModel {
     endpoint_class: Option<String>,
     tokens: i64,
     cost: Option<serde_json::Number>,
+    /// Tokens an admin marked included in a plan — priced at $0, and said so
+    /// beside the figure, never a silent zero.
+    included_tokens: i64,
+    /// When some of the model's dollars come from a FUZZY catalog match, the
+    /// entry it was priced as and how ("alias" / "segment") — the legend says
+    /// "priced as openai/gpt-4o (fuzzy match)".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priced_as: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_kind: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -278,6 +458,8 @@ pub struct CostPerAgent {
     last_used: Option<String>,
     cost: serde_json::Number,
     local_share: Option<serde_json::Number>,
+    /// Tokens priced at $0 because the model is included in a plan.
+    included_tokens: i64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -345,27 +527,52 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
     let unpriced = async {
         let sql = format!(
             "with priced as ({priced}) \
-             select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens \
+             select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
+                             filter (where cost is null), 0)::bigint as tokens, \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
+                             filter (where cost_basis = 'included'), 0)::bigint as included, \
+                    coalesce(sum(cost) filter (where cost_basis = 'derived'), 0)::float8 as derived \
              from priced where created_at > now() - make_interval(days => $1) \
-               and endpoint_class = 'cloud' and cost is null"
+               and endpoint_class = 'cloud'"
         );
-        let row: (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        let row: (i64, i64, f64) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(30)
             .fetch_one(pg)
             .await?;
         Ok::<_, sqlx::Error>(row)
     };
-    // (llmModel, endpointClass, tokens, cost)
-    type PerModelRow = (Option<String>, Option<String>, i64, Option<f64>);
-    // (agentModel, prompt, completion, generations, last_ms, cost, localShare)
-    type PerAgentRow = (Option<String>, i32, i32, i32, Option<i64>, f64, Option<f64>);
+    // (llmModel, endpointClass, tokens, cost, includedTokens, pricedAs, matchKind)
+    type PerModelRow = (
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<f64>,
+        i64,
+        Option<String>,
+        Option<String>,
+    );
+    // (agentModel, prompt, completion, generations, last_ms, cost, localShare, includedTokens)
+    type PerAgentRow = (
+        Option<String>,
+        i32,
+        i32,
+        i32,
+        Option<i64>,
+        f64,
+        Option<f64>,
+        i64,
+    );
 
     let per_model = async {
         let sql = format!(
             "with priced as ({priced}) \
              select llm_model as \"llmModel\", endpoint_class as \"endpointClass\", \
                     coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens, \
-                    sum(cost)::float8 as cost \
+                    sum(cost)::float8 as cost, \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
+                             filter (where cost_basis = 'included'), 0)::bigint as included, \
+                    max(cost_matched_id) filter (where cost_match_kind in ('alias', 'segment')), \
+                    max(cost_match_kind) filter (where cost_match_kind in ('alias', 'segment')) \
              from priced where created_at > now() - make_interval(days => $1) \
              group by llm_model, endpoint_class \
              order by (endpoint_class = 'local') desc nulls last, tokens desc"
@@ -376,12 +583,27 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
             .await?;
         Ok::<_, sqlx::Error>(
             rows.into_iter()
-                .map(|(llm_model, endpoint_class, tokens, cost)| CostPerModel {
-                    llm_model,
-                    endpoint_class,
-                    tokens,
-                    cost: cost.map(js_num),
-                })
+                .map(
+                    |(
+                        llm_model,
+                        endpoint_class,
+                        tokens,
+                        cost,
+                        included_tokens,
+                        priced_as,
+                        match_kind,
+                    )| {
+                        CostPerModel {
+                            llm_model,
+                            endpoint_class,
+                            tokens,
+                            cost: cost.map(js_num),
+                            included_tokens,
+                            priced_as,
+                            match_kind,
+                        }
+                    },
+                )
                 .collect(),
         )
     };
@@ -397,7 +619,8 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
                     case when count(*) filter (where endpoint_class is not null) = 0 then null \
                          else sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'local')::float8 \
                               / nullif(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class is not null), 0) \
-                    end as \"localShare\" \
+                    end as \"localShare\", \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where cost_basis = 'included'), 0)::bigint as included \
              from priced where created_at > now() - make_interval(days => $1) \
              group by agent_model \
              order by sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) desc"
@@ -409,7 +632,16 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
         Ok::<_, sqlx::Error>(
             rows.into_iter()
                 .map(
-                    |(agent_model, prompt, completion, generations, last_ms, cost, local_share)| {
+                    |(
+                        agent_model,
+                        prompt,
+                        completion,
+                        generations,
+                        last_ms,
+                        cost,
+                        local_share,
+                        included_tokens,
+                    )| {
                         CostPerAgent {
                             agent_model,
                             prompt,
@@ -418,6 +650,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
                             last_used: last_ms.map(talaria_agent_auth::epoch_ms_to_iso),
                             cost: js_num(cost),
                             local_share: local_share.map(js_num),
+                            included_tokens,
                         }
                     },
                 )
@@ -466,7 +699,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
         per_day
     );
     let (today, week, month) = (today?, week?, month?);
-    let (est, split, (unpriced,), per_model, per_agent, per_day) =
+    let (est, split, (unpriced, included, derived), per_model, per_agent, per_day) =
         (est?, split?, unpriced?, per_model?, per_agent?, per_day?);
     let activity: (i32, f64, Option<String>, Option<String>, Option<f64>) = sqlx::query_as(
         "select count(*)::int, coalesce(sum(cost_usd), 0)::float8, max(source), \
@@ -517,6 +750,8 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
                 other: split.2,
             },
             unpriced_cloud_tokens: unpriced,
+            included_cloud_tokens: included,
+            derived_cost: js_num(derived),
             provider_reported,
         },
         per_model,
@@ -535,11 +770,13 @@ pub struct TaskUsagePerModel {
     pub tokens: i64,
     /// Null when every row for the model is unpriced — shown, never silent $0.
     pub cost: Option<serde_json::Number>,
+    /// Tokens priced at $0 because the model is included in a plan.
+    pub included_tokens: i64,
 }
 
-/// Token spend reported against one ticket. Agents
-/// self-report it via MCP log_usage for work done outside Talaria's request
-/// path — by design it adds to the same totals.
+/// Token spend attributed to one ticket: the metered rows that carry its id.
+/// Rows agents once self-reported through the retired MCP `log_usage` tool
+/// (`source = 'ticket'`) still count here.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskUsage {
@@ -585,11 +822,12 @@ pub async fn task_usage(pg: &PgPool, task_id: &str) -> Result<TaskUsage, sqlx::E
          select llm_model as \"llmModel\", \
                 coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + \
                              cache_read_tokens), 0)::bigint as tokens, \
-                sum(cost)::float8 as cost \
+                sum(cost)::float8 as cost, \
+                coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where cost_basis = 'included'), 0)::bigint as included \
          from priced where task_id = $1::uuid \
          group by llm_model order by tokens desc"
     );
-    let rows: Vec<(Option<String>, i64, Option<f64>)> =
+    let rows: Vec<(Option<String>, i64, Option<f64>, i64)> =
         sqlx::query_as(sqlx::AssertSqlSafe(per_model_sql.as_str()))
             .bind(task_id)
             .fetch_all(pg)
@@ -603,11 +841,14 @@ pub async fn task_usage(pg: &PgPool, task_id: &str) -> Result<TaskUsage, sqlx::E
         unpriced_tokens: unpriced,
         per_model: rows
             .into_iter()
-            .map(|(llm_model, tokens, cost)| TaskUsagePerModel {
-                llm_model,
-                tokens,
-                cost: cost.map(js_num),
-            })
+            .map(
+                |(llm_model, tokens, cost, included_tokens)| TaskUsagePerModel {
+                    llm_model,
+                    tokens,
+                    cost: cost.map(js_num),
+                    included_tokens,
+                },
+            )
             .collect(),
     })
 }
@@ -665,19 +906,90 @@ fn json_f64(v: Option<&Value>) -> Option<f64> {
     }
 }
 
-/// Whether a published price row may price this call. A known serving variant
-/// matches only that row. With no variant, a model-level published price is a
-/// derived fallback — except OpenRouter, whose catalog price is not the
-/// endpoint that served the call.
-pub fn published_price_applies(
-    provider: &str,
-    served_variant: Option<&str>,
-    price_variant: &str,
-) -> bool {
-    if let Some(served) = served_variant.filter(|v| !v.is_empty()) {
-        return price_variant == served;
+/// Whether a published price row may price this call: the serving variant's
+/// own row when the call names one, and the model-level row (variant '') for
+/// any call — for every provider, OpenRouter included (the priced view's
+/// comment says why). The view's lateral join is this predicate, ordered so
+/// the exact variant wins.
+pub fn published_price_applies(served_variant: Option<&str>, price_variant: &str) -> bool {
+    price_variant.is_empty() || served_variant.is_some_and(|v| !v.is_empty() && v == price_variant)
+}
+
+/// Where a row's dollars came from — `cost_basis` in the priced view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostBasis {
+    Local,
+    Provider,
+    Included,
+    Derived,
+    Manual,
+}
+
+impl CostBasis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CostBasis::Local => "local",
+            CostBasis::Provider => "provider",
+            CostBasis::Included => "included",
+            CostBasis::Derived => "derived",
+            CostBasis::Manual => "manual",
+        }
     }
-    price_variant.is_empty() && provider != "openrouter"
+}
+
+/// An admin's pricing decision for one (endpoint, model) — the
+/// `model_price_overrides.mode` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminPricing {
+    Manual,
+    Included,
+}
+
+/// The facts the price decision reads off one row and its joins.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PriceFacts<'a> {
+    /// `endpoint_class`: Some("local"), Some("cloud"), or None (unattributed).
+    pub class: Option<&'a str>,
+    pub provider_cost: bool,
+    pub admin: Option<AdminPricing>,
+    /// The row's `cost_variant`.
+    pub served_variant: Option<&'a str>,
+    /// The published prices for this endpoint+model as (variant, exact):
+    /// only complete ones — input and output present and zero or more (a
+    /// negative rate, the catalog's "variable" marker, is no price at all).
+    /// `exact` is false for a fuzzy catalog match.
+    pub published: &'a [(&'a str, bool)],
+}
+
+/// THE PRICE DECISION as a value — the CASE in the priced view, first match
+/// wins. None is an unpriced row. The live test in talaria-price-oracle runs
+/// the SQL over the same cases and holds the two to one answer.
+pub fn price_basis(f: &PriceFacts<'_>) -> Option<CostBasis> {
+    if f.class == Some("local") {
+        return Some(CostBasis::Local);
+    }
+    if f.provider_cost {
+        return Some(CostBasis::Provider);
+    }
+    if f.class != Some("cloud") {
+        return None;
+    }
+    if f.admin == Some(AdminPricing::Included) {
+        return Some(CostBasis::Included);
+    }
+    // The one row the view's lateral join takes: the served variant's own,
+    // else the model-level row.
+    let chosen = f
+        .published
+        .iter()
+        .find(|(v, _)| !v.is_empty() && f.served_variant == Some(*v))
+        .or_else(|| f.published.iter().find(|(v, _)| v.is_empty()));
+    match chosen {
+        Some((_, true)) => Some(CostBasis::Derived),
+        _ if f.admin == Some(AdminPricing::Manual) => Some(CostBasis::Manual),
+        Some((_, false)) => Some(CostBasis::Derived),
+        None => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -718,6 +1030,8 @@ pub async fn record_gateway_usage_with_spend(
         pg,
         RELAY_SOURCE,
         caller,
+        None,
+        &StatedFlow::default(),
         endpoint_name,
         endpoint_class,
         upstream_model,
@@ -728,24 +1042,43 @@ pub async fn record_gateway_usage_with_spend(
     .await
 }
 
+/// The flow a caller states for its own rows, beside the one a recorded
+/// affinity key would give them: an app run's ref and ticket. Each is booked
+/// only when it is a uuid — a ref the app made up (a support message id, a
+/// slug) is dropped from the row, never the row with it. A flow recorded for
+/// the call's affinity key still wins.
+#[derive(Debug, Clone, Default)]
+pub struct StatedFlow {
+    pub ref_id: Option<String>,
+    pub task_id: Option<String>,
+}
+
 /// The source a relay row carries when the calling key is the writer of
 /// record — an operator's own key, a harness run on the workbench key.
 pub const RELAY_SOURCE: &str = "gateway";
-/// The source a relay row carries when it was written FOR an agent whose
-/// turn no Talaria flow drove — a Hermes cron, or anything else the
-/// container started by itself (see the turn register below). The agent's
-/// chat and channel turns keep their own sources; this one names the spend
-/// that used to reach no ledger at all.
+/// The source a relay row carries for an agent's call that no Talaria flow
+/// claimed: a Hermes cron (its affinity key is `cron_<job id>`), a call made
+/// outside any conversation (no key at all), or a turn whose key the
+/// transport never recorded. A call under a key the transport DID record
+/// carries that flow's source instead — see "Attribution" below.
 pub const UNATTENDED_SOURCE: &str = "unattended";
 
 /// One relay-metered row under `source`. `record_gateway_usage_with_spend`
-/// is this with the operator-key source; the relay picks the source by who
-/// the caller is and whether a Talaria turn is open for it.
+/// is this with the operator-key source and no affinity key; the relay picks
+/// the source by who the caller is.
+///
+/// `affinity_key` is the `x-talaria-session` value Hermes stamped on an
+/// agent's call. When the chat transport recorded which flow that key — or
+/// the conversation the agent's plugin tied it to — belongs to, the row
+/// takes the flow's source, `ref_id` and `task_id` in the same statement;
+/// otherwise it keeps `source`, and a later record may backfill it.
 #[allow(clippy::too_many_arguments)]
 pub async fn record_relay_usage(
     pg: &PgPool,
     source: &str,
     caller: &str,
+    affinity_key: Option<&str>,
+    stated: &StatedFlow,
     endpoint_name: &str,
     endpoint_class: &str,
     upstream_model: &str,
@@ -755,14 +1088,29 @@ pub async fn record_relay_usage(
 ) -> Result<(), sqlx::Error> {
     let spend = spend.cloned().unwrap_or_default();
     let cost_source = spend.cost_usd.map(|_| "provider");
+    let reported_cost = spend.cost_usd.is_some();
     sqlx::query(
-        "insert into usage_events (agent_model, source, prompt_tokens, completion_tokens, \
+        "insert into usage_events (agent_model, source, ref_id, task_id, affinity_key, \
+                                  prompt_tokens, completion_tokens, \
                                   cache_write_tokens, cache_read_tokens, reasoning_tokens, \
                                   estimated, endpoint_class, llm_model, endpoint, \
                                   provider_cost, cost_source, cost_provider, cost_variant, \
                                   cost_fetched_at, generation_id) \
-         values ($1, $16, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
-                 $11, $12, $13, $14, case when $11::numeric is null then null else now() end, $15)",
+         select $1, coalesce(a.source, $16), coalesce(a.ref_id, $18::uuid), \
+                coalesce(a.task_id, $19::uuid), $17, \
+                $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+                $11, $12, $13, $14, case when $11::numeric is null then null else now() end, $15 \
+         from (values (1)) as one (x) \
+         left join lateral ( \
+           select a.source, a.ref_id, a.task_id from usage_attributions a \
+            where a.agent_model = $1 \
+              and a.affinity_key in ( \
+                    $17, \
+                    (select k.conversation_key from usage_affinity_keys k \
+                      where k.agent_model = $1 and k.affinity_key = $17)) \
+            order by (a.affinity_key = $17) desc \
+            limit 1 \
+         ) a on true",
     )
     .bind(caller)
     .bind(k(counts.prompt_tokens))
@@ -780,465 +1128,234 @@ pub async fn record_relay_usage(
     .bind(spend.variant.filter(|v| !v.is_empty()))
     .bind(spend.generation_id)
     .bind(source)
+    .bind(affinity_key)
+    .bind(uuid_or_none(stated.ref_id.as_deref()))
+    .bind(uuid_or_none(stated.task_id.as_deref()))
     .execute(pg)
-    .await
-    .map(|_| ())
-}
-
-// ── Agent-reported spend (tasks.$id.usage POST) ──────────────────────────────
-
-/// Which model serves this generation: the requested TIER's model when a tier
-/// was routed, else the agent's current MAIN model.
-///
-/// The agent's stored `endpoint` is a config-time PREFERENCE, not what ran:
-/// agents call the gateway by model name and `resolve_route` round-robins the
-/// pool serving it, so trusting the config can stamp a cloud turn `local` and
-/// price it at $0. Classify from the gateway's real pool instead and record
-/// only what's certain — one server is exact, a pool that agrees on class is
-/// priced by class, a mixed pool leaves the row unattributed rather than
-/// guessing.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AgentClass {
-    pub endpoint_class: Option<String>,
-    pub llm_model: String,
-    pub endpoint: Option<String>,
-}
-
-type ClassCache = std::collections::HashMap<String, (std::time::Instant, Option<AgentClass>)>;
-
-static CLASS_CACHE: std::sync::LazyLock<std::sync::Mutex<ClassCache>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(ClassCache::new()));
-
-/// The serving tier-or-main spec for an agent, narrowed to
-/// what the gateway's pool can honestly claim. Cached 60s per
-/// (agentModel, tier): the def and the endpoint pool both move slower than
-/// that, and the hot path should never feel a classification.
-pub async fn classify_agent(
-    pg: &PgPool,
-    agent_model: &str,
-    tier: Option<&str>,
-) -> Result<Option<AgentClass>, sqlx::Error> {
-    let cache_key = format!("{agent_model}:{}", tier.unwrap_or(""));
-    {
-        let cache = CLASS_CACHE.lock().unwrap();
-        if let Some((at, value)) = cache.get(&cache_key)
-            && at.elapsed().as_secs() < 60
-        {
-            return Ok(value.clone());
-        }
-    }
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = match tier {
-        Some(tier) => {
-            sqlx::query_as(
-                "select e.class, (a->>'model') as model, (a->>'endpoint') as endpoint \
-                 from agent_defs d \
-                 join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
-                 cross join lateral jsonb_array_elements(coalesce(v.config->'aliases','[]'::jsonb)) a \
-                 left join llm_endpoints e on e.name = (a->>'endpoint') \
-                 where d.model = $1 and a->>'name' = $2",
-            )
-            .bind(agent_model)
-            .bind(tier)
-            .fetch_optional(pg)
-            .await?
-        }
-        None => {
-            sqlx::query_as(
-                "select e.class, (v.config->'main'->>'model') as model, (v.config->'main'->>'endpoint') as endpoint \
-                 from agent_defs d \
-                 join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
-                 left join llm_endpoints e on e.name = (v.config->'main'->>'endpoint') \
-                 where d.model = $1",
-            )
-            .bind(agent_model)
-            .fetch_optional(pg)
-            .await?
-        }
-    };
-    let value = match row {
-        // A tier still pointed at a legacy upstream (no model on the alias)
-        // classifies as nothing — an unattributable row, never a guess.
-        Some((class, Some(model), endpoint)) if !model.is_empty() => {
-            classify_model(pg, &model, (class.as_deref(), endpoint.as_deref())).await?
-        }
-        _ => None,
-    };
-    CLASS_CACHE
-        .lock()
-        .unwrap()
-        .insert(cache_key, (std::time::Instant::now(), value.clone()));
-    Ok(value)
-}
-
-async fn classify_model(
-    pg: &PgPool,
-    model: &str,
-    configured: (Option<&str>, Option<&str>),
-) -> Result<Option<AgentClass>, sqlx::Error> {
-    let (class, endpoint) = configured;
-    let routing = crate::registry::routing_for(pg, model).await?;
-    if routing.endpoints.len() == 1 {
-        let one = &routing.endpoints[0];
-        return Ok(Some(AgentClass {
-            endpoint_class: Some(one.class.clone()),
-            llm_model: routing.upstream_model,
-            endpoint: Some(one.name.clone()),
-        }));
-    }
-    if routing.endpoints.is_empty() {
-        return Ok(class.map(|class| AgentClass {
-            endpoint_class: Some(class.to_string()),
-            llm_model: model.to_string(),
-            endpoint: endpoint.map(str::to_string),
-        }));
-    }
-    // A pool: the class is certain when every member agrees (local stays $0,
-    // cloud stays visible as unpriced), the endpoint never is.
-    let all_agree = routing
-        .endpoints
-        .iter()
-        .map(|e| e.class.as_str())
-        .all(|c| c == routing.endpoints[0].class.as_str());
-    Ok(Some(AgentClass {
-        endpoint_class: all_agree.then(|| routing.endpoints[0].class.clone()),
-        llm_model: routing.upstream_model,
-        endpoint: None,
-    }))
-}
-
-/// One agent-reported spend row. 'chat'/'channel' rows
-/// are gateway-metered by Talaria; 'ticket' rows are agent-SELF-REPORTED (MCP
-/// log_usage) for work done outside Talaria's request path — by design they
-/// add to the same totals (that spend is just as real), guarded by the agent
-/// key + board policy rather than metering.
-pub struct UsageInput<'a> {
-    pub agent_model: &'a str,
-    pub source: &'a str,
-    pub ref_id: Option<&'a str>,
-    pub task_id: Option<&'a str>,
-    /// Alias tier the request was routed to (None = the agent's main model).
-    pub tier: Option<&'a str>,
-    pub counts: TokenCounts,
-    pub estimated: bool,
-}
-
-/// Insert one usage_events row, attributed by the classify
-/// plane. Classification failure is swallowed to null here:
-/// the row still lands, unattributed.
-pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::Error> {
-    let cls = classify_agent(pg, u.agent_model, u.tier)
-        .await
-        .unwrap_or(None);
-    sqlx::query(
-        "insert into usage_events (agent_model, source, ref_id, task_id, prompt_tokens, completion_tokens, \
-                                  cache_write_tokens, cache_read_tokens, reasoning_tokens, \
-                                  estimated, endpoint_class, llm_model, endpoint) \
-         values ($1, $2, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-    )
-    .bind(u.agent_model)
-    .bind(u.source)
-    .bind(u.ref_id)
-    .bind(u.task_id)
-    .bind(k(u.counts.prompt_tokens))
-    .bind(k(u.counts.completion_tokens))
-    .bind(k(u.counts.cache_write_tokens))
-    .bind(k(u.counts.cache_read_tokens))
-    .bind(k(u.counts.reasoning_tokens))
-    .bind(u.estimated)
-    .bind(cls.as_ref().and_then(|c| c.endpoint_class.clone()))
-    .bind(cls.as_ref().map(|c| c.llm_model.clone()))
-    .bind(cls.as_ref().and_then(|c| c.endpoint.clone()))
-    .execute(pg)
-    .await
-    .map(|_| ())?;
-
-    // A cloud row landing without a price is the oracle's cue to look again —
-    // detached, throttled, and idempotent, so the hot path never feels it. A
-    // probe that itself fails nudges nothing.
-    if let Some(cls) = cls
-        && cls.endpoint_class.as_deref() == Some("cloud")
-        && cls.endpoint.is_some()
-        && !cls.llm_model.is_empty()
-    {
-        let pg = pg.clone();
-        let endpoint = cls.endpoint.clone().unwrap_or_default();
-        let model = cls.llm_model.clone();
-        tokio::spawn(async move {
-            let priced = sqlx::query(
-                "select 1 as ok from provider_prices p \
-                 join llm_endpoints e on e.id = p.endpoint_id \
-                 where e.name = $1 and p.model = $2 \
-                   and (p.variant <> '' or e.provider is distinct from 'openrouter')",
-            )
-            .bind(&endpoint)
-            .bind(&model)
-            .fetch_optional(&pg)
-            .await;
-            if matches!(priced, Ok(None))
-                && let Some(nudge) = NUDGE_AUTO_PRICES.get()
-            {
-                nudge(&pg);
-            }
-        });
+    .await?;
+    // A cloud row with no charge of its own is priced from a published rate;
+    // when there is none, the oracle is told — as the per-turn ledger rows
+    // this writer replaced for agents used to tell it.
+    if endpoint_class == "cloud" && !reported_cost {
+        nudge_if_unpriced(pg, endpoint_name, upstream_model);
     }
     Ok(())
 }
 
-// ── The in-flight turn register ──────────────────────────────────────────────
-//
-// WHO WRITES AN AGENT'S ROW. A persona turn Talaria drives — a chat turn, a
-// channel reply, a harness run — is ledgered ONCE, as the whole turn, by the
-// flow that drove it, under the agent's model id; so the relay skips the N
-// inner-loop calls that turn makes on the agent's own key. But a turn Hermes
-// starts by itself — a cron firing inside the container — reaches the relay
-// byte-identical to a chat turn (Hermes makes the request, not Talaria, so no
-// header can ride along), and no flow writes its row. The register is how
-// the relay tells the two apart: the chat transport (fleet_chat.rs,
-// `hold_for_agent`, the one door every Talaria-driven turn goes through)
-// counts each turn here while it is open, and the relay meters an agent's
-// call itself when no turn is counted for that agent.
-//
-//   talaria:turn:v1:<agent model id>  →  how many Talaria turns are open
-//
-// A COUNTER, NOT A FLAG: two turns can overlap for one agent — two people in
-// two conversations, a resume racing the turn it replaces — and the first to
-// finish must not unregister the other. A CEILING, REFRESHED WHILE OPEN: an
-// api that dies mid-turn leaves its increment behind, and the ceiling is what
-// forgets it — kept at or under the turn's own idle ceiling (chat-persist's
-// `TALARIA_AGENT_IDLE_SECS`, floored at a minute), so a stale count never
-// outlives a turn that could still be running. The refresh is a ticker rather
-// than a per-chunk touch because the agent's tool loop — the calls the relay
-// is judging — runs during the minutes BEFORE its first frame comes back.
-//
-// KNOWN DOUBLE-SKIP: a cron firing WHILE a chat turn is open for the same
-// agent is skipped along with that turn's calls — the relay cannot tell one
-// agent's two loops apart. The under-count is bounded to one cron per
-// overlapping turn; metering everything and subtracting would double-count
-// the common case instead.
-//
-// FAILURE DIRECTION: a relay that cannot read the register keeps the skip, so
-// a Redis outage lands the ledger exactly where it was before the register
-// existed, never at a double-counted turn. Both ends talk to the same Redis,
-// so a transport that cannot register is a relay that cannot read.
-
-/// The key prefix every registration lives under.
-pub const TURN_KEY_PREFIX: &str = "talaria:turn:v1:";
-/// How long a registration lives without a refresh. At the floor of the
-/// turn's idle ceiling, so a crashed api's leftover is forgotten no later
-/// than the turn it belonged to would have been.
-pub const TURN_TTL: Duration = Duration::from_secs(60);
-/// How often an open turn re-arms its ceiling — three misses before it lapses.
-pub const TURN_REFRESH: Duration = Duration::from_secs(20);
-
-/// The register key for an agent: `talaria:turn:v1:<agent model id>`.
-pub fn turn_key(agent_model: &str) -> String {
-    format!("{TURN_KEY_PREFIX}{agent_model}")
-}
-
-/// A register call, owning what it needs so a guard's Drop can spawn it.
-pub type RegisterFut<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
-
-/// Where open turns are counted. Redis in the process; a memory one under
-/// test, so the counting, the lapse and the refresh are pinned without a
-/// server.
-pub trait TurnRegister: Send + Sync {
-    /// Count one more open turn under `key` and (re)arm its ceiling at `ttl`.
-    /// Answers the count after the increment.
-    fn open(&self, key: String, ttl: Duration) -> RegisterFut<i64>;
-    /// Re-arm the ceiling of a key that is still counted.
-    fn refresh(&self, key: String, ttl: Duration) -> RegisterFut<()>;
-    /// Count one turn closed; a key that reaches zero is removed. Answers
-    /// the count left (never below zero).
-    fn close(&self, key: String) -> RegisterFut<i64>;
-    /// How many turns are counted — zero for a key that lapsed or never was.
-    fn count(&self, key: String) -> RegisterFut<i64>;
-}
-
-/// The Redis register. Its handle is the crate's own, built lazily from the
-/// same `REDIS_URL` the api's state reads, because the chat transport has no
-/// `AppState` to borrow one from — its callers hand it a payload and nothing
-/// else. A failed connect is not cached: the next turn tries again.
-struct RedisTurnRegister {
-    conn: Arc<tokio::sync::OnceCell<ConnectionManager>>,
-}
-
-async fn redis_turn_conn(
-    cell: &tokio::sync::OnceCell<ConnectionManager>,
-) -> Result<ConnectionManager, String> {
-    cell.get_or_try_init(|| async {
-        let url = std::env::var("REDIS_URL")
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if url.is_empty() {
-            return Err("REDIS_URL unset".to_string());
-        }
-        let client = redis::Client::open(url.as_str()).map_err(|e| e.to_string())?;
-        // The same patience the shared handle has — see talaria-state.
-        let config = ConnectionManagerConfig::new()
-            .set_response_timeout(Some(redis_response_timeout(
-                std::env::var("TALARIA_REDIS_RESPONSE_TIMEOUT_MS")
-                    .ok()
-                    .as_deref(),
-            )))
-            .set_connection_timeout(Some(Duration::from_millis(2_000)));
-        match tokio::time::timeout(
-            Duration::from_millis(2_500),
-            ConnectionManager::new_with_config(client, config),
+/// Nudge the price oracle when `model` on `endpoint` has no published price
+/// to derive a cloud row's cost from — detached, so no write ever waits on
+/// it. The relay's ledger writer (`record_relay_usage`, which every booked
+/// call goes through) calls it for a cloud row that carries no cost of its
+/// own.
+fn nudge_if_unpriced(pg: &PgPool, endpoint: &str, model: &str) {
+    if endpoint.is_empty() || model.is_empty() {
+        return;
+    }
+    let (pg, endpoint, model) = (pg.clone(), endpoint.to_string(), model.to_string());
+    tokio::spawn(async move {
+        // Any published price the view would use (it falls back to the
+        // model-level row for every provider now), or an admin's decision.
+        let priced = sqlx::query(
+            "select 1 as ok from provider_prices p \
+             join llm_endpoints e on e.id = p.endpoint_id \
+             where e.name = $1 and p.model = $2 \
+               and p.price_in_per_mtok is not null and p.price_out_per_mtok is not null \
+             union all \
+             select 1 from model_price_overrides o where o.endpoint = $1 and o.model = $2 \
+             limit 1",
         )
-        .await
+        .bind(&endpoint)
+        .bind(&model)
+        .fetch_optional(&pg)
+        .await;
+        if matches!(priced, Ok(None))
+            && let Some(nudge) = NUDGE_AUTO_PRICES.get()
         {
-            Ok(Ok(conn)) => Ok(conn),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("redis connect timeout".to_string()),
+            nudge(&pg);
         }
-    })
+    });
+}
+
+// ── Attribution: which flow an agent's call belongs to ───────────────────────
+//
+// EVERY CALL ON AN AGENT'S KEY IS BOOKED AT THE RELAY, one row per upstream
+// call, under the agent. Nothing else writes an agent's spend: the flow-level
+// rows a chat, channel or harness turn used to write (one per turn, from the
+// counters Hermes reports for its main loop) never saw the auxiliary calls
+// behind a turn — compression, titles, vision, web_extract, session_search —
+// nor a delegated subagent's, and the turn register that made the relay skip
+// every call while a turn was open also skipped any cron that fired inside
+// one. Booking every call where it is made is what closes all of those, and
+// it lets a budget see a long turn's spend while the turn is still running.
+//
+// WHOSE TURN IT IS rides on the call itself. The render gives every agent a
+// `providers.talaria` entry on the gateway URL its model specs already use,
+// with `session_affinity_header: x-talaria-session` (fleet-brain's
+// `gateway_provider_entry`); Hermes matches a provider entry to a call by
+// base URL and stamps that header on every request to it — the main loop on
+// any transport, every auxiliary call, a subagent (its parent's key) and a
+// cron fire. The value is Hermes' affinity key for the conversation:
+//
+//   a cron fire          `cron_<job id>`, every fire of one job alike
+//   an API turn          `gwk_<digest>` — on v0.22 every turn Talaria sends
+//                        runs under Hermes' session authority, which names
+//                        the session's route, and the affinity key is then
+//                        a digest of (source, route, generation): stable for
+//                        the conversation, and computable only inside Hermes
+//   a turn with no route the conversation's own id (older Hermes)
+//   anything else        no header at all
+//
+// So the key on the wire is not a name Talaria knows, and two records meet
+// in the middle:
+//
+//   usage_attributions   written by the chat transport (fleet_chat.rs): the
+//                        conversation it drove — the session id it created,
+//                        or on the completions arm the id Hermes answers in
+//                        `X-Hermes-Session-Id` — with the flow's source,
+//                        ref_id and task_id
+//   usage_affinity_keys  written by the agent's talaria-events plugin from
+//                        inside Hermes (POST /api/agents/affinity): "the key
+//                        I stamp is conversation C's", read off the same
+//                        function that builds the header, at the start of
+//                        every turn
+//
+// The relay copies the flow onto each row it books — under the conversation's
+// own id, or under a key the plugin tied to it — in the insert itself. Either
+// record can land second (the plugin reports when the turn starts; the
+// completions arm learns its id from the response headers), so whichever
+// lands second BACKFILLS the rows already booked, and the transport backfills
+// once more when the stream is let go.
+//
+// WHAT A KEY CAN AND CANNOT DO: it attributes within one agent and nothing
+// more. Both records are keyed by agent, the relay's caller is the agent its
+// bearer names, and the plugin's door takes only the agent's own credential —
+// so a forged header or report (an agent with a terminal can send anything)
+// can only move spend between that agent's own flows; the budget subject is
+// still the key. Two completions conversations that open with the same system
+// prompt and first message share Hermes' session (its id is a digest of
+// exactly those), and the later turn's attribution wins.
+
+/// The request header Hermes stamps the conversation key on — the name the
+/// render writes as `providers.talaria.session_affinity_header`.
+pub const SESSION_HEADER: &str = "x-talaria-session";
+
+/// The longest affinity key the relay keeps. Hermes' own are short (a uuid,
+/// `api-` plus 16 hex digits, `cron_` plus a job id, `gwk_` plus 24); this is
+/// a bound on what a forged header can write, not a format.
+const AFFINITY_KEY_MAX: usize = 128;
+
+/// An affinity key as the relay and the transport keep it: trimmed, 1 to
+/// `AFFINITY_KEY_MAX` printable ASCII characters with no spaces. Anything else
+/// is no key — the call is still booked, just unattributed.
+pub fn affinity_key(raw: Option<&str>) -> Option<String> {
+    let key = raw?.trim();
+    (!key.is_empty() && key.len() <= AFFINITY_KEY_MAX && key.bytes().all(|b| b.is_ascii_graphic()))
+        .then(|| key.to_string())
+}
+
+/// The flow a Talaria-driven turn belongs to, handed to the chat transport so
+/// every call Hermes makes for the turn is booked under it. `source` is the
+/// ledger's word for the flow (`chat`, `channel`, `ticket`, `research`);
+/// `ref_id` the conversation, channel or run, and `task_id` the ticket —
+/// both uuids, and anything that is not one is dropped rather than failing
+/// the record.
+#[derive(Debug, Clone)]
+pub struct TurnAttribution {
+    pub pg: PgPool,
+    /// The agent as the relay names it — its model id, never a tier's.
+    pub agent_model: String,
+    pub source: String,
+    pub ref_id: Option<String>,
+    pub task_id: Option<String>,
+    /// A person is reading this turn as it is written: a conversation turn
+    /// sent from `/api/chat`, or chained from one, with `ref_id` the
+    /// conversation. `source` alone cannot say so, because a work session
+    /// and the plan-document harness book their spend as `chat` too, and
+    /// nobody watches either. Only an attended turn can put an agent's
+    /// approval request to a person (fleet_approvals); the ledger ignores it.
+    pub attended: bool,
+}
+
+fn uuid_or_none(v: Option<&str>) -> Option<String> {
+    v.filter(|s| uuid::Uuid::parse_str(s).is_ok())
+        .map(str::to_string)
+}
+
+/// Record that `key` is this turn's: rows the relay books under it from now
+/// on carry the turn's source, ref_id and task_id. Idempotent — the same key
+/// on a later turn re-records it, and the latest flow wins.
+pub async fn record_attribution(a: &TurnAttribution, key: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into usage_attributions (agent_model, affinity_key, source, ref_id, task_id) \
+         values ($1, $2, $3, $4::uuid, $5::uuid) \
+         on conflict (agent_model, affinity_key) do update \
+           set source = excluded.source, ref_id = excluded.ref_id, \
+               task_id = excluded.task_id, updated_at = now()",
+    )
+    .bind(&a.agent_model)
+    .bind(key)
+    .bind(&a.source)
+    .bind(uuid_or_none(a.ref_id.as_deref()))
+    .bind(uuid_or_none(a.task_id.as_deref()))
+    .execute(&a.pg)
     .await
-    .cloned()
+    .map(|_| ())
 }
 
-impl TurnRegister for RedisTurnRegister {
-    fn open(&self, key: String, ttl: Duration) -> RegisterFut<i64> {
-        let cell = self.conn.clone();
-        Box::pin(async move {
-            let mut conn = redis_turn_conn(&cell).await?;
-            let count: i64 = conn.incr(&key, 1).await.map_err(|e| e.to_string())?;
-            let _: bool = conn
-                .expire(&key, ttl.as_secs() as i64)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(count)
-        })
-    }
-
-    fn refresh(&self, key: String, ttl: Duration) -> RegisterFut<()> {
-        let cell = self.conn.clone();
-        Box::pin(async move {
-            let mut conn = redis_turn_conn(&cell).await?;
-            let _: bool = conn
-                .expire(&key, ttl.as_secs() as i64)
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(())
-        })
-    }
-
-    fn close(&self, key: String) -> RegisterFut<i64> {
-        let cell = self.conn.clone();
-        Box::pin(async move {
-            let mut conn = redis_turn_conn(&cell).await?;
-            let left: i64 = conn.decr(&key, 1).await.map_err(|e| e.to_string())?;
-            if left <= 0 {
-                // A lapsed key DECRs to -1; removing it is the same answer.
-                let _: i64 = conn.del(&key).await.map_err(|e| e.to_string())?;
-            }
-            Ok(left.max(0))
-        })
-    }
-
-    fn count(&self, key: String) -> RegisterFut<i64> {
-        let cell = self.conn.clone();
-        Box::pin(async move {
-            let mut conn = redis_turn_conn(&cell).await?;
-            let count: Option<i64> = conn.get(&key).await.map_err(|e| e.to_string())?;
-            Ok(count.unwrap_or(0).max(0))
-        })
-    }
+/// Claim the rows the relay booked for conversation `key` before both of its
+/// records were in — under the conversation's own id, or under an affinity
+/// key the agent's plugin tied to it. Only `unattended` rows of the last day
+/// move: a row already attributed is left alone, and a key that comes round
+/// again much later (a reused completions digest) cannot reach back over
+/// another flow's history. Answers how many rows it claimed; a conversation
+/// with no flow recorded yet claims none.
+pub async fn backfill_attribution(
+    pg: &PgPool,
+    agent_model: &str,
+    key: &str,
+) -> Result<u64, sqlx::Error> {
+    sqlx::query(
+        "update usage_events u \
+            set source = a.source, ref_id = a.ref_id, task_id = a.task_id \
+           from usage_attributions a \
+          where a.agent_model = $1 and a.affinity_key = $2 \
+            and u.agent_model = $1 \
+            and (u.affinity_key = $2 \
+                 or u.affinity_key in (select k.affinity_key from usage_affinity_keys k \
+                                        where k.agent_model = $1 and k.conversation_key = $2)) \
+            and u.source = $3 \
+            and u.created_at > now() - interval '1 day'",
+    )
+    .bind(agent_model)
+    .bind(key)
+    .bind(UNATTENDED_SOURCE)
+    .execute(pg)
+    .await
+    .map(|r| r.rows_affected())
 }
 
-fn redis_register() -> Arc<dyn TurnRegister> {
-    static REGISTER: OnceLock<Arc<dyn TurnRegister>> = OnceLock::new();
-    REGISTER
-        .get_or_init(|| {
-            Arc::new(RedisTurnRegister {
-                conn: Arc::new(tokio::sync::OnceCell::new()),
-            })
-        })
-        .clone()
-}
-
-/// One open turn in the register. Counted on `open`, refreshed on a ticker
-/// while this value lives, and counted closed when it drops — however the
-/// turn ended: a clean end, the consumer hanging up, an error, the hold
-/// loop giving up before any stream opened. The close is spawned from Drop
-/// (`try_current`: a drop outside the runtime at shutdown loses the close,
-/// which the ceiling then covers; it must not panic).
-pub struct TurnRegistration {
-    key: String,
-    register: Arc<dyn TurnRegister>,
-    refresher: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl TurnRegistration {
-    /// Count a turn open under `agent_model` in `register`.
-    pub async fn open(register: Arc<dyn TurnRegister>, agent_model: &str) -> Result<Self, String> {
-        let key = turn_key(agent_model);
-        register.open(key.clone(), TURN_TTL).await?;
-        let refresher = {
-            let register = register.clone();
-            let key = key.clone();
-            tokio::spawn(async move {
-                let mut tick = tokio::time::interval(TURN_REFRESH);
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                // The first tick is immediate — the open just armed the ceiling.
-                tick.tick().await;
-                loop {
-                    tick.tick().await;
-                    if let Err(e) = register.refresh(key.clone(), TURN_TTL).await {
-                        tracing::warn!("[turn-register] refresh of {key} failed: {e}");
-                    }
-                }
-            })
-        };
-        Ok(TurnRegistration {
-            key,
-            register,
-            refresher: Some(refresher),
-        })
-    }
-}
-
-impl Drop for TurnRegistration {
-    fn drop(&mut self) {
-        if let Some(refresher) = self.refresher.take() {
-            refresher.abort();
-        }
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let key = self.key.clone();
-            let fut = self.register.close(key.clone());
-            handle.spawn(async move {
-                if let Err(e) = fut.await {
-                    tracing::warn!("[turn-register] close of {key} failed: {e}");
-                }
-            });
-        }
-    }
-}
-
-/// Count a Talaria-driven turn open for `agent_model` — the chat transport's
-/// call. None when the register is unreachable: the turn goes on unregistered
-/// and the relay, which cannot read either, keeps its skip.
-pub async fn register_turn(agent_model: &str) -> Option<TurnRegistration> {
-    match TurnRegistration::open(redis_register(), agent_model).await {
-        Ok(turn) => Some(turn),
-        Err(e) => {
-            tracing::warn!("[turn-register] cannot register a turn for {agent_model}: {e}");
-            None
-        }
-    }
-}
-
-/// Is a Talaria-driven turn open for `agent_model` right now — the relay's
-/// question. None when the register cannot be read, which the relay treats
-/// as "assume one is" (today's skip).
-pub async fn talaria_turn_open(agent_model: &str) -> Option<bool> {
-    match redis_register().count(turn_key(agent_model)).await {
-        Ok(count) => Some(count > 0),
-        Err(e) => {
-            tracing::warn!("[turn-register] cannot read the register for {agent_model}: {e}");
-            None
-        }
-    }
+/// Record the agent's plugin's report that the affinity key it stamps on its
+/// calls belongs to `conversation` — the conversation's own id as Talaria
+/// knows it — then claim what was already booked under it. The latest report
+/// for a key wins. Answers how many rows the backfill claimed.
+pub async fn record_affinity_key(
+    pg: &PgPool,
+    agent_model: &str,
+    key: &str,
+    conversation: &str,
+) -> Result<u64, sqlx::Error> {
+    sqlx::query(
+        "insert into usage_affinity_keys (agent_model, affinity_key, conversation_key) \
+         values ($1, $2, $3) \
+         on conflict (agent_model, affinity_key) do update \
+           set conversation_key = excluded.conversation_key, updated_at = now()",
+    )
+    .bind(agent_model)
+    .bind(key)
+    .bind(conversation)
+    .execute(pg)
+    .await?;
+    backfill_attribution(pg, agent_model, conversation).await
 }
 
 #[cfg(test)]
@@ -1344,180 +1461,606 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_without_a_serving_variant_does_not_take_a_model_level_price() {
-        assert!(!published_price_applies("openrouter", None, ""));
-        assert!(published_price_applies(
-            "openrouter",
-            Some("Infermatic"),
-            "Infermatic"
-        ));
-        assert!(!published_price_applies(
-            "openrouter",
-            Some("Infermatic"),
-            "OpenAI"
-        ));
-        assert!(published_price_applies("openai", None, ""));
-    }
-    // ── The turn register ────────────────────────────────────────────────
-
-    /// A register in memory with Redis' semantics: a count per key, a
-    /// ceiling that lapses on the paused clock, zero for what lapsed.
-    struct MemoryRegister {
-        rows: std::sync::Mutex<std::collections::HashMap<String, (i64, tokio::time::Instant)>>,
-        refreshes: std::sync::atomic::AtomicUsize,
-    }
-
-    impl MemoryRegister {
-        fn new() -> Arc<Self> {
-            Arc::new(MemoryRegister {
-                rows: std::sync::Mutex::new(std::collections::HashMap::new()),
-                refreshes: std::sync::atomic::AtomicUsize::new(0),
-            })
-        }
-
-        fn live(&self, key: &str) -> i64 {
-            let mut rows = self.rows.lock().unwrap();
-            match rows.get(key) {
-                Some((_, until)) if *until <= tokio::time::Instant::now() => {
-                    rows.remove(key);
-                    0
-                }
-                Some((count, _)) => *count,
-                None => 0,
-            }
-        }
-    }
-
-    impl TurnRegister for MemoryRegister {
-        fn open(&self, key: String, ttl: Duration) -> RegisterFut<i64> {
-            let count = self.live(&key) + 1;
-            self.rows
-                .lock()
-                .unwrap()
-                .insert(key, (count, tokio::time::Instant::now() + ttl));
-            Box::pin(async move { Ok(count) })
-        }
-
-        fn refresh(&self, key: String, ttl: Duration) -> RegisterFut<()> {
-            self.refreshes
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if self.live(&key) > 0
-                && let Some(row) = self.rows.lock().unwrap().get_mut(&key)
-            {
-                row.1 = tokio::time::Instant::now() + ttl;
-            }
-            Box::pin(async { Ok(()) })
-        }
-
-        fn close(&self, key: String) -> RegisterFut<i64> {
-            let left = self.live(&key) - 1;
-            let mut rows = self.rows.lock().unwrap();
-            if left <= 0 {
-                rows.remove(&key);
-            } else if let Some(row) = rows.get_mut(&key) {
-                row.0 = left;
-            }
-            Box::pin(async move { Ok(left.max(0)) })
-        }
-
-        fn count(&self, key: String) -> RegisterFut<i64> {
-            let count = self.live(&key);
-            Box::pin(async move { Ok(count) })
-        }
-    }
-
-    /// Let the closes a Drop spawned run.
-    async fn settle() {
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
-        }
+    fn a_model_level_price_applies_to_any_call_and_a_variant_only_to_its_own() {
+        // No serving variant: the model-level row, OpenRouter's included —
+        // main's per-turn rows and a cut-off stream never carry one.
+        assert!(published_price_applies(None, ""));
+        assert!(published_price_applies(Some(""), ""));
+        assert!(!published_price_applies(None, "Infermatic"));
+        // A served variant: its own row, and the model-level fallback.
+        assert!(published_price_applies(Some("Infermatic"), "Infermatic"));
+        assert!(published_price_applies(Some("Infermatic"), ""));
+        assert!(!published_price_applies(Some("Infermatic"), "OpenAI"));
     }
 
     #[test]
-    fn the_key_is_the_agent_model_under_the_versioned_prefix() {
-        assert_eq!(turn_key("x-eng"), "talaria:turn:v1:x-eng");
+    fn the_price_decision_runs_provider_included_published_manual_in_that_order() {
+        let cloud = |admin, published: &'static [(&'static str, bool)]| PriceFacts {
+            class: Some("cloud"),
+            admin,
+            published,
+            ..PriceFacts::default()
+        };
+        // Local is $0 whatever else is true.
+        let local = PriceFacts {
+            class: Some("local"),
+            provider_cost: true,
+            ..PriceFacts::default()
+        };
+        assert_eq!(price_basis(&local), Some(CostBasis::Local));
+        // The provider's charge beats every admin decision.
+        let charged = PriceFacts {
+            provider_cost: true,
+            ..cloud(Some(AdminPricing::Included), &[("", true)])
+        };
+        assert_eq!(price_basis(&charged), Some(CostBasis::Provider));
+        // Included beats a published price: a catalog cannot know the plan.
+        assert_eq!(
+            price_basis(&cloud(Some(AdminPricing::Included), &[("", true)])),
+            Some(CostBasis::Included)
+        );
+        // A published price beats a manual rate: manual is the fallback.
+        assert_eq!(
+            price_basis(&cloud(Some(AdminPricing::Manual), &[("", true)])),
+            Some(CostBasis::Derived)
+        );
+        // ...but a manual rate beats a FUZZY match.
+        assert_eq!(
+            price_basis(&cloud(Some(AdminPricing::Manual), &[("", false)])),
+            Some(CostBasis::Manual)
+        );
+        assert_eq!(
+            price_basis(&cloud(None, &[("", false)])),
+            Some(CostBasis::Derived)
+        );
+        assert_eq!(
+            price_basis(&cloud(Some(AdminPricing::Manual), &[])),
+            Some(CostBasis::Manual)
+        );
+        // Nothing at all: unpriced.
+        assert_eq!(price_basis(&cloud(None, &[])), None);
+        // A variant-only price does not cover a call that names another.
+        let other_variant = PriceFacts {
+            served_variant: Some("OpenAI"),
+            ..cloud(None, &[("Infermatic", true)])
+        };
+        assert_eq!(price_basis(&other_variant), None);
+        // An unattributed row (no class) is never priced or counted.
+        let unattributed = PriceFacts {
+            class: None,
+            published: &[("", true)],
+            ..PriceFacts::default()
+        };
+        assert_eq!(price_basis(&unattributed), None);
+    }
+
+    #[test]
+    fn the_priced_view_text_carries_the_decision_in_order() {
+        let sql = priced_view();
+        let at = |needle: &str| {
+            sql.find(needle)
+                .unwrap_or_else(|| panic!("the view lost `{needle}`"))
+        };
+        // The cost CASE: provider, included, exact published, manual, fuzzy published.
+        let provider = at(
+            "when (u.provider_cost >= 0 and u.provider_cost < 'Infinity'::numeric) then u.provider_cost",
+        );
+        let included = at("o.mode = 'included' then 0");
+        let exact = at("pp.kind = 'exact' then (");
+        let manual = at("o.price_out_per_mtok < 'Infinity'::numeric) then (");
+        let fuzzy = at("and pp.in_tok is not null then (");
+        assert!(provider < included && included < exact && exact < manual && manual < fuzzy);
+        // The OpenRouter exclusion is gone; the exact variant sorts first.
+        assert!(!sql.contains("is distinct from 'openrouter'"));
+        assert!(sql.contains("order by (p.variant <> '') desc, p.fetched_at desc"));
+        // Cache tokens bill at the published cache rates before the multipliers.
+        assert!(sql.contains("coalesce(pp.cw_tok, pp.in_tok * 1.25)"));
+        assert!(sql.contains("coalesce(pp.cr_tok, pp.in_tok * 0.1)"));
+        // No source with a negative rate is ever read, and no token count
+        // below zero is ever multiplied: the view cannot price under $0.
+        assert!(sql.contains(
+            "(p.price_in_per_mtok >= 0 and p.price_in_per_mtok < 'Infinity'::numeric) and \
+             (p.price_out_per_mtok >= 0 and p.price_out_per_mtok < 'Infinity'::numeric)"
+        ));
+        assert!(sql.contains(
+            "(case when (p.price_cache_write_per_mtok >= 0 and p.price_cache_write_per_mtok < 'Infinity'::numeric) then p.price_cache_write_per_mtok end)"
+        ));
+        assert!(!sql.contains("{charged}"), "every guard is interpolated");
         assert!(
-            TURN_TTL <= Duration::from_secs(60),
-            "the ceiling must not outlive the turn's idle floor (a minute)"
+            sql.contains(
+                "(o.price_in_per_mtok >= 0 and o.price_in_per_mtok < 'Infinity'::numeric)"
+            )
         );
         assert!(
-            TURN_REFRESH * 2 < TURN_TTL,
-            "an open turn must get more than one chance to re-arm before it lapses"
+            !sql.contains("u.prompt_tokens *"),
+            "token counts are floored at zero"
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn two_overlapping_turns_are_a_count_and_the_first_to_end_keeps_the_other() {
-        let register = MemoryRegister::new();
-        let reg: Arc<dyn TurnRegister> = register.clone();
-        let key = turn_key("x-eng");
-        let first = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
-        let second = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
-        assert_eq!(reg.count(key.clone()).await.unwrap(), 2);
-        drop(first);
-        settle().await;
+    #[test]
+    fn an_affinity_key_is_short_printable_ascii_or_nothing() {
         assert_eq!(
-            reg.count(key.clone()).await.unwrap(),
-            1,
-            "a flag would have cleared the second turn here"
+            affinity_key(Some(" 4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a ")).as_deref(),
+            Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a"),
+            "trimmed"
         );
-        drop(second);
-        settle().await;
-        assert_eq!(reg.count(key.clone()).await.unwrap(), 0);
-        assert!(
-            register.rows.lock().unwrap().is_empty(),
-            "the last close removes the key"
+        assert_eq!(
+            affinity_key(Some("api-0123456789abcdef")).as_deref(),
+            Some("api-0123456789abcdef")
         );
+        assert_eq!(
+            affinity_key(Some("cron_a1b2c3")).as_deref(),
+            Some("cron_a1b2c3")
+        );
+        assert_eq!(affinity_key(None), None);
+        assert_eq!(affinity_key(Some("   ")), None);
+        assert_eq!(affinity_key(Some("two words")), None, "no spaces");
+        assert_eq!(affinity_key(Some("caf\u{e9}")), None, "ASCII only");
+        assert_eq!(affinity_key(Some("a\nb")), None, "no control characters");
+        assert_eq!(
+            affinity_key(Some(&"k".repeat(128))).map(|k| k.len()),
+            Some(128)
+        );
+        assert_eq!(affinity_key(Some(&"k".repeat(129))), None, "bounded");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_open_turn_re_arms_its_ceiling_and_a_crashed_one_lapses() {
-        let register = MemoryRegister::new();
-        let reg: Arc<dyn TurnRegister> = register.clone();
-        let key = turn_key("x-eng");
-        let turn = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
-        // Well past the ceiling: the ticker kept it alive.
-        tokio::time::sleep(TURN_TTL * 3).await;
-        assert_eq!(reg.count(key.clone()).await.unwrap(), 1);
-        assert!(
-            register.refreshes.load(std::sync::atomic::Ordering::SeqCst) >= 3,
-            "the ticker refreshed while the turn was open"
+    #[test]
+    fn only_a_uuid_reaches_a_uuid_column() {
+        assert_eq!(
+            uuid_or_none(Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a")).as_deref(),
+            Some("4f7c2a1e-9d3b-4c8a-b1f2-0e6d5a4c3b2a")
         );
-        drop(turn);
-        settle().await;
-        assert_eq!(reg.count(key.clone()).await.unwrap(), 0);
+        assert_eq!(uuid_or_none(Some("not-a-uuid")), None);
+        assert_eq!(uuid_or_none(None), None);
+    }
+}
 
-        // THE CRASH: the api dies mid-turn — no refresh, no close. Nothing
-        // but the ceiling forgets the increment, and it does, within TTL.
-        let mut crashed = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
-        crashed.refresher.take().unwrap().abort();
-        std::mem::forget(crashed);
-        assert_eq!(reg.count(key.clone()).await.unwrap(), 1);
-        tokio::time::sleep(TURN_TTL - Duration::from_secs(1)).await;
-        assert_eq!(
-            reg.count(key.clone()).await.unwrap(),
-            1,
-            "still within the ceiling: a turn that could be running stays counted"
-        );
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        assert_eq!(
-            reg.count(key.clone()).await.unwrap(),
-            0,
-            "past the ceiling the stale registration is gone"
-        );
+// ── Live-DB proof of the relay ledger's SQL ──────────────────────────────────
+//
+// Three hand-written statements decide where an agent's spend lands and
+// whether a budget can see it, and one of them already failed every call
+// in silence: `spend_since` bound its window as a bigint `make_interval`
+// has no signature for, and `check_budget` fails open on a failed read, so
+// no budget ever bound. A unit test cannot see that — it is Postgres's
+// answer — so these run against a migrated database, `#[ignore]`d:
+//
+//   DATABASE_URL=postgres://… cargo test -p talaria-gateway --lib -- --ignored usage::live_db
+//
+// CI's live-tests job runs them (`cargo test --workspace --lib -- --ignored`)
+// on its freshly migrated scratch database. Every test owns its own agent
+// name and deletes only its own rows.
+
+#[cfg(test)]
+mod live_db {
+    use super::*;
+
+    async fn pg() -> PgPool {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        PgPool::connect(&url).await.expect("connect")
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_turn_that_never_opened_a_stream_still_closes_on_drop() {
-        // The hold loop registers before the first attempt and may give up
-        // with a canned reply — the guard drops either way.
-        let reg: Arc<dyn TurnRegister> = MemoryRegister::new();
-        let key = turn_key("x-eng");
-        {
-            let _turn = TurnRegistration::open(reg.clone(), "x-eng").await.unwrap();
-            assert_eq!(reg.count(key.clone()).await.unwrap(), 1);
+    /// A name no other test, and no real agent, books under.
+    fn agent() -> String {
+        format!("live-meter-{}", uuid::Uuid::new_v4())
+    }
+
+    fn uuid() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    async fn cleanup(pg: &PgPool, agent: &str) {
+        for sql in [
+            "delete from usage_events where agent_model = $1",
+            "delete from usage_attributions where agent_model = $1",
+            "delete from usage_affinity_keys where agent_model = $1",
+        ] {
+            sqlx::query(sql).bind(agent).execute(pg).await.unwrap();
         }
-        settle().await;
-        assert_eq!(reg.count(key).await.unwrap(), 0);
+    }
+
+    /// One relay row, as the relay books an agent's call. `prompt` doubles
+    /// as the row's name in the assertions. A local endpoint, so the row is
+    /// $0 and never nudges the price oracle.
+    async fn book(pg: &PgPool, source: &str, agent: &str, key: Option<&str>, prompt: i64) {
+        let counts = TokenCounts {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            ..TokenCounts::default()
+        };
+        record_relay_usage(
+            pg,
+            source,
+            agent,
+            key,
+            &StatedFlow::default(),
+            "live-test-endpoint",
+            "local",
+            "live-test-model",
+            &counts,
+            false,
+            None,
+        )
+        .await
+        .expect("the relay's insert");
+    }
+
+    /// (source, ref_id, task_id) of the row named `prompt`.
+    async fn row(
+        pg: &PgPool,
+        agent: &str,
+        prompt: i64,
+    ) -> (String, Option<String>, Option<String>) {
+        sqlx::query_as(
+            "select source, ref_id::text, task_id::text from usage_events \
+              where agent_model = $1 and prompt_tokens = $2",
+        )
+        .bind(agent)
+        .bind(prompt)
+        .fetch_one(pg)
+        .await
+        .expect("the row")
+    }
+
+    fn flow(
+        pg: &PgPool,
+        agent: &str,
+        source: &str,
+        ref_id: &str,
+        task_id: Option<&str>,
+    ) -> TurnAttribution {
+        TurnAttribution {
+            pg: pg.clone(),
+            agent_model: agent.to_string(),
+            source: source.to_string(),
+            ref_id: Some(ref_id.to_string()),
+            task_id: task_id.map(str::to_string),
+            attended: false,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn spend_since_reads_its_window_instead_of_failing_open() {
+        let pg = pg().await;
+        let a = agent();
+        cleanup(&pg, &a).await;
+        book(&pg, UNATTENDED_SOURCE, &a, None, 100).await;
+        book(&pg, UNATTENDED_SOURCE, &a, None, 50).await;
+        sqlx::query(
+            "update usage_events set created_at = now() - interval '2 days' \
+              where agent_model = $1 and prompt_tokens = 50",
+        )
+        .bind(&a)
+        .execute(&pg)
+        .await
+        .unwrap();
+
+        // Each read is the statement the budget check runs; an error here is
+        // a budget that never binds.
+        let day = spend_since(&pg, 24, Some(&a)).await.expect("a 24h window");
+        assert_eq!(day.tokens, 101, "the row two days old is outside 24h");
+        assert_eq!(day.cost, 0.0, "a local row is $0");
+        let three = spend_since(&pg, 72, Some(&a)).await.expect("a 72h window");
+        assert_eq!(three.tokens, 152);
+        // The clamp's two ends still bind as the int4 make_interval takes.
+        spend_since(&pg, 0, Some(&a)).await.expect("the 1h floor");
+        let wide = spend_since(&pg, i64::MAX, Some(&a))
+            .await
+            .expect("the one-year ceiling");
+        assert_eq!(wide.tokens, 152);
+        // The org-wide read (no subject) is the same statement.
+        let all = spend_since(&pg, 24, None)
+            .await
+            .expect("the org-wide window");
+        assert!(all.tokens >= 101);
+        cleanup(&pg, &a).await;
+    }
+
+    /// The resume time a budget refusal names: the moment enough of the
+    /// window's oldest spend has aged out to take the rest under the cap.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn spend_clears_at_is_when_the_oldest_rows_age_out_far_enough() {
+        let pg = pg().await;
+        let a = agent();
+        cleanup(&pg, &a).await;
+        // 401, 301 and 201 tokens (each row is prompt + 1), written 10h, 5h
+        // and 1h ago: 903 in the 24h window.
+        for (prompt, hours_ago) in [(400, 10), (300, 5), (200, 1)] {
+            book(&pg, UNATTENDED_SOURCE, &a, None, prompt).await;
+            sqlx::query(
+                "update usage_events set created_at = now() - make_interval(hours => $3) \
+                  where agent_model = $1 and prompt_tokens = $2",
+            )
+            .bind(&a)
+            .bind(prompt as i32)
+            .bind(hours_ago)
+            .execute(&pg)
+            .await
+            .unwrap();
+        }
+        let leaves = |prompt: i32| {
+            let (pg, a) = (pg.clone(), a.clone());
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "select ceil(extract(epoch from created_at + interval '24 hours'))::bigint \
+                       from usage_events where agent_model = $1 and prompt_tokens = $2",
+                )
+                .bind(&a)
+                .bind(prompt)
+                .fetch_one(&pg)
+                .await
+                .unwrap()
+            }
+        };
+        let at = |cap: f64| spend_clears_at(&pg, 24, Some(&a), SpendUnit::Tokens, cap);
+
+        // Cap 600: the oldest row leaving takes 903 to 502.
+        assert_eq!(at(600.0).await.unwrap(), Some(leaves(400).await));
+        // Cap 300: two rows have to leave (903 → 502 → 201).
+        assert_eq!(at(300.0).await.unwrap(), Some(leaves(300).await));
+        // Cap 201: 201 left is still AT the cap — the newest row has to go.
+        assert_eq!(at(201.0).await.unwrap(), Some(leaves(200).await));
+        // Under the cap there is nothing to wait for.
+        assert_eq!(at(1000.0).await.unwrap(), None);
+        // Dollars: these rows are local, $0, so no dollar cap is reached.
+        let usd = spend_clears_at(&pg, 24, Some(&a), SpendUnit::Usd, 0.01).await;
+        assert_eq!(usd.unwrap(), None);
+        // The org-wide read is the same statement, with no subject.
+        spend_clears_at(&pg, 24, None, SpendUnit::Tokens, 1.0)
+            .await
+            .expect("the org-wide read");
+        cleanup(&pg, &a).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_relay_row_takes_the_flow_recorded_for_its_key_in_the_insert() {
+        let pg = pg().await;
+        let (a, other) = (agent(), agent());
+        cleanup(&pg, &a).await;
+        cleanup(&pg, &other).await;
+        let (conversation, ticket) = (uuid(), uuid());
+
+        // The session arm: the key on the wire is the conversation's own id.
+        record_attribution(
+            &flow(&pg, &a, "ticket", &conversation, Some(&ticket)),
+            &conversation,
+        )
+        .await
+        .unwrap();
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&conversation), 1).await;
+        assert_eq!(
+            row(&pg, &a, 1).await,
+            (
+                "ticket".into(),
+                Some(conversation.clone()),
+                Some(ticket.clone())
+            )
+        );
+
+        // A v0.22 turn: the key is Hermes' gwk_ digest, which the plugin
+        // tied to the conversation. Nothing was booked under it yet.
+        let gwk = format!("gwk_{}", &uuid()[..8]);
+        assert_eq!(
+            record_affinity_key(&pg, &a, &gwk, &conversation)
+                .await
+                .unwrap(),
+            0
+        );
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 2).await;
+        assert_eq!(
+            row(&pg, &a, 2).await,
+            (
+                "ticket".into(),
+                Some(conversation.clone()),
+                Some(ticket.clone())
+            )
+        );
+
+        // Keys nobody recorded stay the agent's own: a cron's, none at all.
+        book(&pg, UNATTENDED_SOURCE, &a, Some("cron_live0001"), 3).await;
+        book(&pg, UNATTENDED_SOURCE, &a, None, 4).await;
+        assert_eq!(
+            row(&pg, &a, 3).await,
+            (UNATTENDED_SOURCE.into(), None, None)
+        );
+        assert_eq!(
+            row(&pg, &a, 4).await,
+            (UNATTENDED_SOURCE.into(), None, None)
+        );
+
+        // Both records are the agent's: another agent sending the same key
+        // claims nothing.
+        book(&pg, UNATTENDED_SOURCE, &other, Some(&gwk), 5).await;
+        assert_eq!(
+            row(&pg, &other, 5).await,
+            (UNATTENDED_SOURCE.into(), None, None)
+        );
+
+        // An operator key's row keeps its own source whatever key it names.
+        book(&pg, RELAY_SOURCE, &a, None, 6).await;
+        assert_eq!(row(&pg, &a, 6).await, (RELAY_SOURCE.into(), None, None));
+
+        // A later flow on the same conversation wins for the rows after it.
+        let channel = uuid();
+        record_attribution(&flow(&pg, &a, "channel", &channel, None), &conversation)
+            .await
+            .unwrap();
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 7).await;
+        assert_eq!(
+            row(&pg, &a, 7).await,
+            ("channel".into(), Some(channel), None)
+        );
+        cleanup(&pg, &a).await;
+        cleanup(&pg, &other).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn the_second_record_backfills_only_the_last_days_unattended_rows() {
+        let pg = pg().await;
+        let a = agent();
+        cleanup(&pg, &a).await;
+        let (conversation, run) = (uuid(), uuid());
+        let gwk = format!("gwk_{}", &uuid()[..8]);
+
+        // Booked before either record: two calls of this turn, one under the
+        // same key two days ago, and one row some other flow already owns.
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 11).await;
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 12).await;
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&gwk), 13).await;
+        sqlx::query(
+            "update usage_events set created_at = now() - interval '2 days' \
+              where agent_model = $1 and prompt_tokens = 13",
+        )
+        .bind(&a)
+        .execute(&pg)
+        .await
+        .unwrap();
+        book(&pg, RELAY_SOURCE, &a, Some(&gwk), 14).await;
+
+        // The transport's record alone cannot reach rows under a key it
+        // has never heard of.
+        record_attribution(&flow(&pg, &a, "research", &run, None), &conversation)
+            .await
+            .unwrap();
+        assert_eq!(
+            backfill_attribution(&pg, &a, &conversation).await.unwrap(),
+            0
+        );
+
+        // The plugin's report lands second and claims this turn's two calls.
+        assert_eq!(
+            record_affinity_key(&pg, &a, &gwk, &conversation)
+                .await
+                .unwrap(),
+            2
+        );
+        for prompt in [11, 12] {
+            assert_eq!(
+                row(&pg, &a, prompt).await,
+                ("research".into(), Some(run.clone()), None)
+            );
+        }
+        assert_eq!(
+            row(&pg, &a, 13).await,
+            (UNATTENDED_SOURCE.into(), None, None),
+            "a row older than a day is never reached back over"
+        );
+        assert_eq!(
+            row(&pg, &a, 14).await,
+            (RELAY_SOURCE.into(), None, None),
+            "a row that is not unattended is left alone"
+        );
+        // Run again, it finds nothing left to claim.
+        assert_eq!(
+            backfill_attribution(&pg, &a, &conversation).await.unwrap(),
+            0
+        );
+
+        // The completions arm's order: calls booked under the conversation's
+        // own id, then the transport records it from the response headers.
+        let mut completions = format!("api-{}", uuid().replace('-', ""));
+        completions.truncate(20);
+        let chat = uuid();
+        book(&pg, UNATTENDED_SOURCE, &a, Some(&completions), 15).await;
+        record_attribution(&flow(&pg, &a, "chat", &chat, None), &completions)
+            .await
+            .unwrap();
+        assert_eq!(
+            backfill_attribution(&pg, &a, &completions).await.unwrap(),
+            1
+        );
+        assert_eq!(row(&pg, &a, 15).await, ("chat".into(), Some(chat), None));
+        cleanup(&pg, &a).await;
+    }
+
+    /// An app's rows: booked under the caller stamp with source `app`, the
+    /// run's stated ref and ticket kept when they are uuids and dropped —
+    /// never the row with them — when they are not; and the app's budget
+    /// subject sums every stamp under it, and nothing beside it.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn an_app_books_under_its_stamps_and_its_budget_sums_them() {
+        let pg = pg().await;
+        let slug = format!("live-{}", &uuid()[..8]);
+        let own = crate::app_keys::app_key_name(&slug);
+        let (triage, fitness, neighbour) = (
+            format!("{own}:triage"),
+            format!("{own}:fitness:triage"),
+            format!("{own}x"),
+        );
+        for name in [&own, &triage, &fitness, &neighbour] {
+            cleanup(&pg, name).await;
+        }
+        let (refd, ticket) = (uuid(), uuid());
+        let counts = |prompt: i64| TokenCounts {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            ..TokenCounts::default()
+        };
+        let booked = |name: String, prompt: i64, stated: StatedFlow| {
+            let pg = pg.clone();
+            async move {
+                record_relay_usage(
+                    &pg,
+                    crate::app_keys::APP_SOURCE,
+                    &name,
+                    None,
+                    &stated,
+                    "live-test-endpoint",
+                    "local",
+                    "live-test-model",
+                    &counts(prompt),
+                    false,
+                    None,
+                )
+                .await
+                .expect("the relay's insert");
+            }
+        };
+        booked(
+            triage.clone(),
+            21,
+            StatedFlow {
+                ref_id: Some(refd.clone()),
+                task_id: Some(ticket.clone()),
+            },
+        )
+        .await;
+        booked(
+            fitness.clone(),
+            22,
+            StatedFlow {
+                ref_id: Some("msg-41".into()),
+                task_id: Some("t-41".into()),
+            },
+        )
+        .await;
+        booked(own.clone(), 23, StatedFlow::default()).await;
+        booked(neighbour.clone(), 1000, StatedFlow::default()).await;
+
+        assert_eq!(
+            row(&pg, &triage, 21).await,
+            ("app".into(), Some(refd), Some(ticket))
+        );
+        assert_eq!(
+            row(&pg, &fitness, 22).await,
+            ("app".into(), None, None),
+            "a ref that is not a uuid leaves the row, not the ledger"
+        );
+        let spend = spend_since(&pg, 24, Some(&own))
+            .await
+            .expect("the app window");
+        assert_eq!(spend.tokens, 21 + 22 + 23 + 3, "every stamp under the app");
+        let one = spend_since(&pg, 24, Some(&triage))
+            .await
+            .expect("one stamp");
+        assert_eq!(one.tokens, 22, "a stamp is its own name alone");
+        for name in [&own, &triage, &fitness, &neighbour] {
+            cleanup(&pg, name).await;
+        }
     }
 }

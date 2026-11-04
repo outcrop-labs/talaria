@@ -415,6 +415,59 @@ export interface Grounding {
   errored: boolean | null
 }
 
+/** What a loop tool's `handler` is told about the call it is serving. */
+export interface HarnessToolContext {
+  /** The app whose harness this is, or null for a run with no app binding. */
+  app: string | null
+  /** The harness's id. */
+  harness: string
+  /** The person the run acts for, when it acts for one. */
+  actingUserId: string | null
+  /** The model turn (0-based) that made this call. */
+  turn: number
+  /** Aborts with the run: the caller left, the tool's deadline passed. */
+  signal: AbortSignal
+}
+
+/** What a loop tool's `simulate` is given — the run's input, so a dry run's
+ *  answer can be a function of the fixture it is serving. */
+export interface HarnessToolWorld<I> {
+  input: I
+}
+
+/** ONE TOOL A HARNESS'S LOOP OFFERS: the definition the model sees (the OpenAI
+ *  function shape, as `toolDefs`), plus EXACTLY ONE place the call goes —
+ *
+ *    handler   your own code, in the app host, as the run's caller;
+ *    mcp       one of your app's own MCP tools (mcp.ts), through the same
+ *              dispatch an agent's call takes — its checks, its deadline;
+ *    org       an org MCP tool, `'<server>/<tool>'`, through the MCP gateway
+ *              under the per-agent rules of the agent the run acts for —
+ *              never a direct call.
+ *
+ *  `simulate` is the dry-run stand-in: the fitness sweep calls it instead of
+ *  the tool, so a harness whose tools all simulate can be scored on candidate
+ *  models without touching anything real. Its return value is what the model
+ *  sees as the result. */
+export type HarnessTool<I = unknown> = ToolDefinition & {
+  simulate?: (args: Record<string, unknown>, world: HarnessToolWorld<I>) => unknown | Promise<unknown>
+} & (
+    | { handler: (args: Record<string, unknown>, ctx: HarnessToolContext) => unknown | Promise<unknown>; mcp?: never; org?: never }
+    | { mcp: string; handler?: never; org?: never }
+    | { org: string; handler?: never; mcp?: never }
+  )
+
+/** THE RUNNER-HELD TOOL LOOP. The runner offers `tools`, dispatches every call
+ *  the model makes, puts the results back on the tool channel, and asks again
+ *  — up to `maxTurns` model turns — then holds the final answer to `output`
+ *  exactly as a single-shot run's. */
+export interface HarnessLoop<I> {
+  tools: HarnessTool<I>[]
+  /** Model turns the loop may take. Default 6, at most 12 — the same budget
+   *  the fitness sweep's dry runs keep. */
+  maxTurns?: number
+}
+
 export interface HarnessDefinition<I, O> {
   id: string
   label: string
@@ -526,14 +579,18 @@ export interface HarnessDefinition<I, O> {
    *
    *  Omitted means 'none', and 'none' is right for every single-shot structured
    *  harness: the runner asks one question and parses one answer, so a tool call
-   *  can only be the model wandering off. It is enforced at the protocol level
-   *  (`tools: []` / `tool_choice: 'none'`), not left to the prompt.
+   *  can only be the model wandering off. On a persona it has no wire form —
+   *  Hermes reads neither `tools` nor `tool_choice` off a chat-completions body,
+   *  and its loop runs its own tools whatever the turn asks — so nothing stops
+   *  the persona's calls: the guard pass reads their names off the stream (a
+   *  harness that keeps `zero_tool_claim` judges a claim against them), and a
+   *  Hermes session turn refuses 'none' outright.
    *
    *  'own' is the three turns whose whole feature IS the tool loop — an agent
    *  working a ticket, an outreach check-in acting through `message_user`, a
    *  briefing follow-up the owner expects to answer from live data. On those,
-   *  'none' does not weaken the answer, it disarms the agent and then trips
-   *  `zero_tool_claim` for having called no tool. A model served by the ORG
+   *  'none' is the wrong ask: a Hermes session turn refuses it, and an agent
+   *  that called no tool trips `zero_tool_claim`. A model served by the ORG
    *  GATEWAY cannot honor 'own' at all, and says so by failing the call rather
    *  than by quietly running a tool-loop harness as a single completion. */
   tools?: ToolPolicy
@@ -627,6 +684,15 @@ export interface HarnessDefinition<I, O> {
    *  fleet transport refuses rather than pretending otherwise. */
   toolDefs?: ToolDefinition[]
 
+  /** A TOOL LOOP THE RUNNER HOLDS — see `HarnessLoop`. Distinct from both
+   *  `tools` (the model's OWN loop, inside a fleet persona) and `toolDefs`
+   *  (tools offered for one turn and executed by nobody): here the platform
+   *  executes what the model calls. Runs on a gateway model, never streams.
+   *
+   *  The result carries `toolCalls`, `calls` and `exhausted`, and the guard
+   *  is grounded in the tools' real results. */
+  loop?: HarnessLoop<I>
+
   /** How long a persona transport may HOLD for an agent that is not answering
    *  yet, in ms. `proxyChat` waits two minutes by default; an agent restarting
    *  under a config propagation refuses connections for tens of seconds, and a
@@ -635,9 +701,9 @@ export interface HarnessDefinition<I, O> {
    *  spinner, asks for thirty seconds. Meaningless on the gateway path. */
   holdMs?: number
 
-  /** Fixtures the model-fitness suite replays. An app-shipped harness that
-   *  declares these gets its own column in the org's fitness matrix for the
-   *  cost of an array. */
+  /** Fixtures the model-fitness suite replays against each candidate model —
+   *  a platform harness's in the api, an enabled app's through the app host
+   *  (server/app-harnesses.ts `replayAppCase`). */
   evals?: EvalCase<I, O>[]
 }
 
@@ -651,8 +717,10 @@ export interface HarnessDefinition<I, O> {
  *
  *  DERIVED because the rule is mechanical and the alternative is nine copies of
  *  it that drift. Restating a floor per harness is how one of them comes to omit
- *  it and quietly go back to the old behaviour. `registry.test.ts` asserts every
- *  JSON harness carries it, so the derivation cannot be silently bypassed.
+ *  it and quietly go back to the old behaviour. The SDK re-exports this very
+ *  function, so app harnesses get the floor too (`sdk/server.test.ts` holds
+ *  that); the platform's own harnesses get it from the Rust twin,
+ *  `define_harness` in api/crates/talaria-harness/src/define.rs.
  *
  *  WHAT "UNFIT" MEANS HERE IS NARROW, and deliberately so. `run.ts` refuses only
  *  on a capability MEASURED false by a probe or declared false by a human — never

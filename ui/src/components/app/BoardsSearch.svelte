@@ -66,7 +66,8 @@
   const retryTasks = () => {
     for (const result of taskQueries) if (result.isError) void result.refetch()
   }
-  const loading = $derived(boardList.pending || tasksPending)
+  // Both flags read before they are combined (query-state.ts, anyLoading).
+  const loading = $derived([boardList.pending, tasksPending].includes(true))
 
   const projectMatches = $derived(
     searching ? boards.filter((board) => board.name.toLowerCase().includes(normalizedQuery)).slice(0, 3) : [],

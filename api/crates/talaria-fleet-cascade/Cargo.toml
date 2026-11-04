@@ -14,5 +14,7 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-defs = { workspace = true }
 talaria-fleet-create = { workspace = true }
-talaria-fleet-docker = { workspace = true }
+talaria-fleet-reconcile = { workspace = true }
 talaria-secretbox = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

@@ -52,13 +52,25 @@
   // A drifting crest was tried here for the movement and it was wrong: a wave
   // is a SHAPE, so it necessarily paints bands across the middle of the pane,
   // and bands in an empty pane read as content. The vignette has to stay a
-  // vignette. Motion comes from `shimmer` instead (below), which is per-cell
-  // and has no shape at all.
+  // vignette.
+  //
+  // AND IT HOLDS STILL. It used to breathe with `shimmer` (a per-cell jitter
+  // re-rolled about six times a second), and that cost more than anything else
+  // an idle page does: measured in Chromium at 1440×900, a page showing this
+  // state kept the main thread 22–40% busy, rewriting 120k–200k dots a second
+  // (a fillRect and a clearRect each) and logging long tasks, while nothing on
+  // the page changed. An empty pane is the one surface where nothing is
+  // happening, so its field is painted once, like the desktop launcher's
+  // (#625), and repainted only on a resize, a theme flip or a source change.
+  // The frame is the one reduced-motion readers already saw.
   const sources: DitherSource[] = [
-    { id: 'n', kind: 'edge', side: 'top', depth: 60, strength: 0.28 },
-    { id: 's', kind: 'edge', side: 'bottom', depth: 60, strength: 0.28 },
-    { id: 'w', kind: 'edge', side: 'left', depth: 80, strength: 0.2 },
-    { id: 'e', kind: 'edge', side: 'right', depth: 80, strength: 0.2 },
+    // Tuned, with the alphas below, to the median look this still field had
+    // across browsers, DPRs and sub-pixel positions once its entrance had built
+    // it up (N11): see LIVE_FIELD_TUNING in lib/dither-engine.ts.
+    { id: 'n', kind: 'edge', side: 'top', depth: 60, strength: 0.21 },
+    { id: 's', kind: 'edge', side: 'bottom', depth: 60, strength: 0.21 },
+    { id: 'w', kind: 'edge', side: 'left', depth: 80, strength: 0.15 },
+    { id: 'e', kind: 'edge', side: 'right', depth: 80, strength: 0.15 },
   ]
 </script>
 
@@ -89,14 +101,10 @@
       className,
     )}
   >
-    <!-- `shimmer` is the movement: a small per-cell threshold jitter re-rolled
-         a few times a second. It has no direction and no shape, so it cannot
-         band — and the engine only applies it where density is already between
-         0.03 and 0.97, which is exactly the vignette's gradient and never the
-         clear centre. The field breathes at its edges and the middle stays
-         still. Off entirely under reduced motion. -->
+    <!-- A still field: no shimmer, so the engine builds it once and parks
+         (see the sources above for why). -->
     {#if wantsVignette}
-      <DitherLayer {sources} organic={0.55} shimmer={0.1} alphaFloor={0.04} maxAlpha={0.38} />
+      <DitherLayer {sources} organic={0.55} alphaFloor={0.0518} maxAlpha={0.703} />
     {/if}
     <div
       class={cn(

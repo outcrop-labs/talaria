@@ -1,0 +1,97 @@
+{
+  "status": "ok",
+  "readiness": {
+    "status": "ok",
+    "checks": {
+      "state_db": {
+        "status": "ok"
+      },
+      "session_store": {
+        "status": "ok"
+      },
+      "config": {
+        "status": "ok"
+      },
+      "model": {
+        "status": "ok"
+      },
+      "disk": {
+        "status": "ok",
+        "used_percent": 74.0,
+        "free_bytes": 177913233408
+      },
+      "gateway": {
+        "status": "ok",
+        "state": "running",
+        "connected_platforms": 1,
+        "platforms": 1
+      },
+      "background_queues": {
+        "status": "ok",
+        "active_api_runs": 0,
+        "process_completions": 0,
+        "active_delegations": 0
+      }
+    }
+  },
+  "platform": "hermes-agent",
+  "version": "0.22.4",
+  "gateway_state": "running",
+  "platforms": {
+    "api_server": {
+      "state": "connected",
+      "error_code": null,
+      "error_message": null,
+      "updated_at": "2026-11-03T15:23:46.981612+00:00",
+      "writer_pid": 159,
+      "writer_start_time": 46332284,
+      "needs_attention": false,
+      "retrying_since": null,
+      "listener_base": "http://127.0.0.1:8642",
+      "metrics": {
+        "host": "0.0.0.0",
+        "port": 8642,
+        "active_runs": 0,
+        "stored_runs": 0,
+        "last_request_at": null,
+        "last_heartbeat": "2026-11-03T15:23:58.934203+00:00",
+        "metrics_today": {
+          "day": "2026-11-03",
+          "requests": 0,
+          "messages": 0,
+          "tokens": 0,
+          "latency_p95_ms": null
+        }
+      }
+    }
+  },
+  "api_server": {
+    "host": "0.0.0.0",
+    "port": 8642,
+    "active_runs": 0,
+    "stored_runs": 0,
+    "last_request_at": null,
+    "last_heartbeat": "2026-11-03T15:23:58.934203+00:00",
+    "metrics_today": {
+      "day": "2026-11-03",
+      "requests": 0,
+      "messages": 0,
+      "tokens": 0,
+      "latency_p95_ms": null
+    }
+  },
+  "metrics_today": {
+    "day": "2026-11-03",
+    "requests": 0,
+    "messages": 0,
+    "tokens": 0,
+    "latency_p95_ms": null
+  },
+  "last_heartbeat": "2026-11-03T15:23:58.934203+00:00",
+  "active_agents": 0,
+  "gateway_busy": false,
+  "gateway_drainable": true,
+  "exit_reason": null,
+  "updated_at": "2026-11-03T15:23:48.919437+00:00",
+  "pid": 159
+}

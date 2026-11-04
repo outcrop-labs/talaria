@@ -1277,6 +1277,7 @@ fn probe_def(
         "measure one model capability against a fixed prompt",
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

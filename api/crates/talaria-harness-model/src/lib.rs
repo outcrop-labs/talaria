@@ -38,6 +38,16 @@ pub trait ResolveEdges: Send + Sync {
         &'a self,
         pin: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>;
+    /// The admin's model for an app harness slot (`app_harness_models`), only
+    /// while it routes. Defaulted to "nothing assigned" so an edge set that
+    /// predates app slots — the fitness binding pass records which ROLES a
+    /// chain consults, and a slot binds no role — needs no change.
+    fn slot_model<'a>(
+        &'a self,
+        _slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
     fn role_model<'a>(
         &'a self,
         role: &'a str,
@@ -73,6 +83,12 @@ impl ResolveEdges for PgEdges<'_> {
         pin: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
         Box::pin(platform_agent_model(self.pg, pin))
+    }
+    fn slot_model<'a>(
+        &'a self,
+        slot: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>> {
+        Box::pin(app_harness_model(self.pg, slot))
     }
     fn role_model<'a>(
         &'a self,
@@ -120,6 +136,15 @@ pub type ModelChainStep = &'static str;
 pub struct ModelSpec<'a> {
     /// Admin assignment slot on Models → Platform (platform_agents.rs).
     pub pin: Option<&'a str>,
+    /// AN APP HARNESS'S OWN MODEL SETTING — `app:<slug>/<harnessId>`, the key
+    /// an admin assigns a model to in Admin → Models → Fitness, stored in
+    /// `app_harness_models` (the TS resolver reads the same setting,
+    /// ui/src/server/app-harness-models.ts). Set by the app host from the slug
+    /// and the harness id, never by the app. Resolved by the "slot" step,
+    /// which runs before "role" in any chain (`chain_with_slot`). Ungated by
+    /// the member allowlist, like "pin": an admin's assignment is org policy.
+    /// None for every builtin harness.
+    pub slot: Option<&'a str>,
     /// The model role this harness belongs to (model_roles.rs).
     pub role: Option<&'a str>,
     /// Order to try. Default: pin, role, utility, env, first-routable.
@@ -146,7 +171,85 @@ pub struct ResolvedHarnessModel {
     pub step: ModelChainStep,
 }
 
-const DEFAULT_CHAIN: [ModelChainStep; 5] = ["pin", "role", "utility", "env", "first-routable"];
+const DEFAULT_CHAIN: [ModelChainStep; 6] =
+    ["pin", "slot", "role", "utility", "env", "first-routable"];
+
+/// THE SLOT RUNS BEFORE THE ROLE, in any chain — the TS twin is
+/// `chainWithSlot` in ui/src/server/harness/model.ts. A spec with a slot and a
+/// chain written without one still gets the admin's pick first: "slot" goes in
+/// front of "role" when the chain has one, else right after "pin", else first.
+/// A chain that names "slot" itself is taken as written.
+pub fn chain_with_slot(chain: &[ModelChainStep], slot: Option<&str>) -> Vec<ModelChainStep> {
+    if slot.is_none() || chain.contains(&"slot") {
+        return chain.to_vec();
+    }
+    let mut out = chain.to_vec();
+    let at = match (
+        chain.iter().position(|s| *s == "role"),
+        chain.iter().position(|s| *s == "pin"),
+    ) {
+        (Some(role), _) => role,
+        (None, Some(pin)) => pin + 1,
+        (None, None) => 0,
+    };
+    out.insert(at, "slot");
+    out
+}
+
+/// The settings key the app harness model assignments live under — the TS
+/// twin is `APP_HARNESS_MODELS_KEY` in ui/src/server/app-harness-models.ts.
+pub const APP_HARNESS_MODELS_KEY: &str = "app_harness_models";
+
+/// Current raw assignments (slot → model), unvalidated.
+pub async fn get_app_harness_models(pg: &PgPool) -> serde_json::Value {
+    talaria_gateway::settings::get_setting(pg, APP_HARNESS_MODELS_KEY, serde_json::json!({})).await
+}
+
+/// Assign or clear one app harness slot's model. A stored value that is not
+/// an object is replaced by one: it never held an assignment.
+pub async fn set_app_harness_model(
+    pg: &PgPool,
+    slot: &str,
+    model: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let mut cur = get_app_harness_models(pg).await;
+    if !cur.is_object() {
+        cur = serde_json::json!({});
+    }
+    if let Some(obj) = cur.as_object_mut() {
+        match model.filter(|m| !m.is_empty()) {
+            Some(m) => {
+                obj.insert(slot.to_string(), serde_json::Value::String(m.to_string()));
+            }
+            None => {
+                obj.remove(slot);
+            }
+        }
+    }
+    talaria_gateway::settings::set_setting(pg, APP_HARNESS_MODELS_KEY, &cur).await
+}
+
+/// The admin-assigned model for an app harness slot — but only while it still
+/// routes on the gateway. None = unassigned or stale: the harness's own chain
+/// carries on. A database failure propagates.
+pub async fn app_harness_model(pg: &PgPool, slot: &str) -> Result<Option<String>, sqlx::Error> {
+    let Some(assigned) = get_app_harness_models(pg)
+        .await
+        .get(slot)
+        .and_then(|v| v.as_str())
+        .filter(|m| !m.is_empty())
+        .map(String::from)
+    else {
+        return Ok(None);
+    };
+    if talaria_gateway::registry::resolve_route(pg, &assigned)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(assigned))
+}
 
 // The reference deployment names its main endpoint model 'pl-main'. Preferring
 // it in the last-resort step reproduces today's behavior on that install
@@ -255,6 +358,12 @@ impl<'a, E: ResolveEdges + ?Sized> Chain<'a, E> {
                 Some(pin) => self.edges.pin_model(pin).await,
                 None => Ok(None),
             },
+            // Validated inside the edge, as "pin" is: an assignment wins only
+            // while it routes. Ungated — an admin's pick is org policy.
+            "slot" => match self.spec.slot {
+                Some(slot) => self.edges.slot_model(slot).await,
+                None => Ok(None),
+            },
             "role" => match self.spec.role {
                 Some(role) => {
                     let m = self.edges.role_model(role).await?;
@@ -343,7 +452,7 @@ pub async fn resolve_harness_model_with<'a>(
         catalog: OnceCell::new(),
         gate: OnceCell::new(),
     };
-    for step in spec.chain.unwrap_or(&DEFAULT_CHAIN) {
+    for step in chain_with_slot(spec.chain.unwrap_or(&DEFAULT_CHAIN), spec.slot) {
         if let Some(model) = chain.attempt(step).await? {
             return Ok(Some(ResolvedHarnessModel { model, step }));
         }
@@ -377,6 +486,7 @@ pub const MUSE_CHAIN: [ModelChainStep; 5] =
 pub async fn muse_model_for(pg: &PgPool, user_id: &str) -> Result<Option<String>, sqlx::Error> {
     let spec = ModelSpec {
         pin: Some("muse"),
+        slot: None,
         role: None,
         chain: Some(&MUSE_CHAIN),
         user_id: Some(user_id),
@@ -392,7 +502,7 @@ mod tests {
     fn the_chains_are_the_policy() {
         assert_eq!(
             DEFAULT_CHAIN,
-            ["pin", "role", "utility", "env", "first-routable"]
+            ["pin", "slot", "role", "utility", "env", "first-routable"]
         );
         // Muse's order is NOT the default: the user's preference outranks the
         // Utility role.
@@ -401,5 +511,116 @@ mod tests {
             ["pin", "preferred", "utility", "env", "first-routable"]
         );
         assert_eq!(LAST_RESORT_PREFERENCE, ["pl-main"]);
+    }
+
+    #[test]
+    fn the_slot_runs_before_the_role_in_any_chain() {
+        let slot = Some("app:helpdesk/triage");
+        // No slot: the chain as written.
+        assert_eq!(chain_with_slot(&["role", "env"], None), ["role", "env"]);
+        // In front of the role.
+        assert_eq!(
+            chain_with_slot(&["pin", "role", "first-routable"], slot),
+            ["pin", "slot", "role", "first-routable"]
+        );
+        // No role: after the pin, else first — an empty chain included.
+        assert_eq!(
+            chain_with_slot(&["pin", "env"], slot),
+            ["pin", "slot", "env"]
+        );
+        assert_eq!(chain_with_slot(&["utility"], slot), ["slot", "utility"]);
+        assert_eq!(chain_with_slot(&[], slot), ["slot"]);
+        // A chain that names it is taken as written.
+        assert_eq!(chain_with_slot(&["role", "slot"], slot), ["role", "slot"]);
+        // The default chain already has it where it belongs.
+        assert_eq!(chain_with_slot(&DEFAULT_CHAIN, slot), DEFAULT_CHAIN);
+    }
+
+    /// Edges where every step has an answer, so a case proves which won.
+    struct World {
+        slot: Option<&'static str>,
+    }
+
+    impl ResolveEdges for World {
+        fn pin_model<'a>(
+            &'a self,
+            _pin: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(None) })
+        }
+        fn slot_model<'a>(
+            &'a self,
+            slot: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>
+        {
+            let hit = (Some(slot) == self.slot).then(|| "slot-model".to_string());
+            Box::pin(async move { Ok(hit) })
+        }
+        fn role_model<'a>(
+            &'a self,
+            _role: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(Some("role-model".to_string())) })
+        }
+        fn routes<'a>(
+            &'a self,
+            _model: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<bool, sqlx::Error>> + Send + 'a>> {
+            Box::pin(async { Ok(true) })
+        }
+        fn gateway_models<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<GatewayModel>, sqlx::Error>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn preferred_model<'a>(
+            &'a self,
+            _user_id: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<String>, sqlx::Error>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(None) })
+        }
+        fn user_role<'a>(
+            &'a self,
+            _user_id: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<String, sqlx::Error>> + Send + 'a>> {
+            Box::pin(async { Ok("member".to_string()) })
+        }
+        fn member_allowlist(&self) -> Pin<Box<dyn Future<Output = Vec<String>> + Send + '_>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn env_model(&self) -> Option<String> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn an_assigned_slot_wins_over_the_role_and_an_unassigned_one_falls_through() {
+        let spec = ModelSpec {
+            pin: None,
+            slot: Some("app:helpdesk/triage"),
+            role: Some("utility"),
+            chain: Some(&["role", "first-routable"]),
+            user_id: None,
+        };
+        let won = resolve_harness_model_with(
+            &spec,
+            &World {
+                slot: Some("app:helpdesk/triage"),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!((won.model.as_str(), won.step), ("slot-model", "slot"));
+
+        let fell = resolve_harness_model_with(&spec, &World { slot: None })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((fell.model.as_str(), fell.step), ("role-model", "role"));
     }
 }

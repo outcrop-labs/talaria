@@ -13,12 +13,14 @@ pub use talaria_inbox_focus_types as types;
 // action execution.
 //
 // THE ADAPTERS are four harness runs with a deadline wrapped around each.
-// The deadlines are the entire point of that layer: ten seconds for a turn
-// nobody is watching (a card's one-line brief, a structured validation with
-// an honest fallback), ninety for a reply somebody asked for and is watching
-// words arrive. The timeout wraps the run future and the future's drop is the
-// abort — a transport mid-request is dropped rather than signal-noticed, same
-// 10s/90s wall clock, same error surfaces.
+// The deadlines are the entire point of that layer: ten seconds for a
+// structured validation with an honest fallback, ninety for a reply somebody
+// asked for and is watching words arrive, and ninety for a card's one-line
+// brief, which nobody waits on (it runs detached) but which a slow agent needs
+// the time for. The timeout wraps the run future and the future's drop is the
+// abort — a transport mid-request is dropped rather than signal-noticed, and
+// the gateway stops a fleet turn dropped that way in the agent too
+// (talaria-gateway fleet_abandoned.rs).
 //
 // ERROR MODEL: the engine fails two ways — a database error (→ the
 // platform's generic 500) and a product sentence (`That response model is no
@@ -94,11 +96,36 @@ const BRIEF_RETRY_MS: i64 = 2 * 60_000;
 const CONFIRMATION_MS: i64 = 10 * 60_000;
 const UNDO_MS: i64 = 30_000;
 
-/// The cap on a turn NOBODY IS WATCHING: the one-line brief on a queue card,
-/// and the structured command validation behind an action. Both are drawn
-/// alongside other content, both have an honest fallback, and a card that is
-/// ten seconds late is worse than a card that says it could not be written.
+/// The cap on the structured command validation behind an action. It is
+/// drawn alongside other content and has an honest fallback, and a card that
+/// is ten seconds late is worse than a card that says it could not be written.
 const DEADLINE_MS: u64 = 10_000;
+
+/// The cap on a card's one-line brief. NOBODY WAITS ON IT: the queue answers
+/// at once with the card `pending`, the brief runs detached
+/// (`spawn_claim_and_generate_brief`), and the card picks it up on a later
+/// read (the queue polls every 30 s). So this guards the agent turn, not a
+/// reader, and is sized by that turn: the same bound the same assistant gets
+/// for a reply, which a slow Hermes needs — a brief refused on a wedged
+/// derived session waits out the refusal and then the move to a fresh one
+/// (talaria-gateway's lost-turn watch) inside it. The ten seconds it had
+/// before dropped those, and each dropped brief left its turn parked in the
+/// agent.
+///
+/// It stays inside the claim's retry window, so a brief has always ended —
+/// landed, or been stopped — before its card can claim another, and two
+/// briefs for one card never queue behind each other in one derived session.
+/// A brief past it is let go of, and the gateway stops it in the agent
+/// (fleet_abandoned.rs), so it is not left queued there. Once Hermes can
+/// place that stop it lands within the gateway's control window, so the
+/// window is counted in. (An agent store too starved to bind the turn's id
+/// yet is sent the stop until it can; a brief claimed meanwhile queues behind
+/// that one, which is stopped once it is placed.)
+const BRIEF_DEADLINE_MS: u64 = REPLY_DEADLINE_MS;
+const _: () = assert!(
+    BRIEF_DEADLINE_MS + (talaria_gateway::fleet_chat::CONTROL_WINDOW.as_millis() as u64)
+        < (BRIEF_RETRY_MS as u64)
+);
 
 /// The cap on a turn SOMEBODY IS WAITING FOR — a question they typed into the
 /// assistant panel. Nine times the brief's, and the asymmetry is the entire
@@ -162,7 +189,7 @@ pub async fn request_focus_brief(
         ..Default::default()
     };
     let result = tokio::time::timeout(
-        Duration::from_millis(DEADLINE_MS),
+        Duration::from_millis(BRIEF_DEADLINE_MS),
         run_harness(state, &inbox_brief_harness(), &input_value, ctx),
     )
     .await
@@ -928,10 +955,11 @@ fn number_of(v: Option<&Value>) -> i64 {
 }
 
 async fn undo_decision(
-    pg: &PgPool,
+    state: &AppState,
     user: &SessionUser,
     decision_id: &str,
 ) -> Result<Value, sqlx::Error> {
+    let pg = &state.pg;
     // `outcome` is nullable on disk — every completed row today carries one,
     // but a future writer that completes without deciding must cost this
     // person an empty restore, not the whole undo read.
@@ -968,17 +996,23 @@ async fn undo_decision(
                 "Undo can no longer verify the original read action.",
             ));
         };
-        let updated = sqlx::query_scalar::<_, String>(
-            "update notifications set read_at = null \
-             where id = $1::uuid and user_id = $2::uuid and read_at = $3::timestamptz \
-             returning id::text",
+        // Through the notification contract's one reopen door: a grouped row
+        // whose group filed a newer open row since the read comes back
+        // without its key instead of failing the unique open-group index.
+        let reopened = talaria_notify::reopen_notifications(
+            pg,
+            &user.id,
+            std::slice::from_ref(&source_id),
+            Some(&after_read_at),
         )
-        .bind(&source_id)
-        .bind(&user.id)
-        .bind(&after_read_at)
-        .fetch_optional(pg)
         .await?;
-        restored = updated.is_some();
+        restored = !reopened.is_empty();
+        // The row is unread again: the person's bells go back up (I-16 —
+        // the counts, since nothing was read).
+        if restored {
+            let deps = NotifyDeps::publishing(pg.clone(), state.redis().await.ok());
+            talaria_notify::publish_unread(&deps, &user.id).await;
+        }
     } else if source_type == "channel" {
         let before = number_of(outcome.get("beforeCursor")).max(0);
         let after = number_of(outcome.get("afterCursor")).max(0);
@@ -1649,8 +1683,12 @@ async fn execute_action_arms(
     let outcome: Value;
 
     if item.source_type == "notification" && action_id == "mark_read" {
+        // A read cancels the row's pending deferred push, as every read in
+        // `talaria_notify::inbox` does (N3); the undo below reopens through
+        // `reopen_notifications`, which never brings it back.
         let after: Option<i64> = sqlx::query_scalar(
-            "update notifications set read_at = now() \
+            "update notifications set read_at = now(), \
+                    push_due_at = case when pushed_at is null then null else push_due_at end \
              where id = $1::uuid and user_id = $2::uuid and read_at is null \
              returning (trunc(extract(epoch from read_at) * 1000))::bigint",
         )
@@ -1671,6 +1709,16 @@ async fn execute_action_arms(
             "beforeReadAt": null,
             "afterReadAt": talaria_agent_auth::epoch_ms_to_iso(after),
         });
+        // READ-SYNC (I-16): the Home Inbox's read drops the person's bells
+        // in every tab and closes the banners for this row.
+        let deps = NotifyDeps::publishing(pg.clone(), state.redis().await.ok());
+        talaria_notify::publish_read(
+            &deps,
+            &user.id,
+            std::slice::from_ref(&item.source_id),
+            false,
+        )
+        .await;
     } else if item.source_type == "channel" && action_id == "mark_read" {
         let cursors: Option<(i32, i32)> = sqlx::query_as(
             "select member.last_read_seq, c.msg_seq \
@@ -2040,7 +2088,7 @@ pub async fn run_focus_action(
         return Ok(cancel_decision(pg, user, cancel).await?);
     }
     if let Some(undo) = input.undo_decision_id.as_deref() {
-        return Ok(undo_decision(pg, user, undo).await?);
+        return Ok(undo_decision(state, user, undo).await?);
     }
     let (Some(key), Some(action_id)) = (input.key.as_deref(), input.action_id.as_deref()) else {
         return Ok(

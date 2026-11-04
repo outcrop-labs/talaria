@@ -34,18 +34,13 @@ pub struct Manager {
     pub role: String,
 }
 
-/// Postgres casts the binds (`$1::uuid`), and a path segment that is not a
-/// uuid makes the cast — not the predicate — fail, which would surface as a
-/// 500 on a typo'd URL. A shape check first turns that into the plain "no,
-/// you don't manage that" it actually is.
-fn is_uuid(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 36
-        && b.iter().enumerate().all(|(i, c)| match i {
-            8 | 13 | 18 | 23 => *c == b'-',
-            _ => c.is_ascii_hexdigit(),
-        })
-}
+// Postgres casts the binds (`$1::uuid`), and a path segment that is not a
+// uuid makes the cast — not the predicate — fail, which would surface as a
+// 500 on a typo'd URL. A shape check first turns that into the plain "no,
+// you don't manage that" it actually is. The check is the cast's own input
+// rule, so every spelling the cast takes reaches it and names the same agent
+// it would.
+use talaria_params::uuid_shaped;
 
 /// May this person change this agent? The one question every per-agent
 /// mutation asks.
@@ -58,7 +53,7 @@ pub async fn manages_agent(
     if role == "admin" {
         return Ok(true);
     }
-    if !is_uuid(agent_id) {
+    if !uuid_shaped(agent_id) {
         return Ok(false);
     }
     let found: Option<i32> = sqlx::query_scalar(
@@ -189,7 +184,7 @@ pub async fn managed_agent_ids(pg: &PgPool, user_id: &str) -> Result<HashSet<Str
 
 /// One agent's managers, in roster order (name, then email).
 pub async fn list_managers(pg: &PgPool, agent_id: &str) -> Result<Vec<Manager>, sqlx::Error> {
-    if !is_uuid(agent_id) {
+    if !uuid_shaped(agent_id) {
         return Ok(Vec::new());
     }
     let rows: Vec<(String, Option<String>, Option<String>, String)> = sqlx::query_as(
@@ -302,18 +297,21 @@ pub async fn existing_user_ids(
 
 #[cfg(test)]
 mod tests {
-    use super::is_uuid;
+    use super::uuid_shaped;
 
     #[test]
     fn uuid_shape_accepts_the_real_thing_and_refuses_a_path_typo() {
-        assert!(is_uuid("3f2504e0-4f89-11d3-9a0c-0305e82c3301"));
-        assert!(is_uuid("3F2504E0-4F89-11D3-9A0C-0305E82C3301"));
+        assert!(uuid_shaped("3f2504e0-4f89-11d3-9a0c-0305e82c3301"));
+        assert!(uuid_shaped("3F2504E0-4F89-11D3-9A0C-0305E82C3301"));
+        // The other spellings the cast takes name the same agent.
+        assert!(uuid_shaped("{3f2504e0-4f89-11d3-9a0c-0305e82c3301}"));
+        assert!(uuid_shaped("3f2504e04f8911d39a0c0305e82c3301"));
         // The shapes a URL actually carries when someone mistypes it.
-        assert!(!is_uuid(""));
-        assert!(!is_uuid("undefined"));
-        assert!(!is_uuid("3f2504e0-4f89-11d3-9a0c-0305e82c330"));
-        assert!(!is_uuid("3f2504e0-4f89-11d3-9a0c-0305e82c33011"));
-        assert!(!is_uuid("3f2504e0:4f89-11d3-9a0c-0305e82c3301"));
-        assert!(!is_uuid("3f2504e0-4f89-11d3-9a0c-0305e82c330g"));
+        assert!(!uuid_shaped(""));
+        assert!(!uuid_shaped("undefined"));
+        assert!(!uuid_shaped("3f2504e0-4f89-11d3-9a0c-0305e82c330"));
+        assert!(!uuid_shaped("3f2504e0-4f89-11d3-9a0c-0305e82c33011"));
+        assert!(!uuid_shaped("3f2504e0:4f89-11d3-9a0c-0305e82c3301"));
+        assert!(!uuid_shaped("3f2504e0-4f89-11d3-9a0c-0305e82c330g"));
     }
 }

@@ -8,7 +8,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { submitOnEnter } from '@/components/ui/control'
-  import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
+  import { delJsonGone, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import { relativeTime } from '@/lib/fleet'
@@ -18,7 +18,14 @@
     name: string
     updatedBy: string | null
     updatedAt: string
+    /** Why this name is refused now — present only on a row saved before the rule. Such a row is not loaded. */
+    refused?: string
+    /** CONFIG_* only: where the agent's current config names it. Empty when nothing does. */
+    usedAt?: string[]
   }
+
+  /** A credential sealed out of the agent's own config (federation). */
+  const sealed = (s: SecretMeta) => s.name.startsWith('CONFIG_')
 
   // Per-agent secrets: UI-configured env vars, encrypted at rest, write-only
   // (values never come back). Materialized into the agent's env at render — no
@@ -64,9 +71,10 @@
 
   const qc = useQueryClient()
   const key = () => ['agent-secrets', agentId]
-  // GET is 200 `{ secrets }` or 403 — there is no 404 here, so EVERY non-2xx is
-  // a failure. It used to answer `[]`, which rendered "No secrets": an operator
-  // reading that would go add the token that is already there.
+  // GET is 200 `{ secrets }`, 403, or 404 for an agent that no longer exists:
+  // EVERY non-2xx is a failure. It used to answer `[]`, which rendered "No
+  // secrets": an operator reading that would go add the token that is
+  // already there.
   const query = createQuery(() => ({
     queryKey: key(),
     queryFn: (): Promise<SecretMeta[]> => getList<SecretMeta>(`/api/fleet/agents/${agentId}/secrets`, 'secrets'),
@@ -92,15 +100,34 @@
     }
   }
 
-  const remove = async (n: string) => {
-    if (!(await confirm({ title: 'Remove secret', message: `Remove ${n}? The agent loses it on its next start.`, confirmLabel: 'Remove', danger: true }))) return
+  // A sealed credential its config still names cannot go alone: the agent
+  // would read the handle's own text as the value. Removing it takes the
+  // setting out too, in a new version — so the confirm says which one. A
+  // stale list (the config changed since) gets the server's 409, which names
+  // the paths, as the toast.
+  const remove = async (s: SecretMeta) => {
+    const used = s.usedAt ?? []
+    const message = used.length
+      ? `Remove ${s.name}? This agent's config uses it at ${used.join(', ')}. Removing it also takes ${used.length === 1 ? 'that setting' : 'those settings'} out of the config, in a new version, so the agent never reads the placeholder text as the value. Both apply on its next start.`
+      : `Remove ${s.name}? The agent loses it on its next start.`
+    const confirmLabel = used.length ? 'Remove secret and setting' : 'Remove'
+    if (!(await confirm({ title: 'Remove secret', message, confirmLabel, danger: true }))) return
     try {
-      await delJson(`/api/fleet/agents/${agentId}/secrets?name=${encodeURIComponent(n)}`)
+      // A 404 is an agent that no longer exists, and its secrets went with it.
+      await delJsonGone(`/api/fleet/agents/${agentId}/secrets`, { name: s.name, removeSetting: used.length > 0 })
+      // Off the list now, not only after the re-read: for an agent that is
+      // gone, that re-read fails, and a failed refetch keeps the last list.
+      qc.setQueryData<SecretMeta[]>(key(), (rows) => rows?.filter((r) => r.name !== s.name))
     } catch (e) {
       // Fire-and-forget from a row button; the err line belongs to the form.
       toastError('Remove failed', e)
     }
     await qc.invalidateQueries({ queryKey: key() })
+    // A setting went with it: a new version, so the def's current one moved.
+    if (used.length) {
+      await qc.invalidateQueries({ queryKey: ['agent-versions', agentId] })
+      await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+    }
   }
 </script>
 
@@ -171,7 +198,8 @@
     <span class="inline-flex items-center gap-1 text-warning"><AlertTriangle size={12} aria-hidden="true" /> {agentLabel} can read these.</span>
     They are written into its container as plaintext and loaded as env vars, so anything running in there, including the shell its harness
     uses, can print them. Use one only when a process inside the container reads the variable itself; if the credential merely needs to be
-    spent through a tool, grant a handle above instead.
+    spent through a tool, grant a handle above instead. A <code class="font-mono text-fg">CONFIG_…</code> entry is the exception: a credential
+    sealed out of its own config, which Hermes reads for itself and keeps out of every command it runs.
   </p>
   <QueryState {query} errorTitle="Could not load this agent's secrets" errorVariant="compact">
     {#snippet skeleton()}
@@ -191,7 +219,7 @@
     {#snippet children(secrets)}
       <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
         {#each secrets as s (s.name)}
-          <li class="flex items-center gap-3 px-3.5 py-2.5 transition-colors dither-fill">
+          <li class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2.5 transition-colors dither-fill">
             <code class="font-mono text-sm text-fg">{s.name}</code>
             <span class="font-mono text-xs text-muted">••••••••</span>
             <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">
@@ -200,11 +228,30 @@
             <button
               type="button"
               title="Remove"
-              onclick={() => void remove(s.name)}
+              onclick={() => void remove(s)}
               class="shrink-0 text-muted transition-colors hover:text-danger"
             >
               <Trash2 size={14} />
             </button>
+            {#if s.refused}
+              <!-- Saved before the rule that refuses this name. The render
+                   leaves it out of the container (no tool of the agent's could
+                   read it, and loading it only reconfigured the agent), so say
+                   why, beside the remove. -->
+              <p class="flex basis-full items-start gap-1 font-sans text-xs text-warning">
+                <AlertTriangle size={12} class="mt-0.5 shrink-0" aria-hidden="true" />
+                <span>Not loaded: {s.refused}.</span>
+              </p>
+            {:else if sealed(s)}
+              <p class="basis-full font-sans text-xs text-muted">
+                {#if s.usedAt?.length}
+                  A config credential, used at <span class="font-mono text-fg">{s.usedAt.join(', ')}</span>. Hermes reads it; the agent's
+                  commands do not see it. Replace the value to rotate it.
+                {:else}
+                  A config credential its current config does not use. The agent's commands do not see it.
+                {/if}
+              </p>
+            {/if}
           </li>
         {/each}
       </ul>

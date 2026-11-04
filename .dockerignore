@@ -1,7 +1,8 @@
 # Root build context — keep the image a build of the SOURCE, not the machine.
-# Deliberately NOT ignored: apps/ (apps compile into the bundle at build time,
-# including gitignored local apps that are part of local builds by design) and
-# scripts/ (fleet skills + chassis template ship into the runtime image).
+# Deliberately NOT ignored: scripts/ (fleet skills + chassis template ship into
+# the runtime image). apps/ is not ignored either, though no build step reads it
+# any more: an instance compiles its installed apps at runtime, from
+# TALARIA_APPS_DIR (see the Dockerfile's note on the build stage's COPY).
 
 .git
 .git/**
@@ -10,9 +11,9 @@
 
 node_modules
 **/node_modules
-# …except an app's own: apps are self-contained codebases and compile into the
-# bundle as-is (apps/README.md) — their node_modules are source, not something
-# this image rebuilds (ui/ and mcp/ get fresh installs; apps/ don't).
+# …except an app's own: apps are self-contained codebases (apps/README.md) —
+# their node_modules are source, not something this image rebuilds (ui/ and
+# mcp/ get fresh installs; apps/ don't).
 !apps/*/node_modules
 **/dist
 **/coverage
@@ -28,15 +29,29 @@ fleet
 stack
 logs
 **/.uploads
+# The app platform's dev state: app databases (pg/ is the container user's,
+# db.env is a password) and compiled app builds.
+app-data
+app-builds
 ui/.env*
+# The legacy SearXNG settings file an old checkout may still hold (it carries
+# a secret_key; see .gitignore) — never part of a local build context.
+docker/searxng/settings.local.yml
 **/.env
 !**/.env.example
 
-# Not part of any build.
+# Not part of any build — except the two files the ui build reads from them:
+# the SDK kit (ui/scripts/build-sdk-kit.ts) ships talaria.json's schema, and
+# its scaffold shares the app skeleton with the CLI's `talaria app new`. Leave
+# either out and `bun run build` fails in the image, nowhere else: no PR job
+# builds the image. scripts/check-invariants.mjs (image-build-input-ignored)
+# fails a ui build input that this file leaves out.
 docs
+!docs/sdk/talaria.schema.json
 playground
 .claude
 .inspect
 cli
+!cli/src/cmd/app/skeleton.ts
 *.md
 LICENSE

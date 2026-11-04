@@ -26,7 +26,7 @@ export type FakeCtx = Ctx & {
   plant: (cmdArgs: [string, string[]], out: string | Error, cwd?: string) => void
 }
 
-export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; reply?: string } = {}): FakeCtx {
+export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; reply?: string; cwd?: string } = {}): FakeCtx {
   const calls: ExecCall[] = []
   const logLines: FakeCtx['logLines'] = []
   const answers = new Map<string, string | Error>()
@@ -50,6 +50,7 @@ export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; r
 
   return {
     root: '/repo',
+    cwd: init.cwd,
     exec: async (cmd, args, opts) => {
       calls.push({ cmd, args, opts })
       const a = answer(cmd, args, opts?.cwd)
@@ -76,6 +77,9 @@ export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; r
     env: { ...init.env },
     isTTY: init.isTTY ?? false,
     now: () => new Date('2026-01-01T00:00:00Z'),
+    // Waits are instant: a probe that never passes runs out its attempts at
+    // once, so a timed-out readiness wait is a cheap test.
+    sleep: async () => {},
     log,
     calls,
     logLines,

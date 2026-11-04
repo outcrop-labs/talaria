@@ -19,7 +19,8 @@
 
   const open = (t: ToastItem) => {
     dismissToast(t.id)
-    if (t.href) void navigateHref(t.href)
+    if (t.onOpen) t.onOpen()
+    else if (t.href) void navigateHref(t.href)
   }
 </script>
 
@@ -31,11 +32,17 @@
   aria-live="polite"
   class="pointer-events-none fixed bottom-4 right-4 z-[70] flex w-[min(92vw,340px)] flex-col gap-2"
 >
+  <!-- The lead slot: the desktop-alerts card (NotifyPrompt) prepends itself
+       here, so it stacks ABOVE the toasts instead of covering the one that
+       gave it a reason to ask. Display-contents: its children are the stack's
+       own flex items. -->
+  <div data-toast-lead class="contents"></div>
   {#each items as t (t.id)}
     <div
       in:fly={{ x: 16, duration: 220 }}
       out:fade={QUICK}
       role="status"
+      data-toast-key={t.key}
       class="pointer-events-auto relative rounded-[10px] border border-line bg-panel p-3 pr-9 shadow-[var(--theme-shadow-2)]"
     >
       <!-- The whole card is the click target: a toast's one job is "go

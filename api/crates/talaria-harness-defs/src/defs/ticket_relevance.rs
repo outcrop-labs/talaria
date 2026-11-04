@@ -280,6 +280,7 @@ pub fn ticket_relevance_harness() -> HarnessDefinition {
         // one way the registry allows.
         ModelSpec {
             pin: Some("ticket-relevance"),
+            slot: None,
             role: None,
             chain: None,
             user_id: None,

@@ -97,7 +97,8 @@ The stop gate cannot see CI, and it cannot see `rc` move under an open pull requ
 [`scripts/hooks/pr-watch.mjs`](../scripts/hooks/pr-watch.mjs) is that gate: it polls check
 runs and mergeable state and speaks the same exit contract (0 only when checks are green
 and the PR does not conflict with `rc`, 2 with the reason on stderr, anything else not a
-pass). It does not edit or push. The procedure — when to run it, how a red check or a
+pass). Green is the latest run of each check, on the commit that was pushed, with the CI
+workflow's run for it finished. It does not edit or push. The procedure — when to run it, how a red check or a
 conflict is fixed, when to stop and report — is the last step of
 [`ship-a-change`](../.claude/skills/ship-a-change/SKILL.md). It is not a Stop hook: whether
 a harness should spawn it on its own is an open call, and a gate a harness skips is still

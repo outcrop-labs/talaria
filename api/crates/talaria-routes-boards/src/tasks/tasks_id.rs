@@ -18,8 +18,8 @@ use talaria_body::{
     optional_uuid_member, parse,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_mentions::{Mentionee, notify_mentions};
-use talaria_notify::NotifyDeps;
+use talaria_mentions::{MentionOpts, MentionSender, Mentionee, notify_added_mentions};
+use talaria_notify::{NotifyDeps, NotifyEntity, entity};
 use talaria_refs::{MessageRef, RefChip, RefUser, resolve_refs};
 use talaria_session::{SessionUser, require_user};
 use talaria_state::AppState;
@@ -377,25 +377,14 @@ pub async fn put(
         status_note: None,
     };
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
-    let updated = match update_task(&deps, &id, patch, &actor).await {
-        Ok(t) => t,
-        Err(TaskError::ApprovalRequired(msg)) => {
-            return Ok(house_error(StatusCode::FORBIDDEN, &msg));
-        }
-        Err(TaskError::Refusal(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-        Err(TaskError::Db(e)) => return Ok(internal("[tasks] update failed", e)),
-    };
-    // No inline index or judge trigger on this path: a text edit reaches the
-    // activity brain only through the opportunistic RAG sweep (keyed on
-    // updated_at, at most 15 min behind), and entering a review-category
-    // column fires no judge run — the reviewer gets no advisory verdict.
-    if let Some(updated) = updated.as_ref()
-        && description_input.is_some()
-        && description_input != Some(task.description.clone())
-    {
-        // A description that GAINS an @mention notifies board members —
-        // same contract as comments. Only on actual change, never on
-        // other patches.
+    // A description that GAINS an @mention notifies the people it gains —
+    // only them. The whole text used to be re-run on every save, so each
+    // punctuation fix re-told everyone already mentioned (55 rapid edits were
+    // 55 rows). Only on actual change, never on other patches. Everything it
+    // needs is read HERE, before the write.
+    let mention = (description_input.is_some()
+        && description_input != Some(task.description.clone()))
+    .then(|| {
         let (sender_id, sender_label) = match session_user.as_ref() {
             Some(user) => (
                 user.id.clone(),
@@ -406,40 +395,54 @@ pub async fn put(
                 talaria_api_facades::fleet::describe_agent(&actor.id).label,
             ),
         };
-        let pg = state.pg.clone();
-        let notify = NotifyDeps::publishing(pg.clone(), state.redis().await.ok());
-        let board_id = task.board_id.clone();
-        let task_id = task.id.clone();
-        let content = description_input.clone().flatten().unwrap_or_default();
-        let where_ = updated
-            .ticket_ref
-            .clone()
-            .unwrap_or_else(|| "a ticket".into());
-        tokio::spawn(async move {
-            let Ok(members) = list_members(&pg, &board_id).await else {
-                return;
-            };
-            let members: Vec<Mentionee> = members
-                .into_iter()
-                .map(|m| Mentionee {
-                    user_id: m.user_id,
-                    name: m.name,
-                    email: m.email,
-                })
-                .collect();
-            let href = format!("/boards/{board_id}/{task_id}");
-            let _ = notify_mentions(
-                &notify,
-                &members,
-                &sender_id,
-                &sender_label,
-                &content,
-                &where_,
-                &href,
-            )
-            .await;
-        });
-    }
+        AddedMentions {
+            notify: deps.notify.clone(),
+            board_id: task.board_id.clone(),
+            task_id: task.id.clone(),
+            agent_model: session_user.is_none().then(|| actor.id.clone()),
+            sender_id,
+            sender_label,
+            before: task.description.clone().unwrap_or_default(),
+            after: description_input.clone().flatten().unwrap_or_default(),
+        }
+    });
+    // THE WRITE AND WHAT IT OWES PEOPLE RUN WHERE THE CALLER CANNOT CANCEL
+    // THEM (C30). A handler future is dropped when its caller hangs up, at
+    // whatever await it had reached — and a direct-api agent with a short
+    // timeout hangs up after the commit, so the notify work still queued
+    // behind the write's tail never ran (0 of 10 mention rows, measured).
+    // A spawned task is not the caller's to drop: the handler waits on it,
+    // and if it is gone the task finishes anyway.
+    let write = tokio::spawn(async move {
+        let updated = update_task(&deps, &id, patch, &actor).await;
+        if let Ok(Some(updated)) = &updated {
+            post_commit_test_pause().await;
+            if let Some(job) = mention {
+                job.spawn(
+                    updated
+                        .ticket_ref
+                        .clone()
+                        .unwrap_or_else(|| "a ticket".into()),
+                );
+            }
+        }
+        updated
+    });
+    let updated = match write.await {
+        Ok(Ok(t)) => t,
+        Ok(Err(TaskError::ApprovalRequired(msg))) => {
+            return Ok(house_error(StatusCode::FORBIDDEN, &msg));
+        }
+        Ok(Err(TaskError::Refusal(msg))) => {
+            return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
+        }
+        Ok(Err(TaskError::Db(e))) => return Ok(internal("[tasks] update failed", e)),
+        Err(e) => return Ok(internal("[tasks] update task failed", e)),
+    };
+    // No inline index or judge trigger on this path: a text edit reaches the
+    // activity brain only through the opportunistic RAG sweep (keyed on
+    // updated_at, at most 15 min behind), and entering a review-category
+    // column fires no judge run — the reviewer gets no advisory verdict.
     Ok(Json(json!({ "task": updated })).into_response())
 }
 
@@ -504,4 +507,72 @@ pub async fn delete(
         }
         Err(e) => internal("[tasks] delete failed", e),
     })
+}
+
+/// The @mention notice a description edit owes, prepared before the write
+/// so nothing between the commit and its spawn awaits.
+struct AddedMentions {
+    notify: NotifyDeps,
+    board_id: String,
+    task_id: String,
+    /// The agent's model id, when an agent made the edit.
+    agent_model: Option<String>,
+    sender_id: String,
+    sender_label: String,
+    before: String,
+    after: String,
+}
+
+impl AddedMentions {
+    /// Detached: the people the edit newly @mentions, among the board's
+    /// members, are told — the row about the ticket, from the editor.
+    fn spawn(self, where_: String) {
+        tokio::spawn(async move {
+            let Ok(members) = list_members(&self.notify.pg, &self.board_id).await else {
+                return;
+            };
+            let members: Vec<Mentionee> = members
+                .into_iter()
+                .map(|m| Mentionee {
+                    user_id: m.user_id,
+                    name: m.name,
+                    email: m.email,
+                })
+                .collect();
+            let href = format!("/boards/{}/{}", self.board_id, self.task_id);
+            notify_added_mentions(
+                &self.notify,
+                &members,
+                &MentionSender {
+                    user_id: &self.sender_id,
+                    label: &self.sender_label,
+                    agent_model: self.agent_model.as_deref(),
+                },
+                &self.before,
+                &self.after,
+                &where_,
+                &href,
+                &MentionOpts {
+                    entity: Some(NotifyEntity::new(entity::TASK, self.task_id.as_str())),
+                    ..Default::default()
+                },
+            )
+            .await;
+        });
+    }
+}
+
+/// A TEST-ONLY pause after the ticket write committed, so a live check can
+/// hang up between the commit and the notify work (C30): debug builds only,
+/// and only with `TALARIA_TEST_POST_COMMIT_MS` set. Release builds compile it
+/// to nothing.
+async fn post_commit_test_pause() {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("TALARIA_TEST_POST_COMMIT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(ms.min(10_000))).await;
+    }
 }

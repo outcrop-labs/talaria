@@ -1,5 +1,6 @@
 // POST /api/fleet/render. Render every managed agent's config + the fleet
-// compose + the gateway manifest (the bridge hot-reloads the manifest).
+// compose + the gateway manifest (the persona door re-reads the manifest on
+// each attempt).
 // Admin.
 
 use axum::Json;
@@ -16,7 +17,7 @@ use talaria_state::AppState;
 pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     let user = require_admin(&state, &headers).await?;
     let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
-    Ok(match render_fleet(&state.pg, &sb, None).await {
+    Ok(match render_fleet(&state.pg, &sb).await {
         Ok(result) => {
             let actor = actor_of(&user);
             let pg = state.pg.clone();

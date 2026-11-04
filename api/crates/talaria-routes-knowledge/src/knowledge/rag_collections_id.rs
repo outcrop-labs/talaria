@@ -1,7 +1,9 @@
 // /api/rag/collections/{id}. One collection, admin. PUT → replace its access
 // bindings wholesale; an unknown (but well-formed) id 404s. DELETE → drop it
-// (the two auto collections are protected); a missing id is a no-op delete —
-// it still answers ok, it still audits.
+// (the two auto collections are protected); an unknown id is the same 404,
+// with nothing deleted and nothing audited. The collection is read by the
+// id's canonical text, so every spelling the family's gate lets through
+// reaches it.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -50,6 +52,7 @@ pub async fn put(
     if let Some(gate) = talaria_params::uuid_gate("rag-collections", "PUT", &id) {
         return Ok(gate);
     }
+    let id = talaria_params::uuid_canonical(&id).unwrap_or(id);
     match collections::get_collection(&state.pg, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
@@ -86,9 +89,13 @@ pub async fn delete(
     if let Some(gate) = talaria_params::uuid_gate("rag-collections", "DELETE", &id) {
         return Ok(gate);
     }
+    // The store reads the row by its text: the canonical one, whatever
+    // spelling the path used.
+    let id = talaria_params::uuid_canonical(&id).unwrap_or(id);
     let qd = qdrant::real_deps();
     match collections::delete_collection_by_id(&state.pg, &qd, &id).await {
-        Ok(()) => {}
+        Ok(true) => {}
+        Ok(false) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
         Err(msg) if msg == AUTO_DELETE_REFUSAL => {
             return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
         }

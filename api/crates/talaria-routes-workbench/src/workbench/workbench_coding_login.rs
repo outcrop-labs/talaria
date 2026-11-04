@@ -272,19 +272,23 @@ pub async fn put(
     Ok(axum::Json(wire(&session)).into_response())
 }
 
-// doc: Abandon a sign-in in flight.
+// doc: Abandon a sign-in in flight. A session this instance is not running
+// doc: (finished, failed, expired, or never started) is a 404, as on the poll.
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
+    // The same answer the poll and the answer give an id with no flight
+    // here: nothing was abandoned, so it is not an ok. The page's own cancel
+    // ignores the answer, so a login that finished first still closes.
     let agent_id = {
         let Ok(map) = pending().lock() else {
             return Err(internal_str("login registry unavailable"));
         };
         match map.get(&id) {
             Some(p) => p.agent_id.clone(),
-            None => return Ok(axum::Json(json!({ "ok": true })).into_response()),
+            None => return Ok(house_error(StatusCode::NOT_FOUND, "unknown login session")),
         }
     };
     require_agent_editor(&state, &headers, &agent_id).await?;

@@ -105,10 +105,12 @@ pub async fn list_keys(pg: &PgPool, user_id: &str) -> Result<Vec<LlmApiKey>, sql
     Ok(rows.into_iter().map(wire).collect())
 }
 
-/// Revoke — scoped to the owner, and a no-op that still answers ok when the
-/// id is nobody's (the route audits either way).
-pub async fn revoke_key(pg: &PgPool, user_id: &str, key_id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query(
+/// Revoke — scoped to the owner. False when the id names none of the
+/// owner's keys (nobody's, or someone else's): nothing changed, and the
+/// route answers 404 without an audit row. A key already revoked is still
+/// the owner's, and revoking it again is the same ok it always was.
+pub async fn revoke_key(pg: &PgPool, user_id: &str, key_id: &str) -> Result<bool, sqlx::Error> {
+    let done = sqlx::query(
         "update llm_api_keys set revoked_at = now() \
          where id = $1::uuid and user_id = $2::uuid",
     )
@@ -119,7 +121,7 @@ pub async fn revoke_key(pg: &PgPool, user_id: &str, key_id: &str) -> Result<(), 
     // A revoked key must stop authenticating on the next call, not the next
     // TTL expiry.
     talaria_auth::reset_identity_cache();
-    Ok(())
+    Ok(done.rows_affected() > 0)
 }
 
 /// The self-imposed policy a key owner can set (#265). null = unlimited.

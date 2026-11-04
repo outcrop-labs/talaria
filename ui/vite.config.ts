@@ -5,7 +5,8 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
-import { writeHeadHeaders } from './src/server/http'
+import { stampPeer, writeHeadHeaders } from './src/server/http'
+import { SHARED_SERVER_PACKAGES } from './src/app-runtime/specifiers'
 import { appRuntimeDev, appRuntimeHost } from './src/app-runtime/vite-plugin'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -85,6 +86,14 @@ function apiDev(): Plugin {
         const pathname = (req.url ?? '/').split('?')[0]!
         if (!pathname.startsWith('/api/') && !pathname.startsWith('/.well-known/')) return next()
         void (async () => {
+          // The caller hanging up aborts the request's signal — read off the
+          // RESPONSE closing unfinished, the rule server-entry.ts follows
+          // (clientGone): an app's server sees it as ctx.signal. Armed before
+          // the body is read, so a client that leaves mid-upload is seen.
+          const gone = new AbortController()
+          res.once('close', () => {
+            if (!res.writableFinished) gone.abort(new DOMException('the client disconnected', 'AbortError'))
+          })
           const mod = (await server.ssrLoadModule('/src/server/app.ts')) as {
             default: { fetch: (request: Request) => Promise<Response> }
           }
@@ -94,6 +103,9 @@ function apiDev(): Plugin {
           for (const [k, v] of Object.entries(req.headers)) {
             if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
           }
+          // Who is on the socket, stated by the host and never the client
+          // (http.ts PEER_HEADER) — the same stamp server-entry.ts writes.
+          stampPeer(headers, req.socket.remoteAddress)
           let body: Uint8Array<ArrayBuffer> | null = null
           if (req.method !== 'GET' && req.method !== 'HEAD') {
             body = await new Promise<Uint8Array<ArrayBuffer>>((resolveBody) => {
@@ -106,7 +118,7 @@ function apiDev(): Plugin {
           }
 
           const response = await mod.default.fetch(
-            new Request(url.toString(), { method: req.method, headers, body }),
+            new Request(url.toString(), { method: req.method, headers, body, signal: gone.signal }),
           )
           // writeHeadHeaders (not the Object.fromEntries one-liner) so dev
           // matches server-entry.ts on multi-cookie responses — Set-Cookie is
@@ -130,6 +142,8 @@ function apiDev(): Plugin {
           }
           res.end()
         })().catch((err) => {
+          // The client left mid-answer: routine, not a server error.
+          if (res.destroyed && !res.writableFinished) return
           console.error(`[api-dev] ${req.method} ${req.url}`, err)
           if (!res.headersSent) {
             res.writeHead(500, { 'content-type': 'text/plain' })
@@ -176,7 +190,17 @@ export default defineConfig({
   // Dev server reachable over the LAN/Tailscale. allowedHosts only affects the
   // dev server (not prod builds); `true` lets IPs and hostnames through.
   // fs.allow ..: app sources live in ../apps and load through /@app/ in dev.
-  server: { host: true, allowedHosts: true, fs: { allow: ['..'] } },
+  // watch.ignored: src/sdk/client-docs.test.ts typechecks the SDK docs in a
+  // scratch `.sdk-doc-examples-*` dir under ui/ with its own tsconfig.json. A
+  // watched tsconfig change clears Vite's cache, which drops the app runtime's
+  // SSR loader, so every app server answered "this app has no server" until a
+  // restart whenever the ui tests ran beside `talaria dev`.
+  server: {
+    host: true,
+    allowedHosts: true,
+    fs: { allow: ['..'] },
+    watch: { ignored: ['**/.sdk-doc-examples-*/**'] },
+  },
   build: {
     outDir: 'dist/client',
     rollupOptions: {
@@ -196,14 +220,21 @@ export default defineConfig({
   // App codebases have no node_modules of their own; shared deps resolve from
   // the host's — the peer-dependency model (one Svelte, one router, one query
   // client across the whole deployment). dedupe (not alias) keeps Vite's
-  // normal CJS/ESM interop intact.
+  // normal CJS/ESM interop intact. The shared server packages (zod) ride the
+  // same rule: dev loads an app's server.ts, mcp.ts and harnesses/ from source,
+  // and Vite externalizes a bare `zod` once for every importer, then
+  // node-resolves it from the importer's own directory — from apps/ that found
+  // nothing ("Cannot find module 'zod'", and an update adding one rolled
+  // back). Deduped, it resolves from the root, to the very module the host's
+  // own code and `@talaria/sdk/server` import.
   resolve: {
-    dedupe: ['svelte', '@tanstack/svelte-query', 'sv-router', '@lucide/svelte'],
+    dedupe: ['svelte', '@tanstack/svelte-query', 'sv-router', '@lucide/svelte', ...SHARED_SERVER_PACKAGES],
     // The SDK ids must resolve for app files OUTSIDE the Vite root, where the
-    // tsconfig-paths plugin doesn't reach ('/server' entry listed first — the
-    // bare id would otherwise prefix-match it).
+    // tsconfig-paths plugin doesn't reach (the '/server' and '/testing'
+    // entries listed first — the bare id would otherwise prefix-match them).
     alias: {
       '@talaria/sdk/server': resolve(here, 'src/sdk/server.ts'),
+      '@talaria/sdk/testing': resolve(here, 'src/sdk/testing.ts'),
       '@talaria/sdk': resolve(here, 'src/sdk/index.ts'),
     },
   },

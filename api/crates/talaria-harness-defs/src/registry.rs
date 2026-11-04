@@ -15,11 +15,17 @@
 //   for that harness — see `narrow_guard_config`), or if a floor declares
 //   capabilities it never refuses on.
 //
-// THE LAYERS — the source vocabulary keeps three (builtin < app-shipped <
-// admin-custom, merged by id); only the first is real here, registered
-// statically. The admin-custom layer is deliberately empty on both sides (an
-// activity harness is CODE — `render`, `evals[].check` — and Talaria does not
-// run code out of a database row). `builtin_by_id` is the scheduler's lookup.
+// THE LAYERS — the source vocabulary keeps three (builtin, app-shipped,
+// admin-custom). The builtins are registered statically below. The
+// app-shipped layer is what an ENABLED app ships in `apps/<slug>/harnesses/`:
+// customer code the api never loads (docs/RUST-MIGRATION.md rule 10), so the
+// app host checks it and hands it over as data (talaria-app-harnesses), and
+// `merge_app_layer` appends it AFTER the builtins — an app may add a harness,
+// never replace one. Its `render` and `check` stay in the app host, which is
+// where the fitness sweep replays its fixtures. The admin-custom layer is
+// deliberately empty on both sides (an activity harness is CODE — `render`,
+// `evals[].check` — and Talaria does not run code out of a database row).
+// `builtin_by_id` is the scheduler's lookup, and it never sees an app.
 //
 // THE PLATFORM_AGENTS CROSS-CHECK, and the two places the lists do NOT line
 // up. Both are real and neither is forced:
@@ -61,13 +67,24 @@ use crate::defs;
 use talaria_harness::define::{EvalBand, HarnessDefinition};
 
 /// Where a registered harness came from — the admin panel's wire vocabulary,
-/// so a source serializes the same way on both sides. Only `Builtin` is
-/// constructed today.
+/// so a source serializes the same way on both sides. `App` carries the slug
+/// of the enabled app that ships it; `Custom` is never constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HarnessSource {
     Builtin,
     App(&'static str),
     Custom,
+}
+
+impl HarnessSource {
+    /// `builtin`, `app:<slug>` or `custom` — the TS `HarnessSource` spelling.
+    pub fn wire(&self) -> String {
+        match self {
+            HarnessSource::Builtin => "builtin".to_string(),
+            HarnessSource::App(slug) => format!("app:{slug}"),
+            HarnessSource::Custom => "custom".to_string(),
+        }
+    }
 }
 
 /// One harness as the registry hands it out: the definition (already
@@ -80,6 +97,17 @@ pub struct RegisteredHarness {
 }
 
 impl RegisteredHarness {
+    /// The app that ships this harness, for one from the app layer. Its
+    /// `render` and its fixtures' `check` live in that app's module on the app
+    /// host, so the def here carries the metadata and nothing runs it: the
+    /// sweep replays its fixtures through the host instead.
+    pub fn app_slug(&self) -> Option<&'static str> {
+        match self.source {
+            HarnessSource::App(slug) => Some(slug),
+            _ => None,
+        }
+    }
+
     /// Fixture names — the inputs stay on the def, where the sweep reads them.
     pub fn eval_names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.def.evals.iter().map(|e| e.name)
@@ -217,6 +245,51 @@ pub fn builtin_by_id(id: &str) -> Option<&'static RegisteredHarness> {
     BUILTINS.iter().find(|h| h.def.id == id)
 }
 
+/// THE MERGED REGISTRY: the builtins in panel order, then the app layer in the
+/// order the app host listed it (apps by slug, files by name). Returns the
+/// merge and one sentence per app harness it refused.
+///
+/// APPEND-ONLY, BY DESIGN. The deleted TS registry let an app replace a
+/// builtin by reusing its id; here that is refused, because a third-party
+/// definition standing in for the judge's or the titler's column would score
+/// the platform's own slot with somebody else's fixtures. The app host
+/// refuses the same ids first (ui/src/server/app-harnesses.ts); this is the
+/// api's own guard, so a host that disagrees cannot slip one in. A second
+/// harness with an id already taken — by a builtin or an earlier app — is
+/// refused the same way, and anything in `apps` that is not from the app
+/// layer is refused rather than trusted.
+pub fn merge_app_layer(
+    builtins: &[RegisteredHarness],
+    apps: &[RegisteredHarness],
+) -> (Vec<RegisteredHarness>, Vec<String>) {
+    let mut merged: Vec<RegisteredHarness> = builtins.to_vec();
+    let mut refused: Vec<String> = Vec::new();
+    for h in apps {
+        let Some(slug) = h.app_slug() else {
+            refused.push(format!(
+                "\"{}\" is not from an app and cannot join the app layer",
+                h.def.id
+            ));
+            continue;
+        };
+        if let Some(holder) = merged.iter().find(|m| m.def.id == h.def.id) {
+            refused.push(match holder.source {
+                HarnessSource::App(other) => format!(
+                    "app \"{slug}\": \"{}\" is already registered by app \"{other}\"",
+                    h.def.id
+                ),
+                _ => format!(
+                    "app \"{slug}\": \"{}\" is a builtin harness's id, and an app cannot replace one",
+                    h.def.id
+                ),
+            });
+            continue;
+        }
+        merged.push(*h);
+    }
+    (merged, refused)
+}
+
 /// Which platform agent's model assignment drives this harness, if any.
 ///
 /// `model.pin` for the assigned block above. The judge is the exception,
@@ -230,6 +303,11 @@ pub fn builtin_by_id(id: &str) -> Option<&'static RegisteredHarness> {
 /// subject of the call. The tests lock the exact list so that a harness which
 /// SHOULD have had a pin cannot join it by omission.
 pub fn platform_agent_of(harness: &RegisteredHarness) -> Option<&'static str> {
+    // An app harness is bound to its own column only: its model setting is
+    // the app's, and a third-party fixture must not move a platform slot.
+    if harness.app_slug().is_some() {
+        return None;
+    }
     if harness.def.id == "judge" {
         return Some("judge");
     }
@@ -727,6 +805,118 @@ mod tests {
                 h.def.id
             );
         }
+    }
+
+    // ── the app layer ──────────────────────────────────────────────────────────
+
+    /// An app harness the way the app layer hands one over: a def carrying
+    /// metadata only, leaked once like every registry entry.
+    fn app_harness(slug: &'static str, id: &'static str) -> RegisteredHarness {
+        app_harness_pinned(slug, id, None)
+    }
+
+    fn app_harness_pinned(
+        slug: &'static str,
+        id: &'static str,
+        pin: Option<&'static str>,
+    ) -> RegisteredHarness {
+        use talaria_harness::define::{OnFailure, RoleFloor};
+        use talaria_harness_model::ModelSpec;
+        let def: &'static HarnessDefinition = Box::leak(Box::new(HarnessDefinition {
+            floor: RoleFloor::runs_anyway("runs on anything"),
+            ..HarnessDefinition::new(
+                id,
+                "App harness",
+                "Does an app's job.",
+                ModelSpec {
+                    pin,
+                    slot: None,
+                    role: None,
+                    chain: Some(&[]),
+                    user_id: None,
+                },
+                std::sync::Arc::new(|_, _| Err("renders in the app host".into())),
+                Output::Text {
+                    clean: None,
+                    verify: None,
+                },
+                OnFailure::Null,
+            )
+        }));
+        RegisteredHarness {
+            def,
+            source: HarnessSource::App(slug),
+        }
+    }
+
+    #[test]
+    fn appends_app_harnesses_after_the_builtins_in_the_order_given() {
+        let apps = [
+            app_harness("crm", "crm:triage"),
+            app_harness("notes", "notes:sort"),
+        ];
+        let (merged, refused) = merge_app_layer(builtin_activity_harnesses(), &apps);
+        assert!(refused.is_empty(), "{refused:?}");
+        let ids: Vec<&str> = merged.iter().map(|h| h.def.id).collect();
+        assert_eq!(&ids[..EXPECTED_IDS.len()], EXPECTED_IDS);
+        assert_eq!(&ids[EXPECTED_IDS.len()..], ["crm:triage", "notes:sort"]);
+        assert_eq!(merged.last().and_then(|h| h.app_slug()), Some("notes"));
+        assert_eq!(
+            merged.last().map(|h| h.source.wire()).as_deref(),
+            Some("app:notes")
+        );
+    }
+
+    #[test]
+    fn refuses_an_app_harness_that_would_replace_a_builtin() {
+        let (merged, refused) =
+            merge_app_layer(builtin_activity_harnesses(), &[app_harness("crm", "judge")]);
+        let ids: Vec<&str> = merged.iter().map(|h| h.def.id).collect();
+        assert_eq!(ids, EXPECTED_IDS);
+        assert_eq!(
+            builtin_by_id("judge").map(|h| h.source),
+            Some(HarnessSource::Builtin)
+        );
+        assert_eq!(
+            refused,
+            ["app \"crm\": \"judge\" is a builtin harness's id, and an app cannot replace one"]
+        );
+    }
+
+    #[test]
+    fn keeps_the_first_of_two_apps_claiming_one_id() {
+        let (merged, refused) = merge_app_layer(
+            builtin_activity_harnesses(),
+            &[
+                app_harness("alpha", "shared:job"),
+                app_harness("zeta", "shared:job"),
+            ],
+        );
+        let holder = merged.iter().find(|h| h.def.id == "shared:job");
+        assert_eq!(holder.and_then(|h| h.app_slug()), Some("alpha"));
+        assert_eq!(merged.len(), EXPECTED_IDS.len() + 1);
+        assert_eq!(
+            refused,
+            ["app \"zeta\": \"shared:job\" is already registered by app \"alpha\""]
+        );
+    }
+
+    #[test]
+    fn refuses_a_builtin_offered_as_an_app_harness() {
+        let titler = *builtin_by_id("titler").expect("the titler is registered");
+        let (merged, refused) = merge_app_layer(&[], &[titler]);
+        assert!(merged.is_empty());
+        assert_eq!(refused.len(), 1);
+    }
+
+    #[test]
+    fn binds_an_app_harness_to_no_platform_agent() {
+        // Even one that names a pin: its column is its own, and a third-party
+        // fixture must not score the platform's Titler slot.
+        let h = app_harness_pinned("crm", "crm:triage", Some("titler"));
+        assert_eq!(platform_agent_of(&h), None);
+        assert_eq!(h.source.wire(), "app:crm");
+        assert_eq!(HarnessSource::Builtin.wire(), "builtin");
     }
 
     #[test]

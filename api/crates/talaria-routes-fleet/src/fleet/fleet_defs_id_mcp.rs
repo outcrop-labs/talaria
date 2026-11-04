@@ -12,9 +12,11 @@
 // managers' call. `assignedToolsMissing` names the subset entries the
 // server no longer offers (the tab's "Drop missing tools"). POST → `assign`
 // / `unassign` registry servers on this agent (a tool subset per
-// assignment), `removeLegacy` raw entries; the agent rolls
-// so a running Hermes picks the change up. Raw URL `add` is refused: an
-// agent reaches servers through the gateway or not at all.
+// assignment), `removeLegacy` raw entries; the change is applied in place —
+// a running Hermes reconciles server names from its config and re-lists a
+// changed subset on the gateway's notice — and the agent restarts only if
+// the render moved its container. Raw URL `add` is refused: an agent
+// reaches servers through the gateway or not at all.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,7 +27,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use talaria_agent_defs::{add_version_if_changed, list_versions};
 use talaria_agent_mcp::apply_mcp_edits;
-use talaria_api_facades::fleet::reconcile::roll_agent;
+use talaria_api_facades::fleet::docker::ANSWER_WITHIN;
+use talaria_api_facades::mcp::apply::bump_tool_lists;
 use talaria_api_facades::mcp::health::{missing_tools, tool_names};
 use talaria_api_facades::mcp::oauth::has_oauth_tokens;
 use talaria_api_facades::mcp::registry::{
@@ -40,6 +43,8 @@ use talaria_body::{
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_agent_manager, require_agent_reader, secretbox_or_500};
 use talaria_state::AppState;
+
+use super::fleet_defs_id_edit::{BoundedApply, bounded_apply, bounded_render};
 
 /// The def columns this route reads.
 struct Def {
@@ -108,6 +113,9 @@ pub async fn get(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     let user = require_agent_reader(&state, &headers, &id).await?;
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let def = match load_def(&state.pg, &id).await {
         Ok(d) => d,
         Err(e) => return Ok(internal("[fleet/defs/mcp] def read failed", e)),
@@ -164,7 +172,9 @@ pub async fn get(
     };
 
     let mut out = Vec::with_capacity(servers.len());
-    for s in servers.iter().filter(|s| s.enabled) {
+    // `serving`: an app server whose app is off is not on any agent, so it is
+    // not on this tab either. Its grants are kept for when the app serves.
+    for s in servers.iter().filter(|s| s.serving()) {
         let assignment = assigned.get(&s.id);
         let granted = if s.name == WORKBENCH_SERVER {
             def.developer.then_some("developer")
@@ -346,6 +356,9 @@ pub async fn post(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    // When the request began: the apply answers within what is left of the
+    // bound (`bounded_apply`).
+    let started = std::time::Instant::now();
     let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
@@ -380,6 +393,9 @@ pub async fn post(
     }
     .unwrap_or(true);
 
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let def = match load_def(&state.pg, &id).await {
         Ok(d) => d,
         Err(e) => return Ok(internal("[fleet/defs/mcp] def read failed", e)),
@@ -391,6 +407,9 @@ pub async fn post(
 
     // ── registry assignments ──
     let mut touched_registry = false;
+    // The servers whose tool lists this edit can move for the agent — each
+    // counts its own change (`bump_tool_lists`).
+    let mut touched_servers: Vec<String> = Vec::new();
     for a in &assign {
         let server = match get_mcp_server(&state.pg, &a.server_id).await {
             Ok(Some(s)) => s,
@@ -435,6 +454,7 @@ pub async fn post(
         )
         .await;
         touched_registry = true;
+        touched_servers.push(server.name.clone());
     }
     for server_id in &unassign {
         let server = match get_mcp_server(&state.pg, server_id).await {
@@ -459,6 +479,7 @@ pub async fn post(
         )
         .await;
         touched_registry = true;
+        touched_servers.push(server.name.clone());
     }
 
     // ── legacy raw entries: a new config version without them ──
@@ -517,21 +538,85 @@ pub async fn post(
         }
     }
 
-    // ── make it so: render, then roll the agent ──
+    // ── make it so: render, and restart only a container that moved ──
+    // A server assigned or unassigned is a name in the agent's
+    // `mcp_servers`, which a running Hermes reconciles by name within a
+    // minute of the in-place rewrite; a tool subset changed under a server
+    // it keeps reaches it through the gateway's list-changed notice on its
+    // next keepalive (`bump_tool_lists`). Neither moves the container, so
+    // the apply recreates nothing unless something else did.
+    bump_tool_lists(&state.pg, &touched_servers).await;
     let mut applied = false;
     let mut warning: Option<String> = None;
-    if (touched_registry || created) && apply && def.managed {
+    // The apply outlived the bound and goes on (`bounded_apply`): a 202.
+    let mut pending = false;
+    // ONE CONTAINER PER DEPARTMENT: where an older agent holds this one's
+    // department too (a pair from before a department became one agent's),
+    // the department's container is the other agent's and the render leaves
+    // this one out. Rolling it would restart the other agent for a change
+    // that is not its own, so the change is rendered and not applied.
+    let runs_instead = if (touched_registry || created) && apply && def.managed {
+        match talaria_agent_defs::runner_instead_of(&state.pg, &def.id, &def.department).await {
+            Ok(runner) => runner,
+            Err(e) => return Ok(internal("[fleet/defs/mcp] department share read failed", e)),
+        }
+    } else {
+        None
+    };
+    if let Some(runner) = &runs_instead {
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb, None).await;
-        match roll_agent(&state.pg, &sb, &def.department).await {
-            Ok(None) => applied = true,
-            Ok(Some(w)) => warning = Some(w),
-            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
+        // Bounded like the apply below (`bounded_render`): the change is
+        // written, and the answer does not wait on a render past the bound.
+        bounded_render(
+            &state,
+            sb,
+            ANSWER_WITHIN.saturating_sub(started.elapsed()),
+            "[fleet/defs/mcp]",
+        )
+        .await;
+        warning = Some(talaria_agent_defs::shared_department_refusal(
+            "roll",
+            &def.display_name,
+            &def.department,
+            &runner.display_name,
+        ));
+    } else if (touched_registry || created) && apply && def.managed {
+        let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
+        // On its own task and answered within the bound, like the def edit's
+        // apply (`bounded_apply`): a client that goes away must not kill a
+        // recreate halfway, and a roll that outlasts the app proxy's 300 s
+        // must not answer a 502 for a change that is already written. Past
+        // the bound: 202, `pending`, and the apply goes on.
+        match bounded_apply(
+            &state,
+            sb,
+            &def.department,
+            ANSWER_WITHIN.saturating_sub(started.elapsed()),
+            "[fleet/defs/mcp]",
+        )
+        .await
+        {
+            BoundedApply::Settled(Ok(None)) => applied = true,
+            BoundedApply::Settled(Ok(Some(w))) => warning = Some(w),
+            // A step that threw (the render, the image pull, the recreate)
+            // is an apply that did not land, and the assignment or the new
+            // version above is already written: answered like a soft
+            // failure, the reason in `warning` — the edit route's answer
+            // (its decision 12). A bare 400 said nothing of the saved change.
+            BoundedApply::Settled(Err(e)) => warning = Some(format!("the roll failed — {e}")),
+            BoundedApply::StillApplying => pending = true,
         }
     } else if touched_registry || created {
-        // Not rolling: still re-render so the next start carries the change.
+        // Not applying: still re-render so the next start carries the change,
+        // within the same bound (`bounded_render`).
         let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
-        let _ = talaria_api_facades::fleet::render::render_fleet(&state.pg, &sb, None).await;
+        bounded_render(
+            &state,
+            sb,
+            ANSWER_WITHIN.saturating_sub(started.elapsed()),
+            "[fleet/defs/mcp]",
+        )
+        .await;
     }
     let mut out = Map::new();
     out.insert("ok".into(), json!(true));
@@ -542,6 +627,10 @@ pub async fn post(
     }
     if let Some(w) = warning {
         out.insert("warning".into(), json!(w));
+    }
+    if pending {
+        out.insert("pending".into(), json!(true));
+        return Ok((StatusCode::ACCEPTED, Json(Value::Object(out))).into_response());
     }
     Ok(Json(Value::Object(out)).into_response())
 }

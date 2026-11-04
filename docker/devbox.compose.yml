@@ -9,9 +9,12 @@
 # container names, the seeded storage pair, and the two services RESET out.
 #
 # Three networks, the production shape (docker/compose.yml) applied to dev:
-#   default (this project's own)  devbox + postgres + redis + qdrant + storage;
-#                                 nothing published; the app reaches its
-#                                 sidecars by service DNS.
+#   default (this project's own)  devbox + postgres + redis + qdrant + storage,
+#                                 and the app databases the box's app starts
+#                                 (TALARIA_APP_DB_NETWORK below); nothing
+#                                 published; the app reaches its sidecars by
+#                                 service DNS and its app databases by
+#                                 container name.
 #   talaradev (external)          the primary dev stack's TEI embeddings —
 #                                 stateless, shared by every box.
 #   fleet                         this box's PRIVATE agent network (fixed
@@ -90,8 +93,23 @@ services:
       PATH: /work/tools/bin:/home/dev/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       # Tells `talaria dev` this container already owns its infra — it must
       # NOT try to bring up (or wait on) the primary dev stack through the
-      # mounted socket.
-      TALARIA_DEVBOX: '1'
+      # mounted socket. The value is the box's name, the same marker
+      # `talaria box new` writes into the box's ui/.env, because it is also
+      # the instance in an app database's container name
+      # (`talaria-appdb-<instance>-<slug>`, docs/APPS.md). This environment
+      # wins over ui/.env, and when it said '1' every box named its app
+      # databases `talaria-appdb-1-<slug>`: two boxes running the same app
+      # reached for one container.
+      TALARIA_DEVBOX: ${BOX_NAME}
+      # App databases join this box's own network and are dialled by
+      # container name (ui/src/server/app-db.ts, `dialsByName`). Without it
+      # the app dialled 127.0.0.1:<the port the database publishes>, which in
+      # here is this container's own loopback, not the host's, so no app's
+      # store could open. The default network is the one the box's own
+      # postgres is on, the box's counterpart of the product image's
+      # `internal`; the fleet network, where agents live, never sees an app
+      # database. `talaria box rm` removes the databases with the box.
+      TALARIA_APP_DB_NETWORK: devbox-${BOX_NAME}_default
     networks:
       - default
       - talaradev

@@ -1,6 +1,6 @@
 <script lang="ts">
   // No state — this block exists so the component is typed as TS. Without it
-  // svelte-check treats the file as JS, and the eager import in router.ts
+  // svelte-check treats the file as JS, and the eager import in route-table.ts
   // (a .ts module, allowJs off) reports an implicit-any module.
 </script>
 

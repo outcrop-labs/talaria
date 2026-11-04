@@ -49,9 +49,19 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { loadAuthority, unclassified as unclassifiedHermes } from './hermes-skill-authority.mjs'
+import {
+  loadAuthority,
+  unclassified as unclassifiedHermes,
+  declaredSignpostNames,
+  replacedPathsNotCatalogued,
+} from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { scanWebviewThreading, selfTest as desktopThreadingSelfTest } from './desktop-threading.mjs'
+import { checkDropGuard } from './desktop-drop-guard.mjs'
+import { checkReloadKeys } from './desktop-reload-keys.mjs'
+import { checkOsLinks } from './desktop-os-links.mjs'
+import { checkReleaseLatest, selfTest as releaseLatestSelfTest } from './release-latest.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
@@ -325,8 +335,9 @@ const RULES = [
  *  site it policed was in the deleted engines, and the persona-conversation
  *  path it carried as its one permanent exception (channel-replies.ts) serves
  *  from the Rust api now. Model access in the live TS tier goes through the
- *  transports (gateway.ts, llm-gateway.ts) and the one runner that may call
- *  them (harness/run.ts). */
+ *  one runner (harness/run.ts) and its transports (harness/transport.ts), which
+ *  call the Rust relay on the app's gateway key — the TS tier holds no provider
+ *  key and reaches no model any other way. */
 
 const CENSUS = [
   {
@@ -373,7 +384,8 @@ const CENSUS = [
     // The ONE HTTP door for browser code: every request the app makes to its
     // own API goes through a verb in ui/src/lib/fetch-json.ts. Server files
     // fetch upstream services all the time (OAuth exchanges, MCP relays,
-    // safeFetch) and the SDK is its own published door — both excluded below.
+    // safeFetch), excluded below. The SDK is NOT a second door: since the
+    // client-parity pass its `api()` and `appApi()` are built on these verbs.
     pattern: /\bfetch\s*\(/g,
     what: 'a hand-rolled client fetch, bypassing the one HTTP door',
     fix: [
@@ -389,10 +401,11 @@ const CENSUS = [
       'frame rules than the chat parser. One door, one decision: non-2xx rejects with the server\'s',
       'own sentence, and every caller catches or deliberately swallows it in writing.',
       '',
-      'The two counted files below are the doors themselves, at their exact call counts — if the',
-      'door is renamed or emptied, the stale-census half of this check fails instead of the rule',
-      'going quietly inert. A fetch anywhere else in client code is a new stanza. If you believe',
-      'you need one, say so in the PR.',
+      'The counted file below is the door itself, at its exact call count — if the door is renamed',
+      'or emptied, the stale-census half of this check fails instead of the rule going quietly',
+      'inert. A fetch anywhere else in client code is a new stanza — the published SDK included:',
+      'it used to carry its own weaker copy (no status, no deadline, no streams) on the belief that',
+      "it could not import the app's door, and it can. If you believe you need one, say so in the PR.",
     ],
     exempt: (path) =>
       path.startsWith('ui/src/server/') ||
@@ -403,7 +416,6 @@ const CENSUS = [
       !path.startsWith('ui/src/'), // the mcp/ and cli/ trees are not the browser app
     sites: {
       'ui/src/lib/fetch-json.ts': 8, // the door: getJson, getJsonOr404, getJsonOr, getText, getBlob, sendJson, postStream, getStream
-      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
   {
@@ -431,14 +443,9 @@ const CENSUS = [
       'divergent error contracts. PR 2 collapsed all of it into fetch-json; the audit line was',
       '"Invariant rule: the stanza lives only in fetch-json.ts", and this census is that line,',
       'executable.',
-      '',
-      'The SDK entry below is not a second door in the app: it is the same exception',
-      '`raw-client-fetch` above already carries — the published SDK cannot import the app\'s',
-      'door, so it is its own, and its count is exact.',
     ],
     sites: {
       'ui/src/lib/fetch-json.ts': 1, // the door: the one SAME_ORIGIN RequestInit every verb spreads
-      'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
 ]
@@ -929,7 +936,8 @@ for (const rule of RULES) {
 {
   const PG = 'ui/src/server/db/pg.ts'
   const GUARD_FROM_INDEX = 304
-  const MARKER = /--\s*deliberate:\s*\S/
+  // A named contract step (the roll-safety guard below) is a deliberate one.
+  const MARKER = /--\s*(deliberate|contract):\s*\S/
   // Ordered [test, name] pairs. Drop-index/view/constraint are deliberately
   // absent: those are routine, reversible cleanup, and the CI schema snapshot
   // (ui/src/server/db/schema.snapshot.sql) already puts them in the PR diff —
@@ -969,7 +977,7 @@ for (const rule of RULES) {
         // a scoped delete is a repair, an unscoped one is a wipe.
         if ((name.includes('no where') && /\bwhere\b/.test(norm)) || !test.test(norm)) continue
         offenders.push({
-          line: lineOf(stripped, statements[index].index ?? 0),
+          line: lineOf(stripped, start + (statements[index].index ?? 0)),
           text: `${name}: ${text.trim().split('\n')[0].slice(0, 80)}`,
         })
         break
@@ -995,6 +1003,116 @@ for (const rule of RULES) {
     failures.push({
       id: 'pg-migration-guard-baseline-lost',
       what: `the MIGRATIONS array parses as ${statements.length} statements, below the destructive guard's baseline of ${GUARD_FROM_INDEX}`,
+      fix: ['Statements are append-only — find what removed entries, or fix the parser in scripts/check-invariants.mjs.'],
+      found: [],
+    })
+  }
+}
+
+// ROLL-SAFETY GUARD: the expand-contract rule, enforced (docs/UPDATES.md →
+// "The overlap contract"). The previous release keeps serving on a schema this
+// array migrated: through a roll's drain, after an aborted roll (green goes,
+// its migrations stay), and through the 24 h Roll back window. A statement
+// that takes away something the previous release still reads or writes is an
+// outage on rollback even when no datum is lost, and the destructive guard
+// above cannot see that. The git-hosts block (#611) passed it while it deleted
+// a setting with a WHERE, dropped the defaults the old inserts leaned on, and
+// swapped primary keys under the old ON CONFLICT targets; on rollback the old
+// release saw GitHub as disconnected and its workbench inserts failed NOT NULL
+// (upgrade-2, release sweep 2026-11-02).
+//
+// A contract step belongs to the release AFTER the one whose code stopped
+// reading the thing, and it says which one: an inline
+// `-- contract: <what goes>, unread since <vX.Y.Z or #PR>`. `-- deliberate:`
+// does not pass these. It records that losing data is intended, not that the
+// previous release is done with the thing.
+//
+// The baseline is the first statement after the #611 compensation. Everything
+// before it is frozen by the checksum law, and #611's own steps were
+// compensated by appending, not by editing them. The number is a literal and
+// never auto-updates.
+{
+  const PG = 'ui/src/server/db/pg.ts'
+  const CONTRACT_GUARD_FROM_INDEX = 526
+  const MARKER = /--\s*contract:[^\n]*(#\d+|\bv\d+\.\d+)/i
+  const PATTERNS = [
+    [/\bdrop\s+(table|column)\b/, 'drop table/column: the previous release reads it'],
+    [/\brename\s+(to|column)\b/, 'rename: the previous release queries the old name'],
+    [/\balter\s+column\s+[^;]*\b(type|using)\b/, 'alter column type: the previous release binds the old type'],
+    [/\balter\s+column\s+\S+\s+drop\s+default\b/, 'drop default: the previous release inserts without the column'],
+    [/\balter\s+column\s+\S+\s+set\s+not\s+null\b/, 'set not null: the previous release inserts without the column'],
+    [
+      /\bdrop\s+constraint\s+(if\s+exists\s+)?\S+_(pkey|key)\b/,
+      'drop a primary key or unique constraint: the previous release names it in ON CONFLICT',
+    ],
+    [/\bdelete\s+from\s+app_settings\b/, 'delete an app setting: the previous release reads it by key'],
+  ]
+  // Same normalization as the destructive guard: quoted literals blanked (a
+  // value cannot fire a pattern), -- comments stripped, lowercased. A
+  // dollar-quoted function body is code that runs later, not a step this pass
+  // takes, so it is blanked too.
+  const contractStep = (sql) => {
+    const norm = sql
+      .replace(/\$\$[\s\S]*?\$\$/g, '$$$$')
+      .replace(/'(?:[^'\\]|'')*'/g, "''")
+      .replace(/--[^\n]*/g, '')
+      .toLowerCase()
+    return PATTERNS.find(([test]) => test.test(norm))?.[1] ?? null
+  }
+  const stripped = stripComments(readFileSync(join(ROOT, PG), 'utf8'))
+  const start = stripped.indexOf('const MIGRATIONS: string[] = [')
+  const body = stripped.slice(start, stripped.indexOf('\n]', start))
+  const statements = [...body.matchAll(/`([^`]*)`/g)]
+  // The guard proves itself on the statements it exists for: #611's contract
+  // steps, verbatim, must still be in the array and must still be caught. A
+  // pattern edit that would have let them through fails here.
+  const SHIPPED = [
+    "delete from app_settings where key = 'github_config'",
+    "alter table workbench_repos alter column host_id drop default",
+    "alter table workbench_repo_flow alter column host_id drop default",
+    "alter table workbench_repos drop constraint if exists workbench_repos_pkey",
+    "alter table workbench_repo_flow drop constraint if exists workbench_repo_flow_pkey",
+  ]
+  const missed = SHIPPED.filter((s) => !statements.some(([, sql]) => sql.trim() === s) || !contractStep(s))
+  if (missed.length) {
+    failures.push({
+      id: 'pg-migration-contract-guard-blind',
+      what: "the roll-safety guard no longer catches #611's contract steps (or they left the MIGRATIONS array)",
+      fix: [
+        'These statements broke a rollback to the previous release. The guard must keep',
+        'catching their shapes; fix PATTERNS in scripts/check-invariants.mjs, never the list.',
+      ],
+      found: missed.map((s) => ({ path: PG, line: 0, text: s })),
+    })
+  }
+  if (statements.length >= CONTRACT_GUARD_FROM_INDEX) {
+    const offenders = []
+    statements.forEach(([text, sql], index) => {
+      if (index < CONTRACT_GUARD_FROM_INDEX || MARKER.test(text)) return
+      const step = contractStep(sql)
+      if (step)
+        offenders.push({
+          line: lineOf(stripped, start + (statements[index].index ?? 0)),
+          text: `${step}: ${text.trim().split('\n')[0].slice(0, 80)}`,
+        })
+    })
+    if (offenders.length) {
+      failures.push({
+        id: 'pg-migration-contract-unmarked',
+        what: `a MIGRATIONS statement (index >= ${CONTRACT_GUARD_FROM_INDEX}) takes away something the previous release may still read, and names no release that stopped reading it`,
+        fix: [
+          'Expand now, contract later (docs/UPDATES.md → The overlap contract). Ship the add with',
+          'the code, and the drop in a later release. Mark it there with',
+          '`-- contract: <what goes>, unread since <vX.Y.Z or #PR>` inside the statement.',
+          'A `-- deliberate:` marker does not pass this check.',
+        ],
+        found: offenders.map((o) => ({ path: PG, line: o.line, text: o.text })),
+      })
+    }
+  } else if (statements.length > 0) {
+    failures.push({
+      id: 'pg-migration-contract-baseline-lost',
+      what: `the MIGRATIONS array parses as ${statements.length} statements, below the roll-safety guard's baseline of ${CONTRACT_GUARD_FROM_INDEX}`,
       fix: ['Statements are append-only — find what removed entries, or fix the parser in scripts/check-invariants.mjs.'],
       found: [],
     })
@@ -1135,6 +1253,7 @@ for (const rule of CENSUS) {
     ['api/crates/talaria-harness-defs/src/registry.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_catalogued_hermes_pack_is_classified'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_pack_has_a_signpost_skill_occupying_the_name'],
+    ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_path_names_a_catalogued_skill_not_a_category'],
   ]
   const missing = ANCHORS.filter(([path, anchor]) => !readFileSync(join(ROOT, path), 'utf8').includes(anchor))
   if (missing.length) {
@@ -1406,12 +1525,14 @@ for (const rule of CENSUS) {
   }
 }
 
-// HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY REPLACED PACK MUST
-// HAVE A TALARIA SIGNPOST occupying the name agents reach for. Hermes adds
-// packs on image updates; a six-line prune array in docker.rs silently let
-// new conflicts in. The catalog is scripts/hermes-skill-authority.json —
-// classify a new path (replaced / keepExact / keepPrefix) before it teaches
-// the fleet a parallel vault. Signposts live in scripts/skills/<signpost>/.
+// HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY SKILL NAME IN A
+// REPLACED PACK MUST BE OCCUPIED BY A TALARIA SIGNPOST. Hermes adds packs on
+// image updates, and its skills_sync defers a bundled skill only when a skill
+// in skills.external_dirs (/opt/skills) carries the same name — so a name
+// with no signpost is a skill Hermes writes onto every agent. The catalog is
+// scripts/hermes-skill-authority.json — classify a new path (replaced /
+// keepExact / keepPrefix) before it teaches the fleet a parallel vault.
+// Signposts live in scripts/skills/<signpost>/.
 {
   const catalogPath = join(ROOT, 'scripts/hermes-skill-authority.json')
   if (!existsSync(catalogPath)) {
@@ -1421,7 +1542,7 @@ for (const rule of CENSUS) {
       fix: [
         'The Hermes bundled-skill authority catalog is the tripwire for packs',
         'the image ships that conflict with Talaria. Restore the file, or the',
-        'fleet will prune an empty list and teach Notion again.',
+        'fleet will stop checking its signposts and teach Notion again.',
       ],
       found: [],
     })
@@ -1440,7 +1561,7 @@ for (const rule of CENSUS) {
           'teach the fleet a parallel workspace by omission.',
           ...unknown.map((u) => `  ${u}`),
         ],
-        found: unknown.map((u) => ({ file: 'scripts/hermes-skill-authority.json', line: 1, excerpt: u })),
+        found: unknown.map((u) => ({ path: 'scripts/hermes-skill-authority.json', line: 1, text: u })),
       })
     }
     const missing = []
@@ -1450,15 +1571,43 @@ for (const rule of CENSUS) {
         missing.push(`${r.path} → scripts/skills/${r.signpost}/SKILL.md (${r.why})`)
       }
     }
+    // A replaced path names one skill directory, never a category. Under a
+    // category prefix, a sibling Hermes adds next week classifies as replaced
+    // while no signpost holds its name, and nothing deletes it any more.
+    const categories = replacedPathsNotCatalogued(cat)
+    if (categories.length) {
+      failures.push({
+        id: 'hermes-skill-replaced-category',
+        what: 'a replaced Hermes path is not a catalogued skill directory',
+        fix: [
+          'Name the skill (email/himalaya), not its category (email). A category',
+          'prefix classifies every sibling Hermes adds as replaced while no',
+          'signpost holds its name, so Hermes syncs it onto every agent.',
+          ...categories.map((p) => `  ${p}`),
+        ],
+        found: categories.map((p) => ({ path: 'scripts/hermes-skill-authority.json', line: 1, text: p })),
+      })
+    }
+    // Every name, not any one: the frontmatter `name:` of each signpost is
+    // what Hermes matches, so a body that merely mentions a name is no cover.
+    const declared = declaredSignpostNames(ROOT)
+    for (const r of replaced) {
+      for (const n of r.names || []) {
+        if (!declared.has(n)) {
+          missing.push(`${r.path} ships "${n}" → no scripts/skills/*/SKILL.md declares name: ${n}`)
+        }
+      }
+    }
     if (missing.length) {
       failures.push({
         id: 'hermes-skill-signpost-missing',
         what: 'replaced Hermes packs without a Talaria signpost skill',
         fix: [
-          'Pruning a pack without occupying the name leaves agents searching',
-          'for "notion" / "github" / "email" and improvising. Add a short',
-          'SKILL.md at scripts/skills/<signpost>/ whose frontmatter name: is',
-          'the Hermes name, pointing at the talaria-toolkit playbook.',
+          'Hermes defers a bundled skill only to a same-named skill in',
+          '/opt/skills, so an unoccupied name is a skill it syncs onto every',
+          'agent. Add a short SKILL.md at scripts/skills/<signpost>/ whose',
+          'frontmatter name: is the Hermes name, pointing at the',
+          'talaria-toolkit playbook.',
           ...missing.map((m) => `  ${m}`),
         ],
         found: [],
@@ -2474,6 +2623,130 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
+// THE DESKTOP SHELL MAKES WEBVIEWS ONLY IN A MAIN-THREAD TURN OF ITS OWN.
+//
+// A sync `#[tauri::command]` runs inside the calling webview's IPC callback.
+// On Windows that is a WebView2 handler, and a WebView2 created there never
+// finishes: `activate_instance` did exactly that, and every first open of an
+// instance froze Talaria Desktop on Windows for good. Linux and macOS create
+// synchronously, so only a Windows run could see it — this sees it on any OS,
+// before review. Callbacks are held to the same rule — window, menu, tray and
+// page events, GTK signals, the notification-click entry points — because a
+// window event fires synchronously inside a sync command's window operation on
+// Windows. The judging (a call graph by name, hops, callbacks, what counts as a
+// creation) and its fixture live in scripts/desktop-threading.mjs; the rule is
+// stated at the top of desktop/src-tauri/src/commands.rs.
+{
+  const desktopSrc = 'desktop/src-tauri/src'
+  const files = new Map()
+  for (const f of walk(join(ROOT, desktopSrc), [], ['.rs'])) {
+    files.set(relative(ROOT, f).split(sep).join('/'), readFileSync(f, 'utf8'))
+  }
+  const wrong = desktopThreadingSelfTest()
+  const { violations, commands, callbacks, creators } = scanWebviewThreading(files)
+  if (wrong.length || commands === 0 || creators.length === 0) {
+    failures.push({
+      id: 'desktop-webview-threading-blind',
+      what: 'the desktop webview-threading tripwire can no longer see what it guards',
+      fix: [
+        'scripts/desktop-threading.mjs must flag its own fixture, and must find the shell\'s',
+        `\`#[tauri::command]\`s and at least one webview creation under ${desktopSrc}. If the`,
+        'commands or the creation moved (a new file, a renamed builder), point the scanner at',
+        'them in the same commit — a tripwire that sees nothing passes while guarding nothing.',
+      ],
+      found: [
+        ...wrong.map((text) => ({ path: 'scripts/desktop-threading.mjs', line: 0, text: `self-test: ${text}` })),
+        ...(commands === 0 ? [{ path: desktopSrc, line: 0, text: 'no #[tauri::command] found' }] : []),
+        ...(creators.length === 0 ? [{ path: desktopSrc, line: 0, text: 'no webview creation found' }] : []),
+      ],
+    })
+  }
+  if (violations.length) {
+    failures.push({
+      id: 'desktop-webview-created-inside-ipc',
+      what: 'a desktop shell command can create a webview (or wait on WebView2) where Windows deadlocks',
+      fix: [
+        'A sync command runs inside the caller\'s WebView2 IPC callback: make it `async`, and run the',
+        'creation as one main-thread turn with `on_main_turn(&app, move |app| …).await` (commands.rs).',
+        'An async command must not create from its tokio worker either — the same hop keeps hide →',
+        'create → show in one turn, the order WebKitGTK geometry needs. Code that may already be on',
+        'the main thread — a callback: a window, menu, tray or page event, a GTK signal, a function',
+        'marked `// webview-threading: callback` — queues with `queue_main_turn`. `run_on_main_thread`',
+        'runs inline there, so it is not a way out. docs/DESKTOP.md, "Threading".',
+      ],
+      found: violations.map((v) => ({
+        path: v.path,
+        line: v.line,
+        text: `${{ sync: 'sync command', worker: 'async command, from its tokio worker', callback: 'callback, inline' }[v.kind]}: ${v.chain.join(' → ')}`,
+      })),
+    })
+  }
+  notes.push(`desktop threading: ${commands} shell commands and ${callbacks} callbacks, none reaches webview creation inline`)
+
+  // The drop guard every instance webview runs (DROP_GUARD in commands.rs):
+  // a drag no zone took is "no drop here", never a navigation, and a drag
+  // over a native field is left to the engine. Run against a stub DOM.
+  const guardWrong = checkDropGuard(files.get(`${desktopSrc}/commands.rs`) ?? '')
+  if (guardWrong.length) {
+    failures.push({
+      id: 'desktop-drop-guard',
+      what: "the instance webviews' drop guard does not do what it promises",
+      fix: [
+        'DROP_GUARD (desktop/src-tauri/src/commands.rs) cancels a drag that no drop zone took —',
+        'without it, the engine loads a dropped file or link in place of the instance — and must',
+        'leave a drag over <input>, <textarea>, <select> or anything contenteditable to the engine,',
+        'which takes those drops with nobody calling preventDefault. scripts/desktop-drop-guard.mjs',
+        'runs the script against each case; if the guard now needs more of the DOM, grow its stub.',
+      ],
+      found: guardWrong.map((text) => ({ path: `${desktopSrc}/commands.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop drop guard: stray drags cancelled, zones and native fields left alone (stub DOM)')
+  }
+
+  // The reload keys every instance webview runs (RELOAD_KEYS in reload.rs):
+  // Ctrl+R and F5 off macOS, Cmd+R on it, Shift to skip the cache, and every
+  // other chord left to the page. Run against a stub window.
+  const keysWrong = await checkReloadKeys(files.get(`${desktopSrc}/reload.rs`) ?? '')
+  if (keysWrong.length) {
+    failures.push({
+      id: 'desktop-reload-keys',
+      what: "the instance webviews' reload keys do not do what they promise",
+      fix: [
+        'RELOAD_KEYS (desktop/src-tauri/src/reload.rs) is how a person reloads an instance page,',
+        'including one whose Talaria UI never loaded: Ctrl+R and F5 on Windows and Linux, Cmd+R on',
+        'macOS, Shift (or Ctrl+F5) skipping the cache, and a refused desktop_reload still reloading.',
+        'It must leave every other chord to the page. scripts/desktop-reload-keys.mjs presses each',
+        'one; if the script now needs more of the window, grow its stub.',
+      ],
+      found: keysWrong.map((text) => ({ path: `${desktopSrc}/reload.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop reload keys: Ctrl+R/F5 (Cmd+R on macOS) reload, other chords left to the page (stub window)')
+  }
+
+  // The OS-link click script (OS_LINKS in links.rs): the one way a link
+  // reaches the OS, so it takes only a trusted click on a mailto:, tel: or
+  // sms: link that the page left alone. Run against a stub window.
+  const osWrong = checkOsLinks(files.get(`${desktopSrc}/links.rs`) ?? '')
+  if (osWrong.length) {
+    failures.push({
+      id: 'desktop-os-links',
+      what: "the instance webviews' OS-link script hands over more, or less, than a person's click",
+      fix: [
+        'OS_LINKS (desktop/src-tauri/src/links.rs) is the only path from a page to the OS: the',
+        'navigation and new-window handlers refuse every OS scheme, because no engine tells them a',
+        'click from a script or the page from an artifact frame. It must take a trusted, primary-',
+        'button click on a mailto:, tel: or sms: link the page did not handle, and nothing else.',
+        'scripts/desktop-os-links.mjs clicks each case; if the script needs more of the DOM, grow it.',
+      ],
+      found: osWrong.map((text) => ({ path: `${desktopSrc}/links.rs`, line: 0, text })),
+    })
+  } else {
+    notes.push('desktop OS links: only a trusted click on mailto:/tel:/sms: goes to the OS (stub window)')
+  }
+}
+
 // THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
 //
 // `cli/src/ports.ts` is the cli's single source for the host-port defaults, but
@@ -2562,29 +2835,25 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
-// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR THREE HOMES.
+// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR TWO HOMES.
 //
 // GH #308 shipped exactly this way: /studio was added to nav.ts's
-// MANAGE_VIEWS (what Admin → People offers) but not to the TS server's
-// MANAGE_VIEW_ROUTES (the SPA's gate) nor the Rust const of the same name
-// (the api's authority) — a grant an admin could make that stopped working
-// at the door. No import reaches across any two of the three, so this is a
-// pin: read each list's own spelling and fail when one moves without the
-// others.
+// MANAGE_VIEWS (what Admin → People offers) but not to the Rust const of the
+// same name (the api's authority) — a grant an admin could make that stopped
+// working at the door. No import reaches across the two, so this is a pin:
+// read each list's own spelling and fail when one moves without the other.
+// (A third home, the TS server's MANAGE_VIEW_ROUTES mirror, is gone: the TS
+// host asks the api for a caller's grants instead of resolving its own copy.)
 {
   const navSrc = readFileSync(join(ROOT, 'ui/src/lib/nav.ts'), 'utf8')
   const navBlock = /export const MANAGE_VIEWS[^\n]*= \[([\s\S]*?)\n\]/.exec(navSrc)?.[1]
   const navRoutes = [...(navBlock ?? '').matchAll(/to: '([^']+)'/g)].map((m) => m[1])
-  const usersSrc = readFileSync(join(ROOT, 'ui/src/server/users.ts'), 'utf8')
-  const tsBlock = /const MANAGE_VIEW_ROUTES = \[([^\]]*)\]/.exec(usersSrc)?.[1]
-  const tsRoutes = [...(tsBlock ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
   const rustSrc = readFileSync(join(ROOT, 'api/crates/talaria-users/src/lib.rs'), 'utf8')
   const rustBlock = /pub const MANAGE_VIEW_ROUTES: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(rustSrc)?.[1]
   const rustRoutes = [...(rustBlock ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1])
 
   const homes = [
     ["ui/src/lib/nav.ts MANAGE_VIEWS (the UI's offer list)", navRoutes],
-    ["ui/src/server/users.ts MANAGE_VIEW_ROUTES (the TS gate's mirror)", tsRoutes],
     ["api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES (the api's authority)", rustRoutes],
   ]
   const canonical = navRoutes
@@ -2604,13 +2873,12 @@ const UNSET_SEAM_CENSUS = [
   if (problems.length) {
     failures.push({
       id: 'manage-view-route-drift',
-      what: 'the manage-section view routes disagree between the UI list, the TS gate, and the Rust api',
+      what: 'the manage-section view routes disagree between the UI list and the Rust api',
       fix: [
-        'Add or remove the route in ALL THREE places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
-        "UI's offer list, ui/src/server/users.ts MANAGE_VIEW_ROUTES the TS gate's mirror, and",
-        "api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's authority (bump its",
-        '[&str; N] to match). A view on one list but not the others is a grant that cannot be',
-        'offered, or one that stops working at the door.',
+        'Add or remove the route in BOTH places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
+        "UI's offer list, and api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's",
+        'authority (bump its [&str; N] to match). A view on one list but not the other is a',
+        'grant that cannot be offered, or one that stops working at the door.',
         ...problems,
       ],
       found: [],
@@ -2737,6 +3005,274 @@ const UNSET_SEAM_CENSUS = [
       ],
       found: dead,
     })
+  }
+}
+
+// ── The image builds the ui from a context .dockerignore trims ──────────────
+// The Dockerfile's build stage runs `bun run build` in ui/ over `COPY . .` —
+// the repo minus .dockerignore. A ui build input outside ui/ that the ignore
+// file leaves out compiles everywhere else (dev, the gate, every PR job: none
+// of them builds the image) and fails only in rc-deploy, after the merge.
+// That shipped once: #604's SDK kit read cli/src/cmd/app/skeleton.ts and
+// docs/sdk/talaria.schema.json, both ignored, and every rc deploy failed from
+// that merge until the ignore file named them.
+//
+// The inputs are what the ui build can reach: relative imports out of ui/ in
+// its non-test sources and in the scripts its `build` runs, plus the
+// `join(UI|ui, '..', '<path>')` reads those scripts make.
+{
+  /** .dockerignore's own matching: patterns are relative to the context
+   *  root, `*` stays within a segment, `**` crosses them, a pattern that
+   *  matches a directory takes everything under it, and the LAST matching
+   *  line wins, so a `!` line re-admits a file its directory's line left out. */
+  const ignoreRules = existsSync(join(ROOT, '.dockerignore'))
+    ? readFileSync(join(ROOT, '.dockerignore'), 'utf8')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#'))
+        .map((l) => {
+          const keep = l.startsWith('!')
+          const pat = (keep ? l.slice(1) : l).replace(/^\/+/, '').replace(/\/+$/, '')
+          const re = pat
+            .split(/(\*\*\/|\*\*|\*|\?)/)
+            .map((t) => (t === '**/' ? '(?:.*/)?' : t === '**' ? '.*' : t === '*' ? '[^/]*' : t === '?' ? '[^/]' : t.replace(/[.+^${}()|[\]\\]/g, '\\$&')))
+            .join('')
+          return { keep, re: new RegExp(`^${re}$`) }
+        })
+    : []
+  const ignored = (path) => {
+    const parts = path.split('/')
+    const prefixes = parts.map((_, i) => parts.slice(0, i + 1).join('/'))
+    let out = false
+    for (const r of ignoreRules) if (prefixes.some((p) => r.re.test(p))) out = !r.keep
+    return out
+  }
+
+  const uiPkg = JSON.parse(readFileSync(join(ROOT, 'ui/package.json'), 'utf8'))
+  const buildScripts = [...(uiPkg.scripts?.build ?? '').matchAll(/\bbun\s+(scripts\/[\w./-]+\.(?:ts|mjs|js))/g)].map((m) => `ui/${m[1]}`)
+  const inputs = new Map()
+  for (const [rel, text] of sources) {
+    if (rel.startsWith('ui/src/') && !/\.test\.[a-z]+$/.test(rel)) inputs.set(rel, text)
+  }
+  for (const rel of buildScripts) {
+    const abs = join(ROOT, rel)
+    if (existsSync(abs)) inputs.set(rel, stripComments(readFileSync(abs, 'utf8')))
+  }
+
+  const IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"](\.\.?\/[^'"]+)['"]/g
+  const UP_READ = /\bjoin\(\s*(?:UI|ui|uiRoot\(\))\s*,\s*['"]\.\.['"]\s*,\s*['"]([^'"]+)['"]/g
+  const norm = (p) => {
+    const out = []
+    for (const s of p.split('/')) {
+      if (s === '..') out.pop()
+      else if (s && s !== '.') out.push(s)
+    }
+    return out.join('/')
+  }
+  const left = []
+  for (const [rel, text] of inputs) {
+    const dir = rel.split('/').slice(0, -1).join('/')
+    const hits = [
+      ...[...text.matchAll(IMPORT)].map((m) => ({ index: m.index, target: norm(`${dir}/${m[1]}`) })),
+      ...[...text.matchAll(UP_READ)].map((m) => ({ index: m.index, target: norm(m[1]) })),
+    ]
+    for (const { index, target } of hits) {
+      if (target.startsWith('ui/')) continue
+      // An extensionless import names a module; the file it resolves to is
+      // what the context has to hold.
+      const file = ['', '.ts', '.js', '.mjs', '/index.ts'].map((x) => target + x).find((p) => existsSync(join(ROOT, p))) ?? target
+      if (!ignored(file)) continue
+      left.push({ path: rel, line: lineOf(text, index), text: `reads ${file}, which .dockerignore leaves out of the image's build context` })
+    }
+  }
+  if (left.length) {
+    failures.push({
+      id: 'image-build-input-ignored',
+      what: 'the ui build reads a file outside ui/ that .dockerignore leaves out, so the image build fails in rc-deploy',
+      fix: [
+        'Re-admit exactly that file in .dockerignore with a `!` line under the line that',
+        'leaves its directory out (see the "Not part of any build" block), with a note',
+        'saying what reads it. Do not un-ignore the whole directory: the context stays a',
+        'build of the source, not the machine.',
+        'Or move the file under ui/ and import it from there.',
+      ],
+      found: left,
+    })
+  }
+}
+
+// ── The notification class registry is the one class list (C14) ──────────────
+//
+// The registry lives in api/crates/talaria-notify/src/classes.rs: KIND_CLASS
+// maps every kind a writer files to its class, and CLASSES is the class list
+// the wire serves as `classes[]` (labels, blurbs and defaults included). Two
+// ways it rots, one half each:
+//
+//   RUST — a writer files `NotificationInput { kind: "<new-kind>" }` that the
+//   table never heard of. It does not fail: `notify_class_of` drops it into
+//   the quiet bucket, and the person's matrix has no row that controls it.
+//   Every literal kind must be a KIND_CLASS kind or a class id.
+//
+//   TS — the client grows its own hand-kept class list (three or more
+//   `id: '<class id>'` entries in one file). The server owns the copy now; a
+//   second list is the first one drifting. notify-classes.ts is the one list
+//   allowed until W2-C retires it with this allowlist line.
+//
+// The anchors fail when the registry parses empty — a rule whose subject was
+// renamed keeps passing on a tree that no longer contains it.
+{
+  const registryPath = 'api/crates/talaria-notify/src/classes.rs'
+  const registry = rustSources.get(registryPath) ?? ''
+  const tableAt = registry.indexOf('pub const KIND_CLASS')
+  const table = tableAt === -1 ? '' : registry.slice(tableAt, registry.indexOf('];', tableAt))
+  const kinds = new Set([...table.matchAll(/\(\s*"([a-z0-9_-]+)"\s*,\s*"([a-z0-9_]+)"\s*,/g)].map((m) => m[1]))
+  const classesAt = registry.indexOf('pub const CLASSES')
+  const classesBody = classesAt === -1 ? '' : registry.slice(classesAt, registry.indexOf('];', classesAt))
+  const classIds = new Set([...classesBody.matchAll(/\bid:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]))
+  if (kinds.size === 0 || classIds.size === 0) {
+    failures.push({
+      id: 'notify-class-registry-anchor',
+      what: `${registryPath} no longer parses: KIND_CLASS gave ${kinds.size} kinds and CLASSES ${classIds.size} classes`,
+      fix: [
+        'The class registry moved or changed shape. Point this rule at its new home in the same',
+        'commit, so the two checks below keep reading the real list — a rule over an empty list',
+        'passes on everything.',
+      ],
+      found: [],
+    })
+  } else {
+    // Rust half: every kind a writer files, in the two literal shapes that
+    // carry one — `NotificationInput { kind, … }`, and the tickets' own
+    // `TaskNotification { kind: "…".into(), … }` that becomes one — as a
+    // string literal, or as a `const NAME: &str = "…"` it names (the MCP
+    // health pass's `KIND_SERVER_DOWN`). A kind passed through a variable is
+    // read where its caller spells it in one of these shapes.
+    const kindConsts = new Map()
+    for (const src of rustSources.values()) {
+      for (const c of src.matchAll(/\bconst\s+([A-Z][A-Z0-9_]+)\s*:\s*&(?:'static\s+)?str\s*=\s*"([^"]+)"/g)) {
+        if (!kindConsts.has(c[1])) kindConsts.set(c[1], c[2])
+      }
+    }
+    const unknown = []
+    let seen = 0
+    for (const [path, src] of rustSources) {
+      const skip = cfgTestRanges(src)
+      for (const m of src.matchAll(/\b(?:NotificationInput|TaskNotification)\s*\{/g)) {
+        if (skip.some(([s, e]) => m.index >= s && m.index < e)) continue
+        const body = braceBody(src, m.index)
+        if (!body) continue
+        const k = /\bkind:\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]+)\b)/.exec(src.slice(body[0], body[1]))
+        if (!k) continue
+        const kind = k[1] ?? kindConsts.get(k[2])
+        if (kind === undefined) continue
+        seen++
+        if (!kinds.has(kind) && !classIds.has(kind)) {
+          const spelled = k[1] ? `"${kind}"` : `${k[2]} (= "${kind}")`
+          unknown.push({ path, line: lineOf(src, m.index), text: `kind: ${spelled} — not in KIND_CLASS and not a class id` })
+        }
+      }
+    }
+    // The shapes' own anchor: a tree where neither shape names a kind any
+    // more has moved its writers somewhere this rule no longer reads.
+    if (seen === 0) {
+      failures.push({
+        id: 'notify-kind-writers-anchor',
+        what: 'no NotificationInput or TaskNotification literal names a kind — the writers moved out of reach of the class-registry rule',
+        fix: [
+          'Point the Rust half of this rule at the struct literals that now carry a notification',
+          'kind, in the same commit that moved them.',
+        ],
+        found: [],
+      })
+    }
+    if (unknown.length) {
+      failures.push({
+        id: 'notify-kind-not-in-registry',
+        what: 'a writer files a notification kind the class registry does not name — it lands in the quiet bucket and no setting controls it',
+        fix: [
+          `Add the kind to KIND_CLASS in ${registryPath} — (kind, class, the reason a row`,
+          'of it shows) — with the class a person would look for it under. If no class fits,',
+          'that is a registry change: add the class to CLASSES with its category and defaults,',
+          'and say so in the pull request. Or name an existing class id as the kind.',
+        ],
+        found: unknown,
+      })
+    }
+    // TS half: no second hand-kept class list.
+    const CLASS_LIST_ALLOWED = [] // empty since W2-C retired notify-classes.ts's list; keep it empty
+    const lists = []
+    const counts = new Map()
+    for (const [path, src] of sources) {
+      if (!path.startsWith('ui/src/') || /\.test\.[a-z]+$/.test(path)) continue
+      const n = [...src.matchAll(/\bid:\s*['"]([a-z0-9_]+)['"]/g)].filter((m) => classIds.has(m[1])).length
+      counts.set(path, n)
+      if (n >= 3 && !CLASS_LIST_ALLOWED.includes(path)) {
+        lists.push({ path, line: 1, text: `${n} entries name a notification class id — a hand-kept class list` })
+      }
+    }
+    for (const path of CLASS_LIST_ALLOWED) {
+      if ((counts.get(path) ?? 0) < 3) {
+        lists.push({ path, line: 1, text: 'allowlisted as a class list, but it no longer is one — delete the allowlist line' })
+      }
+    }
+    if (lists.length) {
+      failures.push({
+        id: 'notify-class-list-in-the-client',
+        what: 'the client keeps its own list of notification classes — the server serves the registry as `classes[]`',
+        fix: [
+          'Render from `classes` in GET /api/notifications (`ClassInfo` in ui/src/lib/notify-wire.ts):',
+          'labels, blurbs, categories and defaults all come from the registry. A second list is',
+          `the first one drifting. The one allowed list is in CLASS_LIST_ALLOWED in this file`,
+          'until W2-C retires it; when it goes, its allowlist line goes in the same commit.',
+        ],
+        found: lists,
+      })
+    }
+    notes.push(`notification classes: ${classIds.size} in the registry, ${kinds.size} kinds in KIND_CLASS, ${seen} writer literals read`)
+  }
+}
+
+// ── GitHub's Latest release is the desktop updater feed ─────────────────────
+// The shell's updater reads /releases/latest/download/latest.json, and GitHub
+// marks a new non-prerelease release Latest unless told not to. A stable
+// server release (release.yml) made Latest by default carries no latest.json at
+// all (desktop installers ship only on desktop-v releases), and every installed
+// app's update check 404s. So release.yml
+// opens and edits every vX.Y.Z release --latest=false, and desktop-package.yml
+// mints desktop-vX.Y.0 --latest=false and marks it Latest explicitly, only once
+// its latest.json is uploaded. The reading of the workflows, and its fixture,
+// live in scripts/release-latest.mjs.
+{
+  const dir = join(ROOT, '.github', 'workflows')
+  const workflows = new Map()
+  for (const file of readdirSync(dir)) {
+    if (file.endsWith('.yml') || file.endsWith('.yaml')) workflows.set(file, readFileSync(join(dir, file), 'utf8'))
+  }
+  const confPath = join(ROOT, 'desktop/src-tauri/tauri.conf.json')
+  const conf = existsSync(confPath) ? readFileSync(confPath, 'utf8') : null
+  const wrong = releaseLatestSelfTest()
+  const found = [
+    ...wrong.map((text) => ({ path: 'scripts/release-latest.mjs', line: 0, text: `self-test: ${text}` })),
+    ...checkReleaseLatest(workflows, conf),
+  ]
+  if (found.length) {
+    failures.push({
+      id: 'release-latest-is-the-desktop-feed',
+      what: "a release can take GitHub's Latest flag from the desktop updater feed, or the feed can flip early",
+      fix: [
+        'GitHub\'s Latest release is what /releases/latest/download/latest.json resolves through, and',
+        'that is the only URL the desktop updater reads (tauri.conf.json). release.yml creates and',
+        'edits every vX.Y.Z release with --latest=false. desktop-package.yml creates its desktop-v',
+        'mint with --latest=false and marks it Latest with `gh release edit "$TAG" --latest` after',
+        'the latest.json upload, never before, and only inside `if [ "$MINT" = true ]` with MINT',
+        'bound to needs.resolve.outputs.mint: `attach` also runs for a re-attach dispatch. Any',
+        'other `gh release create` says --prerelease or an explicit --latest=false. RELEASING.md,',
+        '"The desktop installers".',
+      ],
+      found,
+    })
+  } else {
+    notes.push('release Latest flag: release.yml never takes it; desktop-package.yml takes it after latest.json lands, on the mint path only')
   }
 }
 

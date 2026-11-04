@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use talaria_api_facades::gateway::app_keys::APP_KEY_PREFIX;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
@@ -49,6 +50,16 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // `app:` names the key the app host holds for an app (app_keys.rs). The
+    // relay trusts only the key the app lifecycle recorded, but a personal
+    // key wearing the name would still read as the app's everywhere a key is
+    // listed by name.
+    if name.trim_start().starts_with(APP_KEY_PREFIX) {
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "key names starting with \"app:\" are reserved for the keys Talaria holds for apps",
+        ));
+    }
     let (key, secret) = match mint_key(&state.pg, &user.id, &name).await {
         Ok(r) => r,
         Err(e) => return Ok(internal("[keys] mint failed", e)),

@@ -109,8 +109,8 @@ seed_fleet() {
 # give agents a brain; the app itself runs fine without.
 LLM_BASE_URL=
 LLM_API_KEY=
-LLM_MODEL=
-#HERMES_IMAGE=nousresearch/hermes-agent:latest
+# Overrides the chassis's pinned Hermes image (tag + digest):
+#HERMES_IMAGE=nousresearch/hermes-agent:<tag>@sha256:<digest>
 EOF
     say "seeded fleet/.env"
   fi

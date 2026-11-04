@@ -10,6 +10,17 @@
 //   secret_leak       — a live credential shape in the output
 //   pii_leak          — high-precision personal data (SSN / Luhn card / IBAN)
 //
+// And one rule this file DECLARES but never runs: `implied_completion`, the
+// first rule that is judged rather than matched (talaria-decide's guard.rs).
+// It asks the operator's decision model whether a reply leaves a reader
+// believing something was done that nothing in the turn's tool record did —
+// the claim `zero_tool_claim` misses when it is phrased as a new state of the
+// world rather than a verb of doing. The decision model and its keys live in
+// the api, so a harness run's reply goes there for it, once per run, after the
+// structural pass below (`HarnessDeps.judgeSemantic`, harness/run.ts). It is
+// listed here so an app harness may name it in `guard.rules`, the admin toggle
+// reads it like any other, and `runGuardrails` skips it by declaration.
+//
 // WHAT THE MODE GOVERNS: DISCLOSURE. One org-wide setting, and what it decides
 // is how loudly a finding is told to the people reading model output.
 //   off       nothing runs, nothing is recorded.
@@ -609,7 +620,7 @@ export interface GuardContext {
  *                         rewriting it damages the user's own content. */
 export type Groundable = 'finding' | 'finding+redaction'
 
-export interface Rule {
+interface RuleBase {
   id: string
   label: string
   severity: Severity
@@ -624,6 +635,20 @@ export interface Rule {
    *  supply it (e.g. chat sees tool NAMES but not results/errors) skips the rule
    *  rather than false-positive. */
   needs?: Array<'results' | 'errorInfo'>
+}
+
+/** JUDGED, NOT MATCHED: a rule the api's decision model answers
+ *  (talaria-decide `SEMANTIC_RULES`). It has no `run` here — there is nothing
+ *  to run in this process — and every loop below skips it BY DECLARATION, so a
+ *  structural rule cannot lose its evaluator and fall silent; it would not
+ *  typecheck. Every semantic rule defaults OFF: sending reply text to a
+ *  decision model is an operator's choice to make knowingly. */
+export interface SemanticRule extends RuleBase {
+  semantic: true
+}
+
+export interface StructuralRule extends RuleBase {
+  semantic?: false
   /** Returns a hit (message + snippet + confidence 0..1) or null. Pure.
    *
    *  `grounded` says the flagged span was already in `groundingInput(ctx)`. The
@@ -632,6 +657,8 @@ export interface Rule {
    *  meaning for it. */
   run(ctx: GuardContext): { message: string; snippet: string; confidence: number; grounded?: boolean } | null
 }
+
+export type Rule = StructuralRule | SemanticRule
 
 // The registry. Add a rule here → it's configurable + runs everywhere, no other
 // wiring. (Extensible: PII, unsafe-action, etc. slot in the same way.)
@@ -746,12 +773,34 @@ export const RULES: Rule[] = [
         : null
     },
   },
+  // THE ONE THE FIVE ABOVE STRUCTURALLY CANNOT REACH. `zero_tool_claim` fires
+  // on a claim PHRASING, so "the key is rotated and the deploy is clean" walks
+  // past it while claiming finished work as surely as "I rotated it" would.
+  // Declared here, judged in the api (see the file header and `SemanticRule`):
+  // medium, so it stays out of the high-severity set the fitness band reads to
+  // fail a model, and off until an admin turns it on.
+  {
+    id: 'implied_completion',
+    label: 'Implied completion (judged: claims finished work no tool did)',
+    severity: 'medium',
+    defaultOn: false,
+    semantic: true,
+  },
 ]
+
+/** The structural rules — the ones this process runs. */
+const STRUCTURAL: StructuralRule[] = RULES.filter((r): r is StructuralRule => !r.semantic)
 
 const ruleEnabled = (config: GuardConfig, rule: Rule) => config.checks[rule.id] ?? rule.defaultOn
 
 /** Metadata for the admin UI (which rules exist, defaults). */
 export const guardRuleMeta = () => RULES.map((r) => ({ id: r.id, label: r.label, severity: r.severity, defaultOn: r.defaultOn }))
+
+/** The semantic rules `config` has on — for a harness, the config its
+ *  `guard.rules` narrowed. What a run hands the api to judge; empty means
+ *  there is nothing to ask, and no call is made. */
+export const semanticRulesOn = (config: GuardConfig): string[] =>
+  config.mode === 'off' ? [] : RULES.filter((r) => r.semantic && ruleEnabled(config, r)).map((r) => r.id)
 
 /** What the caller can supply about the turn's tools. A path with the full
  *  message history has both; the chat stream has tool NAMES only (neither). */
@@ -766,7 +815,7 @@ const FULL: Available = { results: true, errorInfo: true }
  *  `guardText` — which are the same loop over two different rule subsets — can
  *  never drift on what a grounded span costs. Returns null when there is nothing
  *  to report. */
-function evaluate(rule: Rule, ctx: GuardContext, config: GuardConfig): Finding | null {
+function evaluate(rule: StructuralRule, ctx: GuardContext, config: GuardConfig): Finding | null {
   const hit = rule.run(ctx)
   if (!hit || hit.confidence < config.minConfidence) return null
   const finding: Finding = { check: rule.id, severity: rule.severity, confidence: hit.confidence, message: hit.message, snippet: hit.snippet }
@@ -791,7 +840,7 @@ function evaluate(rule: Rule, ctx: GuardContext, config: GuardConfig): Finding |
 export function runGuardrails(ctx: GuardContext, config: GuardConfig, available: Available = FULL): Finding[] {
   if (!ctx.answer) return []
   const out: Finding[] = []
-  for (const rule of RULES) {
+  for (const rule of STRUCTURAL) {
     if (!ruleEnabled(config, rule)) continue
     if (rule.needs?.some((n) => !available[n])) continue
     const finding = evaluate(rule, ctx, config)
@@ -822,7 +871,7 @@ export async function guardText(text: string, input?: string): Promise<Finding[]
     ...(input ? { inputText: input } : {}),
   }
   const out: Finding[] = []
-  for (const rule of RULES) {
+  for (const rule of STRUCTURAL) {
     if (!rule.gateSafe || !ruleEnabled(config, rule)) continue
     const finding = evaluate(rule, ctx, config)
     if (finding) out.push(finding)
@@ -939,32 +988,6 @@ export async function guardStats(): Promise<{ total: number; byCheck: Record<str
   let total = 0
   for (const r of rows) { byCheck[r.check] = r.n; total += r.n }
   return { total, byCheck }
-}
-
-/** The one-call entry point for the gateway: run guards (if enabled) on a
- *  finished completion, record findings, and return any annotate-mode caveat. */
-export async function guardCompletion(input: {
-  answer: string
-  messages: unknown[]
-  caller: string
-  model: string
-  endpoint: string | null
-}): Promise<{ findings: Finding[]; caveat: string; mode: GuardMode }> {
-  const config = await getGuardConfig()
-  if (config.mode === 'off' || !input.answer) return { findings: [], caveat: '', mode: config.mode }
-  const messages = input.messages as Msg[]
-  const toolRecord = extractToolRecord(messages)
-  let userMessage = ''
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === 'user') { userMessage = asText(messages[i]!.content); break }
-  }
-  const findings = runGuardrails(
-    { answer: input.answer, toolRecord, userMessage, inputText: groundingTextOf(messages), policedHosts: config.policedHosts },
-    config,
-  )
-  await recordFindings(findings, { caller: input.caller, model: input.model, endpoint: input.endpoint, mode: config.mode }).catch(() => {})
-  const caveat = config.mode === 'annotate' || config.mode === 'strict' ? caveatFor(findings) : ''
-  return { findings, caveat, mode: config.mode }
 }
 
 /** Guard a CHAT/channel reply. The agent's tool loop runs inside the fleet, so

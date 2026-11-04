@@ -418,6 +418,7 @@ pub fn concluder_harness() -> HarnessDefinition {
         // for whoever clicked conclude.
         ModelSpec {
             pin: Some("concluder"),
+            slot: None,
             role: None,
             chain: Some(&MUSE_CHAIN),
             user_id: None,

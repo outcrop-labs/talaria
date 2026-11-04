@@ -31,8 +31,11 @@
     disabled?: boolean
   } = $props()
 
-  const { efforts, isLoading } = useModelEfforts(() => model ?? null)
-  const settled = $derived(!!model && !isLoading)
+  // Kept whole and read through its getters: destructured, the levels and
+  // the loading flag would be the query's state at mount, frozen.
+  const modelEfforts = useModelEfforts(() => model ?? null)
+  const efforts = $derived(modelEfforts.efforts)
+  const settled = $derived(!!model && !modelEfforts.isLoading)
 
   // The effort chip's shape: its rows, the rung the stored level sits on ('' is
   // the model's own default — no rung), and the ingress row that means it.

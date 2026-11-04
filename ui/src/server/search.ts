@@ -30,10 +30,10 @@
 //   documented JSON API.
 //
 // TWO CONFIGURATION FACTS that cost an afternoon each if you meet them cold, and
-// which `docker/searxng/settings.yml` sets for you: the JSON format is OFF by
-// default and a request for it 403s until `search.formats` includes `json`; and
-// the rate limiter throttles our own agents unless it is off for an internal
-// instance.
+// which the operator's own SearXNG settings.yml has to set (Talaria ships no
+// SearXNG and no settings for one): the JSON format is OFF by default and a
+// request for it 403s until `search.formats` includes `json`; and the rate
+// limiter throttles our own agents unless it is off for an internal instance.
 //
 // BOTH LIVE IN A MOUNTED settings.yml, NOT IN ENV VARS, and that is worth
 // knowing before you try the obvious thing: SearXNG honours environment
@@ -48,8 +48,16 @@ import { getSetting } from './audit'
  *  the authority and says why) — empty means no provider of this shape. */
 export const SEARCH_URL_KEY = 'search_url'
 
+/** SEARXNG_URL as the environment sets it, or null — and null includes SET
+ *  BUT BLANK (an env file's `SEARXNG_URL=`), which falls through to the
+ *  setting. The Rust twin's rule (`talaria_search::env_search_url`), so the
+ *  URL in force and Admin → Search's `fromEnv` agree on both sides. */
+export function envSearchUrl(env: Record<string, string | undefined> = process.env): string | null {
+  return env.SEARXNG_URL?.trim() || null
+}
+
 export async function searchUrl(): Promise<string> {
-  const configured = process.env.SEARXNG_URL ?? (await getSetting<string>(SEARCH_URL_KEY, ''))
+  const configured = envSearchUrl() ?? (await getSetting<string>(SEARCH_URL_KEY, ''))
   return configured.replace(/\/$/, '')
 }
 
@@ -153,8 +161,8 @@ export function resultsFrom(body: unknown): SearchResult[] {
  *  "REACHABLE" MEANS "FINDS THINGS", NOT "ANSWERS THE PHONE", and the difference
  *  is the whole reason this function needed changing. A SearXNG whose every
  *  general engine is CAPTCHA-walled — the DEFAULT state of a fresh self-hosted
- *  instance, see the engines block in `docker/searxng/settings.template.yml` —
- *  returns HTTP 200 with valid JSON and `results: []`. The old check asked only
+ *  instance, whose stock engines challenge a server's traffic — returns HTTP
+ *  200 with valid JSON and `results: []`. The old check asked only
  *  whether `searchWeb` threw, so it reported healthy while search found nothing
  *  for anybody, and `platformSupply` went on advertising a `web_search` tool
  *  that could not search. A model handed an empty result set does not fail

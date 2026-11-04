@@ -9,6 +9,8 @@
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
 #     cd api && fmt + clippy + cargo test       (the Rust port)
 #     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
+#     cd desktop/src-tauri && clippy + cargo test on macOS and Windows  (their own code)
+#     the desktop connect smoke on Linux, macOS and Windows  (does it open an instance)
 #     the MCP end-to-end suite (Playwright against a booted app + api + stubs)
 #   That is the whole thing. It takes a couple of minutes (the e2e job, when
 #   its surface moved, is the long pole — see its own note).
@@ -80,8 +82,7 @@
 #     gets disabled. Not this file's problem.
 #   - Build (`vite build`) and any deploy. `svelte-check` already covers the
 #     type surface; a full build roughly triples the runtime for a weaker signal.
-#   - `plugin/` — no build or typecheck to run at all. `scripts/`
-#     is not typechecked either; it is EXECUTED, by the invariants job.
+#   - Typechecking `scripts/`. It is EXECUTED instead, by the invariants job.
 #   - `paths:` filters ON THE TRIGGERS. Still out, and now for a reason that
 #     survives contact: a workflow-level filter is as coarse as the whole file,
 #     and one of these jobs — invariants, seconds, no install — has to see
@@ -277,26 +278,68 @@ jobs:
           # through are in EVERY list on purpose: an edit to either changes
           # what these jobs are, so the run that carries it should exercise
           # all of them.
-          surface ui      'ui/*' 'apps/*' '.github/workflows/ci.yml' '.github/actions/**'
+          #
+          # docs/sdk/ and the app scaffolder are in the ui list because the ui
+          # suite compiles the SDK docs' examples and every file `talaria app new`
+          # writes against the SDK (ui/src/sdk/client-docs.test.ts and
+          # server.test.ts). Without them, a docs-only or scaffold-only edit
+          # that stops compiling skips this job, and a skip reports success.
+          #
+          # The same rule holds for every file a job reads from OUTSIDE its own
+          # directory: each one below is a file the job's tests read, import or
+          # compile in, so an edit to it alone can turn the job red.
+          #   ui    the fixtures it shares with the api (app grants, the app
+          #         manifest, secretbox vectors and their generator), the Rust
+          #         sources it holds its tables to (the harness registry, the
+          #         gateway guard, the platform agents), the chassis template and
+          #         the workbench image files (chassis.test.ts), and
+          #         check-invariants.mjs (server-import-invariant.test.ts runs it).
+          #   cli   every api .rs file (box.test.ts reads them for the env keys
+          #         a box's api must be handed), the grants fixture,
+          #         docs/CONTAINER.md's up command, the devbox compose, and the
+          #         repo's .gitignore (ignore.test.ts asks git about it).
+          #   api   the chassis template, the Hermes toolset and skill-authority
+          #         files (include_str!), the shipped skills tree, and
+          #         mcp/src/index.ts (the fitness catalog's sync test).
+          #   desktop  ui/src/lib/dither-engine.ts, which the launcher imports
+          #         as `@dither` (desktop/vite.config.ts, tsconfig.json).
+          surface ui      'ui/*' 'apps/*' 'docs/sdk/*' 'cli/src/cmd/app/*' \
+                          'api/tests/it/fixtures/*' 'api/crates/talaria-harness-defs/src/registry.rs' \
+                          'api/crates/talaria-gateway/src/guard.rs' 'api/crates/talaria-platform-agents/src/lib.rs' \
+                          'scripts/chassis.template.yml' 'scripts/workbench.Dockerfile' 'scripts/build-workbench-image.sh' \
+                          'scripts/check-invariants.mjs' 'scripts/gen-secretbox-vectors.mjs' \
+                          '.github/workflows/ci.yml' '.github/actions/**'
           surface mcp     'mcp/*' '.github/workflows/ci.yml' '.github/actions/**'
-          surface cli     'cli/*' '.github/workflows/ci.yml' '.github/actions/**'
-          surface api     'api/*' '.github/workflows/ci.yml' '.github/actions/**'
-          surface desktop 'desktop/*' '.github/workflows/ci.yml' '.github/actions/**'
+          surface cli     'cli/*' 'api/*.rs' 'api/tests/it/fixtures/*' 'docs/CONTAINER.md' 'docker/devbox.compose.yml' \
+                          '.gitignore' '.github/workflows/ci.yml' '.github/actions/**'
+          surface api     'api/*' 'scripts/chassis.template.yml' 'scripts/hermes-toolsets.json' \
+                          'scripts/hermes-skill-authority.json' 'scripts/skills/*' 'mcp/src/index.ts' \
+                          '.github/workflows/ci.yml' '.github/actions/**'
+          surface desktop 'desktop/*' 'ui/src/lib/dither-engine.ts' '.github/workflows/ci.yml' '.github/actions/**'
           surface mobile  'mobile/*' '.github/workflows/ci.yml' '.github/actions/**'
-          # The MCP end-to-end suite drives the ui, the stubs and the api's MCP
-          # crates together; a change to any of them can break the story. The
-          # list is every crate the story passes through, not only the ones
-          # named mcp: the agent-side server, the fleet renderer (where the
-          # agent's config.yaml is built), the SSRF guard, route mounting, the
-          # /api/me/mcp account routes, the body validators, the agents.manage
-          # check, and the spend boundary. A required check that this filter
-          # skips still reports success (job-level `if`), so a crate missing
-          # here is a story that silently stops being tested.
-          surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/talaria-mcp*' 'api/crates/talaria-routes-fleet/*' \
-                          'api/crates/talaria-agent-mcp/*' 'api/crates/talaria-fleet-render/*' 'api/crates/talaria-safe-fetch/*' \
-                          'api/crates/talaria-api-routes/*' 'api/crates/talaria-routes-integrations/*' 'api/crates/talaria-body/*' \
-                          'api/crates/talaria-users/*' 'api/crates/talaria-workspace-secrets/*' \
-                          'api/Cargo.lock' '.github/workflows/ci.yml' '.github/actions/**'
+          # The end-to-end suite (ui/e2e/*.spec.ts: the MCP story and the
+          # notification specs) boots the api binary this job builds with
+          # `cargo build --bin talaria-api`, the built ui and the stubs. So its
+          # surface is everything that goes into that binary, not a list of the
+          # crates a spec seems to be about: the root package depends on every
+          # workspace crate, 218 of them directly and the rest through those
+          # (243 of 243 on 2026-11-02, read from the manifests), so a change to
+          # any crate, a shared one such as talaria-db, -state, -auth, -config,
+          # -error, -params or -permissions included, can change what the specs
+          # meet. A hand list of the "relevant" crates missed exactly those, and
+          # a required check this filter skips still reports success (job-level
+          # `if`). `api/crates/*` also covers a crate added later with no edit
+          # here. With it: the binary itself (api/src), the workspace manifest
+          # and lockfile (a dependency's features, such as the TLS roots the
+          # stubs' throwaway CA relies on, can change with no lockfile line), the
+          # build's own config and toolchain pin, and the chassis template this
+          # job copies in for the hire. Not api/tests or the package
+          # Dockerfile: neither goes into the binary. The cost is this job on
+          # every Rust pull request; it runs beside the api job, which takes
+          # longer, so the wait for a green run does not grow.
+          surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/*' 'api/src/*' 'api/Cargo.toml' 'api/Cargo.lock' \
+                          'api/.cargo/*' 'api/rust-toolchain.toml' 'scripts/chassis.template.yml' \
+                          '.github/workflows/ci.yml' '.github/actions/**'
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug
@@ -536,12 +579,28 @@ jobs:
   # home of their own (desktop-package.yml, built on every platform and pinned
   # to a release); dragging linuxdeploy and the flatpak runtime into a tripwire
   # would make it slow enough to be skipped.
+  #
+  # THE CONNECT SMOKE closes each of the three desktop jobs: does the shell open
+  # an instance at all? On Windows every first open froze the app for good (a
+  # webview created inside a WebView2 IPC callback deadlocks), and nothing could
+  # see it: clippy and the tests cannot see a hang, and desktop-package.yml's
+  # installer smoke asks only whether the process is still up after 20 s, which
+  # a frozen one is. Each job builds the real shell (debug, launcher embedded),
+  # registers a fake instance on localhost as the last view, launches it, and
+  # passes only if the instance page is requested and its script runs — boot,
+  # probe, activate, webview, navigation. desktop/packaging/connect-smoke.mjs is
+  # the script; it says which step happened last when it fails. The wait is 90 s
+  # because a pass exits the moment the page answers, while release.yml runs
+  # this file before every publish: a slow WebView2 cold start must not block a
+  # release. The smoke steps share their job's build and its one rust-cache key
+  # (the Actions cache is close to its 10 GB cap), and run even after a clippy
+  # or test failure, so a red job still says whether the app opens.
   desktop:
     name: fmt + clippy + test + typecheck (desktop)
     needs: [changes]
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v5
@@ -562,11 +621,12 @@ jobs:
       # Needed even for `cargo check`/clippy — the sys crates probe the
       # webkit2gtk/gtk packages at build-script time. ubuntu-latest (24.04)
       # ships libwebkit2gtk-4.1-dev; if a runner-image bump ever removes it,
-      # this is the line to read.
+      # this is the line to read. xvfb and dbus are the connect smoke's display
+      # and session bus.
       - name: Tauri system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev xvfb xauth dbus
 
       - name: Format
         working-directory: desktop/src-tauri
@@ -583,6 +643,125 @@ jobs:
       - name: Typecheck
         working-directory: desktop
         run: bun run typecheck
+
+      # `custom-protocol` embeds desktop/dist, so the launcher is the built one
+      # and not tauri.conf.json's devUrl (see the feature's note in Cargo.toml).
+      - name: Build the launcher
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        run: bun run build:vite
+
+      - name: Build the shell
+        if: ${{ !cancelled() }}
+        working-directory: desktop/src-tauri
+        run: cargo build --features custom-protocol
+
+      # A private X display and session bus (the shell's single-instance name
+      # and GApplication live on the bus); software rendering.
+      - name: Connect smoke
+        if: ${{ !cancelled() }}
+        env:
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a dbus-run-session -- node desktop/packaging/connect-smoke.mjs desktop/src-tauri/target/debug/talaria-desktop --wait 90
+
+  # The same crate on macOS. The shell's macOS code — the
+  # UNUserNotificationCenter backend and its delegate (notify/macos.rs), the
+  # dock badge, the menu-bar item, `RunEvent::Reopen` — is behind
+  # `cfg(target_os = "macos")`, so the Linux job above never compiles a line
+  # of it, and desktop-package.yml only builds on main and by dispatch. This
+  # job is what puts it through clippy and the tests on every desktop pull
+  # request, and the connect smoke through WKWebView (the runner has a GUI
+  # session). No bundle and no apt step: macOS has the webview already.
+  desktop-macos:
+    name: clippy + test + connect smoke (desktop macos)
+    needs: [changes]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: desktop
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: desktop/src-tauri
+        run: cargo test --quiet
+
+      - name: Build the launcher
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        run: bun run build:vite
+
+      - name: Build the shell
+        if: ${{ !cancelled() }}
+        working-directory: desktop/src-tauri
+        run: cargo build --features custom-protocol
+
+      - name: Connect smoke
+        if: ${{ !cancelled() }}
+        run: node desktop/packaging/connect-smoke.mjs desktop/src-tauri/target/debug/talaria-desktop --wait 90
+
+  # The same crate on Windows, for the same reason as macOS: notify/windows.rs
+  # and every `cfg(windows)` branch are compiled by no other job, and the tests
+  # carry Windows semantics of their own (paths, the registry's tmp + rename
+  # write, the beacon tests over local sockets). No apt step: the WebView2
+  # bindings ship inside webview2-com-sys. The connect smoke here is the one
+  # that caught the freeze: it failed on rc's code and passes with the fix.
+  desktop-windows:
+    name: clippy + test + connect smoke (desktop windows)
+    needs: [changes]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 50
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: desktop
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: desktop/src-tauri
+        run: cargo test --quiet
+
+      - name: Build the launcher
+        if: ${{ !cancelled() }}
+        working-directory: desktop
+        run: bun run build:vite
+
+      - name: Build the shell
+        if: ${{ !cancelled() }}
+        working-directory: desktop/src-tauri
+        run: cargo build --features custom-protocol
+
+      - name: Connect smoke
+        if: ${{ !cancelled() }}
+        run: node desktop/packaging/connect-smoke.mjs desktop/src-tauri/target/debug/talaria-desktop.exe --wait 90
 
   # The surface gate, on Linux: what `bun run mobile:check` runs, and what a
   # devbox runs. `--no-daemon` because a CI runner is thrown away afterwards and

@@ -113,7 +113,8 @@
   // every agent. Two kinds of row are locked and say why: the pair Talaria
   // replaces with its own tools, and names the api's environment pins.
   // Explicit Save, not autosave: this is a governance control that lands on
-  // every agent, even though saving it rolls nothing.
+  // every agent at once — saving renders the fleet (it restarts nobody), and
+  // each running agent reads the floor on its next turn.
   const vocab = $derived(data?.toolsets)
   const envClosed = $derived(vocab?.env ?? [])
   const locked = $derived([...(vocab?.builtin ?? []), ...envClosed])
@@ -265,7 +266,7 @@
           The Hermes toolsets any agent may carry. A box is the toolset being available to the fleet; clearing one
           closes it for every agent, whatever its managers opened, and a manager sees it locked in the agent's own
           editor. Talaria's own todo and clarify tools replace Hermes' for good, so those two stay closed. Saving
-          rolls nothing: the floor applies at each agent's next render or roll.
+          restarts nobody: the floor reaches every running agent on its next turn.
         </p>
         <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3 md:grid-cols-4">
           {#each floorRows as r (r.name)}
@@ -292,7 +293,7 @@
           {#if floorDirty}
             <Button size="sm" variant="ghost" disabled={floorSaving} onclick={() => (floorEdit = null)}>Reset</Button>
           {/if}
-          {#if toolsetFlash.saved}<span class="text-xs text-success">Saved. Applies at each agent's next render or roll.</span>{/if}
+          {#if toolsetFlash.saved}<span class="text-xs text-success">Saved. Reaches every agent on its next turn.</span>{/if}
           {#if envClosed.length}
             <span class="text-xs text-muted">Pinned by the api's environment: {envClosed.join(', ')}.</span>
           {/if}

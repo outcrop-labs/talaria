@@ -314,12 +314,10 @@ test("an agent's unread is the sum across its conversations", () => {
   assert.deepEqual(v.agents.map((a) => [a.agent.id, a.unread]), [['hermes', 5], ['atlas', 0]])
 })
 
-test('fleet status maps to presence: offline is offline, everything else is online', () => {
+test('fleet status maps to presence: offline is offline, a running container is online', () => {
   const expected: Record<AgentStatus, 'online' | 'offline'> = {
     offline: 'offline',
     idle: 'online',
-    busy: 'online',
-    error: 'online',
   }
   for (const [status, presence] of Object.entries(expected)) {
     assert.equal(agentPresence(status as AgentStatus), presence, status)

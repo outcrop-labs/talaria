@@ -267,6 +267,7 @@ pub fn hermes_comms_harness() -> HarnessDefinition {
         "A workspace agent talking in the rooms it belongs to, using the fleet toolkit.",
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

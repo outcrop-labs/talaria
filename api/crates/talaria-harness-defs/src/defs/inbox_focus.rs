@@ -690,6 +690,7 @@ pub fn inbox_brief_harness() -> HarnessDefinition {
         "Turns a queue item into the one question the owner has to answer and the step that answers it.",
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,
@@ -793,6 +794,7 @@ pub fn inbox_command_harness() -> HarnessDefinition {
         "Maps an owner instruction onto one allowlisted action on the focused item, or asks for clarification.",
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,
@@ -972,6 +974,7 @@ pub fn inbox_reply_harness() -> HarnessDefinition {
         "Answers the owner in the Inbox when no queue item is in focus.",
         ModelSpec {
             pin: None,
+            slot: None,
             role: None,
             chain: Some(&[]),
             user_id: None,

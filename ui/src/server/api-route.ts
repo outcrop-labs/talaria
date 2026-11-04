@@ -50,7 +50,7 @@ export function defineApi<Path extends string>(
   return { path, handlers: handlers as unknown as ApiRoute['handlers'] }
 }
 
-interface CompiledRoute extends ApiRoute {
+export interface CompiledRoute extends ApiRoute {
   segments: string[]
   /** Trailing `$`: match any deeper path, exposing the rest as params._splat. */
   splat: boolean
@@ -69,9 +69,34 @@ export function compileRoute(route: ApiRoute): CompiledRoute {
   return { ...route, segments, splat, staticCount }
 }
 
-/** Match a pathname against a compiled route; null when it doesn't apply. */
-export function matchRoute(route: CompiledRoute, pathname: string): ApiParams | null {
-  const parts = pathname.split('/').filter(Boolean)
+/** A raw (still percent-encoded) URL pathname as its segments, each decoded
+ *  exactly once; empty segments are dropped. Null when a segment holds a
+ *  malformed escape (`%E0%A4%A`, a lone `%`): that path names nothing, and the
+ *  one fetch handler answers it before any route sees it.
+ *
+ *  ONCE, AND PER SEGMENT. The handler used to decode the whole path and the
+ *  matcher then decoded each part again, so `%25` (a literal `%`) reached the
+ *  second decode as a bare `%` and threw — a 500 before the route ran — and an
+ *  encoded `%2F` was a separator by the time the path was split. Splitting the
+ *  raw path first keeps an encoded slash inside its segment. */
+export function pathSegments(rawPathname: string): string[] | null {
+  const out: string[] = []
+  for (const raw of rawPathname.split('/')) {
+    if (!raw) continue
+    try {
+      out.push(decodeURIComponent(raw))
+    } catch {
+      return null
+    }
+  }
+  return out
+}
+
+/** Match decoded segments (`pathSegments`) against a compiled route; null
+ *  when it doesn't apply. `_splat` is the rest joined with `/`, so a segment
+ *  that carried an encoded slash is indistinguishable there — a route that
+ *  must tell them apart reads its own segments (the app gateway does). */
+export function matchSegments(route: CompiledRoute, parts: readonly string[]): ApiParams | null {
   if (route.splat ? parts.length < route.segments.length : parts.length !== route.segments.length) {
     return null
   }
@@ -79,11 +104,18 @@ export function matchRoute(route: CompiledRoute, pathname: string): ApiParams | 
   for (let i = 0; i < route.segments.length; i++) {
     const seg = route.segments[i]!
     const part = parts[i]!
-    if (seg.startsWith('$')) params[seg.slice(1)] = decodeURIComponent(part)
+    if (seg.startsWith('$')) params[seg.slice(1)] = part
     else if (seg !== part) return null
   }
   if (route.splat) {
-    params._splat = parts.slice(route.segments.length).map(decodeURIComponent).join('/')
+    params._splat = parts.slice(route.segments.length).join('/')
   }
   return params
+}
+
+/** Match a RAW pathname (as `URL.pathname` gives it, still encoded) against a
+ *  compiled route; null when it doesn't apply or the path is malformed. */
+export function matchRoute(route: CompiledRoute, rawPathname: string): ApiParams | null {
+  const parts = pathSegments(rawPathname)
+  return parts ? matchSegments(route, parts) : null
 }

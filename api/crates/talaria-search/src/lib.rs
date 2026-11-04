@@ -35,11 +35,28 @@ use talaria_gateway::settings::get_setting;
 /// There is no default: EMPTY means no provider of this shape exists here.
 pub const SEARCH_URL_KEY: &str = "search_url";
 
+/// SEARXNG_URL as the environment sets it, or None — and None includes SET
+/// BUT BLANK. A blank value is what an env file's `SEARXNG_URL=` or a compose
+/// `${SEARXNG_URL:-}` hands a process when nobody chose a URL, so it is not
+/// an instruction to have no search: it falls through to the setting, and
+/// Admin → Search reads it as "not from the environment" (its field is
+/// editable, and what is saved there is what is in force). The one reader of
+/// the variable, so the URL in force and the panel's `fromEnv` cannot
+/// disagree; the TS twin (`ui/src/server/search.ts`) applies the same rule.
+pub fn env_search_url() -> Option<String> {
+    env_leg(std::env::var("SEARXNG_URL").ok())
+}
+
+/// The env leg, pure: trimmed, and blank is unset.
+fn env_leg(raw: Option<String>) -> Option<String> {
+    raw.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
 /// `searchUrl`: env leg first, then the setting; empty when neither is set.
 pub async fn search_url(pg: &PgPool) -> String {
-    let configured = match std::env::var("SEARXNG_URL") {
-        Ok(v) => Some(v),
-        Err(_) => get_setting(pg, SEARCH_URL_KEY, Value::String(String::new()))
+    let configured = match env_search_url() {
+        Some(v) => Some(v),
+        None => get_setting(pg, SEARCH_URL_KEY, Value::String(String::new()))
             .await
             .as_str()
             .map(String::from),
@@ -47,12 +64,11 @@ pub async fn search_url(pg: &PgPool) -> String {
     resolve_search_url(configured)
 }
 
-/// The precedence, pure. The env leg beats the setting even when SET BUT
-/// EMPTY — the empty value suppresses the setting read; the caller only
-/// reaches the setting leg when the env var is UNSET. Any empty resolution
-/// is EMPTY (no provider), never a guessed address. ONE trailing slash comes
-/// off, not all of them — `http://host/` is the only shape operators type,
-/// and `//` is a path.
+/// The precedence's tail, pure. The env leg (`env_search_url`) is already
+/// None when blank, so the setting is read whenever the environment chose
+/// nothing. Any empty resolution is EMPTY (no provider), never a guessed
+/// address. ONE trailing slash comes off, not all of them — `http://host/`
+/// is the only shape operators type, and `//` is a path.
 fn resolve_search_url(configured: Option<String>) -> String {
     let base = configured.unwrap_or_default();
     base.strip_suffix('/').unwrap_or(&base).to_string()
@@ -520,10 +536,29 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_env_value_is_unset() {
+        // SET BUT BLANK used to win over the setting while Admin → Search
+        // said the URL was not from the environment: a URL saved there was
+        // ignored. Blank is unset now, for the URL in force and the panel
+        // alike (both read `env_search_url`).
+        assert_eq!(env_leg(None), None);
+        assert_eq!(env_leg(Some(String::new())), None);
+        assert_eq!(env_leg(Some("   ".into())), None);
+        assert_eq!(env_leg(Some("\t\n".into())), None);
+        assert_eq!(
+            env_leg(Some("http://env.test".into())).as_deref(),
+            Some("http://env.test")
+        );
+        assert_eq!(
+            env_leg(Some(" http://env.test/ ".into())).as_deref(),
+            Some("http://env.test/")
+        );
+    }
+
+    #[test]
     fn url_resolution_keeps_blanks_blank_and_strips_one_slash() {
-        // The env-empty case is the trap: SET BUT EMPTY is not UNSET, so it
-        // suppresses the setting — Some("") resolves to EMPTY (no provider),
-        // never to the setting leg and never to a guessed address.
+        // Whatever reaches here is the env leg (never blank) or the setting:
+        // an empty resolution is EMPTY (no provider), never a guessed address.
         assert_eq!(
             resolve_search_url(Some("http://env.test".into())),
             "http://env.test"

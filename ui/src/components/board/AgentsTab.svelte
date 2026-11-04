@@ -5,6 +5,7 @@
   import Combobox from '@/components/ui/Combobox.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import { anyFailed, anyLoading } from '@/components/ui/query-state'
   import { useAgents } from '@/lib/agents'
   import {
     decideBoardAgentRequest,
@@ -23,7 +24,6 @@
   const qc = useQueryClient()
   const fleetQuery = useAgents()
   const fleet = $derived(fleetQuery.data)
-  const fleetLoading = $derived(fleetQuery.isLoading)
   const options = $derived((fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label, sub: a.role })))
   // The checkbox and the picker are SEEDED from `config`. On rejection the
   // effect below never runs, so the panel renders "Allow all agents" unchecked
@@ -31,10 +31,13 @@
   // read that failed, and one Save away from becoming real.
   const configQuery = useBoardAgents(() => board.id)
   const config = $derived(configQuery.data)
-  const configLoading = $derived(configQuery.isLoading)
-  const configFailed = $derived(
-    (configQuery.isError && config === undefined) || (fleetQuery.isError && fleet === undefined),
-  )
+  // Both reads gate the panel, so every flag of both is read before they are
+  // combined (query-state.ts, anyLoading). `configLoading || fleetLoading`
+  // never read the agents' flag while the policy loaded, and the failure
+  // check above it had read the agents' `isError`: when /api/agents answered
+  // first nothing told this component, and the panel stayed on its skeleton.
+  const configFailed = $derived(anyFailed(configQuery, fleetQuery))
+  const configLoading = $derived(anyLoading(configQuery, fleetQuery))
   // The request queue is editor surface: the GET gates on edit-or-elevated
   // server-side, so a viewer never even asks.
   const requestsQuery = useBoardAgentRequests(() => board.id, () => canEdit)
@@ -138,7 +141,7 @@
         void fleetQuery.refetch()
       }}
     />
-  {:else if configLoading || fleetLoading}
+  {:else if configLoading}
     <!-- The checkbox is seeded from the fetched config — showing it unchecked
          now would render a false policy that flips after load. -->
     <div>

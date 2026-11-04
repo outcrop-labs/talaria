@@ -32,7 +32,11 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { useEnabledApps } from '@/lib/apps'
+  import { searchParams } from 'sv-router'
+  import { route } from '@/router'
+  import { useEnabledApps, type AppManifest } from '@/lib/apps'
+  import { setAppContext } from '@/lib/app-context'
+  import { surfaceRest } from '@/lib/app-route'
   import AppCrash from './AppCrash.svelte'
 
   let { slug, surface }: { slug: string; surface: Surface } = $props()
@@ -43,6 +47,35 @@
   const compPromise = $derived.by(() => {
     void retry
     return surfaceComponent(slug, surface, app?.build?.key)
+  })
+
+  // The surface learns which app it is from the host, never from its own
+  // source: `useApp()` and the SDK's slug-less hooks read this. Getters, so a
+  // refetched manifest reaches a surface that is already mounted. The surface
+  // only renders once `app` resolved, so `manifest` is never read undefined.
+  //
+  // `rest` and `query` are where the surface is: the route below it and the
+  // query, read live off the router, so `useAppRoute()` follows every
+  // navigation — the surface stays mounted from /x/<slug> to
+  // /x/<slug>/items/42 and back (route-table.ts mounts one component for both).
+  // They come through here rather than from the SDK importing the router,
+  // which the dev build probe cannot load (lib/app-route.ts says why).
+  setAppContext({
+    get slug() {
+      return slug
+    },
+    get surface() {
+      return surface
+    },
+    get manifest() {
+      return app as AppManifest
+    },
+    get rest() {
+      return surfaceRest(route.pathname, slug, surface)
+    },
+    get query() {
+      return new URLSearchParams(searchParams.toString())
+    },
   })
 </script>
 

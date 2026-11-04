@@ -20,6 +20,7 @@ import {
   stampOf, storageFromDb, writeSums,
 } from '../backup/lib'
 import { canonicalDir } from '../paths'
+import { refuseForeignCheckout } from '../stack'
 
 
 /** The last `n` bytes of a file, as text — pg_dump writes its completion
@@ -111,6 +112,13 @@ async function archiveAppData(ctx: Ctx, env: Record<string, string | undefined>,
 
 
 export async function runBackup(ctx: Ctx, dest: string, keep: number): Promise<number> {
+  // Every source below is this checkout's: DATABASE_URL from its ui/.env (or
+  // the shell), its app-data dir, its app databases (named for its
+  // TALARIA_WORKTREE). The one shared source is a worktree's blobs in
+  // internal mode: its app keeps them in the main stack's object storage, so
+  // that is where they are read from. Run through the shim from another
+  // checkout, all of it would be the shim's checkout's, so that stops here.
+  refuseForeignCheckout(ctx, 'backup')
   const dockerOrPg = async (): Promise<boolean> => {
     for (const bin of ['docker', 'pg_dump']) {
       try {

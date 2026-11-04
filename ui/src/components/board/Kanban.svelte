@@ -2,6 +2,7 @@
   import StaleBoardNotice from '@/components/board/StaleBoardNotice.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ticketMenuEntries } from '@/components/board/ticket-menu'
+  import MoveTicketDialog from '@/components/board/MoveTicketDialog.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
@@ -76,6 +77,8 @@
   let dragOver = $state<string | null>(null)
   let dragging = $state<string | null>(null)
   const menu = useContextMenu()
+  // The card/row menu's 'Move to board…' — one dialog, opened on a ticket.
+  let movingTask = $state<Task | null>(null)
 
   // Sub-task rollup: children by parent id (children render as cards too).
   const childrenOf = $derived.by(() => {
@@ -109,6 +112,7 @@
         onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
         working: !!working(t.id),
         onStop: () => void stopWork(t.id),
+        onMoveBoard: () => (movingTask = t),
       }),
     )
   const addTo = async (status: TaskStatus, title: string) => {
@@ -225,6 +229,9 @@
   {/if}
 
   <ContextMenu {menu} />
+  {#if movingTask}
+    <MoveTicketDialog task={movingTask} boardId={board.id} open={!!movingTask} onClose={() => (movingTask = null)} />
+  {/if}
     </div>
   </div>
 {/if}

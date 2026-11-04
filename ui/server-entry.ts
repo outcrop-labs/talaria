@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { spawn, type ChildProcess } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, extname, resolve, sep } from 'node:path'
+import { join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -80,7 +80,7 @@ if (validateEnv) {
 // output with no type declarations, so a literal import fails module
 // resolution — the cast supplies the source module's types instead.
 const serverBundleUrl = './dist/server/server.js'
-const { default: server, migrate, writeHeadHeaders, startAppBuilds } = (await import(serverBundleUrl)) as typeof import('./src/server/app.ts')
+const { default: server, migrate, writeHeadHeaders, stampPeer, startAppBuilds } = (await import(serverBundleUrl)) as typeof import('./src/server/app.ts')
 
 // The boundary conversion for res.writeHead. A bundle built before
 // writeHeadHeaders existed exports none — same stale-dist case as `migrate`
@@ -120,7 +120,15 @@ const MIME_TYPES: Record<string, string> = {
 
 async function tryServeStatic(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  const pathname = decodeURIComponent(url.pathname)
+  // A malformed escape is no file: the fetch handler answers it (a 400 under
+  // /api). A throw here was an unhandled rejection that left the request
+  // hanging with no answer at all.
+  let pathname: string
+  try {
+    pathname = decodeURIComponent(url.pathname)
+  } catch {
+    return false
+  }
   if (pathname.includes('..')) return false
 
   const filePath = join(CLIENT_DIR, pathname)
@@ -149,29 +157,12 @@ async function tryServeStatic(req: IncomingMessage, res: ServerResponse): Promis
   }
 }
 
-async function tryServeAppBuilds(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
-  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
-  const pathname = decodeURIComponent(url.pathname)
-  if (!pathname.startsWith('/app-builds/') || pathname.includes('..')) return false
-  const root = resolve(process.env.TALARIA_APP_BUILDS_DIR || join(__dirname, '..', 'app-builds'))
-  const filePath = resolve(root, pathname.slice('/app-builds/'.length))
-  if (filePath !== root && !filePath.startsWith(root + sep)) return false
-  try {
-    const fileStat = await stat(filePath)
-    if (!fileStat.isFile()) return false
-    const ext = extname(filePath).toLowerCase()
-    const data = await readFile(filePath)
-    res.writeHead(200, {
-      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Content-Length': data.length,
-      'Cache-Control': 'public, max-age=31536000, immutable',
-    })
-    res.end(data)
-    return true
-  } catch {
-    return false
-  }
-}
+// /app-builds/* is NOT served from here. An app's compiled client is behind
+// that app's grant, so it goes through the fetch handler like any request
+// that needs a session: server/app-builds-door.ts serves app.js, app.css and
+// assets/** to a session granted the app, and nothing else (this used to
+// stream every file under the builds directory — server.js, mcp.js and
+// current.json included — before any session check).
 
 // A query string is NOT safe to log verbatim. Several routes carry live
 // credentials in it: the OAuth callbacks (/api/auth/google/callback,
@@ -334,17 +325,38 @@ function waitForDrain(res: ServerResponse): Promise<void> {
   })
 }
 
+/** A signal that aborts when the response closes before it finished — the
+ *  client hung up (closed tab, dropped connection, a fetch it aborted). Read
+ *  off the RESPONSE: the request's own 'close' fires as soon as its body has
+ *  been read, which is every request, so it says nothing about the client. A
+ *  response that finished closes too, with writableFinished set, and aborts
+ *  nothing. The same rule as the vite dev middleware (vite.config.ts). */
+function clientGone(res: ServerResponse): AbortSignal {
+  const gone = new AbortController()
+  res.once('close', () => {
+    if (!res.writableFinished) gone.abort(new DOMException('the client disconnected', 'AbortError'))
+  })
+  return gone.signal
+}
+
 async function requestHandler(req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' || req.method === 'HEAD') {
-    if (await tryServeAppBuilds(req, res)) return
     if (await tryServeStatic(req, res)) return
   }
 
+  // Armed before the body is read, so a client that leaves mid-upload is seen.
+  const signal = clientGone(res)
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   const headers = new Headers()
   for (const [k, v] of Object.entries(req.headers)) {
     if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
   }
+  // Who is on the socket, stated by the host (http.ts PEER_HEADER). A bundle
+  // built before the stamp existed exports none: the client's value is then
+  // dropped and nothing is stamped, which every loopback-only route reads as
+  // remote — a stale dist refuses those routes rather than trusting a header.
+  if (typeof stampPeer === 'function') stampPeer(headers, req.socket.remoteAddress)
+  else headers.delete('x-talaria-peer')
 
   let body: Uint8Array<ArrayBuffer> | null = null
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -359,7 +371,10 @@ async function requestHandler(req: IncomingMessage, res: ServerResponse) {
 
   // `duplex: 'half'` is an undici extension this TS's DOM lib doesn't know —
   // cast the init rather than drop it (the runtime needs it for the body).
-  const request = new Request(url.toString(), { method: req.method, headers, body, duplex: 'half' } as RequestInit)
+  // `signal` aborts when the caller goes away before the answer is done
+  // (clientGone): an app's server reads it as ctx.signal, and a proxied read
+  // stops waiting on the api for nobody.
+  const request = new Request(url.toString(), { method: req.method, headers, body, duplex: 'half', signal } as RequestInit)
   const ctx = requestContext(req, url)
   let isEventStream = false
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
@@ -570,8 +585,19 @@ async function ensureRustApi() {
     )
     return
   }
+  // TALARIA_APP_HOST_URL: where the api calls this process back — an app
+  // install's build, an update's stage and switch (talaria-apps `AppHost`),
+  // and the /api/app-host/harnesses routes the fitness sweep reads app
+  // harnesses from and replays their fixtures through. Loopback when this
+  // process listens on every address; the address it listens on otherwise.
+  // An operator's value wins.
+  const selfHost = host === '0.0.0.0' || host === '::' || host === '' ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host
   apiChild = spawn(bin, [], {
-    env: { ...process.env, TALARIA_API_PORT: String(API_PORT) },
+    env: {
+      ...process.env,
+      TALARIA_API_PORT: String(API_PORT),
+      TALARIA_APP_HOST_URL: process.env.TALARIA_APP_HOST_URL || `http://${selfHost}:${port}`,
+    },
     stdio: 'inherit',
   })
   process.env.TALARIA_RUST_API_URL = API_URL

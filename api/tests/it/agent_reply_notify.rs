@@ -1,7 +1,8 @@
 // Live-DB proof of the agent-reply fan-out (cargo test -- --ignored). The
 // feature is three gates stacked on one writer — the read cursor ("still
-// looking" files nothing), the unread dedupe (one pointer per thread, further
-// replies fold in), and the kind→href mapping (chat→thread, plan→plan,
+// looking" files nothing), the thread's group key (one open row per thread:
+// a further reply coalesces into it — its words, count + 1, a re-alert), and
+// the kind→href mapping (chat→thread, plan→plan,
 // research→the RUN, so opening the run is the seen gesture) — and every one
 // of them is a WHERE clause only Postgres can confirm. House rule:
 // #[ignore]d, never CI.
@@ -92,14 +93,42 @@ async fn a_reply_rings_once_for_whoever_was_away() {
     // The dm class — toasts and mail ride it, exactly like a DM.
     assert_eq!(notify_class_of("agent-reply"), "dm");
 
-    // A second reply while the first row still sits unread FOLDS IN: one
-    // pointer per thread, not a pile from a fast back-and-forth.
+    // A second reply while the first row still sits unread COALESCES into
+    // it: one row per thread, not a pile from a fast back-and-forth — and,
+    // unlike wave 1's skip, it rings: the newest words, count 2, and a
+    // createdAt that moved later (the re-alert every client reads).
+    let first_row: (String, i32, i64) = sqlx::query_as(
+        "select id::text, count, (trunc(extract(epoch from created_at) * 1000))::bigint \
+         from notifications where user_id = $1::uuid and kind = 'agent-reply' and href = $2 \
+           and read_at is null",
+    )
+    .bind(&owner)
+    .bind(&href)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
     let second = reply(&pg, &chat, 2, "one more thing", "complete").await;
     notify_agent_reply(&deps, &chat, &second).await;
-    assert_eq!(
-        unread_rows(&pg, &owner, "agent-reply", &href).await.len(),
-        1
+    let rows = unread_rows(&pg, &owner, "agent-reply", &href).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1, "one more thing");
+    let coalesced: (String, i32, i64, Option<String>) = sqlx::query_as(
+        "select id::text, count, (trunc(extract(epoch from created_at) * 1000))::bigint, group_key \
+         from notifications where user_id = $1::uuid and kind = 'agent-reply' and href = $2 \
+           and read_at is null",
+    )
+    .bind(&owner)
+    .bind(&href)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(coalesced.0, first_row.0, "the same row");
+    assert_eq!(coalesced.1, 2);
+    assert!(
+        coalesced.2 > first_row.2,
+        "re-alerted: createdAt moved later"
     );
+    assert_eq!(coalesced.3, Some(format!("thread:{chat}")));
 
     // The owner comes back: reads to latest AND clicks the bell row away.
     // The cursor alone now files nothing for the covered reply — no dedupe
@@ -168,7 +197,7 @@ async fn a_reply_rings_once_for_whoever_was_away() {
         1
     );
     // The mate reads to latest; the next reply is behind their cursor again
-    // and would ring — but the unread pointer folds it, so their row still
+    // and rings — into the unread row they still hold, so their row still
     // says exactly 1. The bell clears it when they click.
     mark_conversation_read(&pg, &plan, &mate, 0).await.unwrap();
     let later = reply(&pg, &plan, 1, "a revision", "complete").await;

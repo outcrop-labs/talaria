@@ -8,7 +8,7 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import { slide } from '@/lib/motion'
   import { draftCron } from '@/lib/muse.svelte'
-  import { DEFAULT_SCHED, parseSchedule, schedToString, type Sched } from './agent-crons'
+  import { DEFAULT_SCHED, MAX_CRON_PROMPT, parseSchedule, schedToString, type Sched } from './agent-crons'
   import ScheduleBuilder from './ScheduleBuilder.svelte'
 
   let {
@@ -98,7 +98,7 @@
       bind:value={prompt}
       placeholder="What should it do each time? Written as a self-contained instruction."
       class="max-h-64"
-      maxlength={20_000}
+      maxlength={MAX_CRON_PROMPT}
     />
   </div>
   {@render children?.()}

@@ -32,7 +32,6 @@ talaria-teams = { workspace = true }
 talaria-templates = { workspace = true }
 talaria-uploads = { workspace = true }
 talaria-users = { workspace = true }
-talaria-web-search = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

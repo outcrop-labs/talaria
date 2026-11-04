@@ -6,8 +6,9 @@
 //
 // Strings, not numbers on purpose: every consumer either prints the value or
 // hands it to docker as an argv, and both want the spelling. The runtime
-// port SLOTS (worktrees: 53xx/54xx/56xx/65xx; boxes: 5301-5389) are allocated
-// by paths.ts, not defaults.
+// port SLOTS (worktrees: 53xx/54xx/56xx/65xx plus the toolkit 57xx, omp auth
+// 58xx and agent gateways from 20000 + slot·100 — slotPorts in
+// cmd/worktree.ts; boxes: 5301-5389) are allocated per stack, not defaults.
 
 /** TALARIA_PG_PORT — dev-compose's `127.0.0.1:<port>:5432`. */
 export const PG_PORT = '5544'

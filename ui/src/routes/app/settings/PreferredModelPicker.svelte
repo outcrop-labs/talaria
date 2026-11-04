@@ -4,6 +4,7 @@
   import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import { anyPending, firstError } from '@/components/ui/query-state'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { savePreferredEffort, savePreferredModel, useModels, useProfilePrefs } from '@/lib/muse.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
@@ -28,9 +29,11 @@
   const prefsQuery = useProfilePrefs()
   const catalog = $derived(catalogQuery.data)
   const prefs = $derived(prefsQuery.data)
-  const catalogLoading = $derived(catalogQuery.isPending)
-  const prefsLoading = $derived(prefsQuery.isPending)
-  const failed = $derived(catalogQuery.isError ? catalogQuery : prefsQuery.isError ? prefsQuery : null)
+  // Both reads gate the picker, so every flag of both is read before they are
+  // combined (query-state.ts, anyLoading): `catalogLoading || prefsLoading`
+  // left the prefs' flag unread while the catalog loaded.
+  const loading = $derived(anyPending(catalogQuery, prefsQuery))
+  const failed = $derived(firstError(catalogQuery, prefsQuery))
   const savedFlash = useSavedFlash()
   let error = $state<string | null>(null)
   let effortError = $state<string | null>(null)
@@ -44,7 +47,10 @@
   // The levels the PICKED model publishes — the default-effort control's whole
   // option list, and the reason it renders only for models that have one.
   // Getter form: the pick can change under the query.
-  const { efforts } = useModelEfforts(() => prefs?.preferredModel ?? null)
+  // Kept whole and read through its getter: destructured, the levels would
+  // be the query's answer at mount and never move.
+  const modelEfforts = useModelEfforts(() => prefs?.preferredModel ?? null)
+  const efforts = $derived(modelEfforts.efforts)
   // A saved default the picked model cannot honor (it was set against another
   // model, or the metadata changed) reads as auto here — inert, never an error.
   const effectiveEffort = $derived(
@@ -80,7 +86,7 @@
 
 <div class="mt-5 border-t border-line-subtle pt-4">
   <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Preferred model</span>
-  {#if catalogLoading || prefsLoading}
+  {#if loading}
     <!-- Mounting the combobox before both queries land makes its value flip
          from Default to the saved pick — hold with a select-shaped shimmer. -->
     <Skeleton class="h-11 w-full" />
@@ -115,7 +121,7 @@
     {#if error}<span class="ml-2 text-danger">{error}</span>{/if}
   </p>
 
-  {#if !failed && !catalogLoading && !prefsLoading && efforts.length > 0}
+  {#if !failed && !loading && efforts.length > 0}
     <!-- ONLY FOR MODELS THAT PUBLISH A LADDER: there is no default to set on a
          model with no effort setting, and rendering one would promise the
          requests something they cannot carry. -->

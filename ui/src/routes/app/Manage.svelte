@@ -8,6 +8,7 @@
   import AppsTile from '@/components/manage/AppsTile.svelte'
   import AttentionPanel from '@/components/manage/AttentionPanel.svelte'
   import FleetControls from '@/components/manage/FleetControls.svelte'
+  import HermesChannelPanel from '@/components/manage/HermesChannelPanel.svelte'
   import McpTile from '@/components/manage/McpTile.svelte'
   import ModelsTile from '@/components/manage/ModelsTile.svelte'
   import SpendTile from '@/components/manage/SpendTile.svelte'
@@ -18,7 +19,7 @@
   import { manageArea } from '@/lib/manage-area'
   import { staggerIn } from '@/lib/motion'
   import { NAV } from '@/lib/nav'
-  import { useDeniedViews, useHasPerm, useSession } from '@/lib/session'
+  import { useAppGrants, useDeniedViews, useHasPerm, useSession } from '@/lib/session'
   import { navigate, route } from '@/router'
 
   // THE MANAGE OVERVIEW — where the dock's gear lands. The control plane at a
@@ -34,11 +35,12 @@
   // tile that is not rendered never sends its request.
   const session = useSession()
   const denied = useDeniedViews()
+  const appGrants = useAppGrants()
   const canManageAgents = useHasPerm('agents.manage')
   const appsQuery = useEnabledApps()
 
   const isAdmin = $derived(session.data?.role === 'admin')
-  const area = $derived(manageArea(NAV, appsQuery.data ?? [], { isAdmin, denied: denied.current }, route.pathname))
+  const area = $derived(manageArea(NAV, appsQuery.data ?? [], { isAdmin, denied: denied.current, appGrants: appGrants.current }, route.pathname))
   const has = (to: string) => area.items.some((i) => i.to === to)
 
   const tiles = $derived({
@@ -90,7 +92,12 @@
       {/if}
 
       <div class="grid items-start gap-4 lg:grid-cols-2">
-        {#if isAdmin}<FleetControls />{/if}
+        {#if isAdmin}
+          <div class="grid gap-4">
+            <FleetControls />
+            <HermesChannelPanel />
+          </div>
+        {/if}
         <ActivityPanel />
       </div>
     {/if}

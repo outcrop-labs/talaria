@@ -21,7 +21,19 @@
 // path is not the current path is simply never read: no teardown ordering to
 // get right, no cleanup to forget.
 
-import { route } from '@/router'
+// The router is not imported here. sv-router is browser-only at module load
+// (it reads `location` and builds an IntersectionObserver), and this module
+// is in @talaria/sdk's graph through ViewHeader. The app build probe loads an
+// app's app.ts, SDK included, in Node, so a static import of '@/router' here
+// failed every dev probe with "location is not defined" and disabled the app.
+// router.ts hands its pathname reader in instead (bindViewTitlePath), which
+// keys claims by the router's pathname exactly as before.
+let currentPath: () => string = () => globalThis.location?.pathname ?? ''
+
+/** router.ts calls this once, at load, with sv-router's pathname. */
+export function bindViewTitlePath(read: () => string): void {
+  currentPath = read
+}
 
 export interface ViewTitleExtras {
   /** InfoTip copy shown beside the title. */
@@ -40,7 +52,7 @@ let claim = $state<{ path: string; title: string } & ViewTitleExtras | null>(nul
  *  titled thing arrives from a query (claim again when it lands; the key
  *  keeps interim claims honest). */
 export function claimViewTitle(title: string, extras?: ViewTitleExtras): void {
-  claim = { path: route.pathname, title, ...extras }
+  claim = { path: currentPath(), title, ...extras }
 }
 
 /** The title claimed for THIS path, if any. `null` means the strip falls

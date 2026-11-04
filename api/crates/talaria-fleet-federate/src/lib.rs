@@ -5,30 +5,53 @@
 // into the fleet dir, run on the Talaria chassis with a fresh state volume.
 // Nothing keeps pointing at the source directory afterwards — it's a one-way
 // door, re-runnable (existing slugs are reported and skipped).
+//
+// A source config.yaml is third-party text and can carry credentials inline.
+// None is stored as written: before the version is written, each literal the
+// render would emit is sealed as one of the agent's per-agent secrets with a
+// `${CONFIG_…}` handle left in the config, and the ones Talaria supplies
+// itself (a model's api_key, an authored MCP server's headers, the API
+// server's key) are dropped — talaria_agent_secrets::plan_config_seal has the
+// rules.
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use talaria_agent_defs::{
-    NewVersion, UpsertDef, add_version_if_changed, dept_ok, slug_ok, upsert_agent_def,
+    NewVersion, UpsertDef, add_version_if_changed, department_holder, dept_ok, slug_ok,
+    upsert_agent_def,
 };
+use talaria_agent_secrets::{plan_config_seal, seal_config_literals};
 use talaria_fleet_create::ensure_agent_key;
 use talaria_gateway::registry::{add_endpoint_models, ensure_endpoint};
+use talaria_secretbox::SecretBox;
 
 #[derive(Debug, serde::Serialize)]
 pub struct FederatedAgent {
     pub slug: String,
     pub model: String,
     pub status: &'static str, // 'federated' | 'exists'
+    /// The per-agent secrets its config's literal credentials were sealed as.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sealed: Vec<String>,
+    /// Where each literal credential Talaria supplies itself sat — not stored.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dropped: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct FederateResult {
     pub agents: Vec<FederatedAgent>,
     pub errors: Vec<String>,
+    /// Roster entries that would put a second agent in a department — one
+    /// another agent already holds, or one an earlier entry claims. Any at
+    /// all and nothing is imported: the route answers 409 with these.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
 }
 
-/// `"${LLM_API_KEY}"` → `"LLM_API_KEY"`; literal keys are never stored.
+/// `"${LLM_API_KEY}"` → `"LLM_API_KEY"`; a literal key names no env var (and
+/// is not stored either — plan_config_seal drops a model's literal api_key).
 fn key_env_of(api_key: Option<&str>) -> Option<String> {
     let raw = api_key?.trim();
     let inner = raw.strip_prefix("${").and_then(|s| s.strip_suffix('}'))?;
@@ -129,10 +152,16 @@ async fn target_of(pg: &PgPool, block: &Value) -> Result<Value, sqlx::Error> {
 
 /// The whole one-way door. Never returns Err: every failure is collected
 /// into `errors` (an unreadable roster aborts with one line).
-pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateResult {
+pub async fn federate_from_dir(
+    pg: &PgPool,
+    sb: &SecretBox,
+    dir: &str,
+    actor: &str,
+) -> FederateResult {
     let mut result = FederateResult {
         agents: Vec::new(),
         errors: Vec::new(),
+        conflicts: Vec::new(),
     };
     let root = std::path::Path::new(dir);
     if !tokio::fs::metadata(root)
@@ -172,6 +201,23 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
         _ => empty,
     };
 
+    // A department is one agent's container and memory (talaria-agent-defs,
+    // "A department is one agent's key"), so an import that would put a
+    // second agent in one is refused whole, before anything is written —
+    // fixed in the roster and re-run, rather than half-landed. An entry
+    // whose slug already exists is the re-run's "exists" and claims nothing.
+    match department_conflicts(pg, &roster).await {
+        Ok(conflicts) if !conflicts.is_empty() => {
+            result.conflicts = conflicts;
+            return result;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            result.errors.push(format!("department check: {e}"));
+            return result;
+        }
+    }
+
     for entry in &roster {
         let field = |k: &str| entry.get(k).and_then(Value::as_str).map(str::trim);
         let (Some(slug), Some(department)) = (field("slug"), field("department")) else {
@@ -191,7 +237,7 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
             ));
             continue;
         }
-        let r = federate_one(pg, root, dir, slug, department, entry, actor).await;
+        let r = federate_one(pg, sb, root, dir, slug, department, entry, actor).await;
         match r {
             Ok(Some(a)) => result.agents.push(a),
             Ok(None) => {} // skipped silently — malformed entry
@@ -201,8 +247,48 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
     result
 }
 
+/// The roster's department claims that cannot land: an entry the loop would
+/// create (a valid, new slug) whose department another agent holds, or an
+/// earlier entry in the same roster claims.
+async fn department_conflicts(pg: &PgPool, roster: &[Value]) -> Result<Vec<String>, String> {
+    let mut claimed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut conflicts = Vec::new();
+    for entry in roster {
+        let field = |k: &str| entry.get(k).and_then(Value::as_str).map(str::trim);
+        let (Some(slug), Some(department)) = (field("slug"), field("department")) else {
+            continue;
+        };
+        if !slug_ok(slug) || !dept_ok(department) {
+            continue; // the loop reports these by name
+        }
+        let exists: Option<(i32,)> = sqlx::query_as("select 1 from agent_defs where slug = $1")
+            .bind(slug)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| e.to_string())?;
+        if exists.is_some() {
+            continue;
+        }
+        if let Some(taken) = department_holder(pg, department, slug)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            conflicts.push(format!("{slug}: {taken}"));
+        } else if let Some(first) = claimed.get(department) {
+            conflicts.push(format!(
+                "{slug}: the department \"{department}\" is also {first}'s in this roster — give each agent its own department"
+            ));
+        } else {
+            claimed.insert(department.to_string(), slug.to_string());
+        }
+    }
+    Ok(conflicts)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn federate_one(
     pg: &PgPool,
+    sb: &SecretBox,
     root: &std::path::Path,
     dir: &str,
     slug: &str,
@@ -220,6 +306,8 @@ async fn federate_one(
             slug: slug.to_string(),
             model: String::new(),
             status: "exists",
+            sealed: Vec::new(),
+            dropped: Vec::new(),
         }));
     }
 
@@ -235,6 +323,10 @@ async fn federate_one(
     } else {
         serde_yaml_ng::from_str::<Value>(&raw_cfg_str).unwrap_or(json!({}))
     };
+    // Seal before anything is written: a config holding a credential no
+    // per-agent secret can carry is refused here, before an endpoint, a key or
+    // a def exists for it.
+    let seal = plan_config_seal(&json!({ "raw": raw_cfg }))?;
 
     // Model targets: main (object form only), aliases (object or
     // "provider/model" shorthand), fallbacks (array of objects).
@@ -319,13 +411,15 @@ async fn federate_one(
         .execute(pg)
         .await
         .map_err(|e| e.to_string())?;
+    // The secrets land before the version that names them.
+    seal_config_literals(pg, sb, &def.id, &seal.sealed, Some(actor)).await?;
     let config = json!({
         "main": main,
         "aliases": aliases,
         "fallbacks": fallbacks,
         "plugins": plugins,
         "mcpServers": mcp_servers,
-        "raw": raw_cfg,
+        "raw": seal.config["raw"],
     });
     add_version_if_changed(
         pg,
@@ -353,6 +447,8 @@ async fn federate_one(
         slug: slug.to_string(),
         model: def.model.clone(),
         status: "federated",
+        sealed: seal.sealed.into_iter().map(|l| l.name).collect(),
+        dropped: seal.dropped,
     }))
 }
 

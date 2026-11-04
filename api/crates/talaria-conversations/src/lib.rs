@@ -9,12 +9,89 @@ use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_gateway::fleet_chat::ToolCall;
+// Checked before a cast is asked for: a plugin's session id is anything the
+// container made up.
+use talaria_params::uuid_shaped;
 use talaria_secretbox::SecretBox;
 
 use std::sync::OnceLock;
 
 pub static REF_BLOCKS: OnceLock<fn(&Value) -> String> = OnceLock::new();
 use talaria_uploads::attachment_text_blocks;
+
+/// Everyone who can read conversation `c`, as a subquery body correlated on
+/// `c` with one column: the firehose audience. The same paths as
+/// `audience_sql!`, written as a set. May repeat a reader; callers take
+/// `distinct`.
+macro_rules! readers_sql {
+    () => {
+        "select c.user_id \
+         union all \
+         select cm.user_id from conversation_members cm \
+          where cm.conversation_id = c.id and c.kind in ('plan', 'work') \
+         union all \
+         select tm.user_id from conversation_teams ct \
+           join team_members tm on tm.team_id = ct.team_id \
+          where ct.conversation_id = c.id and c.kind in ('plan', 'work') \
+         union all \
+         select r.owner_user_id from research_runs r \
+          where r.conversation_id = c.id and c.kind = 'research' \
+            and r.owner_user_id is not null \
+         union all \
+         select rm.user_id from research_runs r \
+           join research_members rm on rm.run_id = r.id \
+          where r.conversation_id = c.id and c.kind = 'research' \
+         union all \
+         select tm.user_id from research_runs r \
+           join research_teams rt on rt.run_id = r.id \
+           join team_members tm on tm.team_id = rt.team_id \
+          where r.conversation_id = c.id and c.kind = 'research'"
+    };
+}
+
+/// `$viewer` (a bind like `"$1::uuid"`) can read conversation `c`. The read
+/// gates, the listing, the unread badge and the working read filter by it.
+/// It stays rc's correlated `exists` chain, which the planner hashes for a
+/// list and probes for one gate: every spelling derived from `readers_sql!`
+/// lost one of the two. `audience_live_the_gate_and_the_fan_agree_on_every_path`
+/// holds the two to one answer, so a path added to one belongs in the other.
+/// A macro, not a const, so each query stays one `'static` literal.
+macro_rules! audience_sql {
+    ($viewer:literal) => {
+        concat!(
+            "(c.user_id = ",
+            $viewer,
+            " \
+              or (c.kind in ('plan', 'work') and ( \
+                exists(select 1 from conversation_members cm \
+                       where cm.conversation_id = c.id and cm.user_id = ",
+            $viewer,
+            ") \
+                or exists(select 1 from conversation_teams ct \
+                          join team_members tm on tm.team_id = ct.team_id \
+                          where ct.conversation_id = c.id and tm.user_id = ",
+            $viewer,
+            "))) \
+              or (c.kind = 'research' and exists( \
+                select 1 from research_runs r \
+                  left join research_members rm on rm.run_id = r.id and rm.user_id = ",
+            $viewer,
+            " \
+                 where r.conversation_id = c.id \
+                   and (r.owner_user_id = ",
+            $viewer,
+            " or rm.user_id is not null \
+                     or exists(select 1 from research_teams rt \
+                               join team_members tm on tm.team_id = rt.team_id \
+                               where rt.run_id = r.id and tm.user_id = ",
+            $viewer,
+            ")))))"
+        )
+    };
+}
+
+mod audience;
+pub use audience::{conversation_audience_ids, fan_conversation_event, fan_known_conversation};
 
 /// The access gate, reduced to the question its callers that only gate ask:
 /// does this row exist for this person? The WHERE clause is the whole rule —
@@ -32,26 +109,12 @@ pub async fn conversation_accessible(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let row: Option<(i32,)> = sqlx::query_as(
+    let row: Option<(i32,)> = sqlx::query_as(concat!(
         "select 1 from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
-           and (c.user_id = $2::uuid \
-             or (c.kind in ('plan', 'work') and ( \
-               exists(select 1 from conversation_members cm \
-                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
-               or exists(select 1 from conversation_teams ct \
-                         join team_members tm on tm.team_id = ct.team_id \
-                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
-             or (c.kind = 'research' and exists( \
-               select 1 from research_runs r \
-                 left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
-                where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
-                    or exists(select 1 from research_teams rt \
-                              join team_members tm on tm.team_id = rt.team_id \
-                              where rt.run_id = r.id and tm.user_id = $2::uuid))))) \
-         limit 1",
-    )
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid"),
+        " limit 1"
+    ))
     .bind(conversation_id)
     .bind(user_id)
     .fetch_optional(pg)
@@ -70,26 +133,12 @@ pub async fn accessible_conversation_agent(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> = sqlx::query_as(
+    let row: Option<(String,)> = sqlx::query_as(concat!(
         "select agent_model from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
-           and (c.user_id = $2::uuid \
-             or (c.kind in ('plan', 'work') and ( \
-               exists(select 1 from conversation_members cm \
-                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
-               or exists(select 1 from conversation_teams ct \
-                         join team_members tm on tm.team_id = ct.team_id \
-                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
-             or (c.kind = 'research' and exists( \
-               select 1 from research_runs r \
-                 left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
-                where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
-                    or exists(select 1 from research_teams rt \
-                              join team_members tm on tm.team_id = rt.team_id \
-                              where rt.run_id = r.id and tm.user_id = $2::uuid))))) \
-         limit 1",
-    )
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid"),
+        " limit 1"
+    ))
     .bind(conversation_id)
     .bind(user_id)
     .fetch_optional(pg)
@@ -234,28 +283,14 @@ pub async fn accessible_conversation(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<Option<AccessibleConversation>, sqlx::Error> {
-    let row: Option<AccessibleRow> = sqlx::query_as(
-        "select agent_model, kind, title, user_id::text, \
-                    case when user_id = $2::uuid then 'owner' else 'collaborator' end, \
-                    plan_template_id::text \
-             from conversations c \
-             where id = $1::uuid and kind in ('chat', 'plan', 'research', 'work') \
-               and (user_id = $2::uuid \
-                 or (kind in ('plan', 'work') and ( \
-                   exists(select 1 from conversation_members cm \
-                          where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
-                   or exists(select 1 from conversation_teams ct \
-                             join team_members tm on tm.team_id = ct.team_id \
-                             where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
-                 or (kind = 'research' and exists( \
-                   select 1 from research_runs r \
-                     left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
-                    where r.conversation_id = c.id \
-                      and (r.owner_user_id = $2::uuid or rm.user_id is not null \
-                        or exists(select 1 from research_teams rt \
-                                  join team_members tm on tm.team_id = rt.team_id \
-                                  where rt.run_id = r.id and tm.user_id = $2::uuid)))))",
-    )
+    let row: Option<AccessibleRow> = sqlx::query_as(concat!(
+        "select c.agent_model, c.kind, c.title, c.user_id::text, \
+                case when c.user_id = $2::uuid then 'owner' else 'collaborator' end, \
+                c.plan_template_id::text \
+         from conversations c \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid")
+    ))
     .bind(conversation_id)
     .bind(user_id)
     .fetch_optional(pg)
@@ -312,6 +347,17 @@ pub struct ConversationListRow {
     pub pinned: bool,
     pub group: Option<String>,
     pub position: Option<i32>,
+}
+
+/// Conversation `c` has an assistant reply streaming right now: the row is
+/// `streaming` and its writer stamped it within five minutes. The sidebar's
+/// `working` flag and the tab bar's working read are this one predicate.
+macro_rules! working_sql {
+    () => {
+        "exists(select 1 from messages m \
+                where m.conversation_id = c.id and m.role = 'assistant' \
+                  and m.status = 'streaming' and m.streamed_at > now() - interval '5 minutes')"
+    };
 }
 
 /// The user's conversations of a given kind, newest activity first.
@@ -374,14 +420,11 @@ pub async fn list_conversations_in(
         Option<String>,
         Option<i32>,
     );
-    let rows: Vec<Row> = sqlx::query_as(
+    let rows: Vec<Row> = sqlx::query_as(concat!(
         "select c.id::text, c.agent_model, c.title, \
-                (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
-                exists( \
-                  select 1 from messages m \
-                  where m.conversation_id = c.id and m.role = 'assistant' \
-                    and m.status = 'streaming' and m.streamed_at > now() - interval '5 minutes' \
-                ), \
+                (trunc(extract(epoch from c.updated_at) * 1000))::bigint, ",
+        working_sql!(),
+        ", \
                 coalesce(( \
                   select m.status = 'error' from messages m \
                   where m.conversation_id = c.id and m.role = 'assistant' \
@@ -404,25 +447,11 @@ pub async fn list_conversations_in(
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
          left join conversation_layout l \
                 on l.conversation_id = c.id and l.user_id = $1::uuid \
-         where c.archived = $3 and c.kind = any($2) \
-           and (c.user_id = $1::uuid \
-             or (c.kind in ('plan', 'work') and ( \
-             exists(select 1 from conversation_members cm \
-                    where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
-             or exists(select 1 from conversation_teams ct \
-                       join team_members tm on tm.team_id = ct.team_id \
-                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))) \
-             or (c.kind = 'research' and exists( \
-               select 1 from research_runs r \
-                 left join research_members rm on rm.run_id = r.id and rm.user_id = $1::uuid \
-                where r.conversation_id = c.id \
-                  and (r.owner_user_id = $1::uuid or rm.user_id is not null \
-                    or exists(select 1 from research_teams rt \
-                              join team_members tm on tm.team_id = rt.team_id \
-                              where rt.run_id = r.id and tm.user_id = $1::uuid))))) \
-         order by coalesce(l.pinned, false) desc, l.position asc nulls last, \
+         where c.archived = $3 and c.kind = any($2) and ",
+        audience_sql!("$1::uuid"),
+        " order by coalesce(l.pinned, false) desc, l.position asc nulls last, \
                   c.updated_at desc",
-    )
+    ))
     .bind(user_id)
     .bind(
         kinds
@@ -702,31 +731,15 @@ pub async fn get_conversation(
         i64,
         String,
         serde_json::Value,
-    )> = sqlx::query_as(
+    )> = sqlx::query_as(concat!(
         "select c.id::text, c.agent_model, c.title, \
                 (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
                 case when c.user_id = $2::uuid then 'owner' else 'collaborator' end, \
                 c.pinned_files \
          from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
-           and ( \
-             c.user_id = $2::uuid \
-             or (c.kind in ('plan', 'work') and ( \
-               exists(select 1 from conversation_members cm \
-                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
-               or exists(select 1 from conversation_teams ct \
-                         join team_members tm on tm.team_id = ct.team_id \
-                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
-             or (c.kind = 'research' and exists( \
-               select 1 from research_runs r \
-                 left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
-                where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
-                    or exists(select 1 from research_teams rt \
-                              join team_members tm on tm.team_id = rt.team_id \
-                              where rt.run_id = r.id and tm.user_id = $2::uuid)))) \
-           )",
-    )
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') and ",
+        audience_sql!("$2::uuid")
+    ))
     .bind(conversation_id)
     .bind(user_id)
     .fetch_optional(pg)
@@ -1026,17 +1039,8 @@ pub async fn remove_plan_team(
 }
 
 /// The caller's total unread messages across conversations of one kind — a
-/// rail badge's number. The SAME audience predicate `list_conversations_in`
-/// filters by, including the plan/work membership scoping, the research run's
-/// own audience, and the -1 no-cursor floor.
-///
-/// KEEP THE TWO IN LOCKSTEP, and the research arm is why that instruction had
-/// teeth: without it a badge counted only the research threads you OWN while
-/// the list showed every one shared with you, so the number under the icon
-/// disagreed with the rows behind it. A comment asking a human to remember is
-/// the weakest form of this guarantee; it is here because the two queries
-/// answer different shapes (a count, and the rows) and have no third place to
-/// share.
+/// rail badge's number. The SAME audience `list_conversations_in` filters by
+/// (`audience_sql!`, one spelling for both), and the -1 no-cursor floor.
 ///
 /// `kind` is a parameter rather than a list for the same reason: Work's badge
 /// is this read with `"work"` and nothing else, because the shared-kind
@@ -1048,7 +1052,7 @@ pub async fn conversation_unread_total(
     user_id: &str,
     kind: &str,
 ) -> Result<i32, sqlx::Error> {
-    let (n,): (i32,) = sqlx::query_as(
+    let (n,): (i32,) = sqlx::query_as(concat!(
         "select count(*)::int from conversations c \
          join messages m on m.conversation_id = c.id \
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
@@ -1056,27 +1060,67 @@ pub async fn conversation_unread_total(
            and m.seq > coalesce(cr.last_read_seq, -1) \
            and m.status = 'complete' \
            and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
-           and (c.user_id = $1::uuid \
-             or (c.kind in ('plan', 'work') and ( \
-             exists(select 1 from conversation_members cm \
-                    where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
-             or exists(select 1 from conversation_teams ct \
-                       join team_members tm on tm.team_id = ct.team_id \
-                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))) \
-             or (c.kind = 'research' and exists( \
-               select 1 from research_runs r \
-                 left join research_members rm on rm.run_id = r.id and rm.user_id = $1::uuid \
-                where r.conversation_id = c.id \
-                  and (r.owner_user_id = $1::uuid or rm.user_id is not null \
-                    or exists(select 1 from research_teams rt \
-                              join team_members tm on tm.team_id = rt.team_id \
-                              where rt.run_id = r.id and tm.user_id = $1::uuid)))))",
-    )
+           and ",
+        audience_sql!("$1::uuid")
+    ))
     .bind(user_id)
     .bind(kind)
     .fetch_one(pg)
     .await?;
     Ok(n)
+}
+
+#[derive(Debug)]
+pub struct WorkingConversation {
+    pub id: String,
+    pub kind: String,
+    pub agent_model: String,
+    pub title: Option<String>,
+    pub streamed_ms: i64,
+}
+
+/// The viewer's live conversations of `kinds` whose reply is streaming right
+/// now, freshest first. The sidebar's `working` flag over the sidebar's
+/// audience, so a tab never lights for a thread its list would not show
+/// working.
+pub async fn working_conversations(
+    pg: &PgPool,
+    user_id: &str,
+    kinds: &[&str],
+) -> Result<Vec<WorkingConversation>, sqlx::Error> {
+    let rows: Vec<(String, String, String, Option<String>, i64)> = sqlx::query_as(concat!(
+        "select c.id::text, c.kind, c.agent_model, c.title, \
+                coalesce((select (trunc(extract(epoch from max(m.streamed_at)) * 1000))::bigint \
+                   from messages m \
+                  where m.conversation_id = c.id and m.status = 'streaming'), 0) \
+         from conversations c \
+         where c.archived = false and c.kind = any($2) and ",
+        working_sql!(),
+        " and ",
+        audience_sql!("$1::uuid"),
+        " order by 5 desc"
+    ))
+    .bind(user_id)
+    .bind(
+        kinds
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect::<Vec<String>>(),
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, kind, agent_model, title, streamed_ms)| WorkingConversation {
+                id,
+                kind,
+                agent_model,
+                title,
+                streamed_ms,
+            },
+        )
+        .collect())
 }
 
 /// Next sequence number for a conversation.
@@ -1117,51 +1161,296 @@ pub async fn insert_user_message(
     Ok(id)
 }
 
-/// The conversation's in-flight assistant reply, if any. A streaming row that
-/// has not MOVED in 15 minutes is a crashed persist — mark it errored and
-/// report none, so a dead stream can never wedge the conversation's
-/// turn-taking. The signal is `streamed_at` (stamped on every flush), not the
-/// row's age: a long agent turn — the kind that builds out a knowledgebase —
-/// streams tool progress for an hour, and age alone would kill it at ten
-/// minutes while it was still working. Fifteen minutes of SILENCE is the
-/// honest bar: the drain loop owns a 10-minute idle ceiling (chat_persist's
-/// STREAM_IDLE), so a row this quiet means its writer is gone.
+// ── Who is writing a reply ───────────────────────────────────────────────────
+//
+// A REPLY ROW SAYS `streaming` WHILE A PROCESS WRITES IT, and until now
+// nothing said whether one still did. The drain that writes a reply lives in
+// the api process that took the turn, so a restart in the middle of a reply
+// (a deploy update, a container restart, an OOM) took its writer away and
+// left the row `streaming` for good: the next message queued behind a reply
+// nobody would finish and was never answered, and the sweep below needed 15
+// minutes of silence to call the row dead, because silence was the only sign
+// it had. On an instance that deploys mid-turn that is a thread unusable for
+// a quarter of an hour.
+//
+// So every process says which replies it is writing. It holds a
+// [`ReplyWriter`] from the row's insert to its landing write, and stamps
+// `streamed_at` on those rows every [`WRITER_BEAT`] (talaria-chat-persist
+// `keep_replies`), quiet stretches included: a turn waiting minutes for the
+// agent's response headers, or a tool call that streams nothing, used to look
+// exactly like a dead one. A `streaming` row is then an ORPHAN when this
+// process is not writing it and no process has stamped it for
+// [`WRITER_LEASE`]. Two app containers run side by side during a deploy
+// (docs/UPDATES.md, "The overlap contract"), so the lease, not "this process
+// is not writing it", is what decides: the old container's drains keep
+// beating their rows until it exits.
+//
+// A CONTAINER FROM BEFORE THE BEAT DOES NOT BEAT, and the first overlap onto
+// this release has one. Its drains stamp a row only when a chunk arrives
+// (Hermes' keep-alives included), so a reply of its that waits for the
+// agent's response headers is stamped by nothing from its insert on, for as
+// long as the old gateway holds the turn and then waits for them. Closed at
+// the ordinary lease, its thread read as idle while the old drain still ran,
+// and a send there started a second turn beside it. So a reply that has
+// said nothing and that no write has touched since it was made (or taken up
+// again by a resume) is given [`WRITER_LEASE_UNWRITTEN`]: past every wait a
+// pre-beat writer can be in before its first chunk.
+//
+// An orphan is closed as an error that says why, the way a drain that died
+// closes its own row, and stamped `orphaned`. It is not picked back up: the
+// agent may have finished the turn, and landing that reply is the reattach a
+// later change adds. A send that queues behind a row this process is not
+// writing watches it, and answers the queue itself if the row turns out to be
+// an orphan (talaria-chat-persist `answer_after_orphan`).
+
+/// How often a process stamps `streamed_at` on the replies it is writing.
+pub const WRITER_BEAT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a `streaming` reply goes unstamped before it has no writer.
+/// Twelve beats: well past a beat a busy database held up, and past the
+/// longest a writer that does not beat holds a row `streaming` (the inbox
+/// assistant's reply, bounded at 90 s).
+pub const WRITER_LEASE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The lease of a reply that has said nothing and that no write has touched
+/// since its insert (or its resume): a writer from before the beat holds the
+/// turn for its agent up to `HOLD_WINDOW` and then waits up to
+/// `HEADERS_WINDOW` for the response headers without writing the row (main's
+/// gateway has the same two bounds), and only then do chunks start stamping
+/// it. Half a minute of margin past both.
+pub const WRITER_LEASE_UNWRITTEN: std::time::Duration = std::time::Duration::from_secs(
+    talaria_gateway::fleet_chat::HOLD_WINDOW.as_secs()
+        + talaria_gateway::fleet_chat::HEADERS_WINDOW.as_secs()
+        + 30,
+);
+
+/// The line an orphaned reply is closed with, after whatever prose it had.
+/// A restart is the usual way a writer goes, not the only one (a writer task
+/// that panicked goes the same way), so the line says "most likely".
+pub const ORPHANED_LINE: &str = "(agent error: this reply stopped being saved partway through, \
+     most likely because Talaria restarted)";
+
+/// The reply rows this process is writing, by id, with how many holds each
+/// has (a resumed row is held again by its new drive).
+static WRITING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The key a row is held under: the canonical text Postgres answers `id::text`
+/// with, whatever spelling a caller had.
+fn writer_key(message_id: &str) -> String {
+    message_id.trim().to_ascii_lowercase()
+}
+
+/// This process's hold on a reply row it writes, from the row's insert to its
+/// landing write. While any hold on a row lives, the row is beaten and is
+/// never this process's orphan, however long it goes quiet.
+#[derive(Debug)]
+pub struct ReplyWriter {
+    key: String,
+}
+
+impl ReplyWriter {
+    pub fn hold(message_id: &str) -> Self {
+        let key = writer_key(message_id);
+        if let Ok(mut writing) = WRITING.lock() {
+            *writing.entry(key.clone()).or_default() += 1;
+        }
+        ReplyWriter { key }
+    }
+}
+
+impl Drop for ReplyWriter {
+    fn drop(&mut self) {
+        if let Ok(mut writing) = WRITING.lock()
+            && let Some(holds) = writing.get_mut(&self.key)
+        {
+            *holds -= 1;
+            if *holds == 0 {
+                writing.remove(&self.key);
+            }
+        }
+    }
+}
+
+/// Whether this process is writing this reply row.
+pub fn written_here(message_id: &str) -> bool {
+    WRITING
+        .lock()
+        .is_ok_and(|writing| writing.contains_key(&writer_key(message_id)))
+}
+
+/// Every reply row this process is writing.
+pub fn replies_written_here() -> Vec<String> {
+    WRITING
+        .lock()
+        .map(|writing| writing.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The beat: stamp the rows this process writes as alive, those still
+/// streaming. Returns how many it stamped.
+pub async fn beat_replies(pg: &PgPool, message_ids: &[String]) -> Result<u64, sqlx::Error> {
+    if message_ids.is_empty() {
+        return Ok(0);
+    }
+    let done = sqlx::query(
+        "update messages set streamed_at = now() \
+         where id::text = any($1::text[]) and status = 'streaming'",
+    )
+    .bind(message_ids)
+    .execute(pg)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// The close every orphan gets: an error whose reason follows the prose that
+/// arrived (or stands alone on an empty row), stamped `orphaned`. Guarded on
+/// the row still being an orphan, so a row a writer stamped or revived since
+/// it was read is left alone. `$1` is the lease in seconds, `$6` the lease
+/// of a reply that has said nothing and that no write has touched since its
+/// insert or its resume ([`WRITER_LEASE_UNWRITTEN`]; an insert sets
+/// `created_at` and `streamed_at` from one clock reading), `$2` the line with
+/// the separator before it, `$3` the line alone, `$4` the whitespace a row's
+/// prose is trimmed of. A macro, not a const, so each query below is one
+/// `'static` literal (sqlx takes no built string).
+macro_rules! close_orphan_sql {
+    () => {
+        "update messages set status = 'error', \
+            content = case when btrim(content, $4) = '' then $3 \
+                           else rtrim(content, $4) || $2 end, \
+            metadata = coalesce(metadata, '{}'::jsonb) || '{\"orphaned\": true}'::jsonb \
+         where role = 'assistant' and status = 'streaming' \
+           and streamed_at < now() - make_interval(secs => case \
+             when btrim(content, $4) = '' and btrim(reasoning, $4) = '' \
+               and tools = '[]'::jsonb \
+               and (streamed_at = created_at or coalesce(metadata, '{}'::jsonb) ? 'resumed') \
+             then $6 else $1 end)"
+    };
+}
+
+const PROSE_WHITESPACE: &str = " \t\r\n";
+
+/// Close one row as an orphan, if it still is one. True when it was closed
+/// here.
+async fn close_orphan(pg: &PgPool, message_id: &str) -> Result<bool, sqlx::Error> {
+    if written_here(message_id) {
+        return Ok(false);
+    }
+    let done = sqlx::query(concat!(close_orphan_sql!(), " and id = $5::uuid"))
+        .bind(WRITER_LEASE.as_secs_f64())
+        .bind(format!("\n\n{ORPHANED_LINE}"))
+        .bind(ORPHANED_LINE)
+        .bind(PROSE_WHITESPACE)
+        .bind(message_id)
+        .bind(WRITER_LEASE_UNWRITTEN.as_secs_f64())
+        .execute(pg)
+        .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// THE SWEEP: close every orphaned reply, whichever conversation it is in.
+/// Run at boot, and on every beat after it, by each process; the rows this
+/// one writes are never its orphans. Answers the closed rows as
+/// `(message_id, conversation_id)`.
+pub async fn sweep_orphaned_replies(pg: &PgPool) -> Result<Vec<(String, String)>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        close_orphan_sql!(),
+        " and not (id::text = any($5::text[])) \
+         returning id::text, conversation_id::text"
+    ))
+    .bind(WRITER_LEASE.as_secs_f64())
+    .bind(format!("\n\n{ORPHANED_LINE}"))
+    .bind(ORPHANED_LINE)
+    .bind(PROSE_WHITESPACE)
+    .bind(replies_written_here())
+    .bind(WRITER_LEASE_UNWRITTEN.as_secs_f64())
+    .fetch_all(pg)
+    .await
+}
+
+/// Where a reply row stands, for a send queued behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyFate {
+    /// Still being written: this process holds it, or a process stamped it
+    /// inside the lease.
+    Writing,
+    /// Nobody was writing it: closed as an orphan, here or by another
+    /// process's sweep.
+    Orphaned,
+    /// Its writer ended it (or the row is gone): that writer's tail is what
+    /// answers anything queued behind it.
+    Landed,
+}
+
+/// Read where a reply row stands, and close it if it is an orphan. Quiet for
+/// less than the ordinary lease, a row is written; past it, the guarded close
+/// decides (a reply that has said nothing may have the longer lease).
+pub async fn reply_fate(pg: &PgPool, message_id: &str) -> Result<ReplyFate, sqlx::Error> {
+    // Twice at most: a stale row the guarded close left alone was revived by
+    // its writer, has the longer lease, or was closed a moment earlier by
+    // another sweep, and only a second read tells which.
+    for _ in 0..2 {
+        let row: Option<(String, bool, bool)> = sqlx::query_as(
+            "select status, coalesce(metadata, '{}'::jsonb) ? 'orphaned', \
+                streamed_at < now() - make_interval(secs => $2) \
+             from messages where id = $1::uuid",
+        )
+        .bind(message_id)
+        .bind(WRITER_LEASE.as_secs_f64())
+        .fetch_optional(pg)
+        .await?;
+        match row {
+            None => return Ok(ReplyFate::Landed),
+            Some((status, _, stale)) if status == "streaming" => {
+                if !stale || written_here(message_id) {
+                    return Ok(ReplyFate::Writing);
+                }
+                if close_orphan(pg, message_id).await? {
+                    return Ok(ReplyFate::Orphaned);
+                }
+            }
+            Some((status, true, _)) if status == "error" => return Ok(ReplyFate::Orphaned),
+            Some(_) => return Ok(ReplyFate::Landed),
+        }
+    }
+    Ok(ReplyFate::Writing)
+}
+
+/// The conversation's in-flight assistant reply, if any: the question "may a
+/// NEW turn start, or does it queue". A reply some process is writing is in
+/// flight. An orphan is not: it is closed here (see "Who is writing a reply",
+/// above) and reported as none, so a send never queues behind a reply nobody
+/// will finish. The test is the writer's beat on `streamed_at`, never the
+/// row's age: a long agent turn, the kind that builds out a knowledgebase,
+/// streams for an hour, and its writer keeps beating it all that time. A row
+/// quiet for less than the ordinary lease costs no more than the read.
 pub async fn active_streaming_assistant(
     pg: &PgPool,
     conversation_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String, bool)> = sqlx::query_as(
-        "select id::text, streamed_at < now() - interval '15 minutes' as stale \
+        "select id::text, streamed_at < now() - make_interval(secs => $2) as stale \
          from messages \
          where conversation_id = $1::uuid and role = 'assistant' and status = 'streaming' \
          order by seq desc limit 1",
     )
     .bind(conversation_id)
+    .bind(WRITER_LEASE.as_secs_f64())
     .fetch_optional(pg)
     .await?;
     match row {
         None => Ok(None),
-        Some((id, stale)) => {
-            if stale {
-                // The reason lands only on an EMPTY row: a writer that died
-                // mid-prose keeps its prose (the mark renders beside it), and
-                // this sweep is the last-resort writer — the normal death
-                // paths put a better sentence in the row themselves.
-                sqlx::query(
-                    "update messages set status = 'error', \
-                        content = case when content = '' \
-                          then '(agent error: the stream writer vanished mid-turn)' \
-                          else content end \
-                     where id = $1::uuid",
-                )
-                .bind(&id)
-                .execute(pg)
-                .await?;
-                Ok(None)
-            } else {
+        Some((id, true)) if !written_here(&id) => {
+            // Closed here, or by another sweep a moment ago; either way it is
+            // no turn to wait for. A row the guarded close left alone (a
+            // writer revived it, or it has the longer lease) is in flight.
+            if reply_fate(pg, &id).await? == ReplyFate::Writing {
                 Ok(Some(id))
+            } else {
+                Ok(None)
             }
         }
+        Some((id, _)) => Ok(Some(id)),
     }
 }
 
@@ -1254,18 +1543,32 @@ pub async fn set_message_run_id(
     Ok(())
 }
 
+/// The Hermes run behind one assistant row, if the row was driven through a
+/// session. The auto-resume asks it about a dead turn: the run may still be
+/// alive in the container, and then the turn is picked back up rather than
+/// sent a second time.
+pub async fn message_run_id(pg: &PgPool, message_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select hermes_run_id from messages where id = $1::uuid")
+            .bind(message_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(run,)| run))
+}
+
 /// The conversation's in-flight assistant row and the Hermes run behind it —
 /// what a stop or a steer has to name. `None` is "nothing is streaming", which
 /// is the whole of the refusal both routes answer with.
 ///
 /// A PLAIN READ, deliberately unlike `active_streaming_assistant`: that one
-/// sweeps a row that has gone quiet for fifteen minutes into an error, because
-/// its question is "may a NEW turn start". This one's question is "what is the
+/// closes a row no process is writing (an orphan, see "Who is writing a
+/// reply"), because its question is "may a NEW turn start". This one's
+/// question is "what is the
 /// reader looking at right now", and the reader is looking at a spinner over
 /// exactly this row — killing it out from under a stop would answer "nothing is
 /// streaming" to a person who can see that something is. The run id is absent
-/// for a turn that went through the full-history chat arm, which Hermes
-/// addresses by nothing either route could name.
+/// for a turn that went through the full-history chat arm: a stop names its
+/// completion id instead, which only its drain knows (talaria-chat-persist).
 pub async fn streaming_run(
     pg: &PgPool,
     conversation_id: &str,
@@ -1363,6 +1666,11 @@ pub fn pinned_history_fits_counts(assistant_rows: i64, pinned_rows: i64) -> bool
 /// signal everywhere liveness is asked about (the sweep above, the sidebar's
 /// working flag): a streaming row that is still writing is still alive,
 /// however long the turn runs.
+///
+/// Every write here is the row's writer's, so it also takes off an `orphaned`
+/// stamp: a reply closed as an orphan whose writer was alive after all (a
+/// process from before the beat, in a deploy's overlap) is written again by
+/// that writer, and the row it lands must not say it was abandoned.
 pub async fn update_assistant(
     pg: &PgPool,
     message_id: &str,
@@ -1373,7 +1681,7 @@ pub async fn update_assistant(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update messages set content = $2, reasoning = $3, tools = $4, status = $5, \
-            streamed_at = now() \
+            streamed_at = now(), metadata = metadata - 'orphaned' \
          where id = $1::uuid",
     )
     .bind(message_id)
@@ -1398,7 +1706,7 @@ pub async fn resurrect_streaming_assistant(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "update messages set content = '', reasoning = '', tools = '[]'::jsonb, \
-            status = 'streaming', streamed_at = now() \
+            status = 'streaming', streamed_at = now(), metadata = metadata - 'orphaned' \
          where id = $1::uuid",
     )
     .bind(message_id)
@@ -1422,8 +1730,9 @@ pub async fn mark_message_resumed(pg: &PgPool, message_id: &str) -> Result<(), s
     Ok(())
 }
 
-/// Stamp a turn as STOPPED — a person pressed stop, or the doom-loop guard
-/// pulled the plug on an agent calling the same thing over and over. The row
+/// Stamp a turn as STOPPED — a person pressed stop. (An agent stuck calling
+/// the same thing over and over is halted inside Hermes by its own loop
+/// guard, which ends the turn with a reply rather than a stop.) The row
 /// itself lands COMPLETE, not errored: whatever the agent managed to say is
 /// what the person chose to keep, and an error status would put a retry
 /// affordance on a turn nobody wants retried. This stamp is what tells the
@@ -1470,43 +1779,6 @@ pub async fn set_message_guard(
         .bind(serde_json::to_value(findings).unwrap_or(Value::Null))
         .execute(pg)
         .await?;
-    Ok(())
-}
-
-/// Land chips on ONE named message row, merging by chip id.
-///
-/// `talaria_chips::surface_tool_chips` is the usual writer, and it cannot serve
-/// here: it resolves which row to write by asking where the agent is currently
-/// speaking, while a caller inside the persist already holds the row's id and
-/// must not land its chip on whatever row that lookup happens to pick. The
-/// merge is the same one that writer uses — a chip whose id is already on the
-/// row is left alone, so a guard that fires again inside one turn does not
-/// stack duplicates.
-pub async fn merge_message_chips(
-    pg: &PgPool,
-    message_id: &str,
-    chips: &[Value],
-) -> Result<(), sqlx::Error> {
-    if chips.is_empty() {
-        return Ok(());
-    }
-    sqlx::query(
-        "update messages set chips = ( \
-           select coalesce(jsonb_agg(c), '[]'::jsonb) from ( \
-             select c from jsonb_array_elements(chips) c \
-             union all \
-             select c from jsonb_array_elements($2::jsonb) c \
-             where not exists ( \
-               select 1 from jsonb_array_elements(chips) e \
-               where e->>'id' = c->>'id' \
-             ) \
-           ) s \
-         ) where id = $1::uuid",
-    )
-    .bind(message_id)
-    .bind(Value::Array(chips.to_vec()))
-    .execute(pg)
-    .await?;
     Ok(())
 }
 
@@ -1595,6 +1867,20 @@ pub async fn post_agent_turn(
     marker: &str,
     body: &str,
 ) -> Result<String, sqlx::Error> {
+    post_agent_turn_with(pg, conversation_id, marker, &serde_json::Map::new(), body).await
+}
+
+/// `post_agent_turn`, with more stamps in the row's `metadata` beside the
+/// marker — written by the same insert, so a reader that finds the row finds
+/// them too (the cron door's Hermes session id is what a later pull dedupes
+/// on). A stamp named `marker` is ignored: the marker argument is the key.
+pub async fn post_agent_turn_with(
+    pg: &PgPool,
+    conversation_id: &str,
+    marker: &str,
+    stamps: &serde_json::Map<String, Value>,
+    body: &str,
+) -> Result<String, sqlx::Error> {
     // Already said: hand back the same id so the caller's idea of "the turn I
     // posted" stays stable across re-entries.
     let said: Option<(String,)> = sqlx::query_as(
@@ -1609,17 +1895,43 @@ pub async fn post_agent_turn(
     if let Some((id,)) = said {
         return Ok(id);
     }
+    let mut metadata = stamps.clone();
+    metadata.insert("marker".into(), Value::String(marker.to_string()));
     let seq = next_seq(pg, conversation_id).await?;
-    let id = insert_streaming_assistant(
-        pg,
-        conversation_id,
-        seq,
-        &serde_json::json!({ "marker": marker }),
-    )
-    .await?;
+    let id = insert_streaming_assistant(pg, conversation_id, seq, &Value::Object(metadata)).await?;
     update_assistant(pg, &id, body, "", &[], "complete").await?;
     touch_conversation(pg, conversation_id, None).await?;
     Ok(id)
+}
+
+/// The Hermes thread this conversation's completions turns open on
+/// (talaria-gateway `fleet_chat::Thread`): 0 until a turn was moved off a
+/// session that lost one in a restart. A missing row is thread 0.
+pub async fn hermes_epoch(pg: &PgPool, conversation_id: &str) -> Result<i32, sqlx::Error> {
+    let epoch: Option<i32> =
+        sqlx::query_scalar("select hermes_epoch from conversations where id = $1::uuid")
+            .bind(conversation_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(epoch.unwrap_or(0))
+}
+
+/// Keep the thread a turn moved this conversation to. Only ever forward: a
+/// slower writer holding an older thread cannot move it back onto the
+/// session it left.
+pub async fn move_hermes_epoch(
+    pg: &PgPool,
+    conversation_id: &str,
+    epoch: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update conversations set hermes_epoch = greatest(hermes_epoch, $2) where id = $1::uuid",
+    )
+    .bind(conversation_id)
+    .bind(epoch)
+    .execute(pg)
+    .await?;
+    Ok(())
 }
 
 /// Bump the conversation's updated_at, setting a title from the first turn
@@ -1727,9 +2039,369 @@ pub async fn create_conversation(
     Ok(row.expect("insert … returning always yields a row").0)
 }
 
+// ── A tool call the stream called finished and the agent saw fail ────────────
+//
+// HERMES' COMPLETIONS STREAM CALLS EVERY FINISHED TOOL `completed`. Its
+// `hermes.tool.progress` frame for the end of a call carries no verdict
+// (v0.22.4 `_on_tool_complete` in api_server_openai_routes.py sends
+// `status: "completed"` whatever the result said), so a terminal command the
+// approval gate refused (`{"error": "Command denied: …", "status":
+// "blocked"}`) landed in `messages.tools` as a call that worked. The session
+// arm does not have this problem: its `tool.failed` says so. The completions
+// arm is the chat default, so this is most chats.
+//
+// The agent's talaria-events plugin is the one place the verdict exists: it
+// reads the result and posts `status: "error"` to /api/agents/tool-events,
+// keyed by the same tool-call id the stream's frames carry. That post and the
+// turn's own writes race, so the verdict is kept two ways and either order
+// lands it: the door records it here (Redis, for the turn still streaming)
+// and marks it on the reply row that was running when the call finished; the
+// turn folds the recorded verdicts into its tools when it lands. Only ever
+// toward `error`: a stream that said a call failed is never overruled by a
+// plugin that says it worked.
+//
+// A TOOL-CALL ID IS NOT UNIQUE ACROSS TURNS. Hermes keeps an id unique
+// within one session's history, and on this arm that history is only what
+// Talaria sends: the prior turns' words, none of their calls. A provider that
+// sends no id gets `deterministic_call_id(name, arguments, index)` (v0.22.4
+// message_sanitization.py), the same id every time the agent runs the same
+// command; some providers number their calls (`call_0`, `functions.x:0`)
+// turn after turn. So a verdict is scoped twice. By CONVERSATION: the
+// plugin's session id names it (the conversation itself on the session arm;
+// on this arm the derived `api-…` session, which the turn recorded against
+// its conversation when its stream opened, talaria-gateway
+// `record_attribution`); a verdict whose session names no conversation of
+// the agent's (a work session's run, a one-shot) is not kept, and the wire's
+// word stands. By TIME: the verdict carries when the call finished, and a
+// drive takes only the verdicts from after it was sent, the door marks only
+// the reply row that was running at that moment.
+
+/// How long the door keeps a verdict for a turn still running the call. A
+/// turn can work for hours (a knowledgebase buildout), and the turn reads the
+/// verdict only when it lands; the same window bounds which landed rows the
+/// door marks.
+const TOOL_FAILURE_SECS: u64 = 6 * 3_600;
+
+fn tool_failure_key(agent_model: &str, conversation_id: &str, tool_call_id: &str) -> String {
+    format!("tool-failed:{agent_model}:{conversation_id}:{tool_call_id}")
+}
+
+/// A tool-call id a model minted (`call_…`, `toolu_…`), or nothing: the id is
+/// part of a Redis key and a jsonb match, so only plain ids are taken.
+fn plain_call_id(id: &str) -> Option<&str> {
+    let id = id.trim();
+    (!id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':')))
+    .then_some(id)
+}
+
+/// When a verdict's call finished, in epoch ms: the plugin's own `at`, which
+/// is when the call ended in the container, not when the post reached the
+/// door (a backed-up queue delivers late). Never later than `now`, since no
+/// call finished in the future, and the door's own clock when the plugin sent
+/// none, or one older than the window a verdict is kept for.
+pub fn verdict_at(reported: Option<i64>, now: i64) -> i64 {
+    let floor = now - (TOOL_FAILURE_SECS as i64) * 1_000;
+    match reported {
+        Some(at) if at > floor => at.min(now),
+        _ => now,
+    }
+}
+
+/// The conversation of this agent's that a plugin's session id names, or
+/// none. The session arm's session is the conversation's own id; the
+/// completions arm's is the `api-…` session Hermes derived, which the chat
+/// turn recorded against its conversation when its stream opened.
+async fn verdict_conversation(
+    pg: &PgPool,
+    agent_model: &str,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let session = session_id.trim();
+    if session.is_empty() {
+        return Ok(None);
+    }
+    if uuid_shaped(session) {
+        return sqlx::query_scalar(
+            "select id::text from conversations where id = $1::uuid and agent_model = $2",
+        )
+        .bind(session)
+        .bind(agent_model)
+        .fetch_optional(pg)
+        .await;
+    }
+    sqlx::query_scalar(
+        "select c.id::text from usage_attributions a \
+           join conversations c on c.id = a.ref_id and c.agent_model = a.agent_model \
+          where a.agent_model = $1 and a.affinity_key = $2 and a.source = 'chat'",
+    )
+    .bind(agent_model)
+    .bind(session)
+    .fetch_optional(pg)
+    .await
+}
+
+/// What the door did with a verdict it kept: the conversation it was kept
+/// for, and how many reply rows it marked failed (0 when the reply running
+/// the call does not hold it yet; the turn's own writes fold it in).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptVerdict {
+    pub conversation_id: String,
+    pub marked: u64,
+}
+
+/// The agent's plugin saw `tool_call_id` fail at `at_ms` (`verdict_at`), in
+/// the session `session_id` names: keep that for the conversation's turn
+/// still running it, and mark it failed on the reply that was running when
+/// it finished, if that reply already holds the call. Answers the
+/// conversation it was kept for, so the door can ring the tabs that have it
+/// open; a session that names no conversation of this agent's keeps nothing
+/// and answers None.
+pub async fn record_tool_failure(
+    pg: &PgPool,
+    redis: Option<&mut redis::aio::ConnectionManager>,
+    agent_model: &str,
+    session_id: &str,
+    tool_call_id: &str,
+    at_ms: i64,
+) -> Result<Option<KeptVerdict>, sqlx::Error> {
+    let Some(id) = plain_call_id(tool_call_id) else {
+        return Ok(None);
+    };
+    let Some(conversation) = verdict_conversation(pg, agent_model, session_id).await? else {
+        tracing::debug!(
+            "[tool-events] {agent_model}: {id} failed in session {session_id:?}, which names no \
+             conversation — not kept"
+        );
+        return Ok(None);
+    };
+    // Before the row: a turn that lands after this line reads the verdict,
+    // and one that landed before it is marked below.
+    if let Some(conn) = redis {
+        let set: redis::RedisResult<()> = redis::cmd("SET")
+            .arg(tool_failure_key(agent_model, &conversation, id))
+            .arg(at_ms)
+            .arg("EX")
+            .arg(TOOL_FAILURE_SECS)
+            .query_async(conn)
+            .await;
+        if let Err(e) = set {
+            tracing::warn!("[tool-events] {agent_model}: could not keep {id} as failed: {e}");
+        }
+    }
+    // The reply that was running when the call finished is the newest one
+    // made before that moment. A newer reply is a later turn, which may hold
+    // the same id for a call of its own.
+    let marked = sqlx::query(
+        "update messages m \
+            set tools = (select coalesce(jsonb_agg(case when t->>'id' = $2 \
+                                                   then jsonb_set(t, '{status}', '\"error\"') \
+                                                   else t end order by n), '[]'::jsonb) \
+                           from jsonb_array_elements(m.tools) with ordinality as e(t, n)) \
+          where m.id = (select x.id from messages x \
+                         where x.conversation_id = $1::uuid and x.role = 'assistant' \
+                           and x.created_at <= to_timestamp($3::float8 / 1000) \
+                           and x.created_at > now() - make_interval(secs => $4) \
+                         order by x.created_at desc, x.id desc limit 1) \
+            and m.tools @> jsonb_build_array(jsonb_build_object('id', $2::text))",
+    )
+    .bind(&conversation)
+    .bind(id)
+    .bind(at_ms as f64)
+    .bind(TOOL_FAILURE_SECS as f64)
+    .execute(pg)
+    .await?;
+    Ok(Some(KeptVerdict {
+        conversation_id: conversation,
+        marked: marked.rows_affected(),
+    }))
+}
+
+/// Fold the verdicts the door recorded into a landing turn's tools: a call
+/// its plugin saw fail is `error`, whatever the stream said. `since_ms` is
+/// when this drive was sent; a verdict from before it is an earlier turn's
+/// call that happened to share an id (None takes every kept verdict, for a
+/// stream whose calls ran before this process saw it). Says whether anything
+/// changed. A Redis that cannot be read changes nothing — the door still
+/// marks the landed row when its post arrives.
+pub async fn fold_tool_failures(
+    redis: &mut redis::aio::ConnectionManager,
+    agent_model: &str,
+    conversation_id: &str,
+    since_ms: Option<i64>,
+    tools: &mut [ToolCall],
+) -> bool {
+    let open: Vec<String> = tools
+        .iter()
+        .filter(|t| t.status != "error")
+        .filter_map(|t| t.id.as_deref().and_then(plain_call_id).map(str::to_string))
+        .collect();
+    if open.is_empty() {
+        return false;
+    }
+    let keys: Vec<String> = open
+        .iter()
+        .map(|id| tool_failure_key(agent_model, conversation_id, id))
+        .collect();
+    let found: Vec<Option<String>> = match redis::cmd("MGET").arg(&keys).query_async(redis).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("[chat_persist] {agent_model}: tool verdicts unreadable: {e}");
+            return false;
+        }
+    };
+    let failed = failed_since(&open, found, since_ms);
+    mark_tool_failures(tools, &failed)
+}
+
+/// The ids whose kept verdict (`at`, in epoch ms) belongs to this drive: at
+/// or after `since_ms`. A value that is not a time counts as nothing.
+fn failed_since(open: &[String], found: Vec<Option<String>>, since_ms: Option<i64>) -> Vec<&str> {
+    open.iter()
+        .zip(found)
+        .filter(|(_, v)| {
+            v.as_deref()
+                .and_then(|v| v.parse::<i64>().ok())
+                .is_some_and(|at| since_ms.is_none_or(|since| at >= since))
+        })
+        .map(|(id, _)| id.as_str())
+        .collect()
+}
+
+/// Mark the calls named in `failed` as `error`. A call already `error` stays
+/// so; nothing is ever marked back to working. Says whether anything changed.
+pub fn mark_tool_failures(tools: &mut [ToolCall], failed: &[&str]) -> bool {
+    let mut changed = false;
+    for t in tools.iter_mut() {
+        if t.status != "error" && t.id.as_deref().is_some_and(|id| failed.contains(&id)) {
+            t.status = "error".to_string();
+            changed = true;
+        }
+    }
+    changed
+}
+
+#[cfg(test)]
+mod orphan_live;
+
+#[cfg(test)]
+mod audience_live;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call(id: Option<&str>, status: &str) -> ToolCall {
+        ToolCall {
+            id: id.map(str::to_string),
+            name: "terminal".into(),
+            label: String::new(),
+            status: status.into(),
+        }
+    }
+
+    /// The plugin's verdict marks exactly the calls it names, only ever
+    /// toward `error`, and a call with no id is never matched.
+    #[test]
+    fn a_failed_verdict_marks_only_its_own_call() {
+        let mut tools = vec![
+            call(Some("call_a"), "completed"),
+            call(Some("call_b"), "completed"),
+            call(None, "completed"),
+            call(Some("call_c"), "running"),
+        ];
+        assert!(mark_tool_failures(&mut tools, &["call_b", "call_c"]));
+        let status: Vec<&str> = tools.iter().map(|t| t.status.as_str()).collect();
+        assert_eq!(status, ["completed", "error", "completed", "error"]);
+        // Nothing left to change: the second fold of a landing is a no-op.
+        assert!(!mark_tool_failures(&mut tools, &["call_b", "call_c"]));
+    }
+
+    #[test]
+    fn only_a_plain_call_id_keys_a_verdict() {
+        assert_eq!(plain_call_id(" call_9x2Lk "), Some("call_9x2Lk"));
+        assert_eq!(plain_call_id("toolu_01A.b:c-d"), Some("toolu_01A.b:c-d"));
+        for bad in ["", "   ", "call a", "call*", "a\"b", &"x".repeat(129)] {
+            assert_eq!(plain_call_id(bad), None, "{bad}");
+        }
+        assert_eq!(
+            tool_failure_key("ada-eng", "c0ffee00-0000-4000-8000-000000000001", "call_1"),
+            "tool-failed:ada-eng:c0ffee00-0000-4000-8000-000000000001:call_1"
+        );
+    }
+
+    /// The same call id in two turns of one conversation, as Hermes mints it
+    /// when the provider sends none (`deterministic_call_id("terminal",
+    /// '{"command": "git status"}', 0)` is the same `call_…` every time): the
+    /// first turn's call failed and kept a verdict; the second turn's
+    /// succeeded. The second drive was sent after the verdict, so the
+    /// verdict is not its own and its call stays `completed`. The first
+    /// turn, landing, takes it.
+    #[test]
+    fn a_repeated_call_id_takes_only_its_own_turns_verdict() {
+        let failed_at = 1_793_136_611_257_i64;
+        let first_sent = failed_at - 4_000;
+        let second_sent = failed_at + 90_000;
+        let kept = || vec![Some(failed_at.to_string())];
+        let open = vec!["call_3b1e0f9a2c4d".to_string()];
+
+        let mut second = vec![call(Some("call_3b1e0f9a2c4d"), "completed")];
+        let failed = failed_since(&open, kept(), Some(second_sent));
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(!mark_tool_failures(&mut second, &failed));
+        assert_eq!(second[0].status, "completed");
+
+        let mut first = vec![call(Some("call_3b1e0f9a2c4d"), "completed")];
+        let failed = failed_since(&open, kept(), Some(first_sent));
+        assert!(mark_tool_failures(&mut first, &failed));
+        assert_eq!(first[0].status, "error");
+
+        // A drive sent the very millisecond the call finished still owns it;
+        // a stream a restart handed back (no send time) takes every kept one.
+        assert_eq!(
+            failed_since(&open, kept(), Some(failed_at)),
+            ["call_3b1e0f9a2c4d"]
+        );
+        assert_eq!(failed_since(&open, kept(), None), ["call_3b1e0f9a2c4d"]);
+        // Nothing kept, or a value that is not a time, is no verdict.
+        assert!(failed_since(&open, vec![None], None).is_empty());
+        assert!(failed_since(&open, vec![Some("error".into())], None).is_empty());
+    }
+
+    /// A verdict is timed by when its call finished in the container, not
+    /// when the post reached the door; never in the future, and the door's
+    /// clock stands in for a time that is missing or older than the window.
+    #[test]
+    fn a_verdict_is_timed_by_its_call() {
+        let now = 1_793_136_700_000_i64;
+        assert_eq!(verdict_at(Some(now - 2_500), now), now - 2_500);
+        assert_eq!(verdict_at(Some(now + 60_000), now), now);
+        assert_eq!(verdict_at(None, now), now);
+        assert_eq!(verdict_at(Some(0), now), now);
+        assert_eq!(
+            verdict_at(Some(now - (TOOL_FAILURE_SECS as i64) * 1_000), now),
+            now
+        );
+    }
+
+    /// Only what the cast takes is cast: a completions session (`api-…`) and
+    /// anything else a container made up go to the attribution lookup.
+    #[test]
+    fn only_a_uuid_session_is_read_as_a_conversation_id() {
+        assert!(uuid_shaped("c0ffee00-0000-4000-8000-00000000000A"));
+        assert!(uuid_shaped("c0ffee00000040008000000000000001"));
+        for not in [
+            "api-6bc93538c8727c5a",
+            "",
+            "c0ffee00-0000-4000-8000-00000000000g",
+            "c0ffee00-0000-4000-8000-0000000000011",
+        ] {
+            assert!(!uuid_shaped(not), "{not}");
+        }
+    }
 
     fn row(id: &str, seq: i32) -> MessageRow {
         MessageRow {
@@ -1839,5 +2511,39 @@ mod tests {
         assert_eq!(reaction_actor(Some("a@x"), Some("A")), "a@x");
         assert_eq!(reaction_actor(None, Some("A")), "A");
         assert_eq!(reaction_actor(None, None), "user");
+    }
+
+    /// A row is written here while any hold on it lives, whatever spelling of
+    /// its id the holder had, and stops being so when the last hold goes.
+    #[test]
+    fn a_reply_is_written_here_while_a_hold_lives() {
+        let row = "5e1ec7ed-0000-4000-8000-0000000000f1";
+        assert!(!written_here(row));
+        let first = ReplyWriter::hold(&row.to_ascii_uppercase());
+        assert!(written_here(row));
+        assert!(replies_written_here().contains(&row.to_string()));
+        // A resumed row is held again by its new drive before the old hold
+        // goes: the row stays written here across the hand-over.
+        let second = ReplyWriter::hold(row);
+        drop(first);
+        assert!(written_here(row));
+        drop(second);
+        assert!(!written_here(row));
+        assert!(!replies_written_here().contains(&row.to_string()));
+    }
+
+    /// The beat outlives the longest quiet stretch of a live writer by a wide
+    /// margin, and the lease outlives the inbox reply's 90 s bound.
+    #[test]
+    fn the_lease_is_many_beats_and_outlives_a_writer_that_does_not_beat() {
+        assert!(WRITER_LEASE >= WRITER_BEAT * 10);
+        assert!(WRITER_LEASE > std::time::Duration::from_secs(90));
+        // A pre-beat writer is silent through its hold and its headers wait.
+        assert!(
+            WRITER_LEASE_UNWRITTEN
+                > talaria_gateway::fleet_chat::HOLD_WINDOW
+                    + talaria_gateway::fleet_chat::HEADERS_WINDOW
+        );
+        assert!(ORPHANED_LINE.starts_with("(agent error:"));
     }
 }

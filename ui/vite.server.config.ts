@@ -14,6 +14,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@talaria/sdk/server': resolve(here, 'src/sdk/server.ts'),
+      '@talaria/sdk/testing': resolve(here, 'src/sdk/testing.ts'),
       '@talaria/sdk': resolve(here, 'src/sdk/index.ts'),
     },
   },
