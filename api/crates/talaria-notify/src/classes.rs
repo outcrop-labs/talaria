@@ -94,6 +94,22 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
     // to down. In-app by default — an admin fixes it from the MCP page.
     ("gap_reported", "gap_reported", "Capability gap"),
     ("mcp_server_down", "gap_reported", "MCP server down"),
+    // The agent image's stable channel stopped a rollout: the canary or an
+    // agent failed on a new Hermes image, which is marked bad and never
+    // rolled out again, and the agents stay on the last known good. The
+    // workspace's own health, for admins, like a server down.
+    (
+        "hermes_update_failed",
+        "gap_reported",
+        "Agent image update failed",
+    ),
+    // The channel cannot do its job: its checks have failed for days, a
+    // rollout has been open for a week, or its state row is unreadable.
+    (
+        "hermes_channel_stuck",
+        "gap_reported",
+        "Agent image updates stuck",
+    ),
 ];
 
 /// Where a class sits in the center and the matrix.
@@ -465,6 +481,9 @@ mod tests {
             // The MCP health pass's ok → down notification: in-app, like the
             // capability gaps it is one of.
             ("mcp_server_down", "gap_reported"),
+            // The stable channel's stopped rollout: the workspace's health.
+            ("hermes_update_failed", "gap_reported"),
+            ("hermes_channel_stuck", "gap_reported"),
             // Every class id is its own kind.
             ("judge_escalation", "judge_escalation"),
             ("gap_reported", "gap_reported"),

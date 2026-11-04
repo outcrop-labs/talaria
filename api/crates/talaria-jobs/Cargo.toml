@@ -48,6 +48,7 @@ talaria-mcp-library = { workspace = true }
 talaria-skills-marketplace = { workspace = true }
 talaria-model-info = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-hermes-channel = { workspace = true }
 talaria-outreach = { workspace = true }
 talaria-price-oracle = { workspace = true }
 talaria-push = { workspace = true }

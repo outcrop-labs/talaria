@@ -4788,6 +4788,42 @@ alter table tasks drop column if exists conversation_id`,
   `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
   `alter table price_lookups add constraint price_lookups_outcome_check
      check (outcome in ('priced', 'no_match', 'source_failed', 'variable', 'suggested'))`,
+  //
+  // The agent image follows Hermes' stable channel (talaria-hermes-channel,
+  // docs/ARCHITECTURE.md "The fleet"). One row per image digest this instance
+  // has seen on the channel: the version tag that shares the digest, the
+  // image's own config schema version (read from the image, never assumed),
+  // and whether it ran well here. A digest marked bad is never rolled out
+  // again. Additive only: main never reads either table, so a rollback to it
+  // leaves them unread.
+  `create table if not exists hermes_images (
+     digest text primary key,
+     repository text not null,
+     version text,
+     config_version integer,
+     status text not null default 'candidate'
+       check (status in ('candidate', 'good', 'bad')),
+     reason text,
+     inspect jsonb not null default '{}'::jsonb,
+     pulled_here boolean not null default false,
+     first_seen timestamptz not null default now(),
+     prepared_at timestamptz,
+     good_since timestamptz,
+     updated_at timestamptz not null default now()
+   )`,
+  // Which digest each agent's container was last told to run. An agent with
+  // no row runs the channel's current image (the compiled pin until the
+  // channel has moved). The rollout writes one row per agent it moves.
+  `create table if not exists hermes_agent_images (
+     agent_id uuid primary key references agent_defs(id) on delete cascade,
+     digest text not null,
+     updated_at timestamptz not null default now()
+   )`,
+  // When the agent was last stopped: Talaria's Stop, or a stop the agent image
+  // channel found when it first ran (an agent stopped before it, by hand, or
+  // by compose down). A start clears only a Stop older than its own start.
+  // The channel never starts an agent that is down this way.
+  `alter table agent_defs add column if not exists stopped_at timestamptz`,
   // The Hermes run id of a work session's newest turn. Dropping the stream
   // does not end a turn in the agent; a stop has to name it, and the api
   // process that read the id may be gone by the time a person presses Stop.
