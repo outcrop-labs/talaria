@@ -1042,26 +1042,55 @@ impl StepSnapshot {
 /// tool call id, and the plugin remembers its last boundary only in process
 /// memory, so a restarted container can send one twice. The allocator is not
 /// bumped for a duplicate, so `seq` stays gapless.
+///
+/// A row takes the turn the run is on, and the record stage places it. The
+/// step after a turn's last tool call is different: its frame lands after
+/// the run finished, when no record stage will run again, so it is placed
+/// here from the ledger itself, at the last closed turn, after that turn's
+/// last placed step. The hook's clock is the row's, clamped to the server's
+/// range and its present, so a clock that is wrong cannot drop the frame.
 pub async fn record_step(
     pg: &PgPool,
     run_id: &str,
     step: &StepSnapshot,
 ) -> Result<Option<i64>, sqlx::Error> {
     let written: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
-        "with bumped as ( \
-           update runs set checkpoint_seq = checkpoint_seq + 1 \
-           where id = $1::uuid \
+        "with run as ( \
+           select checkpoint, state in ('done', 'error', 'cancelled') as finished \
+           from runs where id = $1::uuid \
              and not exists (select 1 from run_checkpoints \
                              where run_id = $1::uuid and tool_call_id = $2) \
-           returning checkpoint_seq, coalesce((checkpoint->>'turn')::bigint, 1) as turn \
+         ), place as ( \
+           select finished, \
+                  case when finished then coalesce( \
+                         (select max(turn) from run_checkpoints c \
+                          where c.run_id = $1::uuid and c.kind = 'turn' \
+                            and c.status in ('record', 'failed')), \
+                         greatest(coalesce((checkpoint->>'turn')::bigint, 1) - 1, 1)) \
+                       else coalesce((checkpoint->>'turn')::bigint, 1) end as turn \
+           from run \
+         ), bumped as ( \
+           update runs set checkpoint_seq = checkpoint_seq + 1 \
+           where id = $1::uuid and exists (select 1 from run) \
+           returning checkpoint_seq \
          ), ledger as ( \
            insert into run_checkpoints \
              (run_id, seq, kind, turn, agent_turn_id, tool_call_id, tool, title, status, \
               job_id, workspace_commit, workspace_tree, restorable, unrestorable_reason, \
-              created_at) \
-           select $1::uuid, checkpoint_seq, 'step', turn, $3, $2, $4, $5, $6, \
-                  $7::uuid, $8, $9, $10, $11, to_timestamp($12::double precision / 1000.0) \
-           from bumped \
+              step_no, created_at) \
+           select $1::uuid, b.checkpoint_seq, 'step', p.turn, $3, $2, $4, $5, $6, \
+                  $7::uuid, $8, $9, $10, $11, \
+                  case when p.finished then coalesce( \
+                         (select max(step_no) from run_checkpoints c \
+                          where c.run_id = $1::uuid and c.kind = 'step' and c.turn = p.turn), \
+                         0) + 1 end, \
+                  case when $12::bigint between 0 \
+                                            and (extract(epoch from now()) * 1000)::bigint \
+                       then to_timestamp(least(greatest($12::bigint, 0), \
+                                               (extract(epoch from now()) * 1000)::bigint) \
+                                         ::double precision / 1000.0) \
+                       else now() end \
+           from bumped b, place p \
            returning seq \
          ) \
          select seq from ledger",
@@ -1128,15 +1157,21 @@ pub async fn place_steps(
 }
 
 /// A job's checkout is gone, so every step that pointed into it can no
-/// longer be restored. Rows already unrestorable keep their own reason.
-pub async fn retire_job_steps(pg: &PgPool, job_id: &str, reason: &str) -> Result<u64, sqlx::Error> {
+/// longer be restored. Rows already unrestorable keep their own reason. Runs
+/// on any executor so the caller can put it in the transaction that marks
+/// the job's workspace cleared.
+pub async fn retire_job_steps<'e>(
+    ex: impl sqlx::PgExecutor<'e>,
+    job_id: &str,
+    reason: &str,
+) -> Result<u64, sqlx::Error> {
     let done = sqlx::query(
         "update run_checkpoints set restorable = false, unrestorable_reason = $2 \
          where job_id = $1::uuid and restorable",
     )
     .bind(job_id)
     .bind(reason)
-    .execute(pg)
+    .execute(ex)
     .await?;
     Ok(done.rows_affected())
 }

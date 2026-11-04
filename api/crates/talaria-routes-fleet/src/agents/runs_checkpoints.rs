@@ -1,4 +1,6 @@
-// GET /api/runs/{id}/checkpoints. The run's append-only ledger, oldest first.
+// GET /api/runs/{id}/checkpoints. The run's append-only ledger in the order
+// the work happened: each turn's send row, its steps, then its record row.
+// `seq` is identity, not order.
 //
 // Same authority as the transcript beside it, and the same refusal: missing
 // and out-of-audience both answer 403, so a guessable id is not an existence

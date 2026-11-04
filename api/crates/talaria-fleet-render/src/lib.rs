@@ -1014,6 +1014,19 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "if [ -x \"$GIT_DIR/hooks/pre-push\" ] && [ \"$GIT_DIR\" != \".\" ]; then\n",
     "  \"$GIT_DIR/hooks/pre-push\" \"$@\" || exit 1\n",
     "fi\n",
+    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
+    "# A checkpoint ref (refs/talaria/*) is the platform's own snapshot of this\n",
+    "# checkout and never leaves it: refused here, whatever the remote or the\n",
+    "# rules, because the branch check below skips every non-branch ref.\n",
+    "refs=\"\"; n=0\n",
+    "while read -r local_ref _ remote_ref _; do\n",
+    "  case \"$local_ref $remote_ref\" in *refs/talaria/*)\n",
+    "    echo \"talaria: push declined — $remote_ref is a checkpoint ref and is never pushed\" >&2; exit 1 ;; esac\n",
+    "  [ -n \"$remote_ref\" ] || continue\n",
+    "  case \"$remote_ref\" in refs/heads/*) ;; *) continue ;; esac\n",
+    "  n=$((n+1)); refs=\"$refs\\\"$remote_ref\\\",\"\n",
+    "done\n",
+    "[ \"$n\" -gt 0 ] || exit 0\n",
     "remote=\"\"\n",
     "# $1 is the remote name; resolve its URL from the config.\n",
     "remote_url=$(git config --get \"remote.$1.url\" 2>/dev/null)\n",
@@ -1024,14 +1037,6 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "# And the host (with any port) the remote is on: the same owner/repo on\n",
     "# two git hosts is two repositories with two sets of rules.\n",
     "host=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://([^@/]+@)?([^/]+)/.*$#\\2#p' -e 's#^([^@]+@)?([^:/]+):.*$#\\2#p')\n",
-    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
-    "refs=\"\"; n=0\n",
-    "while read -r _ _ remote_ref _; do\n",
-    "  [ -n \"$remote_ref\" ] || continue\n",
-    "  case \"$remote_ref\" in refs/heads/*) ;; *) continue ;; esac\n",
-    "  n=$((n+1)); refs=\"$refs\\\"$remote_ref\\\",\"\n",
-    "done\n",
-    "[ \"$n\" -gt 0 ] || exit 0\n",
     "refs=\"${refs%,}\"\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-push-check\"\n",
     "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"host\\\":\\\"$host\\\",\\\"refs\\\":[$refs]}\"\n",
@@ -6621,6 +6626,60 @@ empty_list: []
         assert!(
             err.contains("push declined") && err.contains("not yours"),
             "the refusal must carry the route's sentence: {err}"
+        );
+    }
+
+    /// A checkpoint ref never leaves the container. The branch check skips
+    /// every ref that is not a branch, so a mirror or an explicit push of
+    /// `refs/talaria/ckpt/...` used to pass with no policy at all; the hook
+    /// refuses it itself, before any check is asked, and says which ref.
+    #[test]
+    fn the_pre_push_hook_refuses_a_checkpoint_ref_before_asking_anyone() {
+        let dir = std::env::temp_dir().join(format!("talaria-hookref-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
+        let refs_file = dir.join("refs.txt");
+        std::fs::write(
+            &refs_file,
+            b"refs/heads/x 0 refs/heads/agent/y 0\nrefs/talaria/ckpt/run/call 0 refs/talaria/ckpt/run/call 0\n",
+        )
+        .unwrap();
+        // No remote, no PATH stub, no curl: a refusal here comes from the
+        // hook alone.
+        let out = std::process::Command::new("sh")
+            .arg("pre-push")
+            .arg("origin")
+            .current_dir(dir.join("repo"))
+            .env("GIT_DIR", ".git")
+            .stdin(std::fs::File::open(&refs_file).unwrap())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("refs/talaria/ckpt/run/call") && stderr.contains("never pushed"),
+            "{stderr}"
+        );
+    }
+
+    /// The plugin's snapshot half, driven against a real git repository by
+    /// its own test file. The Python is the artifact that ships, so the
+    /// Rust side only runs it; python3 is on every CI runner and dev box.
+    #[test]
+    fn the_events_plugin_snapshot_test_passes() {
+        let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/src/plugin/talaria-events");
+        let out = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(format!("{plugin}/snapshot_test.py"))
+            .arg(format!("{plugin}/__init__.py"))
+            .output()
+            .expect("python3 runs the plugin's test");
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 

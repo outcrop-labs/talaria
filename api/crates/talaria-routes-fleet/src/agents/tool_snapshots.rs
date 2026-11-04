@@ -186,19 +186,18 @@ pub async fn land(
     };
     let run_id = match &frame.session_id {
         Some(session_id) => {
-            talaria_api_facades::runs::defs::work_session::live_work_session_for(
-                &state.pg,
-                &caller.model,
-                session_id,
-            )
-            .await
+            use talaria_api_facades::runs::defs::work_session::{
+                live_work_session_for, settled_work_session_for,
+            };
+            match live_work_session_for(&state.pg, &caller.model, session_id).await {
+                Ok(None) => settled_work_session_for(&state.pg, &caller.model, session_id).await,
+                other => other,
+            }
         }
         None => Ok(None),
     };
     let run_id = match run_id {
         Ok(Some(run_id)) => run_id,
-        // The step after a turn's last tool call can reach here once the
-        // run has finished; the turn's record row closes that turn.
         Ok(None) => {
             tracing::debug!(
                 "[tool-events] {} snapshot at {} named no live run; dropped",

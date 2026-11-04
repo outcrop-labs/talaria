@@ -256,18 +256,26 @@ pub async fn teardown_job(
     )
     .await?;
     if mode == Teardown::Remove {
-        sqlx::query("update workbench_jobs set workspace_cleared_at = now() where id = $1::uuid")
-            .bind(job_id)
-            .execute(pg)
-            .await
-            .map_err(|e| format!("job update: {e}"))?;
-        // The checkout and its snapshot refs went with the workdir, so the
-        // steps that pointed into it say so rather than promising a restore.
-        talaria_runs_store::retire_job_steps(pg, job_id, "the job's checkout was removed")
-            .await
-            .map_err(|e| format!("checkpoint update: {e}"))?;
+        mark_removed(pg, job_id).await?;
     }
     Ok(())
+}
+
+/// The workdir is gone: the job's done-marker, and the retirement of every
+/// step that pointed into the checkout, in one transaction. Two writes would
+/// let a failure between them leave a job the sweep never scans again with
+/// rows that still promise a restore.
+pub async fn mark_removed(pg: &PgPool, job_id: &str) -> Result<(), String> {
+    let mut tx = pg.begin().await.map_err(|e| format!("job update: {e}"))?;
+    talaria_runs_store::retire_job_steps(&mut *tx, job_id, "the job's checkout was removed")
+        .await
+        .map_err(|e| format!("checkpoint update: {e}"))?;
+    sqlx::query("update workbench_jobs set workspace_cleared_at = now() where id = $1::uuid")
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("job update: {e}"))?;
+    tx.commit().await.map_err(|e| format!("job update: {e}"))
 }
 
 /// Fire-and-forget from a verb: the agent's tool call returns now, the

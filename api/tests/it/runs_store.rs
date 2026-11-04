@@ -718,5 +718,82 @@ async fn step_rows_share_the_seq_allocator_dedupe_by_call_and_read_in_the_transc
         Some("the job's checkout was removed")
     );
 
+    // A clock the server cannot hold, or one ahead of it, is the server's
+    // present rather than a dropped frame.
+    let before: i64 = sqlx::query_scalar("select (extract(epoch from now()) * 1000)::bigint")
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(
+        record_step(&pg, &id, &step("c-far", "terminal", i64::MAX, None))
+            .await
+            .unwrap(),
+        Some(7)
+    );
+    assert_eq!(
+        record_step(&pg, &id, &step("c-neg", "terminal", -5, None))
+            .await
+            .unwrap(),
+        Some(8)
+    );
+    let (far, neg): (i64, i64) = sqlx::query_as(
+        "select (extract(epoch from max(created_at) filter (where tool_call_id = 'c-far')) * 1000)::bigint, \
+                (extract(epoch from max(created_at) filter (where tool_call_id = 'c-neg')) * 1000)::bigint \
+         from run_checkpoints where run_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(far >= before && far <= before + 60_000, "{far} vs {before}");
+    assert!(neg >= before && neg <= before + 60_000, "{neg} vs {before}");
+
+    // The step after the run's last tool call lands after the run ended, when
+    // no record stage will place it: it takes the last closed turn, after that
+    // turn's last placed step.
+    store
+        .checkpoint(
+            &id,
+            &token,
+            turn(2, "record"),
+            "turn 2 answered".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .complete(&id, &token, json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record_step(&pg, &id, &step("c-last", "terminal", past + 9_000, None))
+            .await
+            .unwrap(),
+        Some(10)
+    );
+    assert_eq!(
+        record_step(&pg, &id, &step("c-later", "terminal", past + 9_500, None))
+            .await
+            .unwrap(),
+        Some(11)
+    );
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    let place = |call: &str| {
+        let row = rows
+            .iter()
+            .find(|r| r.tool_call_id.as_deref() == Some(call))
+            .unwrap();
+        (row.turn, row.step_no)
+    };
+    assert_eq!(place("c-last"), (Some(2), Some(1)));
+    assert_eq!(place("c-later"), (Some(2), Some(2)));
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [1, 6, 2, 3, 4, 5, 10, 11, 7, 8, 9],
+        "turn 2 reads: its send row, the placed late steps, the unplaced steps by the clock, its record row"
+    );
+
     cleanup(&pg, kind).await;
 }

@@ -222,17 +222,20 @@ async fn a_frame_lands_nowhere_without_a_live_run_and_a_stranger_s_job_makes_it_
             .is_empty()
     );
 
-    // A finished run of this agent is no longer live.
-    let done = live_run(&state.pg, &model, 2).await;
-    sqlx::query("update runs set state = 'done' where id = $1::uuid")
-        .bind(&done)
-        .execute(&state.pg)
-        .await
-        .unwrap();
+    // A run of this agent that ended a while ago names nothing.
+    let long_done = live_run(&state.pg, &model, 2).await;
+    sqlx::query(
+        "update runs set state = 'done', finished_at = now() - interval '20 minutes' \
+         where id = $1::uuid",
+    )
+    .bind(&long_done)
+    .execute(&state.pg)
+    .await
+    .unwrap();
     let (_, body) = post(
         &state,
         Some(&key),
-        frame(&done, Some(&own_job), calls.clone()),
+        frame(&long_done, Some(&own_job), calls.clone()),
     )
     .await;
     assert_eq!(body["landed"], false, "{body}");
@@ -265,6 +268,116 @@ async fn a_frame_lands_nowhere_without_a_live_run_and_a_stranger_s_job_makes_it_
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = post(&state, None, frame(&run, Some(&own_job), calls)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    cleanup(&state.pg, tag).await;
+}
+
+/// The step after a turn's last tool call reaches the door after the run has
+/// finished: it still lands, placed at the last closed turn after that turn's
+/// last step, so the run's final state has a rewind point too.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn the_last_step_lands_after_the_run_has_ended_and_is_placed() {
+    let state = live_app_state().await;
+    let tag = "last-step";
+    cleanup(&state.pg, tag).await;
+    let (def_id, model, key) = agent(&state, tag).await;
+    let job = started_job(&state.pg, &def_id, &model).await;
+    let run = live_run(&state.pg, &model, 1).await;
+    let first = frame(
+        &run,
+        Some(&job),
+        json!([{"id": "call_1", "name": "terminal"}]),
+    );
+    let (_, body) = post(&state, Some(&key), first).await;
+    assert_eq!(body["seq"], 1, "{body}");
+    sqlx::query(
+        "update run_checkpoints set step_no = 1 where run_id = $1::uuid and tool_call_id = 'call_1'",
+    )
+    .bind(&run)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into run_checkpoints (run_id, seq, kind, turn, status, title) \
+         values ($1::uuid, 2, 'turn', 1, 'record', 'turn 1 answered')",
+    )
+    .bind(&run)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "update runs set state = 'done', finished_at = now(), checkpoint_seq = 2, \
+                checkpoint = '{\"stage\":\"send\",\"turn\":2,\"stageAttempt\":0}' \
+         where id = $1::uuid",
+    )
+    .bind(&run)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+
+    let late = frame(
+        &run,
+        Some(&job),
+        json!([{"id": "call_2", "name": "mcp__talaria__report_outcome"}]),
+    );
+    let (status, body) = post(&state, Some(&key), late).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["landed"], true, "{body}");
+    assert_eq!(body["seq"], 3);
+    let rows = run_checkpoints(&state.pg, &run).await.unwrap();
+    let last = rows
+        .iter()
+        .find(|r| r.tool_call_id.as_deref() == Some("call_2"))
+        .unwrap();
+    assert_eq!((last.turn, last.step_no), (Some(1), Some(2)), "{last:?}");
+    assert!(last.restorable);
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [1, 3, 2],
+        "the late step reads before the record row that closed its turn"
+    );
+
+    cleanup(&state.pg, tag).await;
+}
+
+/// Removing a job's workdir retires its steps and marks the job cleared in
+/// one transaction: a sweep can never find a job it will not scan again
+/// whose rows still promise a restore.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn a_removed_workdir_retires_its_steps_with_the_job_s_done_marker() {
+    let state = live_app_state().await;
+    let tag = "removed";
+    cleanup(&state.pg, tag).await;
+    let (def_id, model, key) = agent(&state, tag).await;
+    let job = started_job(&state.pg, &def_id, &model).await;
+    let run = live_run(&state.pg, &model, 1).await;
+    let first = frame(
+        &run,
+        Some(&job),
+        json!([{"id": "call_1", "name": "terminal"}]),
+    );
+    let (_, body) = post(&state, Some(&key), first).await;
+    assert_eq!(body["landed"], true, "{body}");
+
+    talaria_workbench_mcp::teardown::mark_removed(&state.pg, &job)
+        .await
+        .unwrap();
+    let rows = run_checkpoints(&state.pg, &run).await.unwrap();
+    assert!(!rows[0].restorable);
+    assert_eq!(
+        rows[0].unrestorable_reason.as_deref(),
+        Some("the job's checkout was removed")
+    );
+    let cleared: bool = sqlx::query_scalar(
+        "select workspace_cleared_at is not null from workbench_jobs where id = $1::uuid",
+    )
+    .bind(&job)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    assert!(cleared);
 
     cleanup(&state.pg, tag).await;
 }
