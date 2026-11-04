@@ -1398,7 +1398,8 @@ CREATE TABLE public.runs (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     started_at timestamp with time zone,
     finished_at timestamp with time zone,
-    crashes integer DEFAULT 0 NOT NULL
+    crashes integer DEFAULT 0 NOT NULL,
+    agent_run_id text
 );
 CREATE TABLE public.schema_migrations (
     id integer NOT NULL,

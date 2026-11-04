@@ -4824,6 +4824,10 @@ alter table tasks drop column if exists conversation_id`,
   // by compose down). A start clears only a Stop older than its own start.
   // The channel never starts an agent that is down this way.
   `alter table agent_defs add column if not exists stopped_at timestamptz`,
+  // The Hermes run id of a work session's newest turn. Dropping the stream
+  // does not end a turn in the agent; a stop has to name it, and the api
+  // process that read the id may be gone by the time a person presses Stop.
+  `alter table runs add column if not exists agent_run_id text`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]
