@@ -74,6 +74,7 @@ mod reload;
 mod settings;
 mod suspend;
 mod tray;
+mod update;
 mod watch;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -224,13 +225,13 @@ impl ShellState {
     }
 }
 
-/// The switcher, window-chrome, updater, notification, badge and suspend
-/// command set: the only IPC remote content ever gets, and only for origins
-/// the user registered. Every entry is one of the shell's own commands
-/// (build.rs). Never a `core:` permission: `core:event` would let an
-/// instance page listen, and an `Any`-target event matches every listener
-/// (tauri's `EventTarget::Any` short-circuits the webview filter), so one
-/// instance could hear another's.
+/// The switcher, window-chrome, updater (with the update chip's Later),
+/// notification, badge and suspend command set: the only IPC remote content
+/// ever gets, and only for origins the user registered. Every entry is one of
+/// the shell's own commands (build.rs). Never a `core:` permission:
+/// `core:event` would let an instance page listen, and an `Any`-target event
+/// matches every listener (tauri's `EventTarget::Any` short-circuits the
+/// webview filter), so one instance could hear another's.
 pub const INSTANCE_PERMISSIONS: &[&str] = &[
     "allow-list-instances",
     "allow-activate-instance",
@@ -240,6 +241,7 @@ pub const INSTANCE_PERMISSIONS: &[&str] = &[
     "allow-desktop-window",
     "allow-check-for-update",
     "allow-install-update",
+    "allow-snooze-update",
     "allow-desktop-notify",
     "allow-set-suspend-after",
     "allow-desktop-suspend-report",
@@ -478,6 +480,7 @@ pub fn run() {
                 creating: Mutex::new(BTreeSet::new()),
             });
             app.manage(tray::Tray::default());
+            app.manage(update::Updates::default());
             notify::init(app.handle());
             background::init(app.handle());
             #[cfg(target_os = "linux")]
@@ -490,6 +493,8 @@ pub fn run() {
             reload::install_menu(app.handle());
             // D8: the signed-in instances nobody opens this session.
             commands::schedule_prewarm(app.handle());
+            // The update chip: a check a while after launch, then every 6 h.
+            update::schedule(app.handle());
             // The suspend clock. Each tick is a few lock reads on the main
             // thread; a page is only asked once it is due.
             let handle = app.handle().clone();
@@ -545,6 +550,7 @@ pub fn run() {
             commands::desktop_window,
             commands::check_for_update,
             commands::install_update,
+            commands::snooze_update,
             commands::desktop_notify,
             commands::desktop_notification_status,
             commands::desktop_notification_request,
@@ -691,6 +697,7 @@ mod tests {
         // Each is one of the shell's own generated command permissions.
         assert!(INSTANCE_PERMISSIONS.iter().all(|p| p.starts_with("allow-")));
         for needed in [
+            "allow-snooze-update",
             "allow-desktop-notify",
             "allow-desktop-notification-status",
             "allow-desktop-set-badge",
