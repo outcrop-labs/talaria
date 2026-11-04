@@ -1,6 +1,6 @@
 name: talaria-events
-version: "1.2.0"
-description: Reports tool-call lifecycle (name, arguments, results), delegation (a child spawned, a child finished) and a cron turn's final text to the Talaria platform, so run observability can show what the agent actually did and who it handed work to, a scheduled turn can answer in the conversation that scheduled it, the gateway can book each LLM call to the conversation it belongs to (the affinity key Hermes stamps on it), and uploads the PNG a browser screenshot wrote so the turn shows the page rather than a path inside a disposable container. Auth is the agent's own TALARIA_AGENT_KEY; the platform clamps, bounds and scrubs what it stores.
+version: "1.3.0"
+description: Reports tool-call lifecycle (name, arguments, results), delegation (a child spawned, a child finished) and a cron turn's final text to the Talaria platform, so run observability can show what the agent actually did and who it handed work to, a scheduled turn can answer in the conversation that scheduled it, the gateway can book each LLM call to the conversation it belongs to (the affinity key Hermes stamps on it), uploads the PNG a browser screenshot wrote so the turn shows the page rather than a path inside a disposable container, and reports each model step of a work session with a git snapshot of the job's checkout, so a person can rewind the run to that step. Auth is the agent's own TALARIA_AGENT_KEY; the platform clamps, bounds and scrubs what it stores.
 author: Talaria
 hooks:
   - pre_tool_call
@@ -9,3 +9,4 @@ hooks:
   - subagent_stop
   - post_llm_call
   - pre_llm_call
+  - pre_api_request
