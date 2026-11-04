@@ -3235,8 +3235,9 @@ const UNSET_SEAM_CENSUS = [
 // ── GitHub's Latest release is the desktop updater feed ─────────────────────
 // The shell's updater reads /releases/latest/download/latest.json, and GitHub
 // marks a new non-prerelease release Latest unless told not to. A stable
-// server release (release.yml) made Latest by default has no latest.json for
-// an hour at best, and every installed app's update check 404s. So release.yml
+// server release (release.yml) made Latest by default carries no latest.json at
+// all (desktop installers ship only on desktop-v releases), and every installed
+// app's update check 404s. So release.yml
 // opens and edits every vX.Y.Z release --latest=false, and desktop-package.yml
 // mints desktop-vX.Y.0 --latest=false and marks it Latest explicitly, only once
 // its latest.json is uploaded. The reading of the workflows, and its fixture,
@@ -3264,7 +3265,7 @@ const UNSET_SEAM_CENSUS = [
         'edits every vX.Y.Z release with --latest=false. desktop-package.yml creates its desktop-v',
         'mint with --latest=false and marks it Latest with `gh release edit "$TAG" --latest` after',
         'the latest.json upload, never before, and only inside `if [ "$MINT" = true ]` with MINT',
-        "bound to needs.resolve.outputs.mint: `attach` also runs for release.yml's vX.Y.Z tags. Any",
+        'bound to needs.resolve.outputs.mint: `attach` also runs for a re-attach dispatch. Any',
         'other `gh release create` says --prerelease or an explicit --latest=false. RELEASING.md,',
         '"The desktop installers".',
       ],

@@ -6,16 +6,16 @@
 // non-prerelease release takes that mark BY DEFAULT unless its creator says
 // otherwise. So the flag is not cosmetic here:
 //   - release.yml opens a vX.Y.Z (server) release that carries no latest.json
-//     until desktop-package.yml's attach job finishes, and none at all if a
-//     desktop build fails. Made Latest, it 404s every installed app's update
-//     check. It must say --latest=false, on the create and on a re-run's edit.
+//     at all: desktop installers ship only on desktop-v releases. Made Latest,
+//     it 404s every installed app's update check. It must say --latest=false,
+//     on the create and on a re-run's edit.
 //   - desktop-package.yml mints the desktop-vX.Y.0 release that IS the feed.
 //     It is created --latest=false too (no latest.json on it yet), and marked
 //     Latest with an explicit `gh release edit --latest` only after its
 //     latest.json is uploaded, so the feed never points at a release without
-//     one. The flip runs only on the mint path: `attach` also runs for
-//     release.yml's vX.Y.Z tags (workflow_call), and an unguarded flip would
-//     make the server release Latest. So the flip must sit in the `then`
+//     one. The flip runs only on the mint path: `attach` also runs for a
+//     dispatch that re-attaches into an existing release, and an unguarded
+//     flip would make that release Latest. So the flip must sit in the `then`
 //     branch of a shell `if` on "$MINT" = true (or under a step `if:` on
 //     needs.resolve.outputs.mint), with MINT bound to that output in the step.
 //   - any other workflow that creates a release states its intent (a
@@ -168,7 +168,7 @@ export function checkReleaseLatest(workflows, tauriConf) {
           if (f.line < feed) at(file, f.line, `marks the release Latest before its latest.json is uploaded (line ${feed}): the feed would 404 in between`)
           const why = mintGuard(text, f.line)
           if (why) {
-            at(file, f.line, `the Latest flip can run off the mint path — ${why}. \`attach\` also runs for release.yml's vX.Y.Z tags, which must never be Latest`)
+            at(file, f.line, `the Latest flip can run off the mint path — ${why}. \`attach\` also runs for a re-attach dispatch, which must never move the feed`)
           }
         }
       }

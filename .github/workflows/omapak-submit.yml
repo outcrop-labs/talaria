@@ -1,14 +1,15 @@
 # Submit the desktop shell to Omapak when a release rolls.
 #
-# desktop-package.yml mints desktop-v* (the live updater feed) and release.yml
-# publishes stable v* tags. Either one is a new desktop source. This opens a
+# desktop-package.yml mints desktop-v* (the live updater feed), and that is the
+# only desktop release: a server v* tag carries no desktop build, so it never
+# moves the store pin. Each desktop-v release is a new desktop source. This opens a
 # pull request on outcrop-labs/omapak that moves apps/app.talaria.desktop to
 # that tag and regenerates the vendored cargo/bun sources the offline build
 # consumes. The judge still scores it — nothing here merges.
 #
 # HOW IT IS STARTED. desktop-package.yml calls this at the end of a packaging
 # run, passing the tag it just finished. It is NOT driven by the
-# `release: published` event alone: both release paths mint their release with
+# `release: published` event alone: the desktop-v mint opens its release with
 # GITHUB_TOKEN, and GitHub deliberately refuses to start workflow runs from
 # events a GITHUB_TOKEN created, so that trigger sat silent through
 # desktop-v0.7.0 .. v0.10.0 and the store pin went four versions stale. The
@@ -63,15 +64,15 @@ jobs:
             exit 1
           fi
           case "$tag" in
-            desktop-v*|v[0-9]*) ;;
+            desktop-v*) ;;
             *)
-              echo "$tag is neither a desktop-v nor a stable v tag — nothing to submit"
+              echo "$tag is not a desktop-v tag — nothing to submit (server v* tags carry no desktop build)"
               echo "go=false" >>"$GITHUB_OUTPUT"
               exit 0
               ;;
           esac
-          # Stable only. desktop-v* is never a prerelease; v* RCs are, and an
-          # RC must not move the store pin.
+          # Stable only. desktop-v* is never a prerelease as minted, but a
+          # hand-published one could be, and a prerelease must not move the pin.
           if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
                     --json isPrerelease --jq .isPrerelease)" = true ]; then
             echo "$tag is a prerelease — leaving the store pin where it is"
