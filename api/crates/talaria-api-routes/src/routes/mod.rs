@@ -265,6 +265,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
+            "/api/tasks/{id}/move",
+            axum::routing::post(talaria_routes_boards::tasks::tasks_id_move::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/tasks/{id}/review",
             axum::routing::post(talaria_routes_boards::tasks::tasks_id_review::post)
                 .fallback(|| async { method_not_allowed("POST") }),

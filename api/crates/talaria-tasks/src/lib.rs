@@ -30,6 +30,12 @@ use talaria_retrieval::{embed, qdrant};
 use talaria_statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
 use talaria_tasks_types::DispatchTicket;
 
+mod moving;
+pub use moving::{
+    MoveError, MoveOutcome, MoveRequest, MoveSummary, Mover, PickRefusal, StatusHow, StatusPick,
+    map_labels, move_task, pick_move_status,
+};
+
 pub use talaria_tasks_types::{
     Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
     human_assignee_ids, is_human_assignee, json_strings,
@@ -257,9 +263,20 @@ pub async fn resolve_task_id(pg: &PgPool, raw: &str) -> Result<ResolvedTaskId, s
             .bind(no)
             .fetch_all(pg)
             .await?;
+            let rows = if rows.is_empty() {
+                // NO LIVE TICKET HOLDS THE REF — so it may be one a ticket
+                // carried before it moved boards. A move re-keys the ticket
+                // on its new board and leaves its old (board, number) here,
+                // so a ref pasted into a doc, a chat or an agent's memory
+                // still opens the ticket. Live refs answer first: an alias
+                // only speaks when nothing on a board holds the ref today.
+                moving::aliased_task_ids(pg, &prefix, no).await?
+            } else {
+                rows.into_iter().map(|(id,)| id).collect()
+            };
             Ok(match rows.len() {
                 0 => ResolvedTaskId::Missing,
-                1 => ResolvedTaskId::One(rows.into_iter().next().expect("len checked").0),
+                1 => ResolvedTaskId::One(rows.into_iter().next().expect("len checked")),
                 _ => ResolvedTaskId::Ambiguous,
             })
         }

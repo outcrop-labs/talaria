@@ -4712,6 +4712,21 @@ alter table tasks drop column if exists conversation_id`,
      checked_at timestamptz not null default now(),
      primary key (endpoint_id, model)
    )`,
+  // A ticket's old ref, after it moved boards (POST /api/tasks/{id}/move).
+  // A move re-keys the ticket on its new board's counter; the (board,
+  // number) it carried stays here so `PLAT-118` pasted into a doc, a chat or
+  // an agent's memory still opens it (talaria-tasks `resolve_task_id` reads
+  // this when no live ticket holds the ref). The board's CURRENT prefix
+  // spells the ref, as for a live ticket. Both sides cascade: a deleted board
+  // retires its old refs, a deleted ticket its aliases.
+  `create table if not exists task_ref_aliases (
+     board_id uuid not null references boards(id) on delete cascade,
+     ticket_no integer not null,
+     task_id uuid not null references tasks(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (board_id, ticket_no)
+   )`,
+  `create index if not exists task_ref_aliases_task_idx on task_ref_aliases (task_id)`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]
