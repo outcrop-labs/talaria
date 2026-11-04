@@ -1375,6 +1375,13 @@ CREATE TABLE public.run_checkpoints (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT run_checkpoints_kind_check CHECK ((kind = ANY (ARRAY['turn'::text, 'step'::text])))
 );
+CREATE TABLE public.run_pushes (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    run_id uuid NOT NULL,
+    job_id uuid NOT NULL,
+    branch text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.runs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     kind text NOT NULL,
@@ -1397,7 +1404,12 @@ CREATE TABLE public.runs (
     started_at timestamp with time zone,
     finished_at timestamp with time zone,
     crashes integer DEFAULT 0 NOT NULL,
-    checkpoint_seq bigint DEFAULT 0 NOT NULL
+    checkpoint_seq bigint DEFAULT 0 NOT NULL,
+    lineage_id uuid,
+    attempt_no integer DEFAULT 1 NOT NULL,
+    rewound_from_run_id uuid,
+    rewound_from_seq bigint,
+    CONSTRAINT runs_attempt_shape CHECK ((((lineage_id IS NULL) AND (rewound_from_run_id IS NULL) AND (rewound_from_seq IS NULL) AND (attempt_no = 1)) OR ((lineage_id IS NOT NULL) AND (rewound_from_run_id IS NOT NULL) AND (rewound_from_seq IS NOT NULL) AND (attempt_no > 1))))
 );
 CREATE TABLE public.schema_migrations (
     id integer NOT NULL,
@@ -1715,7 +1727,9 @@ CREATE TABLE public.workbench_jobs (
     queued_at timestamp with time zone,
     queued_reason text,
     pr_number bigint,
-    host_id text DEFAULT 'github'::text NOT NULL
+    host_id text DEFAULT 'github'::text NOT NULL,
+    run_id uuid,
+    superseded_by uuid
 );
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
@@ -2083,6 +2097,8 @@ ALTER TABLE ONLY public.run_checkpoints
     ADD CONSTRAINT run_checkpoints_pkey PRIMARY KEY (run_id, seq);
 ALTER TABLE ONLY public.run_checkpoints
     ADD CONSTRAINT run_checkpoints_run_id_tool_call_id_key UNIQUE (run_id, tool_call_id);
+ALTER TABLE ONLY public.run_pushes
+    ADD CONSTRAINT run_pushes_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.schema_migrations
@@ -2261,7 +2277,10 @@ CREATE INDEX push_subscriptions_user_idx ON public.push_subscriptions USING btre
 CREATE INDEX research_runs_conversation_idx ON public.research_runs USING btree (conversation_id);
 CREATE INDEX research_runs_created_idx ON public.research_runs USING btree (created_at DESC);
 CREATE INDEX research_runs_parent_idx ON public.research_runs USING btree (parent_run_id);
+CREATE INDEX run_checkpoints_job_idx ON public.run_checkpoints USING btree (job_id) WHERE (job_id IS NOT NULL);
+CREATE INDEX run_pushes_run_idx ON public.run_pushes USING btree (run_id, created_at);
 CREATE UNIQUE INDEX runs_approval_key_idx ON public.runs USING btree (approval_key) WHERE (approval_key IS NOT NULL);
+CREATE UNIQUE INDEX runs_lineage_attempt_idx ON public.runs USING btree (lineage_id, attempt_no) WHERE (lineage_id IS NOT NULL);
 CREATE UNIQUE INDEX runs_one_live_per_kind ON public.runs USING btree (kind) WHERE ((state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text])) AND (kind = ANY (ARRAY['rag-reindex'::text, 'rag-backfill'::text])));
 CREATE INDEX runs_owner_active_idx ON public.runs USING btree (owner_user_id, state, updated_at DESC) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text]));
 CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS FIRST, created_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
@@ -2279,9 +2298,11 @@ CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_affinity_idx ON public.usage_events USING btree (agent_model, affinity_key) WHERE (affinity_key IS NOT NULL);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
+CREATE INDEX usage_events_ref_idx ON public.usage_events USING btree (ref_id) WHERE (ref_id IS NOT NULL);
 CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) WHERE (task_id IS NOT NULL);
 CREATE INDEX usage_events_unpriced_generation_idx ON public.usage_events USING btree (generation_id) WHERE ((generation_id IS NOT NULL) AND (provider_cost IS NULL));
 CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, queued_at);
+CREATE INDEX workbench_jobs_run_idx ON public.workbench_jobs USING btree (run_id) WHERE (run_id IS NOT NULL);
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
 CREATE TRIGGER agent_coding_accounts_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_accounts FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
 CREATE TRIGGER agent_coding_blocks_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_account_blocks FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
@@ -2595,8 +2616,14 @@ ALTER TABLE ONLY public.research_teams
     ADD CONSTRAINT research_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.run_checkpoints
     ADD CONSTRAINT run_checkpoints_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.runs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.run_pushes
+    ADD CONSTRAINT run_pushes_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.workbench_jobs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.run_pushes
+    ADD CONSTRAINT run_pushes_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.runs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.runs
+    ADD CONSTRAINT runs_rewound_from_run_id_fkey FOREIGN KEY (rewound_from_run_id) REFERENCES public.runs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.secret_folder_grants
     ADD CONSTRAINT secret_folder_grants_folder_id_fkey FOREIGN KEY (folder_id) REFERENCES public.secret_folders(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.secret_folder_readers
@@ -2667,6 +2694,10 @@ ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
+ALTER TABLE ONLY public.workbench_jobs
+    ADD CONSTRAINT workbench_jobs_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.runs(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.workbench_jobs
+    ADD CONSTRAINT workbench_jobs_superseded_by_fkey FOREIGN KEY (superseded_by) REFERENCES public.workbench_jobs(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repo_flow
