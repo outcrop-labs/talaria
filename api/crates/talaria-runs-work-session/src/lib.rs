@@ -873,6 +873,31 @@ pub async fn live_work_session_for(
     .await
 }
 
+/// The same key for a work session that has just ended: the step after a
+/// turn's last tool call reaches the platform after the run finished, and a
+/// rewind to it is still the person's to make. Ten minutes covers a plugin
+/// queue that drained late; a frame older than that names nothing.
+pub async fn settled_work_session_for(
+    pg: &PgPool,
+    agent_model: &str,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    if uuid::Uuid::parse_str(session_id).is_err() {
+        return Ok(None);
+    }
+    sqlx::query_scalar(
+        "select id::text from runs \
+         where kind = 'work-session' and id = $2::uuid \
+           and state in ('done', 'error', 'cancelled') \
+           and finished_at > now() - interval '10 minutes' \
+           and input->>'agentModel' = $1",
+    )
+    .bind(agent_model)
+    .bind(session_id)
+    .fetch_optional(pg)
+    .await
+}
+
 // ── The transcript artifact ──────────────────────────────────────────────────
 
 /// Credential shapes that must never persist in a transcript body. The

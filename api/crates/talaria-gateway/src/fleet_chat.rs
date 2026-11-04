@@ -1536,22 +1536,42 @@ pub async fn session_messages(agent_model: &str, session_id: &str) -> Option<Vec
 /// control window. Only the STATUS of a refusal is logged: an agent's own
 /// words can be in that body, and this is a session's transcript.
 async fn control_get_json(entry: &ManifestEntry, path: &str, model: &str) -> Option<Value> {
-    match tokio::time::timeout(CONTROL_WINDOW, agent_get(entry, path).send()).await {
-        Ok(Ok(res)) if res.status().is_success() => match res.json::<Value>().await {
-            Ok(body) => Some(body),
-            Err(_) => {
-                tracing::debug!("[fleet_chat] {model}: {path} answered a body that is not json");
+    bounded_get_json(entry, path, model, CONTROL_WINDOW).await
+}
+
+/// The window covers the whole answer, headers and body alike: a container
+/// that sends headers and then nothing used to hold the caller on the
+/// client's own idle clock, long past the window, and a record step that
+/// waited there was filed as a failed run.
+async fn bounded_get_json(
+    entry: &ManifestEntry,
+    path: &str,
+    model: &str,
+    window: Duration,
+) -> Option<Value> {
+    let read = async {
+        match agent_get(entry, path).send().await {
+            Ok(res) if res.status().is_success() => match res.json::<Value>().await {
+                Ok(body) => Some(body),
+                Err(_) => {
+                    tracing::debug!(
+                        "[fleet_chat] {model}: {path} answered a body that is not json"
+                    );
+                    None
+                }
+            },
+            Ok(res) => {
+                tracing::debug!("[fleet_chat] {model}: {path} answered {}", res.status());
                 None
             }
-        },
-        Ok(Ok(res)) => {
-            tracing::debug!("[fleet_chat] {model}: {path} answered {}", res.status());
-            None
+            Err(e) => {
+                tracing::debug!("[fleet_chat] {model}: {path} did not answer: {e}");
+                None
+            }
         }
-        Ok(Err(e)) => {
-            tracing::debug!("[fleet_chat] {model}: {path} did not answer: {e}");
-            None
-        }
+    };
+    match tokio::time::timeout(window, read).await {
+        Ok(body) => body,
         Err(_) => {
             tracing::debug!("[fleet_chat] {model}: {path} went quiet past the control window");
             None
@@ -2218,6 +2238,49 @@ fn session_error_message(json: &Value) -> String {
         .or_else(|| json.get("error").and_then(Value::as_str))
         .unwrap_or("the agent reported an error")
         .to_string()
+}
+
+#[cfg(test)]
+mod session_read_tests {
+    use super::*;
+
+    /// Headers and then silence used to hold the caller past the window:
+    /// only the connect and the headers were bounded, and a body that never
+    /// came waited on the client's own timeout. The whole read is one
+    /// window now, and a stall is a None, which every caller takes as "the
+    /// container could not say".
+    #[tokio::test]
+    async fn a_body_that_never_comes_is_a_none_inside_the_window() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            use tokio::io::AsyncWriteExt as _;
+            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 10000\r\n\r\n{\"data\":[")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let entry = ManifestEntry {
+            model: "probe".into(),
+            url: format!("http://{addr}"),
+            key: None,
+        };
+        let started = std::time::Instant::now();
+        let got = bounded_get_json(
+            &entry,
+            "/api/sessions/x/messages",
+            "probe",
+            Duration::from_millis(400),
+        )
+        .await;
+        assert!(got.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 }
 
 #[cfg(test)]
