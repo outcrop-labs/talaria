@@ -1822,10 +1822,9 @@ pub async fn work_session_step(
         // FIRST thing that happens, because the world may have changed
         // entirely while it was parked.
         let state = (d.session_state)(pg.clone(), task_id.clone(), agent_model.clone()).await?;
-        // AN ATTEMPT THAT CANNOT START IS A FAILED ATTEMPT. Its rewind restored
-        // a conversation and a tree for this turn; ending here as Done with no
-        // turn of its own would be the empty finished run the rewind exists
-        // to never produce, so the reason goes on the run's error instead.
+        // An attempt that cannot send its first turn is a failed attempt, not
+        // a finished one: Done with no turn of its own is the empty run a
+        // rewind must never produce.
         let first_attempt_turn = input.rewind.as_ref().is_some_and(|r| r.turn == *turn);
         if first_attempt_turn {
             let stop = match &state {
