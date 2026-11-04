@@ -4788,6 +4788,10 @@ alter table tasks drop column if exists conversation_id`,
   `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
   `alter table price_lookups add constraint price_lookups_outcome_check
      check (outcome in ('priced', 'no_match', 'source_failed', 'variable', 'suggested'))`,
+  // The Hermes run id of a work session's newest turn. Dropping the stream
+  // does not end a turn in the agent; a stop has to name it, and the api
+  // process that read the id may be gone by the time a person presses Stop.
+  `alter table runs add column if not exists agent_run_id text`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

@@ -926,6 +926,38 @@ pub async fn live_work_sessions_for_agent(
     .await
 }
 
+/// Record the Hermes run id of the turn a work session just opened, so a stop
+/// can name it from any instance, and after the process that read it is gone.
+/// Not gated on the run's state: a cancel that lands first still needs the id.
+pub async fn set_agent_run_id(
+    pg: &PgPool,
+    run_id: &str,
+    agent_run_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update runs set agent_run_id = $2 where id = $1::uuid")
+        .bind(run_id)
+        .bind(agent_run_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// The agent a work session runs on and the Hermes run id of its newest turn.
+/// `None` when the row is gone or names no agent; the id is `None` when no
+/// turn has announced itself yet.
+pub async fn agent_turn_of(
+    pg: &PgPool,
+    run_id: &str,
+) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    sqlx::query_as(
+        "select input->>'agentModel', agent_run_id from runs \
+         where id = $1::uuid and input ? 'agentModel'",
+    )
+    .bind(run_id)
+    .fetch_optional(pg)
+    .await
+}
+
 // ── Pure unit tests ──────────────────────────────────────────────────────────
 //
 // The Postgres surface is proven by the `#[ignore]`d live-DB tests in

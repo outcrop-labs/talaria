@@ -7345,6 +7345,7 @@ dependencies = [
  "talaria-harness",
  "talaria-harness-defs",
  "talaria-runs-define",
+ "talaria-runs-store",
  "talaria-state",
  "talaria-statuses",
  "talaria-tasks",
