@@ -34,6 +34,11 @@ pub struct PublishedPrice {
     pub price_cache_write_per_mtok: Option<f64>,
     pub price_cache_read_per_mtok: Option<f64>,
     pub source: &'static str,
+    /// For a catalog match: the catalog entry the price came from, and how
+    /// the model's id reached it (`exact` / `alias` / `segment`). None for a
+    /// provider's own price list, which names the model itself.
+    pub matched_id: Option<String>,
+    pub match_kind: Option<&'static str>,
 }
 
 /// A `pricing` object's per-token cache rates, scaled to $/MTok: OpenRouter's
@@ -142,6 +147,8 @@ pub fn parse_openrouter_endpoints(model: &str, body: &Value) -> Vec<PublishedPri
                 price_cache_write_per_mtok: write,
                 price_cache_read_per_mtok: read,
                 source: "openrouter.endpoints",
+                matched_id: None,
+                match_kind: None,
             })
         })
         .collect()
@@ -172,6 +179,8 @@ pub fn parse_provider_models(body: &Value) -> Vec<PublishedPrice> {
                 price_cache_write_per_mtok: write,
                 price_cache_read_per_mtok: read,
                 source: "provider.models",
+                matched_id: None,
+                match_kind: None,
             })
         })
         .collect()

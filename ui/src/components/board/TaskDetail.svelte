@@ -913,7 +913,7 @@
                   {#each data!.usage.perModel as m (m.llmModel ?? '?')}
                     <div class="truncate text-xs text-muted">
                       {m.llmModel ?? 'unattributed'} · {formatTokens(m.tokens)}
-                      {m.cost !== null && m.cost > 0 ? ` · ${formatUsd(m.cost)}` : ''}
+                      {m.cost !== null && m.cost > 0 ? ` · ${formatUsd(m.cost)}` : ''}{(m.includedTokens ?? 0) > 0 ? ' · included in a plan' : ''}
                     </div>
                   {/each}
                 </div>

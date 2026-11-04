@@ -66,15 +66,16 @@ pub(crate) async fn upsert_price(
     sqlx::query(
         "insert into provider_prices (endpoint_id, provider, model, variant, price_in_per_mtok, \
          price_out_per_mtok, price_cache_write_per_mtok, price_cache_read_per_mtok, source, \
-         fetched_at) \
-         values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, now()) \
+         fetched_at, matched_id, match_kind) \
+         values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11) \
          on conflict (endpoint_id, model, variant) do update set \
            price_in_per_mtok = excluded.price_in_per_mtok, \
            price_out_per_mtok = excluded.price_out_per_mtok, \
            price_cache_write_per_mtok = excluded.price_cache_write_per_mtok, \
            price_cache_read_per_mtok = excluded.price_cache_read_per_mtok, \
            source = excluded.source, \
-           fetched_at = now()",
+           fetched_at = now(), \
+           matched_id = excluded.matched_id, match_kind = excluded.match_kind",
     )
     .bind(endpoint_id)
     .bind(provider)
@@ -85,6 +86,8 @@ pub(crate) async fn upsert_price(
     .bind(price.price_cache_write_per_mtok)
     .bind(price.price_cache_read_per_mtok)
     .bind(price.source)
+    .bind(&price.matched_id)
+    .bind(price.match_kind)
     .execute(pg)
     .await
     .map_err(|e| e.to_string())?;

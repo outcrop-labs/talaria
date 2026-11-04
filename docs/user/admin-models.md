@@ -44,7 +44,9 @@ price. Each row shows the endpoint, the model, the tokens, and why:
 
 | Reason | What it means |
 | :--- | :--- |
-| **no published price** | The price check asked OpenRouter's public catalog and found no entry for the id, or for the shapes it also tried (the id with a snapshot date or a `:tag` removed) |
+| **no published price** | The price check asked OpenRouter's public catalog and found no entry for the id, or for the shapes it also tried: the id with a snapshot date, a `:tag` or `-latest` removed, and the last segment of a path id such as `accounts/fireworks/models/<id>`. The row also says when a shape was found but withheld: a snapshot whose listed siblings are priced differently from its alias, or an OpenRouter `:online` / `:nitro` id with no entry of its own |
+| **variable price** | The catalog lists the model with a variable price (OpenRouter's routers, such as `openrouter/auto`), so there is no per-token rate. Calls that carry OpenRouter's own charge are still priced |
+| **suggested price** | Another host's model matched an OpenRouter entry only by its last path segment. OpenRouter's rate is offered (**Use … rate**), never applied, because that host may bill differently |
 | **source didn't answer** | The catalog could not be read. The row quotes the error it gave |
 | **not looked up yet** | The check runs every 6 hours and soon after new usage |
 | **endpoint removed** / **no endpoint recorded** | The usage was booked under an endpoint that no longer exists, or under none, so no endpoint's published price applies |
@@ -64,9 +66,16 @@ cloud usage** alert update for history as well as new usage. The order is fixed:
 
 1. The provider's own charge.
 2. *Included in a plan*.
-3. A published price.
-4. Your manual rate. It applies only until a published price appears, and the panel says when a
-   published price has taken over. **Remove** undoes a setting.
+3. A published price found by the model's own id.
+4. Your manual rate. It applies only until a published price for the model's own id appears, and
+   the panel says when one has taken over. **Remove** undoes a setting.
+5. A published price found by a fuzzy match (a stripped date or tag, or a path's last segment).
+   **Priced by a fuzzy match** lists these with the entry each was priced as, and the cost page's
+   legend says "priced as … (fuzzy match)". Set a manual rate to override one.
+
+A manual rate of $0 in and $0 out is refused: say *Included in a plan* instead, so a free model
+never reads as a silent zero. The 30-day spend tile also says how much of its total is estimated
+from published prices rather than charged by the provider.
 
 **Dollar budgets count all of this.** Budgets read the same prices, so a price that appears, from
 the catalog or from you, also counts toward every USD ceiling whose window holds those calls.

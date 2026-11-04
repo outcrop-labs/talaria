@@ -97,6 +97,16 @@ pub fn unpriced_reason(
             ),
         ),
         Some(Lookup {
+            outcome: "suggested",
+            detail,
+        }) => reason(
+            "suggested",
+            format!(
+                "Not applied automatically: {}",
+                detail.unwrap_or("OpenRouter lists a model under the same name.")
+            ),
+        ),
+        Some(Lookup {
             outcome: "variable",
             detail,
         }) => reason(
@@ -143,6 +153,38 @@ pub struct UnpricedModel {
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
     pub reason: Reason,
+    /// OpenRouter's entry for a model another host serves under the same
+    /// last path segment — offered as a manual price, never applied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<Suggestion>,
+}
+
+/// A suggested price: the catalog entry and its rates per 1M tokens.
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Suggestion {
+    pub matched_id: String,
+    #[serde(rename = "in")]
+    pub price_in_per_mtok: f64,
+    #[serde(rename = "out")]
+    pub price_out_per_mtok: f64,
+    pub cache_write: Option<f64>,
+    pub cache_read: Option<f64>,
+}
+
+/// A model priced by a FUZZY catalog match over the window: the entry it
+/// was priced as and how the match was made — shown so an admin who knows
+/// the real rate can set it (a manual rate beats a fuzzy match).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuzzyPriced {
+    pub endpoint: String,
+    pub model: String,
+    pub matched_id: String,
+    pub match_kind: String,
+    pub generations: i64,
+    pub tokens: i64,
+    pub cost: f64,
 }
 
 /// An admin's decision, with what it prices now.
@@ -240,6 +282,14 @@ pub fn validate_price(p: &PriceInput) -> Result<(), String> {
             if p.price_in_per_mtok.is_none() || p.price_out_per_mtok.is_none() {
                 return Err("a manual price needs priceInPerMtok and priceOutPerMtok".into());
             }
+            // A $0 rate would read as a silent zero; "included" is the
+            // labelled way to say it costs nothing.
+            if p.price_in_per_mtok == Some(0.0) && p.price_out_per_mtok == Some(0.0) {
+                return Err(
+                    "a manual price of $0 in and $0 out is \"included in a plan\" — mark it included instead"
+                        .into(),
+                );
+            }
         }
         AdminPricing::Included => {
             if rates.iter().any(|(_, v)| v.is_some()) {
@@ -255,6 +305,16 @@ pub fn validate_price(p: &PriceInput) -> Result<(), String> {
 /// Every unpriced cloud (endpoint, model) in the window, most tokens first,
 /// each with its reason.
 pub async fn list_unpriced(pg: &PgPool) -> Result<Vec<UnpricedModel>, sqlx::Error> {
+    list_unpriced_where(pg, None).await
+}
+
+/// The unpriced list, or just one (endpoint, model)'s row of it — the filter
+/// is in the scan, so the one-row read after a retry does not walk the
+/// whole window.
+async fn list_unpriced_where(
+    pg: &PgPool,
+    only: Option<(&str, &str)>,
+) -> Result<Vec<UnpricedModel>, sqlx::Error> {
     type Row = (
         String,
         String,
@@ -270,10 +330,11 @@ pub async fn list_unpriced(pg: &PgPool) -> Result<Vec<UnpricedModel>, sqlx::Erro
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<serde_json::Value>,
     );
     let view = priced_view();
     // AssertSqlSafe: the only interpolation is the priced view's constant
-    // text; the window is a bind.
+    // text; the window and the filter are binds.
     let sql = format!(
         "with priced as ({view}), \
          gaps as ( \
@@ -287,6 +348,7 @@ pub async fn list_unpriced(pg: &PgPool) -> Result<Vec<UnpricedModel>, sqlx::Erro
            from priced \
            where created_at > now() - make_interval(days => $1) \
              and endpoint_class = 'cloud' and cost is null \
+             and ($2::text is null or (coalesce(endpoint, '') = $2 and llm_model = $3)) \
            group by 1, 2 \
          ) \
          select g.endpoint, g.model, g.generations, g.prompt, g.completion, g.cache_write, \
@@ -294,7 +356,13 @@ pub async fn list_unpriced(pg: &PgPool) -> Result<Vec<UnpricedModel>, sqlx::Erro
                 to_char(g.first_at at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
                 to_char(g.last_at at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
                 (e.id is not null), e.provider, l.outcome, l.detail, \
-                to_char(l.checked_at at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+                to_char(l.checked_at at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
+                case when l.outcome = 'suggested' and l.matched_id is not null \
+                          and l.suggest_in_per_mtok >= 0 and l.suggest_out_per_mtok >= 0 \
+                     then jsonb_build_object('matchedId', l.matched_id, \
+                            'in', l.suggest_in_per_mtok::float8, 'out', l.suggest_out_per_mtok::float8, \
+                            'cacheWrite', l.suggest_cache_write_per_mtok::float8, \
+                            'cacheRead', l.suggest_cache_read_per_mtok::float8) end \
          from gaps g \
          left join llm_endpoints e on e.name = g.endpoint \
          left join price_lookups l on l.endpoint_id = e.id and l.model = g.model \
@@ -302,6 +370,8 @@ pub async fn list_unpriced(pg: &PgPool) -> Result<Vec<UnpricedModel>, sqlx::Erro
     );
     let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(WINDOW_DAYS)
+        .bind(only.map(|o| o.0))
+        .bind(only.map(|o| o.1))
         .fetch_all(pg)
         .await?;
     Ok(rows
@@ -322,7 +392,10 @@ pub async fn list_unpriced(pg: &PgPool) -> Result<Vec<UnpricedModel>, sqlx::Erro
                 outcome,
                 detail,
                 checked_at,
+                suggestion,
             )| {
+                let suggestion: Option<Suggestion> =
+                    suggestion.and_then(|v| serde_json::from_value(v).ok());
                 let lookup = outcome.as_deref().map(|outcome| Lookup {
                     outcome,
                     detail: detail.as_deref(),
@@ -343,6 +416,7 @@ pub async fn list_unpriced(pg: &PgPool) -> Result<Vec<UnpricedModel>, sqlx::Erro
                     first_seen,
                     last_seen,
                     reason,
+                    suggestion,
                 }
             },
         )
@@ -510,11 +584,85 @@ pub async fn reason_now(
     endpoint: &str,
     model: &str,
 ) -> Result<Option<Reason>, sqlx::Error> {
-    Ok(list_unpriced(pg)
+    Ok(list_unpriced_where(pg, Some((endpoint, model)))
         .await?
         .into_iter()
-        .find(|m| m.endpoint == endpoint && m.model == model)
+        .next()
         .map(|m| m.reason))
+}
+
+/// Every model the window prices by a fuzzy catalog match, most tokens first.
+pub async fn list_fuzzy(pg: &PgPool) -> Result<Vec<FuzzyPriced>, sqlx::Error> {
+    let view = priced_view();
+    // AssertSqlSafe: the priced view's constant text only; the window binds.
+    let sql = format!(
+        "with priced as ({view}) \
+         select coalesce(endpoint, ''), llm_model, cost_matched_id, cost_match_kind, \
+                count(*)::bigint, \
+                coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens \
+                             + cache_read_tokens), 0)::bigint, \
+                coalesce(sum(cost), 0)::float8 \
+         from priced \
+         where created_at > now() - make_interval(days => $1) \
+           and cost_basis = 'derived' and cost_match_kind in ('alias', 'segment') \
+           and llm_model is not null and cost_matched_id is not null \
+         group by 1, 2, 3, 4 \
+         order by 6 desc"
+    );
+    let rows: Vec<(String, String, String, String, i64, i64, f64)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(WINDOW_DAYS)
+            .fetch_all(pg)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(endpoint, model, matched_id, match_kind, generations, tokens, cost)| FuzzyPriced {
+                endpoint,
+                model,
+                matched_id,
+                match_kind,
+                generations,
+                tokens,
+                cost,
+            },
+        )
+        .collect())
+}
+
+/// One decision as it stands, for the audit's `before`: None when there is
+/// none.
+pub async fn setting_json(
+    pg: &PgPool,
+    endpoint: &str,
+    model: &str,
+) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    let row: Option<(
+        String,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "select mode, price_in_per_mtok::float8, price_out_per_mtok::float8, \
+                    price_cache_write_per_mtok::float8, price_cache_read_per_mtok::float8, note \
+             from model_price_overrides where endpoint = $1 and model = $2",
+    )
+    .bind(endpoint)
+    .bind(model)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(|(mode, pin, pout, pcw, pcr, note)| {
+        serde_json::json!({
+            "mode": mode,
+            "priceInPerMtok": pin,
+            "priceOutPerMtok": pout,
+            "priceCacheWritePerMtok": pcw,
+            "priceCacheReadPerMtok": pcr,
+            "note": note,
+        })
+    }))
 }
 
 #[cfg(test)]
@@ -583,6 +731,21 @@ mod tests {
             }),
         );
         assert_eq!(variable.code, "variable_price");
+        let suggested = r(
+            "fireworks",
+            true,
+            "accounts/fireworks/models/gpt-oss-120b",
+            Some(Lookup {
+                outcome: "suggested",
+                detail: Some("OpenRouter lists openai/gpt-oss-120b under the same name."),
+            }),
+        );
+        assert_eq!(suggested.code, "suggested");
+        assert!(
+            suggested
+                .text
+                .starts_with("Not applied automatically: OpenRouter lists")
+        );
         assert!(
             variable
                 .text
@@ -634,6 +797,12 @@ mod tests {
         p.price_cache_read_per_mtok = Some(0.5);
         p.price_cache_write_per_mtok = Some(0.0);
         assert_eq!(validate_price(&p), Ok(()));
+        // $0 / $0 is "included", said by name — never a silent manual zero.
+        p.price_in_per_mtok = Some(0.0);
+        p.price_out_per_mtok = Some(0.0);
+        assert!(validate_price(&p).unwrap_err().contains("mark it included"));
+        p.price_out_per_mtok = Some(0.1);
+        assert_eq!(validate_price(&p), Ok(()), "one free side is a real rate");
     }
 
     #[test]
@@ -813,6 +982,123 @@ mod live {
 
     #[tokio::test]
     #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_manual_rate_beats_a_fuzzy_match_but_not_an_exact_one() {
+        let pg = pg().await;
+        let ep = name("fuzzy");
+        let id = endpoint(&pg, &ep, "openai", &[]).await;
+        // gpt-4o-2024-11-20 priced through its alias, and gpt-4o by its own id.
+        published(&pg, &id, "gpt-4o-2024-11-20", "", 2.5, 10.0, None).await;
+        published(&pg, &id, "gpt-4o", "", 2.5, 10.0, None).await;
+        sqlx::query(
+            "update provider_prices set match_kind = case model when 'gpt-4o' then 'exact' else 'alias' end, \
+                    matched_id = 'openai/gpt-4o' where endpoint_id = $1::uuid",
+        )
+        .bind(&id)
+        .execute(&pg)
+        .await
+        .unwrap();
+        book(&pg, &ep, "gpt-4o-2024-11-20", tokens(1_000_000, 0, 0), None).await;
+        book(&pg, &ep, "gpt-4o", tokens(1_000_000, 0, 0), None).await;
+        // The fuzzy row is listed, priced as the alias.
+        let fuzzy = list_fuzzy(&pg).await.unwrap();
+        let f = fuzzy
+            .iter()
+            .find(|f| f.endpoint == ep)
+            .expect("the fuzzy match is listed");
+        assert_eq!(
+            (
+                f.model.as_str(),
+                f.matched_id.as_str(),
+                f.match_kind.as_str()
+            ),
+            ("gpt-4o-2024-11-20", "openai/gpt-4o", "alias")
+        );
+        assert!(
+            fuzzy
+                .iter()
+                .all(|f| !(f.endpoint == ep && f.model == "gpt-4o")),
+            "an exact match is not fuzzy"
+        );
+        // The admin knows the snapshot's real rate: it beats the guess...
+        for model in ["gpt-4o-2024-11-20", "gpt-4o"] {
+            set_price(
+                &pg,
+                &PriceInput {
+                    endpoint: ep.clone(),
+                    model: model.into(),
+                    mode: AdminPricing::Manual,
+                    price_in_per_mtok: Some(5.0),
+                    price_out_per_mtok: Some(15.0),
+                    price_cache_write_per_mtok: None,
+                    price_cache_read_per_mtok: None,
+                    note: None,
+                },
+                "live-test",
+            )
+            .await
+            .unwrap();
+        }
+        let rows = priced_rows(&pg, &ep).await;
+        let basis = |m: &str| rows.iter().find(|r| r.0 == m).and_then(|r| r.2.clone());
+        assert_eq!(basis("gpt-4o-2024-11-20").as_deref(), Some("manual"));
+        assert!(near(
+            rows.iter()
+                .find(|r| r.0 == "gpt-4o-2024-11-20")
+                .unwrap()
+                .1
+                .unwrap(),
+            5.0
+        ));
+        // ...but not the provider's published number for the model itself.
+        assert_eq!(basis("gpt-4o").as_deref(), Some("derived"));
+        cleanup(&pg, &ep).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_suggested_price_is_offered_not_applied() {
+        let pg = pg().await;
+        let ep = name("suggest");
+        let id = endpoint(&pg, &ep, "custom", &[]).await;
+        let model = "accounts/fireworks/models/gpt-oss-120b";
+        book(&pg, &ep, model, tokens(100_000, 10_000, 0), None).await;
+        let hit = crate::CatalogPrice {
+            id: "openai/gpt-oss-120b".into(),
+            in_per_mtok: 0.02,
+            out_per_mtok: 0.076,
+            cache_write_per_mtok: None,
+            cache_read_per_mtok: Some(0.018),
+        };
+        crate::record_suggestion(&pg, &id, model, &hit)
+            .await
+            .unwrap();
+        let row = list_unpriced(&pg)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.endpoint == ep)
+            .expect("still unpriced: a suggestion is never applied");
+        assert_eq!(row.reason.code, "suggested");
+        let s = row.suggestion.expect("the suggestion rides on the row");
+        assert_eq!(s.matched_id, "openai/gpt-oss-120b");
+        assert!(near(s.price_in_per_mtok, 0.02) && near(s.price_out_per_mtok, 0.076));
+        assert_eq!(s.cache_read, Some(0.018));
+        // A later ordinary lookup clears the suggestion.
+        crate::record_lookup(&pg, &id, model, "no_match", Some("x"))
+            .await
+            .unwrap();
+        let row = list_unpriced(&pg)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.endpoint == ep)
+            .unwrap();
+        assert!(row.suggestion.is_none());
+        cleanup(&pg, &ep).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
     async fn openrouter_auto_stays_unpriced_and_never_prices_below_zero() {
         let pg = pg().await;
         let ep = name("auto");
@@ -911,13 +1197,25 @@ mod live {
             Some(("manual", Some(2.0), Some(8.0), Some(-1.0))),
             Some(("manual", Some(-2.0), Some(8.0), None)),
         ];
-        // (variant, in, out, cache_read) rows published for the model.
-        type Pub = &'static [(&'static str, f64, f64, Option<f64>)];
-        let pubs: [Pub; 4] = [
+        // (variant, in, out, cache_read, match_kind) rows published for the model.
+        type Pub = &'static [(&'static str, f64, f64, Option<f64>, Option<&'static str>)];
+        let pubs: [Pub; 6] = [
             &[],
-            &[("", 3.0, 15.0, Some(0.3))],
-            &[("", -1_000_000.0, -1_000_000.0, None)],
-            &[("Anthropic", 3.0, 15.0, Some(-1.0)), ("", -1.0, 2.0, None)],
+            &[("", 3.0, 15.0, Some(0.3), None)],
+            &[("", -1_000_000.0, -1_000_000.0, None, Some("exact"))],
+            &[
+                ("Anthropic", 3.0, 15.0, Some(-1.0), None),
+                ("", -1.0, 2.0, None, Some("exact")),
+            ],
+            &[
+                ("", 3.0, 15.0, None, Some("alias")),
+                ("OpenAI", 1.0, 1.0, None, Some("segment")),
+            ],
+            // Written past every writer: NaN and Infinity never count.
+            &[
+                ("", f64::NAN, 1.0, Some(f64::INFINITY), None),
+                ("Anthropic", 2.0, f64::INFINITY, None, None),
+            ],
         ];
         let served = [None, Some("Anthropic"), Some("OpenAI")];
         let counts = [(10_000i64, 1_000i64, 500i64), (-10_000, -5, -1)];
@@ -930,8 +1228,19 @@ mod live {
                             for (prompt, completion, cache_read) in counts {
                                 n += 1;
                                 let model = format!("m{n}");
-                                for (v, inn, out, read) in published_rows {
+                                for (v, inn, out, read, kind) in published_rows {
                                     published(&pg, &id, &model, v, *inn, *out, *read).await;
+                                    sqlx::query(
+                                        "update provider_prices set match_kind = $3 \
+                                         where endpoint_id = $1::uuid and model = $2 and variant = $4",
+                                    )
+                                    .bind(&id)
+                                    .bind(&model)
+                                    .bind(*kind)
+                                    .bind(*v)
+                                    .execute(&pg)
+                                    .await
+                                    .unwrap();
                                 }
                                 if let Some((mode, inn, out, read)) = admin {
                                     sqlx::query(
@@ -968,10 +1277,17 @@ mod live {
                                 .await
                                 .unwrap();
                                 // The facts the guards leave standing.
-                                let usable: Vec<&str> = published_rows
+                                let usable: Vec<(&str, bool)> = published_rows
                                     .iter()
-                                    .filter(|(_, inn, out, _)| *inn >= 0.0 && *out >= 0.0)
-                                    .map(|(v, ..)| *v)
+                                    .filter(|(_, inn, out, ..)| {
+                                        inn.is_finite()
+                                            && out.is_finite()
+                                            && *inn >= 0.0
+                                            && *out >= 0.0
+                                    })
+                                    .map(|(v, _, _, _, kind)| {
+                                        (*v, kind.is_none_or(|k| k == "exact"))
+                                    })
                                     .collect();
                                 let admin_fact = match admin {
                                     Some(("included", ..)) => Some(AdminPricing::Included),
@@ -987,7 +1303,7 @@ mod live {
                                     provider_cost: charge.is_some_and(|c| c >= 0.0),
                                     admin: admin_fact,
                                     served_variant: variant,
-                                    published_variants: &usable,
+                                    published: &usable,
                                 });
                                 let sql = format!(
                                     "with priced as ({}) select cost::float8, cost_basis from priced \
@@ -1018,7 +1334,7 @@ mod live {
                 }
             }
         }
-        assert_eq!(n, 3 * 3 * 4 * 4 * 3 * 2);
+        assert_eq!(n, 3 * 3 * 4 * 6 * 3 * 2);
         cleanup(&pg, &ep).await;
     }
 
@@ -1345,12 +1661,13 @@ mod live {
             .await;
             let rows = priced_rows(&pg, &ep).await;
             let (_, _, sql_basis) = rows.iter().find(|r| r.0 == model).expect("booked");
+            let exact: Vec<(&str, bool)> = variants.iter().map(|v| (*v, true)).collect();
             let rust = price_basis(&PriceFacts {
                 class: Some("cloud"),
                 provider_cost: charged,
                 admin,
                 served_variant: served,
-                published_variants: variants,
+                published: &exact,
             });
             assert_eq!(
                 sql_basis.as_deref(),

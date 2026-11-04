@@ -1222,7 +1222,12 @@ CREATE TABLE public.price_lookups (
     detail text,
     source text NOT NULL,
     checked_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT price_lookups_outcome_check CHECK ((outcome = ANY (ARRAY['priced'::text, 'no_match'::text, 'source_failed'::text, 'variable'::text])))
+    matched_id text,
+    suggest_in_per_mtok numeric,
+    suggest_out_per_mtok numeric,
+    suggest_cache_write_per_mtok numeric,
+    suggest_cache_read_per_mtok numeric,
+    CONSTRAINT price_lookups_outcome_check CHECK ((outcome = ANY (ARRAY['priced'::text, 'no_match'::text, 'source_failed'::text, 'variable'::text, 'suggested'::text])))
 );
 CREATE TABLE public.provider_prices (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1235,7 +1240,9 @@ CREATE TABLE public.provider_prices (
     source text NOT NULL,
     fetched_at timestamp with time zone DEFAULT now() NOT NULL,
     price_cache_write_per_mtok numeric,
-    price_cache_read_per_mtok numeric
+    price_cache_read_per_mtok numeric,
+    matched_id text,
+    match_kind text
 );
 CREATE TABLE public.provider_spend (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

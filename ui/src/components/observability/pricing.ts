@@ -15,6 +15,7 @@ export const UNPRICED_ANCHOR = 'unpriced'
 export const REASON_CODES = [
   'no_match',
   'variable_price',
+  'suggested',
   'source_failed',
   'not_checked',
   'stale',
@@ -30,6 +31,7 @@ export type ReasonCode = (typeof REASON_CODES)[number]
 export const REASON_META: Record<ReasonCode, { label: string; tone: ChipTone }> = {
   no_match: { label: 'no published price', tone: 'warn' },
   variable_price: { label: 'variable price', tone: 'warn' },
+  suggested: { label: 'suggested price', tone: 'accent' },
   source_failed: { label: "source didn't answer", tone: 'danger' },
   not_checked: { label: 'not looked up yet', tone: 'neutral' },
   stale: { label: 'price no longer applies', tone: 'warn' },
@@ -62,6 +64,29 @@ export interface UnpricedModel {
   firstSeen: string | null
   lastSeen: string | null
   reason: UnpricedReason
+  /** OpenRouter's entry for a model another host serves under the same
+   *  last path segment — offered, never applied. */
+  suggestion?: Suggestion
+}
+
+export interface Suggestion {
+  matchedId: string
+  in: number
+  out: number
+  cacheWrite: number | null
+  cacheRead: number | null
+}
+
+/** A model priced by a FUZZY catalog match (a stripped tag, date or path
+ *  segment found the entry) — an admin's manual rate overrides it. */
+export interface FuzzyPriced {
+  endpoint: string
+  model: string
+  matchedId: string
+  matchKind: string
+  generations: number
+  tokens: number
+  cost: number
 }
 
 export type PriceMode = 'manual' | 'included'
@@ -96,6 +121,8 @@ export interface Repriced {
 export interface UnpricedOverview {
   unpriced: UnpricedModel[]
   prices: PriceSetting[]
+  /** Absent from an api that predates it. */
+  fuzzy?: FuzzyPriced[]
 }
 
 export function useUnpriced(enabled: MaybeGetter<boolean>) {
@@ -113,6 +140,29 @@ export const PRICING_QUERY_KEYS = [['cost-unpriced'], ['cost'], ['alerts']] as c
 
 /** What the panel calls the endpoint a row was booked under. */
 export const endpointLabel = (endpoint: string): string => (endpoint === '' ? '(no endpoint)' : endpoint)
+
+/** Rows booked without a model id can be priced by nothing — they age out of
+ *  the window — so they offer no fixes (the api would refuse them). */
+export const canFix = (m: Pick<UnpricedModel, 'model'>): boolean => m.model !== ''
+
+/** "priced as openai/gpt-4o (fuzzy match)". */
+export const pricedAsLabel = (matchedId: string): string => `priced as ${matchedId} (fuzzy match)`
+
+/** The manual-price body that accepts a suggestion's rates as they stand. */
+export const suggestionBody = (target: PriceTarget, s: Suggestion): Record<string, unknown> => ({
+  endpoint: target.endpoint,
+  model: target.model,
+  mode: 'manual',
+  priceInPerMtok: s.in,
+  priceOutPerMtok: s.out,
+  priceCacheWritePerMtok: s.cacheWrite,
+  priceCacheReadPerMtok: s.cacheRead,
+  note: `OpenRouter's rate for ${s.matchedId}, accepted as a suggestion`,
+})
+
+/** "$0.02 in · $0.076 out per 1M" for a suggestion. */
+export const suggestionLabel = (s: Suggestion): string =>
+  settingLabel({ mode: 'manual', in: s.in, out: s.out, cacheWrite: s.cacheWrite, cacheRead: s.cacheRead })
 
 /** Retry asks a configured cloud endpoint; history booked under a deleted
  *  endpoint, or none, can only be priced by hand. */
@@ -172,6 +222,9 @@ export function manualBody(
   }
   if (values.input === null || values.output === null) {
     return { ok: false, error: 'Input and output rates are both required.' }
+  }
+  if (values.input === 0 && values.output === 0) {
+    return { ok: false, error: 'A $0 rate is “Included in a plan” — mark the model included instead.' }
   }
   return {
     ok: true,
