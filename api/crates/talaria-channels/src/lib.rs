@@ -203,17 +203,24 @@ pub struct ChannelPeer {
 
 /// A message `msg` that viewer `$1` has read IN ITS THREAD: a reply whose
 /// thread cursor (`channel_thread_reads`) covers its seq. Every unread
-/// predicate wraps it in `not (…)` — the rail pill (`list_channels`), the rail
-/// badge (`channel_unread_total`), the profile drawer (`shared_rooms_sql!`) —
-/// and so do the read route's caught-up gates, so the badge and the bell can
-/// never disagree about what a thread read covered. One spelling, by macro: a
-/// copy per query is how three counts drift.
+/// predicate negates it — the rail pill (`list_channels`), the rail badge
+/// (`channel_unread_total`), the profile drawer (`shared_rooms_sql!`) — and so
+/// do the read route's caught-up gates, so the badge and the bell can never
+/// disagree about what a thread read covered. One spelling, by macro: a copy
+/// per query is how three counts drift.
+///
+/// A BARE `exists`, and every caller writes `and not <this>`: that makes it a
+/// top-level conjunct, which Postgres plans as an anti-join over the viewer's
+/// own rows (`channel_thread_reads_user_idx`). Wrapped in `not (… and exists
+/// …)`, it ran as a correlated SubPlan, one probe per unread candidate, and
+/// its cost estimate pushed the rail's queries into full JIT at ~35k messages
+/// (5–6× slower). No `thread_root_id is not null` guard either: the equality
+/// below is never true for a top-level message.
 macro_rules! thread_read_covers_sql {
     () => {
-        "(msg.thread_root_id is not null and exists ( \
-           select 1 from channel_thread_reads tr \
+        "exists (select 1 from channel_thread_reads tr \
            where tr.thread_root_id = msg.thread_root_id \
-             and tr.user_id = $1::uuid and msg.seq <= tr.last_read_seq))"
+             and tr.user_id = $1::uuid and tr.last_read_seq >= msg.seq)"
     };
 }
 

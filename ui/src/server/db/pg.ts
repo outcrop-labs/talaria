@@ -4683,6 +4683,14 @@ alter table tasks drop column if exists conversation_id`,
      updated_at timestamptz not null default now(),
      primary key (thread_root_id, user_id)
    )`,
+  // The viewer's own thread cursors, as the unread predicates read them: the
+  // rail's queries negate `thread_read_covers_sql!` as a top-level `not
+  // exists`, which Postgres plans as an anti-join against this person's rows.
+  // Keyed (user_id, thread_root_id) with the cursor included, that side is an
+  // index-only read. The PK leads with the thread, so it cannot serve it, nor
+  // the users ON DELETE cascade, which otherwise scans the whole table.
+  `create index if not exists channel_thread_reads_user_idx
+     on channel_thread_reads (user_id, thread_root_id) include (last_read_seq)`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

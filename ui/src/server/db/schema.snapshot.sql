@@ -2136,6 +2136,7 @@ CREATE INDEX board_views_board_idx ON public.board_views USING btree (board_id, 
 CREATE INDEX channel_messages_idx ON public.channel_messages USING btree (channel_id, seq);
 CREATE INDEX channel_messages_streaming_idx ON public.channel_messages USING btree (created_at) WHERE (status = 'streaming'::text);
 CREATE INDEX channel_messages_thread_idx ON public.channel_messages USING btree (thread_root_id) WHERE (thread_root_id IS NOT NULL);
+CREATE INDEX channel_thread_reads_user_idx ON public.channel_thread_reads USING btree (user_id, thread_root_id) INCLUDE (last_read_seq);
 CREATE UNIQUE INDEX channels_dm_key_idx ON public.channels USING btree (dm_key) WHERE (dm_key IS NOT NULL);
 CREATE UNIQUE INDEX channels_task_idx ON public.channels USING btree (task_id) WHERE (task_id IS NOT NULL);
 CREATE UNIQUE INDEX chat_approvals_external_idx ON public.chat_approvals USING btree (external_id) WHERE ((external_id IS NOT NULL) AND (status = 'pending'::text));
