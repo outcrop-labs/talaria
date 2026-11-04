@@ -404,7 +404,7 @@ pub async fn capability_keys_for(pg: &sqlx::PgPool, model: &str) -> Vec<String> 
 #[derive(Debug, Clone, Default)]
 pub struct RunLedger {
     pub source: Option<LedgerSource>,
-    /// The conversation, channel or research run.
+    /// The conversation, channel, research run or work session.
     pub ref_id: Option<String>,
     /// The ticket, so the turn reaches the ticket's cost and not just the
     /// ledger.

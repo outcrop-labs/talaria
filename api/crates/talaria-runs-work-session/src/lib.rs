@@ -696,7 +696,7 @@ async fn real_turn(
         effort: None,
         ledger: Some(RunLedger {
             source: Some(LedgerSource::Chat),
-            ref_id: Some(task_id.clone()),
+            ref_id: Some(run_id.clone()),
             task_id: Some(task_id.clone()),
         }),
         deps: Some(Arc::new(deps)),
