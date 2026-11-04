@@ -25,6 +25,7 @@
     kind = 'kb-doc',
     id,
     format = 'markdown',
+    canRestore = true,
     onRestore,
   }: {
     kind?: HistoryKind
@@ -32,6 +33,11 @@
     /** How a version previews: rendered markdown, or its raw text (a sheet's
      *  grid, a page's HTML). */
     format?: 'markdown' | 'text'
+    /** False for a viewer who may read the history but not edit the
+     *  document (the server's `canEdit`): no Restore to be refused. */
+    canRestore?: boolean
+    /** Rejects with the reason when the restore did not land — the dialog
+     *  stays open and says so. */
     onRestore: (content: string) => Promise<void>
   } = $props()
 
@@ -178,9 +184,11 @@
       {/if}
       <div class="flex justify-end gap-2">
         <Button variant="outline" size="sm" onclick={() => (opened = null)}>Close</Button>
-        <Button size="sm" disabled={restoring} onclick={() => void restore()}>
-          {restoring ? 'Restoring' : 'Restore this version'}
-        </Button>
+        {#if canRestore}
+          <Button size="sm" disabled={restoring} onclick={() => void restore()}>
+            {restoring ? 'Restoring' : 'Restore this version'}
+          </Button>
+        {/if}
       </div>
     {/snippet}
   </Modal>

@@ -70,6 +70,9 @@ export interface KbDoc extends KbDocMeta {
   /** The viewer may change sharing: owner — or, for agent-created docs,
    *  anyone with access to that agent (server-computed). */
   governs?: boolean
+  /** The viewer may change the content — the PUT's own rule, computed on
+   *  read (absent from older servers and from save answers). */
+  canEdit?: boolean
 }
 
 export const useSpaces = () =>

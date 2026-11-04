@@ -32,6 +32,9 @@ export interface Artifact {
   updatedBy: string | null
   createdAt: string
   updatedAt: string
+  /** The viewer may change the content — the PUT's own rule, computed on
+   *  read (absent from older servers and from save answers). */
+  canEdit?: boolean
 }
 
 export interface ArtifactFolder {

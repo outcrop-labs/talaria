@@ -37,6 +37,7 @@ mod conversation_reads;
 mod conversation_schedules_live;
 mod decide_shadow_live;
 mod developer_agent_live;
+mod doc_save_base_live;
 mod fitness_arming;
 mod fitness_transcripts_live;
 mod gateway_hot_caches;

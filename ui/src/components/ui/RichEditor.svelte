@@ -209,6 +209,11 @@
   export function getMarkdown(): string {
     return $editor?.storage.markdown.getMarkdown() ?? ''
   }
+  /** Typed since the last onSave fired (or since it was created): something
+   *  a host leaving the editor would still have to save. */
+  export function hasUnsavedChanges(): boolean {
+    return !!$editor && getMarkdown() !== lastSaved
+  }
   export function clear(): void {
     $editor?.commands.clearContent()
     lastSaved = ''
