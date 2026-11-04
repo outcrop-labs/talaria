@@ -13,6 +13,10 @@
 // A DENY NEVER LEAVES THE CONTAINER AS DATA: the hook turns it into git's
 // own "pre-push declined" with the sentence on stderr, so the agent reads
 // the rule where it reads every other git fact.
+//
+// An allowed push is recorded against the run that owns the branch's job, so a
+// person can read what a run did outside its workspace. A push to a branch a
+// rewind retired is declined: the attempt's own branch is where its work goes.
 
 use axum::Json;
 use axum::extract::State;
@@ -131,6 +135,42 @@ pub async fn post(
                 .into_response());
         }
     }
+    let branches: Vec<&str> = refs
+        .iter()
+        .filter_map(|r| r.strip_prefix("refs/heads/"))
+        .collect();
+    let jobs = match branch_jobs(&state.pg, &agent_id, &rule.host_id, &repo, &branches).await {
+        Ok(jobs) => jobs,
+        Err(e) => {
+            tracing::error!("[secrets] push attribution read failed for {repo}: {e}");
+            Vec::new()
+        }
+    };
+    if let Some(retired) = jobs.iter().find(|j| j.status == "superseded") {
+        let sentence = format!(
+            "{} belongs to job {}, which a rewind superseded — this work continues in job {}",
+            retired.branch,
+            retired.id,
+            retired.superseded_by.as_deref().unwrap_or("none"),
+        );
+        tracing::warn!(
+            "[secrets] {} push to {repo} declined — {sentence}",
+            caller.model
+        );
+        return Ok((
+            StatusCode::FORBIDDEN,
+            [(axum::http::header::CACHE_CONTROL, "no-store")],
+            Json(json!({ "error": sentence })),
+        )
+            .into_response());
+    }
+    for job in &jobs {
+        if let Some(run_id) = &job.run_id
+            && let Err(e) = record_push(&state.pg, run_id, job).await
+        {
+            tracing::error!("[secrets] push on job {} not recorded: {e}", job.id);
+        }
+    }
     tracing::warn!(
         "[secrets] {} push to {repo} ({} ref(s)) allowed by repo rules",
         caller.model,
@@ -142,4 +182,54 @@ pub async fn post(
         Json(json!({ "ok": true })),
     )
         .into_response())
+}
+
+#[derive(sqlx::FromRow)]
+struct BranchJob {
+    id: String,
+    run_id: Option<String>,
+    status: String,
+    branch: String,
+    superseded_by: Option<String>,
+}
+
+/// The newest job on each branch: a branch name comes round again when a later
+/// job on the ticket mints it, and only the newest job speaks for it.
+async fn branch_jobs(
+    pg: &sqlx::PgPool,
+    agent_id: &str,
+    host_id: &str,
+    repo: &str,
+    branches: &[&str],
+) -> Result<Vec<BranchJob>, sqlx::Error> {
+    sqlx::query_as(
+        "select distinct on (branch) id::text as id, run_id::text as run_id, status, branch, \
+                superseded_by::text as superseded_by \
+         from workbench_jobs \
+         where agent_id = $1::uuid and host_id = $2 and lower(repo) = lower($3) \
+           and branch = any($4) \
+         order by branch, created_at desc",
+    )
+    .bind(agent_id)
+    .bind(host_id)
+    .bind(repo)
+    .bind(branches)
+    .fetch_all(pg)
+    .await
+}
+
+async fn record_push(
+    pg: &sqlx::PgPool,
+    run_id: &str,
+    job: &BranchJob,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into run_pushes (run_id, job_id, branch) values ($1::uuid, $2::uuid, $3)",
+    )
+    .bind(run_id)
+    .bind(&job.id)
+    .bind(&job.branch)
+    .execute(pg)
+    .await
+    .map(|_| ())
 }
