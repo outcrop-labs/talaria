@@ -41,6 +41,40 @@ pub enum WriteFailure {
 
 pub type WriteOutcome = Result<(), WriteFailure>;
 
+/// A turn row marks where a turn landed. It holds no conversation boundary and
+/// no file snapshot, so nothing can be rewound to it.
+const TURN_UNRESTORABLE: &str = "a turn boundary has no snapshot to restore";
+
+/// `run_checkpoints.kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckpointKind {
+    Turn,
+    Step,
+}
+
+/// One ledger row, as `GET /api/runs/{id}/checkpoints` answers it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunCheckpoint {
+    pub seq: i64,
+    pub kind: CheckpointKind,
+    pub turn: Option<i64>,
+    pub agent_turn_id: Option<String>,
+    pub step_no: Option<i64>,
+    pub tool_call_id: Option<String>,
+    pub tool: Option<String>,
+    pub title: Option<String>,
+    pub status: Option<String>,
+    pub checkpoint: Option<Value>,
+    pub job_id: Option<String>,
+    pub workspace_commit: Option<String>,
+    pub workspace_tree: Option<String>,
+    pub restorable: bool,
+    pub unrestorable_reason: Option<String>,
+    pub created_at: String,
+}
+
 /// `claim`'s four answers. `Taken` is not an error at either call site: held
 /// by a live lease, or deferred by a `retry` whose wait has not elapsed — the
 /// sweep will find it again.
@@ -492,21 +526,41 @@ impl RunStore for PgRunStore {
         clear_decision: bool,
     ) -> BoxFuture<'a, Result<WriteOutcome, sqlx::Error>> {
         async move {
+            let turn = checkpoint.get("turn").and_then(Value::as_i64);
+            let stage = checkpoint
+                .get("stage")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            // ONE STATEMENT, so the ledger and `runs.checkpoint` cannot disagree:
+            // a write the predicate refuses bumps nothing and inserts nothing.
             cas_write!(
                 &self.pg,
                 id,
                 token,
-                "update runs set \
-                   checkpoint = $3, phase = $4, \
-                   decision = case when $5 then null else decision end, \
-                   approval_key = case when $5 then null else approval_key end, \
-                   updated_at = now() \
-                 where id = $1::uuid and lease_owner = $2 and state = 'running' returning id",
+                "with bumped as ( \
+                   update runs set \
+                     checkpoint = $3::jsonb, phase = $4::text, \
+                     decision = case when $5 then null else decision end, \
+                     approval_key = case when $5 then null else approval_key end, \
+                     checkpoint_seq = checkpoint_seq + 1, \
+                     updated_at = now() \
+                   where id = $1::uuid and lease_owner = $2 and state = 'running' \
+                   returning id, checkpoint_seq \
+                 ), ledger as ( \
+                   insert into run_checkpoints \
+                     (run_id, seq, kind, turn, title, status, checkpoint, unrestorable_reason) \
+                   select id, checkpoint_seq, 'turn', $6::bigint, $4::text, $7::text, $3::jsonb, $8::text \
+                   from bumped \
+                 ) \
+                 select id from bumped",
                 id,
                 token,
                 checkpoint,
                 phase,
                 clear_decision,
+                turn,
+                stage,
+                TURN_UNRESTORABLE,
             )
         }
         .boxed()
@@ -895,6 +949,54 @@ pub async fn latest_run_of_kind(
     .transpose()
 }
 
+fn decode_kind(s: &str) -> Result<CheckpointKind, sqlx::Error> {
+    match s {
+        "turn" => Ok(CheckpointKind::Turn),
+        "step" => Ok(CheckpointKind::Step),
+        other => Err(sqlx::Error::ColumnDecode {
+            index: "kind".into(),
+            source: format!("unknown checkpoint kind {other:?} (row from a newer deploy?)").into(),
+        }),
+    }
+}
+
+/// A run's ledger, oldest first. An unknown run reads as an empty ledger, and
+/// so does a run older than the ledger: both have nothing to go back to.
+pub async fn run_checkpoints(pg: &PgPool, id: &str) -> Result<Vec<RunCheckpoint>, sqlx::Error> {
+    let rows = sqlx::query(
+        "select seq, kind, turn, agent_turn_id, step_no, tool_call_id, tool, title, status, \
+                checkpoint, job_id::text, workspace_commit, workspace_tree, restorable, \
+                unrestorable_reason, \
+                (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms \
+         from run_checkpoints where run_id = $1::uuid order by seq",
+    )
+    .bind(id)
+    .fetch_all(pg)
+    .await?;
+    rows.iter()
+        .map(|r| {
+            Ok(RunCheckpoint {
+                seq: r.try_get("seq")?,
+                kind: decode_kind(&r.try_get::<String, _>("kind")?)?,
+                turn: r.try_get("turn")?,
+                agent_turn_id: r.try_get("agent_turn_id")?,
+                step_no: r.try_get("step_no")?,
+                tool_call_id: r.try_get("tool_call_id")?,
+                tool: r.try_get("tool")?,
+                title: r.try_get("title")?,
+                status: r.try_get("status")?,
+                checkpoint: r.try_get("checkpoint")?,
+                job_id: r.try_get("job_id")?,
+                workspace_commit: r.try_get("workspace_commit")?,
+                workspace_tree: r.try_get("workspace_tree")?,
+                restorable: r.try_get("restorable")?,
+                unrestorable_reason: r.try_get("unrestorable_reason")?,
+                created_at: epoch_ms_to_iso(r.try_get("created_ms")?),
+            })
+        })
+        .collect()
+}
+
 /// The run this kind is currently doing, or None. `awaiting` counts as active —
 /// a run parked on a question is not finished, however long it sits.
 pub async fn active_run_of_kind(
@@ -953,6 +1055,12 @@ mod tests {
         let straddling = format!("{}{}x", "y".repeat(3998), "😀");
         let clamped = clamp_error(&straddling);
         assert_eq!(clamped, "y".repeat(3998));
+    }
+
+    #[test]
+    fn an_unknown_checkpoint_kind_decodes_loudly() {
+        assert_eq!(decode_kind("step").unwrap(), CheckpointKind::Step);
+        assert!(decode_kind("boundary").is_err());
     }
 
     #[test]
