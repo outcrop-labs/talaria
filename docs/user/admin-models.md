@@ -67,6 +67,12 @@ cloud usage** alert update for history as well as new usage. The order is fixed:
 3. A published price.
 4. Your manual rate. It applies only until a published price appears, and the panel says when a
    published price has taken over. **Remove** undoes a setting.
+
+**Dollar budgets count all of this.** Budgets read the same prices, so a price that appears, from
+the catalog or from you, also counts toward every USD ceiling whose window holds those calls.
+After upgrading from a release that left OpenRouter agent turns at $0, that history re-prices at
+once, and an agent already over its ceiling is refused on its next call. Check the ceilings under
+**Admin → Settings** when you upgrade.
 - **Remove provider** — cascades: every agent on it gets new versions and a re-render, and each
   running one restarts onto them (offline for about a minute). An agent someone stopped stays
   stopped and picks the change up when it next starts.

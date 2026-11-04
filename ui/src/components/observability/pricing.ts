@@ -14,6 +14,7 @@ export const UNPRICED_ANCHOR = 'unpriced'
 
 export const REASON_CODES = [
   'no_match',
+  'variable_price',
   'source_failed',
   'not_checked',
   'stale',
@@ -28,6 +29,7 @@ export type ReasonCode = (typeof REASON_CODES)[number]
  *  the rest are facts about the ledger, not faults (neutral). */
 export const REASON_META: Record<ReasonCode, { label: string; tone: ChipTone }> = {
   no_match: { label: 'no published price', tone: 'warn' },
+  variable_price: { label: 'variable price', tone: 'warn' },
   source_failed: { label: "source didn't answer", tone: 'danger' },
   not_checked: { label: 'not looked up yet', tone: 'neutral' },
   stale: { label: 'price no longer applies', tone: 'warn' },

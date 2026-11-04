@@ -4712,6 +4712,24 @@ alter table tasks drop column if exists conversation_id`,
      checked_at timestamptz not null default now(),
      primary key (endpoint_id, model)
    )`,
+  // ── Negative "prices" (2026-11-03, follow-up to #682) ───────────────────────
+  // OpenRouter's catalog prices its routers (openrouter/auto, /fusion,
+  // nvidia/switchyard …) at "-1" — "variable", not -$1 per token — and the
+  // price oracle stored that as a model-level row. #682 let the priced view
+  // read model-level rows on OpenRouter, so those rows priced calls at about
+  // minus their token count in dollars and drove every USD budget negative.
+  // The oracle now refuses a negative or non-finite number and the view
+  // reads none; this removes the rows already stored.
+  `-- deliberate: a negative rate is never a price (OpenRouter's "-1" means variable); the
+   -- next price pass records those models as variable-priced instead
+   delete from provider_prices
+    where price_in_per_mtok < 0 or price_out_per_mtok < 0
+       or price_cache_write_per_mtok < 0 or price_cache_read_per_mtok < 0`,
+  // The oracle's new outcome for them: the catalog lists the model with a
+  // variable price, so it stays unpriced and the panel says why.
+  `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
+  `alter table price_lookups add constraint price_lookups_outcome_check
+     check (outcome in ('priced', 'no_match', 'source_failed', 'variable'))`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

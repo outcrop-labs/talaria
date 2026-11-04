@@ -176,12 +176,27 @@ struct Catalog {
     /// How many priced models the catalog carried — a miss says how big the
     /// list it was not in was.
     size: usize,
+    /// Normalized ids the catalog lists with a variable (negative) price.
+    variable: HashSet<String>,
 }
 
 /// The pricing fields arrive as strings or numbers. Anything else —
 /// missing, objects, an empty string — is skipped. (No catalog ships an empty
 /// price string, and skipping is the honest read of one that did.)
+///
+/// A PRICE IS A FINITE NUMBER, ZERO OR MORE. OpenRouter publishes `"-1"` as
+/// its marker for "variable" — its routers (`openrouter/auto`,
+/// `openrouter/fusion`, `nvidia/switchyard` …) bill whatever model each call
+/// was routed to — and a parse that kept it priced those calls at -$1 per
+/// token, which sank every USD budget below zero. Anything negative or
+/// non-finite is no price; `raw_per_token` says which entries were refused.
 fn tok_per_token(v: Option<&Value>) -> Option<f64> {
+    raw_per_token(v).filter(|n| n.is_finite() && *n >= 0.0)
+}
+
+/// The number as published, sign and all — only for telling a variable
+/// price (negative) apart from a missing one.
+fn raw_per_token(v: Option<&Value>) -> Option<f64> {
     match v {
         Some(Value::Number(n)) => n.as_f64(),
         Some(Value::String(s)) => s.trim().parse::<f64>().ok(),
@@ -196,11 +211,21 @@ fn tok_per_token(v: Option<&Value>) -> Option<f64> {
 fn build_catalog(models: &[Value]) -> Catalog {
     let mut by_id = HashMap::new();
     let mut by_suffix: HashMap<String, Vec<SuffixEntry>> = HashMap::new();
+    let mut variable = HashSet::new();
     for m in models {
         let Some(id) = m.get("id").and_then(Value::as_str) else {
             continue;
         };
         let pricing = m.get("pricing");
+        // A negative prompt or completion price is the catalog saying
+        // "variable": no entry, and remembered so the miss can say why.
+        let published_negative = ["prompt", "completion"]
+            .iter()
+            .any(|k| raw_per_token(pricing.and_then(|p| p.get(*k))).is_some_and(|n| n < 0.0));
+        if published_negative {
+            variable.insert(normalize(id));
+            continue;
+        }
         let (Some(in_tok), Some(out_tok)) = (
             tok_per_token(pricing.and_then(|p| p.get("prompt"))),
             tok_per_token(pricing.and_then(|p| p.get("completion"))),
@@ -235,7 +260,26 @@ fn build_catalog(models: &[Value]) -> Catalog {
         by_id,
         by_suffix,
         size,
+        variable,
     }
+}
+
+/// The catalog id a model's lookup would have taken, when the catalog lists
+/// it with a VARIABLE price — only vendor-prefixed (exact catalog ids), never
+/// a bare suffix: a custom endpoint's `auto` is not OpenRouter's router.
+fn variable_entry(catalog: &Catalog, model: &str) -> Option<String> {
+    id_candidates(model)
+        .into_iter()
+        .find(|id| id.contains('/') && catalog.variable.contains(&normalize(id)))
+}
+
+/// The sentence a variable-priced model records instead of a price.
+fn variable_detail(catalog_id: &str) -> String {
+    format!(
+        "OpenRouter's catalog publishes a variable price for {catalog_id} (\"-1\": each call is billed \
+         as the model it was routed to), so no per-token price applies. Calls that carry the \
+         provider's own charge are priced by it."
+    )
 }
 
 fn suffix_match(catalog: &Catalog, vendor: &str, model: &str) -> Option<CatalogPrice> {
@@ -540,6 +584,22 @@ async fn refresh_auto_prices(
                         }
                     }
                 }
+            } else if let Some(entry) = variable_entry(&catalog, &m) {
+                // No price to store: drop any earlier pass's row for this
+                // model (one written before negatives were refused), and say
+                // why it stays unpriced.
+                let _ = sqlx::query(
+                    "delete from provider_prices where endpoint_id = $1::uuid and model = $2 \
+                     and variant = '' and source = $3",
+                )
+                .bind(&id)
+                .bind(&m)
+                .bind(CATALOG_SOURCE)
+                .execute(pg)
+                .await;
+                counts.no_match += 1;
+                let detail = variable_detail(&entry);
+                let _ = record_lookup(pg, &id, &m, "variable", Some(&detail)).await;
             } else {
                 counts.no_match += 1;
                 let detail = no_match_detail(&m, catalog.size);
@@ -1011,6 +1071,64 @@ mod tests {
         );
         // One slash is a vendor path, matched whole and by suffix already.
         assert_eq!(id_candidates("openai/gpt-5"), ["openai/gpt-5"]);
+    }
+
+    #[test]
+    fn a_variable_price_is_no_price_and_the_miss_says_so() {
+        // The live catalog's routers, verbatim (2026-11-03): "-1" is
+        // OpenRouter's marker for "variable", never -$1 per token.
+        let c = build_catalog(&[
+            json!({ "id": "openrouter/auto", "pricing": { "prompt": "-1", "completion": "-1" } }),
+            json!({ "id": "openrouter/fusion", "pricing": { "prompt": "-1", "completion": "-1" } }),
+            json!({ "id": "nvidia/switchyard", "pricing": { "prompt": "-1", "completion": "-1" } }),
+            json!({ "id": "typesafe/jev-router", "pricing": { "prompt": "-1", "completion": "-1" } }),
+            entry("openai/gpt-4o", "0.0000025", "0.00001"),
+        ]);
+        for (provider, model) in [
+            ("openrouter", "openrouter/auto"),
+            ("openrouter", "openrouter/fusion"),
+            ("custom", "nvidia/switchyard"),
+            ("openrouter", "typesafe/jev-router"),
+        ] {
+            assert!(
+                price_for(&c, provider, model).is_none(),
+                "{model} must stay unpriced"
+            );
+            assert!(
+                variable_entry(&c, model).is_some(),
+                "{model} is recorded as variable"
+            );
+        }
+        // A bare id is never a router: a custom endpoint's `auto` neither
+        // prices at the router's -1 nor claims its reason.
+        assert!(price_for(&c, "custom", "auto").is_none());
+        assert!(price_for(&c, "custom", "fusion").is_none());
+        assert_eq!(variable_entry(&c, "auto"), None);
+        assert!(variable_detail("openrouter/auto").contains("variable price for openrouter/auto"));
+        // Only real prices count toward the catalog's size.
+        assert_eq!(c.size, 1);
+        assert!(price_for(&c, "openrouter", "openai/gpt-4o").is_some());
+    }
+
+    #[test]
+    fn negative_or_unreadable_numbers_are_never_prices() {
+        assert_eq!(tok_per_token(Some(&json!("-1"))), None);
+        assert_eq!(tok_per_token(Some(&json!(-0.5))), None);
+        assert_eq!(tok_per_token(Some(&json!("NaN"))), None);
+        assert_eq!(tok_per_token(Some(&json!("inf"))), None);
+        assert_eq!(tok_per_token(Some(&json!("0"))), Some(0.0));
+        assert_eq!(tok_per_token(Some(&json!("0.0000025"))), Some(0.0000025));
+        // A negative cache rate drops the rate, not the entry.
+        let c = build_catalog(&[json!({
+            "id": "openai/gpt-4o",
+            "pricing": { "prompt": "0.0000025", "completion": "0.00001", "input_cache_read": "-1", "input_cache_write": "-1" }
+        })]);
+        let hit = price_for(&c, "openai", "gpt-4o").unwrap();
+        assert_eq!(
+            (hit.cache_read_per_mtok, hit.cache_write_per_mtok),
+            (None, None)
+        );
+        assert!(hit.in_per_mtok >= 0.0 && hit.out_per_mtok >= 0.0);
     }
 
     #[test]
