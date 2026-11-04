@@ -27,29 +27,29 @@ export const PAD = 10
 export const RAIL = 22
 export const MAX_ROWS = 14
 
-const TOOL_WORDS: Record<string, ToolKind> = {
-  search: 'search',
-  grep: 'search',
-  find: 'search',
-  glob: 'search',
-  read: 'read',
-  view: 'read',
-  write: 'edit',
-  edit: 'edit',
-  patch: 'edit',
-  terminal: 'shell',
-  shell: 'shell',
-  bash: 'shell',
-  exec: 'shell',
-  test: 'test',
-  tests: 'test',
-  browser: 'browser',
-  web: 'browser',
-  git: 'git',
-  commit: 'git',
-  push: 'git',
-  pr: 'git',
-}
+const TOOL_WORDS = new Map<string, ToolKind>([
+  ['search', 'search'],
+  ['grep', 'search'],
+  ['find', 'search'],
+  ['glob', 'search'],
+  ['read', 'read'],
+  ['view', 'read'],
+  ['write', 'edit'],
+  ['edit', 'edit'],
+  ['patch', 'edit'],
+  ['terminal', 'shell'],
+  ['shell', 'shell'],
+  ['bash', 'shell'],
+  ['exec', 'shell'],
+  ['test', 'test'],
+  ['tests', 'test'],
+  ['browser', 'browser'],
+  ['web', 'browser'],
+  ['git', 'git'],
+  ['commit', 'git'],
+  ['push', 'git'],
+  ['pr', 'git'],
+])
 
 const withoutMcpPrefix = (name: string) => name.split('__').at(-1)!
 const toolWords = (name: string) => withoutMcpPrefix(name).split(/[^a-z0-9]+/i)
@@ -57,7 +57,7 @@ const toolWords = (name: string) => withoutMcpPrefix(name).split(/[^a-z0-9]+/i)
 export function toolKind(name: string | null): ToolKind {
   if (name === null) return 'turn'
   for (const word of toolWords(name)) {
-    const kind = TOOL_WORDS[word.toLowerCase()]
+    const kind = TOOL_WORDS.get(word.toLowerCase())
     if (kind) return kind
   }
   return 'other'
