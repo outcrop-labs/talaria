@@ -275,7 +275,7 @@ async fn the_status_patch_lands_through_the_dynamic_update() {
             agent_start: Some(true),
             position: None,
         },
-        "typed-binds",
+        &talaria_api::tasks::TaskActor::human("typed-binds"),
     )
     .await
     .unwrap()
@@ -297,7 +297,7 @@ async fn the_status_patch_lands_through_the_dynamic_update() {
             agent_start: Some(false),
             position: None,
         },
-        "typed-binds",
+        &talaria_api::tasks::TaskActor::human("typed-binds"),
     )
     .await
     .unwrap()

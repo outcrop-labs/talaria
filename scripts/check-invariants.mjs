@@ -3279,54 +3279,134 @@ const UNSET_SEAM_CENSUS = [
 // ── A ticket's column has one writer ─────────────────────────────────────────
 // The owner's rule, broken by a new side door every time it was stated: a
 // ticket changes column only when it is TOLD to — a person's move, an agent's
-// move tool when a person asked, or a step of an approved, running workchain.
-// Never assignment, a work session, a PR, a review, a sweep or a trigger. On
-// 2026-11-04 the owner's instance showed 43 "(promoted by assignment)" moves
-// and 81 a work session made of its own ticket.
+// move a person approved (the chat's approval card, executed as that person),
+// or an approved, running workchain. Never assignment, a work session, a PR,
+// a review, a sweep or a trigger. On 2026-11-04 the owner's instance showed 43
+// "(promoted by assignment)" moves and 81 a work session made of its own
+// ticket.
 //
 // `talaria-tasks/src/placement.rs` `set_status` is the one statement that
-// writes `tasks.status`, and it takes a StatusMover with exactly those three
-// kinds, recording which one placed the ticket — the pickup gate reads it.
-// So: no other `update tasks … set … status =` anywhere in the api or the
-// TypeScript; no other write of the placement columns; and a ticket is BORN
-// (insert with a status) only in create_task, which never stamps a placement.
-// Test code (tests/, `#[cfg(test)]` modules and files) seeds rows freely.
-// The migrations array is a one-shot backfill, not a writer, and is skipped.
+// writes `tasks.status`; it and its `StatusMover` are crate-private, and a
+// person's move needs a `TaskActor::person` — the user id a route read from
+// its session. So this rule fails:
+//   · any other write of `tasks.status` or the placement columns — UPDATE in
+//     any spelling (schema-qualified, quoted, aliased, row-assignment), an
+//     upsert's DO UPDATE SET, a MERGE, a dynamic set list (format!/concat!,
+//     QueryBuilder, a TS template), a trigger or rule on tasks, or a
+//     function assigning NEW.status — in api/crates, api/src, ui/src, mcp/src
+//     and the migrations array (whose one backfill may write the placement
+//     columns, never the status);
+//   · a ticket BORN (insert with a status) anywhere but create_task;
+//   · `TaskActor::person(` outside the route crates and inbox-focus, or
+//     `StatusMover::` outside talaria-tasks.
+// Test code (tests/, `#[cfg(test)]` modules and files, *.test.*) seeds rows
+// freely.
 {
   const HOME = 'api/crates/talaria-tasks/src/placement.rs'
   const BIRTH = 'api/crates/talaria-tasks/src/lib.rs'
-  const UPDATE = /\bupdate\s+tasks\b(?:\s+(?!set\b)[a-z_]\w*)?\s+set\b/gi
-  /** The SET list after `index`: up to its where/returning/from, or 600 chars. */
+  const PG = 'ui/src/server/db/pg.ts'
+  // The table, however it is spelled: tasks, public.tasks, "tasks",
+  // \"tasks\" inside a Rust string, "public"."tasks".
+  const T = String.raw`(?<![\w."])(?:\\?"?[a-z_]\w*\\?"?\s*\.\s*)?\\?"?tasks\\?"?(?![\w.])`
+  const UPDATE = new RegExp(String.raw`\bupdate\s+(?:only\s+)?${T}(?:\s+(?:as\s+)?(?!set\b)[a-z_]\w*)?\s+set\b`, 'gi')
+  const UPSERT = new RegExp(String.raw`\binsert\s+into\s+${T}[^;]{0,2000}?\bdo\s+update\s+set\b`, 'gi')
+  const MERGE = new RegExp(String.raw`\bmerge\s+into\s+${T}[^;]{0,2000}?\bupdate\s+set\b`, 'gi')
+  const INSERT = new RegExp(String.raw`\binsert\s+into\s+${T}\s*\(([^)]*)\)`, 'gi')
+  const TRIGGER = new RegExp(String.raw`\bcreate\s+(?:or\s+replace\s+)?(?:constraint\s+)?(?:trigger|rule)\b[^;\x60]{0,400}?\b(?:on|to)\s+${T}`, 'gi')
+  const DYNAMIC_TS = new RegExp(String.raw`\bupdate\s+${T}(?:\s+(?:as\s+)?(?!set\b)[a-z_]\w*)?\s+set\s+\$\{`, 'gi')
+  const STATUS = /(?:^|[^\w.])(?:\\?"?\w+\\?"?\.)?\\?"?status\\?"?\s*=(?!=)/i
+  const PLACED = /\bplaced_(?:by|by_kind|at)\\?"?\s*=(?!=)/i
+  /** The SET list after `index`: string and statement ends cut, nested
+   *  parens (subselects, function calls) removed, cut at its top-level
+   *  where / returning / from / when. A row assignment `(a, status) = (…)`
+   *  keeps its column list. */
   const setList = (src, index) => {
-    const tail = src.slice(index, index + 600)
-    const end = tail.search(/\b(where|returning|from)\b/i)
-    return end === -1 ? tail : tail.slice(0, end)
+    let text = src.slice(index, index + 1200)
+    const end = text.search(/(?<!\\)"\s*[),.;]|\x60|;/)
+    if (end !== -1) text = text.slice(0, end)
+    const rowCols = [...text.matchAll(/\(([^()]*)\)\s*=/g)].map((m) => m[1]).join(',')
+    let prev
+    do {
+      prev = text
+      text = text.replace(/\([^()]*\)/g, ' ')
+    } while (text !== prev)
+    const stop = text.search(/\b(where|returning|from|when)\b/i)
+    if (stop !== -1) text = text.slice(0, stop)
+    return { text, rowCols }
+  }
+  /** The text of a macro or builder call starting at `index`: to its
+   *  matching paren, or 1500 chars for a builder. */
+  const callText = (src, index, builder) => {
+    if (builder) return src.slice(index, index + 1500)
+    const open = src.indexOf('(', index)
+    let depth = 0
+    for (let i = open; i < src.length && i < open + 4000; i++) {
+      if (src[i] === '(') depth++
+      else if (src[i] === ')' && --depth === 0) return src.slice(open, i + 1)
+    }
+    return src.slice(open, open + 4000)
   }
   /** Every status / placement write in one file's text: [{index, what}]. */
-  const statusWrites = (src) => {
+  const statusWrites = (src, { migrations = false } = {}) => {
     const out = []
-    for (const m of src.matchAll(UPDATE)) {
-      const set = setList(src, m.index + m[0].length)
-      if (/(?:^|[^\w.])(?:\w+\.)?status\s*=(?!=)/i.test(set)) out.push({ index: m.index, what: 'update tasks … set status =' })
-      else if (/\bplaced_(?:by|by_kind|at)\s*=/i.test(set)) out.push({ index: m.index, what: 'update tasks … set placed_* =' })
+    const setWrite = (m, kind) => {
+      const { text, rowCols } = setList(src, m.index + m[0].length)
+      if (STATUS.test(text) || /\bstatus\b/i.test(rowCols)) out.push({ index: m.index, what: `${kind} … set status =` })
+      else if (!migrations && (PLACED.test(text) || /\bplaced_/i.test(rowCols))) {
+        out.push({ index: m.index, what: `${kind} … set placed_* =` })
+      }
     }
-    for (const m of src.matchAll(/\binsert\s+into\s+tasks\s*\(([^)]*)\)/gi)) {
-      if (/\bplaced_(?:by|by_kind|at)\b/i.test(m[1])) out.push({ index: m.index, what: 'insert into tasks (… placed_* …)' })
+    for (const m of src.matchAll(UPDATE)) setWrite(m, 'update tasks')
+    for (const m of src.matchAll(UPSERT)) setWrite(m, 'insert into tasks … do update')
+    for (const m of src.matchAll(MERGE)) setWrite(m, 'merge into tasks … update')
+    for (const m of src.matchAll(INSERT)) {
+      if (!migrations && /\bplaced_(?:by|by_kind|at)\b/i.test(m[1])) out.push({ index: m.index, what: 'insert into tasks (… placed_* …)' })
       else if (/\bstatus\b/i.test(m[1])) out.push({ index: m.index, what: 'insert into tasks (… status …)', birth: true })
+    }
+    for (const m of src.matchAll(TRIGGER)) out.push({ index: m.index, what: 'a trigger or rule on tasks' })
+    for (const m of src.matchAll(/\bnew\s*\.\s*status\s*:?=(?!=)/gi)) out.push({ index: m.index, what: 'a function assigning NEW.status' })
+    for (const m of src.matchAll(DYNAMIC_TS)) out.push({ index: m.index, what: 'update tasks set ${…} (a dynamic set list)' })
+    for (const m of src.matchAll(/\b(?:format|concat)!\s*\(/g)) {
+      const call = callText(src, m.index, false)
+      if (/\bupdate\b/i.test(call) && new RegExp(T, 'i').test(call) && /\bstatus\b/i.test(call)) {
+        out.push({ index: m.index, what: `${m[0].replace(/\s*\($/, '')} building an update of tasks that names status` })
+      }
+    }
+    for (const m of src.matchAll(/\bQueryBuilder\b/g)) {
+      const call = callText(src, m.index, true)
+      if (/\bupdate\b/i.test(call) && new RegExp(T, 'i').test(call) && /\bstatus\b/i.test(call)) {
+        out.push({ index: m.index, what: 'a QueryBuilder update of tasks that names status' })
+      }
     }
     return out
   }
   // The detector, on fixtures — a rule whose pattern stops matching passes a
-  // tree full of the thing it forbids.
+  // tree full of the thing it forbids. [source, writes it must find, opts].
   const selfTest = [
     ['"update tasks set status = $2 where id = $1"', 1],
     ['"update tasks set title=$2, \\\n         status=$4, priority=$5 where id=$1"', 1],
+    ['"update public.tasks set status = $2 where id = $1"', 1],
+    ['"update tasks as t set status = $2 where t.id = $1"', 1],
+    ['"update tasks t set status = $2 where t.id = $1"', 1],
+    ['r#"update "tasks" set status = $2 where id = $1"#', 1],
+    ['"update \\"public\\".\\"tasks\\" set \\"status\\" = $2"', 1],
+    ['"update tasks set tags = (select x from y where z), status = $2 where id = $1"', 1],
+    ['"update tasks set (title, status) = ($2, $3) where id = $1"', 1],
+    ['"insert into tasks (id, title) values ($1, $2) on conflict (id) do update set status = excluded.status"', 1],
+    ['"merge into tasks t using src s on t.id = s.id when matched then update set status = s.status"', 1],
+    ['format!("update tasks set {} = $2 where id = $1", "status")', 1],
+    ['let mut q = QueryBuilder::new("update tasks set "); q.push("status = "); q.push_bind(s);', 1],
+    ['sql`update tasks set ${sql(patch)} where id = ${id}`', 1],
     ['"update tasks t set placed_by_kind = \'person\' where t.id = $1"', 1],
     ['"insert into tasks (board_id, title, status) values ($1, $2, $3)"', 1],
+    ['`create trigger tasks_touch before update on tasks for each row execute function f()`', 1],
+    ['`create or replace function f() returns trigger as $$ begin new.status := \'inbox\'; return new; end $$`', 1],
     ['"update tasks set tags = $2 where id = $1 and status = \'inbox\'"', 0],
     ['"update tasks set approved_at = now(), updated_at = now() where id = $1"', 0],
+    ['"update task_activity set description = $2 where status = $1"', 0],
     ['"insert into tasks (board_id, title) values ($1, $2)"', 0],
-  ].filter(([src, want]) => statusWrites(src).length !== want)
+    ['`update tasks t set placed_by = a.actor from (select 1) a where a.task_id = t.id`', 0, { migrations: true }],
+  ].filter(([src, want, opts]) => statusWrites(src, opts).length !== want)
   const testFiles = new Set()
   const rust = new Map(rustSources)
   for (const f of walk(join(ROOT, 'api/src'), [], RUST_EXTS)) {
@@ -3342,12 +3422,13 @@ const UNSET_SEAM_CENSUS = [
   }
   const found = selfTest.map(([src]) => ({ path: 'scripts/check-invariants.mjs', line: 0, text: `self-test missed: ${src}` }))
   let anchor = false
+  const isTest = (path) => /(^|\/)tests\//.test(path) || testFiles.has(path) || /\.test\.[mc]?[jt]s$/.test(path)
   const scan = (path, src, isRust) => {
-    if (/(^|\/)tests\//.test(path) || testFiles.has(path) || /\.test\.[mc]?[jt]s$/.test(path)) return
-    if (path === 'ui/src/server/db/pg.ts') return
+    if (isTest(path)) return
     const skip = isRust ? cfgTestRanges(src) : []
-    for (const w of statusWrites(src)) {
-      if (skip.some(([a, b]) => w.index >= a && w.index < b)) continue
+    const inTest = (i) => skip.some(([a, b]) => i >= a && i < b)
+    for (const w of statusWrites(src, { migrations: path === PG })) {
+      if (inTest(w.index)) continue
       if (path === HOME && w.what === 'update tasks … set status =') {
         anchor = true
         continue
@@ -3355,26 +3436,39 @@ const UNSET_SEAM_CENSUS = [
       if (w.birth && path === BIRTH) continue
       found.push({ path, line: lineOf(src, w.index), text: w.what })
     }
+    // Who may be a person: the route crates and inbox-focus, which build
+    // it from the request's session.
+    const personOk = /^api\/crates\/talaria-routes-[\w-]+\//.test(path) || path.startsWith('api/crates/talaria-inbox-focus/')
+    for (const m of src.matchAll(/\bTaskActor::person\s*\(/g)) {
+      if (personOk || inTest(m.index) || path.startsWith('api/crates/talaria-tasks-types/')) continue
+      found.push({ path, line: lineOf(src, m.index), text: 'TaskActor::person( outside the routes — a person comes from a session' })
+    }
+    for (const m of src.matchAll(/\bStatusMover::/g)) {
+      if (path.startsWith('api/crates/talaria-tasks/') || inTest(m.index)) continue
+      found.push({ path, line: lineOf(src, m.index), text: 'StatusMover outside talaria-tasks' })
+    }
   }
   for (const [path, src] of rust) scan(path, src, true)
   for (const [path, src] of sources) scan(path, src, false)
+  if (!sources.has(PG)) scan(PG, stripComments(readFileSync(join(ROOT, PG), 'utf8')), false)
   if (!anchor) found.push({ path: HOME, line: 0, text: 'the one status writer is gone — set_status no longer writes tasks.status here' })
   if (found.length) {
     failures.push({
       id: 'ticket-status-one-writer',
       what: "a ticket's column is written outside talaria-tasks placement.rs — a side door that moves tickets nobody asked to move",
       fix: [
-        'Change a column through talaria_tasks::update_task (or placement::set_status inside the',
-        'tasks crate), which demands a StatusMover: a person, an agent a person asked (never its own',
-        'work session), or a step of an approved, running workchain. A side effect that wants to say',
-        'something — an assignment, a session, a PR, a review, a sweep, a trigger — records activity,',
-        'a label or a field (outcome, error_message) and leaves the column alone. A ticket is born',
-        'only in create_task, in intake, with no placement.',
+        "Change a column through talaria_tasks::update_task with the request's TaskActor::person (a",
+        'route builds it from the session), the review decision, or the board move — set_status is',
+        'the one statement. An agent never writes a status itself: its refused move becomes the chat',
+        "approval card and the person's click makes it. A side effect that wants to say something —",
+        'an assignment, a session, a PR, a review, a sweep, a trigger — records activity, a label or',
+        'a field (outcome, error_message) and leaves the column alone. A ticket is born only in',
+        'create_task, in intake, with no placement.',
       ],
       found,
     })
   } else {
-    notes.push("ticket column: one writer (placement.rs set_status), births only in create_task")
+    notes.push('ticket column: one writer (placement.rs set_status), births only in create_task, persons only from routes')
   }
 }
 

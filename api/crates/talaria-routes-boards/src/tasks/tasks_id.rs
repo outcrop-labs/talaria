@@ -188,7 +188,8 @@ pub async fn put(
         if !can_edit(role.as_deref()) {
             return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
-        let actor = TaskActor::human(
+        let actor = TaskActor::person(
+            user.id.clone(),
             user.email
                 .clone()
                 .or_else(|| user.name.clone())

@@ -30,7 +30,7 @@
 //   inserted between our read and our write, and what they inserted is a live
 //   session for this exact ticket and agent, so standing down is correct.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::PgPool;
@@ -312,15 +312,17 @@ pub async fn maybe_dispatch_ticket(
             }
         }
         // THE PICKUP GATE (talaria-tasks placement.rs). A pickup column is
-        // not enough: somebody allowed — a person, an agent a person asked,
-        // or a running workchain — must have PUT the ticket there, and no
-        // session of this agent's may have finished on that placement yet.
-        // Assignment, a sweep, a PR or a trigger never releases work, and a
-        // finished session is not restarted by the next sweep.
+        // not enough: a PERSON must have put the ticket there (an agent's
+        // move counts only through the approval card a person clicks), or it
+        // is a running workchain's ready step; and no session of this
+        // agent's that started on that placement may have ended with its
+        // report. Assignment, a sweep, a PR or a trigger never releases work.
+        // A session that stopped WITHOUT a report — the turn cap, an error —
+        // spent nothing, so the sweep continues the work.
         match tasks::placement::pickup_refusal(pg, &task.id, &agent).await {
             Ok(None) => {}
             Ok(Some(why)) => {
-                tracing::debug!("{LOG} {}: not starting {agent}: {why}", task.id);
+                tracing::debug!("{LOG} {}: not starting {agent}: {}", task.id, why.message());
                 continue;
             }
             Err(e) => {
@@ -357,6 +359,34 @@ pub async fn maybe_dispatch_ticket(
         match tasks::agent_ticket_refusal(pg, &target, &subject, tasks::AgentIntent::Write).await {
             Ok(Some(_refusal)) => continue,
             Ok(None) => {
+                // THE GENERATION CAP IS A STOP, and a stop is said. The
+                // ticket no longer leaves its column when work ends, so a
+                // pair that has used every session would otherwise sit in
+                // the pickup column looking queued, forever, in silence.
+                match sessions_used(pg, &task.id, &agent).await {
+                    Ok(n) if n >= MAX_SESSIONS_PER_TICKET_AGENT as i64 => {
+                        let line = format!(
+                            "{agent} has had {MAX_SESSIONS_PER_TICKET_AGENT} work sessions on this \
+                             ticket without reporting an outcome — Talaria will not start another; \
+                             a person takes it from here"
+                        );
+                        if let Err(e) = tasks::tell_work_stopped(pg, &task.id, &line).await {
+                            tracing::error!(
+                                "{LOG} {}: could not say the work stopped: {e}",
+                                task.id
+                            );
+                        }
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::error!(
+                            "{LOG} {}: could not count {agent}'s sessions, not dispatching: {e}",
+                            task.id
+                        );
+                        continue;
+                    }
+                }
                 if dispatch_ticket_work(deps, task, &agent, None).await {
                     talaria_work_wait::clear_waiting(pg, &task.id).await;
                 }
@@ -366,6 +396,19 @@ pub async fn maybe_dispatch_ticket(
             }
         }
     }
+}
+
+/// How many work sessions this (ticket, agent) pair has had, ever — the
+/// generation walk's bound.
+async fn sessions_used(pg: &PgPool, task_id: &str, agent: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "select count(*)::bigint from runs \
+          where kind = 'work-session' and subject_id = $1 and input->>'agentModel' = $2",
+    )
+    .bind(task_id)
+    .bind(agent)
+    .fetch_one(pg)
+    .await
 }
 
 /// The durable stop mark for one (ticket, agent), or `None` when there is
@@ -440,10 +483,14 @@ pub struct SweepPass {
     pub parked: Vec<String>,
     /// Ids of agent-assigned tickets waiting on an earlier workchain step.
     pub waiting: Vec<String>,
-    /// Ids of agent-assigned tickets in a pickup column that nobody allowed
-    /// placed there (assignment's old promotion, a column it was born in):
-    /// never offered — the pickup gate would refuse every agent anyway.
+    /// Ids of agent-assigned tickets in a pickup column that no person
+    /// placed there (assignment's old promotion, a column it was born in,
+    /// an agent's own move): never offered — the pickup gate refuses them.
     pub unreleased: Vec<String>,
+    /// Ids of tickets whose every agent already reported on this placement:
+    /// finished work, waiting for a person. Never offered, so a finished
+    /// ticket does not go through the gates every minute.
+    pub settled: Vec<String>,
 }
 
 /// The pass in numbers — what the log line says, and what a test asserts.
@@ -453,6 +500,7 @@ pub struct SweepCount {
     pub parked: usize,
     pub waiting: usize,
     pub unreleased: usize,
+    pub settled: usize,
 }
 
 impl SweepPass {
@@ -462,6 +510,7 @@ impl SweepPass {
             parked: self.parked.len(),
             waiting: self.waiting.len(),
             unreleased: self.unreleased.len(),
+            settled: self.settled.len(),
         }
     }
 }
@@ -494,11 +543,9 @@ pub async fn sweep_pass(pg: &PgPool) -> Option<SweepPass> {
         String,
         Option<serde_json::Value>,
         Option<String>,
-        bool,
     );
     let rows: Vec<Row> = match sqlx::query_as(
-        "select t.id::text, t.board_id::text, t.status, t.assignees, t.archived_at::text, \
-                coalesce(t.placed_by_kind = any($1::text[]), false) \
+        "select t.id::text, t.board_id::text, t.status, t.assignees, t.archived_at::text \
          from tasks t \
          where t.assignees <> '[]'::jsonb \
            and t.archived_at is null \
@@ -508,7 +555,6 @@ pub async fn sweep_pass(pg: &PgPool) -> Option<SweepPass> {
                and r.updated_at > now() - interval '5 minutes' \
            )",
     )
-    .bind(tasks::placement::RELEASING_KINDS)
     .fetch_all(pg)
     .await
     {
@@ -531,8 +577,7 @@ pub async fn sweep_pass(pg: &PgPool) -> Option<SweepPass> {
     let mut meta_by_board: HashMap<String, Option<statuses::StatusMeta>> = HashMap::new();
     let mut in_pickup: Vec<DispatchTicket> = Vec::new();
     let mut pass = SweepPass::default();
-    let mut placed: HashSet<String> = HashSet::new();
-    for (id, board_id, status, assignees, archived_at, released) in rows {
+    for (id, board_id, status, assignees, archived_at) in rows {
         let Some(assignees) = sweep_assignees(assignees) else {
             continue;
         };
@@ -561,9 +606,6 @@ pub async fn sweep_pass(pg: &PgPool) -> Option<SweepPass> {
         {
             pass.parked.push(id);
             continue;
-        }
-        if released {
-            placed.insert(id.clone());
         }
         in_pickup.push(DispatchTicket {
             id,
@@ -595,32 +637,44 @@ pub async fn sweep_pass(pg: &PgPool) -> Option<SweepPass> {
             pass.waiting.push(task.id);
             continue;
         }
-        // Nobody allowed placed it — unless it is a running workchain step,
-        // which a person approved by building the chain. Asked only for the
-        // unplaced, so the common case costs the pass nothing.
-        if !placed.contains(&task.id) {
-            let chain = match metas.get(&task.board_id) {
-                Some(meta) => {
-                    tasks::placement::running_chain_step(pg, &task.id, &task.board_id, meta).await
-                }
-                None => Ok(None),
-            };
-            match chain {
-                Ok(Some(_)) => {}
+        // THE PICKUP GATE'S PLACEMENT HALF, per agent — the same function
+        // maybe_dispatch_ticket asks, so the counts are the gate's own
+        // answer. Offered when any agent may start; otherwise unreleased
+        // (nobody placed it) or settled (every agent already reported).
+        let mut verdict: Option<tasks::placement::PickupRefusal> = None;
+        let mut free = false;
+        for agent in tasks::agent_assignees(&task.assignees) {
+            match tasks::placement::pickup_refusal(pg, &task.id, &agent).await {
                 Ok(None) => {
-                    pass.unreleased.push(task.id);
-                    continue;
+                    free = true;
+                    break;
+                }
+                Ok(Some(why)) => {
+                    verdict = Some(match (verdict, why) {
+                        (Some(tasks::placement::PickupRefusal::Unreleased), _)
+                        | (_, tasks::placement::PickupRefusal::Unreleased) => {
+                            tasks::placement::PickupRefusal::Unreleased
+                        }
+                        (_, other) => other,
+                    })
                 }
                 Err(e) => {
                     tracing::error!(
-                        "{LOG} {}: could not read its workchain, not offering: {e}",
+                        "{LOG} {}: could not read who placed it, not offering: {e}",
                         task.id
                     );
-                    continue;
+                    verdict = Some(tasks::placement::PickupRefusal::Gone);
                 }
             }
         }
-        pass.offer.push(task);
+        match (free, verdict) {
+            (true, _) => pass.offer.push(task),
+            (false, Some(tasks::placement::PickupRefusal::Unreleased)) => {
+                pass.unreleased.push(task.id)
+            }
+            (false, Some(tasks::placement::PickupRefusal::Spent)) => pass.settled.push(task.id),
+            (false, _) => {}
+        }
     }
     Some(pass)
 }
@@ -643,8 +697,19 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) -> SweepCount {
         parked,
         waiting,
         unreleased,
+        settled,
     } = count;
-    if offered > 0 || parked > 0 || waiting > 0 || unreleased > 0 {
+    // SAID WHEN IT CHANGES. The same counts every minute are not news: a
+    // board of finished tickets used to print the same INFO line all day.
+    // A changed count is INFO; an unchanged one is DEBUG.
+    static LAST: std::sync::Mutex<Option<SweepCount>> = std::sync::Mutex::new(None);
+    let changed = {
+        let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+        let changed = last.as_ref() != Some(&count);
+        *last = Some(count);
+        changed
+    };
+    if offered > 0 || parked > 0 || waiting > 0 || unreleased > 0 || settled > 0 {
         let parked_note = if parked > 0 {
             format!(" ({parked} parked outside pickup columns)")
         } else {
@@ -657,14 +722,25 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) -> SweepCount {
         };
         let unreleased_note = if unreleased > 0 {
             format!(
-                " ({unreleased} in a pickup column nobody placed them in — a person moves them there)"
+                " ({unreleased} in a pickup column no person placed them in — a person moves them there)"
             )
         } else {
             String::new()
         };
-        tracing::info!(
-            "{LOG} sweep re-offered {offered} ticket(s) to their agents{parked_note}{waiting_note}{unreleased_note}"
-        );
+        let settled_note = if settled > 0 {
+            format!(" ({settled} reported on, waiting for a person)")
+        } else {
+            String::new()
+        };
+        if changed {
+            tracing::info!(
+                "{LOG} sweep re-offered {offered} ticket(s) to their agents{parked_note}{waiting_note}{unreleased_note}{settled_note}"
+            );
+        } else {
+            tracing::debug!(
+                "{LOG} sweep re-offered {offered} ticket(s) to their agents{parked_note}{waiting_note}{unreleased_note}{settled_note}"
+            );
+        }
     }
     count
 }
@@ -1326,8 +1402,18 @@ mod live_db {
             let rt = talaria_realtime::RealtimeDeps::publish_only(Some(redis.clone()));
             let deps = dispatch_deps(pg.clone(), redis, rt);
             let mut tasks = tasks::TaskDeps::from_route(pg.clone(), None);
-            // The real push side, so update_task's own detached offer runs.
+            // The real push side, so update_task's own detached offer runs:
+            // the dispatch assembly, and the seam the process wires at boot
+            // (talaria-jobs) — unset, a task write's push is a quiet no-op.
             tasks.dispatch = Some(deps.clone());
+            let _ = talaria_tasks_types::MAYBE_DISPATCH_TICKET.set(std::sync::Arc::new(
+                |pg, dispatch, ticket, only_agents| {
+                    Box::pin(async move {
+                        let Some(deps) = dispatch else { return };
+                        maybe_dispatch_ticket(&pg, &deps, &ticket, only_agents.as_deref()).await;
+                    })
+                },
+            ));
             Rule {
                 pg,
                 user,
@@ -1383,10 +1469,56 @@ mod live_db {
                     status: Some(status.into()),
                     ..Default::default()
                 },
-                &tasks::TaskActor::human(self.person.clone()),
+                &self.person(),
             )
             .await
             .unwrap_or_else(|e| panic!("a person's move to {status}: {e}"));
+        }
+
+        /// The signed-in person, as a route builds them from the session.
+        fn person(&self) -> tasks::TaskActor {
+            tasks::TaskActor::person(self.user.clone(), self.person.clone())
+        }
+
+        /// Every session on the ticket ends WITHOUT a report — the turn cap,
+        /// a restart, an errored turn — as the runs store finishes one.
+        async fn finish_unreported(&self, id: &str) {
+            sqlx::query(
+                "update runs set state = 'done', finished_at = now(), updated_at = now() \
+                 where kind = 'work-session' and subject_id = $1",
+            )
+            .bind(id)
+            .execute(&self.pg)
+            .await
+            .unwrap();
+        }
+
+        /// The agent reports through the real write path (report_outcome's
+        /// PUT), then its newest session ends: the reported finish.
+        async fn report_and_finish(&self, id: &str, outcome: &str) {
+            sqlx::query(
+                "update runs set state = 'running' where id = (select id from runs \
+                   where kind = 'work-session' and subject_id = $1 order by created_at desc limit 1)",
+            )
+            .bind(id)
+            .execute(&self.pg)
+            .await
+            .unwrap();
+            self.report(id, outcome).await;
+            self.finish_unreported(id).await;
+        }
+
+        async fn report(&self, id: &str, outcome: &str) {
+            self.write(
+                id,
+                tasks::TaskPatch {
+                    outcome: Some(Some(outcome.into())),
+                    ..Default::default()
+                },
+                &tasks::TaskActor::agent(self.agent.clone()),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("the agent's report: {e}"));
         }
 
         async fn row(&self, id: &str) -> (String, Option<String>) {
@@ -1395,6 +1527,20 @@ mod live_db {
                 .fetch_one(&self.pg)
                 .await
                 .expect("ticket row")
+        }
+
+        /// The session count once the move's detached push has landed: polled
+        /// until it reaches `want` (or 15 s pass — the count then is the
+        /// answer). A count that should STAY put is read after `settle`.
+        async fn sessions_reach(&self, id: &str, want: i64) -> i64 {
+            for _ in 0..150 {
+                let n = self.sessions(id).await;
+                if n >= want {
+                    return n;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            self.sessions(id).await
         }
 
         async fn sessions(&self, id: &str) -> i64 {
@@ -1407,8 +1553,8 @@ mod live_db {
             .expect("run count")
         }
 
-        /// Offer the ticket exactly as a write or the sweep does, then let
-        /// update_task's own detached offer land too.
+        /// The GATE, asked the way the sweep asks it — never a stand-in for a
+        /// person's move, whose own push is what starts work.
         async fn offer(&self, id: &str) -> i64 {
             let task = tasks::get_task(&self.pg, id)
                 .await
@@ -1507,7 +1653,7 @@ mod live_db {
                 assignees: Some(vec![r.agent.clone()]),
                 ..Default::default()
             },
-            &tasks::TaskActor::human(r.person.clone()),
+            &r.person(),
         )
         .await
         .unwrap();
@@ -1527,10 +1673,10 @@ mod live_db {
 
     #[tokio::test]
     #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
-    async fn rule_pickup_only_from_a_pickup_column_an_allowed_mover_placed() {
+    async fn rule_pickup_only_from_a_pickup_column_a_person_placed() {
         let r = Rule::new("pickup").await;
-        // In a pickup column nobody placed it in (the shape assignment's old
-        // promotion left): not picked up, by the push or by the sweep.
+        // In a pickup column no person placed it in (the shape assignment's
+        // old promotion left): not picked up, by the push or by the sweep.
         let unplaced = r.born(std::slice::from_ref(&r.agent)).await;
         sqlx::query("update tasks set status = 'assigned' where id = $1::uuid")
             .bind(&unplaced)
@@ -1551,46 +1697,94 @@ mod live_db {
         assert_eq!(r.sessions(&unplaced).await, 0, "the sweep started it");
         assert_eq!(r.row(&unplaced).await.0, "assigned", "the sweep moved it");
 
-        // A person moves it into the pickup column: picked up, once.
+        // A person moves it into the pickup column: their move's own push
+        // starts it — nobody offers it by hand.
         let placed = r.born(std::slice::from_ref(&r.agent)).await;
         r.move_as_person(&placed, "assigned").await;
+        let (status, kind, by): (String, Option<String>, Option<String>) = sqlx::query_as(
+            "select status, placed_by_kind, placed_by from tasks where id = $1::uuid",
+        )
+        .bind(&placed)
+        .fetch_one(&r.pg)
+        .await
+        .unwrap();
         assert_eq!(
-            r.row(&placed).await,
-            ("assigned".into(), Some("person".into()))
+            (status.as_str(), kind.as_deref()),
+            ("assigned", Some("person"))
         );
+        assert_eq!(
+            by.as_deref(),
+            Some(r.user.as_str()),
+            "placed_by is the user id"
+        );
+        let n = r.sessions_reach(&placed, 1).await;
+        assert_eq!(n, 1, "a person's placement starts work");
+
+        // M1: the session stops WITHOUT a report (the turn cap): nothing was
+        // spent, so the gate the sweep asks continues the work.
+        r.finish_unreported(&placed).await;
         assert_eq!(
             r.offer(&placed).await,
-            1,
-            "a person's placement is a pickup"
+            2,
+            "an unreported stop stranded the work"
         );
-        // That session finishes: the placement is spent, and the next offer
-        // (the sweep's, every minute) starts nothing.
+
+        // The agent reports and its session ends: spent. The gate starts
+        // nothing, and the sweep counts the ticket as settled, not offered.
+        r.report_and_finish(&placed, "fixed it; PR #1").await;
+        assert_eq!(
+            r.offer(&placed).await,
+            2,
+            "a reported session was restarted"
+        );
+        // Past the sweep's settle window (it skips a ticket whose session
+        // touched the runs table in the last five minutes).
         sqlx::query(
-            "update runs set state = 'done', updated_at = now() \
+            "update runs set updated_at = now() - interval '6 minutes' \
              where kind = 'work-session' and subject_id = $1",
         )
         .bind(&placed)
         .execute(&r.pg)
         .await
         .unwrap();
-        assert_eq!(
-            r.offer(&placed).await,
-            1,
-            "a finished session was restarted"
+        let pass = sweep_pass(&r.pg).await.expect("the pass runs");
+        assert!(
+            pass.settled.contains(&placed),
+            "a finished ticket is not re-offered"
         );
+        assert!(!pass.offer.iter().any(|t| t.id == placed));
         assert_eq!(r.row(&placed).await.0, "assigned", "the session moved it");
-        // A person places it again: released again.
+
+        // S7: a person RE-PLACES it from one pickup column to another — the
+        // move's push starts the next session at once.
         r.move_as_person(&placed, "in_progress").await;
         assert_eq!(
-            r.offer(&placed).await,
-            2,
-            "a fresh placement is a fresh pickup"
+            r.sessions_reach(&placed, 3).await,
+            3,
+            "a re-placement waited for the sweep"
         );
 
-        // A person's STOP holds until a person places it again — placed by
-        // their email, which the old activity-actor test never matched.
+        // S2: a session that STARTED before a re-placement and ends after it,
+        // with its report, does not spend the new placement.
+        r.finish_unreported(&placed).await;
+        r.session_row(&placed, "running").await;
+        r.report(&placed, "fixed it; PR #1").await;
+        r.move_as_person(&placed, "assigned").await;
+        let pushed = r.sessions_reach(&placed, 5).await;
+        assert_eq!(pushed, 5, "the re-placement's push");
+        r.finish_unreported(&placed).await;
+        let sessions = r.sessions(&placed).await;
+        assert_eq!(
+            r.offer(&placed).await,
+            sessions + 1,
+            "a session ending after the re-placement swallowed it"
+        );
+
+        // A person's STOP holds until a person places it again.
         let stopped = r.born(std::slice::from_ref(&r.agent)).await;
         r.move_as_person(&stopped, "assigned").await;
+        assert_eq!(r.sessions_reach(&stopped, 1).await, 1);
+        r.finish_unreported(&stopped).await;
         sqlx::query(
             "insert into work_dispatch_blocks (task_id, agent_model, blocked_by) values ($1::uuid, $2, 'Rule Live')",
         )
@@ -1599,11 +1793,11 @@ mod live_db {
         .execute(&r.pg)
         .await
         .unwrap();
-        assert_eq!(r.offer(&stopped).await, 0, "a stopped pair started");
+        assert_eq!(r.offer(&stopped).await, 1, "a stopped pair started");
         r.move_as_person(&stopped, "in_progress").await;
         assert_eq!(
-            r.offer(&stopped).await,
-            1,
+            r.sessions_reach(&stopped, 2).await,
+            2,
             "a person's placement lifts their stop"
         );
         r.drop().await;
@@ -1611,16 +1805,57 @@ mod live_db {
 
     #[tokio::test]
     #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
-    async fn rule_a_work_session_never_moves_its_ticket() {
+    async fn rule_a_ticket_out_of_sessions_says_so_once() {
+        let r = Rule::new("cap").await;
+        let id = r.born(std::slice::from_ref(&r.agent)).await;
+        r.move_as_person(&id, "assigned").await;
+        assert_eq!(r.sessions_reach(&id, 1).await, 1, "the placement's push");
+        r.finish_unreported(&id).await;
+        for _ in r.sessions(&id).await..MAX_SESSIONS_PER_TICKET_AGENT as i64 {
+            r.session_row(&id, "done").await;
+        }
+        let used = r.sessions(&id).await;
+        assert_eq!(r.offer(&id).await, used, "a 26th session started");
+        assert_eq!(r.offer(&id).await, used);
+        let lines: Vec<String> = sqlx::query_scalar(
+            "select description from task_activity where task_id = $1::uuid and type = 'dispatch'",
+        )
+        .bind(&id)
+        .fetch_all(&r.pg)
+        .await
+        .unwrap();
+        let stops: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("will not start another"))
+            .collect();
+        assert_eq!(stops.len(), 1, "the stop is said once: {lines:?}");
+        let told: i64 = sqlx::query_scalar(
+            "select count(*)::bigint from notifications where user_id = $1::uuid and title like '%work stopped'",
+        )
+        .bind(&r.user)
+        .fetch_one(&r.pg)
+        .await
+        .unwrap();
+        assert_eq!(told, 1, "the ticket's people are told once");
+        r.drop().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
+    async fn rule_an_agent_never_moves_a_ticket_itself() {
         let r = Rule::new("session").await;
         let id = r.born(std::slice::from_ref(&r.agent)).await;
         r.move_as_person(&id, "assigned").await;
+        assert_eq!(r.sessions_reach(&id, 1).await, 1, "the placement's push");
+        r.finish_unreported(&id).await;
         r.session_row(&id, "running").await;
         let agent = tasks::TaskActor::agent(r.agent.clone());
-        // Starting, progressing, handing off, parking: every move refused.
-        for dest in ["in_progress", "quality_review", "blocked", "done"] {
-            let refused = r
-                .write(
+        let attempt = |dest: &'static str| {
+            let agent = agent.clone();
+            let r = &r;
+            let id = id.clone();
+            async move {
+                r.write(
                     &id,
                     tasks::TaskPatch {
                         status: Some(dest.into()),
@@ -1628,38 +1863,40 @@ mod live_db {
                     },
                     &agent,
                 )
-                .await;
+                .await
+                .err()
+            }
+        };
+        // Its own session: starting, progressing, handing off, parking —
+        // every move refused (the held decision,
+        // placement::SESSION_MOVES_ITS_TICKET, keeps it so).
+        for dest in ["in_progress", "quality_review", "blocked", "done"] {
             assert_eq!(
-                refused.err().as_deref(),
+                attempt(dest).await.as_deref(),
                 Some(tasks::placement::SESSION_NO_MOVE),
                 "a session's move to {dest}"
             );
         }
         // The report is a field, and the column stays.
-        r.write(
-            &id,
-            tasks::TaskPatch {
-                outcome: Some(Some("fixed it; PR #1".into())),
-                ..Default::default()
-            },
-            &agent,
-        )
-        .await
-        .unwrap();
+        r.report(&id, "fixed it; PR #1").await;
         assert_eq!(r.row(&id).await, ("assigned".into(), Some("person".into())));
-        let outcome: Option<String> =
-            sqlx::query_scalar("select outcome from tasks where id = $1::uuid")
-                .bind(&id)
-                .fetch_one(&r.pg)
-                .await
-                .unwrap();
-        assert_eq!(outcome.as_deref(), Some("fixed it; PR #1"));
         assert_eq!(
             r.status_lines(&id).await,
             vec!["moved to assigned".to_string()],
             "only the person's move is on the record"
         );
-        // The platform has no mover at all.
+        // No session: still refused — (b) is the person's approval card,
+        // never the agent's own call (S1), restarts of its own work included.
+        r.finish_unreported(&id).await;
+        for dest in ["in_progress", "quality_review"] {
+            assert_eq!(
+                attempt(dest).await.as_deref(),
+                Some(tasks::placement::AGENT_NEEDS_APPROVAL),
+                "an agent's own move to {dest}"
+            );
+        }
+        // The platform has no mover; a person named but not signed in moves
+        // nothing either.
         let platform = r
             .write(
                 &id,
@@ -1671,34 +1908,87 @@ mod live_db {
             )
             .await;
         assert_eq!(platform.err().as_deref(), Some(tasks::placement::NO_MOVER));
-        // With no session live, the same agent move is (b) — a person asked.
-        sqlx::query(
-            "update runs set state = 'done' where kind = 'work-session' and subject_id = $1",
-        )
-        .bind(&id)
-        .execute(&r.pg)
-        .await
-        .unwrap();
-        r.write(
-            &id,
-            tasks::TaskPatch {
-                status: Some("in_progress".into()),
-                ..Default::default()
-            },
-            &agent,
-        )
-        .await
-        .unwrap();
+        let unsigned = r
+            .write(
+                &id,
+                tasks::TaskPatch {
+                    status: Some("in_progress".into()),
+                    ..Default::default()
+                },
+                &tasks::TaskActor::human(r.person.clone()),
+            )
+            .await;
+        assert_eq!(
+            unsigned.err().as_deref(),
+            Some(tasks::placement::PERSON_NOT_SIGNED_IN)
+        );
+        // The approval card's click is the person's move (chips_approvals_id
+        // runs update_task as TaskActor::person): it moves, and releases.
+        r.move_as_person(&id, "in_progress").await;
         assert_eq!(
             r.row(&id).await,
-            ("in_progress".into(), Some("agent".into()))
+            ("in_progress".into(), Some("person".into()))
         );
         r.drop().await;
     }
 
     #[tokio::test]
     #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
-    async fn rule_an_approved_running_workchain_step_still_moves_and_starts() {
+    async fn rule_a_repeated_report_still_ends_the_session() {
+        let r = Rule::new("repeat").await;
+        let id = r.born(std::slice::from_ref(&r.agent)).await;
+        r.move_as_person(&id, "assigned").await;
+        assert_eq!(r.sessions_reach(&id, 1).await, 1, "the placement's push");
+        r.finish_unreported(&id).await;
+        // Session one reports.
+        r.session_row(&id, "running").await;
+        assert!(
+            !tasks::placement::session_reported(&r.pg, &id, &r.agent)
+                .await
+                .unwrap()
+        );
+        r.report(&id, "fixed it; PR #1").await;
+        assert!(
+            tasks::placement::session_reported(&r.pg, &id, &r.agent)
+                .await
+                .unwrap(),
+            "a report ends the session"
+        );
+        r.finish_unreported(&id).await;
+        // Session two reports THE SAME TEXT: still the end of that session.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        r.session_row(&id, "running").await;
+        assert!(
+            !tasks::placement::session_reported(&r.pg, &id, &r.agent)
+                .await
+                .unwrap(),
+            "the first session's report ended the second"
+        );
+        r.report(&id, "fixed it; PR #1").await;
+        assert!(
+            tasks::placement::session_reported(&r.pg, &id, &r.agent)
+                .await
+                .unwrap(),
+            "a repeated identical report did not end the session"
+        );
+        let lines: Vec<String> = sqlx::query_scalar(
+            "select description from task_activity where task_id = $1::uuid and type = 'outcome' \
+             order by created_at",
+        )
+        .bind(&id)
+        .fetch_all(&r.pg)
+        .await
+        .unwrap();
+        assert_eq!(
+            lines,
+            vec!["reported an outcome", "reported the same outcome again"]
+        );
+        r.drop().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
+    async fn rule_a_running_workchain_releases_its_step_but_never_moves_it() {
         let r = Rule::new("chain").await;
         let first = r.born(&[]).await;
         r.move_as_person(&first, "done").await;
@@ -1742,33 +2032,13 @@ mod live_db {
         .execute(&r.pg)
         .await
         .unwrap();
-        // Its agent, inside the session, moves the step: the chain's move (c).
-        r.write(
-            &step,
-            tasks::TaskPatch {
-                status: Some("quality_review".into()),
-                ..Default::default()
-            },
-            &tasks::TaskActor::agent(r.agent.clone()),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            r.row(&step).await,
-            ("quality_review".into(), Some("workchain".into()))
-        );
-        // A PAUSED chain is not running: the same session move is refused.
-        sqlx::query("update task_workchains set paused = true where id = $1::uuid")
-            .bind(&chain)
-            .execute(&r.pg)
-            .await
-            .unwrap();
-        r.move_as_person(&step, "in_progress").await;
+        // The step's own session may not move it: a step definition names no
+        // column, so the chain has no move to make on its behalf (S3).
         let refused = r
             .write(
                 &step,
                 tasks::TaskPatch {
-                    status: Some("blocked".into()),
+                    status: Some("quality_review".into()),
                     ..Default::default()
                 },
                 &tasks::TaskActor::agent(r.agent.clone()),
@@ -1777,6 +2047,20 @@ mod live_db {
         assert_eq!(
             refused.err().as_deref(),
             Some(tasks::placement::SESSION_NO_MOVE)
+        );
+        assert_eq!(r.row(&step).await, ("assigned".into(), None));
+        // A PAUSED chain is not running: its step is not released.
+        r.finish_unreported(&step).await;
+        sqlx::query("update task_workchains set paused = true where id = $1::uuid")
+            .bind(&chain)
+            .execute(&r.pg)
+            .await
+            .unwrap();
+        assert_eq!(
+            tasks::placement::pickup_refusal(&r.pg, &step, &r.agent)
+                .await
+                .unwrap(),
+            Some(tasks::placement::PickupRefusal::Unreleased)
         );
         r.drop().await;
     }

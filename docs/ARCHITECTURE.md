@@ -986,13 +986,16 @@ Work delivery is **push-side**: the app dispatches durable work sessions to agen
 (`talaria-work-dispatch`): on the task write that hands an agent work (the ticket enters an
 agent-start column, or gains an agent assignee), on a workchain hand-off, and from a sixty-second
 sweep that re-offers anything a push missed. **A ticket moves only when it is told to**
-(`talaria-tasks` `placement.rs`, the one writer of `tasks.status`): a person's move, an agent's
-move tool when a person asked (refused while its own work session is live on the ticket), or a
-step of an approved, running workchain. Assignment, a session, a PR, a review, a sweep or a
-trigger never moves one. Each placement records its mover, and the pickup gate starts a session
-only on a ticket one of them placed in a pickup column, once per placement: a finished session
-is not restarted until somebody allowed places the ticket again. A session ends on the agent's
-`report_outcome`, which records the result and leaves the column to a person. A workchain step whose predecessor is still open is
+(`talaria-tasks` `placement.rs`, the one writer of `tasks.status`): a signed-in person's move
+(`TaskActor::person`, built by a route from the session), or an agent's move a person approved —
+an agent's own status write is always refused, and in a chat the refusal becomes an approval card
+whose click makes the move as that person. Assignment, a session, a PR, a review, a sweep or a
+trigger never moves one. Each placement records who made it (a person by user id), and the pickup
+gate starts a session only on a ticket a person placed in a pickup column, or an approved, running
+workchain's ready step. A session ends on the agent's `report_outcome`, which records the result
+and leaves the column to a person; that report spends the placement, so the same work is not
+picked up again until a person places the ticket again. A session that stopped without a report
+(the turn cap, an error) spent nothing, and the sweep continues it within the 25-session cap. A workchain step whose predecessor is still open is
 not dispatched — the gate asks `talaria_tasks::workchain_blocked` before any session starts, and
 the session asks it again on every turn. The agent cannot start it by hand either: moving it into a
 working column or review, or binding a workbench job to it, is refused the same way. Agents do not

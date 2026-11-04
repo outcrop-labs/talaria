@@ -112,7 +112,14 @@ pub async fn post(
         ..Default::default()
     };
     Ok(
-        match update_task(&deps, &id, patch, &TaskActor::human(reviewer)).await {
+        match update_task(
+            &deps,
+            &id,
+            patch,
+            &TaskActor::person(user.id.clone(), reviewer),
+        )
+        .await
+        {
             Ok(t2) => Json(json!({ "task": t2 })).into_response(),
             Err(e) => internal("[tasks] review move failed", e.message()),
         },

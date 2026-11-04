@@ -80,14 +80,15 @@ pub enum Mover {
 }
 
 impl Mover {
-    /// The column-writer's mover. A move between boards is (a) for a person
-    /// and (b) for an agent: `live_hold` refuses the move outright while a
-    /// work session is live on the ticket or it is a workchain step, so an
-    /// agent here is never a session's side effect.
-    fn status_mover(&self) -> crate::StatusMover {
+    /// The column-writer's mover. A person's move between boards is (a), by
+    /// their user id. An agent's is allowed (`live_hold` refuses it while a
+    /// session is live or the ticket is a workchain step) but recorded as the
+    /// agent's, which RELEASES NOTHING: a ticket an agent moved into another
+    /// board's pickup column waits there for a person (placement.rs).
+    fn status_mover(&self) -> crate::placement::StatusMover {
         match self {
-            Mover::Human { actor, .. } => crate::StatusMover::Person(actor.clone()),
-            Mover::Agent { model, .. } => crate::StatusMover::Agent(model.clone()),
+            Mover::Human { user_id, .. } => crate::placement::StatusMover::Person(user_id.clone()),
+            Mover::Agent { model, .. } => crate::placement::StatusMover::Agent(model.clone()),
         }
     }
     fn actor(&self) -> &str {

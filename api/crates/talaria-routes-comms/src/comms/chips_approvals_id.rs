@@ -67,7 +67,15 @@ pub async fn post(
         return Ok(Json(json!({ "status": "denied", "tools": [] })).into_response());
     }
 
-    if let Err(response) = execute(&state, &user.id, user.role == "admin", &row).await {
+    if let Err(response) = execute(
+        &state,
+        &user.id,
+        &talaria_session::actor_of(&user),
+        user.role == "admin",
+        &row,
+    )
+    .await
+    {
         return Ok(response);
     }
     if let Err(e) = mark_approval(&state.pg, &row.id, "approved", &user.id).await {
@@ -143,6 +151,7 @@ async fn answer_card(
 async fn execute(
     state: &AppState,
     user_id: &str,
+    label: &str,
     is_admin: bool,
     row: &talaria_chips::ApprovalRow,
 ) -> Result<(), Response> {
@@ -213,7 +222,9 @@ async fn execute(
                 ..TaskPatch::default()
             };
             let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
-            match update_task(&deps, task_id, patch, &TaskActor::human(user_id)).await {
+            // The person's click IS the move — (b), an agent's move a person
+            // asked for, made as that signed-in person (placement.rs).
+            match update_task(&deps, task_id, patch, &TaskActor::person(user_id, label)).await {
                 Ok(_) => Ok(()),
                 Err(TaskError::ApprovalRequired(msg) | TaskError::Refusal(msg)) => {
                     Err(house_error(StatusCode::BAD_REQUEST, &msg))

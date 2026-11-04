@@ -9,7 +9,7 @@ bold throughout the guides resolve here.
 | **Agent** | A hired teammate with a soul, memory, skills, tools, and a model for a brain | [Working with agents](./working-with-agents.md) |
 | **Agent chat** | A private thread with one agent — fresh context per topic | [Comms](./comms.md) |
 | **Agent guidance** | Prompt-only instructions that ride with a template into the model, never shown on the ticket | [Templates](./templates.md) |
-| **Agent start** | A column agents pick up work from — once a person (or an agent they asked, or a running workchain) puts the ticket there. Assignment alone never starts work | [Boards](./boards.md) |
+| **Agent start** | A column agents pick up work from — once a person puts the ticket there (or approves an agent's move card), or it is a running workchain's next step. Assignment alone never starts work | [Boards](./boards.md) |
 | **Assistant** | The personal agent that's just yours; it writes your daily brief | [Your assistant](./personal-assistant.md) |
 | **Attached decision** | The queue item your drawer instruction will act on | [Your day](./your-day.md) |
 | **auto** | An unassigned slot, or an unpriced model in the ledger | [Admin: Models](./admin-models.md) |

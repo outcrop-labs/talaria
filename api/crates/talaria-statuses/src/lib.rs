@@ -785,7 +785,7 @@ pub async fn update_status(
     board_id: &str,
     key: &str,
     patch: &StatusPatch,
-    actor: &str,
+    actor: &talaria_tasks_types::TaskActor,
 ) -> Result<Result<(), String>, sqlx::Error> {
     let pg = &deps.pg;
     if key == "blocked" {
@@ -931,7 +931,7 @@ async fn drain_signoff_column(
     row_id: &str,
     from: &str,
     to: &str,
-    actor: &str,
+    actor: &talaria_tasks_types::TaskActor,
 ) -> Result<Result<(), String>, sqlx::Error> {
     if from == to {
         return Ok(Ok(()));
@@ -1003,14 +1003,7 @@ async fn drain_signoff_column(
             )),
             ..Default::default()
         };
-        match talaria_tasks_types::update_task(
-            deps,
-            ticket,
-            patch,
-            &talaria_tasks_types::TaskActor::human(actor),
-        )
-        .await
-        {
+        match talaria_tasks_types::update_task(deps, ticket, patch, actor).await {
             Ok(_) => {}
             Err(e) => {
                 let sofar = if moved > 0 {
@@ -1056,7 +1049,7 @@ pub async fn delete_status(
     board_id: &str,
     key: &str,
     reassign_to: &str,
-    actor: &str,
+    actor: &talaria_tasks_types::TaskActor,
 ) -> Result<Result<(), String>, sqlx::Error> {
     let pg = &deps.pg;
     if key == "blocked" {
@@ -1105,14 +1098,7 @@ pub async fn delete_status(
             status_note: Some(format!("the \"{victim_label}\" column was deleted")),
             ..Default::default()
         };
-        match talaria_tasks_types::update_task(
-            deps,
-            ticket,
-            patch,
-            &talaria_tasks_types::TaskActor::human(actor),
-        )
-        .await
-        {
+        match talaria_tasks_types::update_task(deps, ticket, patch, actor).await {
             Ok(_) => {}
             Err(e) => return Ok(Err(e.message())),
         }

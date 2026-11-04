@@ -36,7 +36,7 @@ pub use moving::{
     MoveError, MoveOutcome, MoveRequest, MoveSummary, Mover, PickRefusal, StatusHow, StatusPick,
     map_labels, move_task, pick_move_status,
 };
-pub use placement::StatusMover;
+use placement::StatusMover;
 
 pub use talaria_tasks_types::{
     Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
@@ -533,6 +533,58 @@ async fn notify_task_users(
     }
 }
 
+/// WORK STOPPED, AND NOTHING WILL RESTART IT: say so on the ticket and tell
+/// its people. A ticket no longer leaves its column when its agent stops
+/// (placement.rs), so a stop nobody hears about looks like work still queued.
+/// Once per `line`: a dispatch line already on the ticket is not written or
+/// sent again (the sweep asks every minute).
+pub async fn tell_work_stopped(pg: &PgPool, task_id: &str, line: &str) -> Result<(), sqlx::Error> {
+    let said: bool = sqlx::query_scalar(
+        "select exists (select 1 from task_activity \
+           where task_id = $1::uuid and type = 'dispatch' and description = $2)",
+    )
+    .bind(task_id)
+    .bind(line)
+    .fetch_one(pg)
+    .await?;
+    if said {
+        return Ok(());
+    }
+    log_activity(pg, task_id, "talaria", "dispatch", line).await?;
+    let Some(task) = get_task(pg, task_id).await? else {
+        return Ok(());
+    };
+    let audience = ticket_audience(
+        pg,
+        task_id,
+        &task.board_id,
+        &task.assignees,
+        &task.created_by,
+    )
+    .await?;
+    let notify = NotifyDeps::publishing(pg.clone(), None);
+    notify_task_users(
+        &notify,
+        &audience,
+        "talaria",
+        &TaskNotification {
+            kind: "task-status".into(),
+            title: format!(
+                "{}: work stopped",
+                task.ticket_ref
+                    .clone()
+                    .unwrap_or_else(|| task.title.clone()),
+            ),
+            body: Some(line.to_string()),
+            href: Some(format!("/boards/{}/{}", task.board_id, task.id)),
+            task_id: task.id.clone(),
+            status_burst: None,
+        },
+    )
+    .await;
+    Ok(())
+}
+
 /// Who hears about a ticket's moves: its watchers, its assigned humans and
 /// its creator (SE-9) — each re-checked against the board at THIS moment, so
 /// someone removed from the board since stops hearing about it.
@@ -669,6 +721,13 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
         // THE AGENT'S REPORT, when it did not ride a move (which told the same
         // people already): the result is on the ticket, the column is theirs.
         if reported_by_agent && !moved {
+            // The column's LABEL, as the board shows it, not its key.
+            let column = talaria_statuses::list_statuses(&deps.pg, &cur.board_id)
+                .await
+                .ok()
+                .and_then(|list| list.into_iter().find(|c| c.key == cur.status))
+                .map(|c| c.label)
+                .unwrap_or_else(|| cur.status.clone());
             match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
                 Ok(audience) => {
                     notify_task_users(
@@ -682,8 +741,8 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
                                 cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
                             ),
                             body: Some(format!(
-                                "{} — the agent left it in {}; move it when you have reviewed the work",
-                                cur.title, cur.status
+                                "{} — it is still in {column}; move it when you have reviewed the work",
+                                cur.title
                             )),
                             href: Some(href.clone()),
                             task_id: id.clone(),
@@ -1545,21 +1604,22 @@ pub async fn update_task(
         patch.error_message = patch.error_message.as_ref().map(|_| guarded[4].clone());
     }
     // ── WHO MOVES IT (placement.rs) ─────────────────────────────────────────
-    // A write that changes the column needs one of the three movers, and
-    // the caller's kind names which: a person is (a); an agent is (c) on a
-    // running workchain step, else (b) — unless its own work session is live
-    // on this ticket, which makes the move the session's side effect; the
-    // platform is none of them.
+    // A write that changes the column needs a mover. A signed-in person
+    // (`TaskActor::person`, user id from the session) is (a). An agent's own
+    // write is refused — its session's always, and any other because (b) is
+    // the approval path: the refusal becomes the chat's approval card, and the
+    // person's click moves it as that person. The platform is none of them.
     let mover = match patch.status.as_ref().filter(|s| **s != cur.status) {
         None => None,
         Some(_) => Some(match who.kind {
-            TaskActorKind::Human => StatusMover::Person(who.id.clone()),
-            TaskActorKind::Agent => {
-                match placement::agent_mover(pg, &cur.id, &cur.board_id, &meta, &who.id).await? {
-                    Ok(mover) => mover,
-                    Err(why) => return Err(TaskError::ApprovalRequired(why.into())),
-                }
-            }
+            TaskActorKind::Human => match who.user_id() {
+                Some(user_id) => StatusMover::Person(user_id.to_string()),
+                None => return Err(TaskError::Refusal(placement::PERSON_NOT_SIGNED_IN.into())),
+            },
+            TaskActorKind::Agent => match placement::agent_mover(pg, &cur.id, &who.id).await? {
+                Ok(mover) => mover,
+                Err(why) => return Err(TaskError::ApprovalRequired(why.into())),
+            },
             TaskActorKind::Platform => {
                 return Err(TaskError::Refusal(placement::NO_MOVER.into()));
             }
@@ -1655,6 +1715,16 @@ pub async fn update_task(
     }
     tx.commit().await?;
 
+    // AN AGENT'S REPORT IS AN EVENT, the same text again included. It ends
+    // the agent's work session (placement::session_reported reads the line)
+    // and spends the placement, so a second session that reports what the
+    // first one did must still leave its line — a changed-text test would
+    // drop it and leave that session running to the turn cap.
+    let agent_reported_outcome =
+        who.kind == TaskActorKind::Agent && patch.outcome.as_ref().is_some_and(|o| o.is_some());
+    let agent_reported_error = who.kind == TaskActorKind::Agent
+        && patch.error_message.as_ref().is_some_and(|e| e.is_some());
+
     // ── THE NOTIFY WORK GOES OUT NOW (C30) ──────────────────────────────────
     // The write above has committed. Everything a person is told about it is
     // spawned HERE, before this function's next await: a caller that hangs up
@@ -1672,13 +1742,7 @@ pub async fn update_task(
             archived_now: patch.archived == Some(true) && cur.archived_at.is_none(),
             review_keys: meta.review_keys.clone(),
             actor: who.id.clone(),
-            reported_by_agent: who.kind == TaskActorKind::Agent
-                && ((patch.outcome.is_some()
-                    && next_outcome.is_some()
-                    && next_outcome != cur.outcome)
-                    || (patch.error_message.is_some()
-                        && next_error_message.is_some()
-                        && next_error_message != cur.error_message)),
+            reported_by_agent: agent_reported_outcome || agent_reported_error,
         },
     );
 
@@ -1732,9 +1796,11 @@ pub async fn update_task(
             .collect::<Vec<_>>(),
         None => Vec::new(),
     };
-    let entered_pickup = next_status != cur.status
-        && meta.agent_start_keys.contains(&next_status)
-        && !meta.agent_start_keys.contains(&cur.status);
+    // Any move INTO a pickup column, from another pickup column too: a
+    // person re-placing a ticket assigned → in_progress is asking for the
+    // work again, and should not wait for the sweep (only a person's write
+    // can change the column at all — placement.rs).
+    let entered_pickup = next_status != cur.status && meta.agent_start_keys.contains(&next_status);
     if entered_pickup || !added_agents.is_empty() {
         // Entering the queue is approval for EVERY agent assignee; a new
         // assignee on a ticket already sitting there gets only their own
@@ -1809,16 +1875,18 @@ pub async fn update_task(
     // the write before. Same for the rest of the result fields, which had no
     // activity line at all, and for tags, where `tags: []` cleared every
     // label silently.
-    if patch.outcome.is_some() && next_outcome != cur.outcome {
+    if (patch.outcome.is_some() && next_outcome != cur.outcome) || agent_reported_outcome {
         log_activity(
             pg,
             id,
             &who.id,
             "outcome",
-            if next_outcome.is_some() {
-                "reported an outcome"
-            } else {
+            if next_outcome.is_none() {
                 "cleared the outcome"
+            } else if next_outcome == cur.outcome {
+                "reported the same outcome again"
+            } else {
+                "reported an outcome"
             },
         )
         .await?;
@@ -1837,16 +1905,20 @@ pub async fn update_task(
         )
         .await?;
     }
-    if patch.error_message.is_some() && next_error_message != cur.error_message {
+    if (patch.error_message.is_some() && next_error_message != cur.error_message)
+        || agent_reported_error
+    {
         log_activity(
             pg,
             id,
             &who.id,
             "error",
-            if next_error_message.is_some() {
-                "reported an error"
-            } else {
+            if next_error_message.is_none() {
                 "cleared the error"
+            } else if next_error_message == cur.error_message {
+                "reported the same error again"
+            } else {
+                "reported an error"
             },
         )
         .await?;
@@ -2584,11 +2656,18 @@ pub async fn set_task_approved(
 pub async fn complete_quality_review(
     deps: &TaskDeps,
     task_id: &str,
-    reviewer: &str,
+    reviewer_actor: &TaskActor,
     review_status: &str,
     next_status: &str,
 ) -> TaskResult<Option<Task>> {
     let pg = &deps.pg;
+    // A review decision is a PERSON's: the card's click, by the signed-in
+    // reviewer. Their label goes on the record, their user id on the
+    // placement a rejection makes.
+    let reviewer = reviewer_actor.id.as_str();
+    let Some(reviewer_id) = reviewer_actor.user_id() else {
+        return Err(TaskError::Refusal(placement::PERSON_NOT_SIGNED_IN.into()));
+    };
     let Some(current) = get_task(pg, task_id).await? else {
         return Ok(None);
     };
@@ -2630,7 +2709,7 @@ pub async fn complete_quality_review(
             task_id,
             Some(&current.status),
             next_status,
-            &StatusMover::Person(reviewer.to_string()),
+            &StatusMover::Person(reviewer_id.to_string()),
         )
         .await?;
     }

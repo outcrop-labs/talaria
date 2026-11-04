@@ -535,20 +535,9 @@ async fn real_session_state(
     // moves its ticket (talaria-tasks placement.rs), so the ticket leaving
     // the working columns is a PERSON's stop now; the agent's own end is its
     // outcome (or its error) reported during this session.
-    let reported: bool = sqlx::query_scalar(
-        "select exists (select 1 from task_activity a \
-           where a.task_id = $1::uuid and a.actor = $2 and a.type in ('outcome', 'error') \
-             and a.created_at >= (select max(r.created_at) from runs r \
-               where r.kind = 'work-session' and r.subject_id = $3 \
-                 and r.input->>'agentModel' = $2 \
-                 and r.state in ('queued', 'running', 'awaiting')))",
-    )
-    .bind(&task_id)
-    .bind(&agent_model)
-    .bind(&task_id)
-    .fetch_one(&pg)
-    .await
-    .map_err(|e| e.to_string())?;
+    let reported = tasks::placement::session_reported(&pg, &task_id, &agent_model)
+        .await
+        .map_err(|e| e.to_string())?;
     if reported {
         return Ok(Some(SessionState {
             stop: Some(format!(

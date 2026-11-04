@@ -85,7 +85,13 @@ pub static GET_TASK: OnceLock<
 > = OnceLock::new();
 pub static COMPLETE_QUALITY_REVIEW: OnceLock<
     Arc<
-        dyn Fn(TaskDeps, String, String, String, String) -> BoxFuture<'static, TaskErrorResult>
+        dyn Fn(
+                TaskDeps,
+                String,
+                talaria_tasks_types::TaskActor,
+                String,
+                String,
+            ) -> BoxFuture<'static, TaskErrorResult>
             + Send
             + Sync,
     >,
@@ -1925,7 +1931,9 @@ async fn execute_action_arms(
             f(
                 task_deps,
                 task.id.clone(),
-                actor.clone(),
+                // The signed-in person whose click this is: their user id
+                // places a rejected ticket (talaria-tasks placement.rs).
+                talaria_tasks_types::TaskActor::person(user.id.clone(), actor.clone()),
                 if approved { "approved" } else { "rejected" }.to_string(),
                 next_status.as_deref().expect("checked above").to_string(),
             )

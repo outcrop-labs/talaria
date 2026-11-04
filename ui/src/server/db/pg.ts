@@ -4829,13 +4829,15 @@ alter table tasks drop column if exists conversation_id`,
   // process that read the id may be gone by the time a person presses Stop.
   `alter table runs add column if not exists agent_run_id text`,
   // ── Who put a ticket in its column (2026-11-04) ───────────────────────────
-  // A ticket moves only when a person moves it, an agent a person asked moves
-  // it, or a step of an approved, running workchain does — never as a side
-  // effect of an assignment, a work session, a PR, a review or a sweep. Every
-  // status write records which of the three it was (talaria-tasks
-  // placement.rs is the one writer), and an agent picks a ticket up only
-  // from a pickup column one of them placed it in. Null is a ticket nobody
-  // placed: a column it was born in, or one from before this was recorded.
+  // A ticket moves only when a person moves it (an agent's move only as the
+  // approval card a person clicks) — never as a side effect of an
+  // assignment, a work session, a PR, a review or a sweep. Every status write
+  // records who placed the ticket (talaria-tasks placement.rs is the one
+  // writer): a person by user id, or an agent's allowed board move by its
+  // model, which releases nothing. An agent picks a ticket up only from a
+  // pickup column a person placed it in, or as a running workchain's ready
+  // step. Null is a ticket nobody placed: a column it was born in, or one
+  // from before this was recorded.
   `alter table tasks
      add column if not exists placed_by text,
      add column if not exists placed_by_kind text,
@@ -4843,21 +4845,26 @@ alter table tasks drop column if exists conversation_id`,
   `alter table tasks drop constraint if exists tasks_placed_by_kind_check`,
   `alter table tasks add constraint tasks_placed_by_kind_check
      check (placed_by_kind is null or placed_by_kind in ('person', 'agent', 'workchain'))`,
-  // The tickets already on the boards: a column a person moved the ticket
-  // into is a person's placement. Assignment's promotion wrote the person's
-  // name with "(promoted by assignment)", so those lines are not; nor are
-  // Talaria's own or an agent's. Anything else stays null and is not picked
-  // up until a person places it again.
-  `update tasks t set placed_by = a.actor, placed_by_kind = 'person', placed_at = a.created_at
+  // The tickets already on the boards: a column a SIGNED-IN PERSON moved the
+  // ticket into is that person's placement, recorded by their user id (the
+  // one form placed_by holds). The board wrote a person's moves under their
+  // email, review cards and approvals under the user id: both resolve to a
+  // users row. Anything that does not — Talaria, an agent (current or long
+  // gone), a "user" or "reviewer" fallback — is not a person's placement,
+  // and neither is assignment's promotion. The line must name the ticket's
+  // CURRENT column exactly (or that column with a parenthesised note), so a
+  // key that merely starts with it does not count. Everything else stays
+  // null and is not picked up until a person places it again.
+  `update tasks t set placed_by = u.id::text, placed_by_kind = 'person', placed_at = a.created_at
      from (select distinct on (task_id) task_id, actor, description, created_at
              from task_activity where type = 'status'
             order by task_id, created_at desc) a
+     join users u on u.email = a.actor or u.id::text = a.actor
     where a.task_id = t.id
       and t.placed_by_kind is null
-      and a.description like ('moved to ' || t.status || '%')
-      and a.description not like '%(promoted by assignment)%'
-      and a.actor <> 'talaria'
-      and not exists (select 1 from agent_defs d where d.model = a.actor)`,
+      and (a.description = 'moved to ' || t.status
+           or starts_with(a.description, 'moved to ' || t.status || ' ('))
+      and a.description not like '%(promoted by assignment)%'`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

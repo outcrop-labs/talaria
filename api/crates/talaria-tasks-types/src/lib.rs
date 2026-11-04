@@ -138,7 +138,15 @@ pub struct Task {
 #[derive(Debug, Clone)]
 pub struct TaskActor {
     pub kind: TaskActorKind,
+    /// Who the activity line names: a person's email or name, an agent's
+    /// model, or the platform's own name.
     pub id: String,
+    /// The signed-in person's user id — set only by [`TaskActor::person`],
+    /// which only the routes call, from the request's session. A ticket's
+    /// column moves for a person only when this is present (talaria-tasks
+    /// placement.rs records it as `placed_by`), so a crate that writes
+    /// `TaskActor::human("talaria")` can edit fields but moves nothing.
+    user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,23 +157,44 @@ pub enum TaskActorKind {
 }
 
 impl TaskActor {
+    /// A person named on the record but not signed in here — field edits
+    /// only. A column move needs [`TaskActor::person`].
     pub fn human(id: impl Into<String>) -> Self {
         TaskActor {
             kind: TaskActorKind::Human,
             id: id.into(),
+            user_id: None,
+        }
+    }
+    /// THE SIGNED-IN PERSON, built by a route from its session: `user_id` is
+    /// the session's user id, `label` what the activity line shows. The only
+    /// actor whose write may move a ticket's column. `bun run check`
+    /// (`ticket-status-one-writer`) allows this constructor only in the route
+    /// crates and inbox-focus, which build it from the request's session.
+    pub fn person(user_id: impl Into<String>, label: impl Into<String>) -> Self {
+        TaskActor {
+            kind: TaskActorKind::Human,
+            id: label.into(),
+            user_id: Some(user_id.into()),
         }
     }
     pub fn agent(model: impl Into<String>) -> Self {
         TaskActor {
             kind: TaskActorKind::Agent,
             id: model.into(),
+            user_id: None,
         }
     }
     pub fn platform(id: impl Into<String>) -> Self {
         TaskActor {
             kind: TaskActorKind::Platform,
             id: id.into(),
+            user_id: None,
         }
+    }
+    /// The signed-in person's user id, when this actor is one.
+    pub fn user_id(&self) -> Option<&str> {
+        self.user_id.as_deref()
     }
 }
 

@@ -224,7 +224,10 @@ pub async fn put(
             // tickets into a surviving column of the same category, one
             // update_task each, and the person who reshaped the column owns
             // those moves.
-            let actor = actor_of_user(user.email.as_deref(), user.name.as_deref());
+            let actor = talaria_tasks::TaskActor::person(
+                user.id.clone(),
+                actor_of_user(user.email.as_deref(), user.name.as_deref()),
+            );
             let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
             match update_status(&deps, &id, &status_key, &patch, &actor).await {
                 Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
@@ -289,7 +292,10 @@ pub async fn delete(
     // The actor is threaded through because the reassignment lands on each
     // ticket's activity log — deleting a column moves work, and the person
     // who did it owns that move.
-    let actor = actor_of_user(user.email.as_deref(), user.name.as_deref());
+    let actor = talaria_tasks::TaskActor::person(
+        user.id.clone(),
+        actor_of_user(user.email.as_deref(), user.name.as_deref()),
+    );
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     Ok(
         match delete_status(&deps, &id, &status_key, &reassign_to, &actor).await {

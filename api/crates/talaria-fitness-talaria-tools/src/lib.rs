@@ -346,7 +346,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "triage_ticket",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Triage a ticket: adjust priority, effort, labels, description, due date. Change its status ONLY when a person asked you to move it — a ticket never moves as a side effect of your work. While your work session is live on the ticket a status change is refused (403): report_outcome records the result and a person moves it. Otherwise a requested move goes FORWARD only: to the active column (in_progress by default), to blocked, or to review (quality_review by default). Restarting a blocked ticket, taking anything out of quality_review, moving a ticket into a column agents pick up from, and any write at all to a ticket a person has taken off the table — closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD — are a person's call and return 403. Assigning and marking done are human-only.",
+            description: "Triage a ticket: adjust priority, effort, labels, description, due date. You never change a ticket's status yourself: every status change you send is refused (403). When a person asks you to move a ticket, send the status anyway — in their chat the refusal becomes an approval card, and their click moves it (that is the only way an agent's move happens, and the only way it can start an agent's work). During your own work session on the ticket, record the result with report_outcome instead; a person moves it. Any write at all to a ticket a person has taken off the table — closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD — returns 403 too. Assigning and marking done are human-only.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -361,7 +361,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "color": one_of(TICKET_COLORS, "Color-code the ticket (shows on cards + gantt)"),
                     "status": one_of(
                         &["in_progress", "blocked", "quality_review"],
-                        "Only when a person asked you to move the ticket. Forward only, never from blocked, never into a column agents pick up from, and never during your own work session on the ticket. blocked and quality_review are one-way: a person moves it after that.",
+                        "Only when a person asked you to move the ticket — the call is refused and, in their chat, becomes the approval card they click to make the move.",
                     ),
                 },
                 "required": ["taskId"],
