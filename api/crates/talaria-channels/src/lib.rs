@@ -290,6 +290,23 @@ pub struct MemberChannel {
     /// DMs only: the agents seated in it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agents: Option<Vec<String>>,
+    /// The caller's own notify level and timed mute here — the channel
+    /// detail's `notify`, on the listing so a rail row's menu can show and
+    /// change it without a read per row. Last, after everything above.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify: Option<ChannelNotifyView>,
+}
+
+/// `{level, mutedUntil, settable}`, as `GET /api/channels/{id}` serves it:
+/// `level` is what applies (a NULL stored level is the kind's default),
+/// `mutedUntil` is null once a mute has run out, and `settable` is false when
+/// the caller has no member row of their own to hold one.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelNotifyView {
+    pub level: String,
+    pub muted_until: Option<String>,
+    pub settable: bool,
 }
 
 /// The agent listing and the elevated view — the bare channel columns.
@@ -358,6 +375,9 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
         i32,
         Option<String>,
         Option<Vec<String>>,
+        bool,
+        Option<String>,
+        Option<i64>,
     );
     let rows: Vec<MemberRow> = sqlx::query_as(concat!(
         "select c.id::text, c.name, c.topic, c.kind, coalesce(m.role, 'member'), \
@@ -380,7 +400,10 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
                where om.channel_id = c.id and om.user_id <> $1::uuid) end, \
              case when c.kind = 'dm' then array( \
                select ca.agent_model from channel_agents ca \
-               where ca.channel_id = c.id order by ca.agent_model) end \
+               where ca.channel_id = c.id order by ca.agent_model) end, \
+             m.user_id is not null, m.notify_level, \
+             case when m.muted_until > now() \
+                  then (trunc(extract(epoch from m.muted_until) * 1000))::bigint end \
          from channels c \
          left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
          join users self on self.id = $1::uuid \
@@ -415,7 +438,17 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
                 unread,
                 members_json,
                 agents,
+                settable,
+                notify_level,
+                muted_ms,
             )| {
+                let notify = Some(ChannelNotifyView {
+                    level: talaria_notify::ChannelLevel::of(notify_level.as_deref(), &kind)
+                        .as_str()
+                        .to_string(),
+                    muted_until: muted_ms.map(epoch_ms_to_iso),
+                    settable,
+                });
                 MemberChannel {
                     id,
                     name,
@@ -444,6 +477,7 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
                             .collect()
                     }),
                     agents,
+                    notify,
                 }
             },
         )
@@ -536,6 +570,51 @@ pub async fn mark_channel_read(
     .execute(pg)
     .await?;
     Ok(())
+}
+
+/// MARK UNREAD: put the member's channel cursor back to just before the
+/// newest message on the main feed that counts as unread for them (complete,
+/// someone else's — the listing's own not-self clause), so the channel reads
+/// one unread again. The one deliberate step back from `mark_channel_read`,
+/// on the member's own row. `None` when the caller has no row of their own
+/// (a room whose roster is a board's or a team's holds no cursor to move);
+/// `Some(false)` when nothing on the feed could count, which writes nothing.
+/// A thread reply past the new cursor that the reader's thread cursor does
+/// not cover counts again too, exactly as it did before they read the feed.
+pub async fn mark_channel_unread(
+    pg: &PgPool,
+    channel_id: &str,
+    user_id: &str,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row: Option<(Option<i32>,)> = sqlx::query_as(
+        "select (select max(msg.seq) from channel_messages msg \
+                  where msg.channel_id = m.channel_id and msg.status = 'complete' \
+                    and msg.thread_root_id is null \
+                    and not (msg.author_type = 'user' \
+                      and msg.author = coalesce(self.email, self.name, 'user'))) \
+         from channel_members m join users self on self.id = m.user_id \
+         where m.channel_id = $1::uuid and m.user_id = $2::uuid",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    let Some((newest,)) = row else {
+        return Ok(None);
+    };
+    let Some(newest) = newest else {
+        return Ok(Some(false));
+    };
+    sqlx::query(
+        "update channel_members set last_read_seq = $3 \
+         where channel_id = $1::uuid and user_id = $2::uuid",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(newest - 1)
+    .execute(pg)
+    .await?;
+    Ok(Some(true))
 }
 
 /// Advance the reader's cursor on ONE thread (`channel_thread_reads`) — the
@@ -2381,6 +2460,7 @@ mod tests {
             peer: None,
             members: None,
             agents: None,
+            notify: None,
         };
         assert_eq!(
             serde_json::to_string(&ch).unwrap(),
@@ -2407,6 +2487,7 @@ mod tests {
                 email: None,
             }]),
             agents: Some(vec!["atlas-operations".into()]),
+            notify: None,
         };
         assert_eq!(
             serde_json::to_string(&ch).unwrap(),

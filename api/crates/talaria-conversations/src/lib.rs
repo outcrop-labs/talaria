@@ -523,6 +523,46 @@ pub async fn mark_conversation_read(
     Ok(())
 }
 
+/// MARK UNREAD: put the reader's cursor back to just before the thread's
+/// newest turn that counts as unread for them — the agent's, or another
+/// person's — so the thread reads one unread again. The read cursor only ever
+/// advances (`mark_conversation_read`); this is the one deliberate step back,
+/// and it is the reader's own row. Answers whether it moved: false when the
+/// thread holds nothing that could count (an empty thread, or only the
+/// reader's own words), which writes nothing.
+pub async fn mark_conversation_unread(
+    pg: &PgPool,
+    conversation_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    // The same predicate the list's unread count uses, so the step back lands
+    // exactly one countable turn behind.
+    let newest: Option<i32> = sqlx::query_scalar(
+        "select max(m.seq) from messages m \
+         where m.conversation_id = $1::uuid and m.status = 'complete' \
+           and (m.role = 'assistant' or m.author_user_id is distinct from $2::uuid)",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_one(pg)
+    .await?;
+    let Some(newest) = newest else {
+        return Ok(false);
+    };
+    sqlx::query(
+        "insert into conversation_reads (conversation_id, user_id, last_read_seq) \
+         values ($1::uuid, $2::uuid, $3) \
+         on conflict (conversation_id, user_id) do update \
+           set last_read_seq = excluded.last_read_seq, updated_at = now()",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .bind(newest - 1)
+    .execute(pg)
+    .await?;
+    Ok(true)
+}
+
 /// The thread's highest landed seq — the "mark to latest" arm of the read
 /// route, for callers who know WHICH thread but haven't loaded its seqs.
 /// An empty thread reads as 0, which the counting floor (-1) treats as

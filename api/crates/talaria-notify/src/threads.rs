@@ -433,6 +433,13 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
         if reply_seq <= cursor {
             continue; // they have read past this reply — still looking
         }
+        // A person who muted this agent's DMs still gets the row, quietly
+        // (agent_mutes.rs): it counts in-app and nothing rings.
+        let quiet = crate::agent_mutes::agent_dm_muted(&deps.pg, &member, &agent_model).await;
+        let meta = NotifyMeta {
+            quiet,
+            ..meta.clone()
+        };
         if let Err(e) = add_notification_with(deps, &member, &input, &meta).await {
             tracing::error!("[notifications] agent-reply row for {member} failed: {e}");
         }

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-18 routes.
+20 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -21,12 +21,17 @@
 | [`/api/join`](#apijoin) | GET | `public` |
 | [`/api/me`](#apime) | GET | `session` |
 | [`/api/me`](#apime) | PUT | `session` |
+| [`/api/me/agent-mutes`](#apimeagent-mutes) | GET | `session` |
+| [`/api/me/agent-mutes`](#apimeagent-mutes) | PUT | `session` |
 | [`/api/me/assistant`](#apimeassistant) | GET | `session` |
 | [`/api/me/assistant`](#apimeassistant) | POST | `session` |
 | [`/api/me/assistant`](#apimeassistant) | PATCH | `session` |
 | [`/api/me/events`](#apimeevents) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | PUT | `session` |
+| [`/api/me/pins`](#apimepins) | GET | `session` |
+| [`/api/me/pins`](#apimepins) | POST | `session` |
+| [`/api/me/pins`](#apimepins) | DELETE | `session` |
 | [`/api/me/presence`](#apimepresence) | GET | `session` |
 | [`/api/me/presence`](#apimepresence) | PUT | `session` |
 | [`/api/me/sent`](#apimesent) | GET | `session` |
@@ -188,6 +193,28 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me.rs`](../../api/c
 | `statusText` | `string? nullable(100)` |  |
 | `title` | `string? nullable(80)` |  |
 
+## `/api/me/agent-mutes`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/me_agent_mutes.rs`](../../api/crates/talaria-routes-comms/src/comms/me_agent_mutes.rs)
+
+> /api/me/agent-mutes. The caller's timed mutes of an agent's direct
+> messages — its replies in their threads and its own check-ins
+> (talaria_notify::agent_mutes). GET → { mutes: [{ agentModel, mutedUntil }] },
+> only the mutes that still hold. PUT { agentModel, mutedUntil: ISO|null } →
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{mutes}` | 200 | — |
+| PUT | `session` | [body](#put-apimeagent-mutes-body) | `{ok, agentModel, mutedUntil}` | 200, 400 | — |
+
+### PUT `/api/me/agent-mutes` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `agentModel` | `string(1)` |  |
+| `mutedUntil` | `string? nullable` |  |
+
 ## `/api/me/assistant`
 
 Source: [`api/crates/talaria-routes-integrations/src/account/me_assistant.rs`](../../api/crates/talaria-routes-integrations/src/account/me_assistant.rs)
@@ -253,6 +280,34 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_mcp.rs`](../../a
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `serverId` | `uuid` |  |
+
+## `/api/me/pins`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/me_pins.rs`](../../api/crates/talaria-routes-comms/src/comms/me_pins.rs)
+
+> /api/me/pins. The caller's Comms rail pins — what leads their rail, in the
+> order they pinned it. GET → { pins: ["channel:<id>" | "agent:<model>" |
+> "thread:<id>", …] }, oldest first. POST { key } pins one (idempotent: a key
+> already pinned keeps its place) → { ok: true }; a person holds at most 200,
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{pins}` | 200 | — |
+| POST | `session` | [body](#post-apimepins-body) | `{ok}` | 200, 400, 409 | — |
+| DELETE | `session` | [body](#delete-apimepins-body) | `{ok}` | 200, 400 | — |
+
+### POST `/api/me/pins` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `key` | `string(1)` |  |
+
+### DELETE `/api/me/pins` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `key` | `string(1)` |  |
 
 ## `/api/me/presence`
 

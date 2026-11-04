@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-34 routes.
+36 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -36,6 +36,7 @@
 | [`/api/channels/{id}/teams`](#apichannelsidteams) | POST | `session` |
 | [`/api/channels/{id}/teams`](#apichannelsidteams) | DELETE | `session` |
 | [`/api/channels/{id}/typing`](#apichannelsidtyping) | POST | `session` |
+| [`/api/channels/{id}/unread`](#apichannelsidunread) | POST | `session` |
 | [`/api/chat`](#apichat) | POST | `session` |
 | [`/api/chat/chips/approvals/{id}`](#apichatchipsapprovalsid) | POST | `session` |
 | [`/api/chat/chips/resolve`](#apichatchipsresolve) | POST | `session` |
@@ -62,6 +63,7 @@
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | DELETE | `session` |
 | [`/api/conversations/{id}/todo`](#apiconversationsidtodo) | GET | `session` |
+| [`/api/conversations/{id}/unread`](#apiconversationsidunread) | POST | `session` |
 | [`/api/dms`](#apidms) | POST | `session` |
 
 ## `/api/channels`
@@ -370,6 +372,20 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_typing.rs`](../.
 | :--- | :--- | :--- |
 | `typing` | `bool?` |  |
 | `threadRootId` | `uuid` |  |
+
+## `/api/channels/{id}/unread`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_unread.rs`](../../api/crates/talaria-routes-comms/src/comms/channels_id_unread.rs)
+
+> /api/channels/{id}/unread.
+> POST → mark the channel (or DM, or relay) unread for the caller: their
+> channel cursor steps back to just before the newest message on the main
+> feed that counts for them (complete, someone else's), so its badge reads 1
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{ok, marked}` | 200, 403, 409 | — |
 
 ## `/api/chat`
 
@@ -758,6 +774,20 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_todo.rs`](.
 | GET | `session` | — | `{items, summary}` | 200, 403 | — |
 
 **GET** — The steps the agent is working through on this conversation.
+
+## `/api/conversations/{id}/unread`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_unread.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_unread.rs)
+
+> /api/conversations/{id}/unread.
+> POST → mark the thread unread for the caller: their read cursor steps back
+> to just before the thread's newest turn that counts for them (the agent's,
+> or another person's), so its unread pill reads 1 again. → { ok,
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{ok, marked}` | 200, 403 | — |
 
 ## `/api/dms`
 
