@@ -13,6 +13,7 @@ import { compose, waitForPostgres, worktreeComposeFiles } from '../compose'
 import { envValue } from '../envfile'
 import { NAME_RE, portTaken } from '../paths'
 import { containerProject, primaryContainer, refuseSideStackContainers, worktreeStackNames } from '../stack'
+import { seedCheckout } from '../targetseed'
 
 /** The shared port slot: first c in 1..89 with app/api/pg/redis
  *  (53xx/54xx/56xx/65xx) all free, so any number of worktrees run at once
@@ -345,7 +346,10 @@ export const CLEAR_SEEDED_GATEWAY_PORTS =
   "do $$ begin if to_regclass('public.agent_defs') is not null then " +
   'update agent_defs set gateway_port = null where gateway_port is not null; end if; end $$;'
 
-export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promise<number> {
+/** How `talaria worktree` fills the new checkout's Rust build cache. */
+export type WorktreeSeedOpts = { seed?: boolean; seedFrom?: string; desktop?: boolean }
+
+export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD', seedOpts: WorktreeSeedOpts = {}): Promise<number> {
   const root = ctx.root
   if (!NAME_RE.test(name)) ctx.log.die('name must be lowercase-kebab')
   const wt = join(root, '..', `talaria-${name}`)
@@ -629,6 +633,20 @@ TALARIA_GATEWAY_PORT_BASE=${slot.gatewayBase}
     }
   }
 
+  // The Rust build cache, last: it is an optimisation, so a seed that cannot
+  // happen warns and the stack above is already whole. Every worktree used to
+  // start with an empty api/target and pay a cold build, writing its own copy
+  // of the same third-party artifacts (four agent worktrees held 15-107 GiB
+  // each). The seed reflinks the registry crates' units from the best idle
+  // checkout and leaves every workspace crate to build from this checkout's
+  // sources (src/targetseed.ts says why only those).
+  ctx.log.say('Rust build cache')
+  if (seedOpts.seed === false) {
+    ctx.log.skip('--no-seed: the first build is cold')
+  } else {
+    await seedCheckout(ctx, wt, { from: seedOpts.seedFrom ? resolve(ctx.cwd ?? root, seedOpts.seedFrom) : undefined, desktop: seedOpts.desktop })
+  }
+
   ctx.log.raw(`
 Worktree "${name}" ready — fully isolated from main.
 
@@ -656,10 +674,21 @@ export const worktreeCommand: Leaf = {
   kind: 'leaf',
   name: 'worktree',
   summary: 'spin up an isolated worktree stack (own DB seeded from main)',
-  usage: 'talaria worktree <name> [base-ref]',
+  usage: 'talaria worktree <name> [base-ref] [--no-seed] [--seed-from <checkout>] [--desktop]',
   positionals: { name: 'name', required: true, multiple: true, desc: 'then optionally a base ref (default: HEAD)' },
+  flags: [
+    { name: 'no-seed', kind: 'bool', desc: "start with an empty api/target (a cold build) instead of reflinking an idle checkout's registry crates" },
+    { name: 'seed-from', kind: 'value', desc: 'the checkout whose target to seed from (default: the idle one whose Cargo.lock shares the most entries)' },
+    { name: 'desktop', kind: 'bool', desc: 'seed desktop/src-tauri/target too' },
+  ],
   run: (ctx, args) => {
     if (args.positionals.length > 2) ctx.log.die(`unexpected argument \`${args.positionals[2]}\``)
-    return runWorktree(ctx, args.positionals[0]!, args.positionals[1] ?? 'HEAD')
+    const seedFrom = typeof args.flags['seed-from'] === 'string' ? args.flags['seed-from'] : undefined
+    if (args.flags['no-seed'] === true && seedFrom) ctx.log.die('--no-seed and --seed-from contradict each other')
+    return runWorktree(ctx, args.positionals[0]!, args.positionals[1] ?? 'HEAD', {
+      seed: args.flags['no-seed'] !== true,
+      seedFrom,
+      desktop: args.flags.desktop === true,
+    })
   },
 }

@@ -200,6 +200,15 @@ export const TOOL_FIELDS: Record<string, { label: string; description: string; f
       { name: 'priority', label: 'Priority', type: 'string' },
     ],
   },
+  move_ticket: {
+    label: 'Move to another board',
+    description: 'Move a ticket to another board. It is re-keyed there; labels and assignees the board lacks are dropped.',
+    fields: [
+      { name: 'taskId', label: 'Ticket', type: 'string', required: true },
+      { name: 'boardId', label: 'Board', type: 'string', required: true },
+      { name: 'status', label: 'Status', type: 'string' },
+    ],
+  },
   comment: {
     label: 'Comment',
     description: 'Leave a comment on a ticket.',

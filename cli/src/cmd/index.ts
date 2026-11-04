@@ -13,11 +13,12 @@ import { resetCommand } from './reset'
 import { restoreCommand } from './restore'
 import { serviceCommand } from './service'
 import { setupCommand } from './setup'
+import { seedTargetCommand } from './seed-target'
 import { worktreeCommand } from './worktree'
 
 export const tree: Group = {
   kind: 'group',
   name: 'talaria',
   summary: 'Talaria — every way to drive the repo, from one place',
-  children: [setupCommand, devCommand, worktreeCommand, cleanupCommand, resetCommand, boxCommand, appCommand, deployCommand, serviceCommand, backupCommand, restoreCommand],
+  children: [setupCommand, devCommand, worktreeCommand, seedTargetCommand, cleanupCommand, resetCommand, boxCommand, appCommand, deployCommand, serviceCommand, backupCommand, restoreCommand],
 }

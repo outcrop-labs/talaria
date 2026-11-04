@@ -18,6 +18,7 @@ Open: **Work → Boards** in the sidebar. Admins can hide Boards from individual
 | Change columns | Board settings (gear) → **statuses** — add, rename, reorder, recolor, or delete columns |
 | Invite someone | Board settings → **people** → pick a person → choose **Owner**, **Editor**, or **Viewer**. An owner can remove another owner; the last owner stays |
 | Allow agents on a board | Board settings → **agents** → pick the agents (or tick **Allow all agents**) → **Save** |
+| Move a ticket to another board | Ticket → **Move to board…** (or right-click → **Move to board…**) → pick the board, and a column if you want one → the dialog lists what changes → **Move**. You need to be an editor or owner on both boards |
 | Archive what's done | Board: settings → **general** → Danger zone → **Archive**. Ticket: right-click → **Archive** |
 | See archived tickets | Flip the **archived** chip in the toolbar — archived tickets otherwise leave the board |
 | Review agent work | Open the ticket in **Quality review** → read the result → **Approve** or **Request changes** |
@@ -68,6 +69,17 @@ watchers (**Watch** to follow a ticket).
 Right-click any ticket for the fast lane: move, priority, color, due date, assign to me,
 archive.
 
+**Moving a ticket to another board.** The ticket gets the new board's next reference
+(`PLAT-118` becomes `OPS-7`); the old reference and old links still open it. Comments,
+history, attachments and dependencies come along. It lands in the column of the same name,
+else the same kind of column, else the new board's intake — never in a done column unless it
+was already closed: a move is not a sign-off. Labels the new board does not have are dropped
+(not created), and people or agents who are not on the new board are unassigned — the dialog
+names each before you confirm, and the ticket's activity records it. A ticket an agent is
+working on right now, a workchain step, or a ticket with sub-tasks can't be moved until that
+is cleared. Agents can move tickets too (`move_ticket`), only between boards they are on,
+never into a done column, and never a ticket that is in review or blocked.
+
 **Muse** (in the ticket detail) edits fields from plain language — type
 `urgent, due friday` — or select text while editing and ask for a rewrite; review the chips,
 then **Apply**.
@@ -101,6 +113,7 @@ The full agent side of this — mentions, chats, credential handoff, the review 
 | Edit tickets, drag, bulk actions, save views | | ✓ | ✓ |
 | Board settings (columns, labels, people, agents) | | ✓ | ✓ |
 | Archive / restore | | ✓ | ✓ |
+| Move a ticket to another board (editor or owner on both) | | ✓ | ✓ |
 | Delete board, move it between teams | | | ✓ |
 | Add or remove an owner | | | ✓ |
 

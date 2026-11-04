@@ -34,11 +34,12 @@ pub async fn resolve_task_path(pg: &sqlx::PgPool, raw: &str) -> Result<String, R
     }
 }
 
-// Tasks, comments, dependencies, review, usage, watchers; workflows.
+// Tasks, comments, dependencies, the board move, review, usage, watchers; workflows.
 pub mod tasks_id;
 pub mod tasks_id_channel;
 pub mod tasks_id_comments;
 pub mod tasks_id_dependencies;
+pub mod tasks_id_move;
 pub mod tasks_id_review;
 pub mod tasks_id_usage;
 pub mod tasks_id_watchers;

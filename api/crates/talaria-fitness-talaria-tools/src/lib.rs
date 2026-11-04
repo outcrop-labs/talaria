@@ -370,6 +370,24 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             needs_google: false,
         },
         SandboxTool {
+            name: "move_ticket",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Tickets,
+            description: "Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and assignees who are not on it are unassigned — the result's moved field names both, so tell the person what changed. preview: true answers the same moved field without moving anything. A ticket that is closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD, in review, or blocked is a person's to move (403); so is moving one into a closed column or into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "taskId": str_schema("Ticket id"),
+                    "boardId": str_schema("The board to move it to — an id from list_boards"),
+                    "status": str_schema("A status key on the DESTINATION board. Leave it out and the move maps the ticket's column for you. Never a done column: a move does not close a ticket."),
+                    "preview": bool_schema("true: answer what would change (new ref, column, dropped labels, unassigned) and move nothing"),
+                },
+                "required": ["taskId", "boardId"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
             name: "comment",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
@@ -1806,9 +1824,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 83);
+        assert_eq!(TALARIA_TOOLS.len(), 84);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 83);
+        assert_eq!(names.len(), 84);
     }
 
     #[test]
