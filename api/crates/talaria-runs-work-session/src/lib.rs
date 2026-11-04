@@ -377,6 +377,8 @@ pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 /// run id, which is the session id (`session_for_turn`).
 pub type SessionMessagesFn =
     Arc<dyn Fn(String, String) -> BoxFuture<'static, Option<Vec<Value>>> + Send + Sync>;
+/// The same rows plus the ones a compaction archived.
+pub type SessionArchiveFn = SessionMessagesFn;
 
 /// The two destinations the dispatch prompt may name. From `status_meta`, so
 /// they come from `placeable` like every other destination in the product.
@@ -406,6 +408,7 @@ pub struct WorkSessionDeps {
     /// The session's transcript, read once per recorded turn to put the
     /// ledger's step rows in the order the agent actually took them.
     pub session_messages: SessionMessagesFn,
+    pub session_archive: SessionArchiveFn,
 }
 
 /// The real edges. `state` carries the pool every dep reads and the harness
@@ -474,6 +477,11 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
                 talaria_gateway::fleet_chat::session_messages(&agent_model, &run_id).await
             })
         }),
+        session_archive: Arc::new(|agent_model, run_id| {
+            Box::pin(async move {
+                talaria_gateway::fleet_chat::session_messages_archived(&agent_model, &run_id).await
+            })
+        }),
     }
 }
 
@@ -486,18 +494,15 @@ pub fn present_call_ids(rows: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// After turn `turn` is recorded, read the session once and retire the step
-/// rows whose boundary a compaction took out of the live transcript. The
-/// ledger's `seq` is read first, so a frame that lands during the read is
-/// not judged by a transcript that could not hold it. Best-effort by
-/// contract: a transcript the container cannot give, or one too long to read
-/// whole, changes nothing. Nothing here fails the step.
-async fn retire_compacted_session_steps(
-    d: &WorkSessionDeps,
-    agent_model: &str,
-    run_id: &str,
-    turn: i64,
-) {
+/// After turn `turn` is recorded, judge the run's step rows by the session's
+/// own transcript: a step the live read holds keeps its standing, one only
+/// the archived read holds was compacted away, one neither holds was never
+/// a turn of the session's own. The ledger's `seq` is read first, so a frame
+/// that lands during the reads is not judged by a transcript that could not
+/// hold it. Best-effort by contract: a transcript the container cannot give,
+/// or one too long to read whole, changes nothing. Nothing here fails the
+/// step.
+async fn verify_session_steps(d: &WorkSessionDeps, agent_model: &str, run_id: &str, turn: i64) {
     let through = match talaria_runs_store::checkpoint_seq(&d.state.pg, run_id).await {
         Ok(seq) => seq,
         Err(e) => {
@@ -505,21 +510,26 @@ async fn retire_compacted_session_steps(
             return;
         }
     };
-    let Some(rows) = (d.session_messages)(agent_model.to_string(), run_id.to_string()).await else {
+    let (live, archived) = tokio::join!(
+        (d.session_messages)(agent_model.to_string(), run_id.to_string()),
+        (d.session_archive)(agent_model.to_string(), run_id.to_string()),
+    );
+    let (Some(live), Some(archived)) = (live, archived) else {
         tracing::debug!(
             "{LOG} {run_id}: transcript not readable at turn {turn}; steps keep their standing"
         );
         return;
     };
-    let present = present_call_ids(&rows);
-    match talaria_runs_store::retire_compacted_steps(&d.state.pg, run_id, through, &present).await {
+    let live = present_call_ids(&live);
+    let archived = present_call_ids(&archived);
+    match talaria_runs_store::verify_steps(&d.state.pg, run_id, through, &live, &archived).await {
         Ok(retired) if retired > 0 => {
             tracing::info!(
-                "{LOG} {run_id}: {retired} step row(s) compacted out of the transcript by turn {turn}"
+                "{LOG} {run_id}: {retired} step row(s) retired by the transcript at turn {turn}"
             );
         }
         Ok(_) => {}
-        Err(e) => tracing::warn!("{LOG} {run_id}: compaction check failed at turn {turn}: {e}"),
+        Err(e) => tracing::warn!("{LOG} {run_id}: transcript check failed at turn {turn}: {e}"),
     }
 }
 
@@ -1490,7 +1500,7 @@ pub async fn work_session_step(
                     .await;
                 }
             }
-            retire_compacted_session_steps(d, &agent_model, &ctx.run.id, *turn).await;
+            verify_session_steps(d, &agent_model, &ctx.run.id, *turn).await;
             return Ok(StepResult::Next {
                 checkpoint: json!(WorkSessionCheckpoint::Send {
                     turn: turn + 1,
@@ -2286,6 +2296,7 @@ mod tests {
             }),
             now: Arc::new(|| 1_788_045_420_000),
             session_messages: Arc::new(|_agent, _run| Box::pin(async { None })),
+            session_archive: Arc::new(|_agent, _run| Box::pin(async { None })),
         };
         (deps, Recorder { lines, recent })
     }

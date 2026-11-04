@@ -1125,27 +1125,35 @@ pub async fn record_step(
 
 const COMPACTED_REASON: &str = "compacted: the session no longer holds this step's conversation row \
 live; Hermes keeps it archived (compacted = 1)";
+const FOREIGN_REASON: &str = "not in this run's transcript: the session holds no row for this step's \
+tool call, live or archived, so it was not a turn of the session's own";
 
-/// The step rows up to `through_seq` whose boundary row the session no longer
-/// holds live can no longer be cut to, so they say so. `present` is every
-/// tool call id the live transcript still carries; the bound keeps a frame
-/// that landed after the transcript was read from being judged by it. Rows
-/// already unrestorable keep their own reason. Answers how many rows moved.
-pub async fn retire_compacted_steps(
+/// Judge the step rows up to `through_seq` by the run's own transcript. A
+/// step whose boundary call the live transcript still holds keeps its
+/// standing; one the session holds only archived was compacted away; one it
+/// holds nowhere was never this session's own step. The bound keeps a frame
+/// that landed after the transcript was read from being judged by it, and
+/// rows already unrestorable keep their own reason. Answers how many rows
+/// moved.
+pub async fn verify_steps(
     pg: &PgPool,
     run_id: &str,
     through_seq: i64,
-    present: &[String],
+    live: &[String],
+    archived: &[String],
 ) -> Result<u64, sqlx::Error> {
     let done = sqlx::query(
-        "update run_checkpoints set restorable = false, unrestorable_reason = $4 \
+        "update run_checkpoints set restorable = false, \
+           unrestorable_reason = case when tool_call_id = any($4::text[]) then $5 else $6 end \
          where run_id = $1::uuid and kind = 'step' and restorable and seq <= $2 \
            and tool_call_id <> all($3::text[])",
     )
     .bind(run_id)
     .bind(through_seq)
-    .bind(present)
+    .bind(live)
+    .bind(archived)
     .bind(COMPACTED_REASON)
+    .bind(FOREIGN_REASON)
     .execute(pg)
     .await?;
     Ok(done.rows_affected())

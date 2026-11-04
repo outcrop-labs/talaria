@@ -207,10 +207,20 @@ mod._last_boundary.pop(other)
 pre(history, sid=other)
 assert "commit" in snapshots()[7] and "reason" not in snapshots()[7], snapshots()[7]
 assert git(os.path.join(w2, "work"), "rev-parse", f"refs/talaria/ckpt/{other}/c3") == snapshots()[7]["commit"]
+# A turn that is not the session's own, such as Hermes's post-turn background
+# review on the same session object, carries another task id: it is not a
+# step of this run and reports nothing.
+mod._last_boundary.pop(session, None)
+mod.on_pre_api_request(session_id=session, task_id="7991ecb1-0000-4000-8000-000000000000", turn_id=f"{session}:7991ecb1-0000-4000-8000-000000000000:309793a7", api_request_id="x", conversation_history=history)
+assert len(snapshots()) == 8, "another task's turn must not report"
+mod.on_pre_api_request(session_id=session, task_id=session, turn_id=f"{session}:{session}:0a0b0c0d", api_request_id="x", conversation_history=history)
+assert len(snapshots()) == 9, "the session's own turn reports"
+mod._last_boundary.pop(session, None)
+
 # Cron turns and sessions with no id report nothing.
 mod.on_pre_api_request(session_id=session, platform="cron", conversation_history=history)
 mod.on_pre_api_request(session_id="", conversation_history=history)
-assert len(snapshots()) == 8
+assert len(snapshots()) == 9
 
 # A job_status listing the agent did not ask about by id binds nothing, even
 # when it names exactly one started job: that job may be another session's.

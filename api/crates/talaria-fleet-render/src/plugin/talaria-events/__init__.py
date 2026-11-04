@@ -783,12 +783,19 @@ def on_pre_api_request(*, platform: str = "", **kw: Any) -> None:
 def _report_step(
     *,
     session_id: str = "",
+    task_id: str = "",
     turn_id: str = "",
     api_request_id: str = "",
     conversation_history: Any = None,
     **_: Any,
 ) -> None:
     if not session_id:
+        return
+    # A turn of the session's own carries the session as its task. Hermes's
+    # post-turn background review runs on the same session object under
+    # another task id, and its tool calls never enter the session's
+    # transcript: they are not steps of this run.
+    if task_id and task_id != session_id:
         return
     batch = _trailing_batch(conversation_history)
     if not batch:

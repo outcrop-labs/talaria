@@ -1508,7 +1508,14 @@ pub async fn session_overview(agent_model: &str, conversation_id: &str) -> Optio
 /// judges rows by their absence must not judge them by a transcript it did
 /// not read whole. A short page is the end.
 pub async fn session_messages(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
-    session_rows(agent_model, session_id, 500, 8).await
+    session_rows(agent_model, session_id, 500, 8, false).await
+}
+
+/// The same rows plus the ones a compaction archived, which the live read
+/// leaves out: what a caller needs to tell a step that was compacted away
+/// from one that was never the session's.
+pub async fn session_messages_archived(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
+    session_rows(agent_model, session_id, 500, 8, true).await
 }
 
 async fn session_rows(
@@ -1516,9 +1523,10 @@ async fn session_rows(
     session_id: &str,
     page: usize,
     pages: usize,
+    archived: bool,
 ) -> Option<Vec<Value>> {
     let entry = agent_entry(agent_model).await?;
-    session_rows_from(&entry, session_id, agent_model, page, pages).await
+    session_rows_from(&entry, session_id, agent_model, page, pages, archived).await
 }
 
 async fn session_rows_from(
@@ -1527,12 +1535,18 @@ async fn session_rows_from(
     agent_model: &str,
     page: usize,
     pages: usize,
+    archived: bool,
 ) -> Option<Vec<Value>> {
     let mut rows = Vec::new();
     for n in 0..pages {
         let path = format!(
-            "/api/sessions/{session_id}/messages?limit={page}&offset={}&order=oldest",
-            n * page
+            "/api/sessions/{session_id}/messages?limit={page}&offset={}&order=oldest{}",
+            n * page,
+            if archived {
+                "&include_compacted=true"
+            } else {
+                ""
+            }
         );
         let body = control_get_json(entry, &path, agent_model).await?;
         if body.get("session_id").and_then(Value::as_str) != Some(session_id) {
@@ -2333,7 +2347,10 @@ mod session_read_tests {
             url: format!("http://{addr}"),
             key: None,
         };
-        assert_eq!(session_rows_from(&entry, "s1", "probe", 2, 3).await, None);
+        assert_eq!(
+            session_rows_from(&entry, "s1", "probe", 2, 3, false).await,
+            None
+        );
     }
 }
 

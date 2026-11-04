@@ -16,8 +16,7 @@ use talaria_api::runs::define::{
 };
 use talaria_api::runs::store::{
     AnswerOutcome, CancelOutcome, CheckpointKind, ClaimOutcome, NewRun, PgRunStore, RunStore,
-    StepSnapshot, WriteFailure, record_step, retire_compacted_steps, retire_job_steps,
-    run_checkpoints,
+    StepSnapshot, WriteFailure, record_step, retire_job_steps, run_checkpoints, verify_steps,
 };
 /// Every test passes its own kind: the suite runs in parallel, and this deletes
 /// all of a kind's runs.
@@ -549,7 +548,7 @@ async fn step_rows_share_the_seq_allocator_dedupe_by_call_and_keep_their_order_a
     // A frame of turn 1 that lands after turn 2 opened still joins turn 1:
     // its Hermes turn id is the one turn 1's rows carry.
     assert_eq!(
-        record_step(&pg, &id, &step("c0", "read_file", past + 500, None))
+        record_step(&pg, &id, &step("c0", "read_file", past + 500, Some(&job)))
             .await
             .unwrap(),
         Some(6)
@@ -608,18 +607,21 @@ async fn step_rows_share_the_seq_allocator_dedupe_by_call_and_keep_their_order_a
     // A compaction took c2's conversation row out of the live transcript:
     // the step says so. c1 is still there; d1 landed after the read and is
     // not judged by it. A second pass changes nothing.
+    // c0 is in neither the live nor the archived transcript: it was never
+    // this session's own step.
     let through = talaria_api::runs::store::checkpoint_seq(&pg, &id)
         .await
         .unwrap();
-    let present = vec!["c1".to_string(), "c0".to_string(), "d1".to_string()];
+    let live = vec!["c1".to_string(), "d1".to_string()];
+    let archived = vec!["c2".to_string()];
     assert_eq!(
-        retire_compacted_steps(&pg, &id, through - 1, &present)
+        verify_steps(&pg, &id, through - 1, &live, &archived)
             .await
             .unwrap(),
-        1
+        2
     );
     assert_eq!(
-        retire_compacted_steps(&pg, &id, through - 1, &present)
+        verify_steps(&pg, &id, through - 1, &live, &archived)
             .await
             .unwrap(),
         0
@@ -636,6 +638,18 @@ async fn step_rows_share_the_seq_allocator_dedupe_by_call_and_keep_their_order_a
             .unwrap()
             .starts_with("compacted:"),
         "{c2:?}"
+    );
+    let c0 = rows
+        .iter()
+        .find(|r| r.tool_call_id.as_deref() == Some("c0"))
+        .unwrap();
+    assert!(!c0.restorable);
+    assert!(
+        c0.unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .starts_with("not in this run's transcript"),
+        "{c0:?}"
     );
     let d1 = rows
         .iter()
@@ -656,7 +670,8 @@ async fn step_rows_share_the_seq_allocator_dedupe_by_call_and_keep_their_order_a
         retire_job_steps(&pg, &job, "the job's checkout was removed")
             .await
             .unwrap(),
-        2
+        2,
+        "d1 and c3 are the job's steps still promising a restore"
     );
     assert_eq!(
         retire_job_steps(&pg, &job, "again").await.unwrap(),
