@@ -147,11 +147,15 @@ pub async fn post(
         }
     };
     if let Some(retired) = jobs.iter().find(|j| j.status == "superseded") {
+        let current = retired
+            .superseded_by
+            .as_deref()
+            .map_or(String::new(), |id| {
+                format!(" — this work continues in job {id}")
+            });
         let sentence = format!(
-            "{} belongs to job {}, which a rewind superseded — this work continues in job {}",
-            retired.branch,
-            retired.id,
-            retired.superseded_by.as_deref().unwrap_or("none"),
+            "{} belongs to job {}, which a rewind superseded{current}",
+            retired.branch, retired.id,
         );
         tracing::warn!(
             "[secrets] {} push to {repo} declined — {sentence}",
