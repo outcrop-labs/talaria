@@ -375,13 +375,11 @@ pub async fn maybe_dispatch_ticket(
         let subject = talaria_agent_auth::AgentSubject::Model(agent.clone());
         match tasks::agent_ticket_refusal(pg, &target, &subject, tasks::AgentIntent::Write).await {
             Ok(Some(_refusal)) => continue,
-            Ok(None) => {
-                match dispatch_ticket_work(deps, task, &agent, None).await {
-                    Dispatch::Session => talaria_work_wait::clear_waiting(pg, &task.id).await,
-                    Dispatch::NotNow => {}
-                    Dispatch::AtCap => surface_session_cap(pg, &task.id, &agent).await,
-                }
-            }
+            Ok(None) => match dispatch_ticket_work(deps, task, &agent, None).await {
+                Dispatch::Session => talaria_work_wait::clear_waiting(pg, &task.id).await,
+                Dispatch::NotNow => {}
+                Dispatch::AtCap => surface_session_cap(pg, &task.id, &agent).await,
+            },
             Err(e) => {
                 tracing::error!("{LOG} {}: dispatch to {agent} threw: {e}", task.id);
             }

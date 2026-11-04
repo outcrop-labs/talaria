@@ -1513,18 +1513,19 @@ async fn call_tool(
             if let Some(error) = bad_job_id(&job_id) {
                 return CallOutcome::Fail(error);
             }
-            let row: Option<(String, String, Option<String>, Option<String>)> = match sqlx::query_as(
-                "select status, repo, task_id::text, superseded_by::text from workbench_jobs \
+            let row: Option<(String, String, Option<String>, Option<String>)> =
+                match sqlx::query_as(
+                    "select status, repo, task_id::text, superseded_by::text from workbench_jobs \
                  where id = $1::uuid and agent_id = $2::uuid",
-            )
-            .bind(&job_id)
-            .bind(&agent.id)
-            .fetch_optional(pg)
-            .await
-            {
-                Ok(row) => row,
-                Err(e) => return thrown(format!("job read: {e}")),
-            };
+                )
+                .bind(&job_id)
+                .bind(&agent.id)
+                .fetch_optional(pg)
+                .await
+                {
+                    Ok(row) => row,
+                    Err(e) => return thrown(format!("job read: {e}")),
+                };
             let (repo, task_id) = match row {
                 None => return CallOutcome::Fail("unknown job".into()),
                 Some((status, repo, task_id, _)) if status == "started" => (repo, task_id),
@@ -4239,7 +4240,10 @@ mod tests {
             .unwrap()
         }
 
-        async fn lineage_row(pg: &PgPool, job_id: &str) -> (String, Option<String>, Option<String>) {
+        async fn lineage_row(
+            pg: &PgPool,
+            job_id: &str,
+        ) -> (String, Option<String>, Option<String>) {
             sqlx::query_as(
                 "select status, superseded_by::text, run_id::text from workbench_jobs \
                  where id = $1::uuid",
@@ -4330,7 +4334,11 @@ mod tests {
             );
             assert_eq!(
                 lineage_row(pg, &source).await,
-                ("superseded".into(), Some(allocated.clone()), Some(root.clone()))
+                (
+                    "superseded".into(),
+                    Some(allocated.clone()),
+                    Some(root.clone())
+                )
             );
             let again = ok(call_tool(deps, me, "start_job", &start).await);
             assert_eq!(again["jobId"], json!(allocated), "asking twice is one job");
@@ -4344,25 +4352,22 @@ mod tests {
                 assert!(why.contains(&allocated), "{tool}: {why}");
             }
             assert_eq!(lineage_row(pg, &source).await.0, "superseded");
-            let read = ok(call_tool(
-                deps,
-                me,
-                "job_status",
-                &args(json!({ "jobId": source })),
-            )
-            .await);
+            let read =
+                ok(call_tool(deps, me, "job_status", &args(json!({ "jobId": source }))).await);
             assert_eq!(read["jobs"][0]["status"], "superseded");
             assert_eq!(read["jobs"][0]["supersededBy"], json!(allocated));
 
             set_state(pg, &second, "cancelled").await;
             let third = session(pg, &task_id, "running", Some((&root, &root, 3))).await;
-            let latest =
-                owned_job(pg, agent_id, &task_id, &third, &format!("{BRANCH}-a3")).await;
+            let latest = owned_job(pg, agent_id, &task_id, &third, &format!("{BRANCH}-a3")).await;
             let answer = ok(call_tool(deps, me, "start_job", &start).await);
             assert_eq!(answer["jobId"], json!(latest));
             for retired in [&source, &allocated] {
                 let (status, current, _) = lineage_row(pg, retired).await;
-                assert_eq!((status.as_str(), current), ("superseded", Some(latest.clone())));
+                assert_eq!(
+                    (status.as_str(), current),
+                    ("superseded", Some(latest.clone()))
+                );
             }
 
             let grant = hosts::RepoRef {
@@ -4378,7 +4383,9 @@ mod tests {
             .await
             .unwrap();
             assert!(
-                resumable_job(deps, agent_id, &task_id, &grant).await.is_none(),
+                resumable_job(deps, agent_id, &task_id, &grant)
+                    .await
+                    .is_none(),
                 "a superseded job is never a revise round's"
             );
 
