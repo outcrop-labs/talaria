@@ -1199,7 +1199,7 @@ mod live {
         ];
         // (variant, in, out, cache_read, match_kind) rows published for the model.
         type Pub = &'static [(&'static str, f64, f64, Option<f64>, Option<&'static str>)];
-        let pubs: [Pub; 5] = [
+        let pubs: [Pub; 6] = [
             &[],
             &[("", 3.0, 15.0, Some(0.3), None)],
             &[("", -1_000_000.0, -1_000_000.0, None, Some("exact"))],
@@ -1210,6 +1210,11 @@ mod live {
             &[
                 ("", 3.0, 15.0, None, Some("alias")),
                 ("OpenAI", 1.0, 1.0, None, Some("segment")),
+            ],
+            // Written past every writer: NaN and Infinity never count.
+            &[
+                ("", f64::NAN, 1.0, Some(f64::INFINITY), None),
+                ("Anthropic", 2.0, f64::INFINITY, None, None),
             ],
         ];
         let served = [None, Some("Anthropic"), Some("OpenAI")];
@@ -1274,7 +1279,12 @@ mod live {
                                 // The facts the guards leave standing.
                                 let usable: Vec<(&str, bool)> = published_rows
                                     .iter()
-                                    .filter(|(_, inn, out, ..)| *inn >= 0.0 && *out >= 0.0)
+                                    .filter(|(_, inn, out, ..)| {
+                                        inn.is_finite()
+                                            && out.is_finite()
+                                            && *inn >= 0.0
+                                            && *out >= 0.0
+                                    })
                                     .map(|(v, _, _, _, kind)| {
                                         (*v, kind.is_none_or(|k| k == "exact"))
                                     })
@@ -1324,7 +1334,7 @@ mod live {
                 }
             }
         }
-        assert_eq!(n, 3 * 3 * 4 * 5 * 3 * 2);
+        assert_eq!(n, 3 * 3 * 4 * 6 * 3 * 2);
         cleanup(&pg, &ep).await;
     }
 

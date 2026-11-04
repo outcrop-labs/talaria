@@ -408,6 +408,12 @@ pub(crate) enum Decision {
 /// - a last-segment match prices only on OpenRouter; anywhere else it is a
 ///   suggestion.
 pub(crate) fn decide(catalog: &Catalog, provider: &str, model: &str) -> Decision {
+    // A router id, with or without a date or tag on its tail, is never
+    // priced: the variable check runs before any shape can match a priced
+    // entry (`openrouter/auto:nitro` must not land on some `auto` alias).
+    if let Some(catalog_id) = variable_entry(catalog, model) {
+        return Decision::Variable { catalog_id };
+    }
     let openrouter = provider == "openrouter";
     let mut notes: Vec<String> = Vec::new();
     for (id, step) in id_steps(model) {
@@ -434,9 +440,6 @@ pub(crate) fn decide(catalog: &Catalog, provider: &str, model: &str) -> Decision
             return Decision::Suggest { hit };
         }
         return Decision::Price { hit, step };
-    }
-    if let Some(catalog_id) = variable_entry(catalog, model) {
-        return Decision::Variable { catalog_id };
     }
     let mut detail = no_match_detail(model, catalog.size);
     if !notes.is_empty() {
@@ -1432,6 +1435,25 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_router_id_with_a_tail_is_variable_before_anything_matches() {
+        let c = build_catalog(&[
+            json!({ "id": "openrouter/auto", "pricing": { "prompt": "-1", "completion": "-1" } }),
+            entry("other/auto", "0.000001", "0.000002"),
+        ]);
+        for model in [
+            "openrouter/auto",
+            "openrouter/auto:nitro",
+            "openrouter/auto-20260101",
+            "~openrouter/auto-latest",
+        ] {
+            assert!(
+                matches!(decide(&c, "openrouter", model), Decision::Variable { .. }),
+                "{model} is a router: variable, never priced"
+            );
+        }
     }
 
     #[test]

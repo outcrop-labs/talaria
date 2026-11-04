@@ -30,6 +30,6 @@
   - `#[ignore]` live tests against a migrated Postgres:
     - manual beats an alias match but not an exact one, and the fuzzy list names the entry;
     - a suggestion is offered, never applied, and is cleared by a later lookup;
-    - the 1,080-case property test now covers fuzzy rows and finds no negative cost.
+    - the 1,296-case property test now covers fuzzy rows and finds no negative cost.
   - ui tests for the new labels and bodies; `svelte-check`.
   - On the worktree stack: real catalog lookups for the withheld and suggested shapes, the panel's suggestion and fuzzy rows, and the By agent label.

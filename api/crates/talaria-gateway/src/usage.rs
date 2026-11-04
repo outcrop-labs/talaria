@@ -156,7 +156,12 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     // A rate the view may use: the column when it is >= 0, else null (a null
     // input/output rate rules the source out; a null cache rate falls back
     // to the multiplier).
-    let usable = |col: &str| format!("(case when {col} >= 0 then {col} end)");
+    //
+    // "Usable" is a finite number, zero or more: Postgres' numeric takes NaN
+    // and Infinity, and sorts NaN above everything, so `>= 0` alone would let
+    // a hand-stored NaN through. `< 'Infinity'` refuses both.
+    let fin = |col: &str| format!("({col} >= 0 and {col} < 'Infinity'::numeric)");
+    let usable = |col: &str| format!("(case when {} then {col} end)", fin(col));
     let rate = |input: &str, output: &str, write: &str, read: &str| {
         format!(
             "(greatest(u.prompt_tokens, 0) * {input} \
@@ -172,7 +177,17 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         &usable("o.price_cache_write_per_mtok"),
         &usable("o.price_cache_read_per_mtok"),
     );
-    let manual_ok = "o.mode = 'manual' and o.price_in_per_mtok >= 0 and o.price_out_per_mtok >= 0";
+    let manual_ok = format!(
+        "o.mode = 'manual' and {} and {}",
+        fin("o.price_in_per_mtok"),
+        fin("o.price_out_per_mtok")
+    );
+    let charged = fin("u.provider_cost");
+    let published_ok = format!(
+        "{} and {}",
+        fin("p.price_in_per_mtok"),
+        fin("p.price_out_per_mtok")
+    );
     let exact = "pp.in_tok is not null and pp.kind = 'exact'";
     let cw = usable("p.price_cache_write_per_mtok");
     let cr = usable("p.price_cache_read_per_mtok");
@@ -180,7 +195,7 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         "select u.*, \
         case \
           when u.endpoint_class = 'local' then 0 \
-          when u.provider_cost >= 0 then u.provider_cost \
+          when {charged} then u.provider_cost \
           when u.endpoint_class = 'cloud' and o.mode = 'included' then 0 \
           when u.endpoint_class = 'cloud' and {exact} then {published} \
           when u.endpoint_class = 'cloud' and {manual_ok} then {manual} \
@@ -189,7 +204,7 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         end as cost, \
         case \
           when u.endpoint_class = 'local' then 'local' \
-          when u.provider_cost >= 0 then 'provider' \
+          when {charged} then 'provider' \
           when u.endpoint_class = 'cloud' and o.mode = 'included' then 'included' \
           when u.endpoint_class = 'cloud' and {exact} then 'derived' \
           when u.endpoint_class = 'cloud' and {manual_ok} then 'manual' \
@@ -197,13 +212,13 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
           else null \
         end as cost_basis, \
         case \
-          when u.endpoint_class = 'local' or u.provider_cost >= 0 or o.mode = 'included' then null \
+          when u.endpoint_class = 'local' or {charged} or o.mode = 'included' then null \
           when u.endpoint_class = 'cloud' and {exact} then pp.kind \
           when u.endpoint_class = 'cloud' and {manual_ok} then null \
           when u.endpoint_class = 'cloud' and pp.in_tok is not null then pp.kind \
         end as cost_match_kind, \
         case \
-          when u.endpoint_class = 'local' or u.provider_cost >= 0 or o.mode = 'included' then null \
+          when u.endpoint_class = 'local' or {charged} or o.mode = 'included' then null \
           when u.endpoint_class = 'cloud' and {exact} then pp.matched_id \
           when u.endpoint_class = 'cloud' and {manual_ok} then null \
           when u.endpoint_class = 'cloud' and pp.in_tok is not null then pp.matched_id \
@@ -220,7 +235,7 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         where p.endpoint_id = e.id \
           and p.model = u.llm_model \
           and (p.variant = '' or p.variant = coalesce(u.cost_variant, '')) \
-          and p.price_in_per_mtok >= 0 and p.price_out_per_mtok >= 0 \
+          and {published_ok} \
         order by (p.variant <> '') desc, p.fetched_at desc \
         limit 1 \
       ) pp on true"
@@ -1527,10 +1542,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("the view lost `{needle}`"))
         };
         // The cost CASE: provider, included, exact published, manual, fuzzy published.
-        let provider = at("when u.provider_cost >= 0 then u.provider_cost");
+        let provider = at(
+            "when (u.provider_cost >= 0 and u.provider_cost < 'Infinity'::numeric) then u.provider_cost",
+        );
         let included = at("o.mode = 'included' then 0");
         let exact = at("pp.kind = 'exact' then (");
-        let manual = at("o.price_out_per_mtok >= 0 then (");
+        let manual = at("o.price_out_per_mtok < 'Infinity'::numeric) then (");
         let fuzzy = at("and pp.in_tok is not null then (");
         assert!(provider < included && included < exact && exact < manual && manual < fuzzy);
         // The OpenRouter exclusion is gone; the exact variant sorts first.
@@ -1541,12 +1558,19 @@ mod tests {
         assert!(sql.contains("coalesce(pp.cr_tok, pp.in_tok * 0.1)"));
         // No source with a negative rate is ever read, and no token count
         // below zero is ever multiplied: the view cannot price under $0.
-        assert!(sql.contains("p.price_in_per_mtok >= 0 and p.price_out_per_mtok >= 0"));
         assert!(sql.contains(
-            "(case when p.price_cache_write_per_mtok >= 0 then p.price_cache_write_per_mtok end)"
+            "(p.price_in_per_mtok >= 0 and p.price_in_per_mtok < 'Infinity'::numeric) and \
+             (p.price_out_per_mtok >= 0 and p.price_out_per_mtok < 'Infinity'::numeric)"
         ));
-        assert!(sql.contains("when u.provider_cost >= 0 then u.provider_cost"));
-        assert!(sql.contains("o.price_in_per_mtok >= 0 and o.price_out_per_mtok >= 0"));
+        assert!(sql.contains(
+            "(case when (p.price_cache_write_per_mtok >= 0 and p.price_cache_write_per_mtok < 'Infinity'::numeric) then p.price_cache_write_per_mtok end)"
+        ));
+        assert!(!sql.contains("{charged}"), "every guard is interpolated");
+        assert!(
+            sql.contains(
+                "(o.price_in_per_mtok >= 0 and o.price_in_per_mtok < 'Infinity'::numeric)"
+            )
+        );
         assert!(
             !sql.contains("u.prompt_tokens *"),
             "token counts are floored at zero"
