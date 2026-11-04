@@ -100,8 +100,17 @@
     const seq = readCursorToPost({ channelId: root, latest, posted: lastReadPosted, looking })
     if (seq === null) return
     lastReadPosted = { id: root, seq }
+    // Both counts the read moves: the sidebar pill (['channels']) and the
+    // rail's Comms badge (['unreads']). The rail otherwise waits for the next
+    // firehose landing or its 30 s floor, since a read that clears no bell
+    // row publishes nothing.
     void markChannelThreadRead(channelId, root, seq)
-      .then(() => qc.invalidateQueries({ queryKey: ['channels'] }))
+      .then(() =>
+        Promise.all([
+          qc.invalidateQueries({ queryKey: ['channels'] }),
+          qc.invalidateQueries({ queryKey: ['unreads'] }),
+        ]),
+      )
       .catch(() => {})
   })
 </script>
