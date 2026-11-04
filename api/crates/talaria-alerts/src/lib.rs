@@ -610,16 +610,13 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
 
     // ── Ledger blind spots ──────────────────────────────────────────────────────
     if let Some(cost) = cost.as_ref() {
-        if cost.totals.unpriced_cloud_tokens > 0 {
-            alerts.push(Alert {
-                severity: AlertSeverity::Warning,
-                title: "Unpriced cloud usage".into(),
-                detail: format!(
-                    "{} cloud tokens (30d) have no rate, so spend is understated. Set prices on /models.",
-                    fmt(cost.totals.unpriced_cloud_tokens)
-                ),
-                href: "/models",
-            });
+        // Admins only: the fix (a price, "included in a plan", a retried
+        // lookup) is an admin's to make, on an admin-only panel — the line
+        // used to send everyone to /models, where no price can be set.
+        if let Some(alert) = unpriced_alert(cost.totals.unpriced_cloud_tokens)
+            && is_admin(pg, user_id).await
+        {
+            alerts.push(alert);
         }
         let share = cost.totals.estimated_share.as_f64().unwrap_or(0.0);
         if cost.totals.month.generations >= 5 && share > 0.5 {
@@ -776,6 +773,24 @@ fn mcp_attention_alert(labels: &[String]) -> Option<Alert> {
     })
 }
 
+/// Where the unpriced alert sends an admin: the Cost tab's unpriced panel.
+pub const UNPRICED_HREF: &str = "/observability/cost#unpriced";
+
+/// The "Unpriced cloud usage" warning for the window's unpriced cloud tokens,
+/// or None when there are none — the whole decision, so a test can hold the
+/// alert to the ledger number that clears it.
+pub fn unpriced_alert(unpriced_cloud_tokens: i64) -> Option<Alert> {
+    (unpriced_cloud_tokens > 0).then(|| Alert {
+        severity: AlertSeverity::Warning,
+        title: "Unpriced cloud usage".into(),
+        detail: format!(
+            "{} cloud tokens (30d) have no price, so spend is understated. Set a price, mark the model included in a plan, or retry the price lookup.",
+            fmt(unpriced_cloud_tokens)
+        ),
+        href: UNPRICED_HREF,
+    })
+}
+
 async fn is_admin(pg: &sqlx::PgPool, user_id: &str) -> bool {
     sqlx::query_scalar::<_, String>("select role from users where id::text = $1")
         .bind(user_id)
@@ -820,6 +835,18 @@ async fn probe_mcp() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unpriced_alert_names_the_tokens_and_links_the_panel_that_fixes_them() {
+        assert!(unpriced_alert(0).is_none(), "nothing unpriced, no alert");
+        let alert = unpriced_alert(1_234_567).expect("unpriced tokens raise it");
+        assert_eq!(alert.severity, AlertSeverity::Warning);
+        assert_eq!(alert.title, "Unpriced cloud usage");
+        assert_eq!(alert.href, "/observability/cost#unpriced");
+        assert!(alert.detail.starts_with(&fmt(1_234_567)));
+        // It no longer sends anyone to /models, where no price can be set.
+        assert!(!alert.detail.contains("/models"));
+    }
 
     fn member(id: &str, name: &str, renders: bool) -> talaria_agent_defs::DepartmentMember {
         talaria_agent_defs::DepartmentMember {
@@ -885,5 +912,98 @@ mod tests {
         assert_eq!(minutes(0), 0);
         assert_eq!(minutes(89_999), 1); // round(1.4999) = 1
         assert_eq!(minutes(90_000), 2); // round(1.5) = 2
+    }
+}
+
+/// LIVE: the unpriced alert clears for HISTORY, not only new usage, the
+/// moment a price lands — rows booked through the relay's own writer, the
+/// real priced view, the real `cost_overview`. `#[ignore]`d; the
+/// api-integration job runs it with the workspace's ignored lib tests.
+///
+///   DATABASE_URL=postgres://… cargo test -p talaria-alerts --lib -- --ignored live
+#[cfg(test)]
+mod live {
+    use super::*;
+    use talaria_gateway::usage::{
+        AdminPricing, RELAY_SOURCE, StatedFlow, TokenCounts, record_relay_usage,
+    };
+    use talaria_price_oracle::unpriced::{PriceInput, set_price};
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn the_unpriced_alert_clears_for_history_when_a_price_lands() {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        let pg = sqlx::PgPool::connect(&url).await.expect("connect");
+        let ep = format!("alerts-live-{}", now_ms());
+        let model = "gpt-4.1-2025-04-14";
+        // Rows already in the window, booked before anyone priced the model.
+        for prompt in [40_000, 2_000] {
+            record_relay_usage(
+                &pg,
+                RELAY_SOURCE,
+                "alerts-live:caller",
+                None,
+                &StatedFlow::default(),
+                &ep,
+                "cloud",
+                model,
+                &TokenCounts {
+                    prompt_tokens: prompt,
+                    completion_tokens: 1_000,
+                    ..TokenCounts::default()
+                },
+                false,
+                None,
+            )
+            .await
+            .expect("the relay's insert");
+        }
+        let mine = 40_000 + 2_000 + 2 * 1_000;
+        let before = cost_overview(&pg)
+            .await
+            .unwrap()
+            .totals
+            .unpriced_cloud_tokens;
+        // Anything else in this database that is unpriced stays counted; the
+        // claim is about these rows only.
+        let others = before - mine;
+        assert!(others >= 0, "the window counts our {mine} tokens");
+        let alert = unpriced_alert(before).expect("our rows raise the alert");
+        assert_eq!(alert.href, UNPRICED_HREF);
+
+        set_price(
+            &pg,
+            &PriceInput {
+                endpoint: ep.clone(),
+                model: model.into(),
+                mode: AdminPricing::Manual,
+                price_in_per_mtok: Some(2.0),
+                price_out_per_mtok: Some(8.0),
+                price_cache_write_per_mtok: None,
+                price_cache_read_per_mtok: None,
+                note: None,
+            },
+            "alerts-live",
+        )
+        .await
+        .unwrap();
+        let after = cost_overview(&pg)
+            .await
+            .unwrap()
+            .totals
+            .unpriced_cloud_tokens;
+        assert_eq!(after, others, "every past row of the model is priced now");
+        assert_eq!(
+            unpriced_alert(after).is_some(),
+            others > 0,
+            "the alert is gone unless something else is still unpriced"
+        );
+        for sql in [
+            "delete from usage_events where endpoint = $1",
+            "delete from model_price_overrides where endpoint = $1",
+        ] {
+            sqlx::query(sql).bind(&ep).execute(&pg).await.unwrap();
+        }
     }
 }

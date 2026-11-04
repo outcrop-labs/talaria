@@ -20,9 +20,19 @@ export interface CostOverview {
     estimatedShare: number
     split: { local: number; cloud: number; other: number }
     unpricedCloudTokens: number
+    /** Cloud tokens an admin marked included in a plan: priced at $0, and
+     *  labelled wherever spend is shown — never a silent zero. */
+    includedCloudTokens?: number
     providerReported?: { cost: number; source: string; fetchedAt: string | null; stale: boolean }
   }
-  perModel: Array<{ llmModel: string | null; endpointClass: 'local' | 'cloud' | null; tokens: number; cost: number | null }>
+  perModel: Array<{
+    llmModel: string | null
+    endpointClass: 'local' | 'cloud' | null
+    tokens: number
+    cost: number | null
+    /** Of `tokens`, those included in a plan ($0, labelled). */
+    includedTokens?: number
+  }>
   perAgent: Array<CostTotals & { agentModel: string; lastUsed: string | null; cost: number; localShare: number | null }>
   perDay: Array<CostTotals & { day: string; local: number; cloud: number }>
 }
@@ -48,3 +58,15 @@ export function agentLabel(id: string): { label: string; role: string } {
 // decimals, so a real amount never renders as "$0.00". The model surfaces take
 // its `unpricedAsWord` variant instead (see `@/components/models/fitness`).
 export { formatTokens, formatUsd as formatCost } from '@/lib/format'
+import { formatTokens as formatTokensLabel, formatUsd as formatUsdLabel } from '@/lib/format'
+
+/** A cloud model's spend as the legend says it: "unpriced", "included in a
+ *  plan" when every token is, the dollars plus how much was included when
+ *  some is — an included model never reads as a bare "$0". */
+export function modelCostLabel(m: { cost: number | null; tokens: number; includedTokens?: number }): string {
+  const included = m.includedTokens ?? 0
+  if (m.cost === null) return 'unpriced'
+  if (included > 0 && included >= m.tokens) return 'included in a plan'
+  if (included > 0) return `${formatUsdLabel(m.cost)} + ${formatTokensLabel(included)} included`
+  return formatUsdLabel(m.cost)
+}

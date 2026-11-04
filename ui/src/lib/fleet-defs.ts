@@ -166,8 +166,23 @@ export interface LlmEndpoint {
     variant: string
     in: number | null
     out: number | null
+    /** The published cache rates, when the source carries them. */
+    cacheWrite?: number | null
+    cacheRead?: number | null
     source: string
     fetchedAt: string
+  }>
+  /** An admin's pricing for this endpoint's models no source prices: a
+   *  manual rate, or "included in a plan" ($0, labelled). Set on the Cost
+   *  tab's unpriced panel; shown read-only here. */
+  adminPrices?: Array<{
+    model: string
+    mode: 'manual' | 'included'
+    in: number | null
+    out: number | null
+    cacheWrite: number | null
+    cacheRead: number | null
+    note: string | null
   }>
   /** Fetched catalog rates. Not a spend source. */
   autoPrices?: Record<string, { in: number; out: number }>
