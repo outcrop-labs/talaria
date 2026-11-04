@@ -2352,6 +2352,22 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_ticket_links_to_its_new_board_and_nothing_else() {
+        // move_ticket answers { task, moved }: the task carries its NEW
+        // board, and the summary names its boards fromBoardId / toBoardId so
+        // it never reads as a second ticket (talaria-tasks MoveSummary).
+        let chips = chips_from_tool(
+            "move_ticket",
+            r#"{"taskId":"t-2","boardId":"b-2"}"#,
+            r#"{"task":{"id":"t-2","boardId":"b-2","title":"Gate"},"moved":{"fromBoardId":"b-1","toBoardId":"b-2","fromRef":"A-1","toRef":"B-1"}}"#,
+        );
+        let links: Vec<&Value> = chips.iter().filter(|c| c["kind"] == "link").collect();
+        assert_eq!(links.len(), 1, "{chips:?}");
+        assert_eq!(links[0]["href"], "/boards/b-2/t-2");
+        assert!(chips.iter().all(|c| c["kind"] != "approval"));
+    }
+
+    #[test]
     fn a_drafted_email_becomes_an_approval_chip() {
         let chips = chips_from_tool(
             "draft_email",

@@ -103,9 +103,16 @@ pub struct SpendWindow {
 //   1. local                         $0                          'local'
 //   2. the provider's own charge     provider_cost               'provider'
 //   3. an admin's "included"         $0, labelled                'included'
-//   4. a published price             provider_prices             'derived'
+//   4. an EXACT published price      provider_prices             'derived'
 //   5. an admin's manual rate        model_price_overrides       'manual'
-//   6. nothing                       null — unpriced, and the alert counts it
+//   6. a FUZZY published price       provider_prices             'derived'
+//   7. nothing                       null — unpriced, and the alert counts it
+//
+// A catalog match is exact when the model's own id found the entry, fuzzy
+// when a stripped tag, date or path segment did (`match_kind`); the row
+// carries which entry it was priced as (`cost_matched_id`) so the cost page
+// can say so, and an admin who knows the real rate can override a guess but
+// not the provider's published number.
 //
 // 2 is the charge itself (OpenRouter's `usage.cost`, or a `/generation`
 // backfill), so nothing an admin types can contradict it. 3 beats 4 because
@@ -137,52 +144,98 @@ pub struct SpendWindow {
 // Multipliers per input KIND are VALUES interpolated into this text, not
 // binds: the view is spliced into larger statements whose callers bind their
 // own $1/$2.
+//
+// NO ROW EVER PRICES BELOW ZERO. Every rate the view reads is taken only when
+// it is zero or more, and every token count is floored at zero, so a bad
+// number anywhere — OpenRouter's `-1` "variable" marker stored by a release
+// that did not refuse it, a hand-edited row — leaves that row unpriced (or on
+// the next source down) instead of sinking every USD budget below zero. The
+// writers refuse the same numbers; this is the read side's half, and it is
+// what stops the rows already stored on an instance from counting.
 static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    // A rate the view may use: the column when it is >= 0, else null (a null
+    // input/output rate rules the source out; a null cache rate falls back
+    // to the multiplier).
+    //
+    // "Usable" is a finite number, zero or more: Postgres' numeric takes NaN
+    // and Infinity, and sorts NaN above everything, so `>= 0` alone would let
+    // a hand-stored NaN through. `< 'Infinity'` refuses both.
+    let fin = |col: &str| format!("({col} >= 0 and {col} < 'Infinity'::numeric)");
+    let usable = |col: &str| format!("(case when {} then {col} end)", fin(col));
     let rate = |input: &str, output: &str, write: &str, read: &str| {
         format!(
-            "(u.prompt_tokens * {input} \
-             + u.cache_write_tokens * coalesce({write}, {input} * {CACHE_WRITE_MULTIPLIER}) \
-             + u.cache_read_tokens * coalesce({read}, {input} * {CACHE_READ_MULTIPLIER}) \
-             + u.completion_tokens * {output}) / 1e6"
+            "(greatest(u.prompt_tokens, 0) * {input} \
+             + greatest(u.cache_write_tokens, 0) * coalesce({write}, {input} * {CACHE_WRITE_MULTIPLIER}) \
+             + greatest(u.cache_read_tokens, 0) * coalesce({read}, {input} * {CACHE_READ_MULTIPLIER}) \
+             + greatest(u.completion_tokens, 0) * {output}) / 1e6"
         )
     };
     let published = rate("pp.in_tok", "pp.out_tok", "pp.cw_tok", "pp.cr_tok");
     let manual = rate(
         "o.price_in_per_mtok",
         "o.price_out_per_mtok",
-        "o.price_cache_write_per_mtok",
-        "o.price_cache_read_per_mtok",
+        &usable("o.price_cache_write_per_mtok"),
+        &usable("o.price_cache_read_per_mtok"),
     );
+    let manual_ok = format!(
+        "o.mode = 'manual' and {} and {}",
+        fin("o.price_in_per_mtok"),
+        fin("o.price_out_per_mtok")
+    );
+    let charged = fin("u.provider_cost");
+    let published_ok = format!(
+        "{} and {}",
+        fin("p.price_in_per_mtok"),
+        fin("p.price_out_per_mtok")
+    );
+    let exact = "pp.in_tok is not null and pp.kind = 'exact'";
+    let cw = usable("p.price_cache_write_per_mtok");
+    let cr = usable("p.price_cache_read_per_mtok");
     format!(
         "select u.*, \
         case \
           when u.endpoint_class = 'local' then 0 \
-          when u.provider_cost is not null then u.provider_cost \
+          when {charged} then u.provider_cost \
           when u.endpoint_class = 'cloud' and o.mode = 'included' then 0 \
+          when u.endpoint_class = 'cloud' and {exact} then {published} \
+          when u.endpoint_class = 'cloud' and {manual_ok} then {manual} \
           when u.endpoint_class = 'cloud' and pp.in_tok is not null then {published} \
-          when u.endpoint_class = 'cloud' and o.mode = 'manual' then {manual} \
           else null \
         end as cost, \
         case \
           when u.endpoint_class = 'local' then 'local' \
-          when u.provider_cost is not null then 'provider' \
+          when {charged} then 'provider' \
           when u.endpoint_class = 'cloud' and o.mode = 'included' then 'included' \
+          when u.endpoint_class = 'cloud' and {exact} then 'derived' \
+          when u.endpoint_class = 'cloud' and {manual_ok} then 'manual' \
           when u.endpoint_class = 'cloud' and pp.in_tok is not null then 'derived' \
-          when u.endpoint_class = 'cloud' and o.mode = 'manual' then 'manual' \
           else null \
-        end as cost_basis \
+        end as cost_basis, \
+        case \
+          when u.endpoint_class = 'local' or {charged} or o.mode = 'included' then null \
+          when u.endpoint_class = 'cloud' and {exact} then pp.kind \
+          when u.endpoint_class = 'cloud' and {manual_ok} then null \
+          when u.endpoint_class = 'cloud' and pp.in_tok is not null then pp.kind \
+        end as cost_match_kind, \
+        case \
+          when u.endpoint_class = 'local' or {charged} or o.mode = 'included' then null \
+          when u.endpoint_class = 'cloud' and {exact} then pp.matched_id \
+          when u.endpoint_class = 'cloud' and {manual_ok} then null \
+          when u.endpoint_class = 'cloud' and pp.in_tok is not null then pp.matched_id \
+        end as cost_matched_id \
       from usage_events u \
       left join llm_endpoints e on e.name = u.endpoint \
       left join model_price_overrides o \
         on o.endpoint = coalesce(u.endpoint, '') and o.model = u.llm_model \
       left join lateral ( \
         select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok, \
-               p.price_cache_write_per_mtok as cw_tok, p.price_cache_read_per_mtok as cr_tok \
+               {cw} as cw_tok, {cr} as cr_tok, \
+               coalesce(p.match_kind, 'exact') as kind, p.matched_id \
         from provider_prices p \
         where p.endpoint_id = e.id \
           and p.model = u.llm_model \
           and (p.variant = '' or p.variant = coalesce(u.cost_variant, '')) \
-          and p.price_in_per_mtok is not null and p.price_out_per_mtok is not null \
+          and {published_ok} \
         order by (p.variant <> '') desc, p.fetched_at desc \
         limit 1 \
       ) pp on true"
@@ -345,6 +398,9 @@ pub struct CostTotals {
     /// Cloud tokens priced at $0 because an admin marked the model included
     /// in a plan — counted as priced, and labelled where spend is shown.
     pub included_cloud_tokens: i64,
+    /// Of the 30-day dollars, those derived from a published price (an
+    /// estimate) rather than the provider's own charge or an admin's rate.
+    pub derived_cost: serde_json::Number,
     /// Provider activity/cost-report total for the last 30 days, when a
     /// provider returned one. The month tile uses this number.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -383,6 +439,13 @@ pub struct CostPerModel {
     /// Tokens an admin marked included in a plan — priced at $0, and said so
     /// beside the figure, never a silent zero.
     included_tokens: i64,
+    /// When some of the model's dollars come from a FUZZY catalog match, the
+    /// entry it was priced as and how ("alias" / "segment") — the legend says
+    /// "priced as openai/gpt-4o (fuzzy match)".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priced_as: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_kind: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -395,6 +458,8 @@ pub struct CostPerAgent {
     last_used: Option<String>,
     cost: serde_json::Number,
     local_share: Option<serde_json::Number>,
+    /// Tokens priced at $0 because the model is included in a plan.
+    included_tokens: i64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -465,20 +530,38 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
              select coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
                              filter (where cost is null), 0)::bigint as tokens, \
                     coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
-                             filter (where cost_basis = 'included'), 0)::bigint as included \
+                             filter (where cost_basis = 'included'), 0)::bigint as included, \
+                    coalesce(sum(cost) filter (where cost_basis = 'derived'), 0)::float8 as derived \
              from priced where created_at > now() - make_interval(days => $1) \
                and endpoint_class = 'cloud'"
         );
-        let row: (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        let row: (i64, i64, f64) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(30)
             .fetch_one(pg)
             .await?;
         Ok::<_, sqlx::Error>(row)
     };
-    // (llmModel, endpointClass, tokens, cost, includedTokens)
-    type PerModelRow = (Option<String>, Option<String>, i64, Option<f64>, i64);
-    // (agentModel, prompt, completion, generations, last_ms, cost, localShare)
-    type PerAgentRow = (Option<String>, i32, i32, i32, Option<i64>, f64, Option<f64>);
+    // (llmModel, endpointClass, tokens, cost, includedTokens, pricedAs, matchKind)
+    type PerModelRow = (
+        Option<String>,
+        Option<String>,
+        i64,
+        Option<f64>,
+        i64,
+        Option<String>,
+        Option<String>,
+    );
+    // (agentModel, prompt, completion, generations, last_ms, cost, localShare, includedTokens)
+    type PerAgentRow = (
+        Option<String>,
+        i32,
+        i32,
+        i32,
+        Option<i64>,
+        f64,
+        Option<f64>,
+        i64,
+    );
 
     let per_model = async {
         let sql = format!(
@@ -487,7 +570,9 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
                     coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens), 0)::bigint as tokens, \
                     sum(cost)::float8 as cost, \
                     coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) \
-                             filter (where cost_basis = 'included'), 0)::bigint as included \
+                             filter (where cost_basis = 'included'), 0)::bigint as included, \
+                    max(cost_matched_id) filter (where cost_match_kind in ('alias', 'segment')), \
+                    max(cost_match_kind) filter (where cost_match_kind in ('alias', 'segment')) \
              from priced where created_at > now() - make_interval(days => $1) \
              group by llm_model, endpoint_class \
              order by (endpoint_class = 'local') desc nulls last, tokens desc"
@@ -499,12 +584,24 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
         Ok::<_, sqlx::Error>(
             rows.into_iter()
                 .map(
-                    |(llm_model, endpoint_class, tokens, cost, included_tokens)| CostPerModel {
+                    |(
                         llm_model,
                         endpoint_class,
                         tokens,
-                        cost: cost.map(js_num),
+                        cost,
                         included_tokens,
+                        priced_as,
+                        match_kind,
+                    )| {
+                        CostPerModel {
+                            llm_model,
+                            endpoint_class,
+                            tokens,
+                            cost: cost.map(js_num),
+                            included_tokens,
+                            priced_as,
+                            match_kind,
+                        }
                     },
                 )
                 .collect(),
@@ -522,7 +619,8 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
                     case when count(*) filter (where endpoint_class is not null) = 0 then null \
                          else sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class = 'local')::float8 \
                               / nullif(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where endpoint_class is not null), 0) \
-                    end as \"localShare\" \
+                    end as \"localShare\", \
+                    coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where cost_basis = 'included'), 0)::bigint as included \
              from priced where created_at > now() - make_interval(days => $1) \
              group by agent_model \
              order by sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) desc"
@@ -534,7 +632,16 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
         Ok::<_, sqlx::Error>(
             rows.into_iter()
                 .map(
-                    |(agent_model, prompt, completion, generations, last_ms, cost, local_share)| {
+                    |(
+                        agent_model,
+                        prompt,
+                        completion,
+                        generations,
+                        last_ms,
+                        cost,
+                        local_share,
+                        included_tokens,
+                    )| {
                         CostPerAgent {
                             agent_model,
                             prompt,
@@ -543,6 +650,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
                             last_used: last_ms.map(talaria_agent_auth::epoch_ms_to_iso),
                             cost: js_num(cost),
                             local_share: local_share.map(js_num),
+                            included_tokens,
                         }
                     },
                 )
@@ -591,7 +699,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
         per_day
     );
     let (today, week, month) = (today?, week?, month?);
-    let (est, split, (unpriced, included), per_model, per_agent, per_day) =
+    let (est, split, (unpriced, included, derived), per_model, per_agent, per_day) =
         (est?, split?, unpriced?, per_model?, per_agent?, per_day?);
     let activity: (i32, f64, Option<String>, Option<String>, Option<f64>) = sqlx::query_as(
         "select count(*)::int, coalesce(sum(cost_usd), 0)::float8, max(source), \
@@ -643,6 +751,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
             },
             unpriced_cloud_tokens: unpriced,
             included_cloud_tokens: included,
+            derived_cost: js_num(derived),
             provider_reported,
         },
         per_model,
@@ -661,6 +770,8 @@ pub struct TaskUsagePerModel {
     pub tokens: i64,
     /// Null when every row for the model is unpriced — shown, never silent $0.
     pub cost: Option<serde_json::Number>,
+    /// Tokens priced at $0 because the model is included in a plan.
+    pub included_tokens: i64,
 }
 
 /// Token spend attributed to one ticket: the metered rows that carry its id.
@@ -711,11 +822,12 @@ pub async fn task_usage(pg: &PgPool, task_id: &str) -> Result<TaskUsage, sqlx::E
          select llm_model as \"llmModel\", \
                 coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + \
                              cache_read_tokens), 0)::bigint as tokens, \
-                sum(cost)::float8 as cost \
+                sum(cost)::float8 as cost, \
+                coalesce(sum(prompt_tokens + completion_tokens + cache_write_tokens + cache_read_tokens) filter (where cost_basis = 'included'), 0)::bigint as included \
          from priced where task_id = $1::uuid \
          group by llm_model order by tokens desc"
     );
-    let rows: Vec<(Option<String>, i64, Option<f64>)> =
+    let rows: Vec<(Option<String>, i64, Option<f64>, i64)> =
         sqlx::query_as(sqlx::AssertSqlSafe(per_model_sql.as_str()))
             .bind(task_id)
             .fetch_all(pg)
@@ -729,11 +841,14 @@ pub async fn task_usage(pg: &PgPool, task_id: &str) -> Result<TaskUsage, sqlx::E
         unpriced_tokens: unpriced,
         per_model: rows
             .into_iter()
-            .map(|(llm_model, tokens, cost)| TaskUsagePerModel {
-                llm_model,
-                tokens,
-                cost: cost.map(js_num),
-            })
+            .map(
+                |(llm_model, tokens, cost, included_tokens)| TaskUsagePerModel {
+                    llm_model,
+                    tokens,
+                    cost: cost.map(js_num),
+                    included_tokens,
+                },
+            )
             .collect(),
     })
 }
@@ -839,8 +954,11 @@ pub struct PriceFacts<'a> {
     pub admin: Option<AdminPricing>,
     /// The row's `cost_variant`.
     pub served_variant: Option<&'a str>,
-    /// The variants with a complete published price for this endpoint+model.
-    pub published_variants: &'a [&'a str],
+    /// The published prices for this endpoint+model as (variant, exact):
+    /// only complete ones — input and output present and zero or more (a
+    /// negative rate, the catalog's "variable" marker, is no price at all).
+    /// `exact` is false for a fuzzy catalog match.
+    pub published: &'a [(&'a str, bool)],
 }
 
 /// THE PRICE DECISION as a value — the CASE in the priced view, first match
@@ -859,13 +977,19 @@ pub fn price_basis(f: &PriceFacts<'_>) -> Option<CostBasis> {
     if f.admin == Some(AdminPricing::Included) {
         return Some(CostBasis::Included);
     }
-    if f.published_variants
+    // The one row the view's lateral join takes: the served variant's own,
+    // else the model-level row.
+    let chosen = f
+        .published
         .iter()
-        .any(|v| published_price_applies(f.served_variant, v))
-    {
-        return Some(CostBasis::Derived);
+        .find(|(v, _)| !v.is_empty() && f.served_variant == Some(*v))
+        .or_else(|| f.published.iter().find(|(v, _)| v.is_empty()));
+    match chosen {
+        Some((_, true)) => Some(CostBasis::Derived),
+        _ if f.admin == Some(AdminPricing::Manual) => Some(CostBasis::Manual),
+        Some((_, false)) => Some(CostBasis::Derived),
+        None => None,
     }
-    (f.admin == Some(AdminPricing::Manual)).then_some(CostBasis::Manual)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1351,10 +1475,10 @@ mod tests {
 
     #[test]
     fn the_price_decision_runs_provider_included_published_manual_in_that_order() {
-        let cloud = |admin, published: &'static [&'static str]| PriceFacts {
+        let cloud = |admin, published: &'static [(&'static str, bool)]| PriceFacts {
             class: Some("cloud"),
             admin,
-            published_variants: published,
+            published,
             ..PriceFacts::default()
         };
         // Local is $0 whatever else is true.
@@ -1367,17 +1491,26 @@ mod tests {
         // The provider's charge beats every admin decision.
         let charged = PriceFacts {
             provider_cost: true,
-            ..cloud(Some(AdminPricing::Included), &[""])
+            ..cloud(Some(AdminPricing::Included), &[("", true)])
         };
         assert_eq!(price_basis(&charged), Some(CostBasis::Provider));
         // Included beats a published price: a catalog cannot know the plan.
         assert_eq!(
-            price_basis(&cloud(Some(AdminPricing::Included), &[""])),
+            price_basis(&cloud(Some(AdminPricing::Included), &[("", true)])),
             Some(CostBasis::Included)
         );
         // A published price beats a manual rate: manual is the fallback.
         assert_eq!(
-            price_basis(&cloud(Some(AdminPricing::Manual), &[""])),
+            price_basis(&cloud(Some(AdminPricing::Manual), &[("", true)])),
+            Some(CostBasis::Derived)
+        );
+        // ...but a manual rate beats a FUZZY match.
+        assert_eq!(
+            price_basis(&cloud(Some(AdminPricing::Manual), &[("", false)])),
+            Some(CostBasis::Manual)
+        );
+        assert_eq!(
+            price_basis(&cloud(None, &[("", false)])),
             Some(CostBasis::Derived)
         );
         assert_eq!(
@@ -1389,13 +1522,13 @@ mod tests {
         // A variant-only price does not cover a call that names another.
         let other_variant = PriceFacts {
             served_variant: Some("OpenAI"),
-            ..cloud(None, &["Infermatic"])
+            ..cloud(None, &[("Infermatic", true)])
         };
         assert_eq!(price_basis(&other_variant), None);
         // An unattributed row (no class) is never priced or counted.
         let unattributed = PriceFacts {
             class: None,
-            published_variants: &[""],
+            published: &[("", true)],
             ..PriceFacts::default()
         };
         assert_eq!(price_basis(&unattributed), None);
@@ -1408,18 +1541,40 @@ mod tests {
             sql.find(needle)
                 .unwrap_or_else(|| panic!("the view lost `{needle}`"))
         };
-        // The cost CASE: provider, included, published, manual — in order.
-        let provider = at("when u.provider_cost is not null then u.provider_cost");
+        // The cost CASE: provider, included, exact published, manual, fuzzy published.
+        let provider = at(
+            "when (u.provider_cost >= 0 and u.provider_cost < 'Infinity'::numeric) then u.provider_cost",
+        );
         let included = at("o.mode = 'included' then 0");
-        let published = at("pp.in_tok is not null then (");
-        let manual = at("o.mode = 'manual' then (");
-        assert!(provider < included && included < published && published < manual);
+        let exact = at("pp.kind = 'exact' then (");
+        let manual = at("o.price_out_per_mtok < 'Infinity'::numeric) then (");
+        let fuzzy = at("and pp.in_tok is not null then (");
+        assert!(provider < included && included < exact && exact < manual && manual < fuzzy);
         // The OpenRouter exclusion is gone; the exact variant sorts first.
         assert!(!sql.contains("is distinct from 'openrouter'"));
         assert!(sql.contains("order by (p.variant <> '') desc, p.fetched_at desc"));
         // Cache tokens bill at the published cache rates before the multipliers.
         assert!(sql.contains("coalesce(pp.cw_tok, pp.in_tok * 1.25)"));
         assert!(sql.contains("coalesce(pp.cr_tok, pp.in_tok * 0.1)"));
+        // No source with a negative rate is ever read, and no token count
+        // below zero is ever multiplied: the view cannot price under $0.
+        assert!(sql.contains(
+            "(p.price_in_per_mtok >= 0 and p.price_in_per_mtok < 'Infinity'::numeric) and \
+             (p.price_out_per_mtok >= 0 and p.price_out_per_mtok < 'Infinity'::numeric)"
+        ));
+        assert!(sql.contains(
+            "(case when (p.price_cache_write_per_mtok >= 0 and p.price_cache_write_per_mtok < 'Infinity'::numeric) then p.price_cache_write_per_mtok end)"
+        ));
+        assert!(!sql.contains("{charged}"), "every guard is interpolated");
+        assert!(
+            sql.contains(
+                "(o.price_in_per_mtok >= 0 and o.price_in_per_mtok < 'Infinity'::numeric)"
+            )
+        );
+        assert!(
+            !sql.contains("u.prompt_tokens *"),
+            "token counts are floored at zero"
+        );
     }
 
     #[test]

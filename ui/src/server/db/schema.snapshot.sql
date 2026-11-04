@@ -549,6 +549,12 @@ CREATE TABLE public.channel_teams (
     team_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.channel_thread_reads (
+    thread_root_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    last_read_seq integer DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.channels (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     name text NOT NULL,
@@ -1237,7 +1243,12 @@ CREATE TABLE public.price_lookups (
     detail text,
     source text NOT NULL,
     checked_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT price_lookups_outcome_check CHECK ((outcome = ANY (ARRAY['priced'::text, 'no_match'::text, 'source_failed'::text])))
+    matched_id text,
+    suggest_in_per_mtok numeric,
+    suggest_out_per_mtok numeric,
+    suggest_cache_write_per_mtok numeric,
+    suggest_cache_read_per_mtok numeric,
+    CONSTRAINT price_lookups_outcome_check CHECK ((outcome = ANY (ARRAY['priced'::text, 'no_match'::text, 'source_failed'::text, 'variable'::text, 'suggested'::text])))
 );
 CREATE TABLE public.provider_prices (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1250,7 +1261,9 @@ CREATE TABLE public.provider_prices (
     source text NOT NULL,
     fetched_at timestamp with time zone DEFAULT now() NOT NULL,
     price_cache_write_per_mtok numeric,
-    price_cache_read_per_mtok numeric
+    price_cache_read_per_mtok numeric,
+    matched_id text,
+    match_kind text
 );
 CREATE TABLE public.provider_spend (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1455,6 +1468,12 @@ CREATE TABLE public.task_coding_pins (
 CREATE TABLE public.task_dependencies (
     task_id uuid NOT NULL,
     depends_on_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.task_ref_aliases (
+    board_id uuid NOT NULL,
+    ticket_no integer NOT NULL,
+    task_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.task_watchers (
@@ -1895,6 +1914,8 @@ ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.channel_teams
     ADD CONSTRAINT channel_teams_pkey PRIMARY KEY (channel_id, team_id);
+ALTER TABLE ONLY public.channel_thread_reads
+    ADD CONSTRAINT channel_thread_reads_pkey PRIMARY KEY (thread_root_id, user_id);
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.chat_approvals
@@ -2085,6 +2106,8 @@ ALTER TABLE ONLY public.task_coding_pins
     ADD CONSTRAINT task_coding_pins_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
+ALTER TABLE ONLY public.task_ref_aliases
+    ADD CONSTRAINT task_ref_aliases_pkey PRIMARY KEY (board_id, ticket_no);
 ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_pkey PRIMARY KEY (task_id, watcher);
 ALTER TABLE ONLY public.task_workchain_edges
@@ -2182,6 +2205,7 @@ CREATE INDEX board_views_board_idx ON public.board_views USING btree (board_id, 
 CREATE INDEX channel_messages_idx ON public.channel_messages USING btree (channel_id, seq);
 CREATE INDEX channel_messages_streaming_idx ON public.channel_messages USING btree (created_at) WHERE (status = 'streaming'::text);
 CREATE INDEX channel_messages_thread_idx ON public.channel_messages USING btree (thread_root_id) WHERE (thread_root_id IS NOT NULL);
+CREATE INDEX channel_thread_reads_user_idx ON public.channel_thread_reads USING btree (user_id, thread_root_id) INCLUDE (last_read_seq);
 CREATE UNIQUE INDEX channels_dm_key_idx ON public.channels USING btree (dm_key) WHERE (dm_key IS NOT NULL);
 CREATE UNIQUE INDEX channels_task_idx ON public.channels USING btree (task_id) WHERE (task_id IS NOT NULL);
 CREATE UNIQUE INDEX chat_approvals_external_idx ON public.chat_approvals USING btree (external_id) WHERE ((external_id IS NOT NULL) AND (status = 'pending'::text));
@@ -2246,6 +2270,7 @@ CREATE INDEX skills_index_entries_rank_idx ON public.skills_index_entries USING 
 CREATE INDEX skills_index_entries_search_idx ON public.skills_index_entries USING gin (search);
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
 CREATE INDEX task_coding_pins_account_idx ON public.task_coding_pins USING btree (account_id);
+CREATE INDEX task_ref_aliases_task_idx ON public.task_ref_aliases USING btree (task_id);
 CREATE INDEX task_workchain_edges_from ON public.task_workchain_edges USING btree (workchain_id, from_step);
 CREATE INDEX task_workchain_edges_to ON public.task_workchain_edges USING btree (workchain_id, to_step);
 CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_steps USING btree (task_id);
@@ -2385,6 +2410,10 @@ ALTER TABLE ONLY public.channel_teams
     ADD CONSTRAINT channel_teams_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channel_teams
     ADD CONSTRAINT channel_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.channel_thread_reads
+    ADD CONSTRAINT channel_thread_reads_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.channel_messages(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.channel_thread_reads
+    ADD CONSTRAINT channel_thread_reads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.channels
@@ -2589,6 +2618,10 @@ ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_depends_on_id_fkey FOREIGN KEY (depends_on_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_ref_aliases
+    ADD CONSTRAINT task_ref_aliases_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_ref_aliases
+    ADD CONSTRAINT task_ref_aliases_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_workchain_edges

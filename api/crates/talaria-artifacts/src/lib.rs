@@ -1248,6 +1248,58 @@ pub async fn save_artifact_body_if_unchanged(
     Ok(ConditionalSave::Saved(Box::new(a)))
 }
 
+/// The editor's content save, made atomic with its version check — the
+/// artifact twin of `talaria_kb::save_doc_content_if_unchanged`, whose doc
+/// says why. Title and body land in ONE update, only if the row is still the
+/// version the editor's buffer started from (`expected_updated_at`, at the
+/// wire's millisecond) or the save would change nothing that moved (the row
+/// already holds this body, and this title when one is sent). Unlike
+/// `save_artifact_body_if_unchanged` (the agent's surgical edit, which
+/// re-applies on a move), a person's stale buffer cannot be re-applied: a
+/// move answers `Moved` and the route puts the row in front of the editor.
+pub async fn save_artifact_content_if_unchanged(
+    pg: &PgPool,
+    id: &str,
+    title: Option<&str>,
+    body: &str,
+    actor: &str,
+    expected_updated_at: &str,
+) -> Result<ConditionalSave, sqlx::Error> {
+    let done = sqlx::query(
+        "update artifacts set title = coalesce($2, title), body = $3, updated_by = $4::text, \
+             updated_at = now() \
+         where id = $1::uuid \
+           and (date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', $5::timestamptz) \
+                or (body = $3 and ($2::text is null or title = $2)))",
+    )
+    .bind(id)
+    .bind(title)
+    .bind(body)
+    .bind(actor)
+    .bind(expected_updated_at)
+    .execute(pg)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Ok(match get_artifact(pg, id).await? {
+            Some(_) => ConditionalSave::Moved,
+            None => ConditionalSave::Missing,
+        });
+    }
+    let Some(a) = get_artifact(pg, id).await? else {
+        return Ok(ConditionalSave::Missing);
+    };
+    let _ = talaria_internal_history::snapshot(
+        pg,
+        "artifact",
+        &a.id,
+        &format!("# {}\n\n{}", a.title, a.body),
+        Some(actor),
+    )
+    .await;
+    let _ = remirror_if_official(pg, &a, actor).await;
+    Ok(ConditionalSave::Saved(Box::new(a)))
+}
+
 /// Delete — the KB mirror dies with the artifact (its RAG copy goes
 /// via delete_doc's unindex), then the row.
 pub async fn delete_artifact(

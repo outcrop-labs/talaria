@@ -18,7 +18,11 @@
   import {
     PRICING_QUERY_KEYS,
     UNPRICED_ANCHOR,
+    canFix,
     canRetry,
+    pricedAsLabel,
+    suggestionBody,
+    suggestionLabel,
     clearPrice,
     emptyPriceForm,
     endpointLabel,
@@ -47,6 +51,7 @@
   const data = $derived(query.data)
   const unpriced = $derived(data?.unpriced ?? [])
   const prices = $derived(data?.prices ?? [])
+  const fuzzy = $derived(data?.fuzzy ?? [])
 
   const refresh = () => Promise.all(PRICING_QUERY_KEYS.map((queryKey) => qc.invalidateQueries({ queryKey: [...queryKey] })))
   const key = (t: PriceTarget) => `${t.endpoint}\u0000${t.model}`
@@ -76,12 +81,12 @@
     ['cacheWrite', 'Cache write', 'input × 1.25'],
     ['cacheRead', 'Cache read', 'input × 0.1'],
   ] as const
-  let dialog = $state<{ target: UnpricedModel; mode: 'manual' | 'included' } | null>(null)
+  let dialog = $state<{ target: PriceTarget; mode: 'manual' | 'included' } | null>(null)
   let form = $state<PriceForm>(emptyPriceForm())
   let formError = $state<string | null>(null)
   let saving = $state(false)
 
-  const openDialog = (target: UnpricedModel, mode: 'manual' | 'included') => {
+  const openDialog = (target: PriceTarget, mode: 'manual' | 'included') => {
     form = emptyPriceForm()
     formError = null
     dialog = { target, mode }
@@ -114,6 +119,19 @@
       formError = errorMessage(e)
     } finally {
       saving = false
+    }
+  }
+
+  // Accept a suggestion: OpenRouter's rate for the same name, saved as the
+  // admin's own manual price (so it is labelled manual, and replaceable).
+  const acceptSuggestion = async (m: UnpricedModel) => {
+    if (!m.suggestion) return
+    try {
+      const r = await setPrice(suggestionBody({ endpoint: m.endpoint, model: m.model }, m.suggestion))
+      pushToast({ title: 'Suggested price saved', body: repricedLine(r.repriced), tone: 'success' })
+      await refresh()
+    } catch (e) {
+      toastError('Could not save the suggested price', e)
     }
   }
 
@@ -160,7 +178,7 @@
     <QueryError title="Could not load unpriced models" error={query.error} onRetry={() => void query.refetch()} />
   {:else if data === undefined}
     <Panel><SkeletonRows /></Panel>
-  {:else if unpriced.length > 0 || prices.length > 0}
+  {:else if unpriced.length > 0 || prices.length > 0 || fuzzy.length > 0}
     <Panel>
       <SectionHeader
         title="Unpriced models · 30 days"
@@ -187,7 +205,15 @@
                   {#if m.reason.checkedAt}<span class="text-ink-dim"> · checked {relativeTime(m.reason.checkedAt)}</span>{/if}
                 </p>
               </div>
+              {#if !canFix(m)}
+                <p class="text-xs text-muted">Nothing can price a call booked without a model id; these rows leave the 30-day window on their own.</p>
+              {:else}
               <div class="flex flex-wrap items-center gap-2">
+                {#if m.suggestion}
+                  <Button size="sm" variant="accent-soft" onclick={() => void acceptSuggestion(m)}>
+                    Use {m.suggestion.matchedId}'s rate · {suggestionLabel(m.suggestion)}
+                  </Button>
+                {/if}
                 <Button size="sm" variant="outline" onclick={() => openDialog(m, 'manual')}>Set price</Button>
                 <Button size="sm" variant="outline" onclick={() => openDialog(m, 'included')}>Included in a plan</Button>
                 <span title={canRetry(m) ? undefined : 'No configured endpoint to ask — price it by hand instead.'}>
@@ -201,6 +227,7 @@
                   </Button>
                 </span>
               </div>
+              {/if}
               {#if notes[key(m)]}
                 <p transition:slide={{ duration: 150 }} class="text-xs text-fg">{notes[key(m)]}</p>
               {/if}
@@ -209,6 +236,31 @@
         </ul>
       {/if}
     </Panel>
+
+    {#if fuzzy.length > 0}
+      <Panel>
+        <SectionHeader
+          title="Priced by a fuzzy match · 30 days"
+          info="These models were priced through a catalog entry their id only resembles — a snapshot priced as its alias, a path priced by its last segment. If you know the real rate, set it: a manual rate beats a fuzzy match (never the provider's own charge or an exact published price)."
+          action={String(fuzzy.length).padStart(2, '0')}
+        />
+        <ul class="divide-y divide-line">
+          {#each fuzzy as f (key(f))}
+            <li class="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3" data-testid="fuzzy-row">
+              <span class="font-mono text-xs text-muted">{endpointLabel(f.endpoint)}</span>
+              <span class="min-w-0 flex-1 truncate font-mono text-sm text-fg" title={f.model}>{f.model}</span>
+              <Chip tone="warn">{f.matchKind}</Chip>
+              <span class="font-mono text-[11px] text-fg">{pricedAsLabel(f.matchedId)}</span>
+              <span class="flex w-full flex-wrap items-center gap-2 text-xs text-muted">
+                {formatTokens(f.tokens)} tokens · {f.generations} calls in the last 30 days
+                <Button size="sm" variant="outline" onclick={() => openDialog(f, 'manual')}>Set price</Button>
+                <Button size="sm" variant="outline" onclick={() => openDialog(f, 'included')}>Included in a plan</Button>
+              </span>
+            </li>
+          {/each}
+        </ul>
+      </Panel>
+    {/if}
 
     {#if prices.length > 0}
       <Panel>

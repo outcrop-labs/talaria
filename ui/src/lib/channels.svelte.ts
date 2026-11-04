@@ -240,6 +240,20 @@ export const markChannelRead = async (
   await postJson<{ ok: true }>(`/api/channels/${id}/read`, { seq });
 };
 
+/** Mark ONE thread read — the thread-panel twin of `markChannelRead`. `seq`
+ * optional: the server advances to the thread's newest complete reply when
+ * absent, so an open panel catches up in one post. */
+export const markChannelThreadRead = async (
+  id: string,
+  threadRootId: string,
+  seq?: number,
+): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/channels/${id}/read`, {
+    threadRootId,
+    ...(seq !== undefined ? { seq } : {}),
+  });
+};
+
 export const sendChannelMessage = async (
   id: string,
   content: string,

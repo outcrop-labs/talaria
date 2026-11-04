@@ -561,6 +561,27 @@ server.registerTool(
 )
 
 server.registerTool(
+  'move_ticket',
+  {
+    description:
+      `Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is ${OFF_THE_TABLE}, in review, or blocked is a person's to move (403); so is moving one into a closed column or into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry. ${COMMENT_INSTEAD}`,
+    inputSchema: {
+      taskId: z.string().describe(TICKET_ADDR),
+      boardId: z.string().describe('The board to move it to — an id from list_boards'),
+      status: z
+        .string()
+        .max(40)
+        .optional()
+        .describe(
+          "A status key on the DESTINATION board. Leave it out and the move maps the ticket's column for you. Never a done column: a move does not close a ticket.",
+        ),
+      preview: z.boolean().optional().describe('true: answer what would change (new ref, column, dropped labels, unassigned) and move nothing'),
+    },
+  },
+  async ({ taskId, ...body }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/move`, body)),
+)
+
+server.registerTool(
   'comment',
   {
     description:

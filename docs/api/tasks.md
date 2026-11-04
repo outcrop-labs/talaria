@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-12 routes.
+13 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -19,6 +19,7 @@
 | [`/api/tasks/{id}/comments`](#apitasksidcomments) | POST | `dual` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | POST | `dual` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | DELETE | `session` |
+| [`/api/tasks/{id}/move`](#apitasksidmove) | POST | `dual` |
 | [`/api/tasks/{id}/review`](#apitasksidreview) | POST | `session` |
 | [`/api/tasks/{id}/usage`](#apitasksidusage) | GET | `dual` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | POST | `session` |
@@ -131,6 +132,28 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs`](
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `dependsOnId` | `string(1, 200)` |  |
+
+## `/api/tasks/{id}/move`
+
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs)
+
+> POST /api/tasks/{id}/move { boardId, status?, preview? }. Move a ticket to
+> another board — an ACTION, so POST (API-CONVENTIONS "Methods").
+>
+> The decisions live in talaria-tasks `move_task` (permission on both
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `dual` | [body](#post-apitasksidmove-body) | `{task, moved}` | 200, 400, 403, 404, 409 | — |
+
+### POST `/api/tasks/{id}/move` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `boardId` | `uuid` |  |
+| `status` | `string?(40)` |  |
+| `preview` | `bool?` |  |
 
 ## `/api/tasks/{id}/review`
 

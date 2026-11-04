@@ -12,6 +12,7 @@
   import { archiveTask, prefetchTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards.svelte'
   import { assigneeInfo, userAssignee } from '@/lib/assignees'
   import { ticketMenuEntries } from '@/components/board/ticket-menu'
+  import MoveTicketDialog from '@/components/board/MoveTicketDialog.svelte'
   import AssigneesPill from './AssigneesPill.svelte'
   import DuePill from './DuePill.svelte'
   import EstimatePill from './EstimatePill.svelte'
@@ -78,6 +79,8 @@
 
   const qc = useQueryClient()
   const menu = useContextMenu()
+  // The card/row menu's 'Move to board…' — one dialog, opened on a ticket.
+  let movingTask = $state<Task | null>(null)
   // Live work per card: one board-wide read; the working rows wear the
   // dither and carry the watch affordance.
   const work = useBoardWorkSessions(() => boardId)
@@ -121,6 +124,7 @@
         onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
         working: !!working(t.id),
         onStop: () => void stopWork(t.id),
+        onMoveBoard: () => (movingTask = t),
       }),
     )
   const label = (id: string) => assigneeInfo(id, fleetQuery.data?.agents ?? [], members).label
@@ -659,5 +663,8 @@
       </div>
     {/if}
     <ContextMenu {menu} />
+  {#if movingTask}
+    <MoveTicketDialog task={movingTask} boardId={boardId} open={!!movingTask} onClose={() => (movingTask = null)} />
+  {/if}
   </div>
 {/if}

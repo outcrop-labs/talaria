@@ -1,7 +1,7 @@
 // The one right-click menu for a ticket — kanban cards and list rows serve
 // the SAME entries: open/copy shortcuts, then quick controls (move, priority,
 // due presets, assign-to-me), then archive. Callers own the actual mutations.
-import { Archive, ArrowRight, CalendarDays, ExternalLink, Flag, Hash, Link as LinkIcon, Palette, Square, UserRound } from '@lucide/svelte'
+import { Archive, ArrowRight, ArrowRightLeft, CalendarDays, ExternalLink, Flag, Hash, Link as LinkIcon, Palette, Square, UserRound } from '@lucide/svelte'
 import { openCopyItems, type ContextMenuEntry, type ContextMenuItem } from '@/components/ui/context-menu.svelte'
 import { userAssignee } from '@/lib/assignees'
 import { PRIORITIES, STATUS_LABEL, TASK_STATUSES, TICKET_COLORS, type Task, type TaskStatus, type Priority, type TicketColor } from '@/lib/task-const'
@@ -21,6 +21,8 @@ export interface TicketMenuOpts {
   working?: boolean
   /** Present → the 'Stop the work' entry renders, last of the action group. */
   onStop?: () => void
+  /** Present → 'Move to board…' opens the move dialog (MoveTicketDialog). */
+  onMoveBoard?: () => void
 }
 
 const dueIso = (days: number) => {
@@ -89,6 +91,9 @@ export function ticketMenuEntries(t: Task, o: TicketMenuOpts): ContextMenuEntry[
         ],
       },
     )
+    if (o.onMoveBoard) {
+      items.push({ label: 'Move to board…', icon: [ArrowRightLeft, { size: 14 }], onSelect: o.onMoveBoard })
+    }
     if (o.meId) {
       const meEntry = userAssignee(o.meId)
       const mine = t.assignees.includes(meEntry)

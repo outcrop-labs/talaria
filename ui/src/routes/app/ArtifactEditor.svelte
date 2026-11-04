@@ -41,11 +41,13 @@
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
-  import AgentRefineNotice from '@/components/kb/AgentRefineNotice.svelte'
-  import { deleteArtifact, officeExport, officeExportHref, saveArtifact, uploadFile, useArtifact, type Artifact } from '@/lib/artifacts'
+  import { deleteArtifact, officeExport, officeExportHref, putArtifact, uploadFile, useArtifact, type Artifact, type ArtifactPatch } from '@/lib/artifacts'
+  import { followRevisions, historyKey } from '@/lib/revisions.svelte'
+  import { guardedSaver } from '@/lib/save-base.svelte'
+  import { heldKey, holdRefusedEdits } from '@/lib/held-edit.svelte'
   import { KIND_LABEL } from './artifacts'
-  import ArtifactHistory from './ArtifactHistory.svelte'
   import FilePreview from './FilePreview.svelte'
+  import KbHistoryRail from './KbHistoryRail.svelte'
   import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
   import ArtifactSheetView from './ArtifactSheetView.svelte'
 
@@ -88,6 +90,12 @@
   let seed = $state(0)
   let html = $state('') // microsite source
   let htmlTimer: ReturnType<typeof setTimeout> | null = null
+  // One save door, one save at a time; the editing surface's buffer saves
+  // GUARDED — it names the version it was seeded from, and an agent's
+  // update_document (or another person's save) landing meanwhile refuses it
+  // instead of being wiped by it: `saver.conflict`, the inline line above the
+  // body, at that save and never on open (lib/save-base.svelte.ts).
+  const saver = guardedSaver((p: ArtifactPatch & { baseUpdatedAt?: string }) => putArtifact(id, p))
   let initMode = false
   $effect(() => {
     if (artifact) title = artifact.title
@@ -95,35 +103,168 @@
       initMode = true
       mode = artifact.body.trim() ? 'read' : 'edit'
       if (artifact.kind === 'microsite') html = artifact.body
+      saver.rebase(artifact)
     }
   })
+
+  // READ PANES FOLLOW THE SERVER: a document or page in read mode refreshes
+  // when a revision lands (an agent's update_document / edit_document,
+  // another person's save). No notice — the Version history rail says who
+  // changed what. Edit mode never follows; a sheet's grid is seeded once.
+  followRevisions(
+    () => 'artifact',
+    () => id,
+    {
+      active: () => mode === 'read' && (artifact?.kind === 'doc' || artifact?.kind === 'microsite'),
+      onMoved: () => void qc.invalidateQueries({ queryKey: ['artifact', id] }),
+    },
+  )
   $effect(() => () => {
     if (htmlTimer) clearTimeout(htmlTimer)
   })
 
   const isOwner = $derived(!!artifact && !!me && (artifact.ownerUserId ? artifact.ownerUserId === me.id : artifact.createdBy === (me.email ?? me.name)))
 
-  const save = async (patch: Parameters<typeof saveArtifact>[1]) => {
+  /** Resolves true when the save landed. `guard`: the edit surface's buffer.
+   *  `rethrow`: the caller shows the failure itself (version history's
+   *  restore says it inline) instead of a toast. */
+  const save = async (patch: ArtifactPatch, opts: { guard?: boolean; rethrow?: boolean } = {}): Promise<boolean> => {
     saving = true
     try {
-      await saveArtifact(id, patch)
+      const saved = await saver.save(patch, opts)
+      void qc.invalidateQueries({ queryKey: historyKey('artifact', id) })
+      // A conflict: the line is up, and dirty stays — nothing was saved.
+      if (!saved) return false
       await qc.invalidateQueries({ queryKey: ['artifact', id] })
       await qc.invalidateQueries({ queryKey: ['artifacts'] })
       dirty = false
+      return true
     } catch (e) {
+      if (opts.rethrow) throw e
       // dirty stays true: the editor's content is not saved, and must not
       // read as saved.
       toastError('Save failed', e)
+      return false
     } finally {
       saving = false
     }
   }
-  const saveBody = () => save({ title, body: editorRef?.getMarkdown() ?? artifact?.body ?? '' })
+  /** The grid a sheet last tried to save — the sheet holds its own cells, so
+   *  this is its buffer as far as Keep mine is concerned. */
+  let sheetBuffer: string | null = null
+  /** The text the editing surface holds right now — a document's mounted
+   *  editor, a page's HTML, a sheet's last grid — or undefined when there is
+   *  no live buffer (the editor is not mounted, the sheet was not edited). */
+  const liveText = (): string | undefined =>
+    artifact?.kind === 'doc'
+      ? editorRef?.getMarkdown()
+      : artifact?.kind === 'microsite'
+        ? html
+        : artifact?.kind === 'sheet'
+          ? (sheetBuffer ?? undefined)
+          : undefined
+  /** The title rides a save only when the person renamed the file. */
+  const titlePart = () => (title !== saver.base?.title ? { title } : {})
+  const saveBody = () => {
+    const body = liveText()
+    return save(body === undefined ? { title } : { title, body }, { guard: mode === 'edit' })
+  }
+  const clearHtmlTimer = () => {
+    if (htmlTimer) clearTimeout(htmlTimer)
+    htmlTimer = null
+  }
+  /** Reseed every surface from the file as it now is (after a replace
+   *  landed): the editor and the grid remount, the page HTML follows. */
+  const reseed = () => {
+    clearHtmlTimer()
+    if (artifact?.kind === 'microsite') html = artifact.body
+    sheetBuffer = null
+    seed += 1
+    saver.rebase(artifact)
+  }
+  /** A deliberate replace — Keep mine, or a kept edit from an earlier visit:
+   *  unguarded, so it lands over the newer version (which stays in version
+   *  history). */
+  const replaceWith = async (edit: { title?: string; body: string }) => {
+    clearHtmlTimer()
+    if (!(await save(edit))) return false
+    reseed()
+    return true
+  }
+  const keepMine = () => {
+    const body = liveText() ?? saver.held?.body
+    if (body === undefined) return
+    void replaceWith({ ...titlePart(), body })
+  }
+
+  // What a refused buffer leaves behind is kept on this device, offered back
+  // on the next open, and asked about before any way out (lib/held-edit).
+  const held = holdRefusedEdits({
+    key: () => (me?.id ? heldKey('artifact', id, me.id) : null),
+    saver,
+    editing: () => mode === 'edit',
+    live: () => {
+      const body = liveText()
+      return body === undefined ? undefined : { ...titlePart(), body }
+    },
+    current: () => artifact,
+    leave: () =>
+      confirm({
+        title: 'Leave with unsaved edits?',
+        message: 'This document changed while you were editing, so your edits were not saved. They stay on this device and are offered back when you open it again.',
+        confirmLabel: 'Leave',
+      }),
+  })
+  /** What a surface seeds from: the file — or, while a save is refused, the
+   *  person's held buffer, so a surface that remounts (the Work view swapping
+   *  the body for comments and back) shows their words, not the newer file. */
+  const seedBody = (a: Artifact) => (saver.conflict && saver.held?.body !== undefined ? saver.held.body : a.body)
+
+  /** Read ⇄ Edit. Entering edit seeds a document's editor (and a page's HTML)
+   *  from the version on screen, so that is the base — once any save still
+   *  in flight has landed and the file has been read again; a sheet's grid
+   *  was seeded when it mounted, so its base stays. Leaving saves what is
+   *  unsaved, and stays in Edit if that save was refused or failed; with a
+   *  refusal already up it asks first. */
+  const setMode = async (m: 'read' | 'edit') => {
+    if (m === mode || !artifact) return
+    if (m === 'edit') {
+      if (saver.busy) {
+        await saver.idle()
+        await qc.invalidateQueries({ queryKey: ['artifact', id] })
+      }
+      if (artifact.kind === 'microsite') html = artifact.body
+      if (artifact.kind !== 'sheet') saver.rebase(artifact)
+    } else if (saver.conflict) {
+      const discard = await confirm({
+        title: 'Discard your unsaved edits?',
+        message: 'This document changed while you were editing, so your edits were not saved. Discard them and read the current version, or stay and keep yours.',
+        confirmLabel: 'Discard',
+        danger: true,
+      })
+      if (!discard) return
+      clearHtmlTimer() // a pending page save must not land the discarded HTML
+      await qc.invalidateQueries({ queryKey: ['artifact', id] })
+      saver.rebase(artifact)
+      sheetBuffer = null
+      seed += 1 // a sheet's grid reseeds from the version now on screen
+    } else {
+      // Save what is unsaved on the way out; an autosave in flight is awaited.
+      const unsaved = dirty || htmlTimer !== null || !!editorRef?.hasUnsavedChanges()
+      clearHtmlTimer()
+      const ok = unsaved ? await saveBody() : (await saver.idle(), true)
+      if (!ok || saver.conflict) return
+    }
+    mode = m
+  }
   const editHtml = (v: string) => {
     html = v
     dirty = true
     if (htmlTimer) clearTimeout(htmlTimer)
-    htmlTimer = setTimeout(() => void save({ body: v }), 700)
+    htmlTimer = setTimeout(() => {
+      htmlTimer = null
+      void save({ body: v }, { guard: true })
+    }, 700)
   }
   let uploading = $state(false)
   const onPickFile = async (file: File | null | undefined) => {
@@ -284,10 +425,7 @@
       size="xs"
       options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
       value={mode}
-      onChange={(m) => {
-        if (m === 'read' && mode === 'edit') void saveBody()
-        mode = m
-      }}
+      onChange={(m) => void setMode(m)}
     />
   {/if}
 {/snippet}
@@ -332,6 +470,7 @@
       {#if override}
         <div class="flex min-h-0 flex-1">{@render override()}</div>
       {:else}
+        {@render conflictRow()}
         {@render bodyRow(artifact)}
       {/if}
       {@render footerRow(artifact)}
@@ -386,10 +525,7 @@
         size="xs"
         options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
         value={mode}
-        onChange={(m) => {
-          if (m === 'read' && mode === 'edit') void saveBody()
-          mode = m
-        }}
+        onChange={(m) => void setMode(m)}
       />
       <Button variant="outline" size="sm" class="shrink-0 capitalize" title="Share &amp; permissions" onclick={() => (shareOpen = true)}>
         {artifact.visibility}
@@ -418,6 +554,7 @@
       </DropdownMenu>
     </div>
 
+    {@render conflictRow()}
     {@render bodyRow(artifact)}
 
     {@render footerRow(artifact)}
@@ -427,50 +564,52 @@
 {/if}
 {/if}
 
+{#snippet conflictRow()}
+  {#if saver.conflict}
+    <div
+      transition:slide={{ duration: 150 }}
+      class="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-1.5 text-xs"
+      role="alert"
+      data-save-conflict
+    >
+      <span class="min-w-0 flex-1 truncate text-warning">Not saved: this document changed while you were editing.</span>
+      <Button variant="outline" size="xs" class="shrink-0" onclick={() => (showHistory = true)}>Review in version history</Button>
+      <Button variant="ghost" size="xs" class="shrink-0" onclick={() => void keepMine()}>Keep mine</Button>
+    </div>
+  {:else if held.offered}
+    <div
+      transition:slide={{ duration: 150 }}
+      class="flex shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-1.5 text-xs"
+      role="alert"
+      data-held-edit
+    >
+      <span class="min-w-0 flex-1 truncate text-warning" title={held.offered.body}>
+        Edits you left here {relativeTime(held.offered.at)} were not saved: this document changed while you were editing.
+      </span>
+      <Button variant="outline" size="xs" class="shrink-0" onclick={() => (showHistory = true)}>Review in version history</Button>
+      <Button variant="ghost" size="xs" class="shrink-0" onclick={() => void held.keepWith(replaceWith)}>Keep mine</Button>
+      <Button variant="ghost" size="xs" class="shrink-0" onclick={() => held.settle()}>Discard</Button>
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet bodyRow(artifact: Artifact)}
   <div class="flex min-h-0 flex-1">
     {#if artifact.kind === 'doc'}
       {#if mode === 'edit'}
         {#key `${id}-${seed}`}
-          <RichEditor bind:this={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Start writing" fill class="min-w-0 flex-1" />
+          <RichEditor bind:this={editorRef} value={seedBody(artifact)} slash prose autosave onSave={() => void saveBody()} placeholder="Start writing" fill class="min-w-0 flex-1" />
         {/key}
-        <!-- TALA-4: announce agent refines (update_document) inside the
-             editing surface too. -->
-        {#if artifact}
-          <AgentRefineNotice
-            kind="artifact"
-            id={id}
-            current={() => editorRef?.getMarkdown() ?? artifact.body}
-            onLoad={(md) => {
-              // Match the KB grammar: the staged text is saved (the viewer's
-              // acceptance) and the editor reseeds with the saved content.
-              void save({ body: md }).then(() => (seed += 1))
-            }}
-            {me}
-            class="shrink-0"
-          />
-        {/if}
       {:else}
         <!-- Tab-pane grammar on the READ pane only: the edit pane holds live
              editor state (and is seed-keyed for Muse/revision swaps), so it
              keeps its hard cut rather than replaying an entrance. -->
         <div in:fly={{ y: 6, duration: 200 }} class="re-prose min-w-0 flex-1 overflow-y-auto">
-          {#if artifact}
-            <AgentRefineNotice
-              kind="artifact"
-              id={id}
-              current={() => artifact.body}
-              onLoad={() => void qc.invalidateQueries({ queryKey: ['artifact', id] })}
-              onAnnounce={() => void qc.invalidateQueries({ queryKey: ['artifact', id] })}
-              {me}
-              class="mx-auto w-full max-w-[46rem] shrink-0"
-            />
-          {/if}
           {#if artifact.body.trim()}
             <Markdown class="tiptap" children={artifact.body} />
           {:else}
             <div class="mx-auto max-w-[46rem] px-6 py-8">
-              <button type="button" onclick={() => (mode = 'edit')} class="text-sm text-muted hover:text-fg">
+              <button type="button" onclick={() => void setMode('edit')} class="text-sm text-muted hover:text-fg">
                 Empty document. Click to start.
               </button>
             </div>
@@ -482,7 +621,7 @@
         <Textarea
           value={html}
           oninput={(e) => editHtml(e.currentTarget.value)}
-          onblur={() => dirty && void save({ body: html })}
+          onblur={() => dirty && void save({ body: html }, { guard: true })}
           spellcheck={false}
           placeholder={'<!doctype html>\n<html>'}
           class="min-w-0 flex-1 rounded-none border-0 font-mono text-xs leading-relaxed"
@@ -492,12 +631,19 @@
         <iframe in:fly={{ y: 6, duration: 200 }} title={artifact.title} srcdoc={artifact.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" class="min-w-0 flex-1 border-0 bg-white"></iframe>
       {:else}
         <div in:fly={{ y: 6, duration: 200 }} class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
-          <button type="button" onclick={() => (mode = 'edit')} class="hover:text-fg">Empty microsite. Switch to Edit to write HTML.</button>
+          <button type="button" onclick={() => void setMode('edit')} class="hover:text-fg">Empty microsite. Switch to Edit to write HTML.</button>
         </div>
       {/if}
     {:else if artifact.kind === 'sheet'}
       {#key `${id}-${seed}`}
-        <ArtifactSheetView value={artifact.body} editable={mode === 'edit'} onSave={(body) => void save({ body })} />
+        <ArtifactSheetView
+          value={seedBody(artifact)}
+          editable={mode === 'edit'}
+          onSave={(body) => {
+            sheetBuffer = body
+            void save({ body }, { guard: true })
+          }}
+        />
       {/key}
     {:else if artifact.kind === 'file'}
       <div class="min-w-0 flex-1 overflow-y-auto p-8">
@@ -547,15 +693,21 @@
            wrapper pinned to the resting width so rows clip, not rewrap. -->
       <div transition:slide={GROW_X} class="shrink-0 overflow-y-auto border-l border-line-subtle">
       <div class="w-64 p-3">
-        <ArtifactHistory
+        <KbHistoryRail
+          kind="artifact"
           {id}
+          format={artifact.kind === 'doc' ? 'markdown' : 'text'}
+          canRestore={artifact.canEdit !== false}
           onRestore={async (content) => {
             const m = /^#\s+(.*)\n+([\s\S]*)$/.exec(content)
             const t = m ? m[1]!.trim() : title
             const b = m ? m[2]! : content
             title = t
-            await save({ title: t, body: b })
-            seed += 1
+            // A deliberate replace: unguarded, and the surfaces reseed from
+            // it. A failure rejects so the rail says it, dialog still open.
+            clearHtmlTimer()
+            if (!(await save({ title: t, body: b }, { rethrow: true }))) throw new Error('The restore did not save.')
+            reseed()
           }}
         />
       </div>
@@ -569,7 +721,7 @@
   <div class="flex items-center gap-2 border-t border-line-subtle px-6 py-2 font-mono text-[10px] tracking-[0.05em] text-muted">
     <span>edited {relativeTime(artifact.updatedAt)}{artifact.updatedBy ? ` by ${artifact.updatedBy}` : ''}</span>
     <span class="ml-auto"></span>
-    {#if mode === 'edit' && artifact.kind !== 'file'}<span class="uppercase">{saving ? 'Saving' : 'Saved'}</span>{/if}
+    {#if mode === 'edit' && artifact.kind !== 'file'}<span class="uppercase">{saving ? 'Saving' : saver.conflict ? 'Not saved' : 'Saved'}</span>{/if}
   </div>
 {/snippet}
 
@@ -584,6 +736,8 @@
     editPolicy={artifact.editPolicy}
     publicSlug={artifact.publicSlug}
     canManage={isOwner}
-    onSave={(patch) => save(patch)}
+    onSave={async (patch) => {
+      await save(patch)
+    }}
   />
 {/snippet}

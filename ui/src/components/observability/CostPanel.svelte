@@ -10,7 +10,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { relativeTime } from '@/lib/fleet'
   import { fade, slide } from '@/lib/motion'
-  import { agentLabel, formatCost, formatTokens, useCost, type CostTotals } from '@/lib/cost.svelte'
+  import { agentCostLabel, agentLabel, formatCost, formatTokens, useCost, type CostTotals } from '@/lib/cost.svelte'
   import SplitPanel from './SplitPanel.svelte'
   import UnpricedPanel from './UnpricedPanel.svelte'
   import { useSession } from '@/lib/session'
@@ -135,7 +135,8 @@
           sub={(t?.providerReported
             ? `${t.providerReported.source}${t.providerReported.stale ? ' (stale)' : ''}${t.providerReported.fetchedAt ? ` · ${t.providerReported.fetchedAt}` : ''}`
             : `today ${formatCost(t?.today.cost ?? 0)} · ${t?.month.generations ?? 0} generations`) +
-            ((t?.includedCloudTokens ?? 0) > 0 ? ` · ${formatTokens(t!.includedCloudTokens!)} included in a plan` : '')}
+            ((t?.includedCloudTokens ?? 0) > 0 ? ` · ${formatTokens(t!.includedCloudTokens!)} included in a plan` : '') +
+            ((t?.derivedCost ?? 0) > 0 && !t?.providerReported ? ` · ${formatCost(t!.derivedCost!)} estimated from published prices` : '')}
         />
       </div>
 
@@ -191,7 +192,7 @@
                 {a.localShare === null ? '—' : `${Math.round(a.localShare * 100)}% self-hosted`}
               </span>
               <span class="w-20 text-right font-mono text-sm text-fg">{formatTokens(a.prompt + a.completion)}</span>
-              <span class="w-16 text-right font-mono text-[11px] text-muted">{formatCost(a.cost)}</span>
+              <span class="w-16 text-right font-mono text-[11px] text-muted" title={(a.includedTokens ?? 0) > 0 ? `${formatTokens(a.includedTokens ?? 0)} tokens included in a plan` : undefined}>{agentCostLabel(a)}</span>
               <span class="w-16 text-right font-mono text-[11px] text-muted">{a.generations} gen</span>
               <span class="w-20 text-right font-mono text-[11px] text-muted">{relativeTime(a.lastUsed)}</span>
             </li>

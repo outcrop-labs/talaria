@@ -2,6 +2,7 @@ import { openStream } from '@/lib/sse'
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { confirm } from '@/components/ui/confirm.svelte'
 import { accessLossMessage, lossName } from '@/lib/access-loss'
+import type { MoveSummary } from '@/lib/ticket-move'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { delJson, getJson, getJsonOr404, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
 import type { Effort, Priority, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
@@ -247,7 +248,8 @@ export interface TaskUsage {
   completionTokens: number
   cost: number
   unpricedTokens: number
-  perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null }>
+  /** `includedTokens`: priced at $0 because the model is included in a plan. */
+  perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null; includedTokens?: number }>
 }
 
 export interface TaskFull {
@@ -369,6 +371,14 @@ export const createTask = (
     tags?: string[]
   },
 ) => postJson<{ task: Task }>(`/api/boards/${boardId}/tasks`, input)
+
+/** Move a ticket to another board (POST /api/tasks/{id}/move). `preview`
+ *  answers what WOULD change and writes nothing — the confirm dialog reads it
+ *  first. `status` is a key on the DESTINATION board; omitted, the server
+ *  maps the column (same name, then category, then intake). Refusals reject
+ *  with the server's sentence (400/403/409). */
+export const moveTask = (taskId: string, input: { boardId: string; status?: string; preview?: boolean }) =>
+  postJson<{ task?: Task; preview?: boolean; moved: MoveSummary }>(`/api/tasks/${taskId}/move`, input)
 
 /** Open (or find) the ticket's discussion thread — the ensure route. Most
  *  tickets are read and moved, never discussed, so a thread is not created

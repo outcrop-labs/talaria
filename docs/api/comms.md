@@ -306,20 +306,23 @@ source.
 Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_read.rs`](../../api/crates/talaria-routes-comms/src/comms/channels_id_read.rs)
 
 > /api/channels/{id}/read.
-> POST { seq } → advance the caller's read cursor (drives unread badges).
-> A cursor that reaches the channel's newest message also clears the bell
-> rows pointing at the channel — its DM row and any @mention in it — and
+> POST { seq?, threadRootId? } → advance the caller's read cursor (drives
+> unread badges). Two arms, two cursors:
+>
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apichannelsidread-body) | `{ok, cleared}` | 200, 400, 403 | — |
+| POST | `session` | [body](#post-apichannelsidread-body) | `{ok, cleared}` | 200, 400, 403, 404 | — |
+
+**POST** — Two arms, two cursors. Without `threadRootId`, the whole-channel cursor (`seq` required); with it, that thread's own cursor (`seq` optional: absent, the thread's newest complete reply). A root that is not this channel's message is 404. The bell rows clear once the person is caught up: the thread's own rows, or every row on the channel when nothing on it is unread. `cleared` counts them.
 
 ### POST `/api/channels/{id}/read` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `seq` | `number(0, 9007)` | seq: integer, min 0, no schema max — the ceiling is the safe-integer bound itself. |
+| `threadRootId` | `uuid?` | The thread to read (any message in it re-roots to its root); absent, the whole channel. |
+| `seq` | `number?(0, 9007)` | Integer, min 0, ceiling the safe-integer bound. Required without threadRootId; in a thread, absent reads to its newest complete reply. |
 
 ## `/api/channels/{id}/teams`
 

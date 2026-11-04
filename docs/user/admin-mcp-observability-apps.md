@@ -72,10 +72,11 @@ How long the audit keeps its record is **Admin → Security → Settings → Aud
 
 Cost comes from the token ledger: every chat turn and channel reply lands in it once agents
 start talking. Cache and reasoning tokens are accounted separately (cache writes bill at
-1.25× input, reads at 0.1× — reasoning rides inside output), dollar figures are rate-card
-estimates rather than provider invoices, and models without prices set on the
-[Models](./admin-models.md) page show as unattributed — the "ledger priced" alert is the
-honesty check. **Admin → Settings** also carries rolling-window LLM budgets (org-wide and
+1.25× input and reads at 0.1× unless the provider publishes its own cache rates — reasoning
+rides inside output). Dollars are the provider's own charge when it reports one, then its
+published price, then a price an admin set; a model nothing prices is listed under **Cost →
+Unpriced models** with the reason ([When usage has no price](./admin-models.md#when-usage-has-no-price)),
+and the "Unpriced cloud usage" alert is the honesty check. **Admin → Settings** also carries rolling-window LLM budgets (org-wide and
 per-caller token/$ ceilings, checked before every gateway call) and a minimum cron interval;
 both are unlimited/unset by default. An agent that reaches its budget ends the turn and says
 when the window reopens. If you raise the limit before then, the agent works again at once.

@@ -10,13 +10,16 @@
 
   Other changes:
   - Cache tokens bill at the catalog's own published cache rates when it has them.
-  - The price check now also matches OpenAI's `-YYYY-MM-DD` and xAI's `-MMDD` snapshot ids and Fireworks-style path ids.
+  - No row ever prices below $0, and no price that is not a finite number counts. OpenRouter publishes `"-1"` for its router models (`openrouter/auto`, `openrouter/fusion`, `nvidia/switchyard` and others), meaning the price is variable. The price check refuses that number and records those models as **variable price**, and calls that carry OpenRouter's own charge are still priced. The priced view reads no negative, NaN or infinite rate from any source and floors token counts at zero. A migration deletes any negative rows an earlier price pass stored.
+  - The price check now also matches OpenAI's `-YYYY-MM-DD` snapshot ids, older `-MMDD` ids such as `gpt-4-0613`, and Fireworks-style path ids. An id whose base model the live catalog no longer lists, such as xAI's `grok-4-0709`, stays unpriced.
   - The price check records why each model has no price: no published price (and the ids it tried), the source didn't answer (quoting its error and every cause under it), or not looked up yet.
   - The new admin-only **Unpriced models** panel lists each model with its endpoint, tokens and reason, and offers **Set price**, **Included in a plan** and **Retry lookup**.
   - Pricing is read-time, so each fix re-prices that model's past calls, and the alert clears for history. The alert now goes to admins only and links to the panel.
   - The endpoint editor shows the admin's settings beside the published prices.
 
   New API: `GET /api/cost/unpriced`, `PUT`/`DELETE /api/cost/prices`, `POST /api/cost/unpriced/lookup`, all admin-only.
+
+  **Upgrade note: USD budgets start binding.** On main, OpenRouter agent turns counted as $0, so an org or per-agent dollar ceiling never bound on them. After the upgrade, every row inside the budget window re-prices at once (24 hours by default, up to 365 days), and new calls carry OpenRouter's own charge. An agent whose real spend is already over its ceiling is refused with `429 budget_exceeded` on its first call after the deploy. Review the USD ceilings under **Admin → Settings** before upgrading, or right after.
 
   Verified:
   - `bun run gate`.
@@ -30,5 +33,7 @@
     - the alert clears when a price lands.
   - The ui tests for the panel's helpers.
   - On a worktree stack, real gateway calls on a Z.ai Coding Plan endpoint, plus OpenRouter and OpenAI rows in the ledger's own shapes. With the catalog first blocked by a proxy, then reachable, each one was seen unpriced with its reason and fixed all three ways in the running app: retry, included and manual, plus the endpoint editor's plan checklist. Unpriced tokens went from 154,572 to 0, the alert cleared, members got 403s, and every write was audited.
+
+  Also verified for the variable prices: the live catalog's `-1` entries are never priced; five `openrouter/auto` rows on a stored `-1` price come out unpriced at $0 in the budget read; a property test over every combination of sources, including negative, NaN and infinite rates and negative token counts, finds no cost below zero; and on a worktree stack an org USD budget of $0.01 refused a real gateway call once the router rows stopped counting negative.
 
   Not verified: a live OpenRouter or OpenAI key (none was available), and a client instance's own data.

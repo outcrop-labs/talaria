@@ -201,6 +201,29 @@ pub struct ChannelPeer {
     pub email: Option<String>,
 }
 
+/// A message `msg` that viewer `$1` has read IN ITS THREAD: a reply whose
+/// thread cursor (`channel_thread_reads`) covers its seq. Every unread
+/// predicate negates it — the rail pill (`list_channels`), the rail badge
+/// (`channel_unread_total`), the profile drawer (`shared_rooms_sql!`) — and so
+/// do the read route's caught-up gates, so the badge and the bell can never
+/// disagree about what a thread read covered. One spelling, by macro: a copy
+/// per query is how three counts drift.
+///
+/// A BARE `exists`, and every caller writes `and not <this>`: that makes it a
+/// top-level conjunct, which Postgres plans as an anti-join over the viewer's
+/// own rows (`channel_thread_reads_user_idx`). Wrapped in `not (… and exists
+/// …)`, it ran as a correlated SubPlan, one probe per unread candidate, and
+/// its cost estimate pushed the rail's queries into full JIT at ~35k messages
+/// (5–6× slower). No `thread_root_id is not null` guard either: the equality
+/// below is never true for a top-level message.
+macro_rules! thread_read_covers_sql {
+    () => {
+        "exists (select 1 from channel_thread_reads tr \
+           where tr.thread_root_id = msg.thread_root_id \
+             and tr.user_id = $1::uuid and tr.last_read_seq >= msg.seq)"
+    };
+}
+
 /// A channel `c` in the viewer-`$1` Comms rail: live, not a ticket's room, and
 /// theirs by membership or (outside DMs) by team. Needs
 /// `left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid`.
@@ -345,7 +368,10 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
                where msg.channel_id = c.id and msg.seq > coalesce(m.last_read_seq, 0) \
                  and msg.status = 'complete' \
                  and not (msg.author_type = 'user' \
-                   and msg.author = coalesce(self.email, self.name, 'user'))), \
+                   and msg.author = coalesce(self.email, self.name, 'user')) \
+                 and not ",
+        thread_read_covers_sql!(),
+        "), \
              case when c.kind = 'dm' then ( \
                select coalesce(json_agg(json_build_object( \
                    'userId', ou.id::text, 'name', ou.name, 'email', ou.email) \
@@ -438,7 +464,9 @@ pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sql
         rail_room_sql!(),
         " and msg.seq > coalesce(m.last_read_seq, 0) and msg.status = 'complete' \
            and not (msg.author_type = 'user' \
-             and msg.author = coalesce(self.email, self.name, 'user'))"
+             and msg.author = coalesce(self.email, self.name, 'user')) \
+           and not ",
+        thread_read_covers_sql!()
     ))
     .bind(user_id)
     .fetch_one(pg)
@@ -508,6 +536,90 @@ pub async fn mark_channel_read(
     .execute(pg)
     .await?;
     Ok(())
+}
+
+/// Advance the reader's cursor on ONE thread (`channel_thread_reads`) — the
+/// thread-panel twin of `mark_channel_read`. Replies share the channel's own
+/// seq counter, but the channel cursor advances only on the main feed, so a
+/// thread read needs its own row: monotonic by the same contract (`greatest`,
+/// never backwards) and one row per (thread, person) upserted on first read.
+/// The caller owns uuid-gating — the route validates the root before it gets
+/// here, so `thread_root_id` is cast unchecked.
+pub async fn mark_channel_thread_read(
+    pg: &PgPool,
+    thread_root_id: &str,
+    user_id: &str,
+    seq: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into channel_thread_reads (thread_root_id, user_id, last_read_seq) \
+         values ($1::uuid, $2::uuid, $3) \
+         on conflict (thread_root_id, user_id) \
+         do update set last_read_seq = greatest(channel_thread_reads.last_read_seq, excluded.last_read_seq), \
+           updated_at = now()",
+    )
+    .bind(thread_root_id)
+    .bind(user_id)
+    .bind(seq)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Is the reader caught up on the WHOLE channel: no complete message past
+/// their channel cursor, except replies their thread cursor covers? The read
+/// route's gate for the channel's bell rows (the href sweep: its DM row, an
+/// @mention in it, every thread-reply row on it), from either arm. It reads
+/// a thread-read reply as read exactly as the badge does
+/// (`thread_read_covers_sql!`). The bare "cursor covers the newest complete
+/// message" it replaces never let a channel whose newest message is a reply
+/// catch up from the main feed — that feed never shows replies — so the badge
+/// read clean while the bell kept the channel's @mention lit. Messages the
+/// reader wrote still count here, as they always did: the feed's cursor is
+/// the newest seq, their own included.
+pub async fn channel_read_caught_up(
+    pg: &PgPool,
+    channel_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(concat!(
+        "select not exists ( \
+           select 1 from channel_messages msg \
+           where msg.channel_id = $2::uuid and msg.status = 'complete' \
+             and msg.seq > coalesce((select last_read_seq from channel_members \
+                                     where channel_id = $2::uuid and user_id = $1::uuid), 0) \
+             and not ",
+        thread_read_covers_sql!(),
+        ")"
+    ))
+    .bind(user_id)
+    .bind(channel_id)
+    .fetch_one(pg)
+    .await
+}
+
+/// Is the reader caught up on ONE thread: does their thread cursor cover
+/// every complete reply in it? The read route's gate for that thread's own
+/// bell rows (`reply:<root>`). Equivalent to "the cursor is at or past the
+/// thread's newest complete reply", spelled through the same clause the badge
+/// uses so the two cannot drift.
+pub async fn channel_thread_read_caught_up(
+    pg: &PgPool,
+    thread_root_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(concat!(
+        "select not exists ( \
+           select 1 from channel_messages msg \
+           where msg.thread_root_id = $2::uuid and msg.status = 'complete' \
+             and not ",
+        thread_read_covers_sql!(),
+        ")"
+    ))
+    .bind(user_id)
+    .bind(thread_root_id)
+    .fetch_one(pg)
+    .await
 }
 
 /// Create a channel or a Relay; the creator becomes its owner (and first
@@ -1777,7 +1889,10 @@ macro_rules! shared_rooms_sql {
                (select count(*)::int from channel_messages msg \
                  where msg.channel_id = c.id and msg.seq > coalesce(m.last_read_seq, 0) \
                    and msg.status = 'complete' \
-                   and not (msg.author_type = 'user' and msg.author = (select who from me))) \
+                   and not (msg.author_type = 'user' and msg.author = (select who from me)) \
+                   and not ",
+            thread_read_covers_sql!(),
+            ") \
              from channels c \
              left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
              where c.archived_at is null and c.task_id is null \

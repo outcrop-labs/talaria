@@ -17,6 +17,7 @@
   import { toastError } from '@/lib/toast.svelte'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
+  import { historyKey } from '@/lib/revisions.svelte'
   import KbHistoryRail from './KbHistoryRail.svelte'
   import KbMuseBar from './KbMuseBar.svelte'
   import KbSettingsMenu from './KbSettingsMenu.svelte'
@@ -66,6 +67,7 @@
     }
     await qc.invalidateQueries({ queryKey: ['kb-space', spaceId] })
     await qc.invalidateQueries({ queryKey: ['kb-spaces'] })
+    void qc.invalidateQueries({ queryKey: historyKey('kb-space', spaceId) })
   }
   const saveBody = () => save({ name: name.trim() || 'Untitled', body: editorRef?.getMarkdown() ?? space?.body ?? '' })
 </script>

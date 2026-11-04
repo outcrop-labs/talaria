@@ -156,6 +156,11 @@ data so you still have realistic agents/boards/tickets to work against.
    to main's lockfile. (`bun run gate` installs any missing `node_modules` of a
    package it typechecks itself, too — never through a symlink.)
 
+7. **Seeds the Rust build cache** (`api/target`, and `desktop/src-tauri/target` with
+   `--desktop`) from an idle checkout's, by reflink — see
+   [The Rust build cache](#the-rust-build-cache). `--no-seed` starts it empty;
+   `--seed-from <checkout>` names the source.
+
 It prints the exact `talaria dev` command and the teardown steps.
 
 **The setup is the invoking checkout's, not the base ref's.** `bun talaria worktree`
@@ -287,11 +292,136 @@ recut, or check the new `ui/.env` against step 4.
   early. This is why a worktree costs RAM and two containers only while its work is
   live — five stale stacks quietly running Postgres was the thing this fixed.
 - **Each worktree builds into its own `api/target`**, which is what keeps two stacks
-  from locking each other out of cargo. `mise.toml` puts every cargo behind a shared
-  **sccache**, so the second worktree's build reuses the first's compiled dependencies
-  instead of paying for the graph again. A side worktree's build dir untouched for 14
-  days is reclaimed by `--apply`; the primary's is a warm cache the sweep only ever
-  names.
+  from locking each other out of cargo, and starts with a seeded one (next section).
+  `mise.toml` puts every cargo behind a shared **sccache** as well, which saves the
+  CPU of a crate another tree compiled, though not the disk. A side worktree's build
+  dir goes when its pull request finishes, or after 14 idle days, or when the disk is
+  over the line (next section); the primary's is a warm cache the sweep only ever names.
+
+## The Rust build cache
+
+Every worktree used to start with an empty `api/target` and pay a cold build, and each
+wrote its own full copy of the same third-party artifacts. On 2026-11-03 four agent
+worktrees held 15, 15, 91 and 107 GiB of target between them, beside the primary's
+34 GiB, and the disk reached the stop gate's 85% line.
+
+**What `talaria worktree` does now.** After the stack is up it **reflink-copies the
+registry crates' build units** from the best idle checkout's `api/target`: the one
+whose `Cargo.lock` shares the most `name version source` entries with the new
+worktree's, most recently built first. `bun talaria seed-target [--from <checkout>]
+[--desktop]` does the same for the checkout you stand in, which you can use on a
+worktree that predates this, a target the sweep removed, or the desktop target before
+a desktop build. A reflinked file shares its extents with the source until either
+side rewrites it, so the copy costs metadata, not data. `du` counts every shared byte
+again; `xfs_spaceman -c 'freesp -s'`, or `df` before and after, says what the disk
+really spent. ([`cli/src/targetseed.ts`](../cli/src/targetseed.ts) is the
+implementation.)
+
+**Only registry and git units are copied.** Nothing of a path package (a workspace
+crate) arrives: not its fingerprint, rlib, test binary, `incremental/` or the files
+`debug/` uplifts. Every workspace crate is compiled from the new worktree's own
+sources on its first build. A `deps/` file is copied only when its hash belongs to a
+kept registry unit, and a name that is a path package anywhere in the lockfile is
+left out. Copying a whole target does not work, and the reason is in how cargo
+judges freshness:
+
+- A path package's unit hash (`-C metadata`, the `-<hash>` in every artifact name)
+  is computed from its path **relative to the workspace root**. Crate `x` in worktree
+  A and crate `x` in worktree B, with different sources, look for the same file names.
+- A path package is fresh while no source file in its dep-info is **newer** than the
+  dep-info file. `cp -r` stamps every copied file with the copy's own time, which is
+  later than the new checkout's sources, so every workspace crate read as fresh, and
+  the build linked worktree A's code into worktree B's tests (`unresolved import` for
+  a symbol that plainly existed, on 2026-10-23). `cp -a` keeps the mtimes, which only
+  makes the race narrower: a build in the source that started after the new
+  checkout was written still wins.
+
+  A registry unit has neither problem. Its fingerprint is its version (the source
+  under `~/.cargo` is immutable) and its features and flags, so cargo judges a copied
+  one exactly as it did in the tree it came from. The copy keeps timestamps
+  (`cp -a`), so registry units keep their build order too. A build script's
+  absolute `OUT_DIR` lines are rewritten by cargo itself (`root-output`), which
+  exists so that a target can move.
+
+**What it refuses.**
+
+- **A target another cargo is building in.** It is never read. cargo 1.97 takes
+  `.cargo-build-lock` and `.cargo-artifact-lock` exclusively and `.cargo-lock`
+  shared. The seed checks `/proc/locks` first, which takes no lock, and then copies
+  under **shared** `flock`s on all three. A build already running makes the seed
+  stand down. A build that starts during the copy waits for it, for seconds.
+- **A filesystem without reflink** (ext4, tmpfs, a source on another filesystem)
+  gets a cold build. `cp --reflink=always` fails rather than copying bytes, and the
+  seed never hard-links, because a hard link would share one mutable file between
+  two trees.
+- **A target that already exists**: it is someone's cache.
+
+Any failure removes the half-made target and leaves the cold build. The worktree is
+whole either way.
+
+**Why not one shared target dir** (a shared `CARGO_TARGET_DIR`, or one per group of
+crates)? Two reasons, both reproduced on this host with a scratch workspace:
+
+- **It is wrong.** Two worktrees of the same workspace map their crates to the same
+  unit hashes, so worktree B, whose sources say `ANSWER = 2`, ran worktree A's binary
+  printing `ANSWER=1`. No `Compiling` line, because its sources were older than A's
+  build.
+- **It serialises.** A second cargo on the same target dir printed `Blocking waiting
+  for file lock on build directory` and waited out the first one's whole build, even
+  for a `cargo check`. With many agents building at once, one lock is one build at a
+  time.
+
+**When a build cache goes** (`bun talaria cleanup`; `--apply` acts on it). The sweep
+now lists the build dirs of every linked checkout. A worktree whose branch an agent
+renamed before pushing (most of them) is still known as `talaria worktree`'s by the
+`TALARIA_WORKTREE` marker in its `ui/.env`; any other checkout's cache is reported
+and left alone. For the worktrees' own caches:
+
+- **Its pull request finished** (merged, or closed unmerged, at the commit the
+  checkout sits on): the cache goes first, before the checkout and whatever happens
+  to it. Not while a cargo holds its lock, it was built in within the last hour, or
+  its stack runs. A dirty or unpushed tree's cache is flagged for a human, as the
+  tree itself is.
+- **A `.talaria-keep`**: kept, always, at any disk reading. The keep means "leave
+  this alone", and a cache it holds is never dropped. Over the line the report lists
+  it as flagged, for a human to decide.
+- **Open pull request, or none yet**: kept. If the disk is **over the line**,
+  `--apply` also drops idle caches of clean, pushed trees: unseeded ones first, and
+  within those the least recently used first. It drops one at a time, re-reading
+  `statfs` after each. It stops when the disk is back under the line, after three
+  caches in one run, or as soon as a drop frees less than 512 MiB, which means build
+  caches are not what fills the disk. It reads the disk rather than summing `du`,
+  because a seeded target frees less than it measures. The report says what it
+  dropped, why it stopped, and what is left.
+- **Untouched for 14 days**: spent, as before, except that a cache whose stack runs,
+  or whose locks a cargo holds, is now kept.
+
+**How a cache is removed.** Its locks are checked, then it is renamed to a sibling
+`.target-dropping-<pid>` (atomic), checked again, and deleted. A deep delete takes
+minutes on a slow disk; a cargo that starts during it finds no target and builds a
+fresh one instead of having one emptied under it. A cargo that took the lock just
+before the rename is seen by the second check, and the dir goes back. A leftover
+`.target-dropping-*` from an interrupted run is removed by the next `--apply` once no
+cargo holds it. Removing a merged worktree's checkout makes the same check on its
+build dirs first, since `git worktree remove` would take them too.
+
+**Where the lock check cannot be trusted, nothing is deleted.** On **btrfs**, `stat`
+reports the subvolume's anonymous device while `/proc/locks` prints the superblock's,
+so a held lock never matches. Off Linux there is no `/proc/locks` at all. Either way
+the check answers "unknown": a cache that would have gone is flagged for a human
+instead, and a checkout with a build dir is not removed. Seeding still works on btrfs,
+which reflinks, because the shared `flock` around the copy is the real gate.
+
+The checkout stays in all three cases; `bun talaria seed-target` refills its cache.
+The stop gate removes no build cache and makes no `gh` call for them. It stays quick,
+and `talaria cleanup` is where they are decided.
+
+**Devboxes are not seeded.** A box builds inside its container, with the image's own
+rustup toolchain and a `CARGO_HOME` in the box's home volume. A host-built target
+names registry sources under the host's `~/.cargo`, built by a different toolchain
+install. Cargo would rebuild what does not match, so a seed would not be wrong, but
+its saving there is unmeasured, and a box's clone is a separate one under
+`../devboxes/`. That is a follow-up once it has been measured inside a box.
 
 ## Manual worktrees
 

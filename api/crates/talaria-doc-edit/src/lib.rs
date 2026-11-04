@@ -54,8 +54,8 @@ pub struct Change {
     /// LINES, in and out — not bytes.
     ///
     /// Every reader of these two numbers reads them as lines: the chat's
-    /// document card renders `+N −M` beside a diff, and `agent-refine`
-    /// reports the same fact in the same words. They were byte lengths once,
+    /// document card renders `+N −M` beside a diff, and the Muse receipt
+    /// (`change-summary`) reports the same fact in the same words. They were byte lengths once,
     /// which made a one-word fix read as "+12 −9" — a plausible number, and
     /// the worst kind of wrong, because nothing about it looks broken.
     ///
