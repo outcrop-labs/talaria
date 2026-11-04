@@ -421,7 +421,6 @@ async fn n_checkpoints_yield_n_ledger_rows_and_the_run_holds_the_last() {
             .unwrap()
             .unwrap();
     }
-    // The checkpoints of other run kinds carry neither field.
     store
         .checkpoint(&id, &token, json!({"cursor": 9}), "swept".into(), false)
         .await
@@ -444,7 +443,10 @@ async fn n_checkpoints_yield_n_ledger_rows_and_the_run_holds_the_last() {
     assert!(rows[0].unrestorable_reason.is_some());
 
     let run = store.get(&id).await.unwrap().unwrap();
-    assert_eq!(rows.last().unwrap().checkpoint.as_ref(), Some(&run.checkpoint));
+    assert_eq!(
+        rows.last().unwrap().checkpoint.as_ref(),
+        Some(&run.checkpoint)
+    );
     assert_eq!(run.phase, "swept");
 
     cleanup(&pg).await;
@@ -468,7 +470,13 @@ async fn a_lost_lease_write_leaves_no_ledger_row() {
         .unwrap();
 
     let refused = store
-        .checkpoint(&id, "someone-else", json!({"turn": 2}), "hijack".into(), false)
+        .checkpoint(
+            &id,
+            "someone-else",
+            json!({"turn": 2}),
+            "hijack".into(),
+            false,
+        )
         .await
         .unwrap();
     assert!(matches!(refused, Err(WriteFailure::LeaseLost { .. })));
@@ -481,7 +489,11 @@ async fn a_lost_lease_write_leaves_no_ledger_row() {
     assert_eq!(cancelled, Err(WriteFailure::Cancelled));
 
     let rows = run_checkpoints(&pg, &id).await.unwrap();
-    assert_eq!(rows.len(), 1, "only the leaseholder's write is in the ledger");
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the leaseholder's write is in the ledger"
+    );
     assert_eq!(rows[0].turn, Some(1));
     let seq: i64 = sqlx::query_scalar("select checkpoint_seq from runs where id = $1::uuid")
         .bind(&id)

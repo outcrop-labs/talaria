@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // A real work session on a worktree stack, end to end: a Developer Agent on a
 // real model through the Talaria gateway, doing a repo job on a throwaway
-// Forgejo. It is the fixture the checkpoint-rewind lanes run, so what a session
-// needs to be healthy is written down here and nowhere else.
+// Forgejo. It is the fixture the checkpoint-rewind lanes run.
 //
 //   node scripts/rewind-fixture.mjs setup    --stack <checkout> [--agent atlas] [--model <id>]
 //   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait]
@@ -11,16 +10,6 @@
 // `<checkout>` is a checkout made by `bun talaria worktree`, with `talaria dev`
 // running in it. Setup is idempotent. `ticket` prints one JSON line and exits 0
 // only when the session reached review with a pushed branch.
-//
-// WHY THE FORGEJO SITS BEHIND TLS ON :443. Talaria hands a git credential only
-// over https, and the rendered pre-push hook breaks on a remote URL that carries
-// a port. A real host has neither problem, so the fixture looks like one. The
-// api reaches Forgejo's REST side on loopback, which `api_origin` allows.
-//
-// WHY A FREE MODEL BY DEFAULT. OpenRouter answers 402 when the account's credit
-// cannot cover a request's worst-case output, and Hermes sends no `max_tokens`.
-// A nearly empty account therefore fails every agent turn while a small curl
-// succeeds. `preflight` sends the request shape an agent sends.
 
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -28,6 +17,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 
+// OpenRouter answers 402 when credit cannot cover a request's worst-case output,
+// and Hermes sends no `max_tokens`, so a nearly empty account fails every turn.
 const DEFAULT_MODEL = 'stealth/crouton-alpha'
 const ENDPOINT = 'OpenRouter'
 const FLEET_NETWORK = 'talaria'
@@ -104,7 +95,6 @@ function readStack(checkout) {
 const psql = (stack, sql) =>
   sh('docker', ['exec', stack.pg, 'psql', '-U', 'talaria', '-d', 'talaria', '-tAc', sql])
 
-/** The cookie carries an opaque id, so a session is one Redis key (repo-traps 5). */
 function mintSession(stack) {
   const row = psql(
     stack,
@@ -294,7 +284,6 @@ async function ensureHost(stack, api, agent) {
   await api('PUT', `/api/workbench/repos/${agent.id}`, { repos: [{ host: HOST_ID, repo: REPO }] })
 }
 
-/** A model the endpoint no longer offers is why a fixture dies quietly: free ids rotate. */
 async function ensureModel(api, agent, model) {
   const { endpoints } = await api('GET', '/api/fleet/endpoints')
   const endpoint = endpoints.find((e) => e.name === ENDPOINT)
@@ -323,8 +312,6 @@ async function ensureModel(api, agent, model) {
   })
 }
 
-/** The roles reach a container as env and a rendered models.yml, so a role set
- *  after the last roll leaves the harness on the old model. */
 async function rollAgent(stack, api, agent, model) {
   const onModel = (name) => shOk('docker', ['exec', name, 'printenv', 'PI_SMOL_MODEL'])?.endsWith(model)
   const before = agentContainer(stack)
@@ -339,8 +326,7 @@ async function rollAgent(stack, api, agent, model) {
   die(`the agent never came up healthy on ${model}`)
 }
 
-/** Lives on the agent's volume, which a roll keeps. Hermes terminals run with
- *  HOME=/opt/data/home and the gateway's own processes with /opt/data. */
+/** Hermes terminals run with HOME=/opt/data/home and the gateway's own processes with /opt/data. */
 function trustForgejo(stack, container) {
   const pem = '/opt/data/rewind-fixture-ca.pem'
   sh('docker', ['exec', '-i', '-u', 'hermes', container, 'sh', '-c', `cat > ${pem}`], {
@@ -359,7 +345,6 @@ function trustForgejo(stack, container) {
   if (!refs) die('the agent cannot read the fixture repo over TLS')
 }
 
-/** The request shape a real turn sends: tools and no `max_tokens`. */
 async function preflight(stack, container, model) {
   const key = sh('docker', ['exec', container, 'printenv', 'LLM_API_KEY'])
   const res = await fetch(`${stack.app}/api/llm/v1/chat/completions`, {

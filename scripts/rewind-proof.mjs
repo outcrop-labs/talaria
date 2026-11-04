@@ -5,8 +5,7 @@
 //
 //   node scripts/rewind-proof.mjs --stack <checkout> --run <run id>
 //
-// Reads only. A database older than the ledger prints the run and says so, which
-// is how a trunk stack compares against a head stack.
+// Reads only. A database older than the ledger prints the run and says so.
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
