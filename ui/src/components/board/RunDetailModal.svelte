@@ -5,9 +5,8 @@
   import { Square } from '@lucide/svelte'
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import type { TabItem } from '@/components/ui/tabs'
-  import { fromLedger, type LedgerRow } from '@/lib/agent-checkpoints'
+  import { fromLedger, runIsLive, type LedgerRow } from '@/lib/agent-checkpoints'
   import { getJson } from '@/lib/fetch-json'
-  import { openStream } from '@/lib/sse'
   import { useStopWorkSession, useWorkSession, useWorkSessionHistory } from '@/lib/work-session.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
@@ -141,24 +140,12 @@
     refetchInterval: 5_000,
     queryFn: () => getJson<{ checkpoints: LedgerRow[] }>(`/api/runs/${runId}/checkpoints`),
   }))
-  // A checkpoint write publishes a transition, so a frame says the ledger
-  // moved. The stream carries no replay, and the poll is the floor under it.
-  $effect(() => {
-    if (!open || tab !== 'checkpoints') return
-    const id = runId
-    const refresh = () => {
-      void qc.invalidateQueries({ queryKey: ['run-checkpoints', id] })
-      void qc.invalidateQueries({ queryKey: ['work-sessions-history', taskId] })
-    }
-    return openStream(`/api/runs/${id}/events`, refresh, {
-      reconnect: true,
-      pauseWhenHidden: true,
-      onResume: refresh,
-      onOpen: ({ first, resumed }) => {
-        if (!first || resumed) refresh()
-      },
-    })
-  })
+  // A checkpoint write publishes a transition, so a frame on the run's stream
+  // says the ledger moved. The poll is the floor under it.
+  const noteRunEvent = () => {
+    void qc.invalidateQueries({ queryKey: ['run-checkpoints', runId] })
+    void qc.invalidateQueries({ queryKey: ['work-sessions-history', taskId] })
+  }
 
   // ── Resources: the sampler's series for this agent. ─────────────────────
   type Sample = { t: number; cpu: number; mem: number; pids: number }
@@ -249,6 +236,7 @@
           history={retained.agent}
           resetKey={transcript?.length ?? 0}
           onFrame={noteFrame}
+          onRunEvent={noteRunEvent}
         />
       </div>
       {#if tab === 'turns'}
@@ -305,7 +293,7 @@
           {#snippet children(data)}
             <AgentCheckpoints
               checkpoints={fromLedger(data.checkpoints, runState)}
-              live={runState !== undefined && !['done', 'error', 'cancelled'].includes(runState)}
+              live={runIsLive(runState)}
             />
           {/snippet}
         </QueryState>

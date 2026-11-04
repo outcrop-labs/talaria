@@ -5,6 +5,7 @@ import {
   layout,
   livePath,
   path,
+  runIsLive,
   summarize,
   toolKind,
   type Checkpoint,
@@ -187,8 +188,26 @@ describe('fromLedger', () => {
     expect(cps.map((c) => c.status)).toEqual(['done', status])
   })
 
+  it('keeps a failed stage on a head the run finished past', () => {
+    expect(fromLedger([row(1, { status: 'failed' })], 'done')[0]?.status).toBe('failed')
+  })
+
   it('reads an empty ledger as no checkpoints', () => {
     expect(fromLedger([], 'running')).toEqual([])
+  })
+})
+
+describe('runIsLive', () => {
+  it.each([
+    ['running', true],
+    ['awaiting', true],
+    ['queued', true],
+    ['done', false],
+    ['error', false],
+    ['cancelled', false],
+    [undefined, false],
+  ])('reads %s as %s', (state, live) => {
+    expect(runIsLive(state)).toBe(live)
   })
 })
 

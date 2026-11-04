@@ -120,7 +120,7 @@
   <header class="head">
     <GitBranch class="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />
     <h2 id="{uid}-title" class="title">Checkpoints</h2>
-    <span class="sum" aria-live="polite">{headline}</span>
+    {#if placed.length > 0}<span class="sum" aria-live="polite">{headline}</span>{/if}
   </header>
 
   {#if placed.length === 0}
@@ -148,6 +148,11 @@
             <stop class="glint-stop" offset="0.5" stop-opacity="0.9" />
             <stop class="glint-stop" offset="1" stop-opacity="0" />
           </linearGradient>
+          <!-- One instance per kind, reused by every row: a component per row was
+               two thirds of the render at 200 rows. -->
+          {#each Object.entries(TOOLS) as [kind, Mark] (kind)}
+            <Mark id="{uid}-{kind}" />
+          {/each}
         </defs>
         {#each placed as p (p.cp.id)}
           {#if hasLine(p)}
@@ -193,7 +198,6 @@
       <ol>
         {#each placed as p (p.cp.id)}
           {@const isHead = p.cp.id === head?.cp.id}
-          {@const ToolMark = TOOLS[p.cp.tool]}
           <li
             class="row"
             data-live={onPath.has(p.row) ? '' : undefined}
@@ -202,7 +206,9 @@
             data-new={p.row >= opened ? '' : undefined}
             aria-current={isHead ? 'step' : undefined}
           >
-            <span class="tool"><ToolMark class="h-[11px] w-[11px]" aria-hidden="true" /></span>
+            <span class="tool" data-kind={p.cp.tool}>
+              <svg width="11" height="11" aria-hidden="true"><use href="#{uid}-{p.cp.tool}" width="11" height="11" /></svg>
+            </span>
             <span class="name" title={p.cp.title}>{p.cp.title}</span>
             {#if p.attempt}<Chip>Attempt {p.attempt}</Chip>{/if}
             {#if p.cp.status === 'failed'}<Chip tone="danger">Failed</Chip>{/if}
@@ -338,7 +344,9 @@
     animation: ackc-glint 700ms 120ms ease-in-out both;
   }
 
+  /* Skips the rows outside the scroller, which roughly halved 200 rows. */
   .row {
+    content-visibility: auto;
     position: relative;
     display: flex;
     align-items: center;
@@ -411,7 +419,8 @@
     border-color: var(--theme-border-subtle);
     background: none;
   }
-  .row:not([data-live]):hover .name {
+  .row:not([data-live]):hover .name,
+  .row:hover .time {
     color: var(--theme-text);
   }
 
@@ -426,6 +435,7 @@
     color: var(--theme-muted);
     text-align: right;
     white-space: nowrap;
+    transition: color 150ms ease-out;
   }
 
   @keyframes ackc-draw {
