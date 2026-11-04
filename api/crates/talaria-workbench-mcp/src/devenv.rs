@@ -1481,10 +1481,10 @@ mod tests {
 
     #[test]
     fn prepare_env_leaves_the_global_bun_pin_to_the_harness_runtime() {
-        // `ensure_harness_runtime` skips for ten minutes after a success, so a
-        // pin written here outlives the one it set: `bun` on the shims-first
-        // PATH answered the old version and omp refused to start.
-        assert!(!USER_SH.contains("bun@"));
+        assert!(
+            !USER_SH.contains("bun@"),
+            "ensure_harness_runtime skips for ten minutes after a success, so a pin here outlives HARNESS_BUN"
+        );
     }
 
     /// Runs USER_SH as prepare_env does, with a stub `mise` already in the
