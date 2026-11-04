@@ -26,6 +26,7 @@
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import { dayDividerMap } from '@/lib/day-dividers'
   import { continuationSet, messageBlocks } from '@/lib/message-groups'
+  import { channelGroupFacts } from './channel-groups'
   import { lookingNow, readCursorToPost, watchLooking } from '@/lib/looking'
   import { userMentionInsert, type Mentionable } from '@/components/chat/mentions.svelte'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
@@ -213,15 +214,9 @@
   // the list, so "Today" rolls over the next time a message lands.
   const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt, { timeZone: ctx.timeZone, now: Date.now() }))
   // A run from one sender reads as one block (lib/message-groups has the
-  // rules); these rows render as its continuation lines. A thread reply that
-  // surfaced in the channel carries its own header.
-  const continued = $derived(
-    continuationSet(
-      messageBlocks(messages, (m) => ({ sender: `${m.authorType}:${m.author}`, at: m.createdAt, fresh: !!m.threadRootId }), {
-        dayStarts: dividers,
-      }),
-    ),
-  )
+  // rules, channelGroupFacts what a row feeds them); these rows render as its
+  // continuation lines.
+  const continued = $derived(continuationSet(messageBlocks(messages, channelGroupFacts, { dayStarts: dividers })))
 
   const mentionables: Mentionable[] = $derived(
     [

@@ -4,6 +4,7 @@
   import DayDivider from './DayDivider.svelte'
   import { dayDividerMap } from '@/lib/day-dividers'
   import { continuationSet, messageBlocks } from '@/lib/message-groups'
+  import { threadGroupFacts } from './channel-groups'
   import { bottomStick } from '@/lib/stick-to-bottom'
   import ChannelComposer from './ChannelComposer.svelte'
   import TypingLine from './TypingLine.svelte'
@@ -60,14 +61,8 @@
   const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt, { timeZone: ctx.timeZone, now: Date.now() }))
   // Replies from one sender group like the main feed's (lib/message-groups).
   // The root stands alone: the replies rule sits under it, so the first reply
-  // always carries its own header.
-  const continued = $derived(
-    continuationSet(
-      messageBlocks(messages, (m, i) => ({ sender: `${m.authorType}:${m.author}`, at: m.createdAt, fresh: i === 1 }), {
-        dayStarts: dividers,
-      }),
-    ),
-  )
+  // always carries its own header (threadGroupFacts).
+  const continued = $derived(continuationSet(messageBlocks(messages, threadGroupFacts, { dayStarts: dividers })))
 
   const stick = bottomStick()
   $effect(() => stick.attach(scrollEl))

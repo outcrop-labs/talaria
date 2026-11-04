@@ -49,6 +49,7 @@
     newTurnId,
     toDisplay,
     toggleReactionLocal,
+    turnGroupFacts,
     withAgentError,
     type DisplayMessage,
     type SendIntent,
@@ -926,22 +927,10 @@
   // time (older payloads) ride with the day before them.
   const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt ?? '', { timeZone, now: Date.now() }))
   // A run from one sender reads as one block (lib/message-groups has the
-  // rules); these rows render as its continuation lines. A row the client drew
-  // itself has no author id yet: it is the viewer's. A scheduled run's turn
-  // carries its own header — the agent spoke up unprompted, and the time says
-  // when.
+  // rules, turnGroupFacts what a turn feeds them); these rows render as its
+  // continuation lines.
   const continued = $derived(
-    continuationSet(
-      messageBlocks(
-        messages,
-        (m) => ({
-          sender: m.role === 'user' ? `user:${m.authorUserId ?? viewer.id ?? ''}` : `agent:${agentModel}`,
-          at: m.createdAt,
-          fresh: !!m.cronJobId,
-        }),
-        { dayStarts: dividers },
-      ),
-    ),
+    continuationSet(messageBlocks(messages, turnGroupFacts(viewer, agentModel), { dayStarts: dividers })),
   )
   const agentName = (actor: string) => (actor === agentModel ? agentLabel : actor)
 

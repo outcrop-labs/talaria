@@ -4,6 +4,7 @@
 // onto rows the client drew itself.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StoredMessage } from '@/lib/conversations.svelte'
+import { continuationSet, messageBlocks } from '@/lib/message-groups'
 import {
   cronJobFromMarker,
   foldToolVerdicts,
@@ -19,6 +20,7 @@ import {
   gutterTime,
   fullTime,
   isoTime,
+  turnGroupFacts,
   withAgentError,
   type DisplayMessage,
 } from './chat-view'
@@ -129,6 +131,55 @@ describe('turnTime', () => {
   it('no or unparseable time → empty', () => {
     expect(turnTime(undefined)).toBe('')
     expect(turnTime('nope')).toBe('')
+  })
+})
+
+describe('turnGroupFacts — what ChatView groups on', () => {
+  const T0 = Date.parse('2026-11-04T15:00:00Z')
+  const at = (m: number) => new Date(T0 + m * 60_000).toISOString()
+  const viewer = { id: 'u-me', email: 'me@x' }
+  const facts = turnGroupFacts(viewer, 'scout')
+  // The continuation rows, through the real grouping function.
+  const continued = (rows: DisplayMessage[]) =>
+    [...continuationSet(messageBlocks(rows, facts, { dayStarts: { has: () => false } }))].sort((a, b) => a - b)
+
+  it('a scheduled run starts its own block; the same turn without the marker continues', () => {
+    const first: DisplayMessage = { role: 'assistant', content: 'earlier', createdAt: at(0) }
+    const next: DisplayMessage = { role: 'assistant', content: 'later', createdAt: at(1) }
+    expect(continued([first, next])).toEqual([1])
+    expect(continued([first, { ...next, cronJobId: 'job-1' }])).toEqual([])
+  })
+
+  it('a row the client drew (no author id yet) is the viewer\'s, so it joins their server row', () => {
+    const server: DisplayMessage = { role: 'user', content: 'a', createdAt: at(0), authorUserId: 'u-me', id: 's1' }
+    const drawn: DisplayMessage = { role: 'user', content: 'b', createdAt: at(1) }
+    expect(continued([server, drawn])).toEqual([1])
+  })
+
+  it('two people on a shared plan never share a block', () => {
+    const rows: DisplayMessage[] = [
+      { role: 'user', content: 'a', createdAt: at(0), authorUserId: 'u-me' },
+      { role: 'user', content: 'b', createdAt: at(1), authorUserId: 'u-other' },
+      { role: 'user', content: 'c', createdAt: at(2), authorUserId: 'u-other' },
+    ]
+    expect(continued(rows)).toEqual([2])
+  })
+
+  it('a user turn and the agent\'s reply are two blocks', () => {
+    expect(continued([{ role: 'user', content: 'q', createdAt: at(0) }, { role: 'assistant', content: 'a', createdAt: at(0) }])).toEqual([])
+  })
+
+  it('ignores status, content and tools: a streaming turn is a continuation from its first token to settled', () => {
+    const prev: DisplayMessage = { role: 'assistant', content: 'part one', createdAt: at(0), status: 'complete' }
+    const live: DisplayMessage = { role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming', createdAt: at(1) }
+    const states: DisplayMessage[] = [
+      live,
+      { ...live, tools: [{ name: 'search', label: 'q', status: 'running' }] },
+      { ...live, content: 'Here is the answer so far' },
+      { ...live, content: 'Here is the answer.', status: 'complete' },
+      { ...live, content: 'Here is the', status: 'error' },
+    ]
+    for (const s of states) expect(continued([prev, s])).toEqual([1])
   })
 })
 

@@ -6,6 +6,7 @@ import type { Attachment } from '@/lib/attachments'
 import type { GuardFinding } from '@/components/chat/guard-caveat'
 import type { ChatChip } from '@/lib/chips'
 import { zoneOrUndefined } from '@/lib/day-dividers'
+import type { GroupFacts } from '@/lib/message-groups'
 
 export interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -339,6 +340,20 @@ export function turnTime(at: string | undefined, timeZone?: string | null): stri
   }
   return f.format(d)
 }
+
+/** What ChatView feeds lib/message-groups for one turn. A row the client drew
+ *  itself has no author id yet: it is the viewer's, so it groups with the
+ *  viewer's server rows rather than splitting until the sync. Every assistant
+ *  turn is the thread's one agent. A scheduled run's turn starts fresh: the
+ *  agent spoke up unprompted, and its header says when. Status, content and
+ *  tools are not read — a streaming turn groups as it will once settled. */
+export const turnGroupFacts =
+  (viewer: Viewer, agentModel: string) =>
+  (m: DisplayMessage): GroupFacts => ({
+    sender: m.role === 'user' ? `user:${m.authorUserId ?? viewer.id ?? ''}` : `agent:${agentModel}`,
+    at: m.createdAt,
+    fresh: !!m.cronJobId,
+  })
 
 // Keyed `${variant}|${zone}` — both run per row, like turnTime.
 const stampFormatters = new Map<string, Intl.DateTimeFormat>()
