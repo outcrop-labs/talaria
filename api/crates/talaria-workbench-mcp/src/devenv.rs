@@ -258,12 +258,6 @@ if [ -n "$sccache_dir" ]; then
   wrapper=$(mise which sccache)
   mise set --file mise.local.toml RUSTC_WRAPPER="$wrapper" SCCACHE_DIR="$sccache_dir" SCCACHE_CACHE_SIZE=20G
 fi
-# The coding harness is a bun program (omp's bin is `#!/usr/bin/env bun`),
-# and `bun` on PATH is a mise SHIM — which resolves only where a mise config
-# pins bun. This repo may pin rust and mold and no bun at all, and doctor
-# probes the harness from the agent's home rather than from here, so the pin
-# has to be GLOBAL or omp dies before it starts wherever it is run.
-mise use -g bun@1.4.0 >/dev/null 2>&1 || true
 echo "=== resolved"
 mise ls --current 2>&1
 "#;
@@ -1483,6 +1477,14 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).into_owned(),
             out.status.success(),
         )
+    }
+
+    #[test]
+    fn prepare_env_leaves_the_global_bun_pin_to_the_harness_runtime() {
+        // `ensure_harness_runtime` skips for ten minutes after a success, so a
+        // pin written here outlives the one it set: `bun` on the shims-first
+        // PATH answered the old version and omp refused to start.
+        assert!(!USER_SH.contains("bun@"));
     }
 
     /// Runs USER_SH as prepare_env does, with a stub `mise` already in the

@@ -57,10 +57,11 @@ pub const PROVIDER: &str = "talaria";
 pub const PI_CODING_AGENT_DIR: &str = "/opt/data/workbench/harness/pi";
 
 /// The bun the coding harness runs on. omp's executable is a bun program
-/// (`#!/usr/bin/env bun`, `engines.bun >= 1.3.14`), so a sandbox without bun
-/// on the PATH cannot start it at all. Pinned so every sandbox agrees; this is
-/// the harness's runtime, not the repo's toolchain (`mise.toml` decides that).
-pub const HARNESS_BUN: &str = "1.4.0";
+/// (`#!/usr/bin/env bun`, `engines.bun >= 1.4.4`), so a sandbox without bun
+/// on the PATH cannot start it at all, and omp exits at start on a bun under
+/// that floor. Pinned so every sandbox agrees; this is the harness's runtime,
+/// not the repo's toolchain (`mise.toml` decides that).
+pub const HARNESS_BUN: &str = "1.4.4";
 
 /// mise's data dir on a Developer Agent's volume (the render sets
 /// `XDG_DATA_HOME` to this, and mise keeps its installs and shims under it).
