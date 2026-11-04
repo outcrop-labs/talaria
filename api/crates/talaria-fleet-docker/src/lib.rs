@@ -38,6 +38,7 @@ pub use browser_engine::{
     MANIFEST_FILE as BROWSER_ENGINE_FILE, manifest_text as browser_engine_manifest,
 };
 pub use lost_turns::discard_lost_turns;
+pub mod rewind;
 pub use pull::{PULL_CEILING, PULL_SILENCE, PullProgress, PullStatus};
 
 /// Set from the api binary so `fleet_up` can run preflight without this crate

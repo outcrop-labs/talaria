@@ -1,5 +1,5 @@
 // The boot assembly — the one place the job bodies become a running schedule,
-// and the one place the six armed run steps get their deps.
+// and the one place the seven armed run steps get their deps.
 //
 // Every job module owns its own `register_*_job(deps)`: the deps are runtime
 // values (the pool, the realtime fan-out, the secretbox), so registration
@@ -12,7 +12,7 @@
 //
 // THE OTHER HALF of the assembly is the run kinds. The defs self-register on
 // first getter call, so `try_arm` touches each getter and then REFUSES to arm
-// unless the census's six kinds are all present. The refusal is a boot list
+// unless the census's seven kinds are all present. The refusal is a boot list
 // made executable: `run-reclaim` is one of the ten jobs, and a sweep that
 // cannot define a kind leaves those rows to an instance that can — no such
 // instance exists, and the rows would sit forever with only a warn line.
@@ -71,6 +71,7 @@ const BOOT_RUN_KINDS: &[&str] = &[
     "rag-backfill",
     "rag-reindex",
     "research",
+    "run-rewind",
     "work-session",
 ];
 
@@ -901,7 +902,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
         .await
         .map_err(|e| format!("the secretbox did not load: {e}"))?;
 
-    // The six armed run steps: their deps are the AppState's edges, and an
+    // The seven armed run steps: their deps are the AppState's edges, and an
     // unarmed step is the loud refusal in the def — reached only by a driver
     // armed before its deps, which this order makes impossible.
     talaria_research_def::arm_research_step(talaria_research_def::real_research_deps(
@@ -920,6 +921,9 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
         state.clone(),
     ));
     talaria_runs_reindex::arm_reindex_step(talaria_runs_reindex::real_reindex_deps(state.clone()));
+    talaria_runs_rewind::arm_rewind_step(Arc::new(talaria_runs_rewind::world::Real {
+        state: state.clone(),
+    }));
     // The boot kind list: touch each getter so its kind registers NOW, then
     // hold arming to the census's table.
     let _ = talaria_research_def::research_run();
@@ -928,6 +932,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     let _ = talaria_runs_agent_hire::agent_hire_run();
     let _ = talaria_runs_reindex::backfill_run();
     let _ = talaria_runs_reindex::reindex_run();
+    let _ = talaria_runs_rewind::rewind_run();
     let missing = missing_run_kinds();
     if !missing.is_empty() {
         return Err(format!(
@@ -1218,6 +1223,7 @@ mod tests {
         let _ = talaria_runs_agent_hire::agent_hire_run();
         let _ = talaria_runs_reindex::backfill_run();
         let _ = talaria_runs_reindex::reindex_run();
+        let _ = talaria_runs_rewind::rewind_run();
         // The census's kind table is WHOLE. An empty list is the assertion
         // now, not the goal: a kind showing up here means a def module fell
         // out of try_arm's boot list, and the sweep would strand that kind's

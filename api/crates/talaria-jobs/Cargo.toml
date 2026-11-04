@@ -59,6 +59,7 @@ talaria-runs-define = { workspace = true }
 talaria-runs-plan-draft = { workspace = true }
 talaria-runs-reclaim = { workspace = true }
 talaria-runs-reindex = { workspace = true }
+talaria-runs-rewind = { workspace = true }
 talaria-runs-run = { workspace = true }
 talaria-runs-store = { workspace = true }
 talaria-runs-work-session = { workspace = true }

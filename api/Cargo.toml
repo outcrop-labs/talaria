@@ -554,6 +554,7 @@ talaria-runs-plan-draft = { path = "crates/talaria-runs-plan-draft" }
 talaria-runs-reclaim = { path = "crates/talaria-runs-reclaim" }
 
 talaria-runs-reindex = { path = "crates/talaria-runs-reindex" }
+talaria-runs-rewind = { path = "crates/talaria-runs-rewind" }
 
 talaria-runs-run = { path = "crates/talaria-runs-run" }
 
@@ -853,6 +854,7 @@ talaria-runs-lease = { workspace = true }
 talaria-runs-plan-draft = { workspace = true }
 talaria-runs-reclaim = { workspace = true }
 talaria-runs-reindex = { workspace = true }
+talaria-runs-rewind = { workspace = true }
 talaria-runs-run = { workspace = true }
 talaria-runs-store = { workspace = true }
 talaria-runs-work-session = { workspace = true }
