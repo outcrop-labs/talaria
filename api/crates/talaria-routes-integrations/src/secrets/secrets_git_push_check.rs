@@ -218,18 +218,12 @@ async fn branch_jobs(
     .await
 }
 
-async fn record_push(
-    pg: &sqlx::PgPool,
-    run_id: &str,
-    job: &BranchJob,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "insert into run_pushes (run_id, job_id, branch) values ($1::uuid, $2::uuid, $3)",
-    )
-    .bind(run_id)
-    .bind(&job.id)
-    .bind(&job.branch)
-    .execute(pg)
-    .await
-    .map(|_| ())
+async fn record_push(pg: &sqlx::PgPool, run_id: &str, job: &BranchJob) -> Result<(), sqlx::Error> {
+    sqlx::query("insert into run_pushes (run_id, job_id, branch) values ($1::uuid, $2::uuid, $3)")
+        .bind(run_id)
+        .bind(&job.id)
+        .bind(&job.branch)
+        .execute(pg)
+        .await
+        .map(|_| ())
 }
