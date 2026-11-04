@@ -367,6 +367,7 @@ pub async fn post(
         // rows.
         let post_deps = notify.clone();
         let content = msg.content.clone();
+        let message_id = msg.id.clone();
         tokio::spawn(async move {
             let label = describe_agent(&name).label;
             notify_channel_post(
@@ -381,6 +382,7 @@ pub async fn post(
                     },
                     content: &content,
                     thread_root_id: thread_root_id.as_deref(),
+                    message_id: Some(&message_id),
                 },
             )
             .await;
@@ -502,6 +504,7 @@ async fn post_as_user(
             let label = sender_label.clone();
             let content = body.content.clone();
             let root = thread_root_id.clone();
+            let message_id = message.id.clone();
             tokio::spawn(async move {
                 notify_channel_post(
                     &post_deps,
@@ -511,6 +514,7 @@ async fn post_as_user(
                         sender: MentionSender::of(&sender_id, &label),
                         content: &content,
                         thread_root_id: root.as_deref(),
+                        message_id: Some(&message_id),
                     },
                 )
                 .await;
