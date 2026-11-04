@@ -34,18 +34,24 @@
 
 use serde::Serialize;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use talaria_agent_auth::AgentSubject;
-use talaria_boards::{board_allows_agent, board_info, board_role, can_edit};
+use talaria_boards::{
+    board_allows_agent, board_info, board_role, can_edit, get_board_agent_config,
+};
 use talaria_labels::list_labels;
 use talaria_realtime::{BoardEvent, publish_board};
-use talaria_retrieval::sources::{CommentSrc, TicketSrc, comment_doc, index_activity, ticket_doc};
+use talaria_retrieval::sources::{
+    ActivityField, CommentSrc, TicketSrc, comment_doc, index_activity, purge_activity_by_field,
+    ticket_doc, unindex_activity,
+};
 use talaria_retrieval::{embed, qdrant};
 use talaria_statuses::{BoardStatus, OFF_BOARD_STATUSES, list_statuses, meta_of};
 
 use super::{
     AgentIntent, AgentWriteTarget, Task, TaskDeps, TaskNotification, agent_assignees,
-    agent_ticket_refusal, get_task, log_activity, notify_task_users, resolve_review_approval,
-    resolve_watchers, spawn_dispatch_id, ticket_audience,
+    agent_ticket_refusal, get_task, notify_task_users, resolve_review_approval, resolve_watchers,
+    spawn_dispatch_id, ticket_audience,
 };
 
 // ── The request, the mover, the answer ───────────────────────────────────────
@@ -421,8 +427,17 @@ async fn board_head(pg: &PgPool, board_id: &str) -> Result<(String, String, i32)
 }
 
 /// The three live holds that keep a ticket where it is, each a 409 a person
-/// can act on.
-async fn live_hold(pg: &PgPool, task_id: &str) -> Result<Option<String>, sqlx::Error> {
+/// can act on. Asked on a CONNECTION, because it is asked twice: once before
+/// the decision (so a preview says so), and again inside the write's
+/// transaction after the row lock (review S2) — a sub-task created, or a
+/// session started, while the move was being decided must refuse it, not
+/// leave half a tree behind. Under the row's `FOR UPDATE`, a concurrent
+/// child insert (its foreign key takes `KEY SHARE` on this row) has either
+/// committed and is counted here, or waits for the move to finish.
+async fn live_hold(
+    conn: &mut sqlx::PgConnection,
+    task_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
     // The ticker's own question (GET /api/tasks/{id}/work-session): a
     // non-terminal work-session run on this ticket. `awaiting` counts — a
     // session parked on a person still holds the ticket's context.
@@ -431,7 +446,7 @@ async fn live_hold(pg: &PgPool, task_id: &str) -> Result<Option<String>, sqlx::E
            and state in ('queued', 'running', 'awaiting') limit 1",
     )
     .bind(task_id)
-    .fetch_optional(pg)
+    .fetch_optional(&mut *conn)
     .await?;
     if working.is_some() {
         return Ok(Some(
@@ -444,7 +459,7 @@ async fn live_hold(pg: &PgPool, task_id: &str) -> Result<Option<String>, sqlx::E
          join task_workchains w on w.id = s.workchain_id where s.task_id = $1::uuid limit 1",
     )
     .bind(task_id)
-    .fetch_optional(pg)
+    .fetch_optional(&mut *conn)
     .await?;
     if let Some((name,)) = chain {
         return Ok(Some(format!(
@@ -453,7 +468,7 @@ async fn live_hold(pg: &PgPool, task_id: &str) -> Result<Option<String>, sqlx::E
     }
     let (kids,): (i64,) = sqlx::query_as("select count(*) from tasks where parent_id = $1::uuid")
         .bind(task_id)
-        .fetch_one(pg)
+        .fetch_one(&mut *conn)
         .await?;
     if kids > 0 {
         return Ok(Some(format!(
@@ -466,13 +481,103 @@ async fn live_hold(pg: &PgPool, task_id: &str) -> Result<Option<String>, sqlx::E
     Ok(None)
 }
 
+/// How a person reads an assignee: `user:<id>` as their name, else their
+/// email, else the raw string; an agent as its id. One read for the list.
+/// The ticket's activity line is its permanent record (review N2), and a
+/// uuid is not something a person can read back.
+async fn assignee_labels(
+    pg: &PgPool,
+    assignees: &[String],
+) -> Result<HashMap<String, String>, sqlx::Error> {
+    let ids: Vec<String> = assignees
+        .iter()
+        .filter_map(|a| a.strip_prefix("user:"))
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .map(str::to_string)
+        .collect();
+    let mut out: HashMap<String, String> =
+        assignees.iter().map(|a| (a.clone(), a.clone())).collect();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let rows: Vec<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("select id::text, name, email from users where id = any($1::uuid[])")
+            .bind(&ids)
+            .fetch_all(pg)
+            .await?;
+    for (id, name, email) in rows {
+        if let Some(label) = name.filter(|n| !n.trim().is_empty()).or(email) {
+            out.insert(format!("user:{id}"), label);
+        }
+    }
+    Ok(out)
+}
+
+/// One activity row on the write's own connection — the move's record shares
+/// the transaction's fate (review S3): a committed move always has it, and a
+/// failure to write it rolls the move back instead of answering 500 after the
+/// ticket already changed boards.
+async fn activity_in(
+    conn: &mut sqlx::PgConnection,
+    task_id: &str,
+    actor: &str,
+    kind: &str,
+    description: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into task_activity (task_id, actor, type, description) \
+         values ($1::uuid, $2, $3, $4)",
+    )
+    .bind(task_id)
+    .bind(actor)
+    .bind(kind)
+    .bind(description)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// A TEST-ONLY pause between the decision and the write, so a live check can
+/// change the ticket in the window the in-transaction re-check exists for
+/// (review S2). Debug builds only, and only for the ticket the env names
+/// (`TALARIA_TEST_MOVE_PAUSE=<task id>:<ms>`), so concurrent tests never slow
+/// each other. Release builds compile it to nothing.
+async fn decision_window_test_pause(task_id: &str) {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("TALARIA_TEST_MOVE_PAUSE")
+        .ok()
+        .and_then(|v| {
+            v.split_once(':')
+                .filter(|(id, _)| *id == task_id)
+                .and_then(|(_, ms)| ms.trim().parse::<u64>().ok())
+        })
+        .filter(|ms| *ms > 0)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(ms.min(10_000))).await;
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = task_id;
+}
+
+/// Of `before`, the people not in `after` — who loses sight of a ticket.
+fn lost(before: &[String], after: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for u in before {
+        if !after.contains(u) && !out.contains(u) {
+            out.push(u.clone());
+        }
+    }
+    out
+}
+
 // ── The move ─────────────────────────────────────────────────────────────────
 
 /// Move ticket `id` to `req.board_id`, or (preview) say what that would do.
 /// The route authenticates; this decides — permission, holds, the mapping —
-/// and writes the row in one transaction, then owes the two boards their
-/// events, the ticket its activity, the people their notices and the brain
-/// its re-index.
+/// and writes the row, its activity and its audit in ONE transaction, after
+/// re-checking under the row lock that the ticket is still the one it
+/// decided about. Then it owes the two boards their events, the people their
+/// notices and the brain its re-index; none of those can fail the move.
 pub async fn move_task(
     deps: &TaskDeps,
     id: &str,
@@ -535,8 +640,13 @@ pub async fn move_task(
             // ticket there asks (`board_allows_agent`, the caller so the
             // elevated-assistant bypass reads `legacy`).
             if !board_allows_agent(pg, req.board_id, subject).await? {
+                // Name an archived board only to an agent its policy lists:
+                // to anyone else a stray id must not say what the board is
+                // called, or that it exists (review N3).
+                let cfg = get_board_agent_config(pg, req.board_id).await?;
+                let listed = cfg.allow_all || cfg.models.iter().any(|m| m == model);
                 return Err(MoveError::Forbidden(
-                    if dest_info.exists && dest_info.archived_at.is_some() {
+                    if dest_info.exists && dest_info.archived_at.is_some() && listed {
                         format!(
                             "agents cannot move a ticket onto an archived board — a person restores {} first",
                             dest_info.label
@@ -558,8 +668,11 @@ pub async fn move_task(
     }
 
     // ── What holds it where it is ────────────────────────────────────────
-    if let Some(hold) = live_hold(pg, id).await? {
-        return Err(MoveError::Conflict(hold));
+    {
+        let mut conn = pg.acquire().await?;
+        if let Some(hold) = live_hold(&mut conn, id).await? {
+            return Err(MoveError::Conflict(hold));
+        }
     }
 
     // ── The mapping ──────────────────────────────────────────────────────
@@ -602,6 +715,32 @@ pub async fn move_task(
             assignees.push(a.clone());
         } else {
             unassigned.push(a.clone());
+        }
+    }
+    let labels_of = assignee_labels(pg, &unassigned).await?;
+    // AGENTS DO NOT UNASSIGN PEOPLE (review S1). `agent_safe_patch` strips an
+    // agent's assignee changes on every other write; a move that would take
+    // a person off the ticket is that same change, made by moving it out of
+    // their sight. A person can make it, or add them to the board first.
+    if mover.is_agent() {
+        let people: Vec<String> = unassigned
+            .iter()
+            .filter(|a| a.starts_with("user:"))
+            .map(|a| labels_of.get(a).cloned().unwrap_or_else(|| a.clone()))
+            .collect();
+        if !people.is_empty() {
+            return Err(MoveError::Forbidden(format!(
+                "agents cannot unassign people — {} {} not on {}, so this move would take {} off the ticket. A person can move it, or add {} to that board first",
+                people.join(", "),
+                if people.len() == 1 { "is" } else { "are" },
+                dest_info.label,
+                if people.len() == 1 {
+                    "them"
+                } else {
+                    "them all"
+                },
+                "them",
+            )));
         }
     }
     let watching_now: Vec<String> = resolve_watchers(pg, id, Some(cur.board_id.as_str()))
@@ -652,25 +791,47 @@ pub async fn move_task(
     if req.preview {
         return Ok(MoveOutcome { task: None, moved });
     }
+    // Who hears about it: the ticket's audience on the destination (told
+    // where it went), and the people who can see it now but will not after
+    // (told only that it left — never where to; review S1).
+    let audience_after = ticket_audience(pg, id, req.board_id, &assignees, &cur.created_by).await?;
+    let audience_before =
+        ticket_audience(pg, id, &cur.board_id, &cur.assignees, &cur.created_by).await?;
+    let losing = lost(&audience_before, &audience_after);
+
+    decision_window_test_pause(id).await;
 
     // ── The write: one transaction ───────────────────────────────────────
-    // The counter bump, the alias and the row share a fate, like create's
-    // ref and row: a board never burns a number into nothing, and an old ref
-    // never points at a ticket that did not move.
+    // The counter bump, the alias, the row, its activity and its audit share
+    // a fate: a board never burns a number into nothing, an old ref never
+    // points at a ticket that did not move, and a ticket never changes boards
+    // without its record.
     let mut tx = pg.begin().await?;
-    let held: Option<(String, Option<i32>)> = sqlx::query_as(
-        "select board_id::text, ticket_no from tasks where id = $1::uuid for update",
+    let held: Option<(String, Option<i32>, String, bool, bool)> = sqlx::query_as(
+        "select board_id::text, ticket_no, status, archived_at is not null, approved_at is not null \
+         from tasks where id = $1::uuid for update",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((held_board, old_no)) = held else {
+    let Some((held_board, old_no, held_status, held_archived, held_approved)) = held else {
         return Err(MoveError::NotFound);
     };
-    if held_board != cur.board_id {
+    // THE DECISION WAS ABOUT THIS ROW (review S2). Everything above read the
+    // ticket before the lock; a person closing it, an agent handing it to
+    // review, an archive or a sign-off in that window would otherwise be
+    // overwritten by a column chosen for a ticket that no longer exists.
+    if held_board != cur.board_id
+        || held_status != cur.status
+        || held_archived != cur.archived_at.is_some()
+        || held_approved != cur.approved_at.is_some()
+    {
         return Err(MoveError::Conflict(
-            "the ticket moved while this was being decided — reload it and try again".into(),
+            "the ticket changed while this was being decided — reload it and try again".into(),
         ));
+    }
+    if let Some(hold) = live_hold(&mut tx, id).await? {
+        return Err(MoveError::Conflict(hold));
     }
     let (ticket_no,): (i32,) = sqlx::query_as(
         "update boards set ticket_seq = ticket_seq + 1, updated_at = now() \
@@ -706,10 +867,59 @@ pub async fn move_task(
     .bind(stays_closed)
     .execute(&mut *tx)
     .await?;
-    tx.commit().await?;
     moved.to_ref = Some(format!("{dest_prefix}-{ticket_no}"));
+    let actor = mover.actor();
+    activity_in(
+        &mut tx,
+        id,
+        actor,
+        "moved",
+        &activity_line(&moved, &labels_of),
+    )
+    .await?;
+    if moved.status != moved.from_status {
+        // The column changed too, and the record says so in the words every
+        // status move uses — the approvals inbox reads "entered review" off
+        // exactly this line.
+        activity_in(
+            &mut tx,
+            id,
+            actor,
+            "status",
+            &format!("moved to {} (moved boards)", moved.status),
+        )
+        .await?;
+    }
+    // A move changes who can see the ticket: governance, not chatter. In the
+    // transaction, so a committed move always has its row.
+    talaria_audit::log_audit_in(
+        &mut tx,
+        talaria_audit::AuditEntry {
+            actor,
+            action: "task.board_move",
+            target_type: "task",
+            target_id: Some(id),
+            target_label: Some(cur.title.as_str()),
+            before: Some(serde_json::json!({
+                "boardId": moved.from_board_id,
+                "boardName": moved.from_board_name,
+                "ref": moved.from_ref,
+                "status": moved.from_status,
+            })),
+            after: Some(serde_json::json!({
+                "boardId": moved.to_board_id,
+                "boardName": moved.to_board_name,
+                "ref": moved.to_ref,
+                "status": moved.status,
+                "labelsDropped": moved.labels_dropped,
+                "unassigned": moved.unassigned,
+            })),
+        },
+    )
+    .await?;
+    tx.commit().await?;
 
-    // ── What the move owes, after the commit ─────────────────────────────
+    // ── What the move owes, after the commit — none of it can fail it ────
     // Both boards' views: the card left one and arrived on the other.
     publish_board(
         &deps.realtime,
@@ -729,22 +939,7 @@ pub async fn move_task(
             deleted: None,
         },
     );
-    spawn_move_notices(deps, &cur, &moved, &assignees, mover.actor());
-    let actor = mover.actor();
-    log_activity(pg, id, actor, "moved", &activity_line(&moved)).await?;
-    if moved.status != moved.from_status {
-        // The column changed too, and the record says so in the words every
-        // status move uses — the approvals inbox reads "entered review" off
-        // exactly this line.
-        log_activity(
-            pg,
-            id,
-            actor,
-            "status",
-            &format!("moved to {} (moved boards)", moved.status),
-        )
-        .await?;
-    }
+    spawn_move_notices(deps, &cur, &moved, audience_after, losing, actor);
     // The sign-off queue of the old board no longer holds it.
     if src_meta.review_keys.iter().any(|k| k == &cur.status) {
         resolve_review_approval(&deps.notify, id);
@@ -755,20 +950,23 @@ pub async fn move_task(
     {
         spawn_dispatch_id(deps, id.to_string(), None);
     }
-    let task = get_task(pg, id).await?;
+    let task = match get_task(pg, id).await {
+        Ok(t) => t,
+        Err(e) => {
+            // The move is committed; the re-read is only the answer's body.
+            tracing::error!("[tasks] re-read after move failed: {e}");
+            None
+        }
+    };
     if let Some(t) = &task {
-        // The room's topic carries the ref; the brain's points carry the
-        // board (`payload.boardId` is the retrieval ACL), so the ticket and
-        // every comment re-index under the new board or the OLD board's
-        // members keep finding them.
         refresh_room_and_brain(pg, t);
     }
     Ok(MoveOutcome { task, moved })
 }
 
 /// The ticket's own record of the move, one line: from → to with both refs,
-/// and every translation that lost something.
-fn activity_line(m: &MoveSummary) -> String {
+/// and every translation that lost something — people by name.
+fn activity_line(m: &MoveSummary, labels: &HashMap<String, String>) -> String {
     let refd = |name: &str, r: &Option<String>| match r {
         Some(r) => format!("{name} ({r})"),
         None => name.to_string(),
@@ -786,10 +984,15 @@ fn activity_line(m: &MoveSummary) -> String {
         ));
     }
     if !m.unassigned.is_empty() {
+        let names: Vec<&str> = m
+            .unassigned
+            .iter()
+            .map(|a| labels.get(a).map(String::as_str).unwrap_or(a.as_str()))
+            .collect();
         line.push_str(&format!(
             " · unassigned (not on {}): {}",
             m.to_board_name,
-            m.unassigned.join(", ")
+            names.join(", ")
         ));
     }
     if m.parent_detached {
@@ -801,34 +1004,27 @@ fn activity_line(m: &MoveSummary) -> String {
     line
 }
 
-/// The move's notice: the ticket's audience ON THE DESTINATION — watchers,
-/// assigned humans and the creator who can see it there (`ticket_audience`,
-/// the same set a status move tells), never the mover. People who cannot
-/// see the new board are not told where it went. Detached, like every
-/// post-commit notice (C30).
+/// The move's two notices, detached like every post-commit notice (C30), and
+/// both through `notify_task_users` (the mover is never told):
+/// · the destination's audience — watchers, assigned humans and the creator
+///   who can see it there — hears where it went;
+/// · the people who could see it and now cannot hear only that it left, and
+///   never where to: naming a board they cannot open would be the leak the
+///   move's own permission rules exist to prevent.
 fn spawn_move_notices(
     deps: &TaskDeps,
     cur: &Task,
     m: &MoveSummary,
-    assignees: &[String],
+    audience: Vec<String>,
+    losing: Vec<String>,
     actor: &str,
 ) {
     let deps = deps.clone();
     let id = cur.id.clone();
-    let created_by = cur.created_by.clone();
     let title = cur.title.clone();
-    let assignees = assignees.to_vec();
     let actor = actor.to_string();
     let m = m.clone();
     tokio::spawn(async move {
-        let audience =
-            match ticket_audience(&deps.pg, &id, &m.to_board_id, &assignees, &created_by).await {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::error!("tasks: move audience read failed: {e}");
-                    return;
-                }
-            };
         let was = match &m.from_ref {
             Some(r) => format!("was {r} on {}", m.from_board_name),
             None => format!("was on {}", m.from_board_name),
@@ -851,11 +1047,34 @@ fn spawn_move_notices(
             },
         )
         .await;
+        notify_task_users(
+            &deps.notify,
+            &losing,
+            &actor,
+            &TaskNotification {
+                kind: "task-status".into(),
+                title: format!(
+                    "{}: moved to a board you can't see",
+                    m.from_ref.clone().unwrap_or_else(|| title.clone())
+                ),
+                body: Some(title.clone()),
+                href: None,
+                task_id: id.clone(),
+                status_burst: None,
+            },
+        )
+        .await;
     });
 }
 
 /// Detached: the room's topic line (it names the ref) and the brain's
-/// ticket + comment points, under the new board.
+/// ticket + comment points, under the new board. The old points are PURGED
+/// first, so a re-index that fails (the embedder down) leaves the ticket
+/// unfindable rather than findable by the old board (review S4). That is the
+/// fast half; the guarantee is at query time — retrieval drops any ticket or
+/// comment hit whose ticket's CURRENT board the reader cannot see
+/// (talaria-retrieval-index `drop_moved_ticket_hits`), whatever the points
+/// say.
 fn refresh_room_and_brain(pg: &PgPool, t: &Task) {
     let pg = pg.clone();
     let t = t.clone();
@@ -871,6 +1090,12 @@ fn refresh_room_and_brain(pg: &PgPool, t: &Task) {
         }
         let qd = qdrant::real_deps();
         let ed = embed::real_deps();
+        if let Err(e) = unindex_activity(&pg, &qd, &ed, "ticket", &t.id).await {
+            tracing::warn!("tasks: purging the moved ticket's point failed: {e}");
+        }
+        if let Err(e) = purge_activity_by_field(&pg, &qd, ActivityField::TaskId, &t.id).await {
+            tracing::warn!("tasks: purging the moved ticket's comment points failed: {e}");
+        }
         let _ = index_activity(
             &pg,
             &qd,
@@ -1168,7 +1393,7 @@ mod tests {
         assert!(!o.contains_key("boardId") && !o.contains_key("id"));
         assert_eq!(v["statusHow"], "same-category");
         assert_eq!(
-            activity_line(&m),
+            activity_line(&m, &HashMap::new()),
             "moved from A (A-1) to B (B-7) · labels dropped (not on B): x · left its parent ticket behind"
         );
     }

@@ -263,17 +263,21 @@ pub async fn resolve_task_id(pg: &PgPool, raw: &str) -> Result<ResolvedTaskId, s
             .bind(no)
             .fetch_all(pg)
             .await?;
-            let rows = if rows.is_empty() {
-                // NO LIVE TICKET HOLDS THE REF — so it may be one a ticket
-                // carried before it moved boards. A move re-keys the ticket
-                // on its new board and leaves its old (board, number) here,
-                // so a ref pasted into a doc, a chat or an agent's memory
-                // still opens the ticket. Live refs answer first: an alias
-                // only speaks when nothing on a board holds the ref today.
-                moving::aliased_task_ids(pg, &prefix, no).await?
-            } else {
-                rows.into_iter().map(|(id,)| id).collect()
-            };
+            // LIVE REFS AND OLD REFS ANSWER TOGETHER. A move re-keys the
+            // ticket on its new board and leaves its old (board, number) in
+            // `task_ref_aliases`, so a ref pasted into a doc, a chat or an
+            // agent's memory still opens it. Prefixes are not unique (two
+            // boards' initials can match), so the alias is not a fallback
+            // behind the live ref: a ref that names a live ticket on one
+            // board and a moved one from another is AMBIGUOUS, exactly as it
+            // was before the move — never silently the other board's
+            // ticket (review N1). Without a collision one id comes back.
+            let mut rows: Vec<String> = rows.into_iter().map(|(id,)| id).collect();
+            for id in moving::aliased_task_ids(pg, &prefix, no).await? {
+                if !rows.contains(&id) {
+                    rows.push(id);
+                }
+            }
             Ok(match rows.len() {
                 0 => ResolvedTaskId::Missing,
                 1 => ResolvedTaskId::One(rows.into_iter().next().expect("len checked")),

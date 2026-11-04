@@ -36,6 +36,30 @@ pub async fn log_audit(pg: &PgPool, entry: AuditEntry<'_>) {
     }
 }
 
+/// Insert one audit row on a caller's connection — inside its transaction, so
+/// the record shares the fate of the write it records (a committed write
+/// always has its row, a rolled-back one never does). Unlike `log_audit` the
+/// error is the caller's: inside a transaction a failed insert aborts it.
+pub async fn log_audit_in(
+    conn: &mut sqlx::PgConnection,
+    entry: AuditEntry<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into audit_log (actor, action, target_type, target_id, target_label, before, after) \
+         values ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(entry.actor)
+    .bind(entry.action)
+    .bind(entry.target_type)
+    .bind(entry.target_id)
+    .bind(entry.target_label)
+    .bind(entry.before)
+    .bind(entry.after)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Audit a mutation WITHOUT making the caller wait for it.
 ///
 /// Every route that audits does the same three things: resolve the actor,

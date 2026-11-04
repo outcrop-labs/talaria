@@ -18,6 +18,7 @@ sqlx = { workspace = true }
 uuid = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-writes = { workspace = true }
+talaria-audit = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-channels = { workspace = true }
 talaria-gateway = { workspace = true }

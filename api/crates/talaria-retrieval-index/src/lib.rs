@@ -23,6 +23,7 @@
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
+use std::collections::{HashMap, HashSet};
 
 use talaria_boards::{agent_board_policy_sql, board_visibility_sql};
 use talaria_body::{truncate_utf16, utf16_len, utf16_substr};
@@ -389,6 +390,11 @@ pub struct RetrievalHit {
     pub title: Option<String>,
     pub snippet: String,
     pub href: Option<String>,
+    /// The ticket a `ticket` or `comment` hit is about (the ticket's own id,
+    /// or the comment point's `taskId`). Read at query time against the
+    /// ticket's CURRENT board (`drop_moved_ticket_hits`); None for every
+    /// other source.
+    pub task_id: Option<String>,
 }
 
 fn hit_of(collection: &str, h: &talaria_retrieval_qdrant::SearchHit) -> RetrievalHit {
@@ -415,7 +421,79 @@ fn hit_of(collection: &str, h: &talaria_retrieval_qdrant::SearchHit) -> Retrieva
             .get("href")
             .and_then(Value::as_str)
             .map(str::to_string),
+        task_id: match h.payload.get("sourceType").and_then(Value::as_str) {
+            Some("ticket") => Some(str_field("sourceId")).filter(|s| !s.is_empty()),
+            Some("comment") => h
+                .payload
+                .get("taskId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            _ => None,
+        },
     }
+}
+
+/// The boards an activity filter admits — its `boardId` arm, the same list
+/// the vector store was asked to match. Pure.
+pub fn filter_boards(filter: &Value) -> HashSet<String> {
+    filter
+        .get("should")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|arm| arm.get("key").and_then(Value::as_str) == Some("boardId"))
+        .filter_map(|arm| arm.pointer("/match/any").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+/// THE TICKET'S CURRENT BOARD DECIDES, AT QUERY TIME. A ticket or comment
+/// point carries the board it was indexed under (`payload.boardId`), and that
+/// is what the vector store filtered on. A ticket that has since moved boards
+/// re-indexes in the background, and a re-index can fail (the embedder or
+/// the store down) — so the store's answer alone would keep showing the
+/// ticket, and its whole discussion, to the board it LEFT. Every ticket and
+/// comment hit is re-asked here against `tasks.board_id`: kept only when
+/// the reader may see the board the ticket is on now, its link repointed
+/// there; dropped when the ticket is gone. One read for the whole page.
+pub async fn drop_moved_ticket_hits(
+    pg: &PgPool,
+    allowed_boards: &HashSet<String>,
+    hits: Vec<RetrievalHit>,
+) -> Result<Vec<RetrievalHit>, sqlx::Error> {
+    let ids: Vec<String> = hits
+        .iter()
+        .filter_map(|h| h.task_id.clone())
+        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .collect();
+    if hits.iter().all(|h| h.task_id.is_none()) {
+        return Ok(hits);
+    }
+    let rows: Vec<(String, String)> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as("select id::text, board_id::text from tasks where id = any($1::uuid[])")
+            .bind(&ids)
+            .fetch_all(pg)
+            .await?
+    };
+    let current: HashMap<String, String> = rows.into_iter().collect();
+    Ok(hits
+        .into_iter()
+        .filter_map(|mut h| {
+            let Some(task) = h.task_id.clone() else {
+                return Some(h);
+            };
+            let board = current.get(&task)?;
+            if !allowed_boards.contains(board) {
+                return None;
+            }
+            h.href = Some(format!("/boards/{board}/{task}"));
+            Some(h)
+        })
+        .collect())
 }
 
 async fn activity_scope(
@@ -656,6 +734,11 @@ pub async fn search_for_principal(
     .await;
 
     let merged = merge_hits(per_col);
+    // The store filtered on the board each point was INDEXED under; a moved
+    // ticket's points can lag its move, so its current board is asked again.
+    let merged = drop_moved_ticket_hits(pg, &filter_boards(&activity_filter), merged)
+        .await
+        .map_err(|e| e.to_string())?;
     if !reranking || merged.len() <= 1 {
         return Ok(merged.into_iter().take(limit).collect());
     }
@@ -852,6 +935,16 @@ mod tests {
     }
 
     #[test]
+    fn filter_boards_reads_the_board_arm_the_store_was_asked() {
+        let f = user_activity_should(&["c1".into()], &["b1".into(), "b2".into()], "u1");
+        let boards = filter_boards(&f);
+        assert_eq!(boards.len(), 2);
+        assert!(boards.contains("b1") && boards.contains("b2"));
+        assert!(filter_boards(&agent_activity_should(&[])).is_empty());
+        assert!(filter_boards(&json!({ "should": [] })).is_empty());
+    }
+
+    #[test]
     fn merge_sorts_by_score_and_dedupes_by_source() {
         let mk = |collection: &str, score: f64, source_type: &str, source_id: &str| RetrievalHit {
             collection: collection.into(),
@@ -861,6 +954,7 @@ mod tests {
             title: None,
             snippet: String::new(),
             href: None,
+            task_id: None,
         };
         let merged = merge_hits(vec![
             vec![mk("a", 0.5, "kb-doc", "1"), mk("a", 0.9, "kb-doc", "2")],

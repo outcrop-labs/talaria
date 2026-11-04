@@ -553,3 +553,334 @@ async fn a_live_work_session_holds_the_ticket_where_it_is() {
     assert_eq!(s, StatusCode::OK, "{body}");
     sweep(&pg, "w").await;
 }
+
+// ── The review's follow-ups (S1, S2, S4, S5, N1) ─────────────────────────────
+
+async fn watch(pg: &PgPool, task: &str, email: &str) {
+    sqlx::query("insert into task_watchers (task_id, watcher) values ($1::uuid, $2)")
+        .bind(task)
+        .bind(email)
+        .execute(pg)
+        .await
+        .unwrap();
+}
+
+async fn email_of(pg: &PgPool, user: &str) -> String {
+    sqlx::query_scalar("select email from users where id = $1::uuid")
+        .bind(user)
+        .fetch_one(pg)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_agent_cannot_unassign_a_person_and_whoever_loses_sight_is_told() {
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    sweep(&pg, "u").await;
+    let (ada, ada_cookie) = member(&state, "u", "ada").await;
+    let (bo, _) = member(&state, "u", "bo").await;
+    let (cy, _) = member(&state, "u", "cy").await;
+    let src = board(&pg, &ada, "Unassign Source", "TMUS").await;
+    let dest = board(&pg, &ada, "Unassign Dest", "TMUD").await;
+    share(&pg, &src, &bo, "editor").await;
+    share(&pg, &src, &cy, "viewer").await;
+    let (model, key) = agent(&state, "u", &[&src, &dest]).await;
+    let id = ticket(
+        &pg,
+        &src,
+        "in_progress",
+        json!([]),
+        json!([format!("user:{bo}"), model]),
+    )
+    .await;
+    let bo_email = email_of(&pg, &bo).await;
+    let cy_email = email_of(&pg, &cy).await;
+    watch(&pg, &id, &cy_email).await;
+
+    // The agent: refused, naming the person, and nothing moved.
+    let (s, body) = as_agent(
+        &state,
+        &key,
+        "POST",
+        &path(&id),
+        Some(json!({ "boardId": dest })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    let msg = body["error"].as_str().unwrap();
+    assert!(
+        msg.contains("cannot unassign people") && msg.contains(&bo_email),
+        "{msg}"
+    );
+    // A preview says the same, before anything is decided.
+    let (s, _) = as_agent(
+        &state,
+        &key,
+        "POST",
+        &path(&id),
+        Some(json!({ "boardId": dest, "preview": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // A person may: Bo is unassigned, named in the activity by email (not a
+    // uuid), and Bo and the watcher Cy — who lose sight — are told it left,
+    // without being told where. The mover is not told.
+    let (s, body) = call_json(
+        &state,
+        "POST",
+        &path(&id),
+        Some(&ada_cookie),
+        Some(json!({ "boardId": dest })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let (line,): (String,) = sqlx::query_as(
+        "select description from task_activity where task_id = $1::uuid and type = 'moved'",
+    )
+    .bind(&id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(
+        line.contains(&bo_email) && !line.contains("user:"),
+        "{line}"
+    );
+    let mut told: Vec<(String, String, Option<String>)> = Vec::new();
+    for _ in 0..50 {
+        told = sqlx::query_as(
+            "select user_id::text, title, href from notifications \
+             where entity_id = $1 and title like '%moved to a board you can''t see%' order by user_id",
+        )
+        .bind(&id)
+        .fetch_all(&pg)
+        .await
+        .unwrap();
+        if told.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let who: Vec<&str> = told.iter().map(|(u, _, _)| u.as_str()).collect();
+    assert!(
+        who.contains(&bo.as_str()) && who.contains(&cy.as_str()),
+        "{told:?}"
+    );
+    assert!(!who.contains(&ada.as_str()), "the mover was told: {told:?}");
+    assert!(
+        told.iter()
+            .all(|(_, title, href)| !title.contains("Unassign Dest")
+                && href.as_deref().unwrap_or("").is_empty()),
+        "{told:?}"
+    );
+    sweep(&pg, "u").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_ticket_that_changes_mid_decision_refuses_the_move() {
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    sweep(&pg, "c").await;
+    let (ada, cookie) = member(&state, "c", "ada").await;
+    let src = board(&pg, &ada, "Race Source", "TMCS").await;
+    let dest = board(&pg, &ada, "Race Dest", "TMCD").await;
+    let closed = ticket(&pg, &src, "in_progress", json!([]), json!([])).await;
+    let parent = ticket(&pg, &src, "inbox", json!([]), json!([])).await;
+    // A move that pauses between its decision and its write (debug builds;
+    // keyed to the one ticket), and a write that lands in that window.
+    async fn racing(
+        state: &AppState,
+        cookie: &str,
+        id: &str,
+        dest: &str,
+        meanwhile: &'static str,
+        pg: &PgPool,
+    ) -> (StatusCode, Value) {
+        unsafe { std::env::set_var("TALARIA_TEST_MOVE_PAUSE", format!("{id}:1500")) };
+        let (st, c, p, d) = (
+            state.clone(),
+            cookie.to_string(),
+            path(id),
+            dest.to_string(),
+        );
+        let mv = tokio::spawn(async move {
+            call_json(&st, "POST", &p, Some(&c), Some(json!({ "boardId": d }))).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        sqlx::query(meanwhile).bind(id).execute(pg).await.unwrap();
+        let out = mv.await.unwrap();
+        unsafe { std::env::remove_var("TALARIA_TEST_MOVE_PAUSE") };
+        out
+    }
+    // A person closes it while the move is deciding: the move must not
+    // reopen it into an open column.
+    let (s, body) = racing(
+        &state,
+        &cookie,
+        &closed,
+        &dest,
+        "update tasks set status = 'done' where id = $1::uuid",
+        &pg,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("changed while"),
+        "{body}"
+    );
+    let (st, board_now): (String, String) =
+        sqlx::query_as("select status, board_id::text from tasks where id = $1::uuid")
+            .bind(&closed)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert_eq!((st.as_str(), board_now.as_str()), ("done", src.as_str()));
+    // A sub-task is created under it while the move is deciding: the parent
+    // must not move without it.
+    let (s, body) = racing(
+        &state,
+        &cookie,
+        &parent,
+        &dest,
+        "insert into tasks (board_id, title, status, priority, parent_id, created_by) \
+         select board_id, 'late child', 'inbox', 'medium', id, 'live-test' from tasks where id = $1::uuid",
+        &pg,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("sub-task"),
+        "{body}"
+    );
+    sweep(&pg, "c").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn search_drops_a_moved_tickets_hits_for_the_board_it_left() {
+    use talaria_retrieval::index::{RetrievalHit, drop_moved_ticket_hits};
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    sweep(&pg, "s").await;
+    let (ada, cookie) = member(&state, "s", "ada").await;
+    let src = board(&pg, &ada, "Search Source", "TMSS").await;
+    let dest = board(&pg, &ada, "Search Dest", "TMSD").await;
+    let id = ticket(&pg, &src, "inbox", json!([]), json!([])).await;
+    let (s, _) = call_json(
+        &state,
+        "POST",
+        &path(&id),
+        Some(&cookie),
+        Some(json!({ "boardId": dest })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // The points as a failed re-index would leave them: indexed under the
+    // board the ticket LEFT.
+    let hit = |source_type: &str, source_id: &str| RetrievalHit {
+        collection: "activity".into(),
+        score: 0.9,
+        source_type: source_type.into(),
+        source_id: source_id.into(),
+        title: None,
+        snippet: "stale".into(),
+        href: Some(format!("/boards/{src}/{id}")),
+        task_id: Some(id.clone()),
+    };
+    let doc = RetrievalHit {
+        task_id: None,
+        href: None,
+        ..hit("kb-doc", "doc-1")
+    };
+    let hits = vec![hit("ticket", &id), hit("comment", "c-1"), doc.clone()];
+    // A reader of the OLD board only: both stale hits are gone, the doc stays.
+    let only_src = std::iter::once(src.clone()).collect();
+    let kept = drop_moved_ticket_hits(&pg, &only_src, hits.clone())
+        .await
+        .unwrap();
+    assert_eq!(kept, vec![doc.clone()]);
+    // A reader of the NEW board: kept, and pointed at where the ticket is.
+    let only_dest = std::iter::once(dest.clone()).collect();
+    let kept = drop_moved_ticket_hits(&pg, &only_dest, hits).await.unwrap();
+    assert_eq!(kept.len(), 3);
+    assert!(
+        kept[..2]
+            .iter()
+            .all(|h| h.href.as_deref() == Some(format!("/boards/{dest}/{id}").as_str()))
+    );
+    sweep(&pg, "s").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn someone_only_on_the_new_board_opens_the_old_ref() {
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    sweep(&pg, "n").await;
+    let (ada, ada_cookie) = member(&state, "n", "ada").await;
+    let (cy, cy_cookie) = member(&state, "n", "cy").await;
+    let src = board(&pg, &ada, "Link Source", "TMNS").await;
+    let dest = board(&pg, &ada, "Link Dest", "TMND").await;
+    share(&pg, &dest, &cy, "viewer").await;
+    let id = ticket(&pg, &src, "inbox", json!([]), json!([])).await;
+    // Before the move Cy cannot see it; after it, the old ref and the id
+    // both open it from the board it is on now — what the old link follows.
+    let (s, _) = call_json(&state, "GET", "/api/tasks/TMNS-1", Some(&cy_cookie), None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call_json(
+        &state,
+        "POST",
+        &path(&id),
+        Some(&ada_cookie),
+        Some(json!({ "boardId": dest })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    for r in ["TMNS-1", id.as_str()] {
+        let (s, body) = call_json(
+            &state,
+            "GET",
+            &format!("/api/tasks/{r}"),
+            Some(&cy_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{r}: {body}");
+        assert_eq!(body["task"]["boardId"], dest.as_str(), "{r}");
+    }
+    sweep(&pg, "n").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_old_ref_that_collides_with_a_live_one_stays_ambiguous() {
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    sweep(&pg, "x").await;
+    let (ada, cookie) = member(&state, "x", "ada").await;
+    // Two boards, one prefix (initials collide in real life: "Sales Board",
+    // "Support Board"), each with a #1.
+    let sales = board(&pg, &ada, "Collide Sales", "TMXX").await;
+    let support = board(&pg, &ada, "Collide Support", "TMXX").await;
+    let elsewhere = board(&pg, &ada, "Collide Elsewhere", "TMXE").await;
+    let _sales_1 = ticket(&pg, &sales, "inbox", json!([]), json!([])).await;
+    let support_1 = ticket(&pg, &support, "inbox", json!([]), json!([])).await;
+    let (s, _) = call_json(&state, "GET", "/api/tasks/TMXX-1", Some(&cookie), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "ambiguous before the move");
+    let (s, _) = call_json(
+        &state,
+        "POST",
+        &path(&support_1),
+        Some(&cookie),
+        Some(json!({ "boardId": elsewhere })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // Still ambiguous: the old ref must not silently open Sales' ticket.
+    let (s, body) = call_json(&state, "GET", "/api/tasks/TMXX-1", Some(&cookie), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    sweep(&pg, "x").await;
+}

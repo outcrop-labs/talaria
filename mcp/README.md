@@ -34,7 +34,7 @@ guardrail prose rules below are checked against.
 | `fetch_attachment` | Read an attached upload: text as text, images as an image, other binaries as metadata |
 | `create_ticket` | Create a ticket → lands in **inbox**, unassigned |
 | `triage_ticket` | Priority, effort, labels, description, due date, and **forward-only** status moves using the board's own status keys (see below) |
-| `move_ticket` | Move a ticket to another board the agent is on — re-keyed there (the old ref still resolves); labels the new board lacks are dropped and assignees not on it unassigned, both named in `moved`; never into a closed or pickup column; `preview: true` moves nothing |
+| `move_ticket` | Move a ticket to another board the agent is on — re-keyed there (the old ref still resolves); labels the new board lacks are dropped and agents not on it unassigned, both named in `moved`; a move that would unassign a person is refused; never into a closed or pickup column; `preview: true` moves nothing |
 | `comment` | Comment on a ticket — lands in the ticket's **discussion thread** (the room where the agent and the board's humans talk); the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
 | `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
 | `add_time` | Add seconds to the auto-accumulated time-spent. Live tickets only |
