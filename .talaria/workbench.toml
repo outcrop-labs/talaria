@@ -1,0 +1,13 @@
+# OS packages the desktop crate's build scripts need (webkit2gtk/gtk sys crates
+# run pkg-config at build time) plus the headless run/spike toolchain used by
+# CI's desktop job (see .github/workflows/ci.yml:629) and the P0 WebDriver spike.
+apt = [
+  "libwebkit2gtk-4.1-dev",
+  "librsvg2-dev",
+  "libayatana-appindicator3-dev",
+  "xvfb",
+  "xauth",
+  "dbus",
+  "dbus-x11",
+  "webkitgtk-webdriver",
+]
