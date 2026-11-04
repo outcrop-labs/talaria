@@ -50,10 +50,12 @@ flag it once it is stale.
   `cargo clean --manifest-path api/Cargo.toml` is a human decision.
   A *side* worktree's build dir is different. `--apply` reclaims it when its pull
   request has finished (merged, or closed unmerged, at the checkout's HEAD), after 14
-  idle days, or, with the disk over the line, the least recently used idle ones first
-  until it is back under. It never takes one a cargo holds the lock on, one built in
-  within the hour, one whose stack runs, or one in a dirty or unpushed tree (flagged
-  for a human instead). The checkout stays. Reclaiming is cheap to undo:
+  idle days, or, with the disk over the line, idle ones (unseeded, then least recently
+  used, first; at most three per run, and it stops once a drop frees under 512 MiB).
+  It never takes one a cargo holds the lock on, one built in within the hour, one
+  whose stack runs, one in a dirty or unpushed tree, or one a `.talaria-keep` holds,
+  at any disk reading. Those are flagged for a human. Where the lock check cannot be
+  trusted (btrfs, or no `/proc/locks`) it deletes nothing and flags instead. The checkout stays. Reclaiming is cheap to undo:
   `bun talaria seed-target` reflinks the registry crates back from an idle checkout,
   and sccache keeps the rest cheap. The sweep lists every linked checkout's build dirs,
   including the worktrees whose branch was renamed (known by `TALARIA_WORKTREE` in

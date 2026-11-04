@@ -1,8 +1,8 @@
 // The sweep's dangerous edges: what it will delete, what it must not, and
 // when the stop gate has to say no. A wrong answer here fills the disk or
 // removes someone else's checkout. Run by `bun run check`.
-import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +26,11 @@ import {
   parseLabels,
   prStateAt,
   pressureDrops,
+  pressureKept,
+  runPressureDrops,
+  dropTarget,
+  targetBusy,
+  BTRFS_SUPER_MAGIC,
   procLocksDev,
   heldFlocks,
   projectVouchedBy,
@@ -904,8 +909,11 @@ check('never a cache a cargo builds in, one used this hour, one whose stack runs
   eq(classify(cache({ pr: 'merged', busy: true })), 'keep')
   // null: the locks could not be read (not Linux). Unknown is not idle,
   // and that holds for the 14-day clock too.
-  eq(classify(cache({ pr: 'merged', busy: null })), 'keep')
-  eq(classify(cache({ ageMs: POLICY.staleTargetMs + DAY, busy: null })), 'keep')
+  // null: the lock check cannot be trusted (no /proc/locks off Linux, or
+  // btrfs). What would have gone is flagged for a human, never deleted.
+  eq(classify(cache({ pr: 'merged', busy: null })), 'flag')
+  eq(classify(cache({ ageMs: POLICY.staleTargetMs + DAY, busy: null })), 'flag')
+  eq(classify(cache({ pr: 'open', busy: null })), 'keep')
   eq(classify(cache({ pr: 'merged', ageMs: POLICY.targetIdleMs - 1 })), 'keep')
   eq(classify(cache({ pr: 'merged', stackRunning: true })), 'keep')
   eq(classify(cache({ ageMs: POLICY.staleTargetMs + DAY, stackRunning: true })), 'keep')
@@ -919,7 +927,7 @@ check('never the primary, the current checkout, or a checkout talaria worktree d
   eq(classify(cache({ foreign: true, bytes: POLICY.oversizedTargetBytes })), 'flag')
 })
 
-check('over the line: idle clean caches, least recently used first, kept trees included', () => {
+check('over the line: idle clean caches, unseeded then least recently used first; a keep is absolute', () => {
   const over = { usedPct: POLICY.pressurePct + 1 }
   const rows = [
     cache({ id: 'recent', ageMs: 3 * HOUR, pr: 'open' }),
@@ -931,9 +939,42 @@ check('over the line: idle clean caches, least recently used first, kept trees i
     cache({ id: 'primary', ageMs: 30 * DAY, primary: true }),
     cache({ id: 'foreign', ageMs: 30 * DAY, foreign: true }),
     cache({ id: 'uninspected', ageMs: 30 * DAY, inspected: false }),
+    cache({ id: 'seeded-old', ageMs: 5 * DAY, seeded: true }),
   ].map((a) => ({ ...a, action: classify(a) }))
-  eq(pressureDrops(rows, over).map((a) => a.id).join(','), 'oldest,middle,recent')
+  eq(pressureDrops(rows, over).map((a) => a.id).join(','), 'middle,recent,seeded-old')
   eq(pressureDrops(rows, { usedPct: POLICY.pressurePct - 1 }).length, 0)
+  // The kept tree's cache is reported, flagged, and never dropped.
+  eq(pressureKept(rows, over).map((a) => a.id).join(','), 'oldest')
+  const text = formatReport({ pressure: { ...over, avail: 1, total: 2, used: 1 }, remaining: rows, removed: [], notes: [] })
+  if (!/flagged, not dropped: idle build caches a `.talaria-keep` holds[\s\S]*oldest/.test(text)) throw new Error(text)
+})
+
+check('the pressure loop: at most pressureDropMax, and it stops when a drop frees too little', () => {
+  const GiB = 1024 ** 3
+  const over = { usedPct: POLICY.pressurePct + 5, avail: 10 * GiB }
+  const rows = ['a', 'b', 'c', 'd', 'e'].map((id, i) => ({ ...cache({ id, ageMs: (10 - i) * DAY }), action: 'keep' }))
+  // Every drop frees 2 GiB and the disk stays over: the cap stops it.
+  let avail = over.avail
+  let r = runPressureDrops(rows, over, { remove: () => {}, read: () => ({ usedPct: over.usedPct, avail: (avail += 2 * GiB) }) })
+  eq(r.dropped.map((a) => a.id).join(','), 'a,b,c')
+  if (!/stopped: 3 caches is this run's limit; left: d .*, e /.test(r.notes[0])) throw new Error(r.notes[0])
+  // The first drop frees almost nothing: the pressure is not build caches.
+  r = runPressureDrops(rows, over, { remove: () => {}, read: () => ({ usedPct: over.usedPct, avail: over.avail + 1024 }) })
+  eq(r.dropped.map((a) => a.id).join(','), 'a')
+  if (!/build caches are not what fills the disk/.test(r.notes[0])) throw new Error(r.notes[0])
+  // Back under the line after one: stops there.
+  r = runPressureDrops(rows, over, { remove: () => {}, read: () => ({ usedPct: POLICY.pressurePct - 1, avail: 99 * GiB }) })
+  eq(r.dropped.length, 1)
+  if (!/back under/.test(r.notes[0])) throw new Error(r.notes[0])
+  // A failed removal is reported and does not count toward the cap.
+  r = runPressureDrops(rows, over, {
+    remove: (a) => {
+      if (a.id === 'a') throw new Error('busy')
+    },
+    read: () => ({ usedPct: over.usedPct, avail: (avail += 2 * GiB) }),
+  })
+  eq(r.dropped.map((a) => a.id).join(','), 'b,c,d')
+  eq(r.failed.length, 1)
 })
 
 check('a removable checkout counts its build dir once, and the build dir goes first', () => {
@@ -955,6 +996,69 @@ check('PR state is the PR at this HEAD; an old PR of a reused name finishes noth
   eq(prStateAt(prs, 'feat/c', 'whatever'), 'open')
   eq(prStateAt(prs, 'feat/none', 'x'), null)
   eq(prStateAt(null, 'wt/a', 'aaa'), null)
+})
+
+check('btrfs: the lock check cannot be trusted, so a target reads as unknown', () => {
+  eq(targetBusy('/nowhere', '', BTRFS_SUPER_MAGIC), null)
+  eq(targetBusy('/nowhere', null), null)
+  eq(targetBusy('/nowhere', '', 0x58465342), false) // XFS, nothing held
+})
+
+// The real lock: a `flock -x` holder, as cargo takes .cargo-build-lock.
+const haveFlock = spawnSync('sh', ['-c', 'command -v flock']).status === 0 && existsSync('/proc/locks')
+function holdLock(file) {
+  // Its own process group: `sleep` inherits the lock fd, so the group goes.
+  const child = spawn('flock', ['-x', file, 'sleep', '30'], { stdio: 'ignore', detached: true })
+  for (let i = 0; i < 100 && targetBusy(dirname(dirname(file))) !== true; i++) spawnSync('sleep', ['0.05'])
+  return child
+}
+
+check('dropTarget renames, re-checks, and removes; a held lock keeps the dir where it was', () => {
+  if (!haveFlock) return
+  const root = mkdtempSync(join(tmpdir(), 'talaria-sweeptest-'))
+  try {
+    const t = join(root, 'talaria-x', 'api', 'target')
+    mkdirSync(join(t, 'debug', 'deps'), { recursive: true })
+    writeFileSync(join(t, 'debug', '.cargo-build-lock'), '')
+    const holder = holdLock(join(t, 'debug', '.cargo-build-lock'))
+    try {
+      let threw = false
+      try {
+        dropTarget(t)
+      } catch {
+        threw = true
+      }
+      eq(threw, true)
+      eq(existsSync(join(t, 'debug', 'deps')), true)
+      // ...and a merged worktree holding that busy target is not removed either.
+      const wt = { ...stale({ path: join(root, 'talaria-x'), id: 'x', merged: true }), action: 'remove' }
+      let why = ''
+      try {
+        removeArtifact(wt, { primary: join(root, 'talaria'), current: '/elsewhere', siblingParent: root, devboxHome: join(root, 'devboxes'), tmp: tmpdir() })
+      } catch (e) {
+        why = String(e?.message ?? e)
+      }
+      if (!why.includes('checkout left in place')) throw new Error(why)
+      eq(existsSync(t), true)
+    } finally {
+      process.kill(-holder.pid, 'SIGKILL')
+    }
+    for (let i = 0; i < 100 && targetBusy(t) !== false; i++) spawnSync('sleep', ['0.05'])
+    dropTarget(t)
+    eq(existsSync(t), false)
+    eq(readdirSync(join(root, 'talaria-x', 'api')).length, 0) // no .target-dropping-* left
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+check('a leftover .target-dropping-* is a removable target of its own', () => {
+  eq(classify(cache({ dropping: true, busy: false, kept: true, pr: 'open' })), 'remove')
+  eq(classify(cache({ dropping: true, busy: true })), 'flag')
+  const roots = { primary: '/work/talaria', current: '/work/talaria', siblingParent: '/work' }
+  eq(removalAllowed({ kind: 'target', path: '/work/talaria-x/api/.target-dropping-123' }, roots), true)
+  eq(removalAllowed({ kind: 'target', path: '/work/talaria-x/api/.target-dropping-x' }, roots), false)
+  eq(removalAllowed({ kind: 'target', path: '/work/talaria/api/.target-dropping-1' }, roots), false)
 })
 
 check('cargo locks from /proc/locks, and the worktree marker', () => {

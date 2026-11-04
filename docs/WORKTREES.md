@@ -382,12 +382,35 @@ and left alone. For the worktrees' own caches:
   to it. Not while a cargo holds its lock, it was built in within the last hour, or
   its stack runs. A dirty or unpushed tree's cache is flagged for a human, as the
   tree itself is.
-- **Open pull request, none yet, or a `.talaria-keep`**: kept. If the disk is
-  **over the line**, `--apply` also drops idle caches of clean, pushed trees, **least
-  recently used first**, one at a time, until `statfs` says the disk is back under
-  it. It reads the disk rather than summing `du`, because a seeded target frees less
-  than it measures.
-- **Untouched for 14 days**: spent, as before, except that a cache whose stack runs, or whose locks a cargo holds or that cannot be read (no `/proc/locks`), is now kept.
+- **A `.talaria-keep`**: kept, always, at any disk reading. The keep means "leave
+  this alone", and a cache it holds is never dropped. Over the line the report lists
+  it as flagged, for a human to decide.
+- **Open pull request, or none yet**: kept. If the disk is **over the line**,
+  `--apply` also drops idle caches of clean, pushed trees: unseeded ones first, and
+  within those the least recently used first. It drops one at a time, re-reading
+  `statfs` after each. It stops when the disk is back under the line, after three
+  caches in one run, or as soon as a drop frees less than 512 MiB, which means build
+  caches are not what fills the disk. It reads the disk rather than summing `du`,
+  because a seeded target frees less than it measures. The report says what it
+  dropped, why it stopped, and what is left.
+- **Untouched for 14 days**: spent, as before, except that a cache whose stack runs,
+  or whose locks a cargo holds, is now kept.
+
+**How a cache is removed.** Its locks are checked, then it is renamed to a sibling
+`.target-dropping-<pid>` (atomic), checked again, and deleted. A deep delete takes
+minutes on a slow disk; a cargo that starts during it finds no target and builds a
+fresh one instead of having one emptied under it. A cargo that took the lock just
+before the rename is seen by the second check, and the dir goes back. A leftover
+`.target-dropping-*` from an interrupted run is removed by the next `--apply` once no
+cargo holds it. Removing a merged worktree's checkout makes the same check on its
+build dirs first, since `git worktree remove` would take them too.
+
+**Where the lock check cannot be trusted, nothing is deleted.** On **btrfs**, `stat`
+reports the subvolume's anonymous device while `/proc/locks` prints the superblock's,
+so a held lock never matches. Off Linux there is no `/proc/locks` at all. Either way
+the check answers "unknown": a cache that would have gone is flagged for a human
+instead, and a checkout with a build dir is not removed. Seeding still works on btrfs,
+which reflinks, because the shared `flock` around the copy is the real gate.
 
 The checkout stays in all three cases; `bun talaria seed-target` refills its cache.
 The stop gate removes no build cache and makes no `gh` call for them. It stays quick,

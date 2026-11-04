@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { realCtx, type Ctx } from './ctx'
@@ -235,6 +235,19 @@ describe('seedTarget', () => {
       expect(r.seeded === false && r.why).toContain('a cargo started building')
       expect(existsSync(join(to, 'api/target'))).toBe(false)
     } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a target dir that cannot be made is a failed seed, never a throw or a half-made target', async () => {
+    const { dir, from, to } = plantCheckouts()
+    try {
+      chmodSync(join(to, 'api'), 0o555)
+      const r = await seedTarget(fakeCtx(), from, to, 'api')
+      expect(r.seeded === false && r.failed).toBe(true)
+      expect(existsSync(join(to, 'api/target'))).toBe(false)
+    } finally {
+      chmodSync(join(to, 'api'), 0o755)
       rmSync(dir, { recursive: true, force: true })
     }
   })

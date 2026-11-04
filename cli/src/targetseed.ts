@@ -42,7 +42,7 @@
 // share mutable files between trees) and never a full byte copy. Any failure
 // removes the half-made target and leaves the cold build.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from './ctx'
 
@@ -184,17 +184,28 @@ export function heldFlocks(procLocks: string): Set<string> {
  */
 export function profileBusy(profileDir: string, procLocks: string | null = readProcLocks()): boolean | null {
   if (procLocks === null) return null
+  // btrfs: stat() answers the subvolume's anonymous device and /proc/locks the
+  // superblock's, so nothing would ever match. Unknown, then: the shared
+  // flock around the copy is the real gate either way.
+  try {
+    if (Number(statfsSync(profileDir).type) === BTRFS_SUPER_MAGIC) return null
+  } catch {
+    return null
+  }
   const held = heldFlocks(procLocks)
   for (const f of CARGO_LOCK_FILES) {
     try {
-      const st = statSync(join(profileDir, f))
-      if (held.has(`${procLocksDev(st.dev)}:${st.ino}`)) return true
+      const st = statSync(join(profileDir, f), { bigint: true })
+      if (held.has(`${procLocksDev(Number(st.dev))}:${st.ino}`)) return true
     } catch {
       // that lock file does not exist: nothing can hold it
     }
   }
   return false
 }
+
+/** statfs f_type of btrfs. */
+export const BTRFS_SUPER_MAGIC = 0x9123683e
 
 export function readProcLocks(): string | null {
   try {
@@ -303,11 +314,35 @@ export async function seedTarget(ctx: Ctx, fromCheckout: string, toCheckout: str
   if (!probe) return { seeded: false, why: `${srcProfile} holds no unit this checkout's lockfile can use` }
 
   const started = Date.now()
-  mkdirSync(dstProfile, { recursive: true })
   const undo = (why: string): SeedResult => {
     rmSync(dstTarget, { recursive: true, force: true })
     return { seeded: false, why, failed: true }
   }
+  // Nothing past here may throw: a half-made target would block every later
+  // seed as "already exists", and fail the worktree whose stack is already up.
+  try {
+    return await copyUnder(ctx, { srcProfile, dstTarget, dstProfile, fromCheckout, rel, sel, probe, started, undo })
+  } catch (e) {
+    return undo(`the seed failed: ${String(e instanceof Error ? e.message : e).split('\n')[0]}`)
+  }
+}
+
+async function copyUnder(
+  ctx: Ctx,
+  o: {
+    srcProfile: string
+    dstTarget: string
+    dstProfile: string
+    fromCheckout: string
+    rel: string
+    sel: SeedSelection
+    probe: string
+    started: number
+    undo: (why: string) => SeedResult
+  },
+): Promise<SeedResult> {
+  const { srcProfile, dstTarget, dstProfile, fromCheckout, rel, sel, probe, started, undo } = o
+  mkdirSync(dstProfile, { recursive: true })
   // Reflink or nothing. `--reflink=always` fails where the filesystem cannot
   // share extents (ext4, tmpfs, across filesystems) instead of copying bytes.
   try {

@@ -90,6 +90,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   realpathSync,
   rmSync,
   statfsSync,
@@ -115,6 +116,13 @@ export const POLICY = {
   // builds is still using it. The cargo lock says whether one is building
   // right now; this says whether one was a moment ago.
   targetIdleMs: 60 * 60 * 1000,
+  // Over the line, --apply drops at most this many idle build caches in one
+  // run, and stops early once a drop frees less than pressureMinFreedBytes:
+  // then the pressure is not build caches (docker, a transient write, or
+  // seeded caches whose extents another tree still shares), and dropping
+  // more would only cost rebuilds.
+  pressureDropMax: 3,
+  pressureMinFreedBytes: 512 * 1024 * 1024,
   // Flagged bulk earns a loud line, never an exit 2. Blocking on something
   // the sweep refuses to delete is a gate with no way through, and a gate
   // with no way through gets silenced.
@@ -558,13 +566,20 @@ export function classify(artifact, policy = POLICY) {
     // The primary's build dir is a warm cache: named when oversized, never
     // removed on a timer. Nor is a checkout `talaria worktree` did not make
     // (`foreign`): it is reported, so the disk it holds is seen, and that is all.
+    // Half removed already (dropTarget was interrupted): it goes once no
+    // cargo holds it.
+    if (artifact.dropping) return artifact.busy === false ? 'remove' : 'flag'
     if (artifact.primary || artifact.current || artifact.kept || artifact.foreign) return big
-    // A cargo building in it, or a lock that cannot be read: never.
-    if (artifact.busy !== undefined && artifact.busy !== false) return big
+    // A cargo building in it: never.
+    if (artifact.busy === true) return big
     // Nor one whose stack runs: an api serving from it, or about to rebuild.
     if (artifact.stackRunning) return big
+    // A lock check that cannot be trusted (no /proc/locks off Linux; btrfs,
+    // whose stat device is not the one /proc/locks prints) never deletes:
+    // what would have gone is flagged for a human instead.
+    const untrusted = artifact.busy === null
     // A side worktree's is spent once the tree has sat.
-    if (artifact.ageMs >= policy.staleTargetMs) return 'remove'
+    if (artifact.ageMs >= policy.staleTargetMs) return untrusted ? 'flag' : 'remove'
     // Its pull request is finished — merged, or closed unmerged — at the
     // commit this checkout sits on. The cache goes first: the checkout keeps
     // its own rules (a closed PR's tree is not removed, a merged one waits
@@ -572,8 +587,8 @@ export function classify(artifact, policy = POLICY) {
     // while it was used in the last POLICY.targetIdleMs or its stack runs,
     // and a tree with work no remote has is a human's call, as for the
     // checkout itself.
-    if ((artifact.pr === 'merged' || artifact.pr === 'closed') && targetIdle(artifact, policy)) {
-      return artifact.dirty || artifact.unpushed ? 'flag' : 'remove'
+    if ((artifact.pr === 'merged' || artifact.pr === 'closed') && targetIdleBy(artifact, policy)) {
+      return artifact.dirty || artifact.unpushed || untrusted ? 'flag' : 'remove'
     }
     return big
   }
@@ -607,7 +622,12 @@ export function classify(artifact, policy = POLICY) {
 /** Idle: no cargo lock held (checked, not guessed), no stack running, and
  *  not built in for POLICY.targetIdleMs. */
 export function targetIdle(artifact, policy = POLICY) {
-  return artifact.busy === false && !artifact.stackRunning && artifact.ageMs >= policy.targetIdleMs
+  return artifact.busy === false && targetIdleBy(artifact, policy)
+}
+
+/** The idle test without the lock half: no stack, not built in lately. */
+function targetIdleBy(artifact, policy) {
+  return !artifact.stackRunning && artifact.ageMs >= policy.targetIdleMs
 }
 
 /**
@@ -632,12 +652,26 @@ export function pressureDrops(classified, pressure, policy = POLICY) {
         !a.primary &&
         !a.current &&
         !a.foreign &&
+        !a.kept &&
         !a.dirty &&
         !a.unpushed &&
         a.inspected === true &&
         targetIdle(a, policy),
     )
-    .sort((x, y) => y.ageMs - x.ageMs)
+    // A non-seeded cache first: removing a seeded one frees only what it
+    // does not share (a third of its `du` here), and its rebuild writes all
+    // of it back. Least recently used first within each.
+    .sort((x, y) => Number(Boolean(x.seeded)) - Number(Boolean(y.seeded)) || y.ageMs - x.ageMs)
+}
+
+/** Over the line, the idle caches a `.talaria-keep` holds. The keep is
+ *  absolute (a human fenced the tree off), so these are never dropped; the
+ *  report names them, flagged, so the human can decide. Pure. */
+export function pressureKept(classified, pressure, policy = POLICY) {
+  if (!(pressure.usedPct >= policy.pressurePct)) return []
+  return classified.filter(
+    (a) => a.kind === 'target' && a.kept && a.action !== 'remove' && !a.primary && !a.current && !a.foreign && targetIdle(a, policy),
+  )
 }
 
 /** What this mode is allowed to delete. --gate only takes garbage that has
@@ -725,7 +759,10 @@ export function removalAllowed(artifact, roots) {
     // Only a build dir inside a SIDE worktree, and only at one of the two
     // paths the repo actually builds into. The primary's is never removable
     // here however stale it looks — `cargo clean` stays a human's call.
-    const owner = TARGET_RELS.map((rel) => trimSuffix(path, rel)).find(Boolean)
+    // A `.target-dropping-*` beside where the target was is the same dir,
+    // part way through its removal.
+    const asTarget = DROPPING_RE.test(basename(path)) ? join(dirname(path), 'target') : path
+    const owner = TARGET_RELS.map((rel) => trimSuffix(asTarget, rel)).find(Boolean)
     if (!owner) return false
     if (roots.primary && owner === resolve(roots.primary)) return false
     if (roots.current && owner === resolve(roots.current)) return false
@@ -766,8 +803,11 @@ export function heldFlocks(procLocks) {
  * takes no lock, so asking never slows another session's build. Every
  * profile dir is asked (debug, release, a target triple's).
  */
-export function targetBusy(targetDir, procLocks = readProcLocks()) {
+export function targetBusy(targetDir, procLocks = readProcLocks(), fsType = fsTypeOf(targetDir)) {
   if (procLocks === null) return null
+  // btrfs: stat() answers the subvolume's anonymous device, /proc/locks the
+  // superblock's, so no key ever matches and every target would read idle.
+  if (fsType === BTRFS_SUPER_MAGIC) return null
   const held = heldFlocks(procLocks)
   const profiles = []
   const walk = (d, depth) => {
@@ -784,14 +824,26 @@ export function targetBusy(targetDir, procLocks = readProcLocks()) {
   for (const p of profiles) {
     for (const f of CARGO_LOCK_FILES) {
       try {
-        const st = statSync(join(p, f))
-        if (held.has(`${procLocksDev(st.dev)}:${st.ino}`)) return true
+        // bigint: an inode past 2^53 keeps every digit
+        const st = statSync(join(p, f), { bigint: true })
+        if (held.has(`${procLocksDev(Number(st.dev))}:${st.ino}`)) return true
       } catch {
         // no such lock file in this profile
       }
     }
   }
   return false
+}
+
+/** statfs f_type of btrfs. */
+export const BTRFS_SUPER_MAGIC = 0x9123683e
+
+function fsTypeOf(path) {
+  try {
+    return Number(statfsSync(path).type)
+  } catch {
+    return null
+  }
 }
 
 function readProcLocks() {
@@ -889,9 +941,13 @@ export function formatReport({ pressure, remaining, removed, notes, policy = POL
     for (const a of flagged) {
       const why =
         a.kind === 'target'
-          ? a.pr === 'merged' || a.pr === 'closed'
-            ? `its PR is ${a.pr}, but the tree is ${a.dirty ? 'dirty' : 'unpushed'}`
-            : 'oversized cache'
+          ? a.busy === null && !a.primary && !a.foreign && !a.kept && !a.current
+            ? 'the cargo lock check cannot be trusted here (btrfs, or no /proc/locks) — never deleted'
+            : a.dropping
+              ? 'half removed, and a cargo holds it'
+              : a.pr === 'merged' || a.pr === 'closed'
+                ? `its PR is ${a.pr}, but the tree is ${a.dirty ? 'dirty' : 'unpushed'}`
+                : 'oversized cache'
           : a.dirty
             ? 'dirty'
             : a.unpushed
@@ -926,10 +982,17 @@ export function formatReport({ pressure, remaining, removed, notes, policy = POL
   const drops = pressureDrops(remaining, pressure, policy)
   if (drops.length) {
     lines.push(
-      `over the line, \`bun talaria cleanup --apply\` also drops these idle build caches, least recently used first, ` +
-        `until the disk is under ${policy.pressurePct}% (the checkouts stay; \`bun talaria seed-target\` refills one):`,
+      `over the line, \`bun talaria cleanup --apply\` also drops these idle build caches, unseeded and least recently used first, ` +
+        `until the disk is under ${policy.pressurePct}% or a drop frees under ${formatBytes(policy.pressureMinFreedBytes)} ` +
+        `(the checkouts stay; \`bun talaria seed-target\` refills one):`,
     )
-    for (const a of drops) lines.push(`  ${a.id}  ${formatBytes(a.bytes)}  last built ${ageDays(a.ageMs)} ago  ${a.pr ? `PR ${a.pr}` : a.kept ? 'kept tree' : 'no PR'}`)
+    for (const a of drops.slice(0, policy.pressureDropMax)) lines.push(`  ${a.id}  ${formatBytes(a.bytes)}  last built ${ageDays(a.ageMs)} ago  ${a.pr ? `PR ${a.pr}` : 'no PR'}${a.seeded ? '  seeded' : ''}`)
+    if (drops.length > policy.pressureDropMax) lines.push(`  (at most ${policy.pressureDropMax} per run; ${drops.length - policy.pressureDropMax} more after that)`)
+  }
+  const held = pressureKept(remaining, pressure, policy)
+  if (held.length) {
+    lines.push('flagged, not dropped: idle build caches a `.talaria-keep` holds (a human decides):')
+    for (const a of held) lines.push(`  ${a.id}  ${formatBytes(a.bytes)}  last built ${ageDays(a.ageMs)} ago`)
   }
   if (!toRemove.length && !flagged.length && !removed?.length && !caches.length) lines.push('nothing stale.')
   if (cacheBytes >= policy.nagBytes) {
@@ -1264,10 +1327,28 @@ export function inventory(root, now = Date.now(), { scanNetworks = true, lifecyc
         pr,
         stackRunning: name ? (running ?? projectRunning(projects, `talaria-wt-${name}`)) : false,
       })
-      if (ours && !isCurrent && (pr === 'merged' || pr === 'closed' || pressureHigh)) {
+      if (lifecycle && ours && !isCurrent && (pr === 'merged' || pr === 'closed' || pressureHigh)) {
         Object.assign(row, inspectTree(path), { inspected: true })
       }
       artifacts.push(row)
+    }
+    // A build dir an interrupted removal left renamed (dropTarget): spent by
+    // definition, so removable as soon as no cargo holds it.
+    if (!ours) return
+    for (const rel of TARGET_RELS) {
+      const parent = dirname(join(path, rel))
+      let names = []
+      try {
+        names = readdirSync(parent).filter((n) => DROPPING_RE.test(n))
+      } catch {
+        continue
+      }
+      for (const n of names) {
+        const row = targetRow(join(parent, n), rel, now, { current: isCurrent, primary: false, kept: false, foreign: false, pr: null, stackRunning: false })
+        row.id = `${basename(path)}/${dirname(rel)}/${n}`
+        row.dropping = true
+        artifacts.push(row)
+      }
     }
   }
 
@@ -1730,6 +1811,35 @@ function keptNow(artifact) {
   return Boolean(dir) && existsSync(join(dir, '.talaria-keep'))
 }
 
+/** The name a build dir is renamed to before it is deleted. */
+export const DROPPING_RE = /^\.target-dropping-\d+$/
+
+/**
+ * Remove a build dir without racing a cargo. Checked, RENAMED to a sibling
+ * `.target-dropping-<pid>` (atomic on one filesystem), checked again, then
+ * deleted. A recursive delete of a large target takes minutes on a slow
+ * disk; a cargo that starts in that window now finds no target at all and
+ * builds a fresh one, rather than one being emptied under it. A cargo that
+ * took the lock between the first check and the rename still holds the
+ * moved lock file's inode, so the second check sees it: the dir is renamed
+ * back when nothing has taken its place, and kept as it is when something
+ * has. A leftover `.target-dropping-*` (an interrupted run) is swept as a
+ * target of its own next time, under the same check.
+ */
+export function dropTarget(path) {
+  if (targetBusy(path) !== false) throw new Error(`a cargo is building in ${path} (or its locks cannot be read) — left in place`)
+  const dropping = DROPPING_RE.test(basename(path)) ? path : join(dirname(path), `.target-dropping-${process.pid}`)
+  if (dropping !== path) {
+    rmSync(dropping, { recursive: true, force: true }) // our own pid's leftover, if any
+    renameSync(path, dropping)
+  }
+  if (targetBusy(dropping) !== false) {
+    if (dropping !== path && !existsSync(path)) renameSync(dropping, path)
+    throw new Error(`a cargo started building in ${path} as it was removed — left in place${existsSync(dropping) ? ` at ${dropping}` : ''}`)
+  }
+  rmSync(dropping, { recursive: true, force: true })
+}
+
 export function removeArtifact(artifact, roots) {
   if (!removalAllowed(artifact, roots)) {
     throw new Error(`refusing to remove ${artifact.kind} ${artifact.id}: path is outside the sweep`)
@@ -1845,13 +1955,19 @@ export function removeArtifact(artifact, roots) {
     return
   }
   if (artifact.kind === 'target') {
-    // Asked again at the moment of removal: a cargo may have started since
-    // the scan. Building, or a lock that cannot be read, and it stays.
-    if (targetBusy(artifact.path) !== false) throw new Error(`a cargo is building in ${artifact.path} (or its locks cannot be read) — left in place`)
-    rmSync(artifact.path, { recursive: true, force: true })
+    dropTarget(artifact.path)
     return
   }
   if (artifact.kind === 'worktree') {
+    // `git worktree remove --force` takes the build dirs with it, so they get
+    // the build dirs' own check first: a cargo building there, or locks that
+    // cannot be read, and the checkout stays.
+    for (const rel of TARGET_RELS) {
+      const tp = join(artifact.path, rel)
+      if (existsSync(tp) && targetBusy(tp) !== false) {
+        throw new Error(`${tp} is in use by a cargo (or its locks cannot be read) — checkout left in place`)
+      }
+    }
     downWorktreeStack(artifact.id, roots)
     tryExec('git', ['-C', roots.primary, 'worktree', 'remove', '--force', artifact.path])
     if (existsSync(artifact.path)) rmSync(artifact.path, { recursive: true, force: true })
@@ -1899,6 +2015,62 @@ function measure(list) {
     a.action = classify(a)
   }
   return out
+}
+
+/**
+ * Over the line: drop idle caches (pressureDrops' order), at most
+ * POLICY.pressureDropMax, re-reading the disk after each, and stopping as
+ * soon as it is under the line or a drop freed less than
+ * POLICY.pressureMinFreedBytes, because then build caches are not what fills
+ * the disk. `remove` and `read` are injected so the bounds can be tested
+ * without a disk. Returns what went, what failed, the last reading, and
+ * notes that say why it stopped and what is left.
+ */
+export function runPressureDrops(classified, pressure, { remove, read }, policy = POLICY) {
+  const candidates = pressureDrops(classified, pressure, policy)
+  const dropped = []
+  const failed = []
+  const notes = []
+  let reading = pressure
+  let why = ''
+  for (const a of candidates) {
+    if (!(reading.usedPct >= policy.pressurePct)) {
+      why = `the disk is back under ${policy.pressurePct}%`
+      break
+    }
+    if (dropped.length >= policy.pressureDropMax) {
+      why = `${policy.pressureDropMax} caches is this run's limit`
+      break
+    }
+    const before = reading.avail
+    try {
+      remove(a)
+      dropped.push(a)
+    } catch (e) {
+      failed.push(`${a.kind} ${a.id}: ${e instanceof Error ? e.message : e}`)
+      continue
+    }
+    try {
+      reading = read()
+    } catch {
+      why = 'the disk could not be read again'
+      break
+    }
+    const freed = reading.avail - before
+    if (freed < policy.pressureMinFreedBytes) {
+      why = `dropping ${a.id} freed only ${formatBytes(Math.max(0, freed))}, so build caches are not what fills the disk`
+      break
+    }
+  }
+  if (candidates.length) {
+    const left = candidates.filter((a) => !dropped.includes(a) && !failed.some((f) => f.startsWith(`${a.kind} ${a.id}:`)))
+    notes.push(
+      `over the line: dropped ${dropped.length} idle build cache(s)${dropped.length ? ` (${dropped.map((a) => a.id).join(', ')})` : ''}` +
+        (why ? `; stopped: ${why}` : '') +
+        (left.length ? `; left: ${left.map((a) => `${a.id} ${formatBytes(a.bytes)}`).join(', ')}` : '; none left to drop'),
+    )
+  }
+  return { dropped, failed, notes, pressure: reading }
 }
 
 function help() {
@@ -1988,26 +2160,23 @@ function main() {
   // recently used first, one at a time, until the disk is back under it.
   // statfs after each one, not the summed `du`: a seeded target shares
   // extents with its source, so removing it frees less than it measures.
+  const pressureNotes = []
   if (mode === 'apply') {
-    for (const a of pressureDrops(classified, pressure)) {
-      if (!(pressure.usedPct >= POLICY.pressurePct)) break
-      try {
-        removeArtifact(a, inventoried.roots)
-        removed.push(a)
-        classified = classified.filter((x) => x !== a)
-        logRemoval(`removed target ${a.id} ${a.path} (disk over the line; least recently used idle cache)`)
-      } catch (e) {
-        failed.push(`${a.kind} ${a.id}: ${e instanceof Error ? e.message : e}`)
-      }
-      try {
-        pressure = readPressure(root)
-      } catch {
-        break
-      }
+    const r = runPressureDrops(classified, pressure, {
+      remove: (a) => removeArtifact(a, inventoried.roots),
+      read: () => readPressure(root),
+    })
+    for (const a of r.dropped) {
+      removed.push(a)
+      logRemoval(`removed target ${a.id} ${a.path} (disk over the line; idle cache, least recently used first)`)
     }
+    failed.push(...r.failed)
+    classified = classified.filter((x) => !r.dropped.includes(x))
+    pressure = r.pressure
+    pressureNotes.push(...r.notes)
   }
   const v = verdict(classified, pressure)
-  const notes = [...inventoried.notes, ...failed.map((f) => `could not remove ${f}`)]
+  const notes = [...inventoried.notes, ...pressureNotes, ...failed.map((f) => `could not remove ${f}`)]
   const report = formatReport({ pressure, remaining: classified, removed, notes })
 
   if (json) {
