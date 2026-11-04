@@ -126,7 +126,7 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/kb_docs_id.rs`](../.
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{doc, editors}` | 200, 403, 404 | — |
-| PUT | `dual` | [body](#put-apikbdocsid-body) | `{doc, editors}` | 200, 400, 403, 404 | audit |
+| PUT | `dual` | [body](#put-apikbdocsid-body) | `{doc, editors}` | 200, 400, 403, 404, 409 | audit |
 | DELETE | `dual` | — | `{ok}` | 200, 403, 404 | audit |
 
 ### PUT `/api/kb/docs/{id}` body
@@ -143,6 +143,7 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/kb_docs_id.rs`](../.
 | `official` | `bool?` |  |
 | `regenerateOkf` | `bool?` |  |
 | `ragRouting` | `string?(60)` |  |
+| `baseUpdatedAt` | `string?(40)` |  |
 
 ## `/api/kb/docs/{id}/backlinks`
 
