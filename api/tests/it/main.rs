@@ -67,6 +67,7 @@ mod realtime_fan;
 mod research_dials_live;
 mod research_live;
 mod run_control_live;
+mod runs_checkpoints_live;
 mod runs_decide;
 mod runs_reclaim;
 mod runs_run;

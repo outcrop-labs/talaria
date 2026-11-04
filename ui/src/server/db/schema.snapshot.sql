@@ -1388,7 +1388,6 @@ CREATE TABLE public.run_checkpoints (
     tool text,
     title text,
     status text,
-    checkpoint jsonb,
     job_id uuid,
     workspace_commit text,
     workspace_tree text,
