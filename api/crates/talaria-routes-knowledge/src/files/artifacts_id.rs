@@ -47,6 +47,9 @@ struct PutBody {
     editors: Option<Vec<talaria_api_facades::kb::perms::EditorGrant>>,
     official: Option<bool>,
     rag_routing: Option<String>,
+    /// The `updatedAt` the caller's editing surface was seeded from — see
+    /// `overwrites_unseen`. Absent: the old last-writer-wins replace.
+    base_updated_at: Option<String>,
 }
 
 fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, String> {
@@ -62,8 +65,40 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         editors: parse_editors(obj.get("editors"))?,
         official: optional_boolean_member(obj, "official")?,
         rag_routing: optional_max_string_member(obj, "ragRouting", 60)?,
+        base_updated_at: optional_max_string_member(obj, "baseUpdatedAt", 40)?,
     })
 }
+
+/// NO SILENT OVERWRITE. A document editor holds a buffer seeded from one
+/// version of the row and saves the WHOLE body back. When an agent's
+/// `update_document` (or another person's save) lands while that buffer is
+/// open, the next save from the stale buffer replaced the agent's edit
+/// without anyone seeing it go. An editor that names the version it started
+/// from (`baseUpdatedAt`) is refused when the row has moved since AND the
+/// body it sends is not the body the row holds — nothing to overwrite when
+/// they match. A move that left the body alone (an icon, a re-file, a
+/// promote) is the editor's to retry on the fresh version: the refusal
+/// carries the row so it can tell, and it puts only a changed body in front
+/// of the person. A save naming no base is the old replace — tools, restores
+/// from version history, and the person's explicit "keep mine".
+///
+/// Shared with `/api/kb/docs/{id}`: one rule for both document planes.
+pub(crate) fn overwrites_unseen(
+    row_updated_at: &str,
+    row_body: &str,
+    base_updated_at: Option<&str>,
+    body: Option<&str>,
+) -> bool {
+    match (base_updated_at, body) {
+        (Some(base), Some(body)) => base != row_updated_at && body != row_body,
+        _ => false,
+    }
+}
+
+/// The refusal's sentence — the editor shows its own line, so this one is
+/// written for anything else that reads the 409.
+pub(crate) const STALE_BASE: &str = "this document changed since your copy was loaded — \
+     reload it (or review it in version history) before saving over it";
 
 fn not_found() -> Response {
     house_error(StatusCode::NOT_FOUND, "not found")
@@ -385,6 +420,21 @@ pub async fn put(
         }
     }
 
+    // After authority (a caller who may not edit learns nothing from a 409),
+    // before anything is written.
+    if overwrites_unseen(
+        &artifact.updated_at,
+        &artifact.body,
+        body.base_updated_at.as_deref(),
+        body.body.as_deref(),
+    ) {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": STALE_BASE, "conflict": true, "artifact": artifact })),
+        )
+            .into_response());
+    }
+
     if !owner {
         body.official = None;
     }
@@ -573,6 +623,48 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const AT: &str = "2026-11-03T10:00:00.000Z";
+    const LATER: &str = "2026-11-03T10:05:00.000Z";
+
+    #[test]
+    fn a_body_saved_from_the_current_version_is_never_refused() {
+        assert!(!overwrites_unseen(
+            AT,
+            "agent text",
+            Some(AT),
+            Some("my text")
+        ));
+    }
+
+    #[test]
+    fn a_body_saved_from_a_stale_version_over_a_different_body_is_refused() {
+        // The agent saved at LATER; the person's buffer started at AT.
+        assert!(overwrites_unseen(
+            LATER,
+            "agent text",
+            Some(AT),
+            Some("my text")
+        ));
+    }
+
+    #[test]
+    fn nothing_is_overwritten_when_the_stale_buffer_already_matches() {
+        assert!(!overwrites_unseen(LATER, "same", Some(AT), Some("same")));
+    }
+
+    #[test]
+    fn a_save_without_a_base_or_without_a_body_keeps_the_old_replace() {
+        // Tools, restores and "keep mine" name no base; an icon or sharing
+        // change carries no body.
+        assert!(!overwrites_unseen(
+            LATER,
+            "agent text",
+            None,
+            Some("my text")
+        ));
+        assert!(!overwrites_unseen(LATER, "agent text", Some(AT), None));
+    }
 
     #[tokio::test]
     async fn transient_read_names_the_recovery_and_hides_the_engine_error() {

@@ -29,8 +29,8 @@ export function cardKindFor(chip: ChatChip): ChipCard {
  *  THE NUMBERS ARE LINE COUNTS, and the sentence says so, because `+6 −0`
  *  alone reads as characters to half the people who see it — a one-word swap
  *  is `1 added · 1 removed`, not `3 added · 4 removed`. The wording is lifted
- *  verbatim from `agent-refine`'s `summarize`, singular included, so the
- *  refine notice and this card report a document edit in one voice instead of
+ *  verbatim from `change-summary`'s `summarize`, singular included, so the
+ *  Muse receipt and this card report a document edit in one voice instead of
  *  looking like two different measurements. */
 export function summarizeChange(c: DocChange): string {
   const lineWord = c.added === 1 && c.removed === 0 ? 'line' : 'lines'

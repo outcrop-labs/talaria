@@ -1,6 +1,7 @@
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { delJson, getJsonOr404, getList, postJson, putJson } from '@/lib/fetch-json'
+import { delJson, errorSentence, getJsonOr404, getList, HttpError, postJson, putJson, putJsonOr } from '@/lib/fetch-json'
+import type { SaveAnswer } from '@/lib/save-base.svelte'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -149,10 +150,20 @@ export const deleteSpace = (id: string) => delJson<{ ok: true }>(`/api/kb/spaces
 export const createDoc = (spaceId: string, input: { title?: string; kind?: 'human' | 'agent'; parentId?: string | null }): Promise<KbDoc> =>
   postJson<{ doc: KbDoc }>(`/api/kb/spaces/${spaceId}/docs`, input).then((r) => r.doc)
 
-export const saveDoc = (
-  id: string,
-  patch: Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'permsInherited' | 'official' | 'ragRouting'>> & { editors?: KbEditor[] },
-): Promise<KbDoc> => putJson<{ doc: KbDoc }>(`/api/kb/docs/${id}`, patch).then((r) => r.doc)
+export type DocPatch = Partial<Pick<KbDoc, 'title' | 'body' | 'icon' | 'visibility' | 'editPolicy' | 'permsInherited' | 'official' | 'ragRouting'>> & { editors?: KbEditor[] }
+
+export const saveDoc = (id: string, patch: DocPatch): Promise<KbDoc> =>
+  putJson<{ doc: KbDoc }>(`/api/kb/docs/${id}`, patch).then((r) => r.doc)
+
+/** The editor's save: `baseUpdatedAt` names the version its buffer started
+ *  from, and a 409 `{ conflict: true, doc }` is an ANSWER (the doc moved under
+ *  the buffer), not a failure — `guardedSaver` in lib/save-base decides it. */
+export const putDoc = async (id: string, patch: DocPatch & { baseUpdatedAt?: string }): Promise<SaveAnswer<KbDoc>> => {
+  const r = await putJsonOr<{ doc?: KbDoc; conflict?: boolean; error?: string }>(`/api/kb/docs/${id}`, patch, [409])
+  if (r.conflict === true && r.doc) return { conflict: r.doc }
+  if (!r.doc) throw new HttpError(409, errorSentence(r, 409))
+  return { saved: r.doc }
+}
 
 /** Custom brains (names only for members) — the doc "Brain" routing picker. */
 export const useBrains = () =>

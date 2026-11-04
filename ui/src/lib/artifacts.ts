@@ -1,6 +1,7 @@
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { delJson, delJsonGone, getJsonOr404, getList, postJson, putJson } from '@/lib/fetch-json'
+import { delJson, delJsonGone, errorSentence, getJsonOr404, getList, HttpError, postJson, putJson, putJsonOr } from '@/lib/fetch-json'
+import type { SaveAnswer } from '@/lib/save-base.svelte'
 import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
@@ -106,10 +107,20 @@ export const officeExport = (
 export const officeExportHref = (id: string, format: 'docx' | 'xlsx'): string =>
   `/api/artifacts/${id}/export?format=${format}`
 
-export const saveArtifact = (
-  id: string,
-  patch: Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'storageRef' | 'contentType' | 'folderId' | 'visibility' | 'editPolicy' | 'official' | 'ragRouting'>> & { editors?: KbEditor[] },
-) => putJson<{ artifact: Artifact }>(`/api/artifacts/${id}`, patch).then((r) => r.artifact)
+export type ArtifactPatch = Partial<Pick<Artifact, 'title' | 'body' | 'icon' | 'storageRef' | 'contentType' | 'folderId' | 'visibility' | 'editPolicy' | 'official' | 'ragRouting'>> & { editors?: KbEditor[] }
+
+export const saveArtifact = (id: string, patch: ArtifactPatch) =>
+  putJson<{ artifact: Artifact }>(`/api/artifacts/${id}`, patch).then((r) => r.artifact)
+
+/** The editor's save — `putDoc`'s twin: `baseUpdatedAt` names the version
+ *  the buffer started from, and a 409 `{ conflict: true, artifact }` is the
+ *  answer that the document moved under it. */
+export const putArtifact = async (id: string, patch: ArtifactPatch & { baseUpdatedAt?: string }): Promise<SaveAnswer<Artifact>> => {
+  const r = await putJsonOr<{ artifact?: Artifact; conflict?: boolean; error?: string }>(`/api/artifacts/${id}`, patch, [409])
+  if (r.conflict === true && r.artifact) return { conflict: r.artifact }
+  if (!r.artifact) throw new HttpError(409, errorSentence(r, 409))
+  return { saved: r.artifact }
+}
 
 // ── Folders ──────────────────────────────────────────────────────────────────
 export const useFolders = () =>

@@ -6,7 +6,7 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import { slide } from '@/lib/motion'
   import { streamMuse } from '@/lib/muse.svelte'
-  import { summarize } from '@/lib/agent-refine'
+  import { summarize } from '@/lib/change-summary'
 
   /** Muse as the knowledge worker — ALWAYS present under the doc (read and
    *  edit): describe a change and it drafts from the current document. With a
@@ -34,7 +34,9 @@
     /** True when the selection can be replaced in place. */
     surgical?: boolean
     onClearSelection?: () => void
-    onAccept: (markdown: string) => Promise<void>
+    /** Resolves false when the save was refused (the document moved under
+     *  the editor): the draft comes back rather than vanishing. */
+    onAccept: (markdown: string) => Promise<boolean | void>
     onAcceptSelection?: (replacement: string) => Promise<void>
   } = $props()
 
@@ -102,7 +104,13 @@
     lastChange = { ...summarize(before, md), scope }
     proposal = null
     if (scope === 'selection' && onAcceptSelection) void onAcceptSelection(md)
-    else void onAccept(md)
+    else
+      void onAccept(md).then((ok) => {
+        if (ok !== false) return
+        proposal = md
+        proposalScope = scope
+        lastChange = null
+      })
   }
 </script>
 

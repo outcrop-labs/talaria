@@ -39,6 +39,7 @@ use talaria_session::{actor_of, require_perm, require_user, who_of};
 use talaria_state::AppState;
 
 use super::kb_spaces_id::{editors_json, parse_editors};
+use crate::files::artifacts_id::{STALE_BASE, overwrites_unseen};
 
 /// `{ ...doc, visibility, editPolicy, governs? }` — the GET/PUT response
 /// overlay. Overriding a key keeps it at its ORIGINAL position (the struct's
@@ -150,6 +151,9 @@ struct PutBody {
     official: Option<bool>,
     regenerate_okf: bool,
     rag_routing: Option<String>,
+    /// The `updatedAt` the caller's editor was seeded from — the artifact
+    /// PUT's `overwrites_unseen` rule, the same on both planes.
+    base_updated_at: Option<String>,
 }
 
 fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, String> {
@@ -165,6 +169,7 @@ fn parse_put_body(obj: &serde_json::Map<String, Value>) -> Result<PutBody, Strin
         official: optional_boolean_member(obj, "official")?,
         regenerate_okf: optional_boolean_member(obj, "regenerateOkf")?.unwrap_or(false),
         rag_routing: optional_max_string_member(obj, "ragRouting", 60)?,
+        base_updated_at: optional_max_string_member(obj, "baseUpdatedAt", 40)?,
     })
 }
 
@@ -295,6 +300,26 @@ pub async fn put(
             Ok(Some(why)) => return Ok(house_error(StatusCode::BAD_REQUEST, why)),
             Err(e) => return Ok(internal("[kb] parent read failed", e)),
         }
+    }
+    // No silent overwrite: an editor saving a stale buffer over a body that
+    // moved under it (an agent's edit_kb_doc, another person's save) is
+    // refused with the doc as it now is — `overwrites_unseen` says when.
+    // After authority, before anything below writes.
+    if overwrites_unseen(
+        &doc.updated_at,
+        &doc.body,
+        body.base_updated_at.as_deref(),
+        body.body.as_deref(),
+    ) {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": STALE_BASE,
+                "conflict": true,
+                "doc": doc_overlay(&doc, &eff.perms, None),
+            })),
+        )
+            .into_response());
     }
 
     if owner {
