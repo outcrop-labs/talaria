@@ -4,7 +4,7 @@
 // Forgejo. It is the fixture the checkpoint-rewind lanes run.
 //
 //   node scripts/rewind-fixture.mjs setup    --stack <checkout> [--agent atlas] [--model <id>]
-//   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait] [--batched]
+//   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait] [--batched|--direct]
 //   node scripts/rewind-fixture.mjs teardown --stack <checkout>
 //
 // `<checkout>` is a checkout made by `bun talaria worktree`, with `talaria dev`
@@ -445,11 +445,23 @@ async function report(stack, api, task, readToken) {
   return { run, job, ticket: { id: task.id, ref: task.ticketRef, status, category }, tools, files }
 }
 
-async function ticket(stack, slug, wait, batched) {
+// The same ticket with the agent told to edit through its own shell and file
+// tools and to leave the coding harness alone, so the job's tree changes
+// across several steps even where the harness cannot run.
+const DIRECT_TICKET = {
+  ...TICKET,
+  title: 'Add subtract and multiply to the fixture calculator (direct edits)',
+  description: TICKET.description.replace(
+    'Use a light-effort workbench job.',
+    'Use a light-effort workbench job. Make every edit yourself with your terminal and file tools: do NOT run the Oh My Pi harness (no jsonRun, run or continueJsonRun) and do not call prepare_env. Make each file change as its own step, and commit after each step.',
+  ),
+}
+
+async function ticket(stack, slug, wait, variant) {
   const api = apiClient(stack, mintSession(stack))
   const agent = agentRow(stack, slug)
   const board = await ensureBoard(stack, api, agent)
-  const body = batched ? BATCHED_TICKET : TICKET
+  const body = { batched: BATCHED_TICKET, direct: DIRECT_TICKET }[variant] ?? TICKET
   const { task } = await api('POST', `/api/boards/${board.id}/tasks`, { ...body, assignees: [agent.model] })
   say(`filed ${task.ticketRef} (${task.id})`)
   if (!wait) {
@@ -485,13 +497,14 @@ const { values, positionals } = parseArgs({
     model: { type: 'string', default: DEFAULT_MODEL },
     'no-wait': { type: 'boolean', default: false },
     batched: { type: 'boolean', default: false },
+    direct: { type: 'boolean', default: false },
   },
 })
 const [command] = positionals
 if (!values.stack || !['setup', 'ticket', 'teardown'].includes(command)) {
-  die('usage: rewind-fixture.mjs setup|ticket|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait] [--batched]')
+  die('usage: rewind-fixture.mjs setup|ticket|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait] [--batched|--direct]')
 }
 const stack = readStack(resolve(values.stack))
 if (command === 'setup') await setup(stack, values.agent, values.model)
-if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'], values.batched)
+if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'], values.direct ? 'direct' : values.batched ? 'batched' : 'plain')
 if (command === 'teardown') teardown(stack)
