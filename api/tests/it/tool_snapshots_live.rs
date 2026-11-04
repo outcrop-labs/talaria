@@ -159,12 +159,8 @@ async fn a_snapshot_lands_one_step_row_on_the_live_run_and_only_once() {
         Some("3 calls: terminal ×2, mcp__workbench__job_status")
     );
     assert_eq!(row.status.as_deref(), Some("failed"));
-    assert_eq!(
-        row.turn,
-        Some(3),
-        "the turn the run is on, until the transcript says"
-    );
-    assert_eq!(row.step_no, None);
+    assert_eq!(row.turn, Some(3), "the turn the run is on");
+    assert_eq!(row.step_no, Some(1), "numbered on arrival");
     assert_eq!(row.agent_turn_id.as_deref(), Some("hermes-turn-4"));
     assert_eq!(row.job_id.as_deref(), Some(job.as_str()));
     assert_eq!(
@@ -292,13 +288,6 @@ async fn the_last_step_lands_after_the_run_has_ended_and_is_placed() {
     let (_, body) = post(&state, Some(&key), first).await;
     assert_eq!(body["seq"], 1, "{body}");
     sqlx::query(
-        "update run_checkpoints set step_no = 1 where run_id = $1::uuid and tool_call_id = 'call_1'",
-    )
-    .bind(&run)
-    .execute(&state.pg)
-    .await
-    .unwrap();
-    sqlx::query(
         "insert into run_checkpoints (run_id, seq, kind, turn, status, title) \
          values ($1::uuid, 2, 'turn', 1, 'record', 'turn 1 answered')",
     )
@@ -331,7 +320,17 @@ async fn the_last_step_lands_after_the_run_has_ended_and_is_placed() {
         .find(|r| r.tool_call_id.as_deref() == Some("call_2"))
         .unwrap();
     assert_eq!((last.turn, last.step_no), (Some(1), Some(2)), "{last:?}");
-    assert!(last.restorable);
+    // Through the real door there is no container to read the transcript
+    // from, so the late row makes no promise; the stubbed read below proves
+    // the held case.
+    assert!(!last.restorable);
+    assert!(
+        last.unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .contains("could not be read"),
+        "{last:?}"
+    );
     assert_eq!(
         rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
         [1, 3, 2],
@@ -378,6 +377,89 @@ async fn a_removed_workdir_retires_its_steps_with_the_job_s_done_marker() {
     .await
     .unwrap();
     assert!(cleared);
+
+    cleanup(&state.pg, tag).await;
+}
+
+/// A late frame is checked against the run's own transcript on arrival, as a
+/// live one is at the next record stage: a boundary the transcript holds is
+/// restorable, one it does not hold is not, and a transcript that cannot be
+/// read makes no promise.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn a_late_frame_is_restorable_only_when_the_run_s_transcript_holds_its_call() {
+    use futures_util::FutureExt as _;
+    use talaria_routes_fleet::agents::tool_snapshots::{TranscriptRead, land_with};
+    let state = live_app_state().await;
+    let tag = "late-verify";
+    cleanup(&state.pg, tag).await;
+    let (def_id, model, key) = agent(&state, tag).await;
+    let _ = key;
+    let job = started_job(&state.pg, &def_id, &model).await;
+    let run = live_run(&state.pg, &model, 1).await;
+    sqlx::query(
+        "update runs set state = 'done', finished_at = now(), \
+                checkpoint = '{\"stage\":\"send\",\"turn\":2,\"stageAttempt\":0}' \
+         where id = $1::uuid",
+    )
+    .bind(&run)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    let caller = talaria_api::agent_auth::AgentCaller {
+        id: Some(def_id.clone()),
+        model: model.clone(),
+        legacy: false,
+    };
+    let held: TranscriptRead = std::sync::Arc::new(|_model, _session| {
+        async { Some(vec!["call_held".to_string()]) }.boxed()
+    });
+    let unreadable: TranscriptRead = std::sync::Arc::new(|_model, _session| async { None }.boxed());
+
+    let f = |call: &str| frame(&run, Some(&job), json!([{"id": call, "name": "terminal"}]));
+    land_with(&state, &caller, f("call_held"), &held)
+        .await
+        .unwrap();
+    land_with(&state, &caller, f("call_lost"), &held)
+        .await
+        .unwrap();
+    land_with(&state, &caller, f("call_blind"), &unreadable)
+        .await
+        .unwrap();
+    let rows = run_checkpoints(&state.pg, &run).await.unwrap();
+    let by = |call: &str| {
+        rows.iter()
+            .find(|r| r.tool_call_id.as_deref() == Some(call))
+            .unwrap()
+    };
+    assert!(by("call_held").restorable, "{:?}", by("call_held"));
+    assert!(!by("call_lost").restorable);
+    assert!(
+        by("call_lost")
+            .unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .starts_with("not in this run's transcript"),
+        "{:?}",
+        by("call_lost")
+    );
+    assert!(!by("call_blind").restorable);
+    assert!(
+        by("call_blind")
+            .unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .contains("could not be read"),
+        "{:?}",
+        by("call_blind")
+    );
+    // A frame whose turn is another task's is not a step of this run at all.
+    let mut other = f("call_other");
+    other["turnId"] = json!(format!(
+        "{run}:7991ecb1-0000-4000-8000-000000000000:309793a7"
+    ));
+    land_with(&state, &caller, other, &held).await.unwrap();
+    assert!(rows.len() == 3 && run_checkpoints(&state.pg, &run).await.unwrap().len() == 3);
 
     cleanup(&state.pg, tag).await;
 }

@@ -18,6 +18,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use talaria_agent_auth::AgentCaller;
 use talaria_body::truncate_utf16;
@@ -148,6 +149,36 @@ async fn own_job(
     .await
 }
 
+/// A Hermes turn id is `<session>:<task>:<hex>`, and a turn of the session's
+/// own is the one whose task is the session. The agent's post-turn
+/// background review runs on the same session object with another task id;
+/// its tool calls never enter the transcript and are not steps of this run.
+/// A frame that carries no turn id cannot be told apart here and is judged
+/// by the transcript later.
+fn own_turn(session_id: &str, turn_id: Option<&str>) -> bool {
+    match turn_id.map(|t| t.split(':').collect::<Vec<_>>()) {
+        Some(parts) if parts.len() >= 3 => parts[0] == session_id && parts[1] == session_id,
+        _ => true,
+    }
+}
+
+/// The tool call ids a run's own live transcript holds, or None when the
+/// container could not say. The door reads it for a frame that lands after
+/// the run ended, which no record stage will judge.
+pub type TranscriptRead =
+    std::sync::Arc<dyn Fn(&str, &str) -> BoxFuture<'static, Option<Vec<String>>> + Send + Sync>;
+
+fn gateway_transcript() -> TranscriptRead {
+    std::sync::Arc::new(|model, session| {
+        let (model, session) = (model.to_string(), session.to_string());
+        Box::pin(async move {
+            let rows = talaria_api_facades::gateway::fleet_chat::session_messages(&model, &session)
+                .await?;
+            Some(talaria_api_facades::runs::defs::work_session::present_call_ids(&rows))
+        })
+    })
+}
+
 fn step_of(frame: &Frame, job_id: Option<String>) -> StepSnapshot {
     let last = frame.calls.last().expect("a frame holds at least one call");
     let reason = match (&frame.reason, &frame.job_id, &job_id) {
@@ -178,23 +209,44 @@ pub async fn land(
     caller: &AgentCaller,
     body: Value,
 ) -> Result<Response, Response> {
+    land_with(state, caller, body, &gateway_transcript()).await
+}
+
+pub async fn land_with(
+    state: &AppState,
+    caller: &AgentCaller,
+    body: Value,
+    transcript: &TranscriptRead,
+) -> Result<Response, Response> {
     let Some(frame) = read_frame(&body, talaria_agent_auth::now_ms()) else {
         return Ok(house_error(
             StatusCode::BAD_REQUEST,
             "a snapshot names its calls",
         ));
     };
-    let run_id = match &frame.session_id {
-        Some(session_id) => {
-            use talaria_api_facades::runs::defs::work_session::{
-                live_work_session_for, settled_work_session_for,
-            };
-            match live_work_session_for(&state.pg, &caller.model, session_id).await {
-                Ok(None) => settled_work_session_for(&state.pg, &caller.model, session_id).await,
-                other => other,
-            }
-        }
-        None => Ok(None),
+    if let Some(session_id) = &frame.session_id
+        && !own_turn(session_id, frame.turn_id.as_deref())
+    {
+        tracing::debug!(
+            "[tool-events] {} snapshot on session {session_id} from another task's turn {:?}; dropped",
+            caller.model,
+            frame.turn_id
+        );
+        return Ok(Json(json!({ "ok": true, "landed": false })).into_response());
+    }
+    use talaria_api_facades::runs::defs::work_session::{
+        live_work_session_for, settled_work_session_for,
+    };
+    let (run_id, settled) = match &frame.session_id {
+        Some(session_id) => match live_work_session_for(&state.pg, &caller.model, session_id).await
+        {
+            Ok(None) => (
+                settled_work_session_for(&state.pg, &caller.model, session_id).await,
+                true,
+            ),
+            other => (other, false),
+        },
+        None => (Ok(None), false),
     };
     let run_id = match run_id {
         Ok(Some(run_id)) => run_id,
@@ -218,7 +270,28 @@ pub async fn land(
             None
         }
     };
-    let step = step_of(&frame, job_id);
+    let mut step = step_of(&frame, job_id);
+    // A frame on a finished run has no record stage ahead of it, so the
+    // transcript judges it here, the way the record stage judges the rest.
+    if settled && step.unrestorable_reason.is_none() {
+        let held = match transcript(&caller.model, &run_id).await {
+            Some(ids) => ids.iter().any(|id| *id == step.tool_call_id),
+            None => {
+                step.unrestorable_reason = Some(
+                    "landed after the run ended and the session's transcript could not be read"
+                        .into(),
+                );
+                true
+            }
+        };
+        if !held {
+            step.unrestorable_reason = Some(
+                "not in this run's transcript: the session holds no row for this step's tool \
+                 call, so it was not a turn of the session's own"
+                    .into(),
+            );
+        }
+    }
     match record_step(&state.pg, &run_id, &step).await {
         Ok(Some(seq)) => {
             tracing::info!(
@@ -323,6 +396,28 @@ mod tests {
         ] {
             assert_eq!(read_frame(&body, 0), None, "{body}");
         }
+    }
+
+    /// A Hermes turn id is `<session>:<task>:<hex>`, and a turn of the
+    /// session's own is the one whose task is the session. The agent's
+    /// post-turn background review runs on the same session object with
+    /// another task id, and its tool calls are not steps of this run.
+    #[test]
+    fn only_the_session_s_own_turn_is_a_step_of_the_run() {
+        let s = "7b1e4c1a-9f8d-8a1b-9c2d-3e4f5a6b7c8d";
+        assert!(own_turn(s, Some(&format!("{s}:{s}:7f4b679d"))));
+        assert!(!own_turn(
+            s,
+            Some(&format!(
+                "{s}:7991ecb1-0000-4000-8000-000000000000:309793a7"
+            ))
+        ));
+        assert!(!own_turn(s, Some("other:other:7f4b679d")));
+        assert!(
+            own_turn(s, None),
+            "a frame with no turn id cannot be told apart here"
+        );
+        assert!(own_turn(s, Some("")));
     }
 
     #[test]

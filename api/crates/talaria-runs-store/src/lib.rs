@@ -956,10 +956,9 @@ fn decode_kind(s: &str) -> Result<CheckpointKind, sqlx::Error> {
 }
 
 /// A run's ledger in the order the work happened. A turn opens with its
-/// `send` row, holds its steps, and closes with its `record` or `failed` row;
-/// steps sort by the place the transcript gave them, then by the hook's own
-/// clock, because a step's frame can land after the turn that held it was
-/// recorded. `seq` is identity, not order. An unknown run reads as an empty
+/// `send` row, holds its steps in step order, and closes with its `record`
+/// or `failed` row; a step's frame can land after the turn that held it was
+/// recorded, so `seq` is identity, not order. An unknown run reads as an empty
 /// ledger, and so does a run older than the ledger: both have nothing to go
 /// back to.
 pub async fn run_checkpoints(pg: &PgPool, id: &str) -> Result<Vec<RunCheckpoint>, sqlx::Error> {
@@ -1043,12 +1042,16 @@ impl StepSnapshot {
 /// memory, so a restarted container can send one twice. The allocator is not
 /// bumped for a duplicate, so `seq` stays gapless.
 ///
-/// A row takes the turn the run is on, and the record stage places it. The
-/// step after a turn's last tool call is different: its frame lands after
-/// the run finished, when no record stage will run again, so it is placed
-/// here from the ledger itself, at the last closed turn, after that turn's
-/// last placed step. The hook's clock is the row's, clamped to the server's
-/// range and its present, so a clock that is wrong cannot drop the frame.
+/// The row's turn is the turn its batch's earlier rows took, by the Hermes
+/// turn id they share; the first row of a turn takes the turn the run is
+/// on, or the last closed turn once the run has finished, because the step
+/// after a turn's last tool call lands after the run ends. Its step number
+/// is the next one in that turn, assigned here and never again: frames leave
+/// one plugin queue in the order the calls ran, so the number is the
+/// transcript's order, and it survives a compaction that takes the
+/// transcript's rows away. The hook's clock is the row's, clamped to the
+/// server's range and its present, so a clock that is wrong cannot drop the
+/// frame.
 pub async fn record_step(
     pg: &PgPool,
     run_id: &str,
@@ -1061,13 +1064,17 @@ pub async fn record_step(
              and not exists (select 1 from run_checkpoints \
                              where run_id = $1::uuid and tool_call_id = $2) \
          ), place as ( \
-           select finished, \
-                  case when finished then coalesce( \
-                         (select max(turn) from run_checkpoints c \
-                          where c.run_id = $1::uuid and c.kind = 'turn' \
-                            and c.status in ('record', 'failed')), \
-                         greatest(coalesce((checkpoint->>'turn')::bigint, 1) - 1, 1)) \
-                       else coalesce((checkpoint->>'turn')::bigint, 1) end as turn \
+           select coalesce( \
+                    (select c.turn from run_checkpoints c \
+                     where c.run_id = $1::uuid and c.kind = 'step' \
+                       and $3::text is not null and c.agent_turn_id = $3 \
+                     order by c.seq desc limit 1), \
+                    case when finished then coalesce( \
+                           (select max(turn) from run_checkpoints c \
+                            where c.run_id = $1::uuid and c.kind = 'turn' \
+                              and c.status in ('record', 'failed')), \
+                           greatest(coalesce((checkpoint->>'turn')::bigint, 1) - 1, 1)) \
+                         else coalesce((checkpoint->>'turn')::bigint, 1) end) as turn \
            from run \
          ), bumped as ( \
            update runs set checkpoint_seq = checkpoint_seq + 1 \
@@ -1080,10 +1087,9 @@ pub async fn record_step(
               step_no, created_at) \
            select $1::uuid, b.checkpoint_seq, 'step', p.turn, $3, $2, $4, $5, $6, \
                   $7::uuid, $8, $9, $10, $11, \
-                  case when p.finished then coalesce( \
-                         (select max(step_no) from run_checkpoints c \
-                          where c.run_id = $1::uuid and c.kind = 'step' and c.turn = p.turn), \
-                         0) + 1 end, \
+                  coalesce((select max(step_no) from run_checkpoints c \
+                            where c.run_id = $1::uuid and c.kind = 'step' and c.turn = p.turn), \
+                           0) + 1, \
                   case when $12::bigint between 0 \
                                             and (extract(epoch from now()) * 1000)::bigint \
                        then to_timestamp(least(greatest($12::bigint, 0), \
@@ -1117,43 +1123,49 @@ pub async fn record_step(
     }
 }
 
-/// Where the transcript puts a step: its Talaria turn, and its ordinal among
-/// the turn's tool calls.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StepPlace {
-    pub tool_call_id: String,
-    pub turn: i64,
-    pub step_no: i64,
-}
+const COMPACTED_REASON: &str = "compacted: the session no longer holds this step's conversation row \
+live; Hermes keeps it archived (compacted = 1)";
+const FOREIGN_REASON: &str = "not in this run's transcript: the session holds no row for this step's \
+tool call, live or archived, so it was not a turn of the session's own";
 
-/// Stamp the transcript's order on a run's step rows. Rows the transcript
-/// does not name keep their provisional turn; rows already in place are left
-/// alone, so the record stage can run this on every turn. Answers how many
-/// rows moved.
-pub async fn place_steps(
+/// Judge the step rows up to `through_seq` by the run's own transcript. A
+/// step whose boundary call the live transcript still holds keeps its
+/// standing; one the session holds only archived was compacted away; one it
+/// holds nowhere was never this session's own step. The bound keeps a frame
+/// that landed after the transcript was read from being judged by it, and
+/// rows already unrestorable keep their own reason. Answers how many rows
+/// moved.
+pub async fn verify_steps(
     pg: &PgPool,
     run_id: &str,
-    places: &[StepPlace],
+    through_seq: i64,
+    live: &[String],
+    archived: &[String],
 ) -> Result<u64, sqlx::Error> {
-    if places.is_empty() {
-        return Ok(0);
-    }
-    let ids: Vec<&str> = places.iter().map(|p| p.tool_call_id.as_str()).collect();
-    let turns: Vec<i64> = places.iter().map(|p| p.turn).collect();
-    let steps: Vec<i64> = places.iter().map(|p| p.step_no).collect();
     let done = sqlx::query(
-        "update run_checkpoints c set turn = p.turn, step_no = p.step_no \
-         from unnest($2::text[], $3::bigint[], $4::bigint[]) as p(tool_call_id, turn, step_no) \
-         where c.run_id = $1::uuid and c.kind = 'step' and c.tool_call_id = p.tool_call_id \
-           and (c.turn is distinct from p.turn or c.step_no is distinct from p.step_no)",
+        "update run_checkpoints set restorable = false, \
+           unrestorable_reason = case when tool_call_id = any($4::text[]) then $5 else $6 end \
+         where run_id = $1::uuid and kind = 'step' and restorable and seq <= $2 \
+           and tool_call_id <> all($3::text[])",
     )
     .bind(run_id)
-    .bind(&ids)
-    .bind(&turns)
-    .bind(&steps)
+    .bind(through_seq)
+    .bind(live)
+    .bind(archived)
+    .bind(COMPACTED_REASON)
+    .bind(FOREIGN_REASON)
     .execute(pg)
     .await?;
     Ok(done.rows_affected())
+}
+
+/// The run's `seq` so far: what a transcript read after this call may be
+/// judged against.
+pub async fn checkpoint_seq(pg: &PgPool, run_id: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("select checkpoint_seq from runs where id = $1::uuid")
+        .bind(run_id)
+        .fetch_one(pg)
+        .await
 }
 
 /// A job's checkout is gone, so every step that pointed into it can no

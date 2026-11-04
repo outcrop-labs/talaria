@@ -130,6 +130,14 @@ _JOBS_ROOT = "/opt/data/workbench/jobs"
 # that is not running does not hold it, and the start_job that resumes a job
 # writes it again, so a snapshot keeps it out.
 _JOB_ENV_FILE = ".talaria/env"
+# The session's binding, kept on the agent's volume so a container restart
+# mid-run does not forget the job until the next job_status call. One file
+# per session, holding the job id; the workdir follows from it.
+_STATE_DIR = "/opt/data/talaria-events/checkouts"
+# Untracked, unignored bytes a step may add before the snapshot is skipped
+# instead: the plan's 250 ms per snapshot and 50 MB of .git per run, against
+# a measured 24 ms per MB of fresh content.
+_UNTRACKED_BUDGET = 16 * 1024 * 1024
 _GIT_TIMEOUT = 10.0
 _SNAPSHOT_IDENTITY = {
     "GIT_AUTHOR_NAME": "Talaria checkpoint",
@@ -410,7 +418,7 @@ def on_post_tool_call(
         _bounded(_call_status, session_id).setdefault(session_id, {}).setdefault(tool_call_id, status)
     if session_id and _JOB_TOOL.fullmatch(tool_name):
         try:
-            _learn_checkout(session_id, args, result)
+            _learn_checkout(session_id, tool_name, args, result)
         except Exception:
             pass
     event = {
@@ -561,16 +569,18 @@ def _job_answer(result: Any) -> dict | None:
     return inner if isinstance(inner, dict) else None
 
 
-def _learn_checkout(session_id: str, args: Any, result: Any) -> None:
-    """Bind the session to the job its answer names. start_job answers one
-    job; job_status answers a list, and a queued job has no workdir yet. A
-    list with several started jobs says nothing about which is this
-    session's unless the call asked for one by id."""
+def _learn_checkout(session_id: str, tool_name: str, args: Any, result: Any) -> None:
+    """Bind the session to the job its answer names: start_job's one job, or
+    the job a job_status call asked for by id. A listing nobody asked for
+    names the agent's jobs, not this session's, and binds nothing; a queued
+    job has no workdir yet and binds nothing either."""
     answer = _job_answer(result)
     if answer is None:
         return
-    jobs = answer.get("jobs") if isinstance(answer.get("jobs"), list) else [answer]
     asked = args.get("jobId") if isinstance(args, dict) else None
+    if tool_name.endswith("__job_status") and not isinstance(asked, str):
+        return
+    jobs = answer.get("jobs") if isinstance(answer.get("jobs"), list) else [answer]
     named = []
     for job in jobs:
         if not isinstance(job, dict):
@@ -585,6 +595,83 @@ def _learn_checkout(session_id: str, args: Any, result: Any) -> None:
             named.append((job_id, own))
     if len(named) == 1:
         _bounded(_checkouts, session_id)[session_id] = named[0]
+        _keep_checkout(session_id, named[0][0])
+
+
+def _keep_checkout(session_id: str, job_id: str) -> None:
+    """Write the binding to the volume. The session id is the file name, so
+    only an id of the shape Talaria mints becomes one."""
+    if not _JOB_ID.fullmatch(session_id):
+        return
+    try:
+        os.makedirs(_STATE_DIR, mode=0o700, exist_ok=True)
+        with open(os.path.join(_STATE_DIR, session_id), "w") as handle:
+            handle.write(job_id)
+    except OSError:
+        pass
+
+
+def _checkout_for(session_id: str) -> tuple[str, str] | None:
+    """The session's (job id, workdir): from memory, else from the volume,
+    which is where a restarted container finds it."""
+    found = _checkouts.get(session_id)
+    if found is not None or not _JOB_ID.fullmatch(session_id):
+        return found
+    try:
+        with open(os.path.join(_STATE_DIR, session_id)) as handle:
+            job_id = handle.read().strip().lower()
+    except OSError:
+        return None
+    if not _JOB_ID.fullmatch(job_id):
+        return None
+    found = (job_id, os.path.join(_JOBS_ROOT, job_id))
+    _bounded(_checkouts, session_id)[session_id] = found
+    return found
+
+
+def _untracked_bytes(root: str, budget: int) -> int | None:
+    """Bytes of untracked, unignored files under the checkout, counted only
+    until the budget is passed. None when git could not list them."""
+    done = subprocess.run(
+        ["git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True, timeout=_GIT_TIMEOUT,
+    )
+    if done.returncode != 0:
+        return None
+    total = 0
+    for name in done.stdout.split(b"\0"):
+        if not name or name == _JOB_ENV_FILE.encode():
+            continue
+        try:
+            total += os.lstat(os.path.join(root.encode(), name)).st_size
+        except OSError:
+            continue
+        if total > budget:
+            break
+    return total
+
+
+def _sweep_git_temp(root: str, since: float) -> None:
+    """Remove the pack and object temp files a killed git left since `since`.
+    An older temp file may be another git's and stays."""
+    objects = os.path.join(root, ".git", "objects")
+    candidates = [os.path.join(objects, "pack")] + [
+        os.path.join(objects, d) for d in os.listdir(objects) if len(d) == 2
+    ]
+    for folder in candidates:
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            if not (name.startswith("tmp_pack_") or name.startswith("tmp_obj_")):
+                continue
+            path = os.path.join(folder, name)
+            try:
+                if os.lstat(path).st_mtime >= since:
+                    os.unlink(path)
+            except OSError:
+                pass
 
 
 def _trailing_batch(history: Any) -> list[tuple[str, str]]:
@@ -618,6 +705,10 @@ def _git_root(workdir: str) -> str | None:
     return os.path.join(workdir, kids[0]) if len(kids) == 1 else None
 
 
+class _Skipped(Exception):
+    """A snapshot not taken on purpose; the reason is the message."""
+
+
 def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
     """Commit the checkout's tracked and untracked files (ignored ones and
     the platform's env file stay out) through a copy of the index, and point
@@ -625,6 +716,13 @@ def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
     not change. A tree equal to the session's last snapshot is that snapshot:
     its commit is reused and no ref is written, so refs grow with the work,
     not with the steps."""
+    untracked = _untracked_bytes(root, _UNTRACKED_BUDGET)
+    if untracked is not None and untracked > _UNTRACKED_BUDGET:
+        raise _Skipped(
+            f"untracked content {untracked / 1048576:.1f} MiB is over the "
+            f"{_UNTRACKED_BUDGET // 1048576} MiB snapshot budget"
+        )
+    started = time.time()
     fd, index = tempfile.mkstemp(prefix="talaria-ckpt-")
     os.close(fd)
     # git reads an empty index file as corrupt, so the temp name is handed
@@ -656,6 +754,9 @@ def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
         parent = ["-p", head] if head else []
         commit = git("commit-tree", tree, *parent, "-m", f"talaria checkpoint {ref_name}", env=env)
         git("update-ref", f"refs/talaria/ckpt/{ref_name}", commit)
+    except BaseException:
+        _sweep_git_temp(root, started)
+        raise
     finally:
         for leftover in (index, index + ".lock"):
             try:
@@ -682,12 +783,19 @@ def on_pre_api_request(*, platform: str = "", **kw: Any) -> None:
 def _report_step(
     *,
     session_id: str = "",
+    task_id: str = "",
     turn_id: str = "",
     api_request_id: str = "",
     conversation_history: Any = None,
     **_: Any,
 ) -> None:
     if not session_id:
+        return
+    # A turn of the session's own carries the session as its task. Hermes's
+    # post-turn background review runs on the same session object under
+    # another task id, and its tool calls never enter the session's
+    # transcript: they are not steps of this run.
+    if task_id and task_id != session_id:
         return
     batch = _trailing_batch(conversation_history)
     if not batch:
@@ -708,7 +816,7 @@ def _report_step(
         ],
         "at": int(time.time() * 1000),
     }
-    checkout = _checkouts.get(session_id)
+    checkout = _checkout_for(session_id)
     if checkout is None:
         event["reason"] = "no workbench job known for this session"
     else:
@@ -724,6 +832,8 @@ def _report_step(
                 tree, commit = _snapshot(session_id, root, ref_name)
                 event["tree"] = tree
                 event["commit"] = commit
+            except _Skipped as skip:
+                event["reason"] = f"snapshot skipped: {skip}"
             except Exception as ex:
                 event["reason"] = f"snapshot failed: {type(ex).__name__}: {str(ex)[:200]}"
             event["ms"] = int((time.monotonic() - started) * 1000)

@@ -4,7 +4,7 @@
 // Forgejo. It is the fixture the checkpoint-rewind lanes run.
 //
 //   node scripts/rewind-fixture.mjs setup    --stack <checkout> [--agent atlas] [--model <id>]
-//   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait] [--batched|--direct]
+//   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait] [--batched|--direct|--long]
 //   node scripts/rewind-fixture.mjs rewind   --stack <checkout> --run <run id> --seq <ledger seq>
 //   node scripts/rewind-fixture.mjs teardown --stack <checkout>
 //
@@ -459,11 +459,29 @@ const DIRECT_TICKET = {
   ),
 }
 
+// Four steps in the first turn and the fifth in the next: a session whose
+// first turn holds many snapshots and that Hermes then compacts at the turn
+// boundary, when the stack's agent config sets compression.threshold_tokens
+// low. A lane that must see a compaction cut past restorable steps files
+// this one.
+const LONG_TICKET = {
+  ...TICKET,
+  title: 'Add subtract and multiply over two turns (long session)',
+  description: `Repository: ${REPO} on the ${HOST_ID} host. Use a light-effort workbench job. Make every edit yourself with your terminal and file tools: do NOT run the Oh My Pi harness and do not call prepare_env.
+
+This turn: do steps 1 to 4, committing on the job's branch after each step, then END YOUR TURN with a one-sentence reply saying which steps you finished. Do NOT do step 5 in this turn, do not finish the job and do not move this ticket yet; you will be prompted again, and step 5 is for that next turn.
+1. Add a \`subtract(a, b)\` function to \`calc.py\`.
+2. Add a \`multiply(a, b)\` function to \`calc.py\`.
+3. Create \`test_calc.py\` with one plain \`assert\` test per function.
+4. Add a \`Usage\` section to \`README.md\` listing the three functions.
+5. Next turn only: run \`python3 test_calc.py\`, finish the job, then move this ticket to review.`,
+}
+
 async function ticket(stack, slug, wait, variant) {
   const api = apiClient(stack, mintSession(stack))
   const agent = agentRow(stack, slug)
   const board = await ensureBoard(stack, api, agent)
-  const body = { batched: BATCHED_TICKET, direct: DIRECT_TICKET }[variant] ?? TICKET
+  const body = { batched: BATCHED_TICKET, direct: DIRECT_TICKET, long: LONG_TICKET }[variant] ?? TICKET
   const { task } = await api('POST', `/api/boards/${board.id}/tasks`, { ...body, assignees: [agent.model] })
   say(`filed ${task.ticketRef} (${task.id})`)
   if (!wait) {
@@ -541,15 +559,16 @@ const { values, positionals } = parseArgs({
     direct: { type: 'boolean', default: false },
     run: { type: 'string' },
     seq: { type: 'string' },
+    long: { type: 'boolean', default: false },
   },
 })
 const [command] = positionals
 if (!values.stack || !['setup', 'ticket', 'rewind', 'teardown'].includes(command)) {
-  die('usage: rewind-fixture.mjs setup|ticket|rewind|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait] [--batched|--direct] [--run <id> --seq <n>]')
+  die('usage: rewind-fixture.mjs setup|ticket|rewind|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait] [--batched|--direct|--long] [--run <id> --seq <n>]')
 }
 const stack = readStack(resolve(values.stack))
 if (command === 'setup') await setup(stack, values.agent, values.model)
-if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'], values.direct ? 'direct' : values.batched ? 'batched' : 'plain')
+if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'], values.long ? 'long' : values.direct ? 'direct' : values.batched ? 'batched' : 'plain')
 if (command === 'rewind') {
   if (!UUID_RE.test(values.run ?? '') || !/^\d+$/.test(values.seq ?? '')) die('rewind needs --run <uuid> and --seq <n>')
   await rewind(stack, values.run, Number(values.seq))

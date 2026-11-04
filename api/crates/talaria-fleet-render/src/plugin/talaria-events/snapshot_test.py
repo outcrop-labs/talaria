@@ -159,7 +159,7 @@ try:
 finally:
     os.chmod(os.path.join(workdir, ".git", "objects"), 0o755)
 e3 = snapshots()[2]
-assert e3["reason"].startswith("snapshot failed: RuntimeError: git add"), e3
+assert e3["reason"].startswith("snapshot failed: RuntimeError: git "), e3
 assert "commit" not in e3 and e3["jobId"] == job_id
 assert not [f for f in os.listdir(tempfile.gettempdir()) if f.startswith("talaria-ckpt-")], "temp index left behind"
 # A git that hangs leaves neither the temp index nor its lock behind.
@@ -207,9 +207,81 @@ mod._last_boundary.pop(other)
 pre(history, sid=other)
 assert "commit" in snapshots()[7] and "reason" not in snapshots()[7], snapshots()[7]
 assert git(os.path.join(w2, "work"), "rev-parse", f"refs/talaria/ckpt/{other}/c3") == snapshots()[7]["commit"]
+# A turn that is not the session's own, such as Hermes's post-turn background
+# review on the same session object, carries another task id: it is not a
+# step of this run and reports nothing.
+mod._last_boundary.pop(session, None)
+mod.on_pre_api_request(session_id=session, task_id="7991ecb1-0000-4000-8000-000000000000", turn_id=f"{session}:7991ecb1-0000-4000-8000-000000000000:309793a7", api_request_id="x", conversation_history=history)
+assert len(snapshots()) == 8, "another task's turn must not report"
+mod.on_pre_api_request(session_id=session, task_id=session, turn_id=f"{session}:{session}:0a0b0c0d", api_request_id="x", conversation_history=history)
+assert len(snapshots()) == 9, "the session's own turn reports"
+mod._last_boundary.pop(session, None)
+
 # Cron turns and sessions with no id report nothing.
 mod.on_pre_api_request(session_id=session, platform="cron", conversation_history=history)
 mod.on_pre_api_request(session_id="", conversation_history=history)
-assert len(snapshots()) == 8
+assert len(snapshots()) == 9
+
+# A job_status listing the agent did not ask about by id binds nothing, even
+# when it names exactly one started job: that job may be another session's.
+third = "22222222-3333-4444-8555-666666666666"
+mod._checkouts.pop(third, None)
+post_as = lambda sid, tool, args, result: mod.on_post_tool_call(tool_name=tool, args=args, result=result, session_id=sid, tool_call_id="cx")
+post_as(third, "mcp__workbench__job_status", {}, answer({"jobs": [{"id": job_id, "status": "started", "workdir": workdir}]}))
+assert third not in mod._checkouts, "an unasked listing must not bind"
+post_as(third, "mcp__workbench__job_status", {"jobId": job_id}, answer({"jobs": [{"id": job_id, "status": "started", "workdir": workdir}]}))
+assert mod._checkouts[third] == (job_id, workdir)
+
+# A bound job survives a container restart: it is kept on the volume per
+# session and read back when memory has nothing.
+state_dir = os.path.join(base, "state")
+mod._STATE_DIR = state_dir
+fourth = "33333333-4444-4555-8666-777777777777"
+post_as(fourth, "mcp__workbench__start_job", {}, answer({"jobId": job_id, "status": "started", "workdir": workdir}))
+assert os.path.isfile(os.path.join(state_dir, fourth)), os.listdir(state_dir) if os.path.isdir(state_dir) else "no state dir"
+mod._checkouts.clear()
+pre(history, sid=fourth)
+assert snapshots()[-1].get("jobId") == job_id and "commit" in snapshots()[-1], snapshots()[-1]
+# An id that is not a session id never becomes a file name.
+mod._checkouts.clear()
+post_as("../../etc/passwd", "mcp__workbench__start_job", {}, answer({"jobId": job_id, "status": "started", "workdir": workdir}))
+assert sorted(os.listdir(state_dir)) == [fourth], os.listdir(state_dir)
+
+# Untracked content over the budget skips the snapshot with a reason and
+# leaves the run going; the budget is bytes of untracked, unignored files.
+post("mcp__workbench__start_job", {}, answer({"jobId": job_id, "status": "started", "workdir": workdir}))
+big = os.path.join(workdir, "blob.bin")
+with open(big, "wb") as f:
+    f.truncate(mod._UNTRACKED_BUDGET + 1)
+history6 = history5 + [{"role": "assistant", "tool_calls": [{"id": "c8"}]}, {"role": "tool", "tool_call_id": "c8", "tool_name": "terminal", "content": "h"}]
+pre(history6, req="t1:api:7")
+e6 = snapshots()[-1]
+assert "commit" not in e6 and e6["reason"].startswith("snapshot skipped: untracked content"), e6
+assert "over the" in e6["reason"] and "budget" in e6["reason"], e6["reason"]
+os.unlink(big)
+# A git killed mid-add leaves no pack garbage behind.
+pack = os.path.join(workdir, ".git", "objects", "pack")
+os.makedirs(pack, exist_ok=True)
+stale = os.path.join(pack, "tmp_pack_old")
+open(stale, "w").close()
+os.utime(stale, (1, 1))
+
+
+def hanging_pack(cmd, *a, **kw):
+    if "add" in cmd:
+        open(os.path.join(pack, "tmp_pack_new"), "w").close()
+        raise subprocess.TimeoutExpired(cmd, 1)
+    return real_run(cmd, *a, **kw)
+
+
+mod.subprocess.run = hanging_pack
+try:
+    history7 = history6 + [{"role": "assistant", "tool_calls": [{"id": "c9"}]}, {"role": "tool", "tool_call_id": "c9", "tool_name": "terminal", "content": "i"}]
+    pre(history7, req="t1:api:8")
+finally:
+    mod.subprocess.run = real_run
+assert snapshots()[-1]["reason"].startswith("snapshot failed: TimeoutExpired"), snapshots()[-1]
+assert not os.path.exists(os.path.join(pack, "tmp_pack_new")), "the killed add's pack garbage stays"
+assert os.path.exists(stale), "another git's older temp file is not ours to remove"
 shutil.rmtree(base)
 print("snapshot_test passed")

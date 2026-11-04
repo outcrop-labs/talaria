@@ -1576,19 +1576,51 @@ pub async fn session_overview(agent_model: &str, conversation_id: &str) -> Optio
 
 /// Every row of a Hermes session, oldest first, asked of the agent's own
 /// container page by page on the control window. `None` is any failure, a
-/// 404 included; a page that comes back short is the end. The 500-row page
-/// is Hermes' ceiling; the page cap stops a runaway session at 4000 rows.
+/// 404 included, and also a session longer than the page cap: a caller that
+/// judges rows by their absence must not judge them by a transcript it did
+/// not read whole. A short page is the end.
 pub async fn session_messages(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
-    const PAGE: usize = 500;
-    const PAGES: usize = 8;
+    session_rows(agent_model, session_id, 500, 8, false).await
+}
+
+/// The same rows plus the ones a compaction archived, which the live read
+/// leaves out: what a caller needs to tell a step that was compacted away
+/// from one that was never the session's.
+pub async fn session_messages_archived(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
+    session_rows(agent_model, session_id, 500, 8, true).await
+}
+
+async fn session_rows(
+    agent_model: &str,
+    session_id: &str,
+    page: usize,
+    pages: usize,
+    archived: bool,
+) -> Option<Vec<Value>> {
     let entry = agent_entry(agent_model).await?;
+    session_rows_from(&entry, session_id, agent_model, page, pages, archived).await
+}
+
+async fn session_rows_from(
+    entry: &ManifestEntry,
+    session_id: &str,
+    agent_model: &str,
+    page: usize,
+    pages: usize,
+    archived: bool,
+) -> Option<Vec<Value>> {
     let mut rows = Vec::new();
-    for page in 0..PAGES {
+    for n in 0..pages {
         let path = format!(
-            "/api/sessions/{session_id}/messages?limit={PAGE}&offset={}&order=oldest",
-            page * PAGE
+            "/api/sessions/{session_id}/messages?limit={page}&offset={}&order=oldest{}",
+            n * page,
+            if archived {
+                "&include_compacted=true"
+            } else {
+                ""
+            }
         );
-        let body = control_get_json(&entry, &path, agent_model).await?;
+        let body = control_get_json(entry, &path, agent_model).await?;
         if body.get("session_id").and_then(Value::as_str) != Some(session_id) {
             tracing::debug!(
                 "[fleet_chat] {agent_model}: session {session_id} resolved to another; its rows are not this run's"
@@ -1597,11 +1629,15 @@ pub async fn session_messages(agent_model: &str, session_id: &str) -> Option<Vec
         }
         let data = body.get("data")?.as_array()?;
         rows.extend(data.iter().cloned());
-        if data.len() < PAGE {
+        if data.len() < page {
             return Some(rows);
         }
     }
-    Some(rows)
+    tracing::debug!(
+        "[fleet_chat] {agent_model}: session {session_id} is longer than {} rows; not read whole",
+        page * pages
+    );
+    None
 }
 
 /// A read through the agent's own door, parsed as json — bounded by the
@@ -2351,6 +2387,41 @@ mod session_read_tests {
             started.elapsed() < Duration::from_secs(5),
             "{:?}",
             started.elapsed()
+        );
+    }
+
+    /// A session longer than the page cap is not read whole, and a caller
+    /// that judges steps by their absence must not see a partial read as the
+    /// transcript: every full page answers None.
+    #[tokio::test]
+    async fn a_session_past_the_page_cap_is_not_a_transcript() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let body = r#"{"session_id":"s1","data":[{"role":"tool","tool_call_id":"a"},{"role":"tool","tool_call_id":"b"}]}"#;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    let _ = sock.write_all(body.as_bytes()).await;
+                });
+            }
+        });
+        let entry = ManifestEntry {
+            model: "probe".into(),
+            url: format!("http://{addr}"),
+            key: None,
+        };
+        assert_eq!(
+            session_rows_from(&entry, "s1", "probe", 2, 3, false).await,
+            None
         );
     }
 }
