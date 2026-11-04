@@ -77,22 +77,28 @@ function rowTitle(row: LedgerRow) {
   return `Checkpoint ${row.seq}`
 }
 
-const ENDED: Record<string, CheckpointStatus> = { error: 'failed', cancelled: 'stopped' }
+/** Unknown means a run too old for the work log, so it has settled. */
+export const runIsLive = (state: string | undefined) =>
+  state !== undefined && !['done', 'error', 'cancelled'].includes(state)
 
-/** `runState` speaks for the newest row only. Unknown means a run too old for
- *  the work log, so it has settled. */
+function headStatus(runState: string | undefined, own: CheckpointStatus): CheckpointStatus {
+  if (runState === 'error') return 'failed'
+  if (runState === 'cancelled') return 'stopped'
+  return runIsLive(runState) ? 'running' : own
+}
+
+/** `runState` speaks for the newest row only. */
 export function fromLedger(rows: LedgerRow[], runState?: string): Checkpoint[] {
   const start = rows[0] ? Date.parse(rows[0].createdAt) : 0
   return rows.map((row, i) => {
     const previous = rows[i - 1]
     const own: CheckpointStatus = row.status === 'failed' ? 'failed' : 'done'
-    const isHead = i === rows.length - 1
     return {
       id: String(row.seq),
       title: rowTitle(row),
       tool: toolKind(row.tool),
       parent: previous && String(previous.seq),
-      status: !isHead || runState === undefined || runState === 'done' ? own : (ENDED[runState] ?? 'running'),
+      status: i === rows.length - 1 ? headStatus(runState, own) : own,
       at: Date.parse(row.createdAt) - start,
     }
   })
