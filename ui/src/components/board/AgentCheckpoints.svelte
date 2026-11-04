@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Component } from 'svelte'
+  import { untrack, type Component } from 'svelte'
   import {
     FileText,
     FlaskConical,
@@ -39,7 +39,6 @@
     live = false,
   }: {
     checkpoints: Checkpoint[]
-    /** The run can still add rows. Decides what an empty line says. */
     live?: boolean
   } = $props()
 
@@ -77,10 +76,7 @@
   const onPath = $derived(livePath(placed))
   const scrolls = $derived(placed.length > MAX_ROWS)
 
-  // Rows already there when the view opens are history, not news. Only a row
-  // that arrives afterward animates in.
-  // svelte-ignore state_referenced_locally -- reason: the count at open is the point, later rows must read as new
-  const opened = checkpoints.length
+  const rowsAtOpen = untrack(() => checkpoints.length)
 
   const hasLine = (p: Placed): p is Placed & { from: number; fromLane: number } =>
     p.from !== undefined && p.fromLane !== undefined
@@ -148,8 +144,6 @@
             <stop class="glint-stop" offset="0.5" stop-opacity="0.9" />
             <stop class="glint-stop" offset="1" stop-opacity="0" />
           </linearGradient>
-          <!-- One instance per kind, reused by every row: a component per row was
-               two thirds of the render at 200 rows. -->
           {#each Object.entries(TOOLS) as [kind, Mark] (kind)}
             <Mark id="{uid}-{kind}" />
           {/each}
@@ -160,9 +154,9 @@
               class="line"
               d={path(p, pitch)}
               pathLength={1}
-              data-live={onPath.has(p.row) ? '' : undefined}
+              data-path={onPath.has(p.row) ? '' : undefined}
               data-fork={p.lane !== p.fromLane ? '' : undefined}
-              data-new={p.row >= opened ? '' : undefined}
+              data-new={p.row >= rowsAtOpen ? '' : undefined}
             />
           {/if}
         {/each}
@@ -170,10 +164,10 @@
           {@const isHead = p.cp.id === head?.cp.id}
           <g
             class="dot"
-            data-live={onPath.has(p.row) ? '' : undefined}
+            data-path={onPath.has(p.row) ? '' : undefined}
             data-head={isHead ? '' : undefined}
             data-status={p.cp.status}
-            data-new={p.row >= opened ? '' : undefined}
+            data-new={p.row >= rowsAtOpen ? '' : undefined}
           >
             <circle cx={x(p.lane, pitch)} cy={y(p.row)} r={isHead ? 4.5 : 3.5} />
             {#if isHead}
@@ -200,10 +194,10 @@
           {@const isHead = p.cp.id === head?.cp.id}
           <li
             class="row"
-            data-live={onPath.has(p.row) ? '' : undefined}
+            data-path={onPath.has(p.row) ? '' : undefined}
             data-status={p.cp.status}
             data-working={p.cp.status === 'running' ? '' : undefined}
-            data-new={p.row >= opened ? '' : undefined}
+            data-new={p.row >= rowsAtOpen ? '' : undefined}
             aria-current={isHead ? 'step' : undefined}
           >
             <span class="tool" data-kind={p.cp.tool}>
@@ -295,7 +289,7 @@
     stroke-dashoffset: 0;
     transition: stroke 200ms ease-out;
   }
-  .line[data-live] {
+  .line[data-path] {
     stroke: var(--ackc-path);
   }
   .line[data-new] {
@@ -320,7 +314,7 @@
       fill 200ms ease-out,
       stroke 200ms ease-out;
   }
-  .dot[data-live] circle {
+  .dot[data-path] circle {
     fill: var(--ackc-path);
     stroke: var(--theme-panel);
   }
@@ -331,7 +325,7 @@
   .dot[data-status='failed'] circle {
     stroke: color-mix(in srgb, var(--theme-danger) 50%, var(--theme-panel));
   }
-  .dot[data-live][data-status='failed'] circle {
+  .dot[data-path][data-status='failed'] circle {
     fill: var(--theme-danger);
     stroke: var(--theme-panel);
   }
@@ -344,7 +338,6 @@
     animation: ackc-glint 700ms 120ms ease-in-out both;
   }
 
-  /* Skips the rows outside the scroller, which roughly halved 200 rows. */
   .row {
     content-visibility: auto;
     position: relative;
@@ -410,16 +403,14 @@
     color: var(--theme-muted);
   }
 
-  /* Left behind fades by colour, not opacity: opacity took the words to about
-     2:1. --theme-muted holds 4.5:1 on the panel in both themes. */
-  .row:not([data-live]) .name {
+  .row:not([data-path]) .name {
     color: var(--theme-muted);
   }
-  .row:not([data-live]) .tool {
+  .row:not([data-path]) .tool {
     border-color: var(--theme-border-subtle);
     background: none;
   }
-  .row:not([data-live]):hover .name,
+  .row:not([data-path]):hover .name,
   .row:hover .time {
     color: var(--theme-text);
   }

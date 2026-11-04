@@ -1,12 +1,7 @@
-// A run as a line of checkpoints: the ledger's rows turned into what the
-// run view draws. Pure, so the layout is testable without a browser.
-// Component: components/board/AgentCheckpoints.svelte.
-
 export type CheckpointStatus = 'running' | 'done' | 'failed' | 'stopped'
 
 export type ToolKind = 'turn' | 'search' | 'read' | 'edit' | 'shell' | 'test' | 'browser' | 'git' | 'other'
 
-/** One row of `GET /api/runs/{id}/checkpoints`, as far as this view reads it. */
 export interface LedgerRow {
   seq: number
   tool: string | null
@@ -22,7 +17,6 @@ export interface Checkpoint {
   parent?: string
   status: CheckpointStatus
   at: number
-  /** The server's number for the attempt this row belongs to. Never counted here. */
   attempt?: number
   fork?: boolean
 }
@@ -33,7 +27,6 @@ export const PAD = 10
 export const RAIL = 22
 export const MAX_ROWS = 14
 
-// Tool names are open strings: Hermes's own, plus `mcp__<server>__<tool>`.
 const TOOL_WORDS: Record<string, ToolKind> = {
   search: 'search',
   grep: 'search',
@@ -58,7 +51,8 @@ const TOOL_WORDS: Record<string, ToolKind> = {
   pr: 'git',
 }
 
-const toolWords = (name: string) => name.split('__').at(-1)!.split(/[^a-z0-9]+/i)
+const withoutMcpPrefix = (name: string) => name.split('__').at(-1)!
+const toolWords = (name: string) => withoutMcpPrefix(name).split(/[^a-z0-9]+/i)
 
 export function toolKind(name: string | null): ToolKind {
   if (name === null) return 'turn'
@@ -77,7 +71,6 @@ function rowTitle(row: LedgerRow) {
   return `Checkpoint ${row.seq}`
 }
 
-/** Unknown means a run too old for the work log, so it has settled. */
 export const runIsLive = (state: string | undefined) =>
   state !== undefined && !['done', 'error', 'cancelled'].includes(state)
 
@@ -87,7 +80,6 @@ function headStatus(runState: string | undefined, own: CheckpointStatus): Checkp
   return runIsLive(runState) ? 'running' : own
 }
 
-/** `runState` speaks for the newest row only. */
 export function fromLedger(rows: LedgerRow[], runState?: string): Checkpoint[] {
   const start = rows[0] ? Date.parse(rows[0].createdAt) : 0
   return rows.map((row, i) => {
@@ -113,8 +105,6 @@ export interface Placed {
   attempt?: number
 }
 
-/** A line is drawn downward, so a row can only hang off one above it. Step
- *  frames arrive asynchronously, which can land a child ahead of its parent. */
 function parentsFirst(checkpoints: Checkpoint[]) {
   const ids = new Set(checkpoints.map((cp) => cp.id))
   const placed = new Set<string>()
@@ -171,7 +161,6 @@ export function summarize(placed: Placed[]) {
   }
 }
 
-/** The rows on the path to the newest one. Every other row was left behind. */
 export function livePath(placed: Placed[]) {
   const rows = new Set<number>()
   for (let p = placed.at(-1); p; p = p.from === undefined ? undefined : placed[p.from]) rows.add(p.row)
