@@ -4614,6 +4614,12 @@ mod tests {
                     );
                 }
 
+                talaria_boards::add_board_agent_row(&pg, &board_id, MODEL)
+                    .await
+                    .unwrap();
+                a_revise_round_moves_its_job_to_the_new_run(&deps, &me, &agent_id, &board_id).await;
+                a_rewind_attempt_gets_its_own_job(&deps, &me, &agent_id, &board_id, &seen).await;
+
                 // 6. request_repo. In PAT mode it is refused up front: the
                 //    approval could never create the repo.
                 let pat: Value = sqlx::query_scalar("select auth from git_hosts where id = 'github'")
@@ -4687,9 +4693,6 @@ mod tests {
                 assert_eq!(listed["repoRequests"][0]["repo"], "acme/talaria-app-notes");
                 assert_eq!(listed["repoRequests"][0]["status"], "rejected");
                 assert_eq!(listed["repoRequests"][0]["note"], "use acme/wiki instead");
-
-                a_revise_round_moves_its_job_to_the_new_run(&deps, &me, &agent_id, &board_id).await;
-                a_rewind_attempt_gets_its_own_job(&deps, &me, &agent_id, &board_id, &seen).await;
             })
             .await;
 
