@@ -105,13 +105,45 @@ pub async fn channel_listeners(
 // people a comment @mentions, and that producer cannot depend on
 // talaria-mentions.
 
-/// Tokens a person answers to: email localpart, dashed full name, first name.
+/// One mention token in the grammar the content scanner reads: lowercase,
+/// every char outside [a-z0-9] mapped to '-', dash runs collapsed, edges
+/// trimmed. The composer's insert (ui mentions.svelte.ts userMentionInsert)
+/// speaks this same rule, so an '@' written from either side resolves.
+fn normalize_token(s: String) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            out.push(c);
+        } else {
+            if out.ends_with('-') {
+                continue;
+            }
+            out.push('-');
+        }
+    }
+    while out.starts_with('-') {
+        out.remove(0);
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Tokens a person answers to: email localpart (in the scanner's grammar,
+/// see `normalize_token`), dashed full name, first name.
+
 pub fn user_mention_tokens(name: Option<&str>, email: Option<&str>) -> Vec<String> {
     let mut tokens: Vec<String> = Vec::new();
+    // The localpart must speak the SAME grammar as the content scanner
+    // (mention_tokens): lowercase, every char outside [a-z0-9] mapped to '-',
+    // dash runs collapsed, edges trimmed. A raw dotted localpart like
+    // "j.siegel" could never be matched by the scanner's tokens — '@j.siegel'
+    // scans to 'j' — so the person would silently never resolve (TALA-93).
     if let Some(email) = email
         && let Some(local) = email.split('@').next()
     {
-        let local = local.to_lowercase();
+        let local = normalize_token(local.to_lowercase());
         if !local.is_empty() && !tokens.contains(&local) {
             tokens.push(local);
         }
@@ -536,5 +568,59 @@ mod tests {
             notification_href("other", "claude-x", "c-4", None, None),
             None
         );
+    }
+
+    // TALA-93: the UI inserts the email localpart as the composer token, and
+    // the content scanner's grammar is [a-z0-9-] — so both sides must speak
+    // the same normalized token. These tests pin the agreement.
+
+    #[test]
+    fn user_mention_tokens_normalize_the_localpart_to_the_grammar() {
+        // What a person answers to is the localpart with every char outside
+        // [a-z0-9] mapped to '-', runs collapsed, edges trimmed — never the
+        // raw localpart, which '@j.siegel' could not match.
+        assert_eq!(
+            user_mention_tokens(Some("Jon Siegel"), Some("j.siegel@x.com")),
+            ["j-siegel", "jon-siegel", "jon"]
+        );
+        assert_eq!(
+            user_mention_tokens(Some("Sam Underscore"), Some("sam_siegel@x.com")),
+            ["sam-siegel", "sam-underscore", "sam"]
+        );
+        assert_eq!(
+            user_mention_tokens(Some("Pat Plus"), Some("p.siegel+ops@x.com")),
+            ["p-siegel-ops", "pat-plus", "pat"]
+        );
+        // A localpart already in the grammar passes through unchanged.
+        assert_eq!(
+            user_mention_tokens(Some("Ada Lovelace"), Some("ada@x.com")),
+            ["ada", "ada-lovelace"]
+        );
+        // No email: the name tokens alone, already conforming.
+        assert_eq!(
+            user_mention_tokens(Some("Grace Hopper"), None),
+            ["grace-hopper", "grace"]
+        );
+    }
+
+    #[test]
+    fn the_token_the_picker_inserts_resolves_end_to_end() {
+        // The agreement: insert (normalized) → '@' + insert → the content
+        // scanner → answers_to_tokens must hold for every email shape.
+        let cases: &[(&str, &str, &str)] = &[
+            ("Jon Siegel", "j.siegel@x.com", "j-siegel"),
+            ("Sam Underscore", "sam_siegel@x.com", "sam-siegel"),
+            ("Pat Plus", "p.siegel+ops@x.com", "p-siegel-ops"),
+            ("Ada Lovelace", "ada@x.com", "ada"),
+        ];
+        for (name, email, insert) in cases {
+            let message = format!("@{insert}");
+            let tokens = mention_tokens(&message);
+            assert!(!tokens.is_empty(), "{message} must scan to a token");
+            assert!(
+                answers_to_tokens(Some(name), Some(email), &tokens),
+                "{name} <{email}> must answer to {message} (scanned {tokens:?})"
+            );
+        }
     }
 }
