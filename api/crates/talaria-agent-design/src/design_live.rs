@@ -509,7 +509,9 @@ async fn design_live_the_design_gates_the_hire() {
         Uuid::new_v4().to_string(),
     );
     claim_for_hire(&st, &user, &d.id, &h1).await.unwrap();
-    hire_row(&st.pg, &h1, "running", None).await;
+    // Live as the gate sees it, but parked (`awaiting`), so no reclaim sweep
+    // on a shared dev database tries to drive this stand-in hire.
+    hire_row(&st.pg, &h1, "awaiting", None).await;
     // Tab two, another handle: refused, and so are edits meanwhile.
     assert!(matches!(
         claim_for_hire(&st, &user, &d.id, &h2).await,
