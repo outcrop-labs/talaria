@@ -808,3 +808,53 @@ async fn step_rows_share_the_seq_allocator_dedupe_by_call_and_keep_their_order_a
 
     cleanup(&pg, kind).await;
 }
+
+/// Frames of one turn can reach the door at once when a plugin queue drains
+/// after a stall, and two statements reading `max(step_no)` under the same
+/// snapshot would hand out one number twice. The number comes from the run
+/// row the statement already locks for `seq`.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn concurrent_steps_of_one_turn_never_share_a_number() {
+    let pg = pg().await;
+    let kind = "rust-store-test-steps-concurrent";
+    cleanup(&pg, kind).await;
+    let store = PgRunStore::new(pg.clone());
+    let (id, token) = claimed_run(&store, kind).await;
+    store
+        .checkpoint(
+            &id,
+            &token,
+            json!({"stage": "send", "turn": 1, "stageAttempt": 0}),
+            "pushed".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut tasks = Vec::new();
+    for n in 0..24 {
+        let (pg, id) = (pg.clone(), id.clone());
+        tasks.push(tokio::spawn(async move {
+            record_step(
+                &pg,
+                &id,
+                &step(&format!("k{n}"), "terminal", 1_700_000_000_000 + n, None),
+            )
+            .await
+            .unwrap()
+        }));
+    }
+    for t in tasks {
+        assert!(t.await.unwrap().is_some());
+    }
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    let mut numbers: Vec<i64> = rows
+        .iter()
+        .filter(|r| r.kind == CheckpointKind::Step)
+        .map(|r| r.step_no.unwrap())
+        .collect();
+    numbers.sort_unstable();
+    assert_eq!(numbers, (1..=24).collect::<Vec<i64>>(), "{numbers:?}");
+    cleanup(&pg, kind).await;
+}

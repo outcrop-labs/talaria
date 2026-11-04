@@ -63,7 +63,11 @@ check('the template\'s checklist asks for a changelog/ file, never a hand edit o
     }, [])
   const entry = boxes.filter((b) => /changelog/i.test(b))
   eq(entry.length, 1)
-  ok(/\[`changelog\/`\]\(\.\.\/changelog\/\)/.test(entry[0]), `the changelog item names no changelog/ file: ${entry[0]}`)
+  // It links the doc that explains an entry, never the directory: right after a
+  // roll changelog/ is empty, git tracks nothing there, and a link to it has no
+  // target (doc-link-target-missing).
+  ok(/\[CONTRIBUTING\.md\]\(\.\.\/CONTRIBUTING\.md\)/.test(entry[0]), `the changelog item links no entry recipe: ${entry[0]}`)
+  ok(!/\]\(\.\.\/changelog\/?\)/.test(entry[0]), `the changelog item links the changelog/ directory, which a roll empties: ${entry[0]}`)
   ok(/changelog\/YYYY-MM-DD-<slug>\.md/.test(entry[0]), `the changelog item gives no file name: ${entry[0]}`)
   ok(!/CHANGELOG\.md\S* carries/.test(entry[0]), `the changelog item still asks for CHANGELOG.md: ${entry[0]}`)
   ok(/written only by the release roll/.test(entry[0]), entry[0])

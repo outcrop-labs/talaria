@@ -1029,7 +1029,7 @@ Rust relay (`/api/llm/v1/chat/completions`) on the app's own gateway key, `app:<
 Which app is calling is the host's answer, not the app's: the host marks every boundary where
 it runs app code (`isolateApp`, an MCP handler, a replay — `ui/src/server/app-scope.ts`), and a
 model call outside every such scope is refused. The relay treats the key as the app: its
-budget subject is `app:<slug>` (set it in Admin → Settings → LLM budgets), every row it books
+budget subject is `app:<slug>` (set it in Admin → Security → LLM budgets), every row it books
 lands under the run's caller stamp inside that namespace with ledger source `app`, and the
 run's ref and ticket ride along when they are uuids. A model that is a live fleet agent is
 driven for the turn through the persona door with the turn recorded as `app` spend. The relay
