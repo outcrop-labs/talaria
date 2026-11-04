@@ -1034,11 +1034,15 @@ mod tests {
     /// The shipped inspection, run on a real image against real rendered
     /// configs: `TALARIA_INSPECT_IMAGE` (an image ref), `TALARIA_INSPECT_CONFIGS`
     /// (`name=path` pairs, comma-separated), and `TALARIA_INSPECT_EXPECT`
-    /// (`held` or `clear`). Needs docker; run by hand.
+    /// (`held` or `clear`). Needs docker; run by hand — CI's run of every
+    /// ignored test names no image, so it passes there without running.
     #[tokio::test]
     #[ignore = "needs docker and a Hermes image (TALARIA_INSPECT_IMAGE)"]
     async fn the_inspection_on_a_real_image() {
-        let image = std::env::var("TALARIA_INSPECT_IMAGE").unwrap();
+        let Ok(image) = std::env::var("TALARIA_INSPECT_IMAGE") else {
+            eprintln!("TALARIA_INSPECT_IMAGE is not set: nothing to inspect");
+            return;
+        };
         let configs: Vec<(String, String)> = std::env::var("TALARIA_INSPECT_CONFIGS")
             .unwrap()
             .split(',')
