@@ -21,7 +21,6 @@
   // turns above the live tail. TURNS is the harness exchange — the ask, the
   // harness output, and the prose the agent wrote back. Both read the
   // retained transcript through the run's own door, plus the live watch.
-  // CHECKPOINTS is the run's ledger as a line.
   // RESOURCES is the agent container's cpu/mem/pids over the run's window.
   // The header's Stop ends the ticket's live session. Everything else in
   // here still only reads.
@@ -130,7 +129,6 @@
     liveFrames = []
   })
 
-  // ── Checkpoints: the ledger, read only while its tab is open. ──────────
   const qc = useQueryClient()
   const history = useWorkSessionHistory(() => taskId)
   const runState = $derived(history.data?.sessions.find((s) => s.runId === runId)?.state)
@@ -140,9 +138,7 @@
     refetchInterval: 5_000,
     queryFn: () => getJson<{ checkpoints: LedgerRow[] }>(`/api/runs/${runId}/checkpoints`),
   }))
-  // A checkpoint write publishes a transition, so a frame on the run's stream
-  // says the ledger moved. The poll is the floor under it.
-  const noteRunEvent = () => {
+  const refreshLedger = () => {
     void qc.invalidateQueries({ queryKey: ['run-checkpoints', runId] })
     void qc.invalidateQueries({ queryKey: ['work-sessions-history', taskId] })
   }
@@ -236,7 +232,7 @@
           history={retained.agent}
           resetKey={transcript?.length ?? 0}
           onFrame={noteFrame}
-          onRunEvent={noteRunEvent}
+          onRunEvent={refreshLedger}
         />
       </div>
       {#if tab === 'turns'}
@@ -293,7 +289,7 @@
           {#snippet children(data)}
             <AgentCheckpoints
               checkpoints={fromLedger(data.checkpoints, runState)}
-              live={runIsLive(runState)}
+              live={!history.isSuccess || runIsLive(runState)}
             />
           {/snippet}
         </QueryState>
