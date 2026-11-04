@@ -34,6 +34,8 @@ export interface Channel {
   agents?: string[];
   /** Others' messages past your read cursor. */
   unreadCount?: number;
+  /** Your own notify level and timed mute here (the detail's `notify`). */
+  notify?: import("./channel-notify").ChannelNotify;
 }
 
 export interface ChannelMember {
