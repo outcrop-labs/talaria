@@ -339,3 +339,52 @@ export function turnTime(at: string | undefined, timeZone?: string | null): stri
   }
   return f.format(d)
 }
+
+// Keyed `${variant}|${zone}` — both run per row, like turnTime.
+const stampFormatters = new Map<string, Intl.DateTimeFormat>()
+function stampFormatter(variant: 'gutter' | 'full', tz: string | undefined): Intl.DateTimeFormat {
+  const k = `${variant}|${tz ?? ''}`
+  let f = stampFormatters.get(k)
+  if (!f) {
+    f = new Intl.DateTimeFormat(
+      [],
+      variant === 'gutter' ? { hour: 'numeric', minute: '2-digit', timeZone: tz } : { dateStyle: 'full', timeStyle: 'short', timeZone: tz },
+    )
+    stampFormatters.set(k, f)
+  }
+  return f
+}
+
+const parsed = (at: string | undefined): Date | null => {
+  if (!at) return null
+  const d = new Date(at)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/** A continuation line's time in the 24px avatar gutter: hour and minute
+ *  with no day period ("3:42", not "03:42 PM"), which is all that fits there
+ *  — the block's header already showed the full time, and the hover title
+ *  carries the date. Empty when there is no time. */
+export function gutterTime(at: string | undefined, timeZone?: string | null): string {
+  const d = parsed(at)
+  if (!d) return ''
+  return stampFormatter('gutter', zoneOrUndefined(timeZone))
+    .formatToParts(d)
+    .filter((p) => p.type !== 'dayPeriod')
+    .map((p) => p.value)
+    .join('')
+    .trim()
+}
+
+/** The whole stamp for a message's hover title: weekday, date and time in the
+ *  viewer's zone. Empty when there is no time. */
+export function fullTime(at: string | undefined, timeZone?: string | null): string {
+  const d = parsed(at)
+  return d ? stampFormatter('full', zoneOrUndefined(timeZone)).format(d) : ''
+}
+
+/** The `<time datetime>` value: the instant as UTC ISO. Empty when there is
+ *  no time. */
+export function isoTime(at: string | undefined): string {
+  return parsed(at)?.toISOString() ?? ''
+}

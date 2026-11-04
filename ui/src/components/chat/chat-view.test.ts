@@ -16,6 +16,9 @@ import {
   toDisplay,
   toggleReactionLocal,
   turnTime,
+  gutterTime,
+  fullTime,
+  isoTime,
   withAgentError,
   type DisplayMessage,
 } from './chat-view'
@@ -126,6 +129,36 @@ describe('turnTime', () => {
   it('no or unparseable time → empty', () => {
     expect(turnTime(undefined)).toBe('')
     expect(turnTime('nope')).toBe('')
+  })
+})
+
+describe('gutterTime / fullTime / isoTime — a continuation line\'s stamps', () => {
+  const at = '2026-10-05T15:05:00Z'
+
+  it('the gutter time drops the day period, so it fits the avatar column', () => {
+    const g = gutterTime(at, 'UTC')
+    expect(g).toMatch(/^(3|15)[:.]05$/)
+    expect(g.length).toBeLessThanOrEqual(5)
+  })
+
+  it('the full stamp names the day and the time, in the given zone', () => {
+    const f = fullTime(at, 'UTC')
+    expect(f).toMatch(/2026/)
+    expect(f).toMatch(/3:05|15:05|15\.05/)
+    expect(fullTime(at, 'Asia/Tokyo')).toMatch(/0?0:05|12:05/)
+  })
+
+  it('isoTime normalizes to UTC ISO for <time datetime>', () => {
+    expect(isoTime('2026-10-05T08:05:00-07:00')).toBe('2026-10-05T15:05:00.000Z')
+  })
+
+  it('no or unparseable time → empty, never "Invalid Date"', () => {
+    for (const f of [gutterTime, fullTime]) {
+      expect(f(undefined)).toBe('')
+      expect(f('nope')).toBe('')
+    }
+    expect(isoTime(undefined)).toBe('')
+    expect(isoTime('nope')).toBe('')
   })
 })
 

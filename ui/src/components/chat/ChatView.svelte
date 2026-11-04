@@ -18,6 +18,7 @@
   import DayDivider from './DayDivider.svelte'
   import CompactedRow from './CompactedRow.svelte'
   import { dayDividerMap } from '@/lib/day-dividers'
+  import { continuationSet, messageBlocks } from '@/lib/message-groups'
   import { useSession } from '@/lib/session'
   import { pushToast, toastError } from '@/lib/toast.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -48,7 +49,6 @@
     newTurnId,
     toDisplay,
     toggleReactionLocal,
-    turnTime,
     withAgentError,
     type DisplayMessage,
     type SendIntent,
@@ -925,6 +925,24 @@
   // One divider before each calendar day's first turn (R1). Rows without a
   // time (older payloads) ride with the day before them.
   const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt ?? '', { timeZone, now: Date.now() }))
+  // A run from one sender reads as one block (lib/message-groups has the
+  // rules); these rows render as its continuation lines. A row the client drew
+  // itself has no author id yet: it is the viewer's. A scheduled run's turn
+  // carries its own header — the agent spoke up unprompted, and the time says
+  // when.
+  const continued = $derived(
+    continuationSet(
+      messageBlocks(
+        messages,
+        (m) => ({
+          sender: m.role === 'user' ? `user:${m.authorUserId ?? viewer.id ?? ''}` : `agent:${agentModel}`,
+          at: m.createdAt,
+          fresh: !!m.cronJobId,
+        }),
+        { dayStarts: dividers },
+      ),
+    ),
+  )
   const agentName = (actor: string) => (actor === agentModel ? agentLabel : actor)
 
   // Esc stops the stream even when focus wandered off the textarea.
@@ -1026,7 +1044,7 @@
            held off the bottom of its own void. Only content that can be read
            needs to clear the float; the surface behind it should not. -->
       <div
-        class="mx-auto w-full max-w-[var(--converse-width)] space-y-5 px-6 py-6"
+        class="mx-auto w-full max-w-[var(--converse-width)] space-y-5 px-6 py-6 [&>[data-continued]]:-mt-5"
         style:padding-bottom="calc(var(--chat-composer, 0px) + 0.5rem)"
       >
       <!-- The top of what is left: inside this branch on purpose, so it never
@@ -1050,7 +1068,9 @@
             chips={m.steer ? [STEER_NOTICE, ...(m.chips ?? [])] : m.chips}
             author={m.authorLabel ?? null}
             picture={!m.authorUserId || m.authorUserId === viewer.id ? (session.data?.picture ?? null) : null}
-            time={turnTime(m.createdAt, timeZone)}
+            at={m.createdAt}
+            {timeZone}
+            continued={continued.has(i)}
             reactions={reactionChips(m.reactions, viewer, agentName)}
             {onReact}
             onContextMenu={copyMenu(m)}
@@ -1064,7 +1084,9 @@
             {agentModel}
             {agentLabel}
             {live}
-            time={turnTime(m.createdAt, timeZone)}
+            at={m.createdAt}
+            {timeZone}
+            continued={continued.has(i)}
             reactions={reactionChips(m.reactions, viewer, agentName)}
             {onReact}
             onContextMenu={copyMenu(m)}
