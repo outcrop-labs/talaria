@@ -218,8 +218,8 @@
 
 <Modal {open} {onClose} title="Run detail" takeover>
   <div class="flex h-full min-h-0 flex-col">
-    <div class="flex items-center gap-1 border-b border-line-subtle pb-3">
-      <Tabs items={tabs} value={tab} onChange={(id) => (tab = id)} />
+    <div class="flex flex-wrap items-center gap-x-1 gap-y-2 border-b border-line-subtle pb-3">
+      <Tabs class="min-w-0 flex-wrap" items={tabs} value={tab} onChange={(id) => (tab = id)} />
       {#if agentModel || live}
         <span class="ml-auto flex min-w-0 items-center gap-2">
           {#if agentModel}<span class="truncate text-xs text-muted">{agentModel}</span>{/if}
