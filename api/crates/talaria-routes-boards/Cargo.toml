@@ -25,6 +25,7 @@ talaria-plan-doc = { workspace = true }
 talaria-plan-drafts = { workspace = true }
 talaria-realtime-watch = { workspace = true }
 talaria-refs = { workspace = true }
+talaria-runs-store = { workspace = true }
 talaria-session = { workspace = true }
 talaria-state = { workspace = true }
 talaria-statuses = { workspace = true }

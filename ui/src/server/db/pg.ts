@@ -4851,6 +4851,39 @@ alter table tasks drop column if exists conversation_id`,
      primary key (run_id, seq),
      unique (run_id, tool_call_id)
    )`,
+  // A rewind's attempts. A run nobody rewound keeps every column at its default
+  // and reads as attempt 1 of a lineage named by its own id, so no backfill.
+  // `attempt` above counts crash hand-overs of ONE run; this counts runs.
+  `alter table runs add column if not exists lineage_id uuid`,
+  `alter table runs add column if not exists attempt_no integer not null default 1`,
+  `alter table runs add column if not exists rewound_from_run_id uuid references runs(id) on delete cascade`,
+  `alter table runs add column if not exists rewound_from_seq bigint`,
+  `alter table runs add constraint runs_attempt_shape check (
+     (lineage_id is null and rewound_from_run_id is null and rewound_from_seq is null and attempt_no = 1)
+     or (lineage_id is not null and rewound_from_run_id is not null and rewound_from_seq is not null and attempt_no > 1)
+   )`,
+  `create unique index if not exists runs_lineage_attempt_idx
+     on runs (lineage_id, attempt_no) where lineage_id is not null`,
+  // The run that owns a job now: the latest to work it, so a revise round
+  // moves it. `superseded_by` is the job a rewind replaced this one with, and
+  // every later rewind repoints it, so it always names the current job.
+  `alter table workbench_jobs add column if not exists run_id uuid references runs(id) on delete set null`,
+  `alter table workbench_jobs add column if not exists superseded_by uuid references workbench_jobs(id) on delete set null`,
+  `create index if not exists workbench_jobs_run_idx on workbench_jobs (run_id) where run_id is not null`,
+  `create index if not exists run_checkpoints_job_idx on run_checkpoints (job_id) where job_id is not null`,
+  // A push the pre-push gate let through, on a branch a run's job owns. The gate
+  // runs before any bytes leave, so a row says the run pushed, not that the
+  // remote took it, and a push made with --no-verify leaves none.
+  `create table if not exists run_pushes (
+     id uuid primary key default gen_random_uuid(),
+     run_id uuid not null references runs(id) on delete cascade,
+     job_id uuid not null references workbench_jobs(id) on delete cascade,
+     branch text not null,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists run_pushes_run_idx on run_pushes (run_id, created_at)`,
+  // A work session's spend carries its run in ref_id, as research's does.
+  `create index if not exists usage_events_ref_idx on usage_events (ref_id) where ref_id is not null`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
