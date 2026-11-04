@@ -1222,7 +1222,7 @@ CREATE TABLE public.price_lookups (
     detail text,
     source text NOT NULL,
     checked_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT price_lookups_outcome_check CHECK ((outcome = ANY (ARRAY['priced'::text, 'no_match'::text, 'source_failed'::text])))
+    CONSTRAINT price_lookups_outcome_check CHECK ((outcome = ANY (ARRAY['priced'::text, 'no_match'::text, 'source_failed'::text, 'variable'::text])))
 );
 CREATE TABLE public.provider_prices (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

@@ -10,13 +10,15 @@
 
   Other changes:
   - Cache tokens bill at the catalog's own published cache rates when it has them.
-  - The price check now also matches OpenAI's `-YYYY-MM-DD` and xAI's `-MMDD` snapshot ids and Fireworks-style path ids.
+  - The price check now also matches OpenAI's `-YYYY-MM-DD` snapshot ids, older `-MMDD` ids such as `gpt-4-0613`, and Fireworks-style path ids. An id whose base model the live catalog no longer lists, such as xAI's `grok-4-0709`, stays unpriced.
   - The price check records why each model has no price: no published price (and the ids it tried), the source didn't answer (quoting its error and every cause under it), or not looked up yet.
   - The new admin-only **Unpriced models** panel lists each model with its endpoint, tokens and reason, and offers **Set price**, **Included in a plan** and **Retry lookup**.
   - Pricing is read-time, so each fix re-prices that model's past calls, and the alert clears for history. The alert now goes to admins only and links to the panel.
   - The endpoint editor shows the admin's settings beside the published prices.
 
   New API: `GET /api/cost/unpriced`, `PUT`/`DELETE /api/cost/prices`, `POST /api/cost/unpriced/lookup`, all admin-only.
+
+  **Upgrade note: USD budgets start binding.** On main, OpenRouter agent turns counted as $0, so an org or per-agent dollar ceiling never bound on them. After the upgrade, every row inside the budget window re-prices at once (24 hours by default, up to 365 days), and new calls carry OpenRouter's own charge. An agent whose real spend is already over its ceiling is refused with `429 budget_exceeded` on its first call after the deploy. Review the USD ceilings under **Admin → Settings** before upgrading, or right after.
 
   Verified:
   - `bun run gate`.

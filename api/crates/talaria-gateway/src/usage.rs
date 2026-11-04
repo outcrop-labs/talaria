@@ -137,38 +137,53 @@ pub struct SpendWindow {
 // Multipliers per input KIND are VALUES interpolated into this text, not
 // binds: the view is spliced into larger statements whose callers bind their
 // own $1/$2.
+//
+// NO ROW EVER PRICES BELOW ZERO. Every rate the view reads is taken only when
+// it is zero or more, and every token count is floored at zero, so a bad
+// number anywhere — OpenRouter's `-1` "variable" marker stored by a release
+// that did not refuse it, a hand-edited row — leaves that row unpriced (or on
+// the next source down) instead of sinking every USD budget below zero. The
+// writers refuse the same numbers; this is the read side's half, and it is
+// what stops the rows already stored on an instance from counting.
 static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    // A rate the view may use: the column when it is >= 0, else null (a null
+    // input/output rate rules the source out; a null cache rate falls back
+    // to the multiplier).
+    let usable = |col: &str| format!("(case when {col} >= 0 then {col} end)");
     let rate = |input: &str, output: &str, write: &str, read: &str| {
         format!(
-            "(u.prompt_tokens * {input} \
-             + u.cache_write_tokens * coalesce({write}, {input} * {CACHE_WRITE_MULTIPLIER}) \
-             + u.cache_read_tokens * coalesce({read}, {input} * {CACHE_READ_MULTIPLIER}) \
-             + u.completion_tokens * {output}) / 1e6"
+            "(greatest(u.prompt_tokens, 0) * {input} \
+             + greatest(u.cache_write_tokens, 0) * coalesce({write}, {input} * {CACHE_WRITE_MULTIPLIER}) \
+             + greatest(u.cache_read_tokens, 0) * coalesce({read}, {input} * {CACHE_READ_MULTIPLIER}) \
+             + greatest(u.completion_tokens, 0) * {output}) / 1e6"
         )
     };
     let published = rate("pp.in_tok", "pp.out_tok", "pp.cw_tok", "pp.cr_tok");
     let manual = rate(
         "o.price_in_per_mtok",
         "o.price_out_per_mtok",
-        "o.price_cache_write_per_mtok",
-        "o.price_cache_read_per_mtok",
+        &usable("o.price_cache_write_per_mtok"),
+        &usable("o.price_cache_read_per_mtok"),
     );
+    let manual_ok = "o.mode = 'manual' and o.price_in_per_mtok >= 0 and o.price_out_per_mtok >= 0";
+    let cw = usable("p.price_cache_write_per_mtok");
+    let cr = usable("p.price_cache_read_per_mtok");
     format!(
         "select u.*, \
         case \
           when u.endpoint_class = 'local' then 0 \
-          when u.provider_cost is not null then u.provider_cost \
+          when u.provider_cost >= 0 then u.provider_cost \
           when u.endpoint_class = 'cloud' and o.mode = 'included' then 0 \
           when u.endpoint_class = 'cloud' and pp.in_tok is not null then {published} \
-          when u.endpoint_class = 'cloud' and o.mode = 'manual' then {manual} \
+          when u.endpoint_class = 'cloud' and {manual_ok} then {manual} \
           else null \
         end as cost, \
         case \
           when u.endpoint_class = 'local' then 'local' \
-          when u.provider_cost is not null then 'provider' \
+          when u.provider_cost >= 0 then 'provider' \
           when u.endpoint_class = 'cloud' and o.mode = 'included' then 'included' \
           when u.endpoint_class = 'cloud' and pp.in_tok is not null then 'derived' \
-          when u.endpoint_class = 'cloud' and o.mode = 'manual' then 'manual' \
+          when u.endpoint_class = 'cloud' and {manual_ok} then 'manual' \
           else null \
         end as cost_basis \
       from usage_events u \
@@ -177,12 +192,12 @@ static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         on o.endpoint = coalesce(u.endpoint, '') and o.model = u.llm_model \
       left join lateral ( \
         select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok, \
-               p.price_cache_write_per_mtok as cw_tok, p.price_cache_read_per_mtok as cr_tok \
+               {cw} as cw_tok, {cr} as cr_tok \
         from provider_prices p \
         where p.endpoint_id = e.id \
           and p.model = u.llm_model \
           and (p.variant = '' or p.variant = coalesce(u.cost_variant, '')) \
-          and p.price_in_per_mtok is not null and p.price_out_per_mtok is not null \
+          and p.price_in_per_mtok >= 0 and p.price_out_per_mtok >= 0 \
         order by (p.variant <> '') desc, p.fetched_at desc \
         limit 1 \
       ) pp on true"
@@ -839,7 +854,9 @@ pub struct PriceFacts<'a> {
     pub admin: Option<AdminPricing>,
     /// The row's `cost_variant`.
     pub served_variant: Option<&'a str>,
-    /// The variants with a complete published price for this endpoint+model.
+    /// The variants with a complete published price for this endpoint+model:
+    /// input and output both present and zero or more. A negative rate (the
+    /// catalog's "variable" marker) is no price at all.
     pub published_variants: &'a [&'a str],
 }
 
@@ -1409,10 +1426,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("the view lost `{needle}`"))
         };
         // The cost CASE: provider, included, published, manual — in order.
-        let provider = at("when u.provider_cost is not null then u.provider_cost");
+        let provider = at("when u.provider_cost >= 0 then u.provider_cost");
         let included = at("o.mode = 'included' then 0");
         let published = at("pp.in_tok is not null then (");
-        let manual = at("o.mode = 'manual' then (");
+        let manual = at("o.price_out_per_mtok >= 0 then (");
         assert!(provider < included && included < published && published < manual);
         // The OpenRouter exclusion is gone; the exact variant sorts first.
         assert!(!sql.contains("is distinct from 'openrouter'"));
@@ -1420,6 +1437,18 @@ mod tests {
         // Cache tokens bill at the published cache rates before the multipliers.
         assert!(sql.contains("coalesce(pp.cw_tok, pp.in_tok * 1.25)"));
         assert!(sql.contains("coalesce(pp.cr_tok, pp.in_tok * 0.1)"));
+        // No source with a negative rate is ever read, and no token count
+        // below zero is ever multiplied: the view cannot price under $0.
+        assert!(sql.contains("p.price_in_per_mtok >= 0 and p.price_out_per_mtok >= 0"));
+        assert!(sql.contains(
+            "(case when p.price_cache_write_per_mtok >= 0 then p.price_cache_write_per_mtok end)"
+        ));
+        assert!(sql.contains("when u.provider_cost >= 0 then u.provider_cost"));
+        assert!(sql.contains("o.price_in_per_mtok >= 0 and o.price_out_per_mtok >= 0"));
+        assert!(
+            !sql.contains("u.prompt_tokens *"),
+            "token counts are floored at zero"
+        );
     }
 
     #[test]
