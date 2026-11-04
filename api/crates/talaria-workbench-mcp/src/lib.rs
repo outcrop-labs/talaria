@@ -120,7 +120,7 @@ pub struct WorkbenchJob {
     /// The admission refusal that parked this job, verbatim. `None` =
     /// not queued (cleared on promotion).
     pub queued_reason: Option<String>,
-    /// The job a rewind replaced this one with. `None` unless superseded.
+    /// The job a rewind replaced this one with.
     pub superseded_by: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -895,10 +895,9 @@ async fn call_tool(
         }
 
         "start_job" => {
-            // Ahead of everything below: the attempt's own job is live, so the
-            // per-ticket refusal would turn it away.
             if let Some(attempt) = rewind::attempt_of_call(pg, &agent.model, args).await
-                && let Some(answer) = rewind::start_job(deps, subject, &agent, args, &attempt).await
+                && let rewind::RewindStart::Answered(answer) =
+                    rewind::start_job(deps, subject, &agent, args, &attempt).await
             {
                 return answer;
             }
@@ -1080,7 +1079,7 @@ async fn call_tool(
                             effort: &effort,
                             plan: &plan,
                             queue_reason: queue_reason.as_deref(),
-                            run_id: run_id.as_deref(),
+                            taking_over: run_id.as_deref(),
                         },
                         pr,
                     )
@@ -2951,8 +2950,7 @@ struct JobResume<'a> {
     effort: &'a str,
     plan: &'a str,
     queue_reason: Option<&'a str>,
-    /// The run taking the job over. A round outside any run leaves its owner.
-    run_id: Option<&'a str>,
+    taking_over: Option<&'a str>,
 }
 
 /// Put a `pr_open` job back to work in place for a revise round: its new
@@ -2983,7 +2981,7 @@ async fn resume_job_row(
     .bind(round.queue_reason)
     .bind(&pr.url)
     .bind(pr.number)
-    .bind(round.run_id)
+    .bind(round.taking_over)
     .fetch_optional(pg)
     .await
     .ok()
@@ -3294,7 +3292,6 @@ async fn wtool_run_for(pg: &PgPool, model: &str, args: &Map<String, Value>) -> O
     }
 }
 
-/// The agent's live work session on this ticket: one per ticket+agent.
 async fn live_session(pg: &PgPool, model: &str, task_id: &str) -> Option<String> {
     sqlx::query_scalar::<_, String>(
         "select id::text from runs \
@@ -4167,6 +4164,12 @@ mod tests {
             .unwrap()
         }
 
+        #[derive(Clone, Copy)]
+        struct Rewound<'a> {
+            root: &'a str,
+            attempt_no: i32,
+        }
+
         async fn ticket(pg: &PgPool, board_id: &str, title: &str) -> String {
             sqlx::query_scalar(
                 "insert into tasks (board_id, title) values ($1::uuid, $2) returning id::text",
@@ -4178,17 +4181,14 @@ mod tests {
             .unwrap()
         }
 
-        /// A work session on `task_id`. `rewound` is the run and seq it left,
-        /// with its lineage's root and its attempt number.
         async fn session(
             pg: &PgPool,
             task_id: &str,
             state: &str,
-            rewound: Option<(&str, &str, i32)>,
+            rewound: Option<Rewound<'_>>,
         ) -> String {
-            let root = rewound.map(|r| r.0);
-            let from = rewound.map(|r| r.1);
-            let attempt_no = rewound.map(|r| r.2);
+            let root = rewound.map(|r| r.root);
+            let attempt_no = rewound.map(|r| r.attempt_no);
             sqlx::query_scalar(
                 "insert into runs (kind, subject_type, subject_id, state, input, \
                                    lineage_id, rewound_from_run_id, rewound_from_seq, attempt_no) \
@@ -4200,7 +4200,7 @@ mod tests {
             .bind(state)
             .bind(json!({ "agentModel": MODEL, "taskId": task_id }))
             .bind(root)
-            .bind(from)
+            .bind(root)
             .bind(attempt_no)
             .fetch_one(pg)
             .await
@@ -4262,8 +4262,6 @@ mod tests {
             }
         }
 
-        /// An ordinary revise round stamps the run taking the job over and
-        /// keeps the job, its branch and its PR.
         async fn a_revise_round_moves_its_job_to_the_new_run(
             deps: &WorkbenchDeps,
             me: &AgentSubject,
@@ -4298,9 +4296,6 @@ mod tests {
                 .unwrap();
         }
 
-        /// A rewind attempt gets the job its rewind allocated, the job it left
-        /// is retired and refuses changes, and a later rewind repoints every
-        /// retired job at the new current one.
         async fn a_rewind_attempt_gets_its_own_job(
             deps: &WorkbenchDeps,
             me: &AgentSubject,
@@ -4313,7 +4308,16 @@ mod tests {
             let start = args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" }));
             let root = session(pg, &task_id, "cancelled", None).await;
             let source = owned_job(pg, agent_id, &task_id, &root, BRANCH).await;
-            let second = session(pg, &task_id, "running", Some((&root, &root, 2))).await;
+            let second = session(
+                pg,
+                &task_id,
+                "running",
+                Some(Rewound {
+                    root: &root,
+                    attempt_no: 2,
+                }),
+            )
+            .await;
             let second_branch = format!("{BRANCH}-a2");
             let allocated = owned_job(pg, agent_id, &task_id, &second, &second_branch).await;
 
@@ -4358,7 +4362,16 @@ mod tests {
             assert_eq!(read["jobs"][0]["supersededBy"], json!(allocated));
 
             set_state(pg, &second, "cancelled").await;
-            let third = session(pg, &task_id, "running", Some((&root, &root, 3))).await;
+            let third = session(
+                pg,
+                &task_id,
+                "running",
+                Some(Rewound {
+                    root: &root,
+                    attempt_no: 3,
+                }),
+            )
+            .await;
             let latest = owned_job(pg, agent_id, &task_id, &third, &format!("{BRANCH}-a3")).await;
             let answer = ok(call_tool(deps, me, "start_job", &start).await);
             assert_eq!(answer["jobId"], json!(latest));
@@ -4390,7 +4403,16 @@ mod tests {
             );
 
             set_state(pg, &third, "cancelled").await;
-            session(pg, &task_id, "running", Some((&root, &root, 4))).await;
+            session(
+                pg,
+                &task_id,
+                "running",
+                Some(Rewound {
+                    root: &root,
+                    attempt_no: 4,
+                }),
+            )
+            .await;
             let why = refused(call_tool(deps, me, "start_job", &start).await);
             assert!(why.contains("no job allocated"), "{why}");
         }
@@ -4552,7 +4574,7 @@ mod tests {
                         effort: "light",
                         plan: "",
                         queue_reason: None,
-                        run_id: None,
+                        taking_over: None,
                     },
                     &pr,
                 )
@@ -4572,7 +4594,7 @@ mod tests {
                             effort: "light",
                             plan: "",
                             queue_reason: None,
-                            run_id: None,
+                            taking_over: None,
                         },
                         &pr,
                     )
