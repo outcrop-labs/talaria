@@ -599,27 +599,54 @@ def _learn_checkout(session_id: str, tool_name: str, args: Any, result: Any) -> 
 
 
 def _keep_checkout(session_id: str, job_id: str) -> None:
-    """Write the binding to the volume. The session id is the file name, so
-    only an id of the shape Talaria mints becomes one."""
+    """Write the binding to the volume, whole or not at all: a temp file
+    beside it is renamed over it, so a restart reads the old binding or the
+    new one and never a torn one. The session id is the file name, so only an
+    id of the shape Talaria mints becomes one, and a path that is a symlink
+    is left alone rather than written through."""
     if not _JOB_ID.fullmatch(session_id):
         return
+    target = os.path.join(_STATE_DIR, session_id)
     try:
         os.makedirs(_STATE_DIR, mode=0o700, exist_ok=True)
-        with open(os.path.join(_STATE_DIR, session_id), "w") as handle:
-            handle.write(job_id)
+        if os.path.islink(target):
+            return
+        fd, tmp = tempfile.mkstemp(prefix=".", suffix=".tmp", dir=_STATE_DIR)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(job_id)
+            os.replace(tmp, target)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            # Neither the new binding nor the old may stand after a failed
+            # write: a restart that read the old one would snapshot the
+            # wrong checkout.
+            try:
+                os.unlink(target)
+            except OSError:
+                pass
+            raise
     except OSError:
         pass
 
 
 def _checkout_for(session_id: str) -> tuple[str, str] | None:
     """The session's (job id, workdir): from memory, else from the volume,
-    which is where a restarted container finds it."""
+    which is where a restarted container finds it. A file that is a symlink,
+    unreadable, or not a job id binds nothing."""
     found = _checkouts.get(session_id)
     if found is not None or not _JOB_ID.fullmatch(session_id):
         return found
     try:
-        with open(os.path.join(_STATE_DIR, session_id)) as handle:
-            job_id = handle.read().strip().lower()
+        fd = os.open(os.path.join(_STATE_DIR, session_id), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            job_id = handle.read(128).decode("ascii", "replace").strip().lower()
     except OSError:
         return None
     if not _JOB_ID.fullmatch(job_id):
@@ -649,29 +676,6 @@ def _untracked_bytes(root: str, budget: int) -> int | None:
         if total > budget:
             break
     return total
-
-
-def _sweep_git_temp(root: str, since: float) -> None:
-    """Remove the pack and object temp files a killed git left since `since`.
-    An older temp file may be another git's and stays."""
-    objects = os.path.join(root, ".git", "objects")
-    candidates = [os.path.join(objects, "pack")] + [
-        os.path.join(objects, d) for d in os.listdir(objects) if len(d) == 2
-    ]
-    for folder in candidates:
-        try:
-            names = os.listdir(folder)
-        except OSError:
-            continue
-        for name in names:
-            if not (name.startswith("tmp_pack_") or name.startswith("tmp_obj_")):
-                continue
-            path = os.path.join(folder, name)
-            try:
-                if os.lstat(path).st_mtime >= since:
-                    os.unlink(path)
-            except OSError:
-                pass
 
 
 def _trailing_batch(history: Any) -> list[tuple[str, str]]:
@@ -709,33 +713,79 @@ class _Skipped(Exception):
     """A snapshot not taken on purpose; the reason is the message."""
 
 
+class _GitFailed(Exception):
+    """A git stage of the snapshot failed; the message names the stage. The
+    stage's own stderr stays out: it reaches people as a reason, and a path
+    or a fatal line is not a sentence."""
+
+
+def _alternates(root: str) -> str:
+    """The real store, plus whatever it already borrows from."""
+    store = os.path.join(root, ".git", "objects")
+    extra = []
+    try:
+        with open(os.path.join(store, "info", "alternates")) as handle:
+            extra = [line.strip() for line in handle if line.strip()]
+    except OSError:
+        pass
+    return ":".join([store, *extra])
+
+
+def _adopt_objects(quarantine: str, root: str) -> None:
+    """Move the snapshot's new objects into the real store. An object the
+    store already has is left as it is; git's objects are immutable."""
+    store = os.path.join(root, ".git", "objects")
+    for fan in os.listdir(quarantine):
+        if len(fan) != 2:
+            continue
+        os.makedirs(os.path.join(store, fan), exist_ok=True)
+        for name in os.listdir(os.path.join(quarantine, fan)):
+            dest = os.path.join(store, fan, name)
+            if os.path.exists(dest):
+                continue
+            os.rename(os.path.join(quarantine, fan, name), dest)
+
+
 def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
     """Commit the checkout's tracked and untracked files (ignored ones and
     the platform's env file stay out) through a copy of the index, and point
     `refs/talaria/ckpt/...` at it. The agent's index, HEAD, status and log do
     not change. A tree equal to the session's last snapshot is that snapshot:
     its commit is reused and no ref is written, so refs grow with the work,
-    not with the steps."""
+    not with the steps.
+
+    The snapshot's objects are written to a quarantine of its own beside the
+    real store, which git reads through as an alternate, and they move into
+    the store only once the commit exists. A snapshot that fails, or is cut
+    short, leaves the store exactly as it was, and nothing here ever deletes
+    from the store, so a `git gc` or `git add` the agent runs beside it keeps
+    every temp file of its own."""
     untracked = _untracked_bytes(root, _UNTRACKED_BUDGET)
     if untracked is not None and untracked > _UNTRACKED_BUDGET:
         raise _Skipped(
             f"untracked content {untracked / 1048576:.1f} MiB is over the "
             f"{_UNTRACKED_BUDGET // 1048576} MiB snapshot budget"
         )
-    started = time.time()
     fd, index = tempfile.mkstemp(prefix="talaria-ckpt-")
     os.close(fd)
     # git reads an empty index file as corrupt, so the temp name is handed
     # over empty: either a copy of the agent's index or nothing at all.
     os.unlink(index)
-    env = {**os.environ, **_SNAPSHOT_IDENTITY, "GIT_INDEX_FILE": index}
+    quarantine = tempfile.mkdtemp(prefix="talaria-ckpt-objects-", dir=os.path.join(root, ".git"))
+    env = {
+        **os.environ,
+        **_SNAPSHOT_IDENTITY,
+        "GIT_INDEX_FILE": index,
+        "GIT_OBJECT_DIRECTORY": quarantine,
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": _alternates(root),
+    }
 
     def git(*args: str, **kw: Any) -> str:
         done = subprocess.run(
             ["git", "-C", root, *args], capture_output=True, text=True, timeout=_GIT_TIMEOUT, **kw
         )
         if done.returncode != 0:
-            raise RuntimeError(f"git {args[0]}: {done.stderr.strip()[:200]}")
+            raise _GitFailed(args[0])
         return done.stdout.strip()
 
     try:
@@ -753,11 +803,21 @@ def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
         ).stdout.strip()
         parent = ["-p", head] if head else []
         commit = git("commit-tree", tree, *parent, "-m", f"talaria checkpoint {ref_name}", env=env)
-        git("update-ref", f"refs/talaria/ckpt/{ref_name}", commit)
-    except BaseException:
-        _sweep_git_temp(root, started)
-        raise
+        # The ref first, while the commit still lives in the quarantine git
+        # reads as its store here: once the ref names it, a gc that prunes
+        # unreachable objects cannot take the commit between its adoption
+        # and the ref.
+        git("update-ref", f"refs/talaria/ckpt/{ref_name}", commit, env=env)
+        try:
+            _adopt_objects(quarantine, root)
+        except BaseException:
+            subprocess.run(
+                ["git", "-C", root, "update-ref", "-d", f"refs/talaria/ckpt/{ref_name}"],
+                capture_output=True, timeout=_GIT_TIMEOUT, env=env,
+            )
+            raise
     finally:
+        shutil.rmtree(quarantine, ignore_errors=True)
         for leftover in (index, index + ".lock"):
             try:
                 os.unlink(leftover)
@@ -834,8 +894,14 @@ def _report_step(
                 event["commit"] = commit
             except _Skipped as skip:
                 event["reason"] = f"snapshot skipped: {skip}"
+            except _GitFailed as stage:
+                event["reason"] = f"snapshot failed: git {stage} failed in the job's checkout"
+            except subprocess.TimeoutExpired:
+                event["reason"] = f"snapshot failed: git took longer than {_GIT_TIMEOUT:.0f} s and was stopped"
+            except OSError:
+                event["reason"] = "snapshot failed: the checkout's object store could not be written"
             except Exception as ex:
-                event["reason"] = f"snapshot failed: {type(ex).__name__}: {str(ex)[:200]}"
+                event["reason"] = f"snapshot failed: an unexpected error in the plugin ({type(ex).__name__})"
             event["ms"] = int((time.monotonic() - started) * 1000)
     _enqueue(event)
 

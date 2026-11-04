@@ -545,6 +545,9 @@ async fn verify_session_steps(d: &WorkSessionDeps, agent_model: &str, run_id: &s
     };
     let live = present_call_ids(&live);
     let archived = present_call_ids(&archived);
+    if let Err(e) = talaria_runs_store::settle_unverified(&d.state.pg, run_id, &live).await {
+        tracing::warn!("{LOG} {run_id}: settling waiting steps failed at turn {turn}: {e}");
+    }
     match talaria_runs_store::verify_steps(&d.state.pg, run_id, through, &live, &archived).await {
         Ok(retired) if retired > 0 => {
             tracing::info!(

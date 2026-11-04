@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use talaria_agent_auth::AgentCaller;
 use talaria_body::truncate_utf16;
 use talaria_error::house_error;
-use talaria_runs_store::{StepSnapshot, record_step};
+use talaria_runs_store::{StepSnapshot, record_step, settle_unverified, verify_steps};
 use talaria_state::AppState;
 
 const MAX_TITLE: usize = 200;
@@ -128,25 +128,38 @@ fn title_for(calls: &[Call]) -> Option<String> {
     )
 }
 
-/// The job id as the ledger may hold it: this agent's own, or None with the
-/// reason the row carries instead.
+/// Where the job the frame names stands with this agent.
+enum Job {
+    /// This agent's, with a checkout still in place.
+    Own(String),
+    /// This agent's, but its workdir was removed: nothing to restore from.
+    Cleared,
+    /// Not this agent's, or no job at all.
+    None,
+}
+
 async fn own_job(
     state: &AppState,
     caller: &AgentCaller,
     job_id: Option<&str>,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<Job, sqlx::Error> {
     let Some(job_id) = job_id else {
-        return Ok(None);
+        return Ok(Job::None);
     };
-    sqlx::query_scalar(
-        "select j.id::text from workbench_jobs j \
+    let row: Option<(String, bool)> = sqlx::query_as(
+        "select j.id::text, j.workspace_cleared_at is not null from workbench_jobs j \
          join agent_defs d on d.id = j.agent_id \
          where j.id = $1::uuid and d.model = $2",
     )
     .bind(job_id)
     .bind(&caller.model)
     .fetch_optional(&state.pg)
-    .await
+    .await?;
+    Ok(match row {
+        Some((_, true)) => Job::Cleared,
+        Some((id, false)) => Job::Own(id),
+        None => Job::None,
+    })
 }
 
 /// A Hermes turn id is `<session>:<task>:<hex>`, and a turn of the session's
@@ -162,29 +175,48 @@ fn own_turn(session_id: &str, turn_id: Option<&str>) -> bool {
     }
 }
 
-/// The tool call ids a run's own live transcript holds, or None when the
-/// container could not say. The door reads it for a frame that lands after
-/// the run ended, which no record stage will judge.
+/// What a run's own session holds, as tool call ids: the live rows, and the
+/// rows a compaction archived. The door reads it for a frame that lands
+/// after the run ended, which no record stage will judge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Transcript {
+    pub live: Vec<String>,
+    pub archived: Vec<String>,
+}
+
+/// A read of the run's transcript, or None when the container could not say.
 pub type TranscriptRead =
-    std::sync::Arc<dyn Fn(&str, &str) -> BoxFuture<'static, Option<Vec<String>>> + Send + Sync>;
+    std::sync::Arc<dyn Fn(&str, &str) -> BoxFuture<'static, Option<Transcript>> + Send + Sync>;
 
 fn gateway_transcript() -> TranscriptRead {
     std::sync::Arc::new(|model, session| {
         let (model, session) = (model.to_string(), session.to_string());
         Box::pin(async move {
-            let rows = talaria_api_facades::gateway::fleet_chat::session_messages(&model, &session)
-                .await?;
-            Some(talaria_api_facades::runs::defs::work_session::present_call_ids(&rows))
+            use talaria_api_facades::gateway::fleet_chat::{
+                session_messages, session_messages_archived,
+            };
+            use talaria_api_facades::runs::defs::work_session::present_call_ids;
+            let (live, archived) = tokio::join!(
+                session_messages(&model, &session),
+                session_messages_archived(&model, &session)
+            );
+            Some(Transcript {
+                live: present_call_ids(&live?),
+                archived: present_call_ids(&archived?),
+            })
         })
     })
 }
 
-fn step_of(frame: &Frame, job_id: Option<String>) -> StepSnapshot {
+fn step_of(frame: &Frame, job: Job) -> StepSnapshot {
     let last = frame.calls.last().expect("a frame holds at least one call");
-    let reason = match (&frame.reason, &frame.job_id, &job_id) {
-        (Some(reason), _, _) => Some(reason.clone()),
-        (None, Some(named), None) => Some(format!("job {named} is not this agent's")),
-        _ => None,
+    let (job_id, reason) = match (&frame.reason, &frame.job_id, job) {
+        (Some(reason), _, Job::Own(id)) => (Some(id), Some(reason.clone())),
+        (Some(reason), _, _) => (None, Some(reason.clone())),
+        (None, _, Job::Own(id)) => (Some(id), None),
+        (None, _, Job::Cleared) => (None, Some("the job's checkout was removed".to_string())),
+        (None, Some(named), Job::None) => (None, Some(format!("job {named} is not this agent's"))),
+        (None, None, Job::None) => (None, None),
     };
     StepSnapshot {
         agent_turn_id: frame.turn_id.clone(),
@@ -263,36 +295,35 @@ pub async fn land_with(
             return Ok(Json(json!({ "ok": true, "landed": false })).into_response());
         }
     };
-    let job_id = match own_job(state, caller, frame.job_id.as_deref()).await {
-        Ok(job_id) => job_id,
+    let job = match own_job(state, caller, frame.job_id.as_deref()).await {
+        Ok(job) => job,
         Err(e) => {
             tracing::warn!("[tool-events] snapshot job lookup failed: {e}");
-            None
+            Job::None
         }
     };
-    let mut step = step_of(&frame, job_id);
+    let mut step = step_of(&frame, job);
     // A frame on a finished run has no record stage ahead of it, so the
-    // transcript judges it here, the way the record stage judges the rest.
-    if settled && step.unrestorable_reason.is_none() {
-        let held = match transcript(&caller.model, &run_id).await {
-            Some(ids) => ids.contains(&step.tool_call_id),
-            None => {
-                step.unrestorable_reason = Some(
-                    "landed after the run ended and the session's transcript could not be read"
-                        .into(),
-                );
-                true
-            }
-        };
-        if !held {
-            step.unrestorable_reason = Some(
-                "not in this run's transcript: the session holds no row for this step's tool \
-                 call, so it was not a turn of the session's own"
-                    .into(),
-            );
+    // transcript judges it here, the way the record stage judges the rest:
+    // this row, and every row still waiting on an earlier read that failed.
+    let judged = if settled {
+        transcript(&caller.model, &run_id).await
+    } else {
+        None
+    };
+    if settled && judged.is_none() && step.unrestorable_reason.is_none() {
+        step.unrestorable_reason = Some(talaria_runs_store::UNVERIFIED_REASON.into());
+    }
+    let landed = record_step(&state.pg, &run_id, &step).await;
+    if let (Ok(Some(seq)), Some(t)) = (&landed, &judged) {
+        if let Err(e) = settle_unverified(&state.pg, &run_id, &t.live).await {
+            tracing::warn!("[tool-events] run {run_id}: settling waiting steps failed: {e}");
+        }
+        if let Err(e) = verify_steps(&state.pg, &run_id, *seq, &t.live, &t.archived).await {
+            tracing::warn!("[tool-events] run {run_id}: judging steps failed: {e}");
         }
     }
-    match record_step(&state.pg, &run_id, &step).await {
+    match landed {
         Ok(Some(seq)) => {
             tracing::info!(
                 "[tool-events] {} run {run_id}: step {seq} at {} ({}) restorable={} snapshot {} ms",
@@ -340,7 +371,7 @@ mod tests {
             "at": 1_700_000_000_123i64,
             "ms": 24,
         }));
-        let step = step_of(&f, Some("2f3b0a6e-1c4d-4e5f-8a9b-0c1d2e3f4a5b".into()));
+        let step = step_of(&f, Job::Own("2f3b0a6e-1c4d-4e5f-8a9b-0c1d2e3f4a5b".into()));
         assert_eq!(step.tool_call_id, "call_3");
         assert_eq!(step.tool, "write_file");
         assert_eq!(
@@ -364,7 +395,7 @@ mod tests {
             "jobId": "2f3b0a6e-1c4d-4e5f-8a9b-0c1d2e3f4a5b",
             "commit": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
         }));
-        let step = step_of(&f, None);
+        let step = step_of(&f, Job::None);
         assert_eq!(step.title, None);
         assert_eq!(step.status, "completed");
         assert_eq!(step.job_id, None);
@@ -385,9 +416,11 @@ mod tests {
             "reason": "no git checkout under /opt/data/workbench/jobs/x",
         }));
         assert_eq!(
-            step_of(&f, None).unrestorable_reason.as_deref(),
+            step_of(&f, Job::None).unrestorable_reason.as_deref(),
             Some("no git checkout under /opt/data/workbench/jobs/x")
         );
+        let cleared = step_of(&f, Job::Cleared);
+        assert_eq!(cleared.job_id, None);
         for body in [
             json!({}),
             json!({"calls": []}),

@@ -1046,8 +1046,9 @@ impl StepSnapshot {
 /// turn id they share; the first row of a turn takes the turn the run is
 /// on, or the last closed turn once the run has finished, because the step
 /// after a turn's last tool call lands after the run ends. Its step number
-/// is the next one in that turn, assigned here and never again: frames leave
-/// one plugin queue in the order the calls ran, so the number is the
+/// is the next one in that turn, taken from the run row this statement
+/// locks for `seq`, so two frames landing at once never share one: frames
+/// leave one plugin queue in the order the calls ran, so the number is the
 /// transcript's order, and it survives a compaction that takes the
 /// transcript's rows away. The hook's clock is the row's, clamped to the
 /// server's range and its present, so a clock that is wrong cannot drop the
@@ -1077,26 +1078,29 @@ pub async fn record_step(
                          else coalesce((checkpoint->>'turn')::bigint, 1) end) as turn \
            from run \
          ), bumped as ( \
-           update runs set checkpoint_seq = checkpoint_seq + 1 \
-           where id = $1::uuid and exists (select 1 from run) \
-           returning checkpoint_seq \
+           update runs r set \
+             checkpoint_seq = r.checkpoint_seq + 1, \
+             step_counts = jsonb_set(r.step_counts, array[p.turn::text], to_jsonb( \
+               coalesce((r.step_counts->>p.turn::text)::bigint, \
+                        (select max(c.step_no) from run_checkpoints c \
+                         where c.run_id = $1::uuid and c.kind = 'step' and c.turn = p.turn), \
+                        0) + 1)) \
+           from place p where r.id = $1::uuid \
+           returning r.checkpoint_seq, (r.step_counts->>p.turn::text)::bigint as step_no, p.turn \
          ), ledger as ( \
            insert into run_checkpoints \
              (run_id, seq, kind, turn, agent_turn_id, tool_call_id, tool, title, status, \
               job_id, workspace_commit, workspace_tree, restorable, unrestorable_reason, \
               step_no, created_at) \
-           select $1::uuid, b.checkpoint_seq, 'step', p.turn, $3, $2, $4, $5, $6, \
-                  $7::uuid, $8, $9, $10, $11, \
-                  coalesce((select max(step_no) from run_checkpoints c \
-                            where c.run_id = $1::uuid and c.kind = 'step' and c.turn = p.turn), \
-                           0) + 1, \
+           select $1::uuid, b.checkpoint_seq, 'step', b.turn, $3, $2, $4, $5, $6, \
+                  $7::uuid, $8, $9, $10, $11, b.step_no, \
                   case when $12::bigint between 0 \
                                             and (extract(epoch from now()) * 1000)::bigint \
                        then to_timestamp(least(greatest($12::bigint, 0), \
                                                (extract(epoch from now()) * 1000)::bigint) \
                                          ::double precision / 1000.0) \
                        else now() end \
-           from bumped b, place p \
+           from bumped b \
            returning seq \
          ) \
          select seq from ledger",
@@ -1124,17 +1128,42 @@ pub async fn record_step(
 }
 
 const COMPACTED_REASON: &str = "compacted: the session no longer holds this step's conversation row \
-live; Hermes keeps it archived (compacted = 1)";
+live; Hermes keeps it archived";
 const FOREIGN_REASON: &str = "not in this run's transcript: the session holds no row for this step's \
 tool call, live or archived, so it was not a turn of the session's own";
+/// A step that landed after its run ended, at a moment the session's
+/// transcript could not be read: not a verdict. The next read that succeeds
+/// settles it either way.
+pub const UNVERIFIED_REASON: &str = "landed after the run ended and the session's transcript could \
+not be read; the next read settles it";
+
+/// Promote the waiting rows the live transcript turns out to hold. The rows
+/// it does not hold are `verify_steps`'s to judge.
+pub async fn settle_unverified(
+    pg: &PgPool,
+    run_id: &str,
+    live: &[String],
+) -> Result<u64, sqlx::Error> {
+    let done = sqlx::query(
+        "update run_checkpoints set restorable = true, unrestorable_reason = null \
+         where run_id = $1::uuid and kind = 'step' and unrestorable_reason = $3 \
+           and tool_call_id = any($2::text[])",
+    )
+    .bind(run_id)
+    .bind(live)
+    .bind(UNVERIFIED_REASON)
+    .execute(pg)
+    .await?;
+    Ok(done.rows_affected())
+}
 
 /// Judge the step rows up to `through_seq` by the run's own transcript. A
 /// step whose boundary call the live transcript still holds keeps its
 /// standing; one the session holds only archived was compacted away; one it
-/// holds nowhere was never this session's own step. The bound keeps a frame
-/// that landed after the transcript was read from being judged by it, and
-/// rows already unrestorable keep their own reason. Answers how many rows
-/// moved.
+/// holds nowhere was never this session's own step. A row still waiting on
+/// a read is judged like a restorable one. The bound keeps a frame that
+/// landed after the transcript was read from being judged by it, and rows
+/// already unrestorable keep their own reason. Answers how many rows moved.
 pub async fn verify_steps(
     pg: &PgPool,
     run_id: &str,
@@ -1145,7 +1174,8 @@ pub async fn verify_steps(
     let done = sqlx::query(
         "update run_checkpoints set restorable = false, \
            unrestorable_reason = case when tool_call_id = any($4::text[]) then $5 else $6 end \
-         where run_id = $1::uuid and kind = 'step' and restorable and seq <= $2 \
+         where run_id = $1::uuid and kind = 'step' and seq <= $2 \
+           and (restorable or unrestorable_reason = $7) \
            and tool_call_id <> all($3::text[])",
     )
     .bind(run_id)
@@ -1154,6 +1184,7 @@ pub async fn verify_steps(
     .bind(archived)
     .bind(COMPACTED_REASON)
     .bind(FOREIGN_REASON)
+    .bind(UNVERIFIED_REASON)
     .execute(pg)
     .await?;
     Ok(done.rows_affected())
