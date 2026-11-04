@@ -139,14 +139,15 @@ pub async fn post(
         .iter()
         .filter_map(|r| r.strip_prefix("refs/heads/"))
         .collect();
-    let jobs =
-        match newest_job_per_branch(&state.pg, &agent_id, &rule.host_id, &repo, &branches).await {
-            Ok(jobs) => jobs,
-            Err(e) => {
-                tracing::error!("[secrets] push attribution read failed for {repo}: {e}");
-                Vec::new()
-            }
-        };
+    let jobs = match deciding_job_per_branch(&state.pg, &agent_id, &rule.host_id, &repo, &branches)
+        .await
+    {
+        Ok(jobs) => jobs,
+        Err(e) => {
+            tracing::error!("[secrets] push attribution read failed for {repo}: {e}");
+            Vec::new()
+        }
+    };
     if let Some(retired) = jobs.iter().find(|j| j.status == "superseded") {
         let current = retired
             .superseded_by
@@ -198,7 +199,7 @@ struct BranchJob {
     superseded_by: Option<String>,
 }
 
-async fn newest_job_per_branch(
+async fn deciding_job_per_branch(
     pg: &sqlx::PgPool,
     agent_id: &str,
     host_id: &str,
@@ -211,7 +212,9 @@ async fn newest_job_per_branch(
          from workbench_jobs \
          where agent_id = $1::uuid and host_id = $2 and lower(repo) = lower($3) \
            and branch = any($4) \
-         order by branch, created_at desc",
+         order by branch, \
+                  status in ('started', 'queued', 'awaiting_approval', 'pr_open') desc, \
+                  created_at desc",
     )
     .bind(agent_id)
     .bind(host_id)
@@ -229,4 +232,78 @@ async fn record_push(pg: &sqlx::PgPool, run_id: &str, job: &BranchJob) -> Result
         .execute(pg)
         .await
         .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MODEL: &str = "push-check-test";
+    const BRANCH: &str = "talaria/push-check";
+
+    async fn job(pg: &sqlx::PgPool, agent: &str, status: &str, age_mins: i32) -> String {
+        sqlx::query_scalar(
+            "insert into workbench_jobs \
+               (agent_id, agent_model, host_id, repo, branch, status, created_at) \
+             values ($1::uuid, $2, 'github', 'acme/widgets', $3, $4, \
+                     now() - make_interval(mins => $5)) \
+             returning id::text",
+        )
+        .bind(agent)
+        .bind(MODEL)
+        .bind(BRANCH)
+        .bind(status)
+        .bind(age_mins)
+        .fetch_one(pg)
+        .await
+        .unwrap()
+    }
+
+    async fn deciding(pg: &sqlx::PgPool, agent: &str) -> String {
+        let jobs = deciding_job_per_branch(pg, agent, "github", "acme/widgets", &[BRANCH])
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        jobs[0].id.clone()
+    }
+
+    async fn reset(pg: &sqlx::PgPool) {
+        sqlx::query("delete from agent_defs where model = $1")
+            .bind(MODEL)
+            .execute(pg)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live database (DATABASE_URL)"]
+    async fn the_live_job_decides_a_branch_whatever_its_age() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let pg = sqlx::PgPool::connect(&url).await.unwrap();
+        reset(&pg).await;
+        let agent: String = sqlx::query_scalar(
+            "insert into agent_defs (slug, department, model, display_name) \
+             values ($1, $1, $1, 'Push') returning id::text",
+        )
+        .bind(MODEL)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+
+        let resumed = job(&pg, &agent, "started", 60).await;
+        let retired = job(&pg, &agent, "superseded", 30).await;
+        assert_eq!(deciding(&pg, &agent).await, resumed);
+
+        sqlx::query("update workbench_jobs set status = 'abandoned' where id = $1::uuid")
+            .bind(&resumed)
+            .execute(&pg)
+            .await
+            .unwrap();
+        assert_eq!(
+            deciding(&pg, &agent).await,
+            retired,
+            "with nothing live, the newest job still speaks"
+        );
+        reset(&pg).await;
+    }
 }
