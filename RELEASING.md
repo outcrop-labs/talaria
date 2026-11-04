@@ -68,8 +68,9 @@ rc-deploy).
 
 The tag push runs the release workflow: the full CI suite against the tag,
 then the image builds and lands on GHCR as `0.2.0-rc.1` and (moving) `rc`,
-the desktop installers are built for linux, macOS and Windows and attached to
-the release, and a GitHub **prerelease** opens with a stub body. The changelog is the
+and a GitHub **prerelease** opens with a stub body. No desktop installers ride
+it: Talaria Desktop ships only as `desktop-v*` releases ("The desktop
+installers", below). The changelog is the
 record — edit the release notes afterwards if you want them to say more,
 or leave the stub pointing at CHANGELOG.md.
 
@@ -147,19 +148,16 @@ suffix.
 the desktop updater feed: the shell reads
 `/releases/latest/download/latest.json`, and the release behind that is the
 newest `desktop-v*` one (the next section). GitHub would make a new stable
-release Latest by default, before its installers are attached (and for good
-if a desktop job fails), and every installed app's update check would 404.
+release Latest by default, and a `v*` release carries no `latest.json`, so
+every installed app's update check would 404.
 So `release.yml` creates and edits every `v*` release with `--latest=false`,
 and `scripts/check-invariants.mjs` (`release-latest-is-the-desktop-feed`)
 fails a workflow that drops the flag. Leave it that way in the Releases page
 too.
 
-The desktop installers a stable tag attaches carry `latest.json` and `.sig`
-files as well, which needs the `TAURI_SIGNING_PRIVATE_KEY` Actions secret (the
-matching pubkey is in `desktop/src-tauri/tauri.conf.json`). They are
-downloads: nothing serves this release's `latest.json`, and installed apps
-keep updating from the newest `desktop-v*` release. An RC does not publish
-`latest.json`.
+A stable tag attaches no desktop installers and no `latest.json`: installed
+apps keep updating from the newest `desktop-v*` release, and Desktop ships
+nowhere else (below).
 
 ## Nightlies
 
@@ -238,15 +236,19 @@ compile being ~8 minutes instead of ~16.
 
 ## The desktop installers
 
-Every tag publish also attaches the desktop app's installers to the GitHub
-Release (`desktop-package.yml`, called by `release.yml` once the image push is
-done — the assets land on a release that exists): linux
+Talaria Desktop ships **only** as `desktop-vX.Y.Z` releases, minted by
+`desktop-package.yml`. A server tag — `vX.Y.Z` or `vX.Y.Z-rc.N` — builds and
+attaches no installers, and neither does a nightly. Desktop has its own version
+line, and the in-app updater offers only a higher number: a Desktop stamped
+0.13.0 from a server tag beside `desktop-v0.12.0` would never be offered an
+update until Desktop passed 0.13. A `desktop-v*` release carries linux
 `.deb`/`.rpm`/`AppImage`/`.pkg.tar.zst`/`.flatpak`, macOS a universal `.dmg`
-(and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, plus a
-`SHA256SUMS` over all of them.
+(and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, a `SHA256SUMS`
+over all of them, and the `latest.json` and `.sig` files the updater reads,
+which need the `TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey
+is in `desktop/src-tauri/tauri.conf.json`).
 
-Nightlies open no Release (above), so they carry no installers. A trunk build
-that touches `desktop/` IS a desktop release — the auto-minor channel: once
+A trunk build that touches `desktop/` IS a desktop release — the auto-minor channel: once
 every platform job is green, `desktop-package.yml` mints `desktop-vX.Y.0`
 (highest suffix-free X.Y.Z across the `v*` and `desktop-v*` tags, minor+1,
 patch 0) and opens a regular Release for it carrying the installers and
@@ -262,12 +264,12 @@ hand-picked number) are manual** — dispatch `desktop-package` with
 `version=1.0.0` and `publish=true`. A stable `vX.Y.Z` cut raises the baseline
 the same way; before cutting one, check it exceeds the highest `desktop-v*`
 tag (the auto math resumes from whichever is higher). To re-attach installers
-to an existing release, re-run that release's `desktop-package` job, or
+to an existing `desktop-v*` release, re-run its `desktop-package` run, or
 dispatch with `version` and `release_tag` filled in — also the way to finish a
 mint whose run was cancelled mid-attach; `--clobber` makes either idempotent.
 A plain dispatch without `publish` builds artifacts only, nothing minted.
 
-A published stable release — `desktop-v*` or a suffix-free `v*` — also opens
+A published `desktop-v*` release also opens
 a pull request on [omapak](https://github.com/outcrop-labs/omapak) that moves
 `app.talaria.desktop` to that tag and regenerates the vendored cargo and bun
 sources (`omapak-submit.yml`). The store judge still scores it; the workflow
@@ -275,7 +277,7 @@ does not merge. That needs a repository secret `OMAPAK_SUBMIT_TOKEN` (a
 fine-grained PAT or GitHub App token with contents and pull-requests write
 on `outcrop-labs/omapak`). Without it the job fails on purpose: a rolled
 release that never reaches the store is a red run, not a quiet success.
-RCs do not submit.
+A server `v*` release does not submit: it carries no desktop build.
 
 Nothing is signed or notarized yet. That is a provisioning decision, not an
 oversight: it takes an Apple Developer certificate and a Windows signing key.

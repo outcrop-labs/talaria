@@ -169,7 +169,7 @@
                   <Button size="sm" onclick={() => void saveLimits(k)}>Save</Button>
                 </div>
                 <p class="mt-2 max-w-lg text-[11px] leading-relaxed text-muted">
-                  Caps apply over the org budget window (Admin → Settings) and never raise past an admin's ceiling — they can only tighten it. Blank means unlimited.
+                  Caps apply over the org budget window (Admin → Security → LLM budgets) and never raise past an admin's ceiling — they can only tighten it. Blank means unlimited.
                 </p>
               </div>
             {/if}

@@ -342,9 +342,9 @@ distributable. `/releases/latest` must never resolve to one. A Play-signed relea
 second job in that workflow once the store credentials exist — not an edit to the one that is
 there.
 
-Mobile does **not** currently ride the platform's own `v*` releases the way the desktop installers
-do. That is a one-line `workflow_call` away when it should, and is deliberately not wired while the
-app is pre-alpha and cutting its own versions far faster than the platform cuts its.
+Mobile does **not** ride the platform's own `v*` releases, and neither does Desktop any more:
+each surface ships only in its own namespace (`mobile-v*`, `desktop-v*`), because an installer
+stamped with the server's version would sit outside the surface's own update line.
 
 ## The toolchain
 
