@@ -53,7 +53,9 @@ export function watchLooking(
  *  newest message's seq, once the person is looking and it is past what was
  *  already posted for this channel. Not looking, nothing is posted — the
  *  messages stay unread (and their DM or mention still alerts) until they
- *  look, and then the newest is posted at once. */
+ *  look, and then the newest is posted at once. `channelId` is the cursor's
+ *  key: the channel for the main feed, the thread's root for a thread panel
+ *  (ThreadPanel), whose seqs come from the same channel-wide counter. */
 export function readCursorToPost(input: {
   channelId: string
   latest: number

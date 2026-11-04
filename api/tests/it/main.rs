@@ -28,6 +28,7 @@ mod boards_store;
 mod brief_item_live;
 mod brief_verdict_carry_live;
 mod browser_toolsets_live;
+mod channel_thread_reads;
 mod chips_landing_live;
 mod code_probe_child;
 mod conversation_audience_live;

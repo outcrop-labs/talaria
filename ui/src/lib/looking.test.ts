@@ -73,6 +73,15 @@ describe('readCursorToPost', () => {
     expect(readCursorToPost({ channelId: 'c2', latest: 2, posted, looking: true })).toBe(2)
   })
 
+  it("posts a second thread whose newest reply is older than the first thread's", () => {
+    // ThreadPanel keys by root and is not remounted between threads; reply
+    // seqs are channel-wide, so the older thread's newest sits below the
+    // first thread's cursor and must still post.
+    const first = { id: 'root-a', seq: 50 }
+    expect(readCursorToPost({ channelId: 'root-b', latest: 30, posted: first, looking: true })).toBe(30)
+    expect(readCursorToPost({ channelId: 'root-a', latest: 50, posted: first, looking: true })).toBeNull()
+  })
+
   it('posts nothing for an empty conversation', () => {
     expect(readCursorToPost({ channelId: 'c1', latest: 0, posted: { id: '', seq: 0 }, looking: true })).toBeNull()
   })
