@@ -327,10 +327,12 @@ mod tests {
     #[ignore = "needs a running Hermes container"]
     async fn the_contract_on_a_live_hermes() {
         let env = |k: &str| std::env::var(format!("TALARIA_REWIND_CONTRACT_{k}"));
-        let (Ok(container), Ok(url), Ok(key)) = (env("CONTAINER"), env("URL"), env("KEY")) else {
+        let Ok(container) = env("CONTAINER") else {
             eprintln!("TALARIA_REWIND_CONTRACT_CONTAINER is not set: nothing to check");
             return;
         };
+        let url = env("URL").expect("TALARIA_REWIND_CONTRACT_URL goes with CONTAINER");
+        let key = env("KEY").expect("TALARIA_REWIND_CONTRACT_KEY goes with CONTAINER");
         let session = format!("contract-{}", uuid::Uuid::new_v4());
         let problems = ask(&url, &key, &container, &session)
             .await

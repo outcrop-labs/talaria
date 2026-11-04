@@ -1168,11 +1168,28 @@ mod live_db {
     #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
     async fn rewinds_past_the_routes_check_get_one_hold_between_them() {
         let pg = pg().await;
-        let task: String = sqlx::query_scalar("select gen_random_uuid()::text")
-            .fetch_one(&pg)
-            .await
-            .expect("a task id");
-        let agent = format!("hold-race-{task}");
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let email = format!("hold-race-{tag}@link-test.invalid");
+        let user: String = sqlx::query_scalar(
+            "insert into users (sub, email, name, role) values ($1, $1, 'Hold Race', 'member') \
+             returning id::text",
+        )
+        .bind(&email)
+        .fetch_one(&pg)
+        .await
+        .expect("insert user");
+        let board: String = sqlx::query_scalar(
+            "insert into boards (name, owner_id) values ('hold-race', $1::uuid) returning id::text",
+        )
+        .bind(&user)
+        .fetch_one(&pg)
+        .await
+        .expect("insert board");
+        let task = ticket(&pg, &board, "in_progress", serde_json::json!([])).await;
+        let agent = format!("hold-race-{tag}");
         let mut rewinds = Vec::new();
         for _ in 0..6 {
             let id: String = sqlx::query_scalar(
@@ -1230,13 +1247,13 @@ mod live_db {
         lock.release().await;
         assert!(placed, "a hold whose rewind ended does not block the next");
 
-        sqlx::query("delete from work_dispatch_holds where task_id = $1::uuid")
-            .bind(&task)
+        sqlx::query("delete from runs where id::text = any($1)")
+            .bind(&rewinds)
             .execute(&pg)
             .await
             .expect("cleanup");
-        sqlx::query("delete from runs where id = any($1::uuid[])")
-            .bind(&rewinds)
+        sqlx::query("delete from users where id = $1::uuid")
+            .bind(&user)
             .execute(&pg)
             .await
             .expect("cleanup");

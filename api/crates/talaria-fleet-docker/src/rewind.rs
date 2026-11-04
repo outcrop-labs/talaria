@@ -157,8 +157,8 @@ head=$(git -C "$src" symbolic-ref -q refs/remotes/origin/HEAD || true)
 if [ -n "$head" ] && git -C "$dst" show-ref -q --verify "$head"; then
   git -C "$dst" symbolic-ref refs/remotes/origin/HEAD "$head"
 fi
+rm -rf -- "$dst/.git/FETCH_HEAD" "$dst/.git/logs"
 git -C "$dst" checkout -q -b "$branch" "$commit"
-rm -f -- "$dst/.git/FETCH_HEAD"
 git -C "$dst" rev-parse 'HEAD^{tree}'
 "#;
 
@@ -661,7 +661,12 @@ mod tests {
             .0,
             "the later commit is not in the object store at all"
         );
-        assert!(!ok(&dst, &["reflog", "--all"]).contains(&f.later[..7]));
+        let reflog = ok(&dst, &["reflog", "--all"]);
+        assert!(!reflog.contains(&f.later[..7]), "{reflog}");
+        assert!(
+            !reflog.contains("fetch"),
+            "the reflog names no source: {reflog}"
+        );
         assert!(
             !dst.join(".git/FETCH_HEAD").exists(),
             "no note of where it came from"
