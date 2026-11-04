@@ -48,8 +48,14 @@ Do these in order, one at a time:
 Commit on the job's branch, finish the job, then move this ticket to review.`,
 }
 
-const sh = (cmd, args, opts = {}) =>
-  execFileSync(cmd, args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...opts }).trim()
+const sh = (cmd, args, opts = {}) => {
+  try {
+    return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], ...opts }).trim()
+  } catch (e) {
+    // The exec error repeats argv and stdout, and stdout can hold a credential.
+    throw new Error(`${cmd} ${args[0]} failed: ${String(e.stderr || e.code || e.status).trim().slice(0, 500)}`)
+  }
+}
 const shOk = (cmd, args) => {
   try {
     return sh(cmd, args)
@@ -96,23 +102,21 @@ const psql = (stack, sql) =>
   sh('docker', ['exec', stack.pg, 'psql', '-U', 'talaria', '-d', 'talaria', '-tAc', sql])
 
 function mintSession(stack) {
-  const row = psql(
-    stack,
-    `select row_to_json(u) from (select id, email, name from users where role = 'admin' order by created_at limit 1) u`,
-  )
-  if (!row) die('the stack has no admin user to act as')
-  const user = JSON.parse(row)
+  const id = psql(stack, `select id from users where role = 'admin' order by created_at limit 1`)
+  if (!id) die('the stack has no admin user to act as')
   const sid = `fixture-${randomBytes(12).toString('hex')}`
   const record = {
-    id: user.id,
-    sub: user.id,
-    email: user.email,
-    name: user.name ?? 'Rewind fixture',
+    id,
+    sub: id,
+    email: 'lane@example.invalid',
+    name: 'Rewind fixture',
     picture: null,
     role: 'admin',
     provider: 'password',
   }
-  sh('docker', ['exec', stack.redis, 'redis-cli', 'SET', `sess:${sid}`, JSON.stringify(record), 'EX', '86400'])
+  sh('docker', ['exec', '-i', stack.redis, 'redis-cli'], {
+    input: `SET sess:${sid} ${JSON.stringify(JSON.stringify(record))} EX 86400\n`,
+  })
   return sid
 }
 
@@ -239,7 +243,7 @@ async function ensureForgejoToken(stack, api) {
   if (secrets.some((s) => s.name === SECRET_NAME)) return null
   sh('docker', [
     'exec', '-u', '1000', stack.forgejoApp, 'forgejo', 'admin', 'user', 'create',
-    '--username', REPO_OWNER, '--password', randomBytes(16).toString('hex'),
+    '--username', REPO_OWNER, '--random-password',
     '--email', 'fixture@example.invalid', '--admin', '--must-change-password=false',
   ])
   const token = mintToken(stack, 'all')
