@@ -22,6 +22,7 @@
     restorableKnowledgeSelection,
     writeKnowledgeSelection,
   } from '@/lib/knowledge-selection'
+  import { kbTreeState } from '@/lib/knowledge-tree-state.svelte'
   import {
     createDoc, createSpace, deleteDoc, deleteSpace, moveDoc, updateSpace, useDoc, useDocs, useSpaces,
     type KbDocMeta, type KbSpace,
@@ -165,6 +166,29 @@
     }
   })
 
+  // OPEN THE ANCESTOR CHAIN of whatever doc is selected, so the sidebar tree
+  // actually shows it (TALA-92). Runs for the restored selection AND for a
+  // permalink, because both land on a doc whose ancestors may be collapsed —
+  // and for nested create, whose parent the row itself opens. It waits for
+  // the doc list (useDocs is keyed to the active space, and the restore
+  // navigates before that fetch lands): the chain is only computable from
+  // `docs`, so until then there is nothing to open but the section, which
+  // the chevron-free arrival path opens via the same store. Absent ids are
+  // harmless (absent = collapsed default), and openPath never closes.
+  $effect(() => {
+    if (!onKnowledge || !docId) return
+    if (docsQuery.isLoading || !docs.length) return
+    const parentOf = new Map(docs.map((d) => [d.id, d.parentId ?? null]))
+    if (!parentOf.has(docId)) return // not this space's tree (or gone): nothing honest to open
+    const chain: string[] = []
+    for (let cur = parentOf.get(docId); cur; cur = parentOf.get(cur) ?? null) {
+      if (!parentOf.has(cur)) break // stale parent: open what exists, no further
+      chain.push(cur)
+    }
+    if (chain.some((id) => !kbTreeState.docExpanded(id)) || !kbTreeState.sectionExpanded(spaceId ?? activeSpace?.id ?? '')) {
+      kbTreeState.openPath(chain, spaceId ?? activeSpace?.id ?? '')
+    }
+  })
   $effect(() => {
     if (!onKnowledge) return
     if (pathSpace && staleSeg == null) return // already canonical
@@ -197,6 +221,11 @@
     if (!activeSpace) return
     const doc = await createDoc(activeSpace.id, { kind, title: 'Untitled', parentId })
     await qc.invalidateQueries({ queryKey: ['kb-docs', activeSpace.id] })
+    // A nested create opens its parent chain (TALA-92): the row's Plus does
+    // this too, but newDoc is also the editor's "new nested doc" path, and
+    // the selection effect above opens ancestors of the SELECTED doc — this
+    // is the same reach for the doc just created.
+    if (parentId) kbTreeState.openPath([parentId], activeSpace.id)
     setDocId(doc.id)
   })
   const move = guarded('Moving the doc', async (id: string, parentId: string | null, sort: number) => {
@@ -333,7 +362,14 @@
               onRename={(name) => void renameSpace(s.id, name)}
               onContextMenu={(e) => menu.openMenu(e, spaceMenu(s))}
             />
-            {#if activeSpace?.id === s.id}
+            <!-- The section gate is the store's AND the active space's
+                 (TALA-92): the chevron decides whether a section is open,
+                 but the doc list is keyed to the active space (useDocs) —
+                 a non-active space's section would render the ACTIVE
+                 space's docs under the wrong row. So: open section shows
+                 the tree, only ever for the space the docs belong to.
+                 Skeleton/error stay inside the gate as before. -->
+            {#if activeSpace?.id === s.id && kbTreeState.sectionExpanded(s.id)}
               {#if docsQuery.isLoading}
                 <!-- Switching spaces refetches the doc tree — keep its shape. -->
                 <SkeletonRows rows={6} class="ml-4 mt-1 border-l border-line-subtle py-1 pl-4" />
