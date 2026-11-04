@@ -93,6 +93,16 @@
   // `heldDesign`), saying so, rather than offer a describe or a manual
   // start the server would refuse.
   const held = $derived(preselect ? null : heldDesign(read?.design))
+  // The hire settled while the modal waited: a design handed back opens on
+  // review with the hire's reason; a spent one leaves an empty describe.
+  let wasHeld = false
+  $effect(() => {
+    if (held) wasHeld = true
+    else if (wasHeld) {
+      wasHeld = false
+      step = openingStep(design, false)
+    }
+  })
   const generating = $derived(design?.status === 'generating')
   const genErr = $derived(design?.status === 'error' ? design.error : null)
   // A design handed back by a failed hire says why on the review step.
@@ -194,8 +204,10 @@
         // The design changed elsewhere (or a hire holds it): show the one
         // the server holds now, rather than keep typing into a ghost.
         if (isConflict(e)) {
-          await qc.refetchQueries({ queryKey: DESIGN_KEY })
+          // Reseed from whatever the read brings (set first: the effect
+          // runs as the read lands).
           seededFrom = null
+          await qc.refetchQueries({ queryKey: DESIGN_KEY })
         }
         return false
       })
@@ -321,8 +333,8 @@
     } catch (e) {
       startErr = errorMessage(e)
       if (isConflict(e)) {
-        await qc.refetchQueries({ queryKey: DESIGN_KEY })
         seededFrom = null
+        await qc.refetchQueries({ queryKey: DESIGN_KEY })
       }
     }
   }
@@ -390,8 +402,10 @@
         // A 409 may be the design's own (replaced elsewhere, or a hire from
         // another tab holds it): read it again and show what is current.
         if (r.status === 409 && designId) {
-          await qc.refetchQueries({ queryKey: DESIGN_KEY })
+          // Reseed from whatever the read brings (set first: the effect
+          // runs as the read lands).
           seededFrom = null
+          await qc.refetchQueries({ queryKey: DESIGN_KEY })
         }
         return
       }
