@@ -14,7 +14,8 @@ pub const REDACTED: &str = "‹redacted›";
 /// token in a URL path (`/bot<token>/`, `/webhooks/<id>/<token>`, a long
 /// mixed segment), and a long base64 blob.
 pub fn scrub_text(text: &str, secrets: &[String]) -> String {
-    let mut out = text.to_string();
+    // JSON escapes a slash as `\/`: read it as one.
+    let mut out = text.replace("\\/", "/");
     let mut known: Vec<String> = Vec::new();
     for s in secrets
         .iter()
@@ -24,8 +25,19 @@ pub fn scrub_text(text: &str, secrets: &[String]) -> String {
         known.push(s.to_string());
         known.push(url_encode(s, false));
         known.push(url_encode(s, true));
-        for b in [base64(s.as_bytes(), false), base64(s.as_bytes(), true)] {
-            known.push(b.trim_end_matches('=').to_string());
+        // In a longer base64 text a value starts at any of three byte
+        // offsets, and each encodes it differently: the characters that
+        // carry only its bits, for each.
+        for url in [false, true] {
+            for k in 0..3usize {
+                let mut bytes = vec![0u8; k];
+                bytes.extend_from_slice(s.as_bytes());
+                let enc = base64(&bytes, url);
+                let (from, to) = ((8 * k).div_ceil(6), 8 * (k + s.len()) / 6);
+                if to > from + 3 {
+                    known.push(enc[from..to].to_string());
+                }
+            }
         }
     }
     known.sort_by_key(|k| std::cmp::Reverse(k.len()));
@@ -159,6 +171,23 @@ mod tests {
             }
             assert!(clean.contains(REDACTED), "{raw} → {clean}");
         }
+    }
+
+    #[test]
+    fn a_secret_inside_base64_at_any_offset_or_json_escaped_is_found() {
+        // Short enough that its base64 is under the long-blob rule's length:
+        // only the offset forms find it.
+        let secret = "k3yPart9".to_string();
+        for prefix in ["", "a", "ab"] {
+            let blob = base64(format!("{prefix}{secret}!").as_bytes(), false);
+            let clean = scrub_text(
+                &format!("payload {blob} end"),
+                std::slice::from_ref(&secret),
+            );
+            assert!(!clean.contains(&blob), "{prefix:?}: {clean}");
+        }
+        let json = r#"{"url":"https:\/\/x.example\/cb?token=abcdef123456"}"#;
+        assert!(!scrub_text(json, &[]).contains("abcdef123456"));
     }
 
     #[test]

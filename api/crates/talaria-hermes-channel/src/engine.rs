@@ -764,8 +764,12 @@ impl<'a> Engine<'a> {
                 .is_some_and(|(have, want)| have > want)
         };
         // A catch-up that failed on this image is not opened again for it.
-        let behind =
-            |slug: &str, d: &str| state.catchup_failed.get(slug) != Some(&current) && !newer(d);
+        // An adopted image whose release is unknown is kept on every path —
+        // never moved down by a plain catch-up either.
+        let unknown = |d: &str| rec_of(d).is_some_and(|x| x.adopted() && x.release().is_none());
+        let behind = |slug: &str, d: &str| {
+            state.catchup_failed.get(slug) != Some(&current) && !newer(d) && !unknown(d)
+        };
         // An adopted image (what an agent ran before the channel) waits for
         // its inspection to say its version — for an hour at most, then it
         // counts as unknown — before anything opens.

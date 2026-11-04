@@ -3386,3 +3386,44 @@ async fn an_adopted_image_of_unknown_version_is_never_moved_down() {
     );
     w.done().await;
 }
+
+/// R6-S1: an adopted image of unknown version is not moved down by the plain
+/// catch-up either — when the registry is unreachable after the upgrade (no
+/// stable found), and when stable names the fleet's own image.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_unknown_version_stays_when_stable_is_unknown_or_the_pin() {
+    for (tag, stable_is_pin) in [("unkreg", false), ("unkpin", true)] {
+        let w = World::new(tag, 1).await;
+        let t = tuning();
+        let nightly = digest(&w.tag, 9);
+        w.main_left(0, &nightly, "nightly-2026-11-04").await;
+        let old = w.old.clone();
+        w.engine(&t)
+            .patch(move |s| {
+                // Unreachable: no stable found. Or stable is the fleet's image.
+                s.last_check = stable_is_pin.then(|| images::CheckRecord {
+                    at: 1,
+                    digest: Some(old.clone()),
+                    version: Some("v9.0.1".into()),
+                    ..Default::default()
+                });
+                s.next_check_at = Some(0);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        *w.fake.found.lock().unwrap() = None;
+        for _ in 0..8 {
+            w.step(&t).await;
+            w.fake.advance(11 * MIN);
+        }
+        assert!(
+            w.fake.rolled().is_empty(),
+            "{tag}: never moved: {:?}",
+            w.fake.rolled()
+        );
+        assert_eq!(w.fake.on(&w.slug(0)), nightly, "{tag}");
+        w.done().await;
+    }
+}

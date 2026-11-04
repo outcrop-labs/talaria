@@ -400,7 +400,8 @@ thing that changes an agent's Hermes, and it keeps what it finds. With the defau
   Only the canary and the moves wait for the window. An image whose version cannot be
   read (a nightly-style tag, an inspection that failed) is kept and shown on the panel as
   "version unknown"; it is never moved down, and stable takes it on like any other.
-- **Night 1 (the first window).** The pin's canary soaks 5 min, then the agents below it
+- **Night 1 (the first window after the pin is downloaded and inspected** — so an upgrade
+  late in the evening moves on night 2). The pin's canary soaks 5 min, then the agents below it
   move one at a time: the first watched 10 min, each other 3 min. The move stops at the
   first agent that will not come up on the pin: it goes back on the image it ran, the
   admins are told, and the rest stay where they are until stable takes them on. Agents at
@@ -416,8 +417,10 @@ thing that changes an agent's Hermes, and it keeps what it finds. With the defau
 - **Restarts per agent,** for a fleet that fits in one window: on an image install, one
   at T0 + 5 min on the same Hermes; then night 1 for an agent below the pin; then night 3
   onto stable. On a checkout install, night 1 (below the pin only) and night 3. Larger
-  fleets spread each move over more nights. An agent stopped before the upgrade, when a
-  person starts it, starts straight on the fleet's image (not watched: it was stopped).
+  fleets spread each move over more nights. An agent stopped before the upgrade, if a
+  person starts it before a rollout reaches it, starts on its own old `:latest` (the
+  image it was adopted on) and moves with the next rollout; once a rollout has assigned
+  it the fleet's image, it starts on that (not watched: it was stopped).
 - **Disk.** Until the old `:latest` goes, the docker disk holds it (about 3.9 GB), the pin
   (about 4.5 GB, never pruned) and stable's release (about 4.6 GB): **about 13 GB of
   Hermes images** at the peak, less where layers are shared. Have **about 15 GB free on

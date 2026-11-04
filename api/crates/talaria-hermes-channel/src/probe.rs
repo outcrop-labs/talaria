@@ -118,6 +118,22 @@ pub async fn logs(container: &str, tail: u32) -> String {
 /// the fleet's `.env` (the gateway keys, each agent's own keys) and every
 /// value in an agent's `secrets.env`.
 pub fn known_secrets() -> Vec<String> {
+    // Read once a minute at most: the render writes these files, and an
+    // agent's secret changes with a render, not every log line.
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>> =
+        std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((at, v)) = cache.as_ref()
+        && at.elapsed() < Duration::from_secs(60)
+    {
+        return v.clone();
+    }
+    let v = read_known_secrets();
+    *cache = Some((std::time::Instant::now(), v.clone()));
+    v
+}
+
+fn read_known_secrets() -> Vec<String> {
     let dir = talaria_fleet_layout::fleet_dir();
     let mut out = Vec::new();
     let mut read = |path: std::path::PathBuf, all: bool| {
