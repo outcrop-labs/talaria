@@ -41,8 +41,6 @@ pub enum WriteFailure {
 
 pub type WriteOutcome = Result<(), WriteFailure>;
 
-/// A turn row marks where a turn landed. It holds no conversation boundary and
-/// no file snapshot, so nothing can be rewound to it.
 const TURN_UNRESTORABLE: &str = "a turn boundary has no snapshot to restore";
 
 /// `run_checkpoints.kind`.
@@ -531,8 +529,6 @@ impl RunStore for PgRunStore {
                 .get("stage")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            // ONE STATEMENT, so the ledger and `runs.checkpoint` cannot disagree:
-            // a write the predicate refuses bumps nothing and inserts nothing.
             cas_write!(
                 &self.pg,
                 id,

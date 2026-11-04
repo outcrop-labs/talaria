@@ -4790,11 +4790,6 @@ alter table tasks drop column if exists conversation_id`,
      check (outcome in ('priced', 'no_match', 'source_failed', 'variable', 'suggested'))`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
-  // Agent checkpoint rewind. `runs.checkpoint` keeps only the latest value, so
-  // nothing could name an earlier state to go back to. `checkpoint_seq` is the
-  // one allocator of `run_checkpoints.seq`, for the turn writer here and the
-  // step writer that follows: rows arrive from two doors, and a per-run counter
-  // on the row they already lock is what keeps seq gapless.
   `alter table runs add column if not exists checkpoint_seq bigint not null default 0`,
   `create table if not exists run_checkpoints (
      run_id uuid not null references runs(id) on delete cascade,
