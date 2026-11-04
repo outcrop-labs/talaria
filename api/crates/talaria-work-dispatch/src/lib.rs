@@ -1161,6 +1161,87 @@ mod live_db {
         .expect("insert ticket")
     }
 
+    /// The route's check is read-then-enqueue, so rewinds can pass it together.
+    /// These reach the hold at once, each under the pair's lock as `reserve`
+    /// takes it, with no route in front of them.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn rewinds_past_the_routes_check_get_one_hold_between_them() {
+        let pg = pg().await;
+        let task: String = sqlx::query_scalar("select gen_random_uuid()::text")
+            .fetch_one(&pg)
+            .await
+            .expect("a task id");
+        let agent = format!("hold-race-{task}");
+        let mut rewinds = Vec::new();
+        for _ in 0..6 {
+            let id: String = sqlx::query_scalar(
+                "insert into runs (kind, state, input) values ('run-rewind', 'running', '{}') \
+                 returning id::text",
+            )
+            .fetch_one(&pg)
+            .await
+            .expect("insert rewind");
+            rewinds.push(id);
+        }
+        let start = std::sync::Arc::new(tokio::sync::Barrier::new(rewinds.len()));
+        let mut racers = tokio::task::JoinSet::new();
+        for rewind in rewinds.clone() {
+            let (pg, task, agent, start) = (pg.clone(), task.clone(), agent.clone(), start.clone());
+            racers.spawn(async move {
+                start.wait().await;
+                let mut lock = holds::lock_pair(&pg, &task, &agent).await.expect("lock");
+                let placed = holds::place_hold(lock.conn(), &task, &agent, &rewind)
+                    .await
+                    .expect("hold");
+                lock.release().await;
+                (rewind, placed)
+            });
+        }
+        let mut winners = Vec::new();
+        while let Some(raced) = racers.join_next().await {
+            let (rewind, placed) = raced.expect("racer");
+            if placed {
+                winners.push(rewind);
+            }
+        }
+        assert_eq!(winners.len(), 1, "one rewind holds the pair: {winners:?}");
+        let held: String = sqlx::query_scalar(
+            "select rewind_run_id::text from work_dispatch_holds \
+             where task_id = $1::uuid and agent_model = $2",
+        )
+        .bind(&task)
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .expect("the hold");
+        assert_eq!(held, winners[0]);
+
+        sqlx::query("update runs set state = 'error' where id = $1::uuid")
+            .bind(&held)
+            .execute(&pg)
+            .await
+            .expect("end the winner");
+        let next = rewinds.iter().find(|r| **r != held).expect("a loser");
+        let mut lock = holds::lock_pair(&pg, &task, &agent).await.expect("lock");
+        let placed = holds::place_hold(lock.conn(), &task, &agent, next)
+            .await
+            .expect("hold");
+        lock.release().await;
+        assert!(placed, "a hold whose rewind ended does not block the next");
+
+        sqlx::query("delete from work_dispatch_holds where task_id = $1::uuid")
+            .bind(&task)
+            .execute(&pg)
+            .await
+            .expect("cleanup");
+        sqlx::query("delete from runs where id = any($1::uuid[])")
+            .bind(&rewinds)
+            .execute(&pg)
+            .await
+            .expect("cleanup");
+    }
+
     #[tokio::test]
     #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
     async fn the_pass_offers_agent_tickets_and_skips_people_only_ones() {

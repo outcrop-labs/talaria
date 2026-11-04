@@ -6,7 +6,9 @@
 // held for an admin: every rewind on it would fail.
 
 use serde_json::{Value, json};
-use talaria_fleet_docker::rewind::{self, SEED_CUT_CALL, SEED_CUT_ROWS, SEED_ROWS, Unready};
+use talaria_fleet_docker::rewind::{
+    self, SEED_CUT_CALL, SEED_CUT_ROWS, SEED_ROWS, SessionLease, Unready,
+};
 
 use crate::ops::Fault;
 use crate::probe::{get_json, post_json};
@@ -95,11 +97,11 @@ async fn fork_and_cut(url: &str, key: &str, container: &str, session: &str) -> R
     )
     .map_err(held)?;
 
-    let idle = in_container(
-        rewind::session_idle_in(container, &fork).await,
+    let lease = in_container(
+        rewind::session_lease_in(container, &fork).await,
         "the turn lease read",
     )?;
-    if !idle {
+    if lease != SessionLease::Idle {
         return Err(held(
             "a session with no turn running reads as busy: a rewind would never see the agent quiet",
         ));
@@ -107,10 +109,17 @@ async fn fork_and_cut(url: &str, key: &str, container: &str, session: &str) -> R
 
     forked(&post(&fork_route, key, &refork).await?, 201, session).map_err(held)?;
     in_container(
-        rewind::clear_session_in(container, &refork).await,
-        "emptying a failed rewind's session",
+        rewind::discard_session_in(container, &refork, session).await,
+        "taking back a failed rewind's fork",
     )?;
-    rows_are(&read(&messages(url, &refork), key).await?, &refork, 0, None).map_err(held)
+    let reopened = post(&format!("{url}/api/sessions"), key, &refork).await?;
+    if reopened.0 != 201 {
+        return Err(held(format!(
+            "a discarded fork's id answered {} when opened again: every failed rewind would spend a session slot",
+            reopened.0
+        )));
+    }
+    Ok(())
 }
 
 fn held(problem: impl Into<String>) -> Fault {
@@ -311,14 +320,19 @@ mod tests {
         assert!(matches!(refused, Err(Fault::Infra(_))), "{refused:?}");
     }
 
-    /// The whole contract on a live Hermes. Run by hand with the container's
-    /// name, its API url and its key in `TALARIA_REWIND_CONTRACT_{CONTAINER,URL,KEY}`.
+    /// The whole contract on a live Hermes. CI's `--ignored` job has none, so
+    /// it checks nothing there. By hand: the container's name, its API url and
+    /// its key in `TALARIA_REWIND_CONTRACT_{CONTAINER,URL,KEY}`.
     #[tokio::test]
     #[ignore = "needs a running Hermes container"]
     async fn the_contract_on_a_live_hermes() {
-        let env = |k: &str| std::env::var(format!("TALARIA_REWIND_CONTRACT_{k}")).unwrap();
+        let env = |k: &str| std::env::var(format!("TALARIA_REWIND_CONTRACT_{k}"));
+        let (Ok(container), Ok(url), Ok(key)) = (env("CONTAINER"), env("URL"), env("KEY")) else {
+            eprintln!("TALARIA_REWIND_CONTRACT_CONTAINER is not set: nothing to check");
+            return;
+        };
         let session = format!("contract-{}", uuid::Uuid::new_v4());
-        let problems = ask(&env("URL"), &env("KEY"), &env("CONTAINER"), &session)
+        let problems = ask(&url, &key, &container, &session)
             .await
             .expect("the container answers");
         assert_eq!(problems, Vec::<String>::new());

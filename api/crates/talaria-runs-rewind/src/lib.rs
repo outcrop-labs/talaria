@@ -20,7 +20,8 @@
 //   quiet     the agent reports the source's turn over, within the stop window.
 //   fork      the source session is forked under the attempt's run id.
 //   cut       the fork is cut after the step's tool result row.
-//   restore   the snapshot commit is checked out into the attempt's workdir.
+//   restore   the snapshot commit, and nothing past it, is fetched into a new
+//             repo in the attempt's workdir.
 //   verify    the fork ends at that row and the checkout's tree is the step's.
 //   start     the ticket is read again under the lock and moved if it still
 //             sits in review, the attempt and its job are inserted in one
@@ -30,7 +31,9 @@
 //
 // AFTER ANY CRASH A RETRY CONVERGES on the same end state and touches nothing
 // that happened since. A failure lifts the hold, and discards the checkout
-// and the fork only when the attempt is known not to exist.
+// and the fork only when the attempt is known not to exist, so a failed rewind
+// spends no generation; a fork it could not reach is taken back at the next
+// rewind's reservation.
 //
 // WHAT DECIDES AND WHAT ACTS are kept apart. `validate` is pure and the step
 // is written against the `RewindWorld` trait, so the tests drive every stage,
@@ -87,6 +90,13 @@ pub enum Stage {
 }
 
 impl Stage {
+    fn forked(self) -> bool {
+        matches!(
+            self,
+            Stage::Fork | Stage::Cut | Stage::Restore | Stage::Verify | Stage::Start
+        )
+    }
+
     fn label(self) -> &'static str {
         match self {
             Stage::Stop => "stop",
@@ -284,7 +294,7 @@ pub async fn rewind_step(
             if let Some(cp) = &cp
                 && matches!(world.attempt(&cp.plan.attempt_run_id).await, Ok(None))
             {
-                world.discard(&input, &cp.plan, cp.stage).await;
+                world.discard(&input, &cp.plan, cp.stage.forked()).await;
             }
             Err(why)
         }
@@ -348,6 +358,12 @@ async fn stage(
             Quiet::Unconfirmed(why) => Err(format!(
                 "the agent was not quiet within the stop window ({why}) — the old attempt stays stopped; \
                  rewind again once its turn has ended"
+            )),
+            Quiet::TurnLost { lease_ends_in_secs } => Err(format!(
+                "the agent lost this run's turn: it no longer knows the run, which happens when its \
+                 container is restarted or killed mid-turn. Its session stays locked until the dead \
+                 turn's lease runs out, in about {lease_ends_in_secs} seconds. The old attempt stays \
+                 stopped — rewind again after that"
             )),
         },
         Stage::Fork => {

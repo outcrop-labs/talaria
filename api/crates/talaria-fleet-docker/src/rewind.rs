@@ -26,10 +26,11 @@ import inspect, sys
 sys.path.insert(0, "/opt/hermes")
 try:
     from hermes_state import SessionDB
-except ImportError:
-    print("missing: hermes_state.SessionDB")
+    from hermes_state_mutation_retirement import RETIRED_PREFIX
+except ImportError as e:
+    print("missing: %s" % e.name)
     sys.exit(0)
-missing = [n for n in ("get_messages", "get_session", "_read_ctx", "_session_turn_lease_key") if not callable(getattr(SessionDB, n, None))]
+missing = [n for n in ("get_messages", "get_session", "delete_session", "_execute_write", "_read_ctx", "_session_turn_lease_key") if not callable(getattr(SessionDB, n, None))]
 replace = getattr(SessionDB, "replace_messages", None)
 if replace is None or "archive_dropped" not in inspect.signature(replace).parameters:
     missing.append("replace_messages(archive_dropped)")
@@ -43,7 +44,8 @@ print("missing: " + ", ".join(missing) if missing else "ok")
 
 /// argv: session id. Hermes holds a `session_turn_leases` row for the whole
 /// of a running turn, keyed by the conversation's lineage root; a session
-/// with no unexpired row has no turn running. Prints `idle` or `busy`.
+/// with no unexpired row has no turn running. Prints `idle`, or `busy` and the
+/// seconds the lease has left.
 const IDLE_PY: &str = r#"
 import sys, time
 sys.path.insert(0, "/opt/hermes")
@@ -52,7 +54,8 @@ db = SessionDB()
 key = db._session_turn_lease_key(sys.argv[1])
 with db._read_ctx() as conn:
     row = conn.execute("SELECT expires_at FROM session_turn_leases WHERE conversation_id = ?", (key,)).fetchone()
-print("busy" if row is not None and float(row[0]) > time.time() else "idle")
+left = float(row[0]) - time.time() if row is not None else 0
+print("busy %d" % (left + 1) if left > 0 else "idle")
 "#;
 
 /// argv: session id, tool call id. Keeps every row through the result row of
@@ -75,17 +78,26 @@ now = db.get_messages(sid)
 print(json.dumps({"ok": True, "was": len(rows), "now": len(now), "last": (now[-1].get("tool_call_id") if now else None)}))
 "#;
 
-/// argv: session id. Archives every row, so a session a failed rewind left
-/// under an attempt's id reads as empty to whatever lands on it next.
-const CLEAR_PY: &str = r#"
+/// argv: session id, parent session id. Removes a fork a failed rewind left,
+/// and only that: `gone` when the id is free after, `foreign` when the session
+/// is not a fork of that parent. Hermes fences a deleted id for good, which
+/// would spend the slot, and no turn ever ran on this one for the fence to
+/// guard, so it is lifted.
+const DISCARD_PY: &str = r#"
 import sys
 sys.path.insert(0, "/opt/hermes")
 from hermes_state import SessionDB
+from hermes_state_mutation_retirement import RETIRED_PREFIX
+sid, parent = sys.argv[1], sys.argv[2]
 db = SessionDB()
-sid = sys.argv[1]
-if db.get_session(sid) and db.get_messages(sid):
-    db.replace_messages(sid, [], archive_dropped=True)
-print("ok")
+row = db.get_session(sid)
+if row is not None and row.get("parent_session_id") != parent:
+    print("foreign")
+    sys.exit(0)
+if row is not None:
+    db.delete_session(sid, exclude_active_write_guards=True)
+    db._execute_write(lambda conn: conn.execute("DELETE FROM state_meta WHERE key = ?", (RETIRED_PREFIX + sid,)))
+print("gone")
 "#;
 
 /// argv: session id. Writes the transcript the canary forks and cuts.
@@ -123,19 +135,30 @@ done
 "#;
 
 /// $1 source checkout, $2 new checkout, $3 commit, $4 branch, $5 origin url.
-/// The snapshot commits hang off `refs/talaria/*`, so that namespace is
-/// fetched whole and the row's commit checked out by id: a step whose tree
-/// matched the one before it has no ref of its own. A half-made checkout from
-/// an earlier try is replaced.
+/// An attempt starts from the step and knows nothing after it, so the new
+/// repo is made empty and fetches that commit by id: a clone would bring the
+/// source's later commits, branches and snapshot refs. Only the refs that stood
+/// at or before the step come with it, so the base branch stays to diff
+/// against. A half-made checkout from an earlier try is replaced.
 const RESTORE_SH: &str = r#"
 set -e
 src="$1"; dst="$2"; commit="$3"; branch="$4"; origin="$5"
 rm -rf -- "$dst"
-mkdir -p -- "$(dirname -- "$dst")"
-git clone -q --no-checkout -- "$src" "$dst"
-git -C "$dst" fetch -q -- "$src" '+refs/talaria/*:refs/talaria/*'
+mkdir -p -- "$dst"
+git -C "$dst" init -q
+git -C "$dst" remote add origin "$origin"
+git -C "$dst" fetch -q --no-tags -- "$src" "$commit"
+set --
+for ref in $(git -C "$src" for-each-ref --merged "$commit" --format='%(refname)' refs/remotes/origin refs/tags); do
+  [ "$ref" = refs/remotes/origin/HEAD ] || set -- "$@" "+$ref:$ref"
+done
+[ $# -eq 0 ] || git -C "$dst" fetch -q --no-tags -- "$src" "$@"
+head=$(git -C "$src" symbolic-ref -q refs/remotes/origin/HEAD || true)
+if [ -n "$head" ] && git -C "$dst" show-ref -q --verify "$head"; then
+  git -C "$dst" symbolic-ref refs/remotes/origin/HEAD "$head"
+fi
 git -C "$dst" checkout -q -b "$branch" "$commit"
-git -C "$dst" remote set-url origin "$origin"
+rm -f -- "$dst/.git/FETCH_HEAD"
 git -C "$dst" rev-parse 'HEAD^{tree}'
 "#;
 
@@ -261,41 +284,63 @@ pub async fn git_root(pg: &PgPool, agent_model: &str, workdir: &str) -> Result<S
     }
 }
 
-/// Empty the session a failed rewind forked under an attempt's id.
-pub async fn clear_session(pg: &PgPool, agent_model: &str, session_id: &str) -> Result<(), String> {
-    let (container, _) = container_of(pg, agent_model).await?;
-    clear_session_in(&container, session_id).await
-}
-
-pub async fn clear_session_in(container: &str, session_id: &str) -> Result<(), String> {
-    if !plain(session_id) {
-        return Err("the session id is not one this can name".into());
-    }
-    exec_in(container, &[PYTHON, "-c", CLEAR_PY, session_id])
-        .await
-        .map(|_| ())
-}
-
-/// Whether the agent's store holds no running turn on `session_id`: the proof
-/// a fork will not tear a turn when the turn itself cannot be named.
-pub async fn session_idle(
+/// Remove the fork of `parent` a failed rewind left under `session_id`, so the
+/// next rewind can use the id.
+pub async fn discard_session(
     pg: &PgPool,
     agent_model: &str,
     session_id: &str,
-) -> Result<bool, String> {
+    parent: &str,
+) -> Result<(), String> {
     let (container, _) = container_of(pg, agent_model).await?;
-    session_idle_in(&container, session_id).await
+    discard_session_in(&container, session_id, parent).await
 }
 
-pub async fn session_idle_in(container: &str, session_id: &str) -> Result<bool, String> {
+pub async fn discard_session_in(
+    container: &str,
+    session_id: &str,
+    parent: &str,
+) -> Result<(), String> {
+    if !plain(session_id) || !plain(parent) {
+        return Err("the session id is not one this can name".into());
+    }
+    let out = exec_in(container, &[PYTHON, "-c", DISCARD_PY, session_id, parent]).await?;
+    match out.trim() {
+        "gone" => Ok(()),
+        "foreign" => Err(format!("session {session_id} is not a fork of {parent}")),
+        other => Err(format!("the discard answered {other:?}")),
+    }
+}
+
+/// The turn lease on a session, as the agent's store holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionLease {
+    Idle,
+    Held { ends_in_secs: u64 },
+}
+
+/// The lease on `session_id`: the proof a fork will not tear a turn when the
+/// turn itself cannot be named.
+pub async fn session_lease(
+    pg: &PgPool,
+    agent_model: &str,
+    session_id: &str,
+) -> Result<SessionLease, String> {
+    let (container, _) = container_of(pg, agent_model).await?;
+    session_lease_in(&container, session_id).await
+}
+
+pub async fn session_lease_in(container: &str, session_id: &str) -> Result<SessionLease, String> {
     if !plain(session_id) {
         return Err("the session id is not one this can name".into());
     }
     let out = exec_in(container, &[PYTHON, "-c", IDLE_PY, session_id]).await?;
-    match out.trim() {
-        "idle" => Ok(true),
-        "busy" => Ok(false),
-        other => Err(format!("the idle probe answered {other:?}")),
+    match out.trim().split_once(' ') {
+        None if out.trim() == "idle" => Ok(SessionLease::Idle),
+        Some(("busy", secs)) if secs.parse::<u64>().is_ok() => Ok(SessionLease::Held {
+            ends_in_secs: secs.parse().unwrap_or(0),
+        }),
+        _ => Err(format!("the idle probe answered {:?}", out.trim())),
     }
 }
 
@@ -489,6 +534,164 @@ mod tests {
         }
     }
 
+    /// A repo with a step and history past it, as a job leaves one: a pushed
+    /// branch and snapshot refs beyond the step, and a base branch before it.
+    struct Fixture {
+        dir: std::path::PathBuf,
+        base: String,
+        step: String,
+        later: String,
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> (bool, String) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .output()
+            .expect("git runs");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        )
+    }
+
+    fn ok(dir: &std::path::Path, args: &[&str]) -> String {
+        let (done, out) = git(dir, args);
+        assert!(done, "git {args:?}: {out}");
+        out
+    }
+
+    fn commit(src: &std::path::Path, file: &str) -> String {
+        std::fs::write(src.join(file), file).unwrap();
+        ok(src, &["add", "-A"]);
+        ok(src, &["commit", "-qm", file]);
+        ok(src, &["rev-parse", "HEAD"])
+    }
+
+    fn snapshot(src: &std::path::Path, name: &str) -> String {
+        let tree = ok(src, &["rev-parse", "HEAD^{tree}"]);
+        let snap = ok(src, &["commit-tree", &tree, "-p", "HEAD", "-m", name]);
+        ok(
+            src,
+            &[
+                "update-ref",
+                &format!("refs/talaria/ckpt/run/{name}"),
+                &snap,
+            ],
+        );
+        snap
+    }
+
+    fn fixture(name: &str) -> Fixture {
+        let dir =
+            std::env::temp_dir().join(format!("talaria-rewind-test-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        ok(&dir, &["init", "-q", "--bare", "-b", "main", "origin.git"]);
+        ok(&dir, &["clone", "-q", "origin.git", "src"]);
+        let src = dir.join("src");
+        ok(&src, &["checkout", "-q", "-b", "main"]);
+        let base = commit(&src, "base");
+        ok(&src, &["push", "-q", "origin", "main"]);
+        ok(&src, &["remote", "set-head", "origin", "main"]);
+        ok(&src, &["checkout", "-q", "-b", "job"]);
+        commit(&src, "step");
+        let step = snapshot(&src, "at-step");
+        let later = commit(&src, "later");
+        snapshot(&src, "past-step");
+        ok(&src, &["tag", "past-tag"]);
+        ok(&src, &["push", "-q", "origin", "job"]);
+        Fixture {
+            dir,
+            base,
+            step,
+            later,
+        }
+    }
+
+    fn restore(f: &Fixture) -> std::path::PathBuf {
+        let dst = f.dir.join("jobs/attempt/repo");
+        let origin = f.dir.join("origin.git");
+        let out = std::process::Command::new("sh")
+            .args(["-c", RESTORE_SH, "sh"])
+            .arg(f.dir.join("src"))
+            .arg(&dst)
+            .arg(&f.step)
+            .arg("job-a2")
+            .arg(&origin)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("sh runs");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        dst
+    }
+
+    #[test]
+    fn a_restored_checkout_holds_nothing_past_its_step() {
+        let f = fixture("past");
+        let dst = restore(&f);
+        let refs = ok(&dst, &["for-each-ref", "--format=%(refname)"]);
+        let refs: Vec<&str> = refs.lines().collect();
+        assert_eq!(
+            refs,
+            vec![
+                "refs/heads/job-a2",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main"
+            ],
+            "only the attempt's branch and what stood at or before the step"
+        );
+        let all = ok(&dst, &["log", "--all", "--format=%H"]);
+        assert!(all.contains(&f.step) && all.contains(&f.base), "{all}");
+        assert!(!all.contains(&f.later), "git log --all reaches the future");
+        assert!(
+            !git(
+                &dst,
+                &["cat-file", "-e", &format!("{}^{{commit}}", f.later)]
+            )
+            .0,
+            "the later commit is not in the object store at all"
+        );
+        assert!(!ok(&dst, &["reflog", "--all"]).contains(&f.later[..7]));
+        assert!(
+            !dst.join(".git/FETCH_HEAD").exists(),
+            "no note of where it came from"
+        );
+        assert_eq!(ok(&dst, &["rev-parse", "--abbrev-ref", "HEAD"]), "job-a2");
+        assert_eq!(ok(&dst, &["rev-parse", "HEAD"]), f.step);
+        assert_eq!(ok(&dst, &["status", "--porcelain"]), "");
+        std::fs::remove_dir_all(&f.dir).unwrap();
+    }
+
+    #[test]
+    fn a_restored_checkout_still_reaches_its_remote() {
+        let f = fixture("remote");
+        let dst = restore(&f);
+        assert_eq!(
+            ok(&dst, &["remote", "get-url", "origin"]),
+            f.dir.join("origin.git").display().to_string()
+        );
+        assert!(
+            ok(&dst, &["config", "--get", "remote.origin.fetch"]).contains("refs/remotes/origin")
+        );
+        ok(&dst, &["fetch", "-q", "origin"]);
+        assert_eq!(
+            ok(&dst, &["rev-parse", "refs/remotes/origin/job"]),
+            f.later,
+            "the remote still holds the source's branch: an outside fact, not hidden"
+        );
+        std::fs::remove_dir_all(&f.dir).unwrap();
+    }
+
     #[test]
     fn the_scripts_take_their_inputs_as_arguments() {
         assert!(CUT_PY.contains("sys.argv[1], sys.argv[2]"));
@@ -497,7 +700,7 @@ mod tests {
         );
         assert!(VERIFY_SH.contains(r#"dst="$1""#));
         assert!(ROOT_SH.contains(r#"dir="$1""#));
-        assert!(CLEAR_PY.contains("sys.argv[1]"));
+        assert!(DISCARD_PY.contains("sys.argv[1], sys.argv[2]"));
         assert!(PROBE_PY.contains("archive_dropped"));
         assert!(PROBE_PY.contains("_session_turn_lease_key"));
         assert!(PROBE_PY.contains("session_turn_leases"));

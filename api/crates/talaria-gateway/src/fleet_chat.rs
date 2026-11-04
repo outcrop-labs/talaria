@@ -1418,8 +1418,8 @@ pub async fn agent_request(
     }
 }
 
-/// Whether the agent holds a session under `session_id`. `Err` is no answer.
-pub async fn session_exists(agent_model: &str, session_id: &str) -> Result<bool, String> {
+/// Whether the agent holds a session under `session_id`, and whose fork it is.
+pub async fn session_at(agent_model: &str, session_id: &str) -> Result<SessionAt, String> {
     let answer = agent_request(
         agent_model,
         Method::GET,
@@ -1429,10 +1429,26 @@ pub async fn session_exists(agent_model: &str, session_id: &str) -> Result<bool,
     )
     .await?;
     match answer.status {
-        200..=299 => Ok(true),
-        404 => Ok(false),
+        200..=299 => Ok(SessionAt::Held {
+            parent: parent_of(&answer.body),
+        }),
+        404 => Ok(SessionAt::Absent),
         status => Err(format!("the session read answered {status}")),
     }
+}
+
+fn parent_of(session: &Value) -> Option<String> {
+    session["session"]["parent_session_id"]
+        .as_str()
+        .or(session["parent_session_id"].as_str())
+        .map(str::to_string)
+}
+
+/// A session id as the agent holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionAt {
+    Absent,
+    Held { parent: Option<String> },
 }
 
 /// How Hermes answered a session fork: the child exists, or why not.
@@ -1474,10 +1490,7 @@ pub async fn fork_session(
             )
             .await?;
             Ok(Fork::Exists {
-                parent_session_id: session.body["session"]["parent_session_id"]
-                    .as_str()
-                    .or(session.body["parent_session_id"].as_str())
-                    .map(str::to_string),
+                parent_session_id: parent_of(&session.body),
             })
         }
         status => Err(format!(

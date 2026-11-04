@@ -8,7 +8,8 @@ use serde_json::Value;
 use sqlx::{FromRow, PgPool};
 
 use talaria_fleet_docker::rewind as container;
-use talaria_gateway::fleet_chat;
+use talaria_fleet_docker::rewind::SessionLease;
+use talaria_gateway::fleet_chat::{self, SessionAt};
 use talaria_runs_define::is_terminal;
 use talaria_runs_run::RunDeps;
 use talaria_runs_store::{
@@ -26,7 +27,7 @@ use talaria_work_dispatch::holds::{lock_pair, place_hold};
 use talaria_workbench_mcp::rewind::supersede_jobs;
 use talaria_workbench_mcp::teardown::job_workdir;
 
-use crate::{RewindInput, RewindPlan, Stage, Validated, attempt_input};
+use crate::{RewindInput, RewindPlan, Validated, attempt_input};
 
 pub use talaria_fleet_docker::rewind::{Checkout, Cut};
 pub use talaria_gateway::fleet_chat::Fork;
@@ -96,6 +97,52 @@ pub struct Reservation {
 pub enum Quiet {
     Confirmed,
     Unconfirmed(String),
+    /// The agent no longer knows the run while the session still holds its
+    /// turn's lease: the turn died with the process, and nothing can stop it.
+    TurnLost {
+        lease_ends_in_secs: u64,
+    },
+}
+
+/// What the budget's last answers amount to. Hermes forgets its runs when its
+/// process dies and keeps the lease on disk until it expires.
+pub fn quiet_end(why: String, lease: Option<SessionLease>) -> Quiet {
+    match lease {
+        Some(SessionLease::Held { ends_in_secs }) if why.contains("run_not_found") => {
+            Quiet::TurnLost {
+                lease_ends_in_secs: ends_in_secs,
+            }
+        }
+        Some(SessionLease::Held { .. }) => Quiet::Unconfirmed(format!(
+            "{why}; the agent still holds a turn on the session"
+        )),
+        _ => Quiet::Unconfirmed(why),
+    }
+}
+
+/// A generation with no run row, as a rewind reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Slot {
+    Free,
+    Spent,
+    /// A fork of one of this pair's sessions: only a rewind makes one, and with
+    /// no run row it is what a rewind that could not reach the agent to clean
+    /// up left behind.
+    Leftover {
+        parent: String,
+    },
+}
+
+pub fn slot_of(session: &SessionAt, pair_sessions: &[String]) -> Slot {
+    match session {
+        SessionAt::Absent => Slot::Free,
+        SessionAt::Held {
+            parent: Some(parent),
+        } if pair_sessions.contains(parent) => Slot::Leftover {
+            parent: parent.clone(),
+        },
+        SessionAt::Held { .. } => Slot::Spent,
+    }
 }
 
 /// The attempt row as the world reads it: enough to tell this rewind's own
@@ -220,13 +267,14 @@ pub trait RewindWorld: Send + Sync {
     ) -> BoxFuture<'a, Result<(), String>>;
     /// Lift this rewind's hold. Best effort; the run is already failing.
     fn lift_hold<'a>(&'a self, rewind_id: &'a str) -> BoxFuture<'a, ()>;
-    /// Take back the checkout and the forked session's rows a failed rewind
-    /// placed. Only for an attempt known not to exist. Best effort.
+    /// Take back the checkout and, when `forked`, the session a failed rewind
+    /// placed. Only for an attempt known not to exist. Best effort: a fork it
+    /// cannot reach is taken back by the next rewind of the pair.
     fn discard<'a>(
         &'a self,
         input: &'a RewindInput,
         plan: &'a RewindPlan,
-        stage: Stage,
+        forked: bool,
     ) -> BoxFuture<'a, ()>;
 }
 
@@ -423,6 +471,9 @@ impl RewindWorld for Real {
                 if !placed {
                     return Err("another rewind is already in flight on this ticket and agent".to_string());
                 }
+                let pair_sessions: Vec<String> = (0..MAX_SESSIONS_PER_TICKET_AGENT)
+                    .map(|generation| session_run_id(task_id, agent_model, generation))
+                    .collect();
                 let mut free = None;
                 for generation in 0..MAX_SESSIONS_PER_TICKET_AGENT {
                     let id = session_run_id(task_id, agent_model, generation);
@@ -436,10 +487,17 @@ impl RewindWorld for Real {
                         }
                         None => {}
                     }
-                    // A session a failed rewind left under this id would be
-                    // taken for the fork of this one.
-                    if fleet_chat::session_exists(agent_model, &id).await? {
-                        continue;
+                    match slot_of(&fleet_chat::session_at(agent_model, &id).await?, &pair_sessions) {
+                        Slot::Free => {}
+                        Slot::Spent => continue,
+                        Slot::Leftover { parent } => {
+                            if let Err(e) =
+                                container::discard_session(pg, agent_model, &id, &parent).await
+                            {
+                                tracing::warn!("{LOG} {rewind_id}: a failed rewind's fork stays: {e}");
+                                continue;
+                            }
+                        }
                     }
                     free = Some((generation, id));
                     break;
@@ -529,13 +587,13 @@ impl RewindWorld for Real {
                         Ok(stop) => stop,
                         Err(_) => AgentStop::Unconfirmed("no answer inside the stop window".into()),
                     };
-                let idle = match &agent_model {
-                    Some(model) => container::session_idle(self.pg(), model, session)
+                let lease = match &agent_model {
+                    Some(model) => container::session_lease(self.pg(), model, session)
                         .await
                         .ok(),
                     None => None,
                 };
-                if let Some(verdict) = quiet_from(&stop, idle) {
+                if let Some(verdict) = quiet_from(&stop, lease.map(|l| l == SessionLease::Idle)) {
                     return verdict;
                 }
                 let why = match stop {
@@ -543,12 +601,7 @@ impl RewindWorld for Real {
                     _ => unreachable!("a confirmed stop has returned"),
                 };
                 if tokio::time::Instant::now() + QUIET_POLL >= deadline {
-                    return Quiet::Unconfirmed(match idle {
-                        Some(false) => {
-                            format!("{why}; the agent still holds a turn on the session")
-                        }
-                        _ => why,
-                    });
+                    return quiet_end(why, lease);
                 }
                 tokio::time::sleep(QUIET_POLL).await;
             }
@@ -774,7 +827,7 @@ impl RewindWorld for Real {
         &'a self,
         input: &'a RewindInput,
         plan: &'a RewindPlan,
-        stage: Stage,
+        forked: bool,
     ) -> BoxFuture<'a, ()> {
         async move {
             let pg = self.pg();
@@ -786,16 +839,17 @@ impl RewindWorld for Real {
                     plan.workdir
                 );
             }
-            let forked = matches!(
-                stage,
-                Stage::Cut | Stage::Restore | Stage::Verify | Stage::Start
-            );
             if forked
-                && let Err(e) =
-                    container::clear_session(pg, &input.agent_model, &plan.attempt_run_id).await
+                && let Err(e) = container::discard_session(
+                    pg,
+                    &input.agent_model,
+                    &plan.attempt_run_id,
+                    &input.source_run_id,
+                )
+                .await
             {
                 tracing::warn!(
-                    "{LOG} {}: the forked session was not cleared: {e}",
+                    "{LOG} {}: the forked session stays: {e}",
                     input.source_run_id
                 );
             }
