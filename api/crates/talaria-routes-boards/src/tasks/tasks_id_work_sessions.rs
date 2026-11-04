@@ -90,7 +90,7 @@ pub async fn get(
     let mut sessions: Vec<Value> = Vec::with_capacity(rows.len());
     for row in &rows {
         let input: Value = row.get("input");
-        let checkpoint: Value = row.get("checkpoint");
+        let checkpoint: Option<Value> = row.get("checkpoint");
         let finished: String = row.get("finished");
         let run_id: String = row.get("id");
         let lineage = match RunLineage::from_row(row) {
@@ -102,7 +102,7 @@ pub async fn get(
             "state": row.get::<String, _>("state"),
             "phase": row.get::<Option<String>, _>("phase"),
             "agentModel": input.get("agentModel").and_then(|v| v.as_str()),
-            "turn": checkpoint.get("turn").and_then(|v| v.as_i64()),
+            "turn": checkpoint.and_then(|c| c.get("turn")?.as_i64()),
             "finishedAt": if finished.is_empty() { None } else { Some(finished) },
             "lineageId": lineage.lineage_id,
             "attemptNo": lineage.attempt_no,
