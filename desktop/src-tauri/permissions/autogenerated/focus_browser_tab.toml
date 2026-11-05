@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-focus-browser-tab"
+description = "Enables the focus_browser_tab command without any pre-configured scope."
+commands.allow = ["focus_browser_tab"]
+
+[[permission]]
+identifier = "deny-focus-browser-tab"
+description = "Denies the focus_browser_tab command without any pre-configured scope."
+commands.deny = ["focus_browser_tab"]

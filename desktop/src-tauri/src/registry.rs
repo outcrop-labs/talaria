@@ -55,9 +55,7 @@ pub struct Instance {
 }
 /// A Browse view's tab. Third-party content: unlike an `Instance` there is no
 /// beacon and no trust — the shell remembers the URL, the title and whether
-/// the person pinned it, and nothing else. Unwired until the browse
-/// commands land (the next step of TALA-83's P1).
-#[allow(dead_code)]
+/// the person pinned it, and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserTab {
@@ -297,9 +295,7 @@ pub fn save(path: &Path, record: &Record<'_>) -> Result<(), String> {
 
 /// `browser_tabs.json`: just the tabs. A separate file from the registry —
 /// the registry is instances, and an older build that knows nothing of tabs
-/// must keep reading and writing the registry as it always did. Unwired
-/// until the browse commands land (the next step of TALA-83's P1).
-#[allow(dead_code)]
+/// must keep reading and writing the registry as it always did.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TabsFile {
@@ -309,8 +305,8 @@ struct TabsFile {
 /// Read `browser_tabs.json`. An absent file is no tabs; a file that does not
 /// parse is set aside beside itself (nothing is lost) and reads as none. A
 /// tab is third-party content: the shell records what it reads and never
-/// lets it stop anything. Unwired until the browse commands land (TALA-83).
-#[allow(dead_code)]
+/// lets it stop anything. Pinned tabs come first (by creation), then the
+/// rest: the order every list of tabs shows, decided once, here.
 pub fn load_tabs(path: &Path) -> Vec<BrowserTab> {
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -320,19 +316,19 @@ pub fn load_tabs(path: &Path) -> Vec<BrowserTab> {
             return Vec::new();
         }
     };
-    match serde_json::from_str::<TabsFile>(&raw) {
+    let mut tabs = match serde_json::from_str::<TabsFile>(&raw) {
         Ok(file) => file.tabs,
         Err(_) => {
             let _ = set_aside(path);
-            Vec::new()
+            return Vec::new();
         }
-    }
+    };
+    tabs.sort_by_key(|t| (!t.pinned, t.created_at));
+    tabs
 }
 
 /// Write `browser_tabs.json` the way the registry is written: a tmp file,
-/// then a rename, so a crash mid-write can never truncate it. Unwired until
-/// the browse commands land (TALA-83).
-#[allow(dead_code)]
+/// then a rename, so a crash mid-write can never truncate it.
 pub fn save_tabs(path: &Path, tabs: &[BrowserTab]) -> Result<(), String> {
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(&TabsFile {
@@ -342,6 +338,123 @@ pub fn save_tabs(path: &Path, tabs: &[BrowserTab]) -> Result<(), String> {
     fs::write(&tmp, json).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
     fs::rename(&tmp, path).map_err(|e| format!("replacing {}: {e}", path.display()))?;
     Ok(())
+}
+
+/// Normalize a URL the person handed the shell for a browser tab. The
+/// instance rules (beacon::normalize_origin) with two tab differences the
+/// plan names: a tab is not an app pin — the PATH AND QUERY stay, because
+/// where a person was on a site is what they come back to — and credentials
+/// are STRIPPED rather than refused: the address bar's paste-what-you-have
+/// case, and nothing in a tab's record is ever sent anywhere, so there is
+/// nothing to refuse on. A bare host gets https assumed; only http(s); the
+/// fragment is dropped (the shell remembers where the person was, not the
+/// page's scroll anchor).
+pub fn tab_normalize_url(input: &str) -> Result<BrowserTab, String> {
+    let input = input.trim();
+    // A scheme other than web ones is refused outright — `mailto:` must not
+    // be rewritten into `https://mailto:a@b.c`.
+    if let Ok(parsed) = url::Url::parse(input)
+        && !matches!(parsed.scheme(), "http" | "https")
+    {
+        return Err(format!(
+            "\"{}\" addresses are not supported — use http:// or https://",
+            parsed.scheme()
+        ));
+    }
+    let candidate = if input.contains("://") {
+        input.to_string()
+    } else {
+        format!("https://{input}")
+    };
+    let mut url = url::Url::parse(&candidate).map_err(|_| {
+        format!("“{input}” is not a web address. Enter one like https://talaria.example.com")
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "“{}” addresses are not supported — use http:// or https://",
+            url.scheme()
+        ));
+    }
+    if url.host_str().is_none() {
+        return Err("That address has no host name".to_string());
+    }
+    // Credentials never travel: a `user:pass@host` paste is stripped to the
+    // host — the person's address bar case, paste what you have — but a
+    // password with no user name (`:pass@host`) is a mangled paste, refused
+    // as the instance rules refuse it. A tab's URL is a place, not a key.
+    if url.username().is_empty() && url.password().is_some() {
+        return Err("Addresses with a user name or password in them are not accepted".to_string());
+    }
+    url.set_username("")
+        .map_err(|_| "That address's user name cannot be removed".to_string())?;
+    url.set_password(None)
+        .map_err(|_| "That address's password cannot be removed".to_string())?;
+    url.set_fragment(None);
+    Ok(BrowserTab {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: String::new(),
+        url: url.to_string(),
+        pinned: false,
+        created_at: now_ms(),
+        last_active_at: Some(now_ms()),
+    })
+}
+
+/// Add or update a browser tab in `browser_tabs.json`. `None` id: a new tab
+/// at the normalized URL. `Some`: update that tab's title and URL in place,
+/// keeping its id, pin and creation time. Always one atomic write.
+pub fn tab_upsert(
+    path: &Path,
+    id: Option<&str>,
+    url: &str,
+    title: &str,
+) -> Result<Option<BrowserTab>, String> {
+    let mut tabs = load_tabs(path);
+    let tab = match id {
+        None => {
+            let mut tab = tab_normalize_url(url)?;
+            tab.title = title.to_string();
+            tabs.push(tab.clone());
+            tab
+        }
+        Some(id) => {
+            let Some(existing) = tabs.iter_mut().find(|t| t.id == id) else {
+                return Ok(None);
+            };
+            let normalized = tab_normalize_url(url)?;
+            existing.title = title.to_string();
+            existing.url = normalized.url;
+            existing.last_active_at = Some(now_ms());
+            existing.clone()
+        }
+    };
+    save_tabs(path, &tabs)?;
+    Ok(Some(tab))
+}
+
+/// Pin or unpin a tab (the person's say-so, not the page's). Never creates
+/// a tab: a pin for an id the file does not know is `None`.
+pub fn tab_set_pinned(path: &Path, id: &str, pinned: bool) -> Result<Option<BrowserTab>, String> {
+    let mut tabs = load_tabs(path);
+    let Some(existing) = tabs.iter_mut().find(|t| t.id == id) else {
+        return Ok(None);
+    };
+    existing.pinned = pinned;
+    let tab = existing.clone();
+    save_tabs(path, &tabs)?;
+    Ok(Some(tab))
+}
+
+/// Remove a tab from the file. True when a tab was removed.
+pub fn tab_close(path: &Path, id: &str) -> Result<bool, String> {
+    let mut tabs = load_tabs(path);
+    let before = tabs.len();
+    tabs.retain(|t| t.id != id);
+    let closed = tabs.len() != before;
+    if closed {
+        save_tabs(path, &tabs)?;
+    }
+    Ok(closed)
 }
 
 /// What a boot sweep did: the dirs it deleted, and the removals to keep.
@@ -784,6 +897,89 @@ mod tests {
         // And the next save starts clean.
         save_tabs(&path, &[tab_sample("a")]).unwrap();
         assert_eq!(load_tabs(&path), vec![tab_sample("a")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tab_keeps_its_path_where_an_instance_is_its_origin() {
+        let norm = |input: &str| tab_normalize_url(input).map(|t| t.url);
+        // A bare host gets https, and the path and query stay: "an app pin
+        // IS its origin, a tab is not" (the plan's one exception to
+        // beacon::normalize_origin).
+        assert_eq!(
+            norm("talaria.example.com/boards?x=1"),
+            Ok("https://talaria.example.com/boards?x=1".to_string())
+        );
+        assert_eq!(
+            norm("https://user:pass@talaria.example.com/boards"),
+            Ok("https://talaria.example.com/boards".to_string())
+        );
+        assert_eq!(
+            norm("http://127.0.0.1:5302/comms"),
+            norm("http://127.0.0.1:5302/comms")
+        );
+        // Only web addresses, and no credentials — the instance rules.
+        assert!(tab_normalize_url("ftp://talaria.example.com/x").is_err());
+        assert!(tab_normalize_url("file:///home/me/report.pdf").is_err());
+        assert!(tab_normalize_url("mailto:a@b.c").is_err());
+        assert!(tab_normalize_url("https://:secret@talaria.example.com/").is_err());
+        // A fragment never survives: the shell remembers where the person
+        // was, not the page's scroll anchor.
+        assert_eq!(
+            norm("https://talaria.example.com/boards#t"),
+            Ok("https://talaria.example.com/boards".to_string())
+        );
+        // Whitespace around what the person typed or pasted.
+        assert_eq!(
+            norm("  https://talaria.example.com/x  "),
+            Ok("https://talaria.example.com/x".to_string())
+        );
+    }
+
+    #[test]
+    fn a_tab_is_upserted_and_pinned_and_closed() {
+        let dir = temp_dir("tabs-ops");
+        let path = dir.join("browser_tabs.json");
+        // Open: the tab is born unpinned, at its normalized URL.
+        let opened = tab_upsert(&path, None, "talaria.example.com/boards", "Boards")
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.url, "https://talaria.example.com/boards");
+        assert!(!opened.pinned, "a tab is born unpinned");
+        assert!(opened.last_active_at.is_some(), "opening is an activity");
+        assert_eq!(load_tabs(&path), vec![opened.clone()]);
+        // Update: same id, new title and URL — one tab, not two.
+        let updated = tab_upsert(
+            &path,
+            Some(&opened.id),
+            "https://talaria.example.com/gantt",
+            "Gantt",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.id, opened.id);
+        assert_eq!(updated.url, "https://talaria.example.com/gantt");
+        assert_eq!(load_tabs(&path), vec![updated.clone()]);
+        // Pin, and the pinned tabs come first.
+        let pinned = tab_set_pinned(&path, &opened.id, true).unwrap().unwrap();
+        assert!(pinned.pinned);
+        assert_eq!(load_tabs(&path), vec![pinned.clone()]);
+        // A second tab sorts after the pinned one, and an update never
+        // reorders: position is by pinned, then created.
+        let second = tab_upsert(&path, None, "https://outcrop.example/", "Outcrop")
+            .unwrap()
+            .unwrap();
+        let tabs = load_tabs(&path);
+        assert_eq!(
+            tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec![pinned.id.as_str(), second.id.as_str()],
+            "pinned first, then by creation"
+        );
+        // Close: gone from the file.
+        assert!(tab_close(&path, &second.id).unwrap());
+        assert_eq!(load_tabs(&path), vec![pinned]);
+        // Closing one that is not there is a no-op, not an error.
+        assert!(!tab_close(&path, &second.id).unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

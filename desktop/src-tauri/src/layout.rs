@@ -29,11 +29,16 @@ const ZERO: Bounds = Bounds {
     h: 0.0,
 };
 
-/// (launcher, content) bounds for a window of `w`×`h` logical px. With an
-/// instance active the instance webview IS the window — the launcher is
+/// The browse bar's height in logical px (TALA-83): the strip of shell chrome
+/// above a browser tab.
+pub const BAR: f64 = 44.0;
+
+/// (launcher-or-bar, content) bounds for a window of `w`×`h` logical px. With
+/// an instance active the instance webview IS the window — the launcher is
 /// hidden away (and `hide()`d besides; zero width is belt-and-suspenders) —
 /// because switching lives inside the instance UI, not in shell chrome. The
-/// launcher gets the whole window in welcome mode.
+/// launcher gets the whole window in welcome mode. In browse the bar gets
+/// the top strip and the tab the rest (BAR).
 pub fn bounds_for(view: View, w: f64, h: f64) -> (Bounds, Bounds) {
     match view {
         View::Active => (
@@ -54,6 +59,20 @@ pub fn bounds_for(view: View, w: f64, h: f64) -> (Bounds, Bounds) {
             },
             ZERO,
         ),
+        View::Browse => (
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h: BAR,
+            },
+            Bounds {
+                x: 0.0,
+                y: BAR,
+                w,
+                h: (h - BAR).max(0.0),
+            },
+        ),
     }
 }
 
@@ -67,13 +86,18 @@ pub fn bounds_for(view: View, w: f64, h: f64) -> (Bounds, Bounds) {
 /// a buffer is not mapped on Wayland, so a desktop launch looks like the
 /// process never started. A resize that beats state still places the
 /// launcher: welcome is the only view that exists before state.
+///
+/// In browse the same two slots hold the browse bar (the launcher slot:
+/// `main` is hidden, `browsebar` takes the strip) and the active browser
+/// tab (`browtab-<id>`, the content slot).
 pub fn relayout(window: &Window) {
-    let (view, active) = match window.app_handle().try_state::<ShellState>() {
+    let (view, active, tab) = match window.app_handle().try_state::<ShellState>() {
         Some(state) => (
             *state.view.lock().unwrap(),
             state.active.lock().unwrap().clone(),
+            state.active_tab.lock().unwrap().clone(),
         ),
-        None => (View::Welcome, None),
+        None => (View::Welcome, None, None),
     };
     let Ok(size) = window.inner_size() else {
         return;
@@ -85,11 +109,18 @@ pub fn relayout(window: &Window) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let (launcher, content) =
         bounds_for(view, size.width as f64 / scale, size.height as f64 / scale);
-    if let Some(webview) = window.get_webview("main") {
+    // The first slot is the launcher, or the browse bar over it; the second
+    // the active instance, or the active browser tab.
+    let (first, second) = if view == View::Browse {
+        ("browsebar", tab.map(|id| format!("browtab-{id}")))
+    } else {
+        ("main", active.map(|id| format!("instance-{id}")))
+    };
+    if let Some(webview) = window.get_webview(first) {
         let _ = webview.set_bounds(launcher.rect());
     }
-    if let Some(id) = active
-        && let Some(webview) = window.get_webview(&format!("instance-{id}"))
+    if let Some(label) = second
+        && let Some(webview) = window.get_webview(&label)
     {
         let _ = webview.set_bounds(content.rect());
     }
@@ -109,6 +140,25 @@ pub fn creation_rect(window: &Window) -> Rect {
     let scale = window.scale_factor().unwrap_or(1.0);
     let (_, content) = bounds_for(
         View::Active,
+        size.width as f64 / scale,
+        size.height as f64 / scale,
+    );
+    content.rect()
+}
+
+/// The rect a brand-new browser tab's webview should be born at — the
+/// window under the browse bar (`creation_rect`'s twin for View::Browse,
+/// with the same born-exactly-where-it-belongs reason: tauri#10420).
+pub fn browse_content_rect(window: &Window) -> Rect {
+    let Ok(size) = window.inner_size() else {
+        return Rect {
+            position: Position::Logical(LogicalPosition::new(0.0, 0.0)),
+            size: Size::Logical(LogicalSize::new(1.0, 1.0)),
+        };
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let (_, content) = bounds_for(
+        View::Browse,
         size.width as f64 / scale,
         size.height as f64 / scale,
     );
@@ -227,6 +277,29 @@ mod tests {
                 y: 0.0,
                 w: 640.0,
                 h: 480.0
+            }
+        );
+    }
+
+    #[test]
+    fn browse_gives_the_bar_the_top_and_the_tab_the_rest() {
+        let (bar, content) = bounds_for(View::Browse, 1280.0, 800.0);
+        assert_eq!(
+            bar,
+            Bounds {
+                x: 0.0,
+                y: 0.0,
+                w: 1280.0,
+                h: 44.0
+            }
+        );
+        assert_eq!(
+            content,
+            Bounds {
+                x: 0.0,
+                y: 44.0,
+                w: 1280.0,
+                h: 756.0
             }
         );
     }

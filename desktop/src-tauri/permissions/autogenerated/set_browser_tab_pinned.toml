@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-browser-tab-pinned"
+description = "Enables the set_browser_tab_pinned command without any pre-configured scope."
+commands.allow = ["set_browser_tab_pinned"]
+
+[[permission]]
+identifier = "deny-set-browser-tab-pinned"
+description = "Denies the set_browser_tab_pinned command without any pre-configured scope."
+commands.deny = ["set_browser_tab_pinned"]

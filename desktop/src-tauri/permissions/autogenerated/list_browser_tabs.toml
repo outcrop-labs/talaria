@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-browser-tabs"
+description = "Enables the list_browser_tabs command without any pre-configured scope."
+commands.allow = ["list_browser_tabs"]
+
+[[permission]]
+identifier = "deny-list-browser-tabs"
+description = "Denies the list_browser_tabs command without any pre-configured scope."
+commands.deny = ["list_browser_tabs"]

@@ -93,6 +93,10 @@ pub enum View {
     Welcome,
     /// The active instance fills the window; the launcher is hidden.
     Active,
+    /// The browse bar and the active browser tab (TALA-83): the bar gets the
+    /// top strip, the tab the rest. The launcher and every instance webview
+    /// are hidden.
+    Browse,
 }
 
 /// An instance whose page did not come up (loading.rs): it failed (WebKit's
@@ -154,6 +158,8 @@ pub struct Suspended {
 pub struct ShellState {
     registry_path: PathBuf,
     settings_path: PathBuf,
+    /// `browser_tabs.json`, beside the registry (TALA-83).
+    tabs_path: PathBuf,
     data_root: PathBuf,
     instances: Mutex<Vec<registry::Instance>>,
     /// Removed instances whose data dir the next launch deletes again
@@ -162,6 +168,8 @@ pub struct ShellState {
     settings: Mutex<settings::DesktopSettings>,
     active: Mutex<Option<String>>,
     view: Mutex<View>,
+    /// The view browse came from, so leaving it returns there (TALA-83).
+    before_browse: Mutex<Option<View>>,
     http: reqwest::Client,
     /// What went wrong at startup, for the launcher to say.
     notices: Mutex<Vec<String>>,
@@ -187,6 +195,11 @@ pub struct ShellState {
     /// Local ids whose webview is being created right now
     /// (commands::Creating).
     creating: Mutex<BTreeSet<String>>,
+    /// The Browse view's tabs (TALA-83), as `registry::load_tabs` reads
+    /// them: pinned first, then by creation.
+    tabs: Mutex<Vec<registry::BrowserTab>>,
+    /// The Browse view's tab on screen, by local id.
+    active_tab: Mutex<Option<String>>,
 }
 
 impl ShellState {
@@ -198,6 +211,16 @@ impl ShellState {
             .find(|i| i.id == id)
             .cloned()
             .ok_or_else(|| format!("no such instance: {id}"))
+    }
+
+    /// The tab with this local id, if the file knows it.
+    fn find_tab(&self, id: &str) -> Option<registry::BrowserTab> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
     }
 
     /// Write the registry with the view the window shows now, so a relaunch
@@ -397,6 +420,12 @@ pub fn run() {
             fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
             let registry_path = dir.join("instances.json");
             let settings_path = dir.join("settings.json");
+            // The Browse view's tabs live in their own file beside the
+            // registry (registry.rs): an unreadable file never stops the
+            // app, and an older build reads the registry as it always did.
+            let tabs_path = dir.join("browser_tabs.json");
+            // Read once, before the path is moved into the state below.
+            let mut tabs_loaded = registry::load_tabs(&tabs_path);
             let data_root = dir.join("instances");
             let mut notices = Vec::new();
 
@@ -458,12 +487,14 @@ pub fn run() {
             app.manage(ShellState {
                 registry_path,
                 settings_path,
+                tabs_path,
                 data_root,
                 instances: Mutex::new(loaded.instances),
                 removed: Mutex::new(swept.pending),
                 settings: Mutex::new(loaded_settings),
                 active: Mutex::new(None),
                 view: Mutex::new(View::Welcome),
+                before_browse: Mutex::new(None),
                 http: http_client(),
                 notices: Mutex::new(notices),
                 reopen: Mutex::new(reopen),
@@ -478,6 +509,8 @@ pub fn run() {
                 self_minimized: AtomicBool::new(false),
                 muted: Mutex::new(muted),
                 creating: Mutex::new(BTreeSet::new()),
+                tabs: Mutex::new(std::mem::take(&mut tabs_loaded)),
+                active_tab: Mutex::new(None),
             });
             app.manage(tray::Tray::default());
             app.manage(update::Updates::default());
@@ -543,6 +576,12 @@ pub fn run() {
             commands::close_instance_page,
             commands::show_instance_page,
             commands::remove_instance,
+            commands::list_browser_tabs,
+            commands::open_browser_tab,
+            commands::focus_browser_tab,
+            commands::close_browser_tab,
+            commands::set_browser_tab_pinned,
+            commands::set_browse_mode,
             commands::get_desktop_settings,
             commands::set_titlebar_mode,
             commands::set_suspend_after,

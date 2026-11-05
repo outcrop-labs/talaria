@@ -333,13 +333,15 @@ pub(crate) fn emit_state(app: &AppHandle) {
     let _ = app.emit_to(EventTarget::webview("main"), STATE_EVENT, snapshot(app));
 }
 
-/// Change the view, then make exactly one webview visible: the launcher in
-/// welcome, the active instance in active. Every other one is hidden FIRST —
-/// wry packs child webviews in a vertical GtkBox, so two visible children for
-/// even one layout pass split the window between them.
+/// Change the view, then make exactly the webviews of that view visible: the
+/// launcher in welcome, the active instance in active, the browse bar and
+/// the active tab in browse. Every other one is hidden FIRST — wry packs
+/// child webviews in a vertical GtkBox, so two visible children for even
+/// one layout pass split the window between them.
 ///
 /// The page leaving the screen has its URL remembered, and starts its
 /// suspend clock (suspend.rs); the one coming on screen stops its own.
+/// A browser tab is not an instance page: no suspend clock, no URL record.
 pub(crate) fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
     let state = app.state::<ShellState>();
     let window = main_window(app)?;
@@ -368,26 +370,36 @@ pub(crate) fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
         .lock()
         .unwrap()
         .show(shown.as_deref(), Instant::now());
-    let (keep, title) = match (view, active) {
+    let (keeps, title): (Vec<String>, String) = match (view, active) {
         (View::Active, Some(id)) => {
             let title = state
                 .find(&id)
                 .map(|i| format!("Talaria — {}", i.label))
                 .unwrap_or_else(|_| "Talaria".into());
-            (instance_label(&id), title)
+            (vec![instance_label(&id)], title)
         }
-        _ => ("main".to_string(), "Talaria".to_string()),
+        // Browse keeps two: the bar, and the tab it shows (the plan's
+        // geometry probe rides on this being the only two-visible view).
+        (View::Browse, _) => {
+            let tab = state.active_tab.lock().unwrap().clone();
+            let mut keeps = vec!["browsebar".to_string()];
+            keeps.extend(tab.map(|id| tab_label(&id)));
+            (keeps, "Talaria".to_string())
+        }
+        _ => (vec!["main".to_string()], "Talaria".to_string()),
     };
     for webview in window.webviews() {
-        if webview.label() != keep {
+        if !keeps.contains(&webview.label().to_string()) {
             let _ = webview.hide();
         }
     }
     layout::relayout(&window);
-    if let Some(webview) = window.get_webview(&keep) {
-        webview
-            .show()
-            .map_err(|e| format!("showing the {keep} webview: {e}"))?;
+    for label in &keeps {
+        if let Some(webview) = window.get_webview(label) {
+            webview
+                .show()
+                .map_err(|e| format!("showing the {label} webview: {e}"))?;
+        }
     }
     window
         .set_title(&title)
@@ -403,10 +415,19 @@ pub(crate) fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
 pub(crate) fn focus_view(app: &AppHandle) {
     let state = app.state::<ShellState>();
     let view = *state.view.lock().unwrap();
-    let active = state.active.lock().unwrap().clone();
-    let label = match (view, active) {
-        (View::Active, Some(id)) => instance_label(&id),
-        _ => "main".to_string(),
+    let label = match view {
+        View::Active => state
+            .active
+            .lock()
+            .unwrap()
+            .as_deref()
+            .map(instance_label)
+            .unwrap_or_else(|| "main".to_string()),
+        View::Browse => match state.active_tab.lock().unwrap().clone() {
+            Some(id) => tab_label(&id),
+            None => "browsebar".to_string(),
+        },
+        View::Welcome => "main".to_string(),
     };
     if let Some(webview) = app.get_webview(&label)
         && let Err(e) = webview.set_focus()
@@ -1692,6 +1713,223 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
     emit_state(&app);
     crate::tray::refresh_menu(&app);
     Ok(state.instances.lock().unwrap().clone())
+}
+
+// ─── The Browse view's tabs (TALA-83) ─────────────────────────────────────
+//
+// A browser tab is third-party content with ZERO shell IPC: no capability
+// grant, no initialization script, no drag-drop handler. The shell's own
+// surfaces (the launcher today, the browse bar in P2) drive tabs through
+// these commands; a tab's page can never call one. Every state write goes
+// through the registry helpers (registry.rs), so the file's discipline —
+// atomic writes, corrupt file set aside — is one implementation.
+
+/// The Browse view's tab list, pinned first (registry::load_tabs order).
+#[tauri::command]
+pub fn list_browser_tabs(app: AppHandle) -> Vec<registry::BrowserTab> {
+    app.state::<ShellState>().tabs.lock().unwrap().clone()
+}
+
+/// Open a browser tab at `url`: register it (the registry's normalization:
+/// path and query stay, credentials stripped, only http(s)), create its
+/// webview — zero IPC, no scripts — and focus it. Async, and the creation
+/// is one main-thread turn of its own, like any activation (the threading
+/// note at the top of this file).
+#[tauri::command]
+pub async fn open_browser_tab(app: AppHandle, url: String) -> Result<registry::BrowserTab, String> {
+    // Register first, on the caller's thread: the shell's own state. The
+    // helper's write is the single source of the file; the in-memory list
+    // re-reads it (load_tabs also fixes the pinned-first order).
+    let state = app.state::<ShellState>();
+    registry::tab_upsert(&state.tabs_path, None, &url, "")?.ok_or("opening the tab")?;
+    let tab = {
+        let mut tabs = state.tabs.lock().unwrap();
+        *tabs = registry::load_tabs(&state.tabs_path);
+        tabs.last().cloned().ok_or("opening the tab")?
+    };
+    let returned = tab.clone();
+    on_main_turn(&app, move |app| {
+        *app.state::<ShellState>().active_tab.lock().unwrap() = Some(tab.id.clone());
+        set_browse_view(app, true)?;
+        create_tab_webview(app, &tab).map(|_| ())
+    })
+    .await??;
+    emit_state(&app);
+    Ok(returned)
+}
+
+/// Show a browser tab: the webview exists (created on open) or is created
+/// now, and every other tab is hidden first. One main-thread turn, like
+/// any activation.
+#[tauri::command]
+pub async fn focus_browser_tab(app: AppHandle, id: String) -> Result<(), String> {
+    on_main_turn(&app, move |app| {
+        let state = app.state::<ShellState>();
+        let Some(tab) = state.find_tab(&id) else {
+            return Err(format!("no such tab: {id}"));
+        };
+        set_browse_view(app, true)?;
+        create_tab_webview(app, &tab).map(|_| ())
+    })
+    .await??;
+    emit_state(&app);
+    Ok(())
+}
+
+/// Close a browser tab: its webview (if any) and its data dir — the session
+/// dies with the tab, as `remove_instance` does. The next tab is shown, or
+/// the view browse came from when the last one closes.
+#[tauri::command]
+pub fn close_browser_tab(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<ShellState>();
+    let window = main_window(&app)?;
+    let label = tab_label(&id);
+    if let Some(webview) = window.get_webview(&label) {
+        webview
+            .close()
+            .map_err(|e| format!("closing the tab webview: {e}"))?;
+    }
+    registry::tab_close(&state.tabs_path, &id)?;
+    {
+        let mut tabs = state.tabs.lock().unwrap();
+        tabs.retain(|t| t.id != id);
+    }
+    let was_active = state.active_tab.lock().unwrap().as_deref() == Some(id.as_str());
+    if was_active {
+        *state.active_tab.lock().unwrap() = None;
+    }
+    let dir = state.data_root.join(&id);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("deleting {}: {e}", dir.display()))?;
+    }
+    // The closed webview's WebKit network process can re-create its storage
+    // dir while it shuts down; delete again once it has (remove_instance's
+    // doctrine).
+    tauri::async_runtime::spawn(async move {
+        for wait in [2, 8] {
+            tokio::time::sleep(Duration::from_secs(wait)).await;
+            if dir.exists() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    });
+    // Show the next tab, or leave browse when the last one closed.
+    let next = state.tabs.lock().unwrap().first().cloned();
+    match next {
+        Some(tab) => queue_main_turn(&app, move |app| {
+            let state = app.state::<ShellState>();
+            *state.active_tab.lock().unwrap() = Some(tab.id.clone());
+            create_tab_webview(app, &tab).map(|_| ()).ok();
+            emit_state(app);
+        }),
+        None => {
+            set_browse_view(&app, false)?;
+        }
+    }
+    emit_state(&app);
+    Ok(())
+}
+
+/// Pin or unpin a browser tab (the person's say-so; the page never gets to
+/// ask).
+#[tauri::command]
+pub fn set_browser_tab_pinned(
+    app: AppHandle,
+    id: String,
+    pinned: bool,
+) -> Result<registry::BrowserTab, String> {
+    let state = app.state::<ShellState>();
+    let tab = registry::tab_set_pinned(&state.tabs_path, &id, pinned)?
+        .ok_or_else(|| format!("no such tab: {id}"))?;
+    *state.tabs.lock().unwrap() = registry::load_tabs(&state.tabs_path);
+    emit_state(&app);
+    Ok(tab)
+}
+
+/// Enter or leave the Browse view. Entering remembers the view it came from
+/// (so leaving returns there); leaving restores it. Both relayout — the
+/// bar and tab must be placed (WebKitGTK leaves new children misplaced
+/// until a set_bounds, tauri#10420).
+#[tauri::command]
+pub fn set_browse_mode(app: AppHandle, active: bool) -> Result<(), String> {
+    set_browse_view(&app, active)
+}
+
+/// The one path into and out of View::Browse, shared by the commands and
+/// the tab commands' own view handling. Main thread only (it hides and
+/// shows webviews).
+fn set_browse_view(app: &AppHandle, active: bool) -> Result<(), String> {
+    let state = app.state::<ShellState>();
+    let current = *state.view.lock().unwrap();
+    if active {
+        if current == View::Browse {
+            return Ok(());
+        }
+        *state.before_browse.lock().unwrap() = Some(current);
+        set_view(app, View::Browse)?;
+    } else {
+        if current != View::Browse {
+            return Ok(());
+        }
+        let back = state
+            .before_browse
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or(View::Welcome);
+        set_view(app, back)?;
+    }
+    Ok(())
+}
+
+/// The webview label of a browser tab.
+fn tab_label(id: &str) -> String {
+    format!("browtab-{id}")
+}
+
+/// Create a browser tab's webview, or show the one it already has. ZERO
+/// IPC: no capability is granted, no script is injected, no drag-drop
+/// handler — the page is third-party content and gets nothing but pixels
+/// and input. The one exception is navigation refusal (allowed_navigation):
+/// a dropped file must not load, same rule as instance pages. Main thread
+fn create_tab_webview(app: &AppHandle, tab: &registry::BrowserTab) -> Result<Webview, String> {
+    let state = app.state::<ShellState>();
+    let Some(window) = app.get_window("main") else {
+        return Err("no main window".to_string());
+    };
+    let label = tab_label(&tab.id);
+    // Every other tab hidden first, then this one shown: wry packs child
+    // webviews in a vertical GtkBox, so two visible children for even one
+    // layout pass split the window between them (set_view's rule).
+    for webview in window.webviews() {
+        if webview.label().starts_with("browtab-") && webview.label() != label {
+            let _ = webview.hide();
+        }
+    }
+    // Already live: place it and show it.
+    if let Some(existing) = window.get_webview(&label) {
+        let _ = existing.set_bounds(layout::browse_content_rect(&window));
+        existing
+            .show()
+            .map_err(|e| format!("showing the tab webview: {e}"))?;
+        return Ok(existing);
+    }
+    let dir = state.data_root.join(&tab.id).join("webview");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    let url: tauri::Url = tab
+        .url
+        .parse()
+        .map_err(|e| format!("the stored URL no longer parses: {e}"))?;
+    let rect = layout::browse_content_rect(&window);
+    let nav_label = label.clone();
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
+        .data_directory(dir)
+        .disable_drag_drop_handler()
+        .on_navigation(move |url| allowed_navigation(&nav_label, url))
+        .background_color(GROUND);
+    window
+        .add_child(builder, rect.position, rect.size)
+        .map_err(|e| format!("creating the tab webview: {e}"))
 }
 
 /// The settings. Every Talaria UI's titlebar asks for them as it mounts, so
