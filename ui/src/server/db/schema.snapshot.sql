@@ -1557,7 +1557,12 @@ CREATE TABLE public.tasks (
     placed_by text,
     placed_by_kind text,
     placed_at timestamp with time zone,
-    CONSTRAINT tasks_placed_by_kind_check CHECK (((placed_by_kind IS NULL) OR (placed_by_kind = ANY (ARRAY['person'::text, 'agent'::text, 'workchain'::text]))))
+    reported_at timestamp with time zone,
+    reported_kind text,
+    reported_by text,
+    report_cleared_at timestamp with time zone,
+    CONSTRAINT tasks_placed_by_kind_check CHECK (((placed_by_kind IS NULL) OR (placed_by_kind = ANY (ARRAY['person'::text, 'agent'::text, 'workchain'::text])))),
+    CONSTRAINT tasks_reported_kind_check CHECK (((reported_kind IS NULL) OR (reported_kind = ANY (ARRAY['outcome'::text, 'error'::text]))))
 );
 CREATE TABLE public.team_agents (
     team_id uuid NOT NULL,

@@ -41,12 +41,17 @@ default). Then the columns carry the rules:
 | Column rule | Meaning |
 | :--- | :--- |
 | **agent start** | Agents pick up work a person put here (or approved an agent's move card for), or a running workchain's next step. Assigning an agent never moves a ticket or starts work |
-| **review** | Where agent work is signed off. A work session never moves its ticket: the agent reports its outcome, and a person moves the ticket here |
+| **review** | A column for sign-off, if you want one. Agent work does not need it: the agent's reported outcome reaches your review queues wherever the ticket sits |
 | Blocked | Always present; an agent stuck here is waiting on something |
 
 ### Reviewing an agent's ticket
 
-When a ticket hits the review column you get, in order:
+An agent never moves its ticket: the board stays where you put it. When the agent reports its
+outcome, the work arrives in your review queues — the approvals inbox, the daily brief, the inbox
+cards and Home's Review list — and stays there until you approve it, send it back (Request
+changes, which puts the agent back on it) or move the ticket. An agent that reports what blocks
+it shows up the same way as **blocked** work, with its reason. Open the ticket and you get, in
+order:
 
 1. **The QA judge's verdict** — `Pass` / `Revise` / `Escalate` with its reasoning (advisory
    unless your admin set it enforcing).

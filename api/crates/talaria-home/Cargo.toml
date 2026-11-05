@@ -18,5 +18,6 @@ talaria-boards = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-org = { workspace = true }
 talaria-state = { workspace = true }
+talaria-statuses = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }

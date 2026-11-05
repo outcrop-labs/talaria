@@ -400,7 +400,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "report_outcome",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Report the outcome of work on a ticket: what changed (outcome), how (resolution), or what went wrong (errorMessage — also how you say you are blocked). It records the result on the ticket and ends your work session on it; it does NOT move the ticket. A person reads it, reviews the work, and moves the ticket — to review, to done, or back. Add anything further as a comment. Only ever on a live ticket.",
+            description: "Report the outcome of work on a ticket: what changed (outcome), how (resolution), or what went wrong (errorMessage — also how you say you are blocked). It records the result, ends your work session on it, and puts the work in front of the ticket's people: for review, or as blocked work with your errorMessage as the reason. It does NOT move the ticket — a person approves it, sends it back, or moves it. Add anything further as a comment. Only ever on a live ticket.",
             parameters: json!({
                 "type": "object",
                 "properties": {

@@ -3765,6 +3765,7 @@ dependencies = [
  "talaria-retrieval",
  "talaria-scheduler",
  "talaria-state",
+ "talaria-statuses",
  "tokio",
  "tracing",
 ]
@@ -5731,6 +5732,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-org",
  "talaria-state",
+ "talaria-statuses",
  "tokio",
 ]
 

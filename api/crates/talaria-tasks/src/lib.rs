@@ -628,6 +628,8 @@ struct UpdateNotices {
     /// no longer hands its ticket to review (placement.rs), so this notice is
     /// how the ticket's people hear the work is theirs to look at and move.
     reported_by_agent: bool,
+    /// …and the report said what went wrong: blocked work, not a sign-off.
+    reported_error: bool,
 }
 
 /// Spawn everything `update_task` tells people, in one detached task — see
@@ -644,6 +646,7 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             review_keys,
             actor,
             reported_by_agent,
+            reported_error,
         } = n;
         let id = cur.id.clone();
         let href = format!("/boards/{}/{}", cur.board_id, id);
@@ -737,11 +740,12 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
                         &TaskNotification {
                             kind: "task-status".into(),
                             title: format!(
-                                "{}: outcome reported",
+                                "{}: {}",
                                 cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
+                                if reported_error { "blocked — the agent reported an error" } else { "outcome reported" },
                             ),
                             body: Some(format!(
-                                "{} — it is still in {column}; move it when you have reviewed the work",
+                                "{} — it is still in {column}, and waits in your review queue until you approve it, send it back or move it",
                                 cur.title
                             )),
                             href: Some(href.clone()),
@@ -1676,6 +1680,28 @@ pub async fn update_task(
     };
     let add_seconds = patch.add_time_spent_seconds.unwrap_or(0.0).round().max(0.0) as i64;
 
+    // AN AGENT'S REPORT IS AN EVENT, the same text again included. It ends
+    // the agent's work session (placement::session_reported reads the line),
+    // spends the placement, and puts the work in front of a person (the
+    // review queues read `reported_*`) — so a second session that reports
+    // what the first one did must still leave its line and its stamp; a
+    // changed-text test would drop both and leave that session running to
+    // the turn cap.
+    let agent_reported_outcome =
+        who.kind == TaskActorKind::Agent && patch.outcome.as_ref().is_some_and(|o| o.is_some());
+    let agent_reported_error = who.kind == TaskActorKind::Agent
+        && patch.error_message.as_ref().is_some_and(|e| e.is_some());
+    // A PERSON ACTING on an agent's report — moving the ticket (set_status
+    // stamps that) or archiving it — takes it off the review queues; their
+    // approval notice resolves after the commit. Read before the write.
+    let person_acts = who.user_id().is_some()
+        && (mover.is_some() || (patch.archived == Some(true) && cur.archived_at.is_none()));
+    let report_was_awaiting = if person_acts {
+        talaria_statuses::awaiting_report(pg, id).await?.is_some()
+    } else {
+        false
+    };
+
     // The fields and the column in ONE transaction, the column through the
     // one writer that records who placed it there.
     let mut tx = pg.begin().await?;
@@ -1713,17 +1739,32 @@ pub async fn update_task(
     if let Some(mover) = &mover {
         placement::set_status(&mut tx, id, None, &next_status, mover).await?;
     }
+    if agent_reported_outcome || agent_reported_error {
+        // An error wins: a report that says what went wrong is blocked work.
+        sqlx::query(
+            "update tasks set reported_at = now(), reported_kind = $2, reported_by = $3 \
+             where id = $1::uuid",
+        )
+        .bind(id)
+        .bind(if agent_reported_error {
+            "error"
+        } else {
+            "outcome"
+        })
+        .bind(&who.id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    if person_acts && mover.is_none() {
+        sqlx::query("update tasks set report_cleared_at = now() where id = $1::uuid")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
-
-    // AN AGENT'S REPORT IS AN EVENT, the same text again included. It ends
-    // the agent's work session (placement::session_reported reads the line)
-    // and spends the placement, so a second session that reports what the
-    // first one did must still leave its line — a changed-text test would
-    // drop it and leave that session running to the turn cap.
-    let agent_reported_outcome =
-        who.kind == TaskActorKind::Agent && patch.outcome.as_ref().is_some_and(|o| o.is_some());
-    let agent_reported_error = who.kind == TaskActorKind::Agent
-        && patch.error_message.as_ref().is_some_and(|e| e.is_some());
+    if report_was_awaiting {
+        resolve_review_approval(&deps.notify, id);
+    }
 
     // ── THE NOTIFY WORK GOES OUT NOW (C30) ──────────────────────────────────
     // The write above has committed. Everything a person is told about it is
@@ -1743,6 +1784,7 @@ pub async fn update_task(
             review_keys: meta.review_keys.clone(),
             actor: who.id.clone(),
             reported_by_agent: agent_reported_outcome || agent_reported_error,
+            reported_error: agent_reported_error,
         },
     );
 
@@ -2529,6 +2571,62 @@ pub async fn list_reviews(pg: &PgPool, task_id: &str) -> Result<Vec<QualityRevie
         .collect())
 }
 
+/// A person's "send it back" (the ticket's Request changes): the ticket goes
+/// to `to`, a working column. When it is already there — an agent's reported
+/// outcome sitting in the column the person put it in — the person's
+/// placement is renewed in place instead (placement.rs), which is what lets
+/// the agent pick the work up again; nothing about the column changes.
+pub async fn send_back(
+    deps: &TaskDeps,
+    id: &str,
+    to: &str,
+    who: &TaskActor,
+) -> TaskResult<Option<Task>> {
+    let Some(cur) = get_task(&deps.pg, id).await? else {
+        return Ok(None);
+    };
+    if cur.status != to {
+        let patch = TaskPatch {
+            status: Some(to.to_string()),
+            ..Default::default()
+        };
+        return update_task(deps, id, patch, who).await;
+    }
+    let Some(user_id) = who.user_id() else {
+        return Err(TaskError::Refusal(placement::PERSON_NOT_SIGNED_IN.into()));
+    };
+    let mut tx = deps.pg.begin().await?;
+    placement::set_status(
+        &mut tx,
+        id,
+        Some(&cur.status),
+        to,
+        &StatusMover::Person(user_id.to_string()),
+    )
+    .await?;
+    tx.commit().await?;
+    log_activity(
+        &deps.pg,
+        id,
+        &who.id,
+        "status",
+        &format!("moved to {to} (sent back to the agent)"),
+    )
+    .await?;
+    resolve_review_approval(&deps.notify, id);
+    publish_board(
+        &deps.realtime,
+        &cur.board_id,
+        &BoardEvent {
+            kind_tag: "task",
+            task_id: Some(id.to_string()),
+            deleted: None,
+        },
+    );
+    spawn_dispatch_id(deps, id.to_string(), None);
+    get_task(&deps.pg, id).await.map_err(TaskError::Db)
+}
+
 pub async fn add_review(
     deps: &TaskDeps,
     task_id: &str,
@@ -2558,6 +2656,20 @@ pub async fn add_review(
         },
     )
     .await?;
+    // A person's review decision answers any agent report waiting on it: off
+    // the review queues, and its approval notice resolved.
+    let cleared: Option<(String,)> = sqlx::query_as(
+        "update tasks set report_cleared_at = now() where id = $1::uuid \
+           and reported_kind is not null \
+           and (report_cleared_at is null or report_cleared_at < reported_at) \
+         returning id::text",
+    )
+    .bind(task_id)
+    .fetch_optional(&deps.pg)
+    .await?;
+    if cleared.is_some() {
+        resolve_review_approval(&deps.notify, task_id);
+    }
     if let Some(board_id) = task_board_id(&deps.pg, task_id).await? {
         publish_board(
             &deps.realtime,
@@ -2672,7 +2784,14 @@ pub async fn complete_quality_review(
         return Ok(None);
     };
     let meta = status_meta(pg, &current.board_id).await?;
-    if !meta.review_keys.contains(&current.status) {
+    // Awaiting review is EITHER a review column OR an agent's reported
+    // outcome no person has acted on yet — the ticket stays wherever the
+    // person put it, and the review card reads the report.
+    let reported = talaria_statuses::awaiting_report(pg, task_id)
+        .await?
+        .as_deref()
+        == Some("outcome");
+    if !meta.review_keys.contains(&current.status) && !reported {
         return Ok(None);
     }
     let approved = review_status == "approved";
@@ -2693,7 +2812,8 @@ pub async fn complete_quality_review(
     let mut tx = pg.begin().await?;
     let rows: Vec<(String,)> = sqlx::query_as(
         "update tasks set completed_at = $1::timestamptz, \
-         approved_at = case when $4 then now() else null end, updated_at = now() \
+         approved_at = case when $4 then now() else null end, updated_at = now(), \
+         report_cleared_at = now() \
          where id = $2::uuid and status = $3 returning id::text",
     )
     .bind(&completed_at)
@@ -2702,8 +2822,12 @@ pub async fn complete_quality_review(
     .bind(approved)
     .fetch_all(&mut *tx)
     .await?;
-    // A rejection is a PERSON's move (a): the reviewer sends it back.
-    if !rows.is_empty() && next_status != current.status.as_str() {
+    // A rejection is a PERSON's move (a): the reviewer sends it back — and
+    // when the ticket is already in the column it goes back to (an agent's
+    // reported outcome sitting in its working column), the person's
+    // placement is renewed in place, so the agent picks it up again.
+    let sent_back_in_place = !approved && next_status == current.status.as_str();
+    if !rows.is_empty() && !approved {
         placement::set_status(
             &mut tx,
             task_id,
@@ -2747,7 +2871,11 @@ pub async fn complete_quality_review(
         )
         .bind(task_id)
         .bind(reviewer)
-        .bind(format!("moved to {next_status}"))
+        .bind(if sent_back_in_place {
+            format!("moved to {next_status} (sent back to the agent)")
+        } else {
+            format!("moved to {next_status}")
+        })
         .execute(&mut *tx)
         .await?;
     }
@@ -2764,10 +2892,13 @@ pub async fn complete_quality_review(
         });
     }
 
-    if meta.agent_start_keys.iter().any(|k| k == next_status)
-        && !meta.agent_start_keys.contains(&current.status)
-    {
+    // Sent back into (or within) a pickup column: the person's placement is
+    // fresh, so the work starts again now rather than at the next sweep.
+    if !approved && meta.agent_start_keys.iter().any(|k| k == next_status) {
         spawn_dispatch_id(deps, task_id.to_string(), None);
+    }
+    if reported {
+        resolve_review_approval(&deps.notify, task_id);
     }
 
     // Firing only on terminal keeps the trigger surface exactly the one the

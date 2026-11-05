@@ -110,8 +110,10 @@ pub const NO_MOVER: &str = "only a person, an agent's move a person approved, or
 /// (`TaskActor::human`): they can edit fields, not move the column.
 pub const PERSON_NOT_SIGNED_IN: &str = "a ticket's column moves only for a signed-in person — this write names a person but carries no session";
 
-/// THE status write. Writes the column and who placed it there, nothing
-/// else: the activity line, the notices and the push side stay the caller's
+/// THE status write. Writes the column and who placed it there — and, for a
+/// person, that they have now acted on any agent report the ticket carried
+/// (`report_cleared_at`: the review queues read it, talaria-statuses
+/// `AGENT_*_AWAITING_SQL`). Nothing else: the activity line, the notices and the push side stay the caller's
 /// (update_task, the review decision, a move between boards), so this is the
 /// one statement and not a second write path. `expect_from` makes the write
 /// conditional on the column the caller decided from; `false` means the
@@ -125,7 +127,8 @@ pub(crate) async fn set_status(
 ) -> Result<bool, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as(
         "update tasks set status = $2, placed_by = $3, placed_by_kind = $4, \
-         placed_at = now(), updated_at = now() \
+         placed_at = now(), updated_at = now(), \
+         report_cleared_at = case when $4 = 'person' then now() else report_cleared_at end \
          where id = $1::uuid and ($5::text is null or status = $5) returning id::text",
     )
     .bind(task_id)

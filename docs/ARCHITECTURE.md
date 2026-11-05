@@ -993,7 +993,11 @@ whose click makes the move as that person. Assignment, a session, a PR, a review
 trigger never moves one. Each placement records who made it (a person by user id), and the pickup
 gate starts a session only on a ticket a person placed in a pickup column, or an approved, running
 workchain's ready step. A session ends on the agent's `report_outcome`, which records the result
-and leaves the column to a person; that report spends the placement, so the same work is not
+and leaves the column to a person. The review queues (the approvals inbox, the daily brief, the
+inbox cards, Home and the digest) read that report — `tasks.reported_*`, through
+`talaria_statuses::AGENT_OUTCOME_AWAITING_SQL` / `AGENT_ERROR_AWAITING_SQL` — as review work, or
+as blocked work with its error as the reason, until a person approves it, sends it back or moves
+the ticket (`report_cleared_at`). That report also spends the placement, so the same work is not
 picked up again until a person places the ticket again. A session that stopped without a report
 (the turn cap, an error) spent nothing, and the sweep continues it within the 25-session cap. A workchain step whose predecessor is still open is
 not dispatched — the gate asks `talaria_tasks::workchain_blocked` before any session starts, and

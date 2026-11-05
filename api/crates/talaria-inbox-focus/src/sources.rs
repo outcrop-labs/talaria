@@ -56,14 +56,28 @@ pub async fn task_items(
     // `approved_at is null` into the fragment covers the is_review flag (which
     // decides the card's buttons and its recommendation) and the WHERE that
     // admits the row at all.
+    // REVIEW IS THE COLUMN OR THE OUTCOME. A work session never moves its
+    // ticket, so finished agent work waits in its working column with the
+    // agent's report — awaiting until a person acts on it (approve, send
+    // back, move). An earlier sign-off does not hide a NEW report.
     let review = format!(
-        "( {} and t.approved_at is null )",
-        talaria_statuses::status_category_sql("review", &["quality_review"])
+        "( ( {} and t.approved_at is null ) or {} )",
+        talaria_statuses::status_category_sql("review", &["quality_review"]),
+        talaria_statuses::AGENT_OUTCOME_AWAITING_SQL
+    );
+    // BLOCKED IS THE COLUMN OR THE ERROR: an agent that reported what blocks
+    // it is blocked work, with `error_message` as the reason (the card's
+    // evidence), though its ticket stays where the person put it.
+    let blocked = format!(
+        "( t.status = 'blocked' or {} )",
+        talaria_statuses::AGENT_ERROR_AWAITING_SQL
     );
     let sql = format!(
         "select t.id::text, t.board_id::text, b.name as board, \
                 case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end as ticket_ref, \
-                t.title, t.description, t.status, t.priority, \
+                t.title, t.description, \
+                case when {blocked} and t.status <> 'failed' then 'blocked' else t.status end as status, \
+                t.priority, \
                 (trunc(extract(epoch from t.due_date) * 1000))::bigint as due_ms, \
                 t.error_message, t.outcome, \
                 (trunc(extract(epoch from t.created_at) * 1000))::bigint as created_ms, \
@@ -76,7 +90,7 @@ pub async fn task_items(
          where {vis} \
            and t.archived_at is null \
            and ($2::text is null or t.id::text = $2) \
-           and ( t.status in ('failed', 'blocked') \
+           and ( t.status = 'failed' or {blocked} \
                  or {review} \
                  or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'open' and not bs.agent_start) \
                  or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'inbox') ) \

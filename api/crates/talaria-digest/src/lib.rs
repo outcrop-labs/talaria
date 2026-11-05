@@ -1553,6 +1553,7 @@ mod tests {
                 status: "blocked".into(),
                 updated_at: "2026-08-29T00:00:00.000Z".into(),
                 queue: "blocked".into(),
+                reason: None,
             }],
             triage: vec![],
             incomplete: false,
@@ -1611,6 +1612,7 @@ mod tests {
                 status: "inbox".into(),
                 updated_at: String::new(),
                 queue: "triage".into(),
+                reason: None,
             })
             .collect();
         let content = DigestContent {

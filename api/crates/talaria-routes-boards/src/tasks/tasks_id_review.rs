@@ -13,9 +13,7 @@ use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_statuses::status_meta;
-use talaria_tasks::{
-    TaskActor, TaskDeps, TaskPatch, add_review, get_task, set_task_approved, update_task,
-};
+use talaria_tasks::{TaskActor, TaskDeps, add_review, get_task, set_task_approved};
 
 pub async fn post(
     State(state): State<AppState>,
@@ -107,15 +105,13 @@ pub async fn post(
         return Ok(internal("[tasks] approval clear failed", e));
     }
     // Any update_task throw here is the house 500, never a refusal shape.
-    let patch = TaskPatch {
-        status: Some(target),
-        ..Default::default()
-    };
+    // Sent back: to the working column — or, for an agent's reported outcome
+    // already sitting there, renewed in place so the agent picks it up again.
     Ok(
-        match update_task(
+        match talaria_tasks::send_back(
             &deps,
             &id,
-            patch,
+            &target,
             &TaskActor::person(user.id.clone(), reviewer),
         )
         .await

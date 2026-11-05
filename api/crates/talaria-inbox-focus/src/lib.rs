@@ -1891,7 +1891,13 @@ async fn execute_action_arms(
             .await;
         }
         let meta = status_meta(pg, &task.board_id).await?;
-        if !meta.review_keys.contains(&task.status) {
+        // Awaiting review: a review column, or an agent's reported outcome no
+        // person has acted on (the ticket stays where the person put it).
+        let reported = talaria_statuses::awaiting_report(pg, &task.id)
+            .await?
+            .as_deref()
+            == Some("outcome");
+        if !meta.review_keys.contains(&task.status) && !reported {
             return finish_early(
                 pg,
                 existing_decision_id,

@@ -20,6 +20,9 @@ export interface WorkItem {
   title: string
   status: string
   updatedAt: string
+  /** Why an agent reported this ticket blocked — the ticket stays in the
+   *  column a person put it in, so this line is what says so. */
+  reason?: string
 }
 export interface Queue {
   count: number

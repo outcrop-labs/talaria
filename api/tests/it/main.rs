@@ -66,6 +66,7 @@ mod realtime;
 mod realtime_fan;
 mod research_dials_live;
 mod research_live;
+mod review_from_outcome_live;
 mod run_control_live;
 mod runs_decide;
 mod runs_reclaim;

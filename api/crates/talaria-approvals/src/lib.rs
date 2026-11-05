@@ -382,6 +382,9 @@ type TicketReviewRow = (
     Option<i64>,
     String,
     Option<String>,
+    bool,
+    Option<i64>,
+    Option<String>,
 );
 
 async fn ticket_review_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
@@ -393,17 +396,54 @@ async fn ticket_review_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sq
                     and (a.description = 'moved to ' || t.status \
                          or starts_with(a.description, 'moved to ' || t.status || ' ('))), \
                 b.name, \
-                case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end \
+                case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end, \
+                {outcome} as reported, \
+                (trunc(extract(epoch from t.reported_at) * 1000))::bigint, \
+                t.reported_by \
          from tasks t join boards b on b.id = t.board_id \
-         where t.archived_at is null and b.archived_at is null and {}",
-        status_category_sql("review", &["quality_review"])
+         where t.archived_at is null and b.archived_at is null and ({review} or {outcome})",
+        review = status_category_sql("review", &["quality_review"]),
+        outcome = talaria_statuses::AGENT_OUTCOME_AWAITING_SQL,
     )))
     .fetch_all(pg)
     .await?;
     Ok(rows
         .into_iter()
         .map(
-            |(id, title, board_id, assignees, updated_ms, entered_ms, board, ticket_ref)| {
+            |(
+                id,
+                title,
+                board_id,
+                assignees,
+                updated_ms,
+                entered_ms,
+                board,
+                ticket_ref,
+                reported,
+                reported_ms,
+                reported_by,
+            )| {
+                // An agent's reported outcome is the queue entry now: the
+                // ticket stays in the column a person put it in (talaria-tasks
+                // placement.rs), and the report waits here until a person
+                // approves it, sends it back or moves the ticket.
+                let detail = if reported {
+                    format!(
+                        "{} reported its outcome. The ticket stays where it is on {board} until a \
+                         person approves the work, sends it back or moves it.",
+                        reported_by.as_deref().unwrap_or("The agent")
+                    )
+                } else {
+                    format!(
+                        "Finished work is parked in {board}'s review column until a person \
+                         approves it or asks for changes."
+                    )
+                };
+                let since = if reported {
+                    reported_ms
+                } else {
+                    entered_ms.or(updated_ms)
+                };
                 PendingApproval {
                     kind: ApprovalKind::TicketReview,
                     key: format!("ticket_review:{id}"),
@@ -415,12 +455,9 @@ async fn ticket_review_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sq
                             .map(|r| format!("{r} · "))
                             .unwrap_or_default()
                     ),
-                    detail: format!(
-                        "Finished work is parked in {board}'s review column until a person \
-                         approves it or asks for changes."
-                    ),
+                    detail,
                     href: format!("/boards/{board_id}/{id}"),
-                    waiting_since: epoch_ms_to_iso(entered_ms.or(updated_ms).unwrap_or(0)),
+                    waiting_since: epoch_ms_to_iso(since.unwrap_or(0)),
                     owner_user_ids: ticket_owners(assignees.as_ref()),
                     // Sign-off is a column move, and both routes that perform
                     // one require board editors. An admin who is not on the

@@ -197,14 +197,22 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
     };
     let cost_fut = cost_overview(pg);
     let vis = board_visibility_sql("$1", "$2", false);
+    // STUCK: failed, or blocked for a week — the Blocked column, or an
+    // agent's reported error no person has acted on (its ticket stays where
+    // the person put it, talaria-tasks placement.rs; it reads as 'blocked').
+    let error = talaria_statuses::AGENT_ERROR_AWAITING_SQL;
     let stuck_sql = format!(
-        "select t.id::text, t.title, t.status, b.id::text as board_id, b.name as board, \
-                extract(day from now() - t.updated_at)::int as days \
+        "select t.id::text, t.title, \
+                case when {error} and t.status <> 'failed' then 'blocked' else t.status end, \
+                b.id::text as board_id, b.name as board, \
+                extract(day from now() - coalesce(case when {error} then t.reported_at end, t.updated_at))::int as days \
          from tasks t \
          join boards b on b.id = t.board_id \
          where {vis} \
            and t.archived_at is null \
-           and (t.status = 'failed' or (t.status = 'blocked' and t.updated_at < now() - interval '7 days')) \
+           and (t.status = 'failed' \
+                or (t.status = 'blocked' and t.updated_at < now() - interval '7 days') \
+                or ({error} and t.reported_at < now() - interval '7 days')) \
          order by t.updated_at asc limit 20"
     );
     let stuck_fut = sqlx::query_as::<_, (String, String, String, String, String, i32)>(

@@ -953,8 +953,10 @@ pub async fn move_task(
         },
     );
     spawn_move_notices(deps, &cur, &moved, audience_after, losing, actor);
-    // The sign-off queue of the old board no longer holds it.
-    if src_meta.review_keys.iter().any(|k| k == &cur.status) {
+    // The sign-off queue of the old board no longer holds it — nor, when a
+    // person moved it, the review queues an agent's report put it on (the
+    // person's placement cleared that report, placement.rs).
+    if src_meta.review_keys.iter().any(|k| k == &cur.status) || !mover.is_agent() {
         resolve_review_approval(&deps.notify, id);
     }
     // Landing in a pickup queue with agent assignees is work for them — the

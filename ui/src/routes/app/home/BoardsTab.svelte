@@ -101,6 +101,7 @@
             >
               {#if w.ticketRef}<span class="shrink-0 font-mono text-[11px] text-muted">{w.ticketRef}</span>{/if}
               <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{w.title}</span>
+              {#if w.reason}<span class="min-w-0 max-w-[40%] truncate font-sans text-xs text-muted" title={w.reason}>{w.reason}</span>{/if}
               <span class="shrink-0 font-sans text-xs text-muted">{w.board}</span>
               <span class="shrink-0 font-mono text-[11px] text-muted">{relativeTime(w.updatedAt)}</span>
             </button>

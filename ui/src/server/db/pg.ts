@@ -4842,6 +4842,22 @@ alter table tasks drop column if exists conversation_id`,
      add column if not exists placed_by text,
      add column if not exists placed_by_kind text,
      add column if not exists placed_at timestamptz`,
+  // REVIEW COMES FROM THE OUTCOME, NOT THE COLUMN. A session never moves its
+  // ticket, so finished agent work no longer lands in a review column; the
+  // agent's report (report_outcome) stamps these, and the review queues (the
+  // approvals inbox, the daily brief, the inbox cards, Home) read them. An
+  // 'error' report is blocked work. A person's action — approving, rejecting
+  // or sending it back, moving or archiving the ticket — stamps
+  // report_cleared_at; an agent never does. Awaiting = reported after the
+  // last clear (talaria-statuses AGENT_*_AWAITING_SQL).
+  `alter table tasks
+     add column if not exists reported_at timestamptz,
+     add column if not exists reported_kind text,
+     add column if not exists reported_by text,
+     add column if not exists report_cleared_at timestamptz`,
+  `alter table tasks drop constraint if exists tasks_reported_kind_check`,
+  `alter table tasks add constraint tasks_reported_kind_check
+     check (reported_kind is null or reported_kind in ('outcome', 'error'))`,
   `alter table tasks drop constraint if exists tasks_placed_by_kind_check`,
   `alter table tasks add constraint tasks_placed_by_kind_check
      check (placed_by_kind is null or placed_by_kind in ('person', 'agent', 'workchain'))`,

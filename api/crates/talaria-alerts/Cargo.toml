@@ -26,6 +26,7 @@ talaria-notify = { workspace = true }
 talaria-retrieval = { workspace = true }
 talaria-scheduler = { workspace = true }
 talaria-state = { workspace = true }
+talaria-statuses = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }

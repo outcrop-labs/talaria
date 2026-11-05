@@ -400,6 +400,43 @@ pub async fn status_diagnostics(
     Ok(out)
 }
 
+// ── Review from the outcome, not the column ──────────────────────────────────
+//
+// A work session never moves its ticket (talaria-tasks placement.rs), so
+// finished agent work no longer lands in a review column and a blocked agent
+// no longer parks its ticket in Blocked. The agent's REPORT is what the human
+// queues read instead: `report_outcome` stamps `tasks.reported_at` /
+// `reported_kind` ('outcome' or, with an errorMessage, 'error'), and a
+// person's action — approving, rejecting or sending it back, moving or
+// archiving the ticket — stamps `report_cleared_at`. An agent never clears
+// one. These two fragments are the one definition every queue interpolates
+// (the approvals inbox, the daily brief, the inbox cards, Home, the stuck
+// alert), next to the column test it sits beside.
+
+/// SQL over alias `t`: an agent's reported OUTCOME no person has acted on —
+/// finished agent work awaiting review, wherever the ticket sits.
+pub const AGENT_OUTCOME_AWAITING_SQL: &str = "(t.reported_kind = 'outcome' \
+     and (t.report_cleared_at is null or t.report_cleared_at < t.reported_at))";
+
+/// SQL over alias `t`: an agent's reported ERROR no person has acted on —
+/// blocked agent work, wherever the ticket sits; `t.error_message` is why.
+pub const AGENT_ERROR_AWAITING_SQL: &str = "(t.reported_kind = 'error' \
+     and (t.report_cleared_at is null or t.report_cleared_at < t.reported_at))";
+
+/// The report on this ticket awaiting a person, if any: `"outcome"` or
+/// `"error"` — the same predicate as the two fragments above.
+pub async fn awaiting_report(pg: &PgPool, task_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let kind: Option<Option<String>> = sqlx::query_scalar(
+        "select t.reported_kind from tasks t where t.id = $1::uuid \
+           and t.reported_kind is not null \
+           and (t.report_cleared_at is null or t.report_cleared_at < t.reported_at)",
+    )
+    .bind(task_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(kind.flatten())
+}
+
 /// SQL fragment: `t.status` is in the given CATEGORY on the ticket's own
 /// board, with the legacy fallback for never-customized boards.
 ///

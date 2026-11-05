@@ -42,6 +42,11 @@ pub struct WorkItem {
     /// the wire whole — the field is part of the payload even though no
     /// reader names it.
     pub queue: String,
+    /// Why it is blocked, when an AGENT reported it blocked (its
+    /// `error_message`): the ticket stays in the column a person put it in,
+    /// so the reason is the only thing that says so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl WorkItem {
@@ -89,6 +94,7 @@ struct QueueRow {
     status: String,
     updated_ms: i64,
     queue: String,
+    reason: Option<String>,
 }
 
 /// The queue pass on its own: one round trip over the user's visible, active
@@ -96,30 +102,38 @@ struct QueueRow {
 pub async fn home_queues(pg: &PgPool, user_id: &str) -> Result<HomeQueues, sqlx::Error> {
     // AssertSqlSafe: the interpolation is the crate's board-visibility
     // fragment over this query's own bind positions.
+    // REVIEW AND BLOCKED ARE THE COLUMN OR THE AGENT'S REPORT: a work
+    // session never moves its ticket (talaria-tasks placement.rs), so an
+    // agent's reported outcome is review work and its reported error blocked
+    // work, wherever the ticket sits, until a person acts on it.
     let sql = format!(
         "select t.id::text, t.board_id::text, b.name as board, \
                 case when t.ticket_no is not null then coalesce(b.ticket_prefix,'TASK') || '-' || t.ticket_no end as ticket_ref, \
                 t.title, t.status, \
                 (trunc(extract(epoch from t.updated_at) * 1000))::bigint as updated_ms, \
                 case \
-                  when t.status = 'blocked' then 'blocked' \
+                  when t.status = 'blocked' or {error} then 'blocked' \
                   when t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'review') \
                     or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'quality_review') \
+                    or {outcome} \
                     then 'review' \
                   else 'triage' \
-                end as queue \
+                end as queue, \
+                case when {error} then t.error_message end as reason \
          from tasks t \
          join boards b on b.id = t.board_id \
-         where {} \
+         where {vis} \
            and t.archived_at is null \
-           and ( t.status = 'blocked' \
+           and ( t.status = 'blocked' or {error} or {outcome} \
                  or ( t.approved_at is null \
                       and ( t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'review') \
                             or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'quality_review') ) ) \
                  or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'open' and not bs.agent_start) \
                  or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'inbox') ) \
          order by t.updated_at desc",
-        board_visibility_sql("$1", "$1", false),
+        vis = board_visibility_sql("$1", "$1", false),
+        error = talaria_statuses::AGENT_ERROR_AWAITING_SQL,
+        outcome = talaria_statuses::AGENT_OUTCOME_AWAITING_SQL,
     );
     let rows: Vec<QueueRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(user_id)
@@ -135,6 +149,7 @@ pub async fn home_queues(pg: &PgPool, user_id: &str) -> Result<HomeQueues, sqlx:
         status: r.status,
         updated_at: epoch_ms_to_iso(r.updated_ms),
         queue: r.queue,
+        reason: r.reason,
     };
 
     // Three passes over one row set: the bucket is
@@ -273,6 +288,7 @@ mod tests {
             status: "inbox".into(),
             updated_at: "2026-08-29T00:00:00.000Z".into(),
             queue: "triage".into(),
+            reason: None,
         }
     }
 
