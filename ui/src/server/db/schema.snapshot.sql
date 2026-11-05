@@ -162,6 +162,11 @@ CREATE TABLE public.agent_defs (
     max_children integer DEFAULT 3 NOT NULL,
     stopped_at timestamp with time zone
 );
+CREATE TABLE public.agent_dm_mutes (
+    user_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    muted_until timestamp with time zone NOT NULL
+);
 CREATE TABLE public.agent_google_connections (
     agent_model text NOT NULL,
     google_sub text NOT NULL,
@@ -584,6 +589,11 @@ CREATE TABLE public.chat_approvals (
     decided_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     decided_at timestamp with time zone
+);
+CREATE TABLE public.comms_pins (
+    user_id uuid NOT NULL,
+    pin_key text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.conversation_layout (
     user_id uuid NOT NULL,
@@ -1821,6 +1831,8 @@ ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_slug_key UNIQUE (slug);
+ALTER TABLE ONLY public.agent_dm_mutes
+    ADD CONSTRAINT agent_dm_mutes_pkey PRIMARY KEY (user_id, agent_model);
 ALTER TABLE ONLY public.agent_google_connections
     ADD CONSTRAINT agent_google_connections_pkey PRIMARY KEY (agent_model);
 ALTER TABLE ONLY public.agent_google_oauth_states
@@ -1921,6 +1933,8 @@ ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.comms_pins
+    ADD CONSTRAINT comms_pins_pkey PRIMARY KEY (user_id, pin_key);
 ALTER TABLE ONLY public.conversation_layout
     ADD CONSTRAINT conversation_layout_pkey PRIMARY KEY (user_id, conversation_id);
 ALTER TABLE ONLY public.conversation_members
@@ -2305,6 +2319,8 @@ ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_plan_template_id_fkey FOREIGN KEY (plan_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_ticket_template_id_fkey FOREIGN KEY (ticket_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.agent_dm_mutes
+    ADD CONSTRAINT agent_dm_mutes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_google_connections
     ADD CONSTRAINT agent_google_connections_agent_model_fkey FOREIGN KEY (agent_model) REFERENCES public.agent_defs(model) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_google_connections
@@ -2427,6 +2443,8 @@ ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.comms_pins
+    ADD CONSTRAINT comms_pins_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_layout
     ADD CONSTRAINT conversation_layout_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_layout
