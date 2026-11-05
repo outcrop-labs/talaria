@@ -33,7 +33,7 @@ describe('CreateAgentModal save wiring', () => {
     expect(guard).toBeGreaterThan(-1)
     expect(at - guard).toBeLessThan(120)
     // The 409 reseed path never reaches it.
-    const reseed = code.slice(code.indexOf('if (seededFrom === null) {'), code.indexOf('if (!d || key === seededFrom) return'))
+    const reseed = code.slice(code.indexOf('if (seededFrom === null) {'), code.indexOf('if (!d) {'))
     expect(reseed).not.toContain('restoreUnsaved')
   })
 
@@ -44,5 +44,14 @@ describe('CreateAgentModal save wiring', () => {
     expect(named).toBeGreaterThan(-1)
     expect(flushed).toBeGreaterThan(named)
     expect(create).toContain('...(designId ? { designId } : {})')
+  })
+
+  it('a design that leaves the slot resets the form, never leaves it to be saved as a copy', () => {
+    const gone = code.slice(code.indexOf('if (!d) {'), code.indexOf('if (key === seededFrom) return'))
+    expect(gone).toContain('leftTheSlot(')
+    expect(gone).toContain('resetForm(')
+    const reset = code.slice(code.indexOf('function resetForm'), code.indexOf('function resetForm') + 400)
+    expect(reset).toContain('clearTimeout(saveTimer)')
+    expect(reset).toContain('form = { ...EMPTY_FIELDS }')
   })
 })

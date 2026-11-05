@@ -187,6 +187,16 @@ export function pendingDesign(design: AgentDesign | null | undefined): AgentDesi
   return design ?? null
 }
 
+/** The design a modal was showing (`prevId`) is no longer the slot's: did a
+ *  hire take it (its name, from `read.hiring`), or did it go another way?
+ *  Either way the modal must not keep its fields, or the next keystroke
+ *  would save them as a new manual copy of a design being hired. */
+export function leftTheSlot(prevId: string, read: DesignRead | undefined): { hiredAs: string | null } | null {
+  if (!prevId) return null
+  const hire = read?.hiring.find((h) => h.designId === prevId)
+  return { hiredAs: hire ? hire.name : null }
+}
+
 // ── The edit that could not leave with the page ──────────────────────────────
 //
 // A save on `pagehide` rides `keepalive`, and the browser caps a keepalive

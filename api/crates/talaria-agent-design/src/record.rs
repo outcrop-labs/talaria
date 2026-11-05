@@ -291,11 +291,15 @@ pub fn edit(
         Some(d) if d.status == DesignStatus::Generating => Err(Refusal::Generating),
         // The receipt is the refine's, not the person's: a hand edit after a
         // refine ends it, so typing never reads as "Refine applied".
+        // An edit also ends a hand-back's link to its failed hire: the strip's
+        // Retry replays that hire's old input, and must not spend the edited
+        // design on it.
         Some(d) => Ok(AgentDesign {
             status: DesignStatus::Ready,
             error: None,
             draft: Some(fields),
             previous: None,
+            released_from: None,
             updated_at: now,
             ..d.clone()
         }),
@@ -332,6 +336,10 @@ pub struct Held {
     /// slot holds another one.
     #[serde(default)]
     pub returned: Option<String>,
+    /// The bell row saying it waits was filed: once per hold, so reading
+    /// that row never brings it back (nor its toast or push).
+    #[serde(default)]
+    pub noticed: bool,
 }
 
 /// Spend the slot's design on a hire: refused when the caller names another
@@ -358,6 +366,7 @@ pub fn claim(
         hire_run_id: hire_run_id.to_string(),
         claimed_at: now,
         returned: None,
+        noticed: false,
     })
 }
 
@@ -432,6 +441,7 @@ pub fn follow_held(h: &Held, failed: &str, retry: &str, now: i64) -> Option<Held
         hire_run_id: retry.to_string(),
         claimed_at: now,
         returned: None,
+        noticed: false,
         ..h.clone()
     })
 }
@@ -893,5 +903,29 @@ mod tests {
         assert_eq!(again.hire_run_id, "h-1r");
         assert_eq!(again.design.error, None);
         assert_eq!(follow_back(&ready, "h-1", "h-1r", 9_000), None);
+    }
+
+    #[test]
+    fn an_edit_after_a_hand_back_is_not_spent_on_the_old_hires_retry() {
+        let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
+        let held = claim(Some(&ready), "d-1", "h-1", 6_000).unwrap();
+        let back = hand_back(
+            &Held {
+                returned: Some("x".into()),
+                ..held
+            },
+            7_000,
+        );
+        assert!(follow_back(&back, "h-1", "h-1r", 8_000).is_some());
+        let edited = edit(
+            Some(&back),
+            Some("d-1"),
+            draft("Renamed"),
+            8_000,
+            "d-9".into(),
+        )
+        .unwrap();
+        assert_eq!(edited.released_from, None);
+        assert!(follow_back(&edited, "h-1", "h-1r", 9_000).is_none());
     }
 }
