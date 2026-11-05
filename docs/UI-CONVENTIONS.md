@@ -196,6 +196,7 @@ that's a signal the kit needs a variant, not more overrides.
   status→color mapping inside).
 - Micro-labels (section headers, chips): `text-[10px] font-semibold uppercase
   tracking-wide text-muted` — one size, not 9/10/11px per screen.
+- Chat transcripts group a run from one sender into one block: the first row carries the avatar, name and time, and later rows are continuation lines with their own time in the gutter on hover. The rules (a sender change, a gap over `GROUP_GAP_MS` or a negative one, a new day, a `fresh` row) live once in `lib/message-groups.ts`; each surface maps its rows to facts in a tested pure helper (`channelGroupFacts`, `threadGroupFacts`, `turnGroupFacts`) and renders `continued` rows. Don't decide grouping in a component.
 - Chat chips are not `<Chip>`. A platform link, an exposed tool, a protected-action approval, and the tools that approval unlocked render through `ChatChips` / `PlatformLinkChip` (`components/chat/`). Don't paint a raw in-app URL in a message, and don't invent a second approval control for an action that already has a chip.
 
 ## Icon language

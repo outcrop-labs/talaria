@@ -25,6 +25,8 @@
   import { useSession } from '@/lib/session'
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import { dayDividerMap } from '@/lib/day-dividers'
+  import { continuationSet, messageBlocks } from '@/lib/message-groups'
+  import { channelGroupFacts } from './channel-groups'
   import { lookingNow, readCursorToPost, watchLooking } from '@/lib/looking'
   import { userMentionInsert, type Mentionable } from '@/components/chat/mentions.svelte'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
@@ -211,6 +213,10 @@
   // One divider before each calendar day's first message (R1). Recomputed with
   // the list, so "Today" rolls over the next time a message lands.
   const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt, { timeZone: ctx.timeZone, now: Date.now() }))
+  // A run from one sender reads as one block (lib/message-groups has the
+  // rules, channelGroupFacts what a row feeds them); these rows render as its
+  // continuation lines.
+  const continued = $derived(continuationSet(messageBlocks(messages, channelGroupFacts, { dayStarts: dividers })))
 
   const mentionables: Mentionable[] = $derived(
     [
@@ -308,7 +314,7 @@
            held off the bottom of its own void. Only content that can be read
            needs to clear the float; the surface behind it should not. -->
       <div
-        class="mx-auto w-full max-w-[var(--converse-width)] space-y-4 px-6 py-5"
+        class="mx-auto w-full max-w-[var(--converse-width)] space-y-4 px-6 py-5 [&>[data-continued]]:-mt-4"
         style:padding-bottom="calc(var(--chat-composer, 0px) + 0.5rem)"
       >
       {#if messagesQuery.isError && messagesQuery.data === undefined}
@@ -348,6 +354,7 @@
             <MessageRow
               message={m}
               {ctx}
+              continued={continued.has(i)}
               onOpenThread={() => (threadRoot = m.threadRootId ?? m.id)}
               onInvoke={(text) => void send(text, [])}
               onDecided={() => void messagesQuery.refetch()}
