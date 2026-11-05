@@ -7,7 +7,7 @@
 use serde::Serialize;
 use sqlx::PgPool;
 
-use talaria_tasks::{NewTask, TaskDeps, create_task};
+use talaria_tasks::{NewTask, TaskDeps, create_task, pickup_column};
 
 use crate::Plugin;
 
@@ -67,6 +67,12 @@ pub async fn request_change(
         "{request}\n\n— Requested by {requester_name} from Manage → Apps, for the **{}** plugin ({}). Its maintainer is {agent}: read the plugin with `plugin_status`, build the change on its repo, and open a PR — a person merges it, and an admin approves the update.",
         p.app_slug, p.repo
     );
+    // THE PERSON ASKED THE MAINTAINER for this work, so the ticket is born in
+    // the board's pickup column and the maintainer starts on it — as it always
+    // did. (Assigning alone no longer picks a column; this caller picks it.)
+    let pickup = pickup_column(pg, board_id)
+        .await
+        .map_err(|e| format!("could not read the board's columns: {e}"))?;
     let task = create_task(
         deps,
         &NewTask {
@@ -83,7 +89,7 @@ pub async fn request_change(
             parent_id: None,
             tags: &[],
             created_by: requester,
-            status: None,
+            status: pickup.as_deref(),
         },
     )
     .await

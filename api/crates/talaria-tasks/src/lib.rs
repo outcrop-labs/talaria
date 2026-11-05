@@ -904,6 +904,18 @@ pub struct NewTask<'a> {
     pub status: Option<&'a str>,
 }
 
+/// The board's pickup column — `StatusMeta::assigned_key`, the first usable
+/// agent-start column — for a caller whose ticket IS a person's ask for an
+/// agent's work and must start it as soon as it exists: a plugin change
+/// request (a person asking the maintainer from Manage → Apps) and plugin
+/// upkeep (the plugin's own maintenance loop). They pass it as the new
+/// ticket's chosen `status`, which is where every assigned ticket used to be
+/// born; assignment itself no longer picks a column. None: the board has no
+/// usable agent-start column, and the ticket lands in intake, as it did.
+pub async fn pickup_column(pg: &PgPool, board_id: &str) -> Result<Option<String>, sqlx::Error> {
+    Ok(status_meta(pg, board_id).await?.assigned_key)
+}
+
 pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Task> {
     let pg = &deps.pg;
     let assignees: Vec<String> = input.assignees.to_vec();

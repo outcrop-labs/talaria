@@ -59,6 +59,7 @@ mod notify_producers_live;
 mod office_export_live;
 mod pending_dedupe_live;
 mod plan_row_live;
+mod plugin_tickets_live;
 mod price_rig_live;
 mod profile_drawer_live;
 mod profile_live;
