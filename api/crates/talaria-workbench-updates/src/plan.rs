@@ -16,6 +16,8 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+use talaria_workbench_harnesses::HARNESS_BUN;
 use talaria_workbench_harnesses::{OMP_VERSION, OMP_VERSION_BUN_RANGE, Versions};
 
 use crate::Tool;
@@ -119,6 +121,11 @@ fn pinned(s: &State, t: Tool, cur: &str) -> Option<Result<Option<String>, String
             "pinned to {}, which is held ({}): allow it again or pin another",
             label(t, &p),
             h.reason.lines().next().unwrap_or("")
+        ))
+    } else if let Some(d) = ts.seen.get(&p).and_then(|x| x.deprecated.clone()) {
+        Err(format!(
+            "pinned to {}, which upstream deprecated ({d}): pin another",
+            label(t, &p)
         ))
     } else {
         Ok(Some(p))
@@ -290,6 +297,78 @@ pub fn decide(s: &State, now: i64, tuning: &Tuning) -> Plan {
             version: o.clone(),
             why: newer_or_pinned(s, Tool::Omp, &o),
         });
+        return plan;
+    }
+
+    // 4. What jobs run was deprecated or withdrawn upstream, and nothing newer
+    //    is ready: back to the previous verified pair, or the compiled one.
+    let bad = [Tool::Omp, Tool::Bun]
+        .into_iter()
+        .find(|t| s.is_bad(*t, t.of(&cur)));
+    if let Some(t) = bad {
+        let good = |v: &Versions| {
+            *v != cur
+                && !s.is_bad(Tool::Bun, &v.bun)
+                && !s.is_bad(Tool::Omp, &v.omp)
+                && !s.tool(Tool::Omp).held.contains_key(&v.omp)
+                && !s.tool(Tool::Bun).held.contains_key(&v.bun)
+        };
+        let back = s
+            .previous
+            .as_ref()
+            .map(|p| p.versions())
+            .filter(good)
+            .or_else(|| Some(Versions::bootstrap()).filter(good));
+        let what = format!(
+            "{}, which jobs run, was {}",
+            label(t, t.of(&cur)),
+            match s
+                .tool(t)
+                .seen
+                .get(t.of(&cur))
+                .and_then(|x| x.deprecated.clone())
+            {
+                Some(d) => format!("deprecated upstream ({d})"),
+                None => "deprecated upstream".into(),
+            }
+        );
+        match back {
+            Some(v) => {
+                say(
+                    &mut plan,
+                    t,
+                    Some(format!(
+                        "{what}: jobs move back to Oh My Pi {} on bun {}",
+                        v.omp, v.bun
+                    )),
+                );
+                plan.mv = Some(Move {
+                    version: t.of(&v).to_string(),
+                    why: format!("{what}: back to Oh My Pi {} on bun {}", v.omp, v.bun),
+                    to: v,
+                    tool: t,
+                });
+            }
+            None => say(
+                &mut plan,
+                t,
+                Some(format!(
+                    "{what}, and there is no good release to move to yet"
+                )),
+            ),
+        }
+        return plan;
+    }
+
+    // 5. Nothing verified here yet: smoke-test the compiled pair once, so its
+    //    lockfile is kept and every new install of it is frozen to that tree.
+    if s.current.is_none() && !s.tool(Tool::Omp).held.contains_key(OMP_VERSION) {
+        plan.mv = Some(Move {
+            to: Versions::bootstrap(),
+            tool: Tool::Omp,
+            version: OMP_VERSION.to_string(),
+            why: "the compiled pair, smoke-tested once so its lockfile is kept".into(),
+        });
     }
     plan
 }
@@ -319,7 +398,7 @@ mod tests {
             Seen {
                 first_seen_at: at,
                 requires_bun: requires.map(Into::into),
-                deprecated: None,
+                ..Default::default()
             },
         );
     }
@@ -456,7 +535,10 @@ mod tests {
         // The bootstrap's own floor is known without a check.
         let mut s = State::default();
         s.tool_mut(Tool::Bun).pinned = Some("1.3.14".into());
-        assert_eq!(decide(&s, 0, &DAY).mv, None);
+        assert!(
+            decide(&s, 0, &DAY).mv.is_none_or(|m| m.to.bun != "1.3.14"),
+            "never onto the bun the bootstrap will not start on"
+        );
     }
 
     #[test]
@@ -478,10 +560,67 @@ mod tests {
 
     #[test]
     fn nothing_to_do_says_nothing() {
-        let s = State::default();
+        let s = state("1.4.4", "18.16.0");
         let p = decide(&s, 0, &DAY);
         assert_eq!(p.mv, None);
         assert_eq!(p.details["omp"], None);
         assert_eq!(p.details["bun"], None);
+    }
+
+    #[test]
+    fn a_fresh_instance_smoke_tests_the_compiled_pair_once_to_keep_its_lockfile() {
+        let p = decide(&State::default(), 0, &DAY);
+        assert_eq!(
+            mv(&p),
+            Some((HARNESS_BUN.into(), OMP_VERSION.into(), Tool::Omp))
+        );
+        let mut s = State::default();
+        s.tool_mut(Tool::Omp)
+            .held
+            .insert(OMP_VERSION.into(), Held::default());
+        assert_eq!(decide(&s, 0, &DAY).mv, None, "not once it is held");
+    }
+
+    #[test]
+    fn a_deprecated_current_release_moves_back_to_the_fallback_or_the_compiled_pair() {
+        let mut s = state("1.4.4", "18.17.0");
+        s.previous = Some(Pair {
+            bun: "1.4.4".into(),
+            omp: "18.16.5".into(),
+            at: 0,
+        });
+        seen(&mut s, Tool::Omp, "18.17.0", 0, Some(">=1.4.4"));
+        s.tool_mut(Tool::Omp)
+            .seen
+            .get_mut("18.17.0")
+            .unwrap()
+            .deprecated = Some("broken".into());
+        let p = decide(&s, 100 * H, &DAY);
+        assert_eq!(mv(&p), Some(("1.4.4".into(), "18.16.5".into(), Tool::Omp)));
+        assert!(p.mv.unwrap().why.contains("deprecated upstream (broken)"));
+        // A newer good release that has soaked wins over going back.
+        seen(&mut s, Tool::Omp, "18.17.1", 0, Some(">=1.4.4"));
+        assert_eq!(mv(&decide(&s, 100 * H, &DAY)).unwrap().1, "18.17.1");
+        // With the fallback deprecated too, the compiled pair.
+        s.tool_mut(Tool::Omp).seen.remove("18.17.1");
+        seen(&mut s, Tool::Omp, "18.16.5", 0, Some(">=1.4.4"));
+        s.tool_mut(Tool::Omp)
+            .seen
+            .get_mut("18.16.5")
+            .unwrap()
+            .deprecated = Some("also".into());
+        assert_eq!(mv(&decide(&s, 100 * H, &DAY)).unwrap().1, OMP_VERSION);
+        // A pin to a deprecated release does not move.
+        let mut s = state("1.4.4", "18.16.0");
+        seen(&mut s, Tool::Omp, "18.13.3", 0, Some(">=1.4.4"));
+        s.tool_mut(Tool::Omp)
+            .seen
+            .get_mut("18.13.3")
+            .unwrap()
+            .deprecated = Some("bad".into());
+        s.tool_mut(Tool::Omp).pinned = Some("18.13.3".into());
+        let p = decide(&s, 100 * H, &DAY);
+        assert_eq!(p.mv, None);
+        assert!(p.details["omp"].as_deref().unwrap().contains("deprecated"));
     }
 }

@@ -14,10 +14,11 @@ ticket.
 1. `start_job` with the ticket, repo, effort, and (for standard/heavy) a plan.
    Talaria then **provisions the job before you touch it**: it clones the branch
    into the `workdir`, installs the repo's toolchain, installs the Oh My Pi
-   release Talaria has verified for this instance (kept current for you — the
-   job keeps that release until it ends) into a harness dir of this job's own, and checks it (the launcher starts,
-   its dir is writable, the model is in its catalog, the gateway accepts the
-   key). The answer's `provision` says how that went.
+   release Talaria has verified for this instance (kept current for you; the
+   job keeps that release until it ends) into a harness dir of this job's own,
+   and checks it (the launcher starts, its dir is writable, the model is in its
+   catalog, the gateway accepts the key). The answer's `provision` says how
+   that went.
    - `provision.state: ready` — the `harnesses[0]` lines are there. Run them.
    - `running` — poll `job_status` until it is `ready`. Do nothing else to the job meanwhile.
    - `failed` — the step and its output are in the answer and on the ticket

@@ -54,7 +54,17 @@
     nextCheckAt: number | null
     retryAt: number | null
     minAgeHours: number
-    volumes: { department: string; agent?: string; bun: string | null; omp: string | null; at: number; error: string | null }[]
+    volumes: {
+      department: string
+      agent?: string
+      bun: string | null
+      omp: string | null
+      at: number
+      error: string | null
+      refused: { bun: string; omp: string } | null
+      hostFailures: number
+      retryAt: number | null
+    }[]
     events: { at: number; text: string }[]
   }
 
@@ -243,8 +253,10 @@
           {#each s.volumes as v (v.department)}
             <li class="flex items-baseline justify-between gap-3 py-1.5">
               <span class="min-w-0 truncate font-sans text-sm text-fg">{v.agent ?? v.department}</span>
-              <span class="shrink-0 font-sans text-xs {v.error ? 'text-danger' : 'text-muted'}">
-                {#if v.error}would not take it: {v.error.split('\n')[0]}{:else}<span class="font-mono">omp {v.omp} · bun {v.bun}</span>{/if}
+              <span class="shrink-0 font-sans text-xs {v.refused || v.retryAt ? 'text-danger' : 'text-muted'}">
+                {#if v.refused}would not take omp {v.refused.omp} · bun {v.refused.bun}: {(v.error ?? '').split('\n')[0]} — its jobs run the fallback
+                {:else if v.retryAt}its host failed {v.hostFailures}× — tried again {until(v.retryAt)}
+                {:else}<span class="font-mono">omp {v.omp} · bun {v.bun}</span>{/if}
               </span>
             </li>
           {/each}

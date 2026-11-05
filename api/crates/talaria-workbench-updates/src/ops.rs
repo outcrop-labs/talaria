@@ -14,7 +14,7 @@ use talaria_workbench_harnesses::Versions;
 use talaria_workbench_mcp::devenv::VerifyFailure;
 
 use crate::Tool;
-use crate::engine::{Ops, Patch, Workbench};
+use crate::engine::{Ops, Patch, Smoke, Workbench};
 use crate::state::State;
 use crate::upstream::{self, Release};
 
@@ -92,11 +92,66 @@ impl Ops for Live {
         &'a self,
         w: &'a Workbench,
         v: &'a Versions,
-    ) -> BoxFuture<'a, Result<(), VerifyFailure>> {
+        smoke: &'a Smoke,
+    ) -> BoxFuture<'a, Result<Option<String>, VerifyFailure>> {
         Box::pin(async move {
-            talaria_workbench_mcp::devenv::verify_harness(&self.pg, &w.department, v)
-                .await
-                .map(|_| ())
+            talaria_workbench_mcp::devenv::verify_harness(
+                &self.pg,
+                &w.department,
+                v,
+                &smoke.keep,
+                smoke.integrity.as_deref(),
+            )
+            .await
+            .map(|(_, lock)| lock)
+        })
+    }
+
+    fn store_lock<'a>(
+        &'a self,
+        v: &'a Versions,
+        lock: &'a str,
+        integrity: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let value = serde_json::json!({
+                "lock": lock,
+                "integrity": integrity,
+                "at": talaria_agent_auth::now_ms(),
+            });
+            sqlx::query(
+                "insert into app_settings (key, value) values ($1, $2) \
+                 on conflict (key) do update set value = excluded.value, updated_at = now()",
+            )
+            .bind(talaria_workbench_harnesses::lock_key(v))
+            .bind(value)
+            .execute(&self.pg)
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                format!(
+                    "the verified lockfile for Oh My Pi {} on bun {} could not be kept: {e}",
+                    v.omp, v.bun
+                )
+            })
+        })
+    }
+
+    fn prune_locks<'a>(&'a self, keep: &'a [Versions]) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            let keys: Vec<String> = keep
+                .iter()
+                .map(|v| talaria_workbench_harnesses::lock_key(v))
+                .collect();
+            if let Err(e) =
+                sqlx::query("delete from app_settings where key like $1 and not (key = any($2))")
+                    .bind(format!("{}%", talaria_workbench_harnesses::LOCK_KEY_PREFIX))
+                    .bind(&keys)
+                    .execute(&self.pg)
+                    .await
+            {
+                tracing::warn!("[workbench-harness] old lockfiles could not be pruned: {e}");
+            }
         })
     }
 

@@ -846,10 +846,13 @@ async fn call_tool(
                     "slug": OMP.slug,
                     "guide": OMP.guide,
                     "probe": fill_cmd(OMP.probe, None, "", &launcher),
-                    "version": runtime
-                        .as_ref()
-                        .map(|rt| rt.omp_version().to_string())
-                        .unwrap_or_else(|_| talaria_workbench_harnesses::effective_from(None).target.omp),
+                    "version": match &runtime {
+                        Ok(rt) => rt.omp_version().to_string(),
+                        Err(_) => talaria_workbench_harnesses::effective(pg)
+                            .await
+                            .map(|e| e.target.omp)
+                            .unwrap_or_else(|_| talaria_workbench_harnesses::OMP_VERSION.into()),
+                    },
                     "passthroughConfig": format!("/opt/workbench-config/{MCP_CONFIG_FILE}"),
                 },
                 "models": models,

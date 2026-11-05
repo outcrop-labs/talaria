@@ -226,15 +226,170 @@ pub fn effective_from(state: Option<&Value>) -> Effective {
     }
 }
 
-/// What a provision on this instance installs now. Never a registry call:
-/// a job runs only what the channel verified, or the bootstrap fallback.
-pub async fn effective(pg: &PgPool) -> Effective {
-    let stored: Option<Value> = sqlx::query_scalar("select value from app_settings where key = $1")
+/// The stored channel state, `None` when there is none yet. A store that
+/// will not answer is an error, never the bootstrap: a job provisioned on a
+/// database blip would otherwise run the compiled pair until it ends.
+pub async fn channel_state(pg: &PgPool) -> Result<Option<Value>, String> {
+    sqlx::query_scalar("select value from app_settings where key = $1")
         .bind(CHANNEL_STATE_KEY)
         .fetch_optional(pg)
         .await
-        .unwrap_or(None);
-    effective_from(stored.as_ref())
+        .map_err(|e| format!("the workbench harness state could not be read: {e}"))
+}
+
+/// What a provision on this instance installs now. Never a registry call:
+/// a job runs only what the channel verified, or the bootstrap fallback.
+pub async fn effective(pg: &PgPool) -> Result<Effective, String> {
+    Ok(effective_from(channel_state(pg).await?.as_ref()))
+}
+
+impl Effective {
+    /// The Oh My Pi releases whose installs a provision keeps: the target's
+    /// and the fallback's.
+    pub fn keep(&self) -> Vec<String> {
+        let mut k = vec![self.target.omp.clone()];
+        if let Some(f) = &self.fallback
+            && !k.contains(&f.omp)
+        {
+            k.push(f.omp.clone());
+        }
+        k
+    }
+}
+
+/// The pairs a provision on `department`'s volume tries, in order: the
+/// verified pair — unless this volume already refused it, then it is skipped
+/// and the sentence says why — then the previous verified pair, then the
+/// compiled bootstrap as the last resort. Pure.
+pub fn attempts_from(state: Option<&Value>, department: &str) -> (Vec<Versions>, Option<String>) {
+    let eff = effective_from(state);
+    let refused = state
+        .and_then(|s| s.get("volumes"))
+        .and_then(|v| v.get(department))
+        .and_then(|v| {
+            let r = v.get("refused")?;
+            let pair = Versions {
+                bun: r.get("bun")?.as_str()?.to_string(),
+                omp: r.get("omp")?.as_str()?.to_string(),
+            };
+            let why = v
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Some((pair, why))
+        });
+    let mut out: Vec<Versions> = Vec::new();
+    let mut skipped = None;
+    match &refused {
+        Some((pair, why)) if *pair == eff.target && eff.source == "verified" => {
+            skipped = Some(format!(
+                "this workbench would not take Oh My Pi {} on bun {} ({}), so it is not tried again until the channel's next try on it succeeds",
+                pair.omp,
+                pair.bun,
+                why.lines().next().unwrap_or("no reason recorded")
+            ));
+        }
+        _ => out.push(eff.target.clone()),
+    }
+    for v in eff.fallback.into_iter().chain([Versions::bootstrap()]) {
+        if !out.contains(&v) && !(skipped.is_some() && v == eff.target) {
+            out.push(v);
+        }
+    }
+    (out, skipped)
+}
+
+/// Record that `department`'s volume would not take `v` (the release's own
+/// failure there, not the host's): its next provisions go straight to the
+/// fallback, and the channel tries it again on its own schedule. One UPDATE,
+/// so it waits behind the channel's own row lock and loses nothing.
+pub async fn record_refusal(pg: &PgPool, department: &str, v: &Versions, why: &str) {
+    let why: String = why.chars().take(1500).collect();
+    let r = sqlx::query(
+        "insert into app_settings (key, value) values ($1, '{}'::jsonb) on conflict (key) do nothing",
+    )
+    .bind(CHANNEL_STATE_KEY)
+    .execute(pg)
+    .await;
+    if let Err(e) = r {
+        tracing::warn!("[workbench] the refusal on {department} could not be recorded: {e}");
+        return;
+    }
+    let r = sqlx::query(
+        "update app_settings set value = \
+           case when jsonb_typeof(value) = 'object' then value else '{}'::jsonb end \
+           || jsonb_build_object('volumes', \
+                coalesce(case when jsonb_typeof(value) = 'object' then value->'volumes' end, '{}'::jsonb) \
+                || jsonb_build_object($2::text, \
+                     coalesce(value->'volumes'->$2::text, '{}'::jsonb) \
+                     || jsonb_build_object('refused', jsonb_build_object('bun', $3::text, 'omp', $4::text, 'at', $6::bigint), \
+                                           'error', $5::text, 'at', $6::bigint))), \
+           updated_at = now() \
+         where key = $1",
+    )
+    .bind(CHANNEL_STATE_KEY)
+    .bind(department)
+    .bind(&v.bun)
+    .bind(&v.omp)
+    .bind(&why)
+    .bind(now_ms())
+    .execute(pg)
+    .await;
+    if let Err(e) = r {
+        tracing::warn!("[workbench] the refusal on {department} could not be recorded: {e}");
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// The `app_settings` key prefix the verified lockfiles live under: one per
+/// verified PAIR (a lockfile is bun's own format, and an older bun refuses a
+/// newer bun's — `UnknownLockfileVersion`), written when the pair passes its
+/// smoke test, read by every provision of it.
+pub const LOCK_KEY_PREFIX: &str = "workbench_harness_lock:";
+
+/// The key of `v`'s verified lockfile.
+pub fn lock_key(v: &Versions) -> String {
+    format!("{LOCK_KEY_PREFIX}{}+{}", v.bun, v.omp)
+}
+
+/// A release's verified lockfile, and npm's integrity for its tarball.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedLock {
+    pub lock: String,
+    pub integrity: Option<String>,
+}
+
+/// `v`'s verified lockfile, if a smoke test has kept one.
+pub async fn verified_lock(pg: &PgPool, v: &Versions) -> Result<Option<VerifiedLock>, String> {
+    let row: Option<Value> = sqlx::query_scalar("select value from app_settings where key = $1")
+        .bind(lock_key(v))
+        .fetch_optional(pg)
+        .await
+        .map_err(|e| {
+            format!(
+                "the verified lockfile for Oh My Pi {} on bun {} could not be read: {e}",
+                v.omp, v.bun
+            )
+        })?;
+    Ok(row
+        .and_then(|v| {
+            Some(VerifiedLock {
+                lock: v.get("lock")?.as_str()?.to_string(),
+                integrity: v
+                    .get("integrity")
+                    .and_then(Value::as_str)
+                    .filter(|i| plain_integrity(i))
+                    .map(str::to_string),
+            })
+        })
+        .filter(|l| !l.lock.trim().is_empty()))
 }
 
 /// One harness directory per job, beside nothing another job uses.
@@ -291,14 +446,184 @@ pub const UPDATE_SLOT: &str = "update-check";
 /// A job's agent dir links to these rather than copying them.
 pub const WORKBENCH_CONFIG_DIR: &str = "/opt/workbench-config";
 
+/// The pinned mise every workbench installs when its volume has none: the
+/// release binary from GitHub, by version, checked against its published
+/// SHA-256 (`SHASUMS256.txt` of that release) before it is ever run. Never
+/// `curl https://mise.run | sh`, which ran whatever the installer and the
+/// latest release were at that moment.
+pub const MISE_VERSION: &str = "2026.10.19";
+/// `mise-v<MISE_VERSION>-linux-x64-musl`'s SHA-256.
+pub const MISE_SHA256_X64: &str =
+    "45fa1d94af35d5c65df7176612d5b3f61f9e406d47e8eb28e5032e2a0b99b563";
+/// `mise-v<MISE_VERSION>-linux-arm64-musl`'s SHA-256.
+pub const MISE_SHA256_ARM64: &str =
+    "35cbcd510247f9bde9baee667bd0b394a3d78a54078645f40c028a43c4794baa";
+
+/// A shell function, `install_mise <dest>`: the pinned mise, downloaded,
+/// checksum-verified and moved into place whole. Shared by the harness's
+/// runtime script and prepare_env's.
+pub fn install_mise_sh(download_secs: u64) -> String {
+    r#"install_mise() {
+  dest="$1"
+  case "$(uname -m)" in
+    x86_64|amd64) arch=x64; sum=__X64__ ;;
+    aarch64|arm64) arch=arm64; sum=__ARM64__ ;;
+    *) echo "there is no pinned mise for $(uname -m)" >&2; return 1 ;;
+  esac
+  mkdir -p "$(dirname "$dest")"
+  tmp="$dest.dl.$$"
+  if ! curl -fsSL --max-time __DL__ -o "$tmp" "https://github.com/jdx/mise/releases/download/v__V__/mise-v__V__-linux-$arch-musl" 9>&-; then
+    rm -f "$tmp"; echo "could not download mise __V__ from GitHub" >&2; return 1
+  fi
+  got="$(sha256sum "$tmp" 2>/dev/null | cut -d' ' -f1)"
+  if [ "$got" != "$sum" ]; then
+    rm -f "$tmp"; echo "mise __V__ failed its checksum (sha256 ${got:-unreadable}, not $sum)" >&2; return 1
+  fi
+  chmod 0755 "$tmp" && mv -f "$tmp" "$dest"
+}
+"#
+    .replace("__X64__", MISE_SHA256_X64)
+    .replace("__ARM64__", MISE_SHA256_ARM64)
+    .replace("__V__", MISE_VERSION)
+    .replace("__DL__", &download_secs.to_string())
+}
+
+/// How long each step of the runtime script may take. Every step that runs a
+/// release's code or downloads it is bounded by `timeout`, so a release that
+/// hangs (a start that waits on a TTY or the network) is reported as the
+/// release's and never holds the volume's install lock: the lock's fd is
+/// closed for every child, and `timeout` kills the step's whole process
+/// group. The sum, plus the lock wait, stays under [`RUNTIME_EXEC_SECS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds {
+    /// One `--version` start (bun's or Oh My Pi's).
+    pub start_secs: u64,
+    /// `bun install` of Oh My Pi.
+    pub install_secs: u64,
+    /// mise's own download, and `mise install bun@<v>`.
+    pub mise_secs: u64,
+    /// Waiting for another provision's install lock.
+    pub lock_wait_secs: u64,
+}
+
+/// The bounds every workbench runs under.
+pub const BOUNDS: Bounds = Bounds {
+    start_secs: 60,
+    install_secs: 240,
+    mise_secs: 180,
+    lock_wait_secs: INSTALL_LOCK_WAIT_SECS,
+};
+
+/// The exec limit for one run of the runtime script: the lock wait, mise and
+/// its bun, the install and three starts, with room. The script itself runs
+/// under an in-container `timeout` [`RUNTIME_INNER_SLACK_SECS`] shorter, so
+/// the container kills its own process tree before the client gives up.
+pub const RUNTIME_EXEC_SECS: u64 = 18 * 60;
+/// How much sooner the in-container bound fires than the client's.
+pub const RUNTIME_INNER_SLACK_SECS: u64 = 30;
+
+/// The last argument of the runtime script's shell, so a run the exec limit
+/// overtook can be found in the container and its process group killed.
+pub const RUNTIME_MARKER: &str = "talaria-harness-runtime";
+
+/// The argv that runs a script in the container under the in-container
+/// bound: `sh -c <this> sh <secs> <script>`. Falls back to running it
+/// unbounded where the image has no `timeout`.
+pub const BOUNDED_EXEC_SH: &str = r#"if command -v timeout >/dev/null 2>&1; then exec timeout -k 10 "$1" sh -c "$2" talaria-harness-runtime; else exec sh -c "$2" talaria-harness-runtime; fi"#;
+
+/// Kill whatever is left of a runtime-script run (its process group), found
+/// by [`RUNTIME_MARKER`]: what the client runs when its own limit hit, so a
+/// run the in-container bound missed never keeps going on its own.
+pub const KILL_RUNTIME_SH: &str = r#"for p in /proc/[0-9]*; do
+  last="$(tr '\0' '\n' < "$p/cmdline" 2>/dev/null | tail -n 1)"
+  [ "$last" = talaria-harness-runtime ] || continue
+  g="$(sed 's/^.*) //' "$p/stat" 2>/dev/null | cut -d' ' -f3)"
+  [ -n "$g" ] && kill -KILL -- "-$g" 2>/dev/null
+  kill -KILL "${p#/proc/}" 2>/dev/null
+done
+true"#;
+
+/// Whose failure a runtime-script run was, as the script says it on its last
+/// stderr line (`talaria-fault: <phase>`): `start` (the release installed and
+/// would not start, or did not start in time), `timeout` (its install did not
+/// finish in time), `install` (the install failed: the caller reads the log
+/// to tell a missing release from a network error), `host` (mise's own
+/// download, the install lock, a disk).
+pub fn runtime_fault_phase(err: &str) -> Option<&str> {
+    err.lines()
+        .rev()
+        .find_map(|l| l.trim().strip_prefix("talaria-fault: "))
+        .map(str::trim)
+}
+
+/// One run of the runtime script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeRun<'a> {
+    /// What to install and start.
+    pub v: &'a Versions,
+    /// The harness channel's smoke test: bun and Oh My Pi are installed and
+    /// started by their own versioned paths, and the volume's shell `bun`
+    /// (`mise use -g`, the [`AGENT_BIN_DIR`] link) is left as it is. A
+    /// provision of a verified pair promotes its bun there, once it started.
+    pub smoke: bool,
+    /// Oh My Pi releases whose installs the prune never removes: the
+    /// channel's current and fallback.
+    pub keep: &'a [String],
+    /// A lockfile (`bun.lock`) arrives on stdin: install with
+    /// `--frozen-lockfile`, and reinstall an install whose lock differs, so
+    /// every transitive dependency is exactly what was smoke-tested.
+    pub frozen: bool,
+    /// npm's `dist.integrity` for the Oh My Pi tarball: the lockfile an
+    /// unfrozen install writes must name it, or the install is refused.
+    pub integrity: Option<&'a str>,
+    /// The npm registry `bun install` resolves from (a mirror), when the
+    /// operator set one for the check too.
+    pub registry: Option<&'a str>,
+}
+
+impl<'a> RuntimeRun<'a> {
+    /// A provision of `v`, no lockfile, nothing else kept.
+    pub fn provision(v: &'a Versions) -> RuntimeRun<'a> {
+        RuntimeRun {
+            v,
+            smoke: false,
+            keep: &[],
+            frozen: false,
+            integrity: None,
+            registry: None,
+        }
+    }
+}
+
+/// npm's `dist.integrity` as it may reach a script.
+pub fn plain_integrity(s: &str) -> bool {
+    let Some((algo, b64)) = s.split_once('-') else {
+        return false;
+    };
+    ["sha1", "sha256", "sha384", "sha512"].contains(&algo)
+        && !b64.is_empty()
+        && b64.len() < 200
+        && b64
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"+/=".contains(&c))
+}
+
+/// A registry URL as it may reach a script.
+pub fn plain_registry(s: &str) -> bool {
+    (s.starts_with("https://") || s.starts_with("http://"))
+        && s.len() < 300
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b":/._-%@".contains(&c))
+}
+
 /// Make the harness's runtime real in a sandbox, idempotently, as the agent's
-/// own user: mise if the volume has none yet, bun pinned globally and
-/// installed, `bun` linked into [`AGENT_BIN_DIR`] so every shell finds it
-/// without a profile, and the pinned Oh My Pi installed into
-/// [`omp_install_dir`] and started once. Prints `bun <v>`, `omp <v>` and
-/// `bunPath <path>` on success ([`parse_runtime`]); exits non-zero with the
-/// reason otherwise. Cheap once done (no download, a link refresh, one
-/// `--version`).
+/// own user: the pinned mise if the volume has none yet, bun installed by
+/// version, and Oh My Pi installed into [`omp_install_dir`] and started once.
+/// A provision then pins that bun globally and links it into [`AGENT_BIN_DIR`]
+/// so every shell finds it — only after it and Oh My Pi started. Prints
+/// `bun <v>`, `omp <v>` and `bunPath <path>` on success ([`parse_runtime`]);
+/// exits non-zero with the reason, and a `talaria-fault:` line, otherwise.
+/// Cheap once done (no download, one `--version` each).
 ///
 /// The platform runs this before it hands the agent a harness to use — doctor,
 /// start_job's provisioning, prepare_env — rather than trusting that some
@@ -306,56 +631,120 @@ pub const WORKBENCH_CONFIG_DIR: &str = "/opt/workbench-config";
 /// prepare_env on a cloned repo, so a fresh Developer Agent's doctor, and every
 /// non-login shell, found no bun and omp could not start.
 ///
-/// `v` is what to install and start: [`effective`]'s target for a provision,
-/// a candidate for the harness channel's smoke test. Never a range or a tag
-/// (`None` unless both are [`plain_version`]s).
-pub fn harness_runtime_script(v: &Versions) -> Option<String> {
-    v.plain()
-        .then(|| runtime_script_for(HARNESS_XDG_DATA_HOME, AGENT_BIN_DIR, HARNESS_ROOT, v))
+/// `run.v` is what to install and start: what the channel verified for a
+/// provision, a candidate for the harness channel's smoke test. Never a range
+/// or a tag (`None` unless the versions, integrity and registry are plain).
+pub fn harness_runtime_script(run: &RuntimeRun) -> Option<String> {
+    runtime_script_checked(
+        HARNESS_XDG_DATA_HOME,
+        AGENT_BIN_DIR,
+        HARNESS_ROOT,
+        run,
+        &BOUNDS,
+    )
+}
+
+fn runtime_script_checked(
+    xdg: &str,
+    bin: &str,
+    harness_root: &str,
+    run: &RuntimeRun,
+    b: &Bounds,
+) -> Option<String> {
+    let ok = run.v.plain()
+        && run.keep.iter().all(|k| plain_version(k))
+        && run.integrity.is_none_or(plain_integrity)
+        && run.registry.is_none_or(plain_registry);
+    ok.then(|| runtime_script_for(xdg, bin, harness_root, run, b))
 }
 
 /// [`harness_runtime_script`] against other roots — the script the tests run
 /// for real, under a temp dir, with a stand-in bun.
-fn runtime_script_for(xdg: &str, bin: &str, harness_root: &str, v: &Versions) -> String {
+fn runtime_script_for(
+    xdg: &str,
+    bin: &str,
+    harness_root: &str,
+    run: &RuntimeRun,
+    b: &Bounds,
+) -> String {
+    let v = run.v;
     let root = format!("{harness_root}/omp");
     let link = format!("{root}/{}", v.omp);
     let entry = format!("{link}/node_modules/{OMP_PACKAGE}/dist/cli.js");
-    r#"set -eu
+    let script = r#"set -eu
 export XDG_DATA_HOME="__XDG__" MISE_YES=1
 bin="__BIN__"
 mise="$bin/mise"
-mkdir -p "$bin"
-# Fast path: the link from an earlier run still answers the pinned version,
-# so mise (slow on a loaded volume) is not asked again.
-real=""
-if [ -L "$bin/bun" ] && [ "$("$bin/bun" --version 2>/dev/null)" = "__BUN__" ]; then
-  real="$(readlink -f "$bin/bun")"
-fi
-if [ -z "$real" ]; then
-  if [ ! -x "$mise" ]; then
-    if ! curl -fsSL https://mise.run | MISE_INSTALL_PATH="$mise" sh >/dev/null 2>&1; then
-      echo "could not install mise (the toolchain manager bun is installed with) into $bin" >&2
-      exit 1
-    fi
-  fi
-  "$mise" use -g bun@__BUN__ >/dev/null 2>&1 || true
-  if ! "$mise" install bun@__BUN__ >/dev/null 2>&1; then
-    echo "could not install bun __BUN__ with mise" >&2
-    exit 1
-  fi
-  real="$("$mise" where bun@__BUN__ 2>/dev/null)/bin/bun"
-  if [ ! -x "$real" ]; then
-    echo "bun __BUN__ is not at $real after installing it" >&2
-    exit 1
-  fi
-  ln -sfn "$real" "$bin/bun"
-fi
 root="__OMPROOT__"
 link="__OMPDIR__"
 entry="__ENTRY__"
-started() { "$real" "$entry" --version 2>/dev/null | grep -qx "omp/__OMPV__"; }
-if ! started; then
-  mkdir -p "$root"
+smoke=__SMOKE__
+frozen=__FROZEN__
+mkdir -p "$bin" "$root"
+# Every step that runs a release's code or downloads it is bounded, and runs
+# with the install lock's fd (9) closed: a step that hangs is the release's
+# to answer for, and nothing it leaves behind can keep the lock.
+if command -v timeout >/dev/null 2>&1; then
+  bounded() { s="$1"; shift; timeout -k 5 "$s" "$@"; }
+else
+  bounded() { shift; "$@"; }
+fi
+# The last line the api reads: whose failure this was.
+fault() { echo "talaria-fault: $1" >&2; exit 1; }
+lockin=""
+lockdir=""
+cleanup() {
+  if [ -n "$lockin" ]; then rm -f "$lockin"; fi
+  if [ -n "$lockdir" ]; then rm -rf "$lockdir"; fi
+}
+trap cleanup EXIT
+if [ "$frozen" = 1 ]; then
+  lockin="$root/.lock.in.$$"
+  cat > "$lockin"
+  [ -s "$lockin" ] || { echo "the verified lockfile arrived empty" >&2; fault host; }
+fi
+__INSTALL_MISE__
+# The harness's bun, by its own versioned path: resolved once and asked for
+# its own version, so another provision repointing the shell's `bun` link
+# meanwhile changes nothing here.
+real="__XDG__/mise/installs/bun/__BUN__/bin/bun"
+if ! { [ -x "$real" ] && [ "$(bounded __TSTART__ "$real" --version 2>/dev/null </dev/null 9>&-)" = "__BUN__" ]; }; then
+  if [ ! -x "$mise" ]; then
+    install_mise "$mise" || { echo "could not install mise (the toolchain manager bun is installed with) into $bin" >&2; fault host; }
+  fi
+  rc=0
+  out="$(bounded __TMISE__ "$mise" install bun@__BUN__ 2>&1 </dev/null 9>&-)" || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "could not install bun __BUN__ with mise (exit $rc): $(printf '%s' "$out" | tail -n 4)" >&2
+    case "$rc" in 124|137) echo "bun __BUN__ did not finish installing within __TMISE__ s" >&2; fault timeout ;; esac
+    fault install
+  fi
+  real="$("$mise" where bun@__BUN__ 2>/dev/null </dev/null)/bin/bun"
+  [ -x "$real" ] || { echo "bun __BUN__ is not at $real after installing it" >&2; fault host; }
+  rc=0
+  said="$(bounded __TSTART__ "$real" --version 2>&1 </dev/null 9>&-)" || rc=$?
+  if [ "$said" != "__BUN__" ]; then
+    case "$rc" in 124|137) echo "bun __BUN__ did not finish starting within __TSTART__ s" >&2 ;;
+      *) echo "bun __BUN__ installed but does not start: $(printf '%s' "$said" | tail -n 3)" >&2 ;; esac
+    fault start
+  fi
+fi
+# One start of an Oh My Pi entry on that bun: `said` and `rc` say how it went.
+start_check() {
+  rc=0
+  said="$(bounded __TSTART__ "$real" "$1" --version 2>&1 </dev/null 9>&-)" || rc=$?
+  [ "$rc" = 0 ] && printf '%s\n' "$said" | grep -qx "omp/__OMPV__"
+}
+# The install there is the one wanted: it starts, it has the lockfile its
+# tree was installed from (one made before lockfiles were kept has none, and
+# is installed again once), and (frozen) that lockfile is exactly the
+# verified one.
+current_ok() {
+  start_check "$entry" || return 1
+  [ -s "$link/bun.lock" ] || return 1
+  [ "$frozen" != 1 ] || cmp -s "$lockin" "$link/bun.lock"
+}
+if ! current_ok; then
   # One install at a time per volume, and NEVER without the lock: a second
   # provision waits here, then finds the first one's install and skips its
   # own. The wait is shorter than the exec's own timeout, so a waiter fails
@@ -365,7 +754,7 @@ if ! started; then
     exec 9>"$lock"
     if ! flock -w __LOCKWAIT__ 9; then
       echo "another provision held the Oh My Pi install lock for __LOCKWAIT__ s; provisioning again takes it once that install is done" >&2
-      exit 1
+      fault host
     fi
   else
     # No flock: a lock DIRECTORY, made whole and renamed into place, so it is
@@ -382,6 +771,7 @@ if ! started; then
       echo $$ > "$mine/pid"
       head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$mine/token"
       if mv -T "$mine" "$lock.d" 2>/dev/null; then
+        lockdir="$lock.d"
         break
       fi
       holder=$(cat "$lock.d/pid" 2>/dev/null || true)
@@ -403,35 +793,57 @@ if ! started; then
       if [ "$waited" -ge __LOCKWAIT__ ]; then
         rm -rf "$mine"
         echo "another provision held the Oh My Pi install lock for __LOCKWAIT__ s; provisioning again takes it once that install is done" >&2
-        exit 1
+        fault host
       fi
       sleep 2
       waited=$((waited + 2))
     done
-    trap 'rm -rf "$lock.d"' EXIT
   fi
-  if ! started; then
+  if ! current_ok; then
     # Install beside whatever is there, prove it starts, then swap it in by
     # renaming a symlink over the old one: atomic, and a job already running
     # keeps the directory it started from. Nothing here deletes an install.
     new="$root/.__OMPV__.$(date +%s).$$"
     mkdir -p "$new"
-    # omp itself is exact, and so are its own @oh-my-pi packages; its
-    # third-party deps carry carets (OMP_VERSION's doc says why that stands).
+    # omp itself is exact, and so are its own @oh-my-pi packages; the
+    # verified pair's lockfile pins everything else, integrity included.
+    # (Not a production-only install: this package.json has no
+    # devDependencies, and that flag makes bun write no lockfile, the one
+    # thing the smoke test keeps.)
     printf '{"name":"talaria-omp","private":true,"dependencies":{"__PKG__":"__OMPV__"}}\n' > "$new/package.json"
-    if ! (cd "$new" && BUN_INSTALL_CACHE_DIR="__HROOT__/bun-cache" "$real" install --production --no-progress >"$new/install.log" 2>&1); then
+    # A mirror's URL reaches bun with a trailing slash: bun joins the package
+    # name onto it, and without one drops the URL's last path segment.
+    flags=""
+    if [ "$frozen" = 1 ]; then
+      cp "$lockin" "$new/bun.lock"
+      flags="--frozen-lockfile"
+    fi
+    rc=0
+    (cd "$new" && export BUN_INSTALL_CACHE_DIR="__HROOT__/bun-cache" && if [ -n "__REGISTRY__" ]; then export BUN_CONFIG_REGISTRY="__REGISTRY__/"; fi \
+      && bounded __TINSTALL__ "$real" install --no-progress $flags >"$new/install.log" 2>&1 </dev/null 9>&-) || rc=$?
+    if [ "$rc" != 0 ]; then
       tail -n 15 "$new/install.log" >&2
       rm -rf "$new"
+      case "$rc" in
+        124|137) echo "Oh My Pi __OMPV__ did not finish installing within __TINSTALL__ s" >&2; fault timeout ;;
+      esac
       echo "could not install Oh My Pi __OMPV__ (bun install, above)" >&2
-      exit 1
+      fault install
+    fi
+    if [ -n "__INTEGRITY__" ] && ! grep -qF "__INTEGRITY__" "$new/bun.lock" 2>/dev/null; then
+      rm -rf "$new"
+      echo "Oh My Pi __OMPV__ installed a tarball whose integrity is not the one npm documents (__INTEGRITY__)" >&2
+      fault start
     fi
     # What it printed when it would not start is the reason an admin reads
     # (omp's own `Bun runtime must be >= …` line), so it is kept.
-    if ! said=$("$real" "$new/node_modules/__PKG__/dist/cli.js" --version 2>&1) \
-      || ! printf '%s\n' "$said" | grep -qx "omp/__OMPV__"; then
+    if ! start_check "$new/node_modules/__PKG__/dist/cli.js"; then
       rm -rf "$new"
-      echo "Oh My Pi __OMPV__ installed but does not start on bun __BUN__: $(printf '%s' "$said" | tail -n 3)" >&2
-      exit 1
+      case "$rc" in
+        124|137) echo "Oh My Pi __OMPV__ did not finish starting within __TSTART__ s on bun __BUN__" >&2 ;;
+        *) echo "Oh My Pi __OMPV__ installed but does not start on bun __BUN__: $(printf '%s' "$said" | tail -n 3)" >&2 ;;
+      esac
+      fault start
     fi
     # An install from before installs were swapped is a real directory at the
     # link's path: move it aside (a rename, so a process in it keeps running)
@@ -462,13 +874,24 @@ fi
 # and that no job still holds: a job's launcher names the version link it was
 # provisioned on (`omp/<v>/…`), and its teardown removes that launcher when
 # the job ends, so a job that started on an older release keeps it however
-# long it runs, while new jobs start on the newer one.
+# long it runs, while new jobs start on the newer one. The install this run
+# answers for, and the channel's current and fallback installs (`keep`), are
+# never pruned, and the one this run answers for loses any stamp an earlier
+# run left on it: it is current again.
 # One not current and not yet stamped is stamped now: its clock starts here.
 # Then any version link left dangling.
 cur="$(readlink -f "$link" 2>/dev/null || true)"
+if [ -n "$cur" ] && [ -d "$cur" ]; then rm -f "$cur/.retired"; fi
+keepdirs="|"
+for k in __KEEP__; do
+  kd="$(readlink -f "$root/$k" 2>/dev/null || true)"
+  if [ -n "$kd" ] && [ -d "$kd" ]; then keepdirs="$keepdirs$kd|"; fi
+done
 for d in "$root"/.[0-9]*; do
   [ -d "$d" ] || continue
-  [ "$(readlink -f "$d")" = "$cur" ] && continue
+  dd="$(readlink -f "$d")"
+  [ "$dd" = "$cur" ] && continue
+  case "$keepdirs" in *"|$dd|"*) continue ;; esac
   if [ ! -e "$d/.retired" ]; then
     touch "$d/.retired"
     continue
@@ -487,32 +910,48 @@ for l in "$root"/*; do
   [ -L "$l" ] || continue
   [ -e "$l" ] || rm -f "$l"
 done
-if ! v=$("$real" "$entry" --version 2>&1); then
-  echo "Oh My Pi __OMPV__ does not start on bun __BUN__: $(printf '%s' "$v" | tail -n 3)" >&2
-  exit 1
+if ! start_check "$entry"; then
+  echo "Oh My Pi __OMPV__ does not start on bun __BUN__: $(printf '%s' "$said" | tail -n 3)" >&2
+  fault start
 fi
-echo "bun $("$real" --version)"
-echo "omp $v"
+# A provision promotes the bun it just started on to the volume's shell
+# `bun`; a smoke test never does (the candidate is not verified yet).
+if [ "$smoke" != 1 ] && [ "$(readlink -f "$bin/bun" 2>/dev/null || true)" != "$real" ]; then
+  if [ -x "$mise" ]; then bounded __TMISE__ "$mise" use -g bun@__BUN__ >/dev/null 2>&1 </dev/null 9>&- || true; fi
+  ln -s "$real" "$bin/bun.tmp.$$" && mv -T "$bin/bun.tmp.$$" "$bin/bun"
+fi
+echo "bun $("$real" --version </dev/null 9>&-)"
+echo "omp $said"
 echo "bunPath $real"
-"#
-    .replace("__XDG__", xdg)
-    .replace("__BIN__", bin)
-    .replace("__BUN__", &v.bun)
-    .replace("__JOBS__", &format!("{harness_root}/jobs"))
-    .replace("__OMPROOT__", &root)
-    .replace("__OMPDIR__", &link)
-    .replace("__ENTRY__", &entry)
-    .replace("__LOCKWAIT__", &INSTALL_LOCK_WAIT_SECS.to_string())
-    .replace("__LOCKSTALE__", &PIDLESS_LOCK_STALE_SECS.to_string())
-    .replace("__RETIRE_MIN__", &RETIRED_KEEP_MINS.to_string())
-    .replace("__OMPV__", &v.omp)
-    .replace("__PKG__", OMP_PACKAGE)
-    .replace("__HROOT__", harness_root)
+"#;
+    script
+        .replace("__INSTALL_MISE__", &install_mise_sh(b.mise_secs))
+        .replace("__XDG__", xdg)
+        .replace("__BIN__", bin)
+        .replace("__BUN__", &v.bun)
+        .replace("__JOBS__", &format!("{harness_root}/jobs"))
+        .replace("__OMPROOT__", &root)
+        .replace("__OMPDIR__", &link)
+        .replace("__ENTRY__", &entry)
+        .replace("__SMOKE__", if run.smoke { "1" } else { "0" })
+        .replace("__FROZEN__", if run.frozen { "1" } else { "0" })
+        .replace("__KEEP__", &run.keep.join(" "))
+        .replace("__INTEGRITY__", run.integrity.unwrap_or(""))
+        .replace("__REGISTRY__", run.registry.unwrap_or(""))
+        .replace("__TSTART__", &b.start_secs.to_string())
+        .replace("__TINSTALL__", &b.install_secs.to_string())
+        .replace("__TMISE__", &b.mise_secs.to_string())
+        .replace("__LOCKWAIT__", &b.lock_wait_secs.to_string())
+        .replace("__LOCKSTALE__", &PIDLESS_LOCK_STALE_SECS.to_string())
+        .replace("__RETIRE_MIN__", &RETIRED_KEEP_MINS.to_string())
+        .replace("__OMPV__", &v.omp)
+        .replace("__PKG__", OMP_PACKAGE)
+        .replace("__HROOT__", harness_root)
 }
 
-/// How long a provision waits for another one's omp install. Shorter than
-/// the exec that runs the script (`talaria-workbench-mcp`'s runtime timeout,
-/// 8 min), so a waiter answers with a reason instead of being killed.
+/// How long a provision waits for another one's omp install. Inside the
+/// exec's own limit ([`RUNTIME_EXEC_SECS`]) with every bounded step after it,
+/// so a waiter answers with a reason instead of being killed.
 pub const INSTALL_LOCK_WAIT_SECS: u64 = 240;
 
 /// A lock directory with no holder pid (left by an older script) is taken
@@ -1085,6 +1524,16 @@ mod tests {
 
     const JOB: &str = "11111111-2222-4333-8444-555555555555";
 
+    /// Put a stand-in bun where mise installs `version`: the runtime script
+    /// runs bun by that path.
+    #[cfg(unix)]
+    fn place_bun(xdg: &std::path::Path, version: &str, bun: &std::path::Path) {
+        let dir = xdg.join(format!("mise/installs/bun/{version}/bin"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join("bun"));
+        std::os::unix::fs::symlink(bun, dir.join("bun")).unwrap();
+    }
+
     /// A runtime as the runtime script answers it, on the bootstrap pair.
     fn rt(bun_path: &str) -> Runtime {
         Runtime {
@@ -1129,23 +1578,33 @@ mod tests {
 
     #[test]
     fn the_runtime_script_puts_the_pinned_bun_on_every_shells_path() {
-        let s = harness_runtime_script(&Versions::bootstrap()).unwrap();
+        let s = harness_runtime_script(&RuntimeRun::provision(&Versions::bootstrap())).unwrap();
         assert!(!s.contains("__"), "every placeholder is filled: {s}");
         assert!(s.contains(&format!("bun@{HARNESS_BUN}")));
         assert!(s.contains(&format!("export XDG_DATA_HOME=\"{HARNESS_XDG_DATA_HOME}\"")));
         // The link lands in the directory the image's own PATH carries, which
         // is what makes a non-login shell find bun.
         assert!(s.contains(&format!("bin=\"{AGENT_BIN_DIR}\"")));
-        assert!(s.contains("ln -sfn \"$real\" \"$bin/bun\""));
+        assert!(s.contains(
+            "ln -s \"$real\" \"$bin/bun.tmp.$$\" && mv -T \"$bin/bun.tmp.$$\" \"$bin/bun\""
+        ));
+        // …and only a provision does, after the release started.
+        assert!(s.contains("if [ \"$smoke\" != 1 ] && [ \"$(readlink -f \"$bin/bun\""));
+        // No installer piped to a shell: the pinned mise, checksum-verified.
+        assert!(!s.contains("mise.run") && !s.contains("| sh"), "{s}");
+        // An install the smoke test runs must write the lockfile it keeps:
+        // bun writes none under `--production`.
+        assert!(!s.contains("--production"), "{s}");
+        assert!(s.contains(MISE_SHA256_X64) && s.contains(&format!("v{MISE_VERSION}")));
         // It answers bun, omp and the real bun's path, which is what callers
         // read back (parse_runtime).
-        assert!(s.contains("echo \"bun $(\"$real\" --version)\""));
+        assert!(s.contains("echo \"bun $(\"$real\" --version </dev/null 9>&-)\""));
         assert!(s.contains("echo \"bunPath $real\""));
     }
 
     #[test]
     fn the_runtime_script_installs_the_pinned_omp_never_latest() {
-        let s = harness_runtime_script(&Versions::bootstrap()).unwrap();
+        let s = harness_runtime_script(&RuntimeRun::provision(&Versions::bootstrap())).unwrap();
         assert!(!s.contains("@latest"), "{s}");
         assert!(!s.contains("npx"), "no per-run registry resolution: {s}");
         assert!(s.contains(&format!("\"{OMP_PACKAGE}\":\"{OMP_VERSION}\"")));
@@ -1168,7 +1627,7 @@ mod tests {
             format!(
                 "#!/bin/sh\n\
                  if [ \"$1\" = --version ]; then echo {HARNESS_BUN}; exit 0; fi\n\
-                 if [ \"$1\" = install ]; then echo x >> \"{count}\"; mkdir -p node_modules/{OMP_PACKAGE}/dist; echo 'omp' > node_modules/{OMP_PACKAGE}/dist/cli.js; exit 0; fi\n\
+                 if [ \"$1\" = install ]; then echo x >> \"{count}\"; mkdir -p node_modules/{OMP_PACKAGE}/dist; echo 'omp' > node_modules/{OMP_PACKAGE}/dist/cli.js; echo lock > bun.lock; exit 0; fi\n\
                  if [ \"$2\" = --version ] && [ -f \"$1\" ]; then echo omp/{OMP_VERSION}; exit 0; fi\n\
                  exit 1\n",
                 count = dir.join("installs").display()
@@ -1189,12 +1648,13 @@ mod tests {
         let hroot = tmp.join("harness");
         std::fs::create_dir_all(&bin).unwrap();
         let bun = fake_bun(&tmp);
-        std::os::unix::fs::symlink(&bun, bin.join("bun")).unwrap();
+        place_bun(&tmp.join("xdg"), HARNESS_BUN, &bun);
         let script = runtime_script_for(
             tmp.join("xdg").to_str().unwrap(),
             bin.to_str().unwrap(),
             hroot.to_str().unwrap(),
-            &Versions::bootstrap(),
+            &RuntimeRun::provision(&Versions::bootstrap()),
+            &BOUNDS,
         );
         let run = || {
             let out = Command::new("sh").args(["-c", &script]).output().unwrap();
@@ -1296,13 +1756,14 @@ mod tests {
         let hroot = tmp.join("harness");
         std::fs::create_dir_all(&bin).unwrap();
         let bun = fake_bun(&tmp);
-        std::os::unix::fs::symlink(&bun, bin.join("bun")).unwrap();
+        place_bun(&tmp.join("xdg"), HARNESS_BUN, &bun);
         // The script with flock hidden, so the directory lock is the one used.
         let script = runtime_script_for(
             tmp.join("xdg").to_str().unwrap(),
             bin.to_str().unwrap(),
             hroot.to_str().unwrap(),
-            &Versions::bootstrap(),
+            &RuntimeRun::provision(&Versions::bootstrap()),
+            &BOUNDS,
         )
         .replace("command -v flock", "false");
         let lock = hroot.join("omp/.install.lock.d");
@@ -1963,7 +2424,10 @@ mod tests {
                 bun: hostile.into(),
                 omp: "18.17.0".into(),
             };
-            assert!(harness_runtime_script(&v).is_none(), "{hostile:?}");
+            assert!(
+                harness_runtime_script(&RuntimeRun::provision(&v)).is_none(),
+                "{hostile:?}"
+            );
         }
         assert!(plain_version("0.22.10") && plain_version("1.4.4"));
         // An unreadable row is the bootstrap too, never an error that stops a job.
@@ -1979,7 +2443,7 @@ mod tests {
             bun: "1.4.5".into(),
             omp: "18.17.0".into(),
         };
-        let s = harness_runtime_script(&v).unwrap();
+        let s = harness_runtime_script(&RuntimeRun::provision(&v)).unwrap();
         assert!(s.contains("bun@1.4.5") && !s.contains(&format!("bun@{HARNESS_BUN}")));
         assert!(s.contains(&format!("\"{OMP_PACKAGE}\":\"18.17.0\"")));
         assert!(s.contains(&omp_install_dir("18.17.0")));
@@ -1995,7 +2459,7 @@ mod tests {
             &bun,
             &format!(
                 "if [ \"$1\" = --version ]; then echo {bun_version}; exit 0; fi\n\
-                 if [ \"$1\" = install ]; then v=$(sed -n 's|.*\"{OMP_PACKAGE}\":\"\\([0-9.]*\\)\".*|\\1|p' package.json); mkdir -p node_modules/{OMP_PACKAGE}/dist; echo \"$v\" > node_modules/{OMP_PACKAGE}/dist/cli.js; exit 0; fi\n\
+                 if [ \"$1\" = install ]; then v=$(sed -n 's|.*\"{OMP_PACKAGE}\":\"\\([0-9.]*\\)\".*|\\1|p' package.json); mkdir -p node_modules/{OMP_PACKAGE}/dist; echo \"$v\" > node_modules/{OMP_PACKAGE}/dist/cli.js; echo lock > bun.lock; exit 0; fi\n\
                  if [ \"$2\" = --version ] && [ -f \"$1\" ]; then echo \"omp/$(cat \"$1\")\"; exit 0; fi\n\
                  exit 1"
             ),
@@ -2014,7 +2478,7 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&work).unwrap();
         let bun = versioned_bun(&tmp, HARNESS_BUN);
-        std::os::unix::fs::symlink(&bun, bin.join("bun")).unwrap();
+        place_bun(&tmp.join("xdg"), HARNESS_BUN, &bun);
         let old = Versions {
             bun: HARNESS_BUN.into(),
             omp: "18.15.0".into(),
@@ -2028,7 +2492,8 @@ mod tests {
                 tmp.join("xdg").to_str().unwrap(),
                 bin.to_str().unwrap(),
                 hroot.to_str().unwrap(),
-                v,
+                &RuntimeRun::provision(v),
+                &BOUNDS,
             );
             let out = Command::new("sh").args(["-c", &script]).output().unwrap();
             assert!(
@@ -2117,7 +2582,7 @@ mod tests {
                  echo 'error: Bun runtime must be >= 1.4.4 (found v1.3.14)' >&2; exit 1"
             ),
         );
-        std::os::unix::fs::symlink(&bun, bin.join("bun")).unwrap();
+        place_bun(&tmp.join("xdg"), "1.3.14", &bun);
         let v = Versions {
             bun: "1.3.14".into(),
             omp: "18.16.0".into(),
@@ -2126,7 +2591,8 @@ mod tests {
             tmp.join("xdg").to_str().unwrap(),
             bin.to_str().unwrap(),
             hroot.to_str().unwrap(),
-            &v,
+            &RuntimeRun::provision(&v),
+            &BOUNDS,
         );
         let out = Command::new("sh").args(["-c", &script]).output().unwrap();
         assert!(!out.status.success());
@@ -2143,5 +2609,414 @@ mod tests {
             .collect();
         assert!(left.is_empty(), "no half install and no link: {left:?}");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The runtime script against a temp root with small bounds, as a
+    /// provision (or a smoke test) runs it.
+    #[cfg(unix)]
+    fn run_script(
+        tmp: &std::path::Path,
+        run: &RuntimeRun,
+        b: &Bounds,
+        stdin: Option<&str>,
+    ) -> std::process::Output {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let script = runtime_script_checked(
+            tmp.join("xdg").to_str().unwrap(),
+            tmp.join("bin").to_str().unwrap(),
+            tmp.join("harness").to_str().unwrap(),
+            run,
+            b,
+        )
+        .expect("plain inputs");
+        let mut child = Command::new("sh")
+            .args(["-c", &script])
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(text) = stdin {
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    const QUICK: Bounds = Bounds {
+        start_secs: 2,
+        install_secs: 3,
+        mise_secs: 3,
+        lock_wait_secs: 4,
+    };
+
+    /// A stand-in bun for `bun_version` whose installs write a lockfile
+    /// naming `sha512-TEST` (or keep the frozen one, noting it), and whose
+    /// Oh My Pi answers the version its package.json asked for. `hang` makes
+    /// `install` or the start (`start`) hang, after spawning a sleeper in a
+    /// session of its own that would hold any fd it inherited.
+    #[cfg(unix)]
+    fn stand_in_bun(dir: &std::path::Path, bun_version: &str, hang: &str) -> std::path::PathBuf {
+        let bun = dir.join(format!("bun-{bun_version}-{hang}"));
+        let sleeper = format!(
+            "setsid sleep 30 wbprov-sleeper-{} </dev/null >/dev/null 2>&1 &",
+            std::process::id()
+        );
+        script(
+            &bun,
+            &format!(
+                "if [ \"$1\" = --version ]; then echo {bun_version}; exit 0; fi\n\
+                 if [ \"$1\" = install ]; then\n\
+                   [ {hang} = install ] && {{ {sleeper} sleep 60; }}\n\
+                   v=$(sed -n 's|.*\"{OMP_PACKAGE}\":\"\\([0-9.]*\\)\".*|\\1|p' package.json)\n\
+                   mkdir -p node_modules/{OMP_PACKAGE}/dist; echo \"$v\" > node_modules/{OMP_PACKAGE}/dist/cli.js\n\
+                   case \" $* \" in *' --frozen-lockfile '*) echo frozen > frozen.note ;; *) printf '{{\"omp\":\"%s\",\"integrity\":\"sha512-TEST\"}}\\n' \"$v\" > bun.lock ;; esac\n\
+                   exit 0\n\
+                 fi\n\
+                 if [ \"$2\" = --version ] && [ -f \"$1\" ]; then\n\
+                   [ {hang} = start ] && {{ {sleeper} sleep 60; }}\n\
+                   echo \"omp/$(cat \"$1\")\"; exit 0\n\
+                 fi\n\
+                 exit 1"
+            ),
+        );
+        bun
+    }
+
+    #[cfg(unix)]
+    fn lock_is_free(hroot: &std::path::Path) -> bool {
+        std::process::Command::new("flock")
+            .args(["-n"])
+            .arg(hroot.join("omp/.install.lock"))
+            .arg("true")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    fn kill_sleepers() {
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", &format!("wbprov-sleeper-{}", std::process::id())])
+            .status();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_release_that_hangs_is_the_releases_and_never_keeps_the_install_lock() {
+        let v = Versions {
+            bun: HARNESS_BUN.into(),
+            omp: "18.17.0".into(),
+        };
+        for (hang, said, phase) in [
+            ("start", "did not finish starting within 2 s", "start"),
+            ("install", "did not finish installing within 3 s", "timeout"),
+        ] {
+            let tmp = scratch(&format!("hang-{hang}"));
+            let bun = stand_in_bun(&tmp, HARNESS_BUN, hang);
+            place_bun(&tmp.join("xdg"), HARNESS_BUN, &bun);
+            let t = std::time::Instant::now();
+            let out = run_script(&tmp, &RuntimeRun::provision(&v), &QUICK, None);
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(!out.status.success(), "{hang}: {err}");
+            assert!(
+                t.elapsed().as_secs() < 25,
+                "{hang}: bounded, took {:?}",
+                t.elapsed()
+            );
+            assert!(err.contains(said), "{hang}: {err}");
+            assert_eq!(runtime_fault_phase(&err), Some(phase), "{hang}: {err}");
+            // The sleeper the hung step left behind is still alive, in a
+            // session of its own, and the install lock is free all the same.
+            assert!(
+                lock_is_free(&tmp.join("harness")),
+                "{hang}: the lock is held"
+            );
+            // Nothing half-installed is left, and the next run takes the lock.
+            let left: Vec<_> = std::fs::read_dir(tmp.join("harness/omp"))
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with(".18") || n == "18.17.0")
+                .collect();
+            assert!(left.is_empty(), "{hang}: {left:?}");
+            kill_sleepers();
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_smoke_test_never_moves_the_volumes_shell_bun_and_a_provision_does_once_it_started() {
+        let tmp = scratch("smoke-bun");
+        let old = stand_in_bun(&tmp, HARNESS_BUN, "none");
+        let new = stand_in_bun(&tmp, "1.4.5", "none");
+        place_bun(&tmp.join("xdg"), HARNESS_BUN, &old);
+        place_bun(&tmp.join("xdg"), "1.4.5", &new);
+        let shell_bun = tmp.join("bin/bun");
+        let installed = |v: &str| tmp.join(format!("xdg/mise/installs/bun/{v}/bin/bun"));
+        let boot = Versions::bootstrap();
+        let out = run_script(&tmp, &RuntimeRun::provision(&boot), &QUICK, None);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read_link(&shell_bun).unwrap(),
+            installed(HARNESS_BUN)
+        );
+        let cand = Versions {
+            bun: "1.4.5".into(),
+            omp: OMP_VERSION.into(),
+        };
+        let smoke = RuntimeRun {
+            smoke: true,
+            ..RuntimeRun::provision(&cand)
+        };
+        let out = run_script(&tmp, &smoke, &QUICK, None);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let rt = parse_runtime(&String::from_utf8_lossy(&out.stdout)).unwrap();
+        assert_eq!(
+            rt.bun_path,
+            installed("1.4.5").to_str().unwrap(),
+            "the candidate ran by its own path"
+        );
+        assert_eq!(
+            std::fs::read_link(&shell_bun).unwrap(),
+            installed(HARNESS_BUN),
+            "every shell's bun is still the verified one"
+        );
+        // Adopted: the next provision promotes it.
+        let out = run_script(&tmp, &RuntimeRun::provision(&cand), &QUICK, None);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(std::fs::read_link(&shell_bun).unwrap(), installed("1.4.5"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_current_and_fallback_installs_are_never_pruned_and_current_loses_a_stale_stamp() {
+        use std::process::Command;
+        let tmp = scratch("keep");
+        let bun = stand_in_bun(&tmp, HARNESS_BUN, "none");
+        place_bun(&tmp.join("xdg"), HARNESS_BUN, &bun);
+        let pair = |omp: &str| Versions {
+            bun: HARNESS_BUN.into(),
+            omp: omp.into(),
+        };
+        let (a, b, c) = (pair("18.15.0"), pair("18.16.0"), pair("18.17.0"));
+        for v in [&a, &b] {
+            let out = run_script(&tmp, &RuntimeRun::provision(v), &QUICK, None);
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let dir = |v: &str| std::fs::canonicalize(tmp.join(format!("harness/omp/{v}"))).unwrap();
+        let (da, db) = (dir("18.15.0"), dir("18.16.0"));
+        let age = |p: &std::path::Path| {
+            assert!(
+                Command::new("touch")
+                    .args(["-d", "5 days ago"])
+                    .arg(p)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        // B is current with A its fallback; both carry old stamps (another
+        // version's run left them).
+        std::fs::write(db.join(".retired"), "").unwrap();
+        age(&db.join(".retired"));
+        age(&da.join(".retired"));
+        // A smoke test of C keeps both.
+        let keep = vec!["18.16.0".to_string(), "18.15.0".to_string()];
+        let smoke = RuntimeRun {
+            smoke: true,
+            keep: &keep,
+            ..RuntimeRun::provision(&c)
+        };
+        let out = run_script(&tmp, &smoke, &QUICK, None);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            da.exists() && db.exists(),
+            "current and fallback survive a smoke test"
+        );
+        // A provision of B (current again) clears its stamp, and keeps A.
+        let keep_a = vec!["18.15.0".to_string()];
+        let prov = RuntimeRun {
+            keep: &keep_a,
+            ..RuntimeRun::provision(&b)
+        };
+        let out = run_script(&tmp, &prov, &QUICK, None);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !db.join(".retired").exists(),
+            "current is current again: no stamp"
+        );
+        assert!(da.exists(), "the fallback is kept");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_verified_lockfile_is_installed_frozen_and_a_mismatched_install_is_replaced() {
+        let tmp = scratch("frozen");
+        let bun = stand_in_bun(&tmp, HARNESS_BUN, "none");
+        place_bun(&tmp.join("xdg"), HARNESS_BUN, &bun);
+        let v = Versions::bootstrap();
+        // The smoke test's own install writes a lockfile; npm's integrity
+        // must be in it.
+        let wrong = RuntimeRun {
+            integrity: Some("sha512-OTHER"),
+            ..RuntimeRun::provision(&v)
+        };
+        let out = run_script(&tmp, &wrong, &QUICK, None);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && err.contains("integrity is not the one npm documents"),
+            "{err}"
+        );
+        let right = RuntimeRun {
+            integrity: Some("sha512-TEST"),
+            ..RuntimeRun::provision(&v)
+        };
+        let out = run_script(&tmp, &right, &QUICK, None);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let link = tmp.join(format!("harness/omp/{OMP_VERSION}"));
+        let first = std::fs::canonicalize(&link).unwrap();
+        let verified = std::fs::read_to_string(first.join("bun.lock")).unwrap();
+        // Frozen with that same lockfile: nothing to do.
+        let frozen = RuntimeRun {
+            frozen: true,
+            ..RuntimeRun::provision(&v)
+        };
+        let out = run_script(&tmp, &frozen, &QUICK, Some(&verified));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(std::fs::canonicalize(&link).unwrap(), first);
+        // A volume whose install is not the verified tree is reinstalled
+        // frozen, from the verified lockfile, beside the old one.
+        let other = "{\"verified\":\"elsewhere\"}\n";
+        let out = run_script(&tmp, &frozen, &QUICK, Some(other));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let second = std::fs::canonicalize(&link).unwrap();
+        assert_ne!(second, first);
+        assert_eq!(
+            std::fs::read_to_string(second.join("bun.lock")).unwrap(),
+            other
+        );
+        assert!(
+            second.join("frozen.note").exists(),
+            "installed with --frozen-lockfile"
+        );
+        assert!(first.exists(), "the old install stays for whoever runs it");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn the_fault_line_is_read_from_the_end() {
+        assert_eq!(
+            runtime_fault_phase("x\ntalaria-fault: start\n"),
+            Some("start")
+        );
+        assert_eq!(
+            runtime_fault_phase("talaria-fault: install\nmore\ntalaria-fault: host"),
+            Some("host")
+        );
+        assert_eq!(runtime_fault_phase("docker exec c …: timed out"), None);
+        assert!(
+            plain_integrity("sha512-abc+/=")
+                && !plain_integrity("sha512-a b")
+                && !plain_integrity("md5-x")
+        );
+        assert!(plain_registry("https://npm.example.com/r/") && !plain_registry("https://x\"; rm"));
+    }
+
+    #[test]
+    fn a_volume_that_refused_the_verified_pair_goes_straight_to_the_fallback_then_the_bootstrap() {
+        let st = json!({
+            "current": { "bun": "1.4.5", "omp": "18.17.0" },
+            "previous": { "bun": "1.4.4", "omp": "18.16.5" },
+            "volumes": { "eng": { "refused": { "bun": "1.4.5", "omp": "18.17.0" }, "error": "no disk" } },
+        });
+        let p = |b: &str, o: &str| Versions {
+            bun: b.into(),
+            omp: o.into(),
+        };
+        let (all, skipped) = attempts_from(Some(&st), "ops");
+        assert_eq!(
+            all,
+            vec![
+                p("1.4.5", "18.17.0"),
+                p("1.4.4", "18.16.5"),
+                Versions::bootstrap()
+            ]
+        );
+        assert!(skipped.is_none());
+        let (eng, skipped) = attempts_from(Some(&st), "eng");
+        assert_eq!(eng, vec![p("1.4.4", "18.16.5"), Versions::bootstrap()]);
+        assert!(skipped.unwrap().contains("no disk"));
+        // A refusal of some older pair says nothing about the current one.
+        let st2 = json!({
+            "current": { "bun": "1.4.5", "omp": "18.17.0" },
+            "volumes": { "eng": { "refused": { "bun": "1.4.4", "omp": "18.16.0" } } },
+        });
+        assert_eq!(attempts_from(Some(&st2), "eng").0[0], p("1.4.5", "18.17.0"));
+        // Nothing verified: the bootstrap alone.
+        assert_eq!(attempts_from(None, "eng").0, vec![Versions::bootstrap()]);
+        let e = effective_from(Some(&st));
+        assert_eq!(e.keep(), vec!["18.17.0".to_string(), "18.16.5".to_string()]);
+    }
+
+    #[test]
+    fn a_mirror_reaches_bun_install_with_the_slash_bun_needs() {
+        let v = Versions::bootstrap();
+        let run = RuntimeRun {
+            registry: Some("https://npm.example.com/mirror"),
+            ..RuntimeRun::provision(&v)
+        };
+        let s = harness_runtime_script(&run).unwrap();
+        assert!(s.contains("export BUN_CONFIG_REGISTRY=\"https://npm.example.com/mirror/\""), "{s}");
+        let none = harness_runtime_script(&RuntimeRun::provision(&v)).unwrap();
+        assert!(none.contains("if [ -n \"\" ]; then export BUN_CONFIG_REGISTRY"), "no mirror, no override");
     }
 }

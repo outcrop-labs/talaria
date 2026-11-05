@@ -14,6 +14,8 @@ use crate::Tool;
 const EVENTS_KEPT: usize = 40;
 /// The newest releases kept per harness.
 const SEEN_KEPT: usize = 30;
+/// The newest holds kept per harness (each carries its reason).
+pub const HELD_KEPT: usize = 20;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -88,7 +90,10 @@ pub struct Seen {
     pub first_seen_at: i64,
     /// Oh My Pi's `engines.bun`.
     pub requires_bun: Option<String>,
+    /// npm's deprecation message, or that upstream no longer has it.
     pub deprecated: Option<String>,
+    /// npm's `dist.integrity` for the tarball.
+    pub integrity: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -111,10 +116,19 @@ pub struct LastCheck {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Volume {
+    /// The pair last verified on this volume.
     pub bun: Option<String>,
     pub omp: Option<String>,
     pub at: i64,
     pub error: Option<String>,
+    /// The pair this volume would not take (the release's own failure
+    /// there): its provisions go straight to the fallback until the channel's
+    /// next try here succeeds (`talaria_workbench_harnesses::attempts_from`).
+    pub refused: Option<Pair>,
+    /// Prewarms here the host failed, in a row, and no prewarm before
+    /// `retry_at`: this volume's own backoff, apart from the channel's.
+    pub host_failures: u32,
+    pub retry_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -192,6 +206,31 @@ impl State {
         });
     }
 
+    /// Hold `version` of `t`, keeping at most the [`HELD_KEPT`] newest holds.
+    pub fn hold(&mut self, t: Tool, version: &str, held: Held) {
+        let ts = self.tool_mut(t);
+        ts.held.insert(version.to_string(), held);
+        while ts.held.len() > HELD_KEPT {
+            let Some(oldest) = ts
+                .held
+                .iter()
+                .min_by_key(|(_, h)| h.at)
+                .map(|(v, _)| v.clone())
+            else {
+                break;
+            };
+            ts.held.remove(&oldest);
+        }
+    }
+
+    /// Upstream has withdrawn or deprecated `version` of `t`.
+    pub fn is_bad(&self, t: Tool, version: &str) -> bool {
+        self.tools
+            .get(t.slug())
+            .and_then(|ts| ts.seen.get(version))
+            .is_some_and(|s| s.deprecated.is_some())
+    }
+
     /// Record a release a check (or a Pin) read. Its soak clock starts the
     /// first time it is seen and never restarts.
     pub fn saw(&mut self, t: Tool, rel: &crate::upstream::Release, now: i64) {
@@ -202,6 +241,9 @@ impl State {
         });
         e.requires_bun = rel.requires_bun.clone();
         e.deprecated = rel.deprecated.clone();
+        if rel.integrity.is_some() {
+            e.integrity = rel.integrity.clone();
+        }
         if ts.seen.len() > SEEN_KEPT {
             let keep: Vec<String> = {
                 let mut vs: Vec<&String> = ts.seen.keys().collect();

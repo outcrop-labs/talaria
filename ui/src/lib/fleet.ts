@@ -28,7 +28,6 @@ export function useFleet() {
   }))
 }
 
-/** "3m ago" / "2h ago" / "just now" — compact relative time. */
 /** How far off an epoch-ms moment in the future is, as a panel says it
  *  ("within a minute", "in 12 min", "in about 3 h"); null for none. */
 export function untilTime(ms: number | null | undefined): string | null {
@@ -39,6 +38,7 @@ export function untilTime(ms: number | null | undefined): string | null {
   return `in about ${Math.round(mins / 60)} h`
 }
 
+/** "3m ago" / "2h ago" / "just now" — compact relative time. */
 export function relativeTime(iso: string | null): string {
   if (!iso) return 'never'
   const diff = Date.now() - new Date(iso).getTime()

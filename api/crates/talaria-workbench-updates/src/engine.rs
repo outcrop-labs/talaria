@@ -3,34 +3,46 @@
 // runs against the real instance and against a scripted one in the tests.
 //
 //   check     when due (every ~6 h, jittered; the first within 10 min of
-//             boot), or on Check now: each harness's newest release, plus the
-//             document of any release the instance runs or pins that it has
-//             not read. A release newer than what upstream now calls newest
-//             was withdrawn, and is forgotten.
+//             boot), or on Check now: each harness's newest release, and the
+//             document of every release the instance runs or pins, read
+//             again each time — a release upstream deprecates or withdraws
+//             after it was adopted is noticed, said to the admins, and moved
+//             off. A release newer than what upstream now calls newest was
+//             withdrawn, and is forgotten.
 //   decide    plan::decide — one pair, or nothing.
-//   verify    on ONE running workbench (the first Developer Agent's volume):
-//             install beside what it runs, start it, lay out a job's launcher
-//             for it and run the provisioning preflight through that
-//             launcher. Long, so it runs outside any lock, and its outcome is
-//             written in its own short patch.
+//   re-read   the candidate's own document, just before its smoke test: one
+//             deprecated or withdrawn while it soaked is never run.
+//   verify    on ONE running workbench (the one whose host fails least):
+//             installed beside what it runs by its own versioned paths (the
+//             volume's shell `bun` untouched), started, a job's launcher laid
+//             out for it and the provisioning preflight run through it. Long,
+//             so it runs outside any lock, and its outcome is written in its
+//             own short patch.
 //   adopt     the pair passed: it is what every new job runs from now on, and
-//             the pair before it is kept as the fallback. A job already
-//             running keeps the install it started on until it ends.
-//   hold      the candidate's own failure (would not install, start or pass
-//             the preflight): held, the admins told, and jobs keep running
-//             what they run. Allow again lifts it.
-//   back off  the host's failure (docker, a timeout, the install lock): tried
-//             again in 15 min, then twice as long each time to 6 h; the
-//             third in a row tells the admins. Never held.
+//             the pair before it is kept as the fallback; the lockfile its
+//             install wrote is kept with it, so every later install of it is
+//             frozen to the tree that was smoke-tested. A running job keeps
+//             the install it started on until it ends. An admin's Pin or
+//             Unpin made while it was being tested wins: it is not adopted.
+//   hold      the candidate's own failure (not there to install, would not
+//             start or not in time, its tarball not the documented one, the
+//             preflight): held, the admins told, and jobs keep what they run.
+//             Allow again lifts it.
+//   back off  the host's or the network's failure: tried again in 15 min,
+//             then twice as long each time to 6 h; the third in a row tells
+//             the admins. Never held.
 //   prewarm   with nothing to move, one other running workbench a step is
-//             given the verified pair, so a job does not pay the install. A
-//             volume that will not take it is recorded, the admins told, and
-//             its jobs fall back to the previous pair.
+//             given the verified pair, so a job does not pay the install.
+//             Each volume backs off on its own when its host fails it, and a
+//             volume that will not take the pair is recorded (its jobs go
+//             straight to the fallback) and said.
 //
 // Every write is a patch on a fresh read under the row's lock, so an admin's
 // Pin or Allow again landing mid-step is never lost.
 
 use futures_util::future::BoxFuture;
+#[cfg(test)]
+use talaria_workbench_harnesses::OMP_VERSION;
 use talaria_workbench_harnesses::Versions;
 use talaria_workbench_mcp::devenv::VerifyFailure;
 
@@ -62,6 +74,15 @@ pub struct Workbench {
 /// A state change, applied to a fresh read under the row's lock.
 pub type Patch<'a> = Box<dyn FnOnce(&mut State) + Send + 'a>;
 
+/// What a smoke test is told besides the pair.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Smoke {
+    /// Oh My Pi releases whose installs must survive it (current, fallback).
+    pub keep: Vec<String>,
+    /// npm's integrity for the Oh My Pi tarball.
+    pub integrity: Option<String>,
+}
+
 /// Everything the step does to the world.
 pub trait Ops: Send + Sync {
     fn now(&self) -> i64;
@@ -79,12 +100,23 @@ pub trait Ops: Send + Sync {
     ) -> BoxFuture<'a, Result<Option<Release>, String>>;
     /// The running Developer Agents' workbenches, oldest first.
     fn workbenches(&self) -> BoxFuture<'_, Vec<Workbench>>;
-    /// Install, start and preflight `v` on `w`'s volume.
+    /// Install, start and preflight `v` on `w`'s volume; Ok carries the
+    /// lockfile the install ran from or wrote.
     fn verify<'a>(
         &'a self,
         w: &'a Workbench,
         v: &'a Versions,
-    ) -> BoxFuture<'a, Result<(), VerifyFailure>>;
+        smoke: &'a Smoke,
+    ) -> BoxFuture<'a, Result<Option<String>, VerifyFailure>>;
+    /// Keep pair `v`'s verified lockfile (and npm's integrity for its omp).
+    fn store_lock<'a>(
+        &'a self,
+        v: &'a Versions,
+        lock: &'a str,
+        integrity: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<(), String>>;
+    /// Drop every kept lockfile but `keep`'s pairs'.
+    fn prune_locks<'a>(&'a self, keep: &'a [Versions]) -> BoxFuture<'a, ()>;
     /// Tell every admin.
     fn notify<'a>(&'a self, topic: &'a str, title: &'a str, body: &'a str) -> BoxFuture<'a, ()>;
 }
@@ -101,7 +133,7 @@ pub async fn write<'a>(ops: &'a dyn Ops, f: Patch<'a>) -> Result<State, String> 
 fn first_line(s: &str) -> &str {
     s.lines()
         .map(str::trim)
-        .find(|l| !l.is_empty())
+        .find(|l| !l.is_empty() && !l.starts_with("talaria-fault:"))
         .unwrap_or("")
 }
 
@@ -114,6 +146,35 @@ fn tail(s: &str, max: usize) -> String {
     format!("…{}", t.chars().skip(skip).collect::<String>())
 }
 
+/// The backoff after `n` host failures in a row.
+fn backoff(n: u32) -> i64 {
+    let n = n.clamp(1, 12);
+    (HOST_RETRY_MS << (n - 1).min(10)).min(HOST_RETRY_MAX_MS)
+}
+
+/// The Oh My Pi releases whose installs a smoke test keeps.
+fn keep_of(s: &State) -> Vec<String> {
+    let mut k = vec![s.running().omp];
+    if let Some(p) = &s.previous
+        && !k.contains(&p.omp)
+    {
+        k.push(p.omp.clone());
+    }
+    k
+}
+
+/// What the smoke test of `v` is told.
+fn smoke_of(s: &State, v: &Versions) -> Smoke {
+    Smoke {
+        keep: keep_of(s),
+        integrity: s
+            .tool(Tool::Omp)
+            .seen
+            .get(&v.omp)
+            .and_then(|x| x.integrity.clone()),
+    }
+}
+
 /// Check every harness's upstream and record what it said. Returns one line
 /// per harness.
 pub async fn check(ops: &dyn Ops) -> Result<Vec<String>, String> {
@@ -121,43 +182,61 @@ pub async fn check(ops: &dyn Ops) -> Result<Vec<String>, String> {
     let snapshot = ops.load().await?;
     let running = snapshot.running();
     let mut lines = Vec::new();
-    let mut found: Vec<(Tool, Result<Release, String>, Vec<Release>)> = Vec::new();
+    // (tool, newest, documents re-read, versions upstream no longer has)
+    let mut found: Vec<(Tool, Result<Release, String>, Vec<Release>, Vec<String>)> = Vec::new();
     for t in Tool::ALL {
         let latest = match ops.fetch(t, None).await {
             Ok(Some(r)) => Ok(r),
             Ok(None) => Err("upstream has no release".to_string()),
             Err(e) => Err(e),
         };
-        // The documents of what this instance runs and pins, when it has not
-        // read them: their declared floors are what a move is checked against.
+        // What this instance runs and pins is read again on every check: a
+        // deprecation or a withdrawal after adoption must be noticed.
         let ts = snapshot.tool(t);
         let mut extra = Vec::new();
-        let mut want: Vec<String> = vec![match t {
-            Tool::Bun => running.bun.clone(),
-            Tool::Omp => running.omp.clone(),
-        }];
+        let mut gone = Vec::new();
+        let mut want: Vec<String> = vec![t.of(&running).to_string()];
+        if let Some(p) = &snapshot.previous {
+            want.push(t.of(&p.versions()).to_string());
+        }
         want.extend(ts.pinned.clone());
+        want.sort();
+        want.dedup();
         for v in want {
-            if ts.seen.contains_key(&v) || latest.as_ref().is_ok_and(|r| r.version == v) {
+            if latest.as_ref().is_ok_and(|r| r.version == v) {
                 continue;
             }
-            if let Ok(Some(r)) = ops.fetch(t, Some(&v)).await {
-                extra.push(r);
+            match ops.fetch(t, Some(&v)).await {
+                Ok(Some(r)) => extra.push(r),
+                Ok(None) => gone.push(v),
+                Err(_) => {}
             }
         }
         lines.push(match &latest {
             Ok(r) => format!("{}: newest is {}", t.label(), r.version),
             Err(e) => format!("{}: the check failed: {e}", t.label()),
         });
-        found.push((t, latest, extra));
+        found.push((t, latest, extra, gone));
     }
     let next = now + CHECK_EVERY_MS + ops.jitter(-CHECK_JITTER_MS, CHECK_JITTER_MS);
     write(
         ops,
         Box::new(move |s: &mut State| {
-            for (t, latest, extra) in found {
+            for (t, latest, extra, gone) in found {
                 for r in &extra {
                     s.saw(t, r, now);
+                }
+                for v in &gone {
+                    s.saw(
+                        t,
+                        &Release {
+                            version: v.clone(),
+                            requires_bun: s.tool(t).seen.get(v).and_then(|x| x.requires_bun.clone()),
+                            deprecated: Some("withdrawn: upstream no longer has it".into()),
+                            integrity: None,
+                        },
+                        now,
+                    );
                 }
                 match latest {
                     Ok(r) => {
@@ -166,10 +245,7 @@ pub async fn check(ops: &dyn Ops) -> Result<Vec<String>, String> {
                         // withdrawn, and never adopted.
                         let running = s.running();
                         let keep = [
-                            match t {
-                                Tool::Bun => running.bun.clone(),
-                                Tool::Omp => running.omp.clone(),
-                            },
+                            t.of(&running).to_string(),
                             s.tool(t).pinned.unwrap_or_default(),
                         ];
                         let ts = s.tool_mut(t);
@@ -190,6 +266,16 @@ pub async fn check(ops: &dyn Ops) -> Result<Vec<String>, String> {
                             error: Some(tail(&e, 300)),
                         });
                     }
+                }
+                // What jobs run went bad upstream: the admins hear it once.
+                let cur = t.of(&s.running()).to_string();
+                if let Some(d) = s.tool(t).seen.get(&cur).and_then(|x| x.deprecated.clone()) {
+                    let title = format!("{} {cur}, which workbench jobs run, was deprecated upstream", t.label());
+                    let body = format!(
+                        "{} {cur}: {d}.\n\nNew jobs move off it within a minute or two, to a newer release once one is ready, else to the previous verified pair, else to the compiled one. A job already running keeps it until it ends.",
+                        t.label()
+                    );
+                    s.alert(now, &format!("deprecated:{}:{cur}", t.slug()), &title, &body);
                 }
             }
             s.next_check_at = Some(next);
@@ -219,7 +305,15 @@ pub async fn step(ops: &dyn Ops, tuning: &Tuning) -> Result<Option<String>, Stri
     }
     let s = ops.load().await?;
     let mut plan = plan::decide(&s, now, tuning);
-    let wbs = ops.workbenches().await;
+    let mut wbs = ops.workbenches().await;
+    // The healthiest host first: a volume whose host keeps failing is not
+    // the one every move and every prewarm tries.
+    wbs.sort_by_key(|w| {
+        s.volumes
+            .get(&w.department)
+            .map(|v| v.host_failures)
+            .unwrap_or(0)
+    });
     if let Some(mv) = &plan.mv
         && wbs.is_empty()
     {
@@ -247,41 +341,103 @@ pub async fn step(ops: &dyn Ops, tuning: &Tuning) -> Result<Option<String>, Stri
         )
         .await?;
     }
-    if s.retry_at.is_some_and(|at| at > now) {
-        return Ok(if said.is_empty() {
+    let joined = |said: Vec<String>| {
+        if said.is_empty() {
             None
         } else {
             Some(said.join("; "))
-        });
-    }
+        }
+    };
     if let Some(mv) = plan.mv {
+        if s.retry_at.is_some_and(|at| at > now) {
+            return Ok(joined(said));
+        }
         let Some(w) = wbs.first() else {
-            return Ok(None);
+            return Ok(joined(said));
         };
+        if let Some(line) = reread(ops, &mv, &s).await? {
+            said.push(line);
+            return Ok(joined(said));
+        }
         said.push(verify_move(ops, &mv, w, &s).await?);
-        return Ok(Some(said.join("; ")));
+        return Ok(joined(said));
     }
-    // Prewarm: one workbench a step that has not taken the verified pair.
+    // Prewarm: one workbench a step that has not taken the verified pair,
+    // and is not in its own backoff.
     if let Some(cur) = s.current.clone() {
         let pair = cur.versions();
         let due = wbs.iter().find(|w| match s.volumes.get(&w.department) {
             None => true,
+            Some(v) if v.retry_at.is_some_and(|at| at > now) => false,
             Some(v)
-                if v.bun.as_deref() == Some(&pair.bun) && v.omp.as_deref() == Some(&pair.omp) =>
+                if v.bun.as_deref() == Some(&pair.bun)
+                    && v.omp.as_deref() == Some(&pair.omp)
+                    && v.refused.is_none() =>
             {
                 false
             }
             Some(v) => v.error.is_none() || now - v.at >= VOLUME_RETRY_MS,
         });
         if let Some(w) = due {
-            said.push(prewarm(ops, w, &pair).await?);
+            said.push(prewarm(ops, w, &pair, &s).await?);
         }
     }
-    Ok(if said.is_empty() {
-        None
-    } else {
-        Some(said.join("; "))
-    })
+    Ok(joined(said))
+}
+
+/// Read the move's releases again, right before they run: one upstream
+/// deprecated or withdrew while it soaked is recorded and not run, and the
+/// next step decides again. `Some(line)` when the move is off.
+async fn reread(ops: &dyn Ops, mv: &Move, before: &State) -> Result<Option<String>, String> {
+    let running = before.running();
+    for t in Tool::ALL {
+        let v = t.of(&mv.to).to_string();
+        if v == t.of(&running) {
+            continue;
+        }
+        match ops.fetch(t, Some(&v)).await {
+            Ok(Some(r)) if r.deprecated.is_none() => {
+                // Its integrity may have been read only now.
+                let now = ops.now();
+                write(ops, Box::new(move |s: &mut State| s.saw(t, &r, now))).await?;
+            }
+            Ok(found) => {
+                let now = ops.now();
+                let why = found
+                    .as_ref()
+                    .and_then(|r| r.deprecated.clone())
+                    .unwrap_or_else(|| "withdrawn: upstream no longer has it".into());
+                let line = format!("{} {v} was not smoke-tested: {why}", t.label());
+                let text = line.clone();
+                let rel = Release {
+                    version: v.clone(),
+                    requires_bun: found.and_then(|r| r.requires_bun),
+                    deprecated: Some(why),
+                    integrity: None,
+                };
+                write(
+                    ops,
+                    Box::new(move |s: &mut State| {
+                        s.saw(t, &rel, now);
+                        s.event(now, text);
+                    }),
+                )
+                .await?;
+                return Ok(Some(line));
+            }
+            Err(e) => {
+                return host_failed(
+                    ops,
+                    &format!("{} {v}", t.label()),
+                    "its registry",
+                    &format!("its document could not be read again: {e}"),
+                )
+                .await
+                .map(Some);
+            }
+        }
+    }
+    Ok(None)
 }
 
 async fn verify_move(
@@ -290,6 +446,8 @@ async fn verify_move(
     w: &Workbench,
     before: &State,
 ) -> Result<String, String> {
+    // The state as the re-read left it (integrity included).
+    let before = ops.load().await.unwrap_or_else(|_| before.clone());
     let now = ops.now();
     let from = before.running();
     let to = mv.to.clone();
@@ -297,33 +455,48 @@ async fn verify_move(
     let version = mv.version.clone();
     let dept = w.department.clone();
     let agent = w.agent.clone();
-    match ops.verify(w, &mv.to).await {
-        Ok(()) => {
+    let pins = (before.tool(Tool::Bun).pinned, before.tool(Tool::Omp).pinned);
+    let smoke = smoke_of(&before, &mv.to);
+    match ops.verify(w, &mv.to, &smoke).await {
+        Ok(lock) => {
+            if let Some(lock) = &lock {
+                ops.store_lock(&to, lock, smoke.integrity.as_deref())
+                    .await?;
+            }
             let why = mv.why.clone();
             let line = format!(
                 "adopted Oh My Pi {} on bun {} ({why}; smoke-tested on {agent}'s workbench)",
                 to.omp, to.bun
             );
             let text = line.clone();
-            write(
+            let late = format!(
+                "Oh My Pi {} on bun {} passed its smoke test, but a Pin or Unpin made meanwhile wins: not adopted",
+                to.omp, to.bun
+            );
+            let to2 = to.clone();
+            let s = write(
                 ops,
                 Box::new(move |s: &mut State| {
-                    let prev = s.current.clone().unwrap_or_else(|| Pair::of(&from, 0));
-                    if prev.versions() != to {
-                        s.previous = Some(prev);
-                    }
-                    s.current = Some(Pair::of(&to, now));
                     s.volumes.insert(
                         dept,
                         Volume {
                             bun: Some(to.bun.clone()),
                             omp: Some(to.omp.clone()),
                             at: now,
-                            error: None,
+                            ..Default::default()
                         },
                     );
                     s.host_failures = 0;
                     s.retry_at = None;
+                    if (s.tool(Tool::Bun).pinned, s.tool(Tool::Omp).pinned) != pins {
+                        s.event(now, late);
+                        return;
+                    }
+                    let prev = s.current.clone().unwrap_or_else(|| Pair::of(&from, 0));
+                    if prev.versions() != to {
+                        s.previous = Some(prev);
+                    }
+                    s.current = Some(Pair::of(&to, now));
                     for t in Tool::ALL {
                         let ts = s.tool_mut(t);
                         if ts.forced.as_deref() == Some(version.as_str()) {
@@ -335,7 +508,22 @@ async fn verify_move(
                 }),
             )
             .await?;
-            Ok(line)
+            if s.current.as_ref().map(Pair::versions).as_ref() == Some(&to2) {
+                let mut keep = vec![Versions::bootstrap()];
+                keep.extend(
+                    s.current
+                        .iter()
+                        .chain(s.previous.iter())
+                        .map(Pair::versions),
+                );
+                ops.prune_locks(&keep).await;
+                Ok(line)
+            } else {
+                Ok(format!(
+                    "{} on bun {}: a Pin or Unpin made meanwhile wins",
+                    to2.omp, to2.bun
+                ))
+            }
         }
         Err(VerifyFailure::Candidate(why)) => {
             let reason = tail(&why, 1500);
@@ -356,8 +544,9 @@ async fn verify_move(
             write(
                 ops,
                 Box::new(move |s: &mut State| {
-                    s.tool_mut(tool).held.insert(
-                        version.clone(),
+                    s.hold(
+                        tool,
+                        &version,
                         Held {
                             reason,
                             at: now,
@@ -376,29 +565,34 @@ async fn verify_move(
             Ok(line)
         }
         Err(VerifyFailure::Host(why)) => {
-            host_failed(ops, &format!("{} {version}", tool.label()), &agent, &why).await
+            host_failed(
+                ops,
+                &format!("{} {version}", tool.label()),
+                &format!("{agent}'s workbench"),
+                &why,
+            )
+            .await
         }
     }
 }
 
-async fn host_failed(ops: &dyn Ops, what: &str, agent: &str, why: &str) -> Result<String, String> {
+/// A move the host (or the network) failed: the channel's own backoff.
+async fn host_failed(ops: &dyn Ops, what: &str, place: &str, why: &str) -> Result<String, String> {
     let now = ops.now();
     let why = tail(why, 600);
     let line = format!(
-        "could not smoke-test {what} on {agent}'s workbench (the host's, tried again later): {}",
+        "could not smoke-test {what} on {place} (the host's or the network's, tried again later): {}",
         first_line(&why)
     );
     let text = line.clone();
     let body = format!(
-        "Talaria could not smoke-test {what} on {agent}'s workbench three times in a row. The host, not the release: {why}\n\nJobs keep running what they run. The channel keeps trying, less often each time (up to every 6 h)."
+        "Talaria could not smoke-test {what} on {place} three times in a row. The host or the network, not the release: {why}\n\nJobs keep running what they run. The channel keeps trying, less often each time (up to every 6 h)."
     );
     write(
         ops,
         Box::new(move |s: &mut State| {
             s.host_failures = s.host_failures.saturating_add(1);
-            let n = s.host_failures.min(12);
-            let wait = (HOST_RETRY_MS << (n - 1).min(10)).min(HOST_RETRY_MAX_MS);
-            s.retry_at = Some(now + wait);
+            s.retry_at = Some(now + backoff(s.host_failures));
             s.event(now, text);
             if s.host_failures >= 3 {
                 s.alert(now, "host", "Workbench harness updates cannot run", &body);
@@ -409,13 +603,19 @@ async fn host_failed(ops: &dyn Ops, what: &str, agent: &str, why: &str) -> Resul
     Ok(line)
 }
 
-async fn prewarm(ops: &dyn Ops, w: &Workbench, pair: &Versions) -> Result<String, String> {
+async fn prewarm(
+    ops: &dyn Ops,
+    w: &Workbench,
+    pair: &Versions,
+    s: &State,
+) -> Result<String, String> {
     let now = ops.now();
     let dept = w.department.clone();
     let agent = w.agent.clone();
     let p = pair.clone();
-    match ops.verify(w, pair).await {
-        Ok(()) => {
+    let smoke = smoke_of(s, pair);
+    match ops.verify(w, pair, &smoke).await {
+        Ok(_) => {
             let line = format!(
                 "{agent}'s workbench has Oh My Pi {} on bun {}",
                 pair.omp, pair.bun
@@ -429,7 +629,7 @@ async fn prewarm(ops: &dyn Ops, w: &Workbench, pair: &Versions) -> Result<String
                             bun: Some(p.bun),
                             omp: Some(p.omp),
                             at: now,
-                            error: None,
+                            ..Default::default()
                         },
                     );
                 }),
@@ -438,13 +638,35 @@ async fn prewarm(ops: &dyn Ops, w: &Workbench, pair: &Versions) -> Result<String
             Ok(line)
         }
         Err(VerifyFailure::Host(why)) => {
-            host_failed(
+            // This volume's own backoff: the channel's moves, and the other
+            // volumes' prewarms, go on.
+            let why = tail(&why, 600);
+            let line = format!(
+                "could not prewarm {agent}'s workbench (the host's or the network's, tried again later): {}",
+                first_line(&why)
+            );
+            let text = line.clone();
+            let topic = format!("volume-host:{dept}");
+            let title = format!("{agent}'s workbench cannot be prewarmed");
+            let body = format!(
+                "Talaria could not put Oh My Pi {} on bun {} on {agent}'s workbench three times in a row. The host or the network, not the release: {why}\n\nIts jobs install it themselves, or run the previous pair. It is tried again, less often each time (up to every 6 h).",
+                pair.omp, pair.bun
+            );
+            write(
                 ops,
-                &format!("Oh My Pi {} on bun {}", pair.omp, pair.bun),
-                &agent,
-                &why,
+                Box::new(move |s: &mut State| {
+                    let v = s.volumes.entry(dept).or_default();
+                    v.host_failures = v.host_failures.saturating_add(1);
+                    v.retry_at = Some(now + backoff(v.host_failures));
+                    let n = v.host_failures;
+                    s.event(now, text);
+                    if n >= 3 {
+                        s.alert(now, &topic, &title, &body);
+                    }
+                }),
             )
-            .await
+            .await?;
+            Ok(line)
         }
         Err(VerifyFailure::Candidate(why)) => {
             let reason = tail(&why, 1500);
@@ -470,6 +692,9 @@ async fn prewarm(ops: &dyn Ops, w: &Workbench, pair: &Versions) -> Result<String
                         Volume {
                             error: Some(reason),
                             at: now,
+                            refused: Some(Pair::of(&p, now)),
+                            host_failures: 0,
+                            retry_at: None,
                             ..prior
                         },
                     );
@@ -501,11 +726,15 @@ mod tests {
         fail: Mutex<BTreeMap<(String, String), VerifyFailure>>,
         verified: Mutex<Vec<(String, Versions)>>,
         told: Mutex<Vec<(String, String, String)>>,
+        smokes: Mutex<Vec<Smoke>>,
+        locks: Mutex<BTreeMap<String, (String, Option<String>)>>,
+        /// Runs once, mid-smoke-test (an admin acting meanwhile).
+        delay: Mutex<Option<Box<dyn FnOnce(&Fake) + Send>>>,
     }
 
     impl Fake {
         fn with(dev: &[&str]) -> Fake {
-            Fake {
+            let f = Fake {
                 wbs: dev
                     .iter()
                     .map(|d| Workbench {
@@ -514,7 +743,16 @@ mod tests {
                     })
                     .collect(),
                 ..Default::default()
-            }
+            };
+            // The compiled pair is a real release upstream.
+            f.release(Tool::Omp, OMP_VERSION, Some(">=1.4.4"), false);
+            f.release(
+                Tool::Bun,
+                talaria_workbench_harnesses::HARNESS_BUN,
+                None,
+                false,
+            );
+            f
         }
         fn release(&self, t: Tool, v: &str, requires: Option<&str>, latest: bool) {
             self.upstream.lock().unwrap().insert(
@@ -523,6 +761,7 @@ mod tests {
                     version: v.into(),
                     requires_bun: requires.map(Into::into),
                     deprecated: None,
+                    integrity: Some(format!("sha512-{}", v.replace('.', ""))),
                 },
             );
             if latest {
@@ -579,12 +818,17 @@ mod tests {
             &'a self,
             w: &'a Workbench,
             v: &'a Versions,
-        ) -> BoxFuture<'a, Result<(), VerifyFailure>> {
+            smoke: &'a Smoke,
+        ) -> BoxFuture<'a, Result<Option<String>, VerifyFailure>> {
             Box::pin(async move {
+                self.smokes.lock().unwrap().push(smoke.clone());
                 self.verified
                     .lock()
                     .unwrap()
                     .push((w.department.clone(), v.clone()));
+                if let Some(d) = self.delay.lock().unwrap().take() {
+                    d(self);
+                }
                 match self
                     .fail
                     .lock()
@@ -592,8 +836,31 @@ mod tests {
                     .get(&(v.bun.clone(), v.omp.clone()))
                 {
                     Some(f) => Err(f.clone()),
-                    None => Ok(()),
+                    None => Ok(Some(format!("lock-for-{}", v.omp))),
                 }
+            })
+        }
+        fn store_lock<'a>(
+            &'a self,
+            v: &'a Versions,
+            lock: &'a str,
+            integrity: Option<&'a str>,
+        ) -> BoxFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                self.locks.lock().unwrap().insert(
+                    format!("{}+{}", v.bun, v.omp),
+                    (lock.to_string(), integrity.map(str::to_string)),
+                );
+                Ok(())
+            })
+        }
+        fn prune_locks<'a>(&'a self, keep: &'a [Versions]) -> BoxFuture<'a, ()> {
+            Box::pin(async move {
+                let keep: Vec<String> = keep
+                    .iter()
+                    .map(|v| format!("{}+{}", v.bun, v.omp))
+                    .collect();
+                self.locks.lock().unwrap().retain(|k, _| keep.contains(k));
             })
         }
         fn notify<'a>(
@@ -814,7 +1081,8 @@ mod tests {
         );
         settle(&f, 3).await;
         assert!(f.s().volumes["ops"].error.is_some());
-        assert_eq!(f.told.lock().unwrap().len(), 1);
+        let told = f.told.lock().unwrap().clone();
+        assert_eq!(told.len(), 1, "{told:?}");
         assert_eq!(
             f.s().running(),
             pair("1.4.4", "18.17.0"),
@@ -834,5 +1102,191 @@ mod tests {
         f.release(Tool::Omp, "18.16.0", Some(">=1.4.4"), true);
         check(&f).await.unwrap();
         assert!(!f.s().tool(Tool::Omp).seen.contains_key("18.17.0"));
+    }
+
+    #[tokio::test]
+    async fn a_candidate_deprecated_or_withdrawn_while_it_soaked_is_never_run() {
+        for withdrawn in [false, true] {
+            let f = Fake::with(&["eng"]);
+            f.release(Tool::Bun, "1.4.4", None, true);
+            f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+            f.state.lock().unwrap().next_check_at = Some(0);
+            f.at(1_000);
+            check(&f).await.unwrap();
+            // Upstream changes its mind before the smoke test.
+            if withdrawn {
+                f.upstream
+                    .lock()
+                    .unwrap()
+                    .remove(&(Tool::Omp, "18.17.0".to_string()));
+            } else {
+                f.upstream
+                    .lock()
+                    .unwrap()
+                    .get_mut(&(Tool::Omp, "18.17.0".to_string()))
+                    .unwrap()
+                    .deprecated = Some("broken".into());
+            }
+            f.state.lock().unwrap().next_check_at = Some(i64::MAX);
+            settle(&f, 2).await;
+            let ran = f
+                .verified
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, v)| v.omp == "18.17.0")
+                .count();
+            assert_eq!(ran, 0, "withdrawn={withdrawn}");
+            assert!(f.s().is_bad(Tool::Omp, "18.17.0"), "withdrawn={withdrawn}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_current_release_deprecated_after_adoption_is_said_and_moved_off() {
+        let f = Fake::with(&["eng"]);
+        f.release(Tool::Bun, "1.4.4", None, true);
+        f.release(Tool::Omp, "18.16.5", Some(">=1.4.4"), false);
+        f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+        {
+            let mut s = f.state.lock().unwrap();
+            s.current = Some(Pair::of(&pair("1.4.4", "18.17.0"), 0));
+            s.previous = Some(Pair::of(&pair("1.4.4", "18.16.5"), 0));
+            s.volumes.insert(
+                "eng".into(),
+                Volume {
+                    bun: Some("1.4.4".into()),
+                    omp: Some("18.17.0".into()),
+                    ..Default::default()
+                },
+            );
+            s.next_check_at = Some(0);
+        }
+        f.upstream
+            .lock()
+            .unwrap()
+            .get_mut(&(Tool::Omp, "18.17.0".to_string()))
+            .unwrap()
+            .deprecated = Some("leaks the key".into());
+        f.at(1_000);
+        settle(&f, 2).await;
+        let told = f.told.lock().unwrap().clone();
+        assert!(
+            told.iter()
+                .any(|(topic, title, _)| topic == "deprecated:omp:18.17.0"
+                    && title.contains("deprecated upstream")),
+            "{told:?}"
+        );
+        assert_eq!(
+            f.s().running(),
+            pair("1.4.4", "18.16.5"),
+            "back to the fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_volume_whose_host_fails_backs_off_alone_and_the_others_are_prewarmed() {
+        let f = Fake::with(&["eng", "ops", "web"]);
+        f.release(Tool::Bun, "1.4.4", None, true);
+        f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+        {
+            let mut s = f.state.lock().unwrap();
+            s.current = Some(Pair::of(&pair("1.4.4", "18.17.0"), 0));
+            s.volumes.insert(
+                "eng".into(),
+                Volume {
+                    bun: Some("1.4.4".into()),
+                    omp: Some("18.17.0".into()),
+                    ..Default::default()
+                },
+            );
+            s.next_check_at = Some(i64::MAX);
+        }
+        // ops's host fails every prewarm; web is fine.
+        *f.delay.lock().unwrap() = None;
+        let fail_ops = |f: &Fake| {
+            f.fail.lock().unwrap().insert(
+                ("1.4.4".into(), "18.17.0".into()),
+                VerifyFailure::Host("docker exec … timed out".into()),
+            );
+        };
+        fail_ops(&f);
+        f.at(1_000);
+        settle(&f, 1).await;
+        let v = f.s().volumes["ops"].clone();
+        assert_eq!(v.host_failures, 1);
+        assert!(v.retry_at.unwrap() > 1_000);
+        assert_eq!(
+            f.s().host_failures,
+            0,
+            "the channel's own backoff is untouched"
+        );
+        assert_eq!(f.s().retry_at, None);
+        // The next step goes on to web, not ops again.
+        f.fail.lock().unwrap().clear();
+        settle(&f, 1).await;
+        assert_eq!(f.verified.lock().unwrap().last().unwrap().0, "web");
+        // Once its backoff is over, ops succeeds and its count resets.
+        f.at(v.retry_at.unwrap());
+        settle(&f, 1).await;
+        let v = f.s().volumes["ops"].clone();
+        assert_eq!((v.host_failures, v.retry_at), (0, None));
+        assert_eq!(v.omp.as_deref(), Some("18.17.0"));
+    }
+
+    #[tokio::test]
+    async fn a_pin_made_while_a_release_is_smoke_tested_wins() {
+        let f = Fake::with(&["eng"]);
+        f.release(Tool::Bun, "1.4.4", None, true);
+        f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+        f.state.lock().unwrap().next_check_at = Some(0);
+        f.state.lock().unwrap().current = Some(Pair::of(&Versions::bootstrap(), 0));
+        *f.delay.lock().unwrap() = Some(Box::new(|f: &Fake| {
+            f.state.lock().unwrap().tool_mut(Tool::Omp).pinned = Some(OMP_VERSION.into());
+        }));
+        f.at(1_000);
+        settle(&f, 1).await;
+        assert_eq!(
+            f.s().running(),
+            Versions::bootstrap(),
+            "the admin's pin wins over the move it raced"
+        );
+        assert!(
+            f.s()
+                .events
+                .iter()
+                .any(|e| e.text.contains("a Pin or Unpin made meanwhile wins"))
+        );
+    }
+
+    #[tokio::test]
+    async fn the_lockfile_and_integrity_go_with_the_pair_and_the_smoke_test_keeps_current_and_fallback()
+     {
+        let f = Fake::with(&["eng"]);
+        f.release(Tool::Bun, "1.4.4", None, true);
+        f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+        {
+            let mut s = f.state.lock().unwrap();
+            s.current = Some(Pair::of(&pair("1.4.4", "18.16.0"), 0));
+            s.previous = Some(Pair::of(&pair("1.4.4", "18.15.0"), 0));
+            s.next_check_at = Some(0);
+        }
+        f.release(Tool::Omp, "18.15.0", Some(">=1.4.4"), false);
+        f.at(1_000);
+        settle(&f, 1).await;
+        assert_eq!(f.s().running(), pair("1.4.4", "18.17.0"));
+        let smoke = f.smokes.lock().unwrap()[0].clone();
+        assert_eq!(
+            smoke.keep,
+            vec!["18.16.0".to_string(), "18.15.0".to_string()]
+        );
+        assert_eq!(smoke.integrity.as_deref(), Some("sha512-18170"));
+        let locks = f.locks.lock().unwrap().clone();
+        assert_eq!(
+            locks["1.4.4+18.17.0"],
+            (
+                "lock-for-18.17.0".to_string(),
+                Some("sha512-18170".to_string())
+            )
+        );
     }
 }

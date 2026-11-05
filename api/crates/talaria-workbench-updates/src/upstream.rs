@@ -11,7 +11,9 @@
 //              installs the harness's bun, downloads it from.
 //
 // Both bases are overridable for a mirror, a private registry, or a test stub
-// (`TALARIA_HARNESS_NPM_REGISTRY`, `TALARIA_HARNESS_BUN_RELEASES`).
+// (`TALARIA_HARNESS_NPM_REGISTRY`, `TALARIA_HARNESS_BUN_RELEASES`). The npm
+// override reaches the install too: `bun install` in the workbench resolves
+// from the same registry the check read.
 //
 // EVERYTHING AN UPSTREAM ANSWERS IS UNTRUSTED. A version is kept only as a
 // plain `x.y.z`; `engines.bun` only when it is short and made of the
@@ -57,6 +59,9 @@ pub struct Release {
     pub requires_bun: Option<String>,
     /// npm's deprecation message: a deprecated release is never adopted.
     pub deprecated: Option<String>,
+    /// npm's `dist.integrity` for the tarball: the lockfile the smoke test's
+    /// install writes must name it, and it is kept with the verified pair.
+    pub integrity: Option<String>,
 }
 
 /// The URL that answers `tool`'s release `version` (`None`: the newest).
@@ -115,10 +120,16 @@ pub fn parse_npm(doc: &Value) -> Result<Release, String> {
         Some(Value::Bool(true)) => Some("deprecated".into()),
         _ => None,
     };
+    let integrity = doc
+        .pointer("/dist/integrity")
+        .and_then(Value::as_str)
+        .filter(|i| talaria_workbench_harnesses::plain_integrity(i))
+        .map(str::to_string);
     Ok(Release {
         version: version.to_string(),
         requires_bun,
         deprecated,
+        integrity,
     })
 }
 
@@ -141,6 +152,7 @@ pub fn parse_bun(doc: &Value) -> Result<Release, String> {
         version: version.to_string(),
         requires_bun: None,
         deprecated,
+        integrity: None,
     })
 }
 
@@ -175,15 +187,21 @@ pub async fn fetch(tool: Tool, version: Option<&str>) -> Result<Option<Release>,
     if !status.is_success() {
         return Err(format!("{url} answered {status}"));
     }
-    let body = resp
-        .bytes()
+    // The cap holds while the answer streams in, never after it was read.
+    if resp.content_length().is_some_and(|n| n > MAX_BODY as u64) {
+        return Err(format!("{url} answered more than a release document"));
+    }
+    let mut resp = resp;
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| format!("{url} broke off: {e}"))?;
-    if body.len() > MAX_BODY {
-        return Err(format!(
-            "{url} answered {} bytes, more than a release document",
-            body.len()
-        ));
+        .map_err(|e| format!("{url} broke off: {e}"))?
+    {
+        if body.len() + chunk.len() > MAX_BODY {
+            return Err(format!("{url} answered more than a release document"));
+        }
+        body.extend_from_slice(&chunk);
     }
     let doc: Value = serde_json::from_slice(&body)
         .map_err(|e| format!("{url} answered something other than JSON: {e}"))?;
@@ -215,8 +233,20 @@ mod tests {
             Ok(Release {
                 version: "18.16.0".into(),
                 requires_bun: Some(">=1.4.4".into()),
-                deprecated: None
+                deprecated: None,
+                integrity: None,
             })
+        );
+        let with = json!({ "name": OMP_PACKAGE, "version": "18.16.0", "dist": { "integrity": "sha512-AbC+/=" } });
+        assert_eq!(
+            parse_npm(&with).unwrap().integrity.as_deref(),
+            Some("sha512-AbC+/=")
+        );
+        let odd = json!({ "name": OMP_PACKAGE, "version": "18.16.0", "dist": { "integrity": "sha512-a b" } });
+        assert_eq!(
+            parse_npm(&odd).unwrap().integrity,
+            None,
+            "an integrity no script may carry is dropped"
         );
         let dep = json!({ "name": OMP_PACKAGE, "version": "18.13.3", "deprecated": "broken on bun 1.4.0" });
         assert_eq!(

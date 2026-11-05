@@ -249,6 +249,12 @@ pub async fn pin(ops: &dyn Ops, tool: &str, version: &str, by: &str) -> Result<S
         .fetch(t, Some(version))
         .await?
         .ok_or_else(|| format!("upstream has no {} {version}", t.label()))?;
+    if let Some(d) = &rel.deprecated {
+        return Err(format!(
+            "{} {version} is not one to pin: upstream marks it {d}",
+            t.label()
+        ));
+    }
     let now = ops.now();
     let (by, v) = (by.to_string(), version.to_string());
     engine::write(
@@ -450,7 +456,14 @@ pub fn status_of(s: &State, now: i64, tuning: &Tuning) -> Value {
     let volumes: Vec<Value> = s
         .volumes
         .iter()
-        .map(|(d, v)| json!({ "department": d, "bun": v.bun, "omp": v.omp, "at": v.at, "error": v.error }))
+        .map(|(d, v)| {
+            json!({
+                "department": d, "bun": v.bun, "omp": v.omp, "at": v.at, "error": v.error,
+                "refused": v.refused.as_ref().map(|p| json!({ "bun": p.bun, "omp": p.omp })),
+                "hostFailures": v.host_failures,
+                "retryAt": v.retry_at.filter(|at| *at > now),
+            })
+        })
         .collect();
     let mut events = s.events.clone();
     events.reverse();
@@ -500,6 +513,7 @@ mod tests {
                 version: "18.17.0".into(),
                 requires_bun: Some(">=1.4.4".into()),
                 deprecated: None,
+                integrity: None,
             },
             1_000,
         );

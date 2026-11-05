@@ -8050,6 +8050,7 @@ dependencies = [
  "sqlx",
  "talaria-gateway",
  "talaria-model-roles",
+ "tracing",
 ]
 
 [[package]]
