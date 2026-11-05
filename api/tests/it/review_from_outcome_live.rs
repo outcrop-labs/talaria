@@ -390,6 +390,14 @@ async fn an_outcome_reaches_every_review_queue_and_a_person_clears_it() {
     );
     f.surfaces(&back).await.assert_cleared("sent back");
 
+    // THE COLUMN STILL COUNTS, beside the report: a ticket a person put in
+    // the review column, with no report at all, is review work as before.
+    let column = f.placed("Parked in review").await;
+    f.move_to(&column, "quality_review").await;
+    f.surfaces(&column)
+        .await
+        .assert_review("in the review column, unreported");
+
     // A person MOVES it: off the queues.
     let moved = f.placed("Move me").await;
     f.report(&moved, "done", None).await;
@@ -440,5 +448,17 @@ async fn an_error_report_is_blocked_work_with_its_reason_until_a_person_acts() {
     // A person moves it: no longer blocked work.
     f.move_to(&id, "inbox").await;
     f.surfaces(&id).await.assert_cleared("moved by a person");
+    // THE COLUMN STILL COUNTS: a ticket a person put in Blocked, with no
+    // report, is blocked work as before (no reason line — nobody gave one).
+    let parked = f.placed("Parked in Blocked").await;
+    f.move_to(&parked, "blocked").await;
+    let s = f.surfaces(&parked).await;
+    assert_eq!(
+        s.brief.as_ref().map(|b| b.0.as_str()),
+        Some("BLOCKED"),
+        "{s:?}"
+    );
+    assert_eq!(s.inbox.as_deref(), Some("BLOCKED"), "{s:?}");
+    assert_eq!(s.home, Some(("blocked".to_string(), None)), "{s:?}");
     f.drop().await;
 }

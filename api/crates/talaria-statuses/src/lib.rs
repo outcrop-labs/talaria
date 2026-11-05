@@ -414,13 +414,16 @@ pub async fn status_diagnostics(
 // alert), next to the column test it sits beside.
 
 /// SQL over alias `t`: an agent's reported OUTCOME no person has acted on —
-/// finished agent work awaiting review, wherever the ticket sits.
-pub const AGENT_OUTCOME_AWAITING_SQL: &str = "(t.reported_kind = 'outcome' \
+/// finished agent work awaiting review, wherever the ticket sits. NULL-SAFE
+/// (`is not distinct from`): a ticket with no report reads FALSE, never NULL,
+/// so the fragment can be selected as a bool and OR-ed beside a column test
+/// (a NULL there once emptied the whole brief's task source).
+pub const AGENT_OUTCOME_AWAITING_SQL: &str = "(t.reported_kind is not distinct from 'outcome' \
      and (t.report_cleared_at is null or t.report_cleared_at < t.reported_at))";
 
 /// SQL over alias `t`: an agent's reported ERROR no person has acted on —
 /// blocked agent work, wherever the ticket sits; `t.error_message` is why.
-pub const AGENT_ERROR_AWAITING_SQL: &str = "(t.reported_kind = 'error' \
+pub const AGENT_ERROR_AWAITING_SQL: &str = "(t.reported_kind is not distinct from 'error' \
      and (t.report_cleared_at is null or t.report_cleared_at < t.reported_at))";
 
 /// The report on this ticket awaiting a person, if any: `"outcome"` or
