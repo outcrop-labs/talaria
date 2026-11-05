@@ -32,6 +32,7 @@ import {
   stashUnsaved,
   takeUnsaved,
   clearUnsavedEdits,
+  leftTheSlot,
 } from './agent-design'
 
 const DRAFT: DraftFields = {
@@ -334,4 +335,15 @@ describe('the save that leaves with the page', () => {
     expect(store.size).toBe(0)
   })
 
+})
+
+describe('a design that leaves the slot for a hire (NS11)', () => {
+  const read = (hiring: DesignRead['hiring']): DesignRead => ({ design: null, hiring, returned: [], skewMs: 0 })
+  it('names the hire that took it, so the modal resets instead of keeping a copy', () => {
+    expect(leftTheSlot('d-1', read([{ designId: 'd-1', hireRunId: 'h-1', name: 'Scout' }]))).toEqual({ hiredAs: 'Scout' })
+  })
+  it('still resets when it went another way, and does nothing for a modal showing none', () => {
+    expect(leftTheSlot('d-1', read([]))).toEqual({ hiredAs: null })
+    expect(leftTheSlot('', read([]))).toBeNull()
+  })
 })

@@ -539,6 +539,20 @@ async fn held_of(st: &AppState, user: &str) -> Vec<Held> {
     store::read_held(&mut st.redis().await.unwrap(), user)
         .await
         .unwrap()
+        .into_iter()
+        .map(|e| e.held)
+        .collect()
+}
+
+/// A design on a stand-in hire that has just failed before create.
+async fn failed_hold(st: &AppState, user: &str, purpose: &str) -> (AgentDesign, String) {
+    start_design(st, user, CALLER, purpose).await.unwrap();
+    leave(user).await;
+    let d = until_settled(user).await;
+    let h = Uuid::new_v4().to_string();
+    claim_for_hire(st, user, &d.id, &h).await.unwrap();
+    hire_row(&st.pg, &h, "error", Some("the department is taken"), false).await;
+    (d, h)
 }
 
 #[tokio::test]
@@ -742,4 +756,187 @@ async fn design_live_a_retried_hire_takes_the_design_with_it() {
             .unwrap();
     }
     cleanup(&st.pg, "retry").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_two_reads_settle_one_failure_once() {
+    // NS9: two tabs (or a poll and an event) read at once as the hire fails.
+    // The design ends in ONE place — the slot — never also in the hires.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "twin").await;
+    for round in 0..5 {
+        let (d, h) = failed_hold(&st, &user, &format!("twin read {round}")).await;
+        let (a, b) = (fresh_state().await, fresh_state().await);
+        let (va, vb) = tokio::join!(
+            current_design(&a, &user, false),
+            current_design(&b, &user, false)
+        );
+        va.unwrap();
+        vb.unwrap();
+        let view = current_design(&st, &user, false).await.unwrap();
+        assert_eq!(
+            view.design.as_ref().map(|x| x.id.as_str()),
+            Some(d.id.as_str()),
+            "round {round}"
+        );
+        assert!(
+            view.returned.is_empty() && view.hiring.is_empty(),
+            "round {round}: also left in the hires"
+        );
+        assert!(held_of(&st, &user).await.is_empty(), "round {round}");
+        let waits: Vec<(String, String, bool)> = notices(&st.pg, &user)
+            .await
+            .into_iter()
+            .filter(|(t, _, _)| t.starts_with("The hire of"))
+            .collect();
+        assert!(
+            waits.is_empty(),
+            "round {round}: a waiting row about the open design: {waits:?}"
+        );
+        sqlx::query("delete from runs where id = $1::uuid")
+            .bind(&h)
+            .execute(&st.pg)
+            .await
+            .unwrap();
+        discard_design(&st, &user, None).await.unwrap();
+    }
+    cleanup(&st.pg, "twin").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_a_read_racing_the_retry_follow_cannot_undo_it() {
+    // NS9's second case: a read settling the failure and the strip's Retry
+    // following it, at once, in either order: the design ends on the retry.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "race").await;
+    for round in 0..5 {
+        let (d, h) = failed_hold(&st, &user, &format!("race {round}")).await;
+        let r = Uuid::new_v4().to_string();
+        let (a, b) = (fresh_state().await, fresh_state().await);
+        let (_, _) = tokio::join!(
+            current_design(&a, &user, false),
+            follow_retry(&b, &user, &h, &r)
+        );
+        hire_row(&st.pg, &r, "awaiting", None, false).await;
+        let view = current_design(&st, &user, false).await.unwrap();
+        assert!(
+            view.design.as_ref().is_none_or(|x| x.id != d.id),
+            "round {round}: back in the slot for an agent the retry is making"
+        );
+        assert_eq!(view.hiring.len(), 1, "round {round}");
+        assert_eq!(view.hiring[0].hire_run_id, r, "round {round}");
+        hire_row(&st.pg, &r, "done", None, true).await;
+        let view = current_design(&st, &user, false).await.unwrap();
+        assert!(
+            view.hiring.is_empty() && view.returned.is_empty(),
+            "round {round}"
+        );
+        for x in [&h, &r] {
+            sqlx::query("delete from runs where id = $1::uuid")
+                .bind(x)
+                .execute(&st.pg)
+                .await
+                .unwrap();
+        }
+    }
+    cleanup(&st.pg, "race").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_the_waiting_bell_row_is_filed_once() {
+    // NS10: reading "The hire of A did not finish" must not file it again.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "once").await;
+    start_design(&st, &user, CALLER, "agent a").await.unwrap();
+    leave(&user).await;
+    let a = until_settled(&user).await;
+    let h = Uuid::new_v4().to_string();
+    claim_for_hire(&st, &user, &a.id, &h).await.unwrap();
+    edit_design(&st, &user, None, draft_for("manual b"))
+        .await
+        .unwrap();
+    hire_row(&st.pg, &h, "error", None, false).await;
+    let waits = |pg: PgPool, user: String| async move {
+        let rows: Vec<(bool,)> = sqlx::query_as(
+            "select read_at is not null from notifications where user_id = $1::uuid and title like 'The hire of %'",
+        )
+        .bind(user)
+        .fetch_all(&pg)
+        .await
+        .unwrap();
+        rows
+    };
+    current_design(&st, &user, false).await.unwrap();
+    current_design(&fresh_state().await, &user, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        waits(st.pg.clone(), user.clone()).await,
+        vec![(false,)],
+        "one row, unread"
+    );
+    // The person reads it; the next reads (the link it opens, a poll) file nothing.
+    sqlx::query("update notifications set read_at = now() where user_id = $1::uuid and title like 'The hire of %'")
+        .bind(&user)
+        .execute(&st.pg)
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        current_design(&st, &user, false).await.unwrap();
+    }
+    assert_eq!(
+        waits(st.pg.clone(), user.clone()).await,
+        vec![(true,)],
+        "still the one row, read"
+    );
+    assert_eq!(
+        current_design(&st, &user, false)
+            .await
+            .unwrap()
+            .returned
+            .len(),
+        1
+    );
+    sqlx::query("delete from runs where id = $1::uuid")
+        .bind(&h)
+        .execute(&st.pg)
+        .await
+        .unwrap();
+    discard_design(&st, &user, Some(&a.id)).await.unwrap();
+    discard_design(&st, &user, None).await.unwrap();
+    cleanup(&st.pg, "once").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_a_bell_row_about_a_design_gone_is_read() {
+    // NN10: a design that expired (or ended elsewhere) leaves no row pointing at it.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "orphan").await;
+    start_design(&st, &user, CALLER, "an orphan").await.unwrap();
+    leave(&user).await;
+    until_settled(&user).await;
+    assert_eq!(notices(&st.pg, &user).await.len(), 1);
+    // Gone without a discard (as a TTL expiry leaves it).
+    let mut conn = st.redis().await.unwrap();
+    let _: () = redis::cmd("DEL")
+        .arg(store::key(&user))
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    current_design(&st, &user, false).await.unwrap();
+    assert!(
+        notices(&st.pg, &user)
+            .await
+            .iter()
+            .all(|(_, _, read)| *read)
+    );
+    cleanup(&st.pg, "orphan").await;
 }

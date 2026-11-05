@@ -177,6 +177,9 @@ pub async fn current_design(
     }
     let held = settle_hires(state, &mut conn, user_id).await?;
     let design = slot_design(state, &mut conn, user_id).await?;
+    let mut live: Vec<String> = held.iter().map(|h| h.design.id.clone()).collect();
+    live.extend(design.as_ref().map(|d| d.id.clone()));
+    clear_orphan_notices(state, &conn, user_id, &live).await;
     Ok(DesignView {
         design,
         hiring: held
@@ -251,11 +254,18 @@ async fn run_seen(state: &AppState, run_id: Option<&str>) -> RunSeen {
 }
 
 /// Where the hire a design is spent on stands, and whether its create stage
-/// made the agent (the run's checkpoint carries the def it wrote). A failed
+/// made the agent: the run's checkpoint carries the def it wrote, or — for a
+/// run stopped between that insert and its checkpoint (a cancel, the crash
+/// cap) — the hire's slug is a def its hirer manages. A failed
 /// read says Live, for the same reason as above.
 async fn hire_seen(state: &AppState, hire_run_id: &str) -> HireSeen {
     let row: Result<Option<(String, Option<String>, bool)>, sqlx::Error> = sqlx::query_as(
-        "select state, error, coalesce(checkpoint->>'defId', '') <> '' from runs where id = $1::uuid",
+        "select r.state, r.error, \
+                coalesce(r.checkpoint->>'defId', '') <> '' \
+                or exists (select 1 from agent_defs d join agent_managers m on m.agent_id = d.id \
+                           where d.slug = r.input->>'slug' \
+                             and m.user_id::text = r.input->>'managerUserId') \
+         from runs r where r.id = $1::uuid",
     )
     .bind(hire_run_id)
     .fetch_optional(&state.pg)
@@ -282,36 +292,58 @@ async fn settle_hires(
     user_id: &str,
 ) -> Result<Vec<Held>, DesignError> {
     let now = now_ms();
-    let mut kept = Vec::new();
-    for mut h in store::read_held(conn, user_id).await? {
-        match record::settle_held(&h, &hire_seen(state, &h.hire_run_id).await, now) {
-            HireOutcome::Unchanged => kept.push(h),
+    // Every write below names the hold as it was read (`swap_held`,
+    // `return_into_slot`): a read that lost to another read, or to the
+    // strip's Retry, writes nothing, and the next read sees what won.
+    let mut kept: Vec<store::HeldEntry> = Vec::new();
+    for e in store::read_held(conn, user_id).await? {
+        match record::settle_held(&e.held, &hire_seen(state, &e.held.hire_run_id).await, now) {
+            HireOutcome::Unchanged => kept.push(e),
             HireOutcome::Consumed => {
-                store::drop_held(conn, user_id, &h.design.id).await?;
-                clear_notice(state, conn, user_id, &h.design.id).await;
+                if store::swap_held(conn, user_id, &e, None).await? {
+                    clear_notice(state, conn, user_id, &e.held.design.id).await;
+                }
             }
             HireOutcome::Returned(why) => {
-                h.returned = Some(why);
-                store::put_held(conn, user_id, &h).await?;
-                kept.push(h);
+                let next = Held {
+                    returned: Some(why),
+                    ..e.held.clone()
+                };
+                if store::swap_held(conn, user_id, &e, Some(&next)).await? {
+                    kept.push(store::HeldEntry {
+                        raw: store::held_raw(&next),
+                        held: next,
+                    });
+                }
             }
         }
     }
-    kept.sort_by_key(|h| h.claimed_at);
+    kept.sort_by_key(|e| e.held.claimed_at);
     let mut out = Vec::new();
     let mut slot_free = store::read(conn, user_id).await?.is_none();
-    for h in kept {
-        if h.returned.is_some() && slot_free {
-            let back = record::hand_back(&h, now);
-            if store::return_into_slot(conn, user_id, &h.design.id, &back).await? {
+    for e in kept {
+        if e.held.returned.is_some() && slot_free {
+            let back = record::hand_back(&e.held, now);
+            if store::return_into_slot(conn, user_id, &e, &back).await? {
                 slot_free = false;
                 continue;
             }
         }
-        if h.returned.is_some() && !slot_free {
-            waiting_notice(state, conn, user_id, &h).await;
+        // Waiting behind the open design: the bell says so ONCE per hold —
+        // the swap that sets `noticed` is the one writer that files it, so a
+        // read of that row (or a second tab) never files it again.
+        if e.held.returned.is_some() && !slot_free && !e.held.noticed {
+            let next = Held {
+                noticed: true,
+                ..e.held.clone()
+            };
+            if store::swap_held(conn, user_id, &e, Some(&next)).await? {
+                waiting_notice(state, conn, user_id, &next).await;
+                out.push(next);
+                continue;
+            }
         }
-        out.push(h);
+        out.push(e.held);
     }
     Ok(out)
 }
@@ -341,7 +373,7 @@ pub async fn claim_for_hire(
                 let hired = store::read_held(&mut conn, user_id)
                     .await?
                     .iter()
-                    .any(|h| h.design.id == design_id && h.returned.is_none());
+                    .any(|e| e.held.design.id == design_id && e.held.returned.is_none());
                 return Err(DesignError::Refused(if hired {
                     Refusal::Hiring
                 } else {
@@ -371,10 +403,20 @@ pub async fn follow_retry(state: &AppState, hirer: &str, failed: &str, retry: &s
     let now = now_ms();
     let followed = async {
         let mut conn = redis(state).await?;
-        for h in store::read_held(&mut conn, hirer).await? {
-            if let Some(next) = record::follow_held(&h, failed, retry, now) {
-                store::put_held(&mut conn, hirer, &next).await?;
-                return Ok::<(), DesignError>(());
+        // The hold as read, compared and set: a read that settles it in
+        // between makes this lose, and the loop reads it again.
+        for _ in 0..4 {
+            let mut lost = false;
+            for e in store::read_held(&mut conn, hirer).await? {
+                if let Some(next) = record::follow_held(&e.held, failed, retry, now) {
+                    if store::swap_held(&mut conn, hirer, &e, Some(&next)).await? {
+                        return Ok::<(), DesignError>(());
+                    }
+                    lost = true;
+                }
+            }
+            if !lost {
+                break;
             }
         }
         if let Some(stored) = store::read(&mut conn, hirer).await?
@@ -415,10 +457,13 @@ pub async fn gate_hire<T, E>(
 pub async fn release_hire(state: AppState, user_id: String, hire_run_id: String) {
     let released = async {
         let mut conn = redis(&state).await?;
-        for mut h in store::read_held(&mut conn, &user_id).await? {
-            if h.hire_run_id == hire_run_id {
-                h.returned = Some(START_FAILED.to_string());
-                store::put_held(&mut conn, &user_id, &h).await?;
+        for e in store::read_held(&mut conn, &user_id).await? {
+            if e.held.hire_run_id == hire_run_id {
+                let next = Held {
+                    returned: Some(START_FAILED.to_string()),
+                    ..e.held.clone()
+                };
+                store::swap_held(&mut conn, &user_id, &e, Some(&next)).await?;
             }
         }
         settle_hires(&state, &mut conn, &user_id).await.map(|_| ())
@@ -601,24 +646,36 @@ pub async fn discard_design(
     id: Option<&str>,
 ) -> Result<bool, DesignError> {
     let mut conn = redis(state).await?;
-    let removed = store::update(&mut conn, user_id, |d| match d {
-        Some(d) if id.is_none_or(|want| want == d.id) => Write::Delete(Some(d.clone())),
-        _ => Write::Keep(None),
-    })
-    .await?;
-    let Some(gone) = removed else {
+    // Twice at most: a waiting design can move from the hires into the slot
+    // between the two looks (another read handing it back), and a dismiss of
+    // it must find it wherever it now is.
+    let mut removed = None;
+    for _ in 0..2 {
+        removed = store::update(&mut conn, user_id, |d| match d {
+            Some(d) if id.is_none_or(|want| want == d.id) => Write::Delete(Some(d.clone())),
+            _ => Write::Keep(None),
+        })
+        .await?;
+        if removed.is_some() {
+            break;
+        }
         // A design a failed hire handed back while the slot was taken can be
         // dismissed by its id; one whose hire still runs cannot.
-        if let Some(want) = id
-            && store::read_held(&mut conn, user_id)
-                .await?
-                .iter()
-                .any(|h| h.design.id == want && h.returned.is_some())
+        let Some(want) = id else {
+            return Ok(false);
+        };
+        let waiting = store::read_held(&mut conn, user_id)
+            .await?
+            .into_iter()
+            .find(|e| e.held.design.id == want && e.held.returned.is_some());
+        if let Some(e) = waiting
+            && store::swap_held(&mut conn, user_id, &e, None).await?
         {
-            store::drop_held(&mut conn, user_id, want).await?;
             clear_notice(state, &conn, user_id, want).await;
             return Ok(true);
         }
+    }
+    let Some(gone) = removed else {
         return Ok(false);
     };
     if gone.status == DesignStatus::Generating
@@ -635,6 +692,34 @@ pub async fn discard_design(
     }
     clear_notice(state, &conn, user_id, &gone.id).await;
     Ok(true)
+}
+
+/// A bell row about a design that is gone (expired after 72 h, or ended on
+/// another path) is read, so it never points at nothing.
+async fn clear_orphan_notices(
+    state: &AppState,
+    conn: &ConnectionManager,
+    user_id: &str,
+    live: &[String],
+) {
+    let orphans: Result<Vec<(String,)>, sqlx::Error> = sqlx::query_as(
+        "select distinct entity_id from notifications \
+         where user_id = $1::uuid and entity_type = $2 and read_at is null \
+           and entity_id is not null and not (entity_id = any($3))",
+    )
+    .bind(user_id)
+    .bind(entity::AGENT_DESIGN)
+    .bind(live)
+    .fetch_all(&state.pg)
+    .await;
+    match orphans {
+        Ok(rows) => {
+            for (id,) in rows {
+                clear_notice(state, conn, user_id, &id).await;
+            }
+        }
+        Err(e) => tracing::warn!("[agent-design] orphan notice read failed: {e}"),
+    }
 }
 
 /// Read the person's bell row about a design that is spent or replaced.
@@ -750,22 +835,9 @@ async fn land_answer(state: &AppState, landing: Landing) -> Result<(), String> {
     Ok(())
 }
 
-/// A failed hire's design waits for the slot: the bell says so, once (the
-/// group key keeps it to one row per design; a repeat read does not re-file
-/// while that row is unread).
+/// A failed hire's design waits for the slot: the bell says so. Called once
+/// per hold, by the read whose swap set `noticed`.
 async fn waiting_notice(state: &AppState, conn: &ConnectionManager, user_id: &str, h: &Held) {
-    let already: Result<Option<(i32,)>, sqlx::Error> = sqlx::query_as(
-        "select 1 from notifications where user_id = $1::uuid and entity_type = $2 \
-         and entity_id = $3 and read_at is null and title like 'The hire of %'",
-    )
-    .bind(user_id)
-    .bind(entity::AGENT_DESIGN)
-    .bind(&h.design.id)
-    .fetch_optional(&state.pg)
-    .await;
-    if !matches!(already, Ok(None)) {
-        return;
-    }
     let s = summary(h);
     let deps = NotifyDeps::publishing(state.pg.clone(), Some(conn.clone()));
     let title = format!("The hire of {} did not finish", clip(&s.name, 120));
