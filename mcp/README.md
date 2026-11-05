@@ -33,10 +33,10 @@ guardrail prose rules below are checked against.
 | `get_ticket` | Full ticket: fields, comments, activity, watchers, reviews, dependencies, attachments; board `workflows` are the one instruction inside it an agent follows |
 | `fetch_attachment` | Read an attached upload: text as text, images as an image, other binaries as metadata |
 | `create_ticket` | Create a ticket → lands in **inbox**, unassigned |
-| `triage_ticket` | Priority, effort, labels, description, due date, and **forward-only** status moves using the board's own status keys (see below) |
-| `move_ticket` | Move a ticket to another board the agent is on — re-keyed there (the old ref still resolves); labels the new board lacks are dropped and agents not on it unassigned, both named in `moved`; a move that would unassign a person is refused; never into a closed or pickup column; `preview: true` moves nothing |
+| `triage_ticket` | Priority, effort, labels, description, due date. A status change is always refused for an agent (403); in a chat the refusal becomes the `ticket_move` approval card, and the person's click makes the move (see below) |
+| `move_ticket` | Ask to move a ticket to another board the agent is on — re-keyed there (the old ref still resolves); labels the new board lacks are dropped and agents not on it unassigned, both named in `moved`; a move that would unassign a person is refused; never into a closed or pickup column. `preview: true` answers what would change; the move itself is always refused for an agent (403), and in a chat that refusal becomes the `ticket_move` approval card whose click makes the move as the person |
 | `comment` | Comment on a ticket — lands in the ticket's **discussion thread** (the room where the agent and the board's humans talk); the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
-| `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
+| `report_outcome` | Record outcome/resolution (or errorMessage when blocked). Moves nothing: it ends the agent's work session and puts the work in the ticket people's review queues — as review work, or as blocked work with its reason |
 | `add_time` | Add seconds to the auto-accumulated time-spent. Live tickets only |
 | `add_dependency` | Mark a ticket blocked by another on the same board. Both ends must be live |
 | `report_gap` | Report a capability gap. `taskId` is optional and gated: it binds the report to the people who can see that board, and a refusal is a reason to fix the scope, never to widen the audience |
@@ -241,26 +241,17 @@ same reason; and a terminal move (`done`, or the off-board `failed` / `cancelled
 is redirected to the board's own review column. This MCP server additionally never
 offers the unsafe inputs, so a well-behaved agent never even sees them.
 
-### The lifecycle is one-way for an agent
+### An agent never moves a ticket
 
-`triage_ticket` accepts the board's own status keys (three on a board that kept
-the defaults), but not from anywhere to anywhere. The
-whole rule lives in `agent_safe_patch` (`api/crates/talaria-tasks/src/lib.rs`) — **not here** —
-and every clause raises `HumanApprovalRequired`, which the route turns into a
-403. The tool descriptions mirror it, because an agent that doesn't know spends
-turns on writes that can't land:
-
-| Move | Agent | Why |
-| --- | --- | --- |
-| assigned → `in_progress` | yes | working what a person gave it |
-| in_progress → `blocked` | yes | parking its own work |
-| in_progress → `quality_review` | yes | handing over for sign-off |
-| blocked → `in_progress` | **no** | entering a start column is assignment; a person restarts parked work |
-| out of the review column | **no** | review is the human sign-off queue — otherwise an agent pulls its own work back off the reviewer's board |
-| any write to a **closed** ticket (a `done` column, or `failed` / `cancelled`) | **no** | sign-off is sticky and covers the record, not just the column. Includes `add_time` |
-| any write to an **archived** ticket, or any ticket on an **archived board** | **no** | archiving hides work from the people watching it; an agent noticing and writing anyway is that stop failing |
-| any move of a ticket **stranded** in a status its board no longer has | **no** | nothing can class it, so a person places it |
-| entering an agent-start column from anywhere else | **no** | the destination is the gate, whether the agent named that column or the terminal-move redirect picked it |
+A ticket changes column only when a person moves it (talaria-tasks
+`placement.rs`, the one writer of `tasks.status`). So every status an agent
+sends — `triage_ticket`'s, `move_ticket`'s board move — is refused with a 403
+whose sentence says "cannot", and in a chat with a person that refusal becomes
+the `ticket_move` approval card: the person's click makes the move, as them.
+During the agent's own work session the refusal says to report instead. The
+other clauses still answer first, in their own words, because `agent_safe_patch`
+(`api/crates/talaria-tasks/src/lib.rs`) runs before the mover check: out of
+review, out of blocked, into an agent-start column, closed, archived, stranded.
 
 **"Live" is one word for three conditions.** A ticket takes agent writes only
 while its status is not closed (`done` column / `failed` / `cancelled`), the
@@ -313,13 +304,8 @@ advice last survived here, in words the tool text had already stopped using.
 
 Three consequences worth knowing before you burn a turn on them:
 
-- **The review column belongs to the board, not to this server.** `report_outcome`
-  does not send a literal `quality_review`; the API redirects the terminal move to
-  whatever review column that board has. If the board has **none** — or every
-  review column is also flagged agent-start, which would loop the work straight
-  back into the pickup queue — the write is **refused**, not guessed at, and the
-  error names the board and the setting to fix. That is an admin's problem, not a
-  misbehaving agent.
+- **`report_outcome` sends no status.** The report is what the review queues read
+  (`tasks.reported_*`); the column stays wherever the person put the ticket.
 - **`comment` is the exception and the escape hatch — but only past sign-off.**
   It stays open on a *closed* ticket the agent can no longer edit. It is refused
   on an archived ticket and on an archived board, like every other write.

@@ -39,7 +39,7 @@ pub fn tools_unlocked(kind: &str) -> &'static [&'static str] {
         "slides_update" => &["update_google_slides"],
         "drive_move" => &["move_google_file"],
         "drive_rename" => &["rename_google_file"],
-        "ticket_move" => &["triage_ticket"],
+        "ticket_move" => &["triage_ticket", "move_ticket"],
         "board_access" => &["join_board"],
         _ => &[],
     }
@@ -890,6 +890,29 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
                     }
                     out.push(chip);
                 }
+            }
+        }
+        // An agent's move to another board is refused like its status moves
+        // (talaria-tasks placement.rs), and becomes the SAME card: the
+        // person's click runs the move as them (chips_approvals_id).
+        // A preview wrote nothing and asks nothing.
+        "move_ticket" => {
+            let refused = result.contains("cannot") || result_v.get("error").is_some();
+            let preview = args_v.get("preview").and_then(Value::as_bool) == Some(true);
+            let task = str_field(&args_v, "taskId").unwrap_or("");
+            let board = str_field(&args_v, "boardId").unwrap_or("");
+            if refused && !preview && is_id(task) && is_id(board) {
+                let status = str_field(&args_v, "status").unwrap_or("");
+                let external = format!("ticket:{task}:board:{board}:{status}");
+                let mut chip = approval_chip(
+                    &external,
+                    "ticket_move",
+                    "Move ticket to another board",
+                );
+                if let Some(obj) = chip.as_object_mut() {
+                    obj.insert("payload".into(), args_v.clone());
+                }
+                out.push(chip);
             }
         }
         "request_board_access" => {
@@ -2409,7 +2432,10 @@ mod tests {
     #[test]
     fn unlock_names_the_tools_the_approval_granted() {
         assert_eq!(tools_unlocked("gmail_send"), ["draft_email"]);
-        assert_eq!(tools_unlocked("ticket_move"), ["triage_ticket"]);
+        assert_eq!(
+            tools_unlocked("ticket_move"),
+            ["triage_ticket", "move_ticket"]
+        );
         assert!(tools_unlocked("nope").is_empty());
         assert_eq!(unlock_chip("a-1", "gmail_send")["tools"][0], "draft_email");
     }

@@ -33,10 +33,10 @@
 // (`tasks.placed_by` — always a user id for a person, `placed_by_kind`,
 // `placed_at`), and an agent picks a ticket up only from a pickup column a
 // PERSON placed it in, or as a running chain's ready step ([`pickup_refusal`]).
-// Assignment alone never starts work. A placement is SPENT once a session
-// that started on it has ended with the agent's report (`report_outcome`:
-// an outcome or an error): the same work is not picked up again until a
-// person places the ticket again. A session that stopped without a report —
+// Assignment alone never starts work. A placement is SPENT once the agent
+// reports (`report_outcome`: an outcome or an error) from one of its sessions
+// after it: the same work is not picked up again until a person places the
+// ticket again. A session that stopped without a report —
 // the turn cap, an error, a restart — spent nothing, so the sweep continues
 // it, within the 25-session cap per ticket and agent.
 
@@ -101,6 +101,10 @@ pub const SESSION_NO_MOVE: &str = "a work session cannot move its ticket — rec
 /// The refusal for any other agent status write: an agent moves a ticket
 /// only through a person's approval.
 pub const AGENT_NEEDS_APPROVAL: &str = "agents cannot move a ticket's column themselves — a person moves it, or approves the move card your request shows them in your chat";
+
+/// The refusal for an agent's move to another board: the same approval path
+/// as a status move — the person's click on the card makes the move.
+pub const AGENT_MOVE_NEEDS_APPROVAL: &str = "agents cannot move a ticket to another board themselves — preview: true shows what the move would do; in a chat your request shows the person a move card, and their approval moves it";
 
 /// The refusal for a caller with no mover at all: the platform, a sweep, a
 /// trigger.
@@ -212,8 +216,7 @@ pub enum PickupRefusal {
     /// Nobody allowed placed it where it is, and it is no running chain's
     /// ready step.
     Unreleased,
-    /// A session that started on this placement ended with the agent's
-    /// report.
+    /// The agent reported, from one of its sessions, since this placement.
     Spent,
 }
 
@@ -238,11 +241,13 @@ impl PickupRefusal {
 ///
 ///   released  a person placed it where it is — or it is a running
 ///             workchain's ready step
-///   unspent   no session of this agent's that STARTED on this placement
-///             (`created_at`, so a session still ending when the person
-///             re-placed the ticket does not swallow the new placement) has
-///             ended with the agent's report. A session that stopped without
-///             one — the turn cap, an error, a restart — spent nothing.
+///   unspent   the agent has not REPORTED, from one of its sessions, since
+///             this placement. A report from before it (the person re-placed
+///             the ticket after reading the result) asks for more work; one
+///             after it — even from a session already running when the
+///             person dragged the ticket, even one that then erred — is that
+///             placement's work, done. A session that stopped without a
+///             report (the turn cap, an error, a restart) spent nothing.
 pub async fn pickup_refusal(
     pg: &PgPool,
     task_id: &str,
@@ -269,16 +274,23 @@ pub async fn pickup_refusal(
             return Ok(Some(PickupRefusal::Unreleased));
         }
     }
+    // SPENT = the agent REPORTED, from one of its work sessions on this
+    // ticket, after this placement — whatever that run's state is now (a
+    // session that reported and then erred is still a finished piece of
+    // work) and whenever it started (a person re-placing the ticket while
+    // its session was still working asked for that same work, not a redo).
+    // A report from BEFORE the placement (the person re-placed the ticket
+    // after reading it) spends nothing: that is a request for more.
     let spent: Option<(i32,)> = sqlx::query_as(
-        "select 1 from runs r \
-          where r.kind = 'work-session' and r.subject_id = $1 \
-            and r.input->>'agentModel' = $2 and r.state = 'done' \
-            and ($3::timestamptz is null or r.created_at >= $3::timestamptz) \
-            and exists (select 1 from task_activity x \
-                         where x.task_id = $4::uuid and x.actor = $2 \
-                           and x.type in ('outcome', 'error') \
-                           and x.created_at >= r.created_at \
-                           and x.created_at <= coalesce(r.finished_at, r.updated_at)) \
+        "select 1 from task_activity x \
+          where x.task_id = $4::uuid and x.actor = $2 \
+            and x.type in ('outcome', 'error') and x.description like 'reported %' \
+            and ($3::timestamptz is null or x.created_at >= $3::timestamptz) \
+            and exists (select 1 from runs r \
+                         where r.kind = 'work-session' and r.subject_id = $1 \
+                           and r.input->>'agentModel' = $2 \
+                           and r.created_at <= x.created_at \
+                           and (r.finished_at is null or x.created_at <= r.finished_at)) \
           limit 1",
     )
     .bind(task_id)
@@ -306,6 +318,7 @@ pub async fn session_reported(
     sqlx::query_scalar(
         "select exists (select 1 from task_activity a \
            where a.task_id = $1::uuid and a.actor = $2 and a.type in ('outcome', 'error') \
+             and a.description like 'reported %' \
              and a.created_at >= (select max(r.created_at) from runs r \
                where r.kind = 'work-session' and r.subject_id = $3 \
                  and r.input->>'agentModel' = $2 \
@@ -335,7 +348,11 @@ mod tests {
     fn agent_refusals_say_cannot_so_the_chat_offers_the_approval_card() {
         // talaria-chips turns a refused triage_ticket into a ticket_move
         // card only when the answer says "cannot" (or carries an error).
-        for refusal in [SESSION_NO_MOVE, AGENT_NEEDS_APPROVAL] {
+        for refusal in [
+            SESSION_NO_MOVE,
+            AGENT_NEEDS_APPROVAL,
+            AGENT_MOVE_NEEDS_APPROVAL,
+        ] {
             assert!(refusal.contains("cannot"), "{refusal}");
         }
     }

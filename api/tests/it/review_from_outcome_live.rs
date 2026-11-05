@@ -321,6 +321,11 @@ async fn an_outcome_reaches_every_review_queue_and_a_person_clears_it() {
         "the report moved the ticket"
     );
     f.surfaces(&approve).await.assert_review("reported");
+    // The ticket itself says so — what the ticket page offers its
+    // Approve / Request changes on, whatever the column.
+    let t = tasks::get_task(&f.pg, &approve).await.unwrap().unwrap();
+    assert_eq!(t.report_awaiting.as_deref(), Some("outcome"));
+    assert_eq!(t.reported_by.as_deref(), Some(f.agent.as_str()));
 
     // The agent writing again (a field, or the same report) does not clear it.
     tasks::update_task(
@@ -351,11 +356,20 @@ async fn an_outcome_reaches_every_review_queue_and_a_person_clears_it() {
         "an approval moved the ticket"
     );
     f.surfaces(&approve).await.assert_cleared("approved");
-    // A NEW report after that sign-off is new review work again.
+    let t = tasks::get_task(&f.pg, &approve).await.unwrap().unwrap();
+    assert_eq!(t.report_awaiting, None, "an approved report still awaits");
+    assert!(t.approved_at.is_some());
+    // A NEW report after that sign-off is new review work again, and the old
+    // sign-off mark no longer stands for it.
     f.report(&approve, "follow-up fixed too", None).await;
     f.surfaces(&approve)
         .await
         .assert_review("a new report after a sign-off");
+    let t = tasks::get_task(&f.pg, &approve).await.unwrap().unwrap();
+    assert_eq!(
+        t.approved_at, None,
+        "a new report kept the earlier sign-off"
+    );
 
     // A person SENDS IT BACK in place (the ticket's Request changes, already
     // in its working column): off the queues, and the placement renewed so
@@ -445,9 +459,32 @@ async fn an_error_report_is_blocked_work_with_its_reason_until_a_person_acts() {
         "after the agent wrote again",
         "waiting on the vendor's API key",
     );
+    let t = tasks::get_task(&f.pg, &id).await.unwrap().unwrap();
+    assert_eq!(t.report_awaiting.as_deref(), Some("error"));
     // A person moves it: no longer blocked work.
     f.move_to(&id, "inbox").await;
     f.surfaces(&id).await.assert_cleared("moved by a person");
+    // A person CLEARING THE ERROR answers a blocked report too.
+    let blanked = f.placed("Blocked, then answered").await;
+    f.report(&blanked, "stuck", Some("needs the staging password"))
+        .await;
+    f.surfaces(&blanked)
+        .await
+        .assert_blocked("reported an error", "needs the staging password");
+    tasks::update_task(
+        &f.deps,
+        &blanked,
+        TaskPatch {
+            error_message: Some(None),
+            ..Default::default()
+        },
+        &f.person(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("a person clears the error: {}", e.message()));
+    f.surfaces(&blanked)
+        .await
+        .assert_cleared("the person cleared the error");
     // THE COLUMN STILL COUNTS: a ticket a person put in Blocked, with no
     // report, is blocked work as before (no reason line — nobody gave one).
     let parked = f.placed("Parked in Blocked").await;

@@ -490,7 +490,20 @@ async fn an_agent_moves_only_between_its_boards_and_never_into_done() {
     )
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
-    // The move: the default columns map by key, the agent stays assigned.
+    // The preview: the default columns map by key, the agent stays assigned.
+    let (s, body) = as_agent(
+        &state,
+        &key,
+        "POST",
+        &path(&id),
+        Some(json!({ "boardId": dest, "preview": true })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["moved"]["status"], "in_progress", "{body}");
+    // THE MOVE ITSELF IS A PERSON'S (talaria-tasks placement.rs): the
+    // agent's request is refused with the sentence the chat turns into the
+    // `ticket_move` approval card, and nothing moved.
     let (s, body) = as_agent(
         &state,
         &key,
@@ -499,11 +512,19 @@ async fn an_agent_moves_only_between_its_boards_and_never_into_done() {
         Some(json!({ "boardId": dest })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "{body}");
-    assert_eq!(body["task"]["boardId"], dest.as_str());
-    assert_eq!(body["task"]["status"], "in_progress");
-    assert_eq!(body["task"]["assignees"], json!([model]));
-    assert_eq!(body["task"]["ticketRef"], "TMAD-1");
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        body["error"].as_str(),
+        Some(talaria_api::tasks::placement::AGENT_MOVE_NEEDS_APPROVAL),
+        "{body}"
+    );
+    let (board_now,): (String,) =
+        sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert_eq!(board_now, src, "an agent's own move moved the ticket");
     sweep(&pg, "a").await;
 }
 

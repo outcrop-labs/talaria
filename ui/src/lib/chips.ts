@@ -171,7 +171,7 @@ export function toolsUnlockedBy(kind: string): string[] {
     case 'drive_rename':
       return ['rename_google_file']
     case 'ticket_move':
-      return ['triage_ticket']
+      return ['triage_ticket', 'move_ticket']
     case 'board_access':
       return ['join_board']
     default:

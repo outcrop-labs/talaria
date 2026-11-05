@@ -91,7 +91,7 @@ platform. `talaria.json` declares each trigger, and `server.ts` answers it by id
   | event | when | the handler receives |
   | :--- | :--- | :--- |
   | `ticket.created` | a ticket is created, on any board | `ticketId`, `boardId` |
-  | `ticket.moved` | a ticket changes column — which only a person does: a drag, the approval of an agent's move card, a review's rejection, an agent's board move | `ticketId`, `boardId`, `from` and `to` (column keys), `closed` (whether `to` is terminal: done, failed, cancelled) |
+  | `ticket.moved` | a ticket changes column — which only a person does: a drag, a board move, a review's rejection, or approving the move card an agent offered | `ticketId`, `boardId`, `from` and `to` (column keys), `closed` (whether `to` is terminal: done, failed, cancelled) |
 
   These are the two changes the platform already announces internally (work dispatch and the
   watchers' notifications ride the same writes). **An event carries ids, never content**: a

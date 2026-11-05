@@ -80,9 +80,10 @@ was already closed: a move is not a sign-off. Labels the new board does not have
 (not created), and people or agents who are not on the new board are unassigned — the dialog
 names each before you confirm, and the ticket's activity records it. A ticket an agent is
 working on right now, a workchain step, or a ticket with sub-tasks can't be moved until that
-is cleared. Agents can move tickets too (`move_ticket`), only between boards they are on,
-never into a done column, never a ticket that is in review or blocked, and never in a way
-that unassigns a person. Anyone who could see the ticket before the move and can't after it
+is cleared. An agent can ask to move a ticket (`move_ticket`) between boards it is on — never
+into a done column, never a ticket that is in review or blocked, never in a way that
+unassigns a person — but it never makes the move itself: in your chat the request shows a
+move card, and your approval makes the move as you. Anyone who could see the ticket before the move and can't after it
 (its assignees, watchers and creator) gets a short notice that it moved to a board they
 can't see — without the board's name. An old link opens the ticket for anyone who can see
 its new board. The ticket's token spend counts toward the board it is on now.

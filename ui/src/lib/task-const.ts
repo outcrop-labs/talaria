@@ -121,6 +121,14 @@ export interface Task {
    *  queues read this to stop asking about a ticket somebody already cleared. */
   approvedAt: string | null
   archivedAt: string | null
+  /** An agent's report no person has acted on — 'outcome' (work to review)
+   *  or 'error' (blocked; `errorMessage` says why) — WHATEVER the column. A
+   *  work session never moves its ticket, so this, not the column, is what
+   *  offers Approve / Request changes here and feeds the review queues. */
+  reportAwaiting?: 'outcome' | 'error' | null
+  reportedAt?: string | null
+  /** The agent that reported (its model id). */
+  reportedBy?: string | null
 }
 
 /** A ticket this task depends on (blocked by) or that depends on it (blocks). */

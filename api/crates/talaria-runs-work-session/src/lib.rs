@@ -2333,6 +2333,9 @@ mod tests {
             updated_at: String::new(),
             completed_at: None,
             approved_at: None,
+            report_awaiting: None,
+            reported_at: None,
+            reported_by: None,
             archived_at: None,
         }
     }

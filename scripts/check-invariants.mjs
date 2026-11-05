@@ -3346,12 +3346,23 @@ const UNSET_SEAM_CENSUS = [
     }
     return src.slice(open, open + 4000)
   }
-  /** Every status / placement write in one file's text: [{index, what}]. */
-  const statusWrites = (src, { migrations = false } = {}) => {
+  /** Every status / placement write in one file's text: [{index, what}].
+   *  Two spellings are folded first, LENGTH-PRESERVING so indices and line
+   *  numbers stay true: a Rust string continuation (`\⏎`) reads as the
+   *  whitespace it is, and `"…" + "…"` / `String::from("…") + "…"` joins
+   *  into one literal. */
+  const statusWrites = (raw, { migrations = false } = {}) => {
+    const src = raw
+      .replace(/\\(?=\r?\n)/g, ' ')
+      .replace(/"\s*\)?\s*\+\s*&?\s*"/g, (m) => ' '.repeat(m.length))
     const out = []
     const setWrite = (m, kind) => {
       const { text, rowCols } = setList(src, m.index + m[0].length)
       if (STATUS.test(text) || /\bstatus\b/i.test(rowCols)) out.push({ index: m.index, what: `${kind} … set status =` })
+      // The literal ends at SET: the list is assembled somewhere this rule
+      // cannot read (a const prefix spliced into format!, a builder), so it
+      // is a write to tasks nobody can vouch for.
+      else if (!text.trim() && !rowCols.trim()) out.push({ index: m.index, what: `${kind} … set (its SET list is built outside the literal)` })
       else if (!migrations && (PLACED.test(text) || /\bplaced_/i.test(rowCols))) {
         out.push({ index: m.index, what: `${kind} … set placed_* =` })
       }
@@ -3395,12 +3406,16 @@ const UNSET_SEAM_CENSUS = [
     ['"insert into tasks (id, title) values ($1, $2) on conflict (id) do update set status = excluded.status"', 1],
     ['"merge into tasks t using src s on t.id = s.id when matched then update set status = s.status"', 1],
     ['format!("update tasks set {} = $2 where id = $1", "status")', 1],
-    ['let mut q = QueryBuilder::new("update tasks set "); q.push("status = "); q.push_bind(s);', 1],
+    // Two findings: the literal that ends at SET, and the builder that names status.
+    ['let mut q = QueryBuilder::new("update tasks set "); q.push("status = "); q.push_bind(s);', 2],
     ['sql`update tasks set ${sql(patch)} where id = ${id}`', 1],
     ['"update tasks t set placed_by_kind = \'person\' where t.id = $1"', 1],
     ['"insert into tasks (board_id, title, status) values ($1, $2, $3)"', 1],
     ['`create trigger tasks_touch before update on tasks for each row execute function f()`', 1],
     ['`create or replace function f() returns trigger as $$ begin new.status := \'inbox\'; return new; end $$`', 1],
+    ['"update tasks \\\n         set status = $2 where id = $1"', 1],
+    ['String::from("update tasks set ") + "status = $2 where id = $1"', 1],
+    ['const UPDATE_TASKS: &str = "update tasks set "; let q = format!("{UPDATE_TASKS}status = $2");', 1],
     ['"update tasks set tags = $2 where id = $1 and status = \'inbox\'"', 0],
     ['"update tasks set approved_at = now(), updated_at = now() where id = $1"', 0],
     ['"update task_activity set description = $2 where status = $1"', 0],
@@ -3446,6 +3461,19 @@ const UNSET_SEAM_CENSUS = [
     for (const m of src.matchAll(/\bStatusMover::/g)) {
       if (path.startsWith('api/crates/talaria-tasks/') || inTest(m.index)) continue
       found.push({ path, line: lineOf(src, m.index), text: 'StatusMover outside talaria-tasks' })
+    }
+    // The other two person doors: a board move's `Mover::Human { user_id, … }`
+    // (a CONSTRUCTION — a match pattern carries `..`) and `add_review`, which
+    // clears an agent's report. Both belong to the routes, which have the
+    // session.
+    const routeOk = /^api\/crates\/talaria-routes-[\w-]+\//.test(path)
+    for (const m of src.matchAll(/\bMover::Human\s*\{([^}]*)\}/g)) {
+      if (routeOk || inTest(m.index) || m[1].includes('..')) continue
+      found.push({ path, line: lineOf(src, m.index), text: 'Mover::Human { … } built outside the routes — a person comes from a session' })
+    }
+    for (const m of src.matchAll(/\badd_review\s*\(/g)) {
+      if (routeOk || inTest(m.index) || /\bfn\s+$/.test(src.slice(Math.max(0, m.index - 12), m.index))) continue
+      found.push({ path, line: lineOf(src, m.index), text: 'add_review( outside the routes — a review decision is a person\'s' })
     }
   }
   for (const [path, src] of rust) scan(path, src, true)

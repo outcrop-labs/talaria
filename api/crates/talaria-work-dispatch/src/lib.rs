@@ -365,10 +365,14 @@ pub async fn maybe_dispatch_ticket(
                 // the pickup column looking queued, forever, in silence.
                 match sessions_used(pg, &task.id, &agent).await {
                     Ok(n) if n >= MAX_SESSIONS_PER_TICKET_AGENT as i64 => {
+                        // The cap is a LIFETIME count for the pair, review
+                        // rounds included, so the line says what it is and
+                        // what still works — a re-placement does not.
                         let line = format!(
                             "{agent} has had {MAX_SESSIONS_PER_TICKET_AGENT} work sessions on this \
-                             ticket without reporting an outcome — Talaria will not start another; \
-                             a person takes it from here"
+                             ticket, the most Talaria starts for one agent on one ticket, and will \
+                             not start another — not even if the ticket is placed again. Assign it \
+                             to another agent, or open a follow-up ticket"
                         );
                         if let Err(e) = tasks::tell_work_stopped(pg, &task.id, &line).await {
                             tracing::error!(
@@ -1572,17 +1576,53 @@ mod live_db {
         }
 
         /// A work-session run row for this agent, in `state`.
+        /// A work-session run row for this agent, in `state`, in the NEXT
+        /// GENERATION SLOT — the derived id dispatch claims — so the
+        /// generation walk sees it exactly as it sees a session it started
+        /// (a live one makes a push stand down; production cannot run two).
         async fn session_row(&self, id: &str, state: &str) {
+            for generation in 0..MAX_SESSIONS_PER_TICKET_AGENT {
+                let run_id = session_run_id(id, &self.agent, generation);
+                let taken: bool =
+                    sqlx::query_scalar("select exists (select 1 from runs where id = $1::uuid)")
+                        .bind(&run_id)
+                        .fetch_one(&self.pg)
+                        .await
+                        .unwrap();
+                if taken {
+                    continue;
+                }
+                sqlx::query(
+                    "insert into runs (id, kind, subject_type, subject_id, state, input) \
+                     values ($4::uuid, 'work-session', 'task', $1, $2, \
+                             jsonb_build_object('taskId', $1, 'agentModel', $3::text, 'generation', $5::int))",
+                )
+                .bind(id)
+                .bind(state)
+                .bind(&self.agent)
+                .bind(&run_id)
+                .bind(generation as i32)
+                .execute(&self.pg)
+                .await
+                .expect("session row");
+                return;
+            }
+            panic!("no generation slot left for {id}");
+        }
+
+        /// The newest session's state, as the run driver leaves it.
+        async fn set_newest(&self, id: &str, state: &str) {
             sqlx::query(
-                "insert into runs (kind, subject_type, subject_id, state, input) \
-                 values ('work-session', 'task', $1, $2, jsonb_build_object('taskId', $1, 'agentModel', $3::text))",
+                "update runs set state = $2, updated_at = now(), \
+                   finished_at = case when $2 in ('done', 'error', 'cancelled') then now() end \
+                 where id = (select id from runs where kind = 'work-session' and subject_id = $1 \
+                             order by created_at desc limit 1)",
             )
             .bind(id)
             .bind(state)
-            .bind(&self.agent)
             .execute(&self.pg)
             .await
-            .expect("session row");
+            .unwrap();
         }
 
         async fn status_lines(&self, id: &str) -> Vec<String> {
@@ -1764,20 +1804,26 @@ mod live_db {
             "a re-placement waited for the sweep"
         );
 
-        // S2: a session that STARTED before a re-placement and ends after it,
-        // with its report, does not spend the new placement.
+        // S2: the agent reports, and only THEN does a person re-place the
+        // ticket (they read the result and want more) while that session is
+        // still ending. The re-placement is unspent: once the session ends,
+        // the next one starts.
         r.finish_unreported(&placed).await;
-        r.session_row(&placed, "running").await;
+        r.session_row(&placed, "running").await; // generation 3, live
         r.report(&placed, "fixed it; PR #1").await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         r.move_as_person(&placed, "assigned").await;
-        let pushed = r.sessions_reach(&placed, 5).await;
-        assert_eq!(pushed, 5, "the re-placement's push");
-        r.finish_unreported(&placed).await;
-        let sessions = r.sessions(&placed).await;
+        settle().await;
+        assert_eq!(
+            r.sessions(&placed).await,
+            4,
+            "a push started a second live session"
+        );
+        r.set_newest(&placed, "done").await;
         assert_eq!(
             r.offer(&placed).await,
-            sessions + 1,
-            "a session ending after the re-placement swallowed it"
+            5,
+            "a report from before the re-placement swallowed it"
         );
 
         // A person's STOP holds until a person places it again.
@@ -1799,6 +1845,105 @@ mod live_db {
             r.sessions_reach(&stopped, 2).await,
             2,
             "a person's placement lifts their stop"
+        );
+        r.drop().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
+    async fn rule_a_drag_during_a_session_is_that_sessions_work_not_a_redo() {
+        let r = Rule::new("drag").await;
+        let id = r.born(std::slice::from_ref(&r.agent)).await;
+        r.move_as_person(&id, "assigned").await;
+        assert_eq!(r.sessions_reach(&id, 1).await, 1, "the placement's push");
+        r.set_newest(&id, "running").await;
+        // The person drags it to In progress while the session works: the
+        // push stands down (the session is live), and no second one starts.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        r.move_as_person(&id, "in_progress").await;
+        settle().await;
+        assert_eq!(
+            r.sessions(&id).await,
+            1,
+            "a drag during a session started another"
+        );
+        // The agent reports AFTER the drag and its session ends: that report
+        // is the dragged placement's work. A person approves; nothing starts
+        // again — not at once, not from the sweep.
+        r.report(&id, "fixed it; PR #1").await;
+        r.set_newest(&id, "done").await;
+        tasks::complete_quality_review(&r.tasks, &id, &r.person(), "approved", "in_progress")
+            .await
+            .unwrap_or_else(|e| panic!("approve: {}", e.message()))
+            .expect("the review card applies to a reported outcome");
+        assert_eq!(
+            r.offer(&id).await,
+            1,
+            "an approved, dragged ticket got a redo session"
+        );
+        assert_eq!(
+            tasks::placement::pickup_refusal(&r.pg, &id, &r.agent)
+                .await
+                .unwrap(),
+            Some(tasks::placement::PickupRefusal::Spent)
+        );
+        // A session that REPORTED AND THEN ERRED is finished work too.
+        let erred = r.born(std::slice::from_ref(&r.agent)).await;
+        r.move_as_person(&erred, "assigned").await;
+        assert_eq!(r.sessions_reach(&erred, 1).await, 1);
+        r.set_newest(&erred, "running").await;
+        r.report(&erred, "done before the crash").await;
+        r.set_newest(&erred, "error").await;
+        sqlx::query(
+            "update runs set updated_at = now() - interval '6 minutes' where subject_id = $1",
+        )
+        .bind(&erred)
+        .execute(&r.pg)
+        .await
+        .unwrap();
+        assert_eq!(
+            r.offer(&erred).await,
+            1,
+            "a reported-then-erred session restarted"
+        );
+        // Clearing a field is not a report: an agent writing outcome: null
+        // neither ends a session nor spends a placement.
+        let cleared = r.born(std::slice::from_ref(&r.agent)).await;
+        r.move_as_person(&cleared, "assigned").await;
+        assert_eq!(r.sessions_reach(&cleared, 1).await, 1);
+        r.set_newest(&cleared, "running").await;
+        // A person drafted an outcome field; the agent then blanks it.
+        r.write(
+            &cleared,
+            tasks::TaskPatch {
+                outcome: Some(Some("draft".into())),
+                ..Default::default()
+            },
+            &r.person(),
+        )
+        .await
+        .unwrap();
+        r.write(
+            &cleared,
+            tasks::TaskPatch {
+                outcome: Some(None),
+                ..Default::default()
+            },
+            &tasks::TaskActor::agent(r.agent.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !tasks::placement::session_reported(&r.pg, &cleared, &r.agent)
+                .await
+                .unwrap(),
+            "clearing the outcome ended the session"
+        );
+        r.set_newest(&cleared, "done").await;
+        assert_eq!(
+            r.offer(&cleared).await,
+            2,
+            "clearing the outcome spent the placement"
         );
         r.drop().await;
     }

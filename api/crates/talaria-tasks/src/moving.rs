@@ -802,6 +802,17 @@ pub async fn move_task(
     if req.preview {
         return Ok(MoveOutcome { task: None, moved });
     }
+    // AN AGENT NEVER MOVES A TICKET ITSELF — to another board or column
+    // (placement.rs). Everything above still runs for it, so its preview is
+    // exact and its refusals are the real ones; the write is a person's: in a
+    // chat, this refusal (it says "cannot") becomes the `ticket_move`
+    // approval card, and the person's click makes this same move as them
+    // (chips_approvals_id runs move_task with Mover::Human).
+    if mover.is_agent() {
+        return Err(MoveError::Forbidden(
+            crate::placement::AGENT_MOVE_NEEDS_APPROVAL.into(),
+        ));
+    }
     // Who hears about it: the ticket's audience on the destination (told
     // where it went), and the people who can see it now but will not after
     // (told only that it left — never where to; review S1).

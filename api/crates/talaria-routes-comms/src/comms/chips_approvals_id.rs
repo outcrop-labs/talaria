@@ -214,6 +214,36 @@ async fn execute(
                     .and_then(Value::as_str)
                     .map(str::to_string)
             };
+            // AN AGENT'S BOARD MOVE (its refused move_ticket): the person's
+            // click makes that same move as them — role-checked on both
+            // boards, and their placement (talaria-tasks placement.rs).
+            if let Some(board_id) = text("boardId").filter(|b| !b.is_empty()) {
+                let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
+                let status = text("status").filter(|s| !s.is_empty());
+                let req = talaria_tasks::MoveRequest {
+                    board_id: &board_id,
+                    status: status.as_deref(),
+                    preview: false,
+                };
+                let mover = talaria_tasks::Mover::Human {
+                    user_id: user_id.to_string(),
+                    actor: label.to_string(),
+                };
+                return match talaria_tasks::move_task(&deps, task_id, &req, &mover).await {
+                    Ok(_) => Ok(()),
+                    Err(talaria_tasks::MoveError::NotFound) => {
+                        Err(house_error(StatusCode::NOT_FOUND, "not found"))
+                    }
+                    Err(
+                        talaria_tasks::MoveError::Bad(msg)
+                        | talaria_tasks::MoveError::Forbidden(msg)
+                        | talaria_tasks::MoveError::Conflict(msg),
+                    ) => Err(house_error(StatusCode::BAD_REQUEST, &msg)),
+                    Err(talaria_tasks::MoveError::Db(e)) => {
+                        Err(internal("[chips] ticket board move failed", e))
+                    }
+                };
+            }
             let patch = TaskPatch {
                 title: text("title"),
                 status: text("status"),

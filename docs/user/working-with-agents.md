@@ -50,8 +50,8 @@ An agent never moves its ticket: the board stays where you put it. When the agen
 outcome, the work arrives in your review queues — the approvals inbox, the daily brief, the inbox
 cards and Home's Review list — and stays there until you approve it, send it back (Request
 changes, which puts the agent back on it) or move the ticket. An agent that reports what blocks
-it shows up the same way as **blocked** work, with its reason. Open the ticket and you get, in
-order:
+it shows up the same way as **blocked** work, with its reason. Open the ticket — whatever column
+it is in — and, while its report waits for you, you get, in order:
 
 1. **The QA judge's verdict** — `Pass` / `Revise` / `Escalate` with its reasoning (advisory
    unless your admin set it enforcing).
@@ -60,8 +60,8 @@ order:
 3. **Workbench jobs, if any** — "…plans standard-effort work on *repo*; approve to build"
    (**Approve plan** / **Reject**), and "…opened a PR from *branch*" (**Merge** /
    **View PR**).
-4. **The gate** — "Ready for review. Approve to complete." → **Approve** or
-   **Request changes**.
+4. **The gate** — "Ready for review" (or "*agent* reported its outcome") → **Approve** or
+   **Request changes**. A blocked report shows its reason instead, with **Send it back**.
 
 ### Tickets from a conversation
 

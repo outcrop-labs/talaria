@@ -63,7 +63,12 @@ const TASK_SELECT: &str = "select t.id::text as id, t.board_id::text as board_id
   (trunc(extract(epoch from t.updated_at) * 1000))::bigint as updated_at_ms, \
   (trunc(extract(epoch from t.completed_at) * 1000))::bigint as completed_at_ms, \
   (trunc(extract(epoch from t.approved_at) * 1000))::bigint as approved_at_ms, \
-  (trunc(extract(epoch from t.archived_at) * 1000))::bigint as archived_at_ms \
+  (trunc(extract(epoch from t.archived_at) * 1000))::bigint as archived_at_ms, \
+  case when t.reported_kind is not null \
+        and (t.report_cleared_at is null or t.report_cleared_at < t.reported_at) \
+       then t.reported_kind end as report_awaiting, \
+  (trunc(extract(epoch from t.reported_at) * 1000))::bigint as reported_at_ms, \
+  t.reported_by as reported_by \
   from tasks t join boards b on b.id = t.board_id";
 
 /// The wide row exactly as selected. jsonb lands as `Value` and is typed
@@ -99,6 +104,9 @@ struct TaskRow {
     completed_at_ms: Option<i64>,
     approved_at_ms: Option<i64>,
     archived_at_ms: Option<i64>,
+    report_awaiting: Option<String>,
+    reported_at_ms: Option<i64>,
+    reported_by: Option<String>,
 }
 
 impl From<TaskRow> for Task {
@@ -131,6 +139,9 @@ impl From<TaskRow> for Task {
             completed_at: r.completed_at_ms.map(epoch_ms_to_iso),
             approved_at: r.approved_at_ms.map(epoch_ms_to_iso),
             archived_at: r.archived_at_ms.map(epoch_ms_to_iso),
+            report_awaiting: r.report_awaiting,
+            reported_at: r.reported_at_ms.map(epoch_ms_to_iso),
+            reported_by: r.reported_by,
         }
     }
 }
@@ -1696,7 +1707,9 @@ pub async fn update_task(
     // approval notice resolves after the commit. Read before the write.
     let person_acts = who.user_id().is_some()
         && (mover.is_some() || (patch.archived == Some(true) && cur.archived_at.is_none()));
-    let report_was_awaiting = if person_acts {
+    let person_clears_error =
+        who.user_id().is_some() && patch.error_message == Some(None) && cur.error_message.is_some();
+    let report_was_awaiting = if person_acts || person_clears_error {
         talaria_statuses::awaiting_report(pg, id).await?.is_some()
     } else {
         false
@@ -1741,9 +1754,11 @@ pub async fn update_task(
     }
     if agent_reported_outcome || agent_reported_error {
         // An error wins: a report that says what went wrong is blocked work.
+        // A NEW report is new work to look at, so an earlier sign-off mark
+        // (`approved_at`) no longer stands for it.
         sqlx::query(
-            "update tasks set reported_at = now(), reported_kind = $2, reported_by = $3 \
-             where id = $1::uuid",
+            "update tasks set reported_at = now(), reported_kind = $2, reported_by = $3, \
+             approved_at = null where id = $1::uuid",
         )
         .bind(id)
         .bind(if agent_reported_error {
@@ -1760,6 +1775,17 @@ pub async fn update_task(
             .bind(id)
             .execute(&mut *tx)
             .await?;
+    }
+    // A PERSON CLEARING THE ERROR answers the blocked report it raised: off
+    // the Blocked queues. (An outcome awaiting review is left alone.)
+    if person_clears_error {
+        sqlx::query(
+            "update tasks set report_cleared_at = now() \
+             where id = $1::uuid and reported_kind = 'error'",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     if report_was_awaiting {
@@ -2596,7 +2622,7 @@ pub async fn send_back(
         return Err(TaskError::Refusal(placement::PERSON_NOT_SIGNED_IN.into()));
     };
     let mut tx = deps.pg.begin().await?;
-    placement::set_status(
+    let written = placement::set_status(
         &mut tx,
         id,
         Some(&cur.status),
@@ -2605,6 +2631,13 @@ pub async fn send_back(
     )
     .await?;
     tx.commit().await?;
+    if !written {
+        // The ticket moved between the read and the write: nothing was sent
+        // back, so nothing is said, resolved or dispatched.
+        return Err(TaskError::Refusal(
+            "the ticket moved while this was being decided — reload it and try again".into(),
+        ));
+    }
     log_activity(
         &deps.pg,
         id,

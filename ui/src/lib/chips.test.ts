@@ -178,7 +178,7 @@ describe('the agent approval card', () => {
 describe('unlock and invoke', () => {
   it('names the tools an approval unlocks', () => {
     expect(toolsUnlockedBy('gmail_send')).toEqual(['draft_email'])
-    expect(toolsUnlockedBy('ticket_move')).toEqual(['triage_ticket'])
+    expect(toolsUnlockedBy('ticket_move')).toEqual(['triage_ticket', 'move_ticket'])
     expect(toolsUnlockedBy('unknown')).toEqual([])
   })
 

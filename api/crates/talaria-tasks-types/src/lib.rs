@@ -133,6 +133,15 @@ pub struct Task {
     /// release ahead of it. A person moves it to done when it really is.
     pub approved_at: Option<String>,
     pub archived_at: Option<String>,
+    /// An agent's report no person has acted on yet — `"outcome"` (work to
+    /// review) or `"error"` (blocked; `error_message` says why) — whatever
+    /// column the ticket is in. A work session never moves its ticket, so
+    /// this, not the column, is what puts Approve / Request changes on the
+    /// ticket page and the work in the review queues (talaria-statuses
+    /// `AGENT_*_AWAITING_SQL` is the same predicate).
+    pub report_awaiting: Option<String>,
+    pub reported_at: Option<String>,
+    pub reported_by: Option<String>,
 }
 
 #[derive(Debug, Clone)]

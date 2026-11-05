@@ -280,6 +280,14 @@
   // models that), or absent.
   const inReview = $derived(!!t && isReviewStatus(t.status, boardStatuses))
   const approved = $derived(!!t?.approvedAt)
+  // AN AGENT'S REPORT IS ITS OWN REVIEW STAGE. A work session never moves its
+  // ticket, so finished agent work waits in whatever column a person put it
+  // in, with the report (`reportAwaiting`, the server's AGENT_*_AWAITING
+  // predicate) — and the gate below offers the same sign-off on it. An error
+  // report is blocked work: its reason, and the way to send it back.
+  const reported = $derived(t?.reportAwaiting === 'outcome')
+  const reportedBlocked = $derived(t?.reportAwaiting === 'error')
+  const awaitingReview = $derived(inReview || reported)
   const statusColor = $derived(t ? statusColorOf(t.status, boardStatuses) : 'var(--theme-muted)')
 
   // Sub-tasks: one level deep. Children list + inline add on a
@@ -482,12 +490,34 @@
             <!-- QA judge verdict (advisory) — the most recent, while the ticket
                  is still awaiting sign-off. Once signed off it is history, and
                  history is in the Work tab. -->
-            {#if inReview && !approved && data?.judgeReviews?.[0]}
+            {#if awaitingReview && !approved && data?.judgeReviews?.[0]}
               <JudgeVerdict review={data.judgeReviews[0]} />
             {/if}
 
-            {#if inReview && canEdit}
-              {#if approved}
+            {#if reportedBlocked && canEdit}
+              <!-- BLOCKED BY THE AGENT'S OWN REPORT. The ticket stays where it
+                   is; this is the Blocked column's signal, with the reason. -->
+              <div
+                transition:slide={{ duration: 150 }}
+                class="flex flex-wrap items-center gap-2 rounded-lg border border-[color:var(--theme-warning)]/40 bg-[color:var(--theme-warning)]/5 p-2 font-sans text-sm"
+              >
+                <span class="min-w-0 flex-1 text-fg">
+                  {t.reportedBy ?? 'The agent'} is blocked{t.errorMessage ? `: ${t.errorMessage}` : '.'} It stays here until you
+                  send it back or move it.
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onclick={async () => {
+                    await reviewTask(taskId, 'rejected')
+                    refresh()
+                  }}>Send it back</Button
+                >
+              </div>
+            {/if}
+
+            {#if awaitingReview && canEdit}
+              {#if approved && !reported}
                 <!-- SIGNED OFF, NOT SHIPPED. Approval marks the ticket and
                      leaves it in its column; this says so plainly and points
                      at the move that is genuinely a person's call, rather than
@@ -514,7 +544,13 @@
                   transition:slide={{ duration: 150 }}
                   class="flex flex-wrap items-center gap-2 rounded-lg border border-[color:var(--theme-accent-border)] bg-accent-soft p-2 font-sans text-sm"
                 >
-                  <span class="min-w-0 flex-1 text-fg">Ready for review. Approving marks it signed off.</span>
+                  <span class="min-w-0 flex-1 text-fg">
+                    {#if reported && !inReview}
+                      {t.reportedBy ?? 'The agent'} reported its outcome. It stays in this column; approving marks it signed off.
+                    {:else}
+                      Ready for review. Approving marks it signed off.
+                    {/if}
+                  </span>
                   <Button
                     size="sm"
                     onclick={async () => {
