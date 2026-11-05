@@ -1,0 +1,214 @@
+// The channel's state: ONE `app_settings` row
+// (`talaria_workbench_harnesses::CHANNEL_STATE_KEY`). Provisioning reads only
+// its `current` and `previous` pairs (`talaria_workbench_harnesses::effective`);
+// everything else is the channel's own bookkeeping and the panel's view.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use talaria_workbench_harnesses::Versions;
+
+use crate::Tool;
+
+/// The most recent events kept.
+const EVENTS_KEPT: usize = 40;
+/// The newest releases kept per harness.
+const SEEN_KEPT: usize = 30;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct State {
+    /// The pair the channel last verified on a workbench: what every new job
+    /// runs. None until the first move: jobs run the bootstrap fallback.
+    pub current: Option<Pair>,
+    /// The pair before it: a volume that will not take `current` runs this.
+    pub previous: Option<Pair>,
+    /// Per harness (`bun`, `omp`).
+    pub tools: BTreeMap<String, ToolState>,
+    pub next_check_at: Option<i64>,
+    /// Per workbench volume (department): the pair last verified there.
+    pub volumes: BTreeMap<String, Volume>,
+    /// Smoke tests the host could not run, in a row.
+    pub host_failures: u32,
+    /// No smoke test before this (the host's backoff).
+    pub retry_at: Option<i64>,
+    /// When each alert topic last went to the admins.
+    pub alerted: BTreeMap<String, i64>,
+    pub events: Vec<Event>,
+    /// Alerts a patch decided are due; sent once it commits. Never stored.
+    #[serde(skip)]
+    pub outbox: Vec<Alert>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pair {
+    pub bun: String,
+    pub omp: String,
+    #[serde(default)]
+    pub at: i64,
+}
+
+impl Pair {
+    pub fn of(v: &Versions, at: i64) -> Pair {
+        Pair {
+            bun: v.bun.clone(),
+            omp: v.omp.clone(),
+            at,
+        }
+    }
+    pub fn versions(&self) -> Versions {
+        Versions {
+            bun: self.bun.clone(),
+            omp: self.omp.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ToolState {
+    /// An admin's Pin: this version and no other, until Unpin.
+    pub pinned: Option<String>,
+    /// An admin's Update now: adopt this version without its soak.
+    pub forced: Option<String>,
+    /// Releases the checks have seen, by version.
+    pub seen: BTreeMap<String, Seen>,
+    /// Releases that failed to install, start or pass the preflight on a
+    /// workbench, by version: never adopted until an admin allows them again.
+    pub held: BTreeMap<String, Held>,
+    pub last_check: Option<LastCheck>,
+    /// Why the newest release is not what jobs run yet (the panel's line).
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Seen {
+    /// The first check that saw it: its soak counts from here.
+    pub first_seen_at: i64,
+    /// Oh My Pi's `engines.bun`.
+    pub requires_bun: Option<String>,
+    pub deprecated: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Held {
+    pub reason: String,
+    pub at: i64,
+    /// The workbench the smoke test ran on.
+    pub department: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LastCheck {
+    pub at: i64,
+    pub latest: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Volume {
+    pub bun: Option<String>,
+    pub omp: Option<String>,
+    pub at: i64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Event {
+    pub at: i64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Alert {
+    pub topic: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// An alert topic goes to the admins at most this often.
+pub const ALERT_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Read a stored row: absent or `null` is a fresh state; anything else must
+/// parse, or nothing acts on it (provisioning still runs the bootstrap).
+pub fn parse_state(stored: Option<serde_json::Value>) -> Result<State, String> {
+    match stored {
+        None | Some(serde_json::Value::Null) => Ok(State::default()),
+        Some(v) => serde_json::from_value(v).map_err(|e| {
+            format!(
+                "the workbench harness state (app_settings '{}') is unreadable: {e}",
+                talaria_workbench_harnesses::CHANNEL_STATE_KEY
+            )
+        }),
+    }
+}
+
+impl State {
+    /// What jobs run now: the verified pair, else the bootstrap fallback.
+    pub fn running(&self) -> Versions {
+        self.current
+            .as_ref()
+            .map(Pair::versions)
+            .filter(Versions::plain)
+            .unwrap_or_else(Versions::bootstrap)
+    }
+
+    pub fn tool(&self, t: Tool) -> ToolState {
+        self.tools.get(t.slug()).cloned().unwrap_or_default()
+    }
+
+    pub fn tool_mut(&mut self, t: Tool) -> &mut ToolState {
+        self.tools.entry(t.slug().to_string()).or_default()
+    }
+
+    pub fn event(&mut self, at: i64, text: impl Into<String>) {
+        self.events.push(Event {
+            at,
+            text: text.into(),
+        });
+        let over = self.events.len().saturating_sub(EVENTS_KEPT);
+        self.events.drain(..over);
+    }
+
+    /// Queue an alert unless its topic went out within [`ALERT_EVERY_MS`].
+    pub fn alert(&mut self, now: i64, topic: &str, title: &str, body: &str) {
+        self.alerted.retain(|_, at| now - *at < 31 * ALERT_EVERY_MS);
+        if self
+            .alerted
+            .get(topic)
+            .is_some_and(|at| now - at < ALERT_EVERY_MS)
+        {
+            return;
+        }
+        self.alerted.insert(topic.to_string(), now);
+        self.outbox.push(Alert {
+            topic: topic.into(),
+            title: title.into(),
+            body: body.into(),
+        });
+    }
+
+    /// Record a release a check (or a Pin) read. Its soak clock starts the
+    /// first time it is seen and never restarts.
+    pub fn saw(&mut self, t: Tool, rel: &crate::upstream::Release, now: i64) {
+        let ts = self.tool_mut(t);
+        let e = ts.seen.entry(rel.version.clone()).or_insert(Seen {
+            first_seen_at: now,
+            ..Default::default()
+        });
+        e.requires_bun = rel.requires_bun.clone();
+        e.deprecated = rel.deprecated.clone();
+        if ts.seen.len() > SEEN_KEPT {
+            let keep: Vec<String> = {
+                let mut vs: Vec<&String> = ts.seen.keys().collect();
+                vs.sort_by(|a, b| crate::semver::cmp(b, a));
+                vs.into_iter().take(SEEN_KEPT).cloned().collect()
+            };
+            ts.seen.retain(|v, _| keep.contains(v));
+        }
+    }
+}

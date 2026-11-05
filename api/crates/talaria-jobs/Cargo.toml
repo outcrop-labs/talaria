@@ -73,6 +73,7 @@ talaria-uploads = { workspace = true }
 talaria-work-dispatch = { workspace = true }
 talaria-plugins = { workspace = true }
 talaria-workbench-mcp = { workspace = true }
+talaria-workbench-updates = { workspace = true }
 talaria-workbench-queue = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

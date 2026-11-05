@@ -1589,6 +1589,12 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/workbench/harnesses",
+            get(talaria_routes_workbench::workbench::workbench_harnesses::get)
+                .post(talaria_routes_workbench::workbench::workbench_harnesses::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
             "/api/workbench/jobs",
             get(talaria_routes_workbench::workbench::workbench_jobs::get)
                 .put(talaria_routes_workbench::workbench::workbench_jobs::put)

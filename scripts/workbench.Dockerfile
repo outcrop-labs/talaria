@@ -2,10 +2,11 @@
 # pre-baked, so a first job skips the apt and mise downloads. Purely an
 # optimization: the stock image works the same way.
 #
-# Oh My Pi is NOT baked in. Every job runs the version pinned in
-# talaria-workbench-harnesses (OMP_VERSION), installed once per department
-# volume by the job's provisioning and started through the job's own
-# launcher; a global install here would be a second omp nothing runs.
+# Oh My Pi is NOT baked in. Every job runs the version the workbench harness
+# channel verified (talaria-workbench-updates; OMP_VERSION in
+# talaria-workbench-harnesses is the bootstrap fallback), installed once per
+# department volume by the job's provisioning and started through the job's
+# own launcher; a global install here would be a second omp nothing runs.
 #
 # The BASE is not unpinned: it is the same Hermes pin the chassis renders
 # (scripts/chassis.template.yml), so a Developer Agent runs the Hermes every

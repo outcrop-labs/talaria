@@ -164,6 +164,11 @@ pub mod group_key {
     pub fn hermes(topic: &str) -> String {
         format!("hermes:{topic}")
     }
+    /// The workbench harness channel's alerts: one open row per topic (a
+    /// held release, `held:<tool>:<version>`; a host failing, `host`).
+    pub fn workbench_harness(topic: &str) -> String {
+        format!("workbench-harness:{topic}")
+    }
     /// One approval waiting.
     pub fn approval(approval_id: &str) -> String {
         format!("approval:{approval_id}")
@@ -186,6 +191,7 @@ pub mod entity {
     pub const APPROVAL: &str = "approval";
     pub const MCP_SERVER: &str = "mcp_server";
     pub const HERMES_IMAGE: &str = "hermes_image";
+    pub const WORKBENCH_HARNESS: &str = "workbench_harness";
     pub const PLAN: &str = "plan";
     pub const RESEARCH_RUN: &str = "research_run";
     pub const KB_DOC: &str = "kb_doc";

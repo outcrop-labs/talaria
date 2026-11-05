@@ -769,21 +769,74 @@ fn runtime_ok_cache() -> &'static std::sync::Mutex<RuntimeCache> {
 /// terminal ran without a login shell, met `env: 'bun': No such file or
 /// directory` — and the agent, correctly, refused to start jobs. This runs the
 /// shared bootstrap (`talaria_workbench_harnesses::harness_runtime_script`) as
-/// the agent's own user: mise if missing, bun pinned and installed, `bun`
-/// linked onto the PATH every shell has, and the PINNED Oh My Pi installed
-/// and started once. Idempotent; Ok carries what runs and where its bun is.
+/// the agent's own user: mise if missing, bun installed, `bun` linked onto the
+/// PATH every shell has, and Oh My Pi installed and started once. Idempotent;
+/// Ok carries what runs and where its bun is.
+///
+/// WHICH versions is the harness channel's call, never this one's: the pair it
+/// last verified on a workbench, else the compiled bootstrap
+/// (`talaria_workbench_harnesses::effective`). No registry is asked here. When
+/// that pair will not install on THIS volume and the channel has a previous
+/// verified pair, the job runs on that one and the note says so.
 pub async fn ensure_harness_runtime(
     pg: &PgPool,
     department: &str,
 ) -> Result<talaria_workbench_harnesses::Runtime, String> {
+    ensure_harness_runtime_noted(pg, department)
+        .await
+        .map(|(rt, _)| rt)
+}
+
+/// [`ensure_harness_runtime`], with the sentence to show when this volume
+/// fell back to the previous verified pair.
+pub async fn ensure_harness_runtime_noted(
+    pg: &PgPool,
+    department: &str,
+) -> Result<(talaria_workbench_harnesses::Runtime, Option<String>), String> {
+    let eff = talaria_workbench_harnesses::effective(pg).await;
+    match ensure_versions(pg, department, &eff.target).await {
+        Ok(rt) => Ok((rt, None)),
+        Err(why) => {
+            let Some(fallback) = eff.fallback else {
+                return Err(why);
+            };
+            tracing::warn!(
+                "[workbench] {department}: bun {} + Oh My Pi {} would not install here, falling back to bun {} + Oh My Pi {}: {why}",
+                eff.target.bun,
+                eff.target.omp,
+                fallback.bun,
+                fallback.omp
+            );
+            let rt = ensure_versions(pg, department, &fallback)
+                .await
+                .map_err(|_| why.clone())?;
+            Ok((
+                rt,
+                Some(format!(
+                    "harness: Oh My Pi {} on bun {} would not install on this workbench ({}), so this job runs the previous verified pair, Oh My Pi {} on bun {}",
+                    eff.target.omp,
+                    eff.target.bun,
+                    why.lines().next().unwrap_or("no reason given"),
+                    fallback.omp,
+                    fallback.bun
+                )),
+            ))
+        }
+    }
+}
+
+/// Install (if missing) and start exactly `v` on `department`'s volume. The
+/// one place a harness runtime is put on a volume: a provision, doctor, and
+/// the harness channel's smoke test all come through here.
+pub async fn ensure_versions(
+    pg: &PgPool,
+    department: &str,
+    v: &talaria_workbench_harnesses::Versions,
+) -> Result<talaria_workbench_harnesses::Runtime, String> {
     let container = managed_container(pg, department).await;
-    // Keyed by the pins too: a build that bumps either must not trust what an
-    // older pin provisioned.
-    let key = format!(
-        "{container}|{}|{}",
-        talaria_workbench_harnesses::HARNESS_BUN,
-        talaria_workbench_harnesses::OMP_VERSION
-    );
+    // Keyed by the versions too: a move to another pair must not trust what
+    // an older one provisioned.
+    let key = format!("{container}|{}|{}", v.bun, v.omp);
     if let Some((at, rt)) = runtime_ok_cache()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -792,7 +845,12 @@ pub async fn ensure_harness_runtime(
     {
         return Ok(rt.clone());
     }
-    let script = talaria_workbench_harnesses::harness_runtime_script();
+    let script = talaria_workbench_harnesses::harness_runtime_script(v).ok_or_else(|| {
+        format!(
+            "bun {:.40} / Oh My Pi {:.40} is not a plain release",
+            v.bun, v.omp
+        )
+    })?;
     let (out, err) = docker_exec_as(
         &container,
         Some(AGENT_USER),
@@ -804,8 +862,8 @@ pub async fn ensure_harness_runtime(
     .map_err(|e| {
         format!(
             "could not provision bun {} and Oh My Pi {} for the harness: {}",
-            talaria_workbench_harnesses::HARNESS_BUN,
-            talaria_workbench_harnesses::OMP_VERSION,
+            v.bun,
+            v.omp,
             e.trim()
         )
     })?;
@@ -819,11 +877,124 @@ pub async fn ensure_harness_runtime(
             .to_string();
         format!("the harness runtime did not answer after provisioning: {why}")
     })?;
+    if rt.versions() != *v {
+        return Err(format!(
+            "asked for bun {} + Oh My Pi {}, the volume answered bun {} + {}",
+            v.bun, v.omp, rt.bun, rt.omp
+        ));
+    }
     runtime_ok_cache()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .insert(key, (std::time::Instant::now(), rt.clone()));
     Ok(rt)
+}
+
+/// Why a candidate did not pass [`verify_harness`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyFailure {
+    /// The candidate's own: it would not install, or installed and would not
+    /// start, or its launcher failed the preflight. Held for an admin.
+    Candidate(String),
+    /// The host's: docker would not run the step, it timed out, or another
+    /// provision held the install lock. Tried again later; never held.
+    Host(String),
+}
+
+/// Sort a runtime-script failure: the host's (docker, a timeout, the lock,
+/// mise itself not installing) or the candidate's (everything the install
+/// and start of the release printed).
+pub fn classify_runtime_failure(why: &str) -> VerifyFailure {
+    let host = [
+        "timed out",
+        "is not running",
+        "No such container",
+        "Error response from daemon",
+        "install lock",
+        "could not install mise",
+        "Cannot connect to the Docker daemon",
+    ];
+    if host.iter().any(|h| why.contains(h)) {
+        VerifyFailure::Host(why.to_string())
+    } else {
+        VerifyFailure::Candidate(why.to_string())
+    }
+}
+
+/// THE HARNESS CHANNEL'S SMOKE TEST: install `v` beside whatever the volume
+/// runs (the runtime script's versioned dir and atomic swap — a job already
+/// running keeps its own install), start it (`--version` on its bun), lay out
+/// [`talaria_workbench_harnesses::UPDATE_SLOT`] with the same layout and
+/// launcher a job gets, and run the provisioning preflight through that
+/// launcher in the agent's terminal shell: the launcher there, omp answering
+/// exactly `v.omp`, the agent dir writable. No model is called; the model
+/// catalog and gateway checks stay with each job's own preflight, because
+/// they test the instance, not the release. Ok is the runtime that passed.
+pub async fn verify_harness(
+    pg: &PgPool,
+    department: &str,
+    v: &talaria_workbench_harnesses::Versions,
+) -> Result<talaria_workbench_harnesses::Runtime, VerifyFailure> {
+    use talaria_workbench_harnesses as wh;
+    let container = managed_container(pg, department).await;
+    if !talaria_fleet_docker::container_running(&container).await {
+        return Err(VerifyFailure::Host(format!("{container} is not running")));
+    }
+    // Never the cache: a smoke test runs the real thing.
+    runtime_ok_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|k, _| !k.starts_with(&format!("{container}|")));
+    let rt = ensure_versions(pg, department, v)
+        .await
+        .map_err(|e| classify_runtime_failure(&e))?;
+    let slot = wh::UPDATE_SLOT;
+    let (Some(text), Some(dir), Some(launcher), Some(agent_dir)) = (
+        wh::launcher_script(slot, "/opt/data/workbench", &rt, false),
+        wh::job_harness_dir(slot),
+        wh::job_launcher(slot),
+        wh::job_agent_dir(slot),
+    ) else {
+        return Err(VerifyFailure::Candidate(format!(
+            "Oh My Pi {} is not a plain release",
+            v.omp
+        )));
+    };
+    docker_exec_as(
+        &container,
+        Some(AGENT_USER),
+        &[
+            "sh",
+            "-c",
+            &wh::job_harness_script(),
+            "sh",
+            &dir,
+            "/opt/data/workbench/sessions/update-check",
+            "/opt/data/workbench",
+        ],
+        Some(&text),
+        30_000,
+    )
+    .await
+    .map_err(|e| {
+        VerifyFailure::Host(format!(
+            "could not lay out the smoke-test slot: {}",
+            e.trim()
+        ))
+    })?;
+    match crate::provision::preflight(&container, &launcher, &agent_dir, "", &rt.bun_path, &v.omp)
+        .await
+    {
+        Ok(_) => Ok(rt),
+        // The preflight not running at all, or the volume's own permissions,
+        // are the host's; the launcher and the version are the release's.
+        Err((check, detail)) if check == "preflight" || check == "writable" => {
+            Err(VerifyFailure::Host(detail))
+        }
+        Err((check, detail)) => Err(VerifyFailure::Candidate(format!(
+            "the preflight failed at {check}: {detail}"
+        ))),
+    }
 }
 
 // ── The SDK kit: a Talaria app's toolchain ─────────────────────────────────

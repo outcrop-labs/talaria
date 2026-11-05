@@ -846,7 +846,10 @@ async fn call_tool(
                     "slug": OMP.slug,
                     "guide": OMP.guide,
                     "probe": fill_cmd(OMP.probe, None, "", &launcher),
-                    "version": talaria_workbench_harnesses::OMP_VERSION,
+                    "version": runtime
+                        .as_ref()
+                        .map(|rt| rt.omp_version().to_string())
+                        .unwrap_or_else(|_| talaria_workbench_harnesses::effective_from(None).target.omp),
                     "passthroughConfig": format!("/opt/workbench-config/{MCP_CONFIG_FILE}"),
                 },
                 "models": models,
@@ -2581,7 +2584,7 @@ async fn doctor_slot(
         talaria_workbench_harnesses::launcher_script(
             DOCTOR_SLOT,
             "/opt/data/workbench",
-            &rt.bun_path,
+            rt,
             gateway,
         ),
         talaria_workbench_harnesses::job_harness_dir(DOCTOR_SLOT),

