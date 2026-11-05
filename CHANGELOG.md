@@ -4,6 +4,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- Talaria Desktop is getting a Browse view: tabs and pinned web apps rendered
+  as native webviews beside Talaria instances, with per-tab sessions and a
+  zero-IPC security posture for third-party pages (in progress; the in-app
+  `/browse` route ships first with the shell wiring).
+
 ## 0.13.0 (2026-11-04)
 
 - **A change now reaches `main` only through a verified `rc`, and the branch
