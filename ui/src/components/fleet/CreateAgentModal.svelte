@@ -13,7 +13,6 @@
     EMPTY_FIELDS,
     discardDesign,
     elapsedSeconds,
-    heldDesign,
     isConflict,
     keepaliveBody,
     landingKey,
@@ -26,10 +25,12 @@
     startDesign,
     takeUnsaved,
     useAgentDesign,
+    dismissReturned,
     watchDesign,
     type DraftFields,
   } from '@/lib/agent-design'
   import { errorMessage } from '@/lib/fetch-json'
+  import { useSession } from '@/lib/session'
   import Modal from '@/components/ui/Modal.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -86,23 +87,13 @@
 
   const read = $derived(designQuery.data)
   // DUPLICATE IS ITS OWN FORM: a preselected chassis never reads, writes or
-  // spends the person's waiting design. And a design a hire is spending is
-  // not offered either (the hiring strip has it).
+  // spends the person's waiting design. A design on a hire is out of the
+  // slot altogether, so New agent is open for the next one meanwhile.
   const design = $derived(preselect ? null : pendingDesign(read?.design))
-  // A hire is spending the person's design: New agent waits for it (see
-  // `heldDesign`), saying so, rather than offer a describe or a manual
-  // start the server would refuse.
-  const held = $derived(preselect ? null : heldDesign(read?.design))
-  // The hire settled while the modal waited: a design handed back opens on
-  // review with the hire's reason; a spent one leaves an empty describe.
-  let wasHeld = false
-  $effect(() => {
-    if (held) wasHeld = true
-    else if (wasHeld) {
-      wasHeld = false
-      step = openingStep(design, false)
-    }
-  })
+  // Designs a failed hire handed back while this one was open: each waits
+  // for the slot, and can be dismissed.
+  const returned = $derived(preselect ? [] : (read?.returned ?? []))
+  const session = useSession()
   const generating = $derived(design?.status === 'generating')
   const genErr = $derived(design?.status === 'error' ? design.error : null)
   // A design handed back by a failed hire says why on the review step.
@@ -154,18 +145,29 @@
     untrack(() => {
       if (!loaded) return
       if (seededFrom === null) {
-        // The first read, for a modal opened before it was in.
+        // The first read, for a modal opened before it was in (or the read
+        // after a 409 brought the current design).
         seededFrom = key
         if (d?.draft) {
           form = { ...EMPTY_FIELDS, ...d.draft }
           soulRev += 1
         }
-        restoreUnsaved(d?.id ?? null, d?.draft ?? null)
         return
       }
       if (!d || key === seededFrom) return
       const wasGenerating = seededFrom.endsWith(':-')
+      const prevId = seededFrom.split(':')[0]
       seededFrom = key
+      // ANOTHER DESIGN arrived — handed back by a failed hire into an empty
+      // slot, or started in another tab — and not by this modal's own first
+      // save of a manual start: take its draft, manual or designed, and open
+      // where it stands.
+      if (d.id !== prevId && !(prevId === '' && ownSave)) {
+        form = { ...EMPTY_FIELDS, ...(d.draft ?? {}) }
+        soulRev += 1
+        if (d.status !== 'generating') step = openingStep(d, false)
+        return
+      }
       // A run starting changes nothing on the form, and a record no run
       // wrote is the answer to the person's own save.
       if (d.status === 'generating' || !d.runId) return
@@ -179,6 +181,21 @@
     })
   })
 
+  // THE EDIT THAT COULD NOT LEAVE WITH THE PAGE is offered once, when New
+  // agent opens — cold or warm cache — and only if the server has not moved
+  // past it (`takeUnsaved`). Never later: a 409's reseed must not bring back
+  // a stash over edits made since.
+  let stashChecked = false
+  $effect(() => {
+    const loaded = read !== undefined
+    const uid = session.data?.id
+    untrack(() => {
+      if (stashChecked || !loaded || !uid || preselect) return
+      stashChecked = true
+      restoreUnsaved(uid, design?.id ?? null, design?.draft ?? null)
+    })
+  })
+
   // Hand edits: the form now, the record shortly after (one save per pause).
   // SAVED AS YOU TYPE means no edit is ever lost: a pending save is FLUSHED,
   // never dropped — on close and on Create as an ordinary save (the app
@@ -189,15 +206,22 @@
   let saveTimer: ReturnType<typeof setTimeout> | null = null
   let saveErr = $state<string | null>(null)
   let restored = $state(false)
+  // A save is on the wire: what pagehide must still keep, and (for a manual
+  // start) the record its answer creates is this modal's own.
+  let ownSave = false
   /** Resolves true when the edit reached the server. */
   const save = (): Promise<boolean> => {
     // A run is writing the record (a refine): its landing reseeds the form,
     // and the edits being typed rode in with the refine.
     if (generating || preselect) return Promise.resolve(true)
+    ownSave = true
     return saveDesign(qc, $state.snapshot(form), design?.id)
       .then(() => {
         saveErr = null
         return true
+      })
+      .finally(() => {
+        ownSave = false
       })
       .catch(async (e: unknown) => {
         saveErr = errorMessage(e)
@@ -220,20 +244,25 @@
   }
   // The page is going away: the one save that must outlive it.
   const flushAway = () => {
-    if (!saveTimer || generating || preselect) return
-    clearTimeout(saveTimer)
+    // Pending (the timer has not fired) or already on the wire (it has, and
+    // the page may not wait for the answer): either way it is kept here.
+    if ((!saveTimer && !ownSave) || generating || preselect) return
+    const uid = session.data?.id
+    if (saveTimer) clearTimeout(saveTimer)
+    const pending = saveTimer !== null
     saveTimer = null
     const now = $state.snapshot(form)
+    const base = design?.draft ?? null
+    const { fields } = pending ? keepaliveBody(now, base) : { fields: null }
     // Kept here first: a reload can outrun its own keepalive save, and an
     // edit over the cap cannot ride it at all.
-    stashUnsaved({ id: design?.id ?? null, form: now, at: Date.now() })
-    const { fields } = keepaliveBody(now, design?.draft ?? null)
-    void saveDesign(qc, fields, design?.id, { keepalive: true }).catch(() => {})
+    if (uid) stashUnsaved(uid, { id: design?.id ?? null, form: now, base, sent: fields, at: Date.now() })
+    if (fields) void saveDesign(qc, fields, design?.id, { keepalive: true }).catch(() => {})
   }
   // An edit that could not leave with the page, offered back on this design.
-  function restoreUnsaved(id: string | null, server: DraftFields | null) {
+  function restoreUnsaved(uid: string, id: string | null, server: DraftFields | null) {
     if (preselect) return
-    const back = takeUnsaved(id, server)
+    const back = takeUnsaved(uid, id, server)
     if (!back) return
     form = { ...EMPTY_FIELDS, ...back }
     soulRev += 1
@@ -420,6 +449,19 @@
   }
 </script>
 
+{#snippet returnedNotes()}
+  <!-- A failed hire handed its design back while this one was open: it
+       waits (and the bell said so) rather than overwrite this one, and comes
+       back here once this one is hired or discarded. Nothing is lost. -->
+  {#each returned as r (r.designId)}
+    <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-returned">
+      The hire of {r.name} did not finish{r.reason ? `: ${r.reason.replace(/^The hire did not finish:?\s*/, '')}` : '.'}
+      Its design comes back here once this one is hired or discarded.
+      <button type="button" class="ml-1 underline hover:text-danger" onclick={() => void dismissReturned(qc, r.designId)}>Discard it</button>
+    </p>
+  {/each}
+{/snippet}
+
 {#if step === null}
   <!-- The first read of the design is still out (the roster usually has it
        cached, so this is rare): say so rather than guess a step. -->
@@ -427,27 +469,6 @@
     <div class="flex items-center gap-2 py-6 text-sm text-muted">
       <WaitingMark site="fleet/agent-design" size={12} />
       Checking for a design in progress
-    </div>
-  </Modal>
-{:else if held}
-  <!-- A hire is spending the design. New agent waits for it: a describe or
-       a manual start would have to replace the design the hire hands back
-       if it fails (to fix a field and create it again), so the server
-       refuses both until the hire settles. Duplicate still works. -->
-  <Modal {open} {onClose} title="New agent" width="max-w-lg">
-    <div class="space-y-3 py-2" data-testid="design-held">
-      <p class="flex items-center gap-2 text-sm text-fg">
-        <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
-        Hiring {held.draft?.name || 'the designed agent'}
-      </p>
-      <p class="text-sm leading-relaxed text-muted">
-        New agent opens again when this hire finishes. If it fails, the design comes back here so you can fix it and
-        create it again. The roster shows the hire's progress.
-      </p>
-    </div>
-    <div class="flex items-center border-t border-line pt-4">
-      <span class="ml-auto"></span>
-      <Button variant="ghost" size="sm" onclick={onClose}>Close</Button>
     </div>
   </Modal>
 {:else if step === 'describe'}
@@ -534,6 +555,7 @@
       {/key}
     </AutoHeight>
     {#if genErr || startErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr ?? startErr}</p>{/if}
+    {@render returnedNotes()}
     {#if readErr}
       <p transition:slide={{ duration: 150 }} class="text-xs text-danger" data-testid="design-read-error">
         Could not check for a design in progress: {readErr}
@@ -667,6 +689,7 @@
       {/if}
 
       <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start the container now" class="gap-2 text-sm text-fg" />
+      {@render returnedNotes()}
       {#if hireErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger" data-testid="design-hire-error">{hireErr}</div>{/if}
       {#if restored}<div transition:slide={{ duration: 150 }} class="text-sm text-muted" data-testid="design-restored">Restored edits that had not reached the server when the page closed. They are being saved now.</div>{/if}
       {#if err || saveErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err ?? `Your edits were not saved: ${saveErr}`}</div>{/if}

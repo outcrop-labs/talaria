@@ -27,11 +27,11 @@ import {
   type DraftFields,
   isConflict,
   pendingDesign,
-  heldDesign,
   keepaliveBody,
   KEEPALIVE_MAX_BYTES,
   stashUnsaved,
   takeUnsaved,
+  clearUnsavedEdits,
 } from './agent-design'
 
 const DRAFT: DraftFields = {
@@ -138,10 +138,15 @@ describe('resume after a reload: the modal opens where the server says', () => {
 
 describe('the poll', () => {
   it('asks quickly while watched and generating, slowly in the background, never once settled', () => {
-    expect(pollEvery(design(), true)).toBe(2_000)
-    expect(pollEvery(design(), false)).toBe(5_000)
-    expect(pollEvery(ready(), true)).toBe(false)
+    const r = (d: AgentDesign | null, hiring: DesignRead['hiring'] = []): DesignRead => ({ design: d, hiring, returned: [], skewMs: 0 })
+    expect(pollEvery(r(design()), true)).toBe(2_000)
+    expect(pollEvery(r(design()), false)).toBe(5_000)
+    expect(pollEvery(r(ready()), true)).toBe(false)
     expect(pollEvery(null, true)).toBe(false)
+    // A hire in flight is settled by a read: asked for while it runs.
+    const h = [{ designId: 'd-0', hireRunId: 'h-1', name: 'A' }]
+    expect(pollEvery(r(null, h), true)).toBe(5_000)
+    expect(pollEvery(r(ready(), h), false)).toBe(10_000)
   })
 })
 
@@ -159,7 +164,7 @@ describe('the form reseeds on a landing, never on a save', () => {
 describe('the verbs: one call each, the answer in the cache', () => {
   const qc = () => {
     const c = new QueryClient()
-    c.setQueryData<DesignRead>(DESIGN_KEY, { design: null, skewMs: 1234 })
+    c.setQueryData<DesignRead>(DESIGN_KEY, { design: null, hiring: [], returned: [], skewMs: 1234 })
     return c
   }
   const read = (c: QueryClient) => c.getQueryData<DesignRead>(DESIGN_KEY)
@@ -218,7 +223,7 @@ describe('the verbs: one call each, the answer in the cache', () => {
 
   it('a discard names the design, and one already gone is done', async () => {
     const c = qc()
-    c.setQueryData<DesignRead>(DESIGN_KEY, { design: ready(), skewMs: 0 })
+    c.setQueryData<DesignRead>(DESIGN_KEY, { design: ready(), hiring: [], returned: [], skewMs: 0 })
     answer = () => ({ status: 404, body: { error: 'not found' } })
     await discardDesign(c, 'd-1')
     expect(calls[0]).toEqual({ url: '/api/fleet/agent-design', method: 'DELETE', body: { id: 'd-1' } })
@@ -227,19 +232,26 @@ describe('the verbs: one call each, the answer in the cache', () => {
 
   it('a refused verb throws the server sentence and leaves the cache alone', async () => {
     const c = qc()
-    c.setQueryData<DesignRead>(DESIGN_KEY, { design: design(), skewMs: 0 })
+    c.setQueryData<DesignRead>(DESIGN_KEY, { design: design(), hiring: [], returned: [], skewMs: 0 })
     answer = () => ({ status: 409, body: { error: 'an agent design is still generating — wait for it, or discard it' } })
     await expect(saveDesign(c, DRAFT)).rejects.toThrow(/still generating/)
     expect(read(c)?.design?.status).toBe('generating')
   })
 })
 
-describe('a design a hire is spending', () => {
-  it('is not offered to the modal, the row or the mark until the hire fails', () => {
-    expect(pendingDesign(ready({ hireRunId: 'h-1' }))).toBeNull()
-    expect(pendingDesign(ready())?.id).toBe('d-1')
-    expect(pendingDesign(null)).toBeNull()
-    // Handed back by a failed hire: offered again, on review, saying why.
+describe('a design on a hire is out of the slot', () => {
+  it('leaves New agent open: the read lists it as hiring, not as the design', async () => {
+    answer = () => ({
+      status: 200,
+      body: { design: null, hiring: [{ designId: 'd-0', hireRunId: 'h-1', name: 'A' }], returned: [], now: 0 },
+    })
+    const read = await fetchAgentDesign(false)
+    expect(read.design).toBeNull()
+    expect(openingStep(pendingDesign(read.design), false)).toBe('describe')
+    expect(read.hiring[0]?.hireRunId).toBe('h-1')
+  })
+
+  it('a design handed back opens on review, saying why', () => {
     const back = ready({ error: 'The hire did not finish: the department is taken. Check the fields and create it again.' })
     expect(openingStep(pendingDesign(back), false)).toBe('review')
   })
@@ -261,17 +273,6 @@ describe('what the review and the roster say', () => {
   })
 })
 
-describe('New agent waits while a hire holds the design', () => {
-  it('is held, polled until the read settles it, and not offered as pending', () => {
-    const spent = ready({ hireRunId: 'h-1' })
-    expect(heldDesign(spent)?.id).toBe('d-1')
-    expect(heldDesign(ready())).toBeNull()
-    expect(pendingDesign(spent)).toBeNull()
-    expect(pollEvery(spent, true)).toBe(3_000)
-    expect(pollEvery(spent, false)).toBe(10_000)
-  })
-})
-
 describe('the save that leaves with the page', () => {
   const big = { ...DRAFT, soul: 'x'.repeat(200_000) }
 
@@ -285,29 +286,52 @@ describe('the save that leaves with the page', () => {
     const server = { ...DRAFT, soul: 'the saved soul' }
     const { fields, whole } = keepaliveBody({ ...big, name: 'Renamed' }, server)
     expect(whole).toBe(false)
-    expect(fields.name).toBe('Renamed')
-    expect(fields.soul).toBe('the saved soul')
+    expect(fields?.name).toBe('Renamed')
+    expect(fields?.soul).toBe('the saved soul')
     expect(new TextEncoder().encode(JSON.stringify(fields)).length).toBeLessThanOrEqual(KEEPALIVE_MAX_BYTES)
   })
 
-  it('keeps the edit in this browser and offers it back once, on the same design', () => {
+  it('over the cap with a large saved soul too, sends nothing and keeps the edit here', () => {
+    const { fields, whole } = keepaliveBody(big, { ...DRAFT, soul: 'y'.repeat(100_000) })
+    expect(whole).toBe(false)
+    expect(fields).toBeNull()
+  })
+
+  it('keeps the edit in this browser, per person, and offers it once unless the server moved on', () => {
     const store = new Map<string, string>()
     vi.stubGlobal('localStorage', {
       getItem: (k: string) => store.get(k) ?? null,
       setItem: (k: string, v: string) => void store.set(k, v),
       removeItem: (k: string) => void store.delete(k),
+      key: (n: number) => [...store.keys()][n] ?? null,
+      get length() {
+        return store.size
+      },
     })
-    stashUnsaved({ id: 'd-1', form: big, at: 1_000 })
-    // Another design: not offered (and the stale stash is gone).
-    expect(takeUnsaved('d-2', DRAFT, 2_000)).toBeNull()
-    stashUnsaved({ id: 'd-1', form: big, at: 1_000 })
-    expect(takeUnsaved('d-1', DRAFT, 2_000)?.soul.length).toBe(200_000)
-    expect(takeUnsaved('d-1', DRAFT, 2_000)).toBeNull()
-    // The keepalive save landed after all: nothing to restore.
-    stashUnsaved({ id: 'd-1', form: DRAFT, at: 1_000 })
-    expect(takeUnsaved('d-1', DRAFT, 2_000)).toBeNull()
+    const sent = { ...big, soul: DRAFT.soul }
+    const stash = () => stashUnsaved('u-1', { id: 'd-1', form: big, base: DRAFT, sent, at: 1_000 })
+    stash()
+    // Another person at this browser: never offered.
+    expect(takeUnsaved('u-2', 'd-1', DRAFT, 2_000)).toBeNull()
+    expect(takeUnsaved('u-1', 'd-2', DRAFT, 2_000)).toBeNull() // another design (and it is gone)
+    stash()
+    // The server holds what the tab had: offered, once.
+    expect(takeUnsaved('u-1', 'd-1', DRAFT, 2_000)?.soul.length).toBe(200_000)
+    expect(takeUnsaved('u-1', 'd-1', DRAFT, 2_000)).toBeNull()
+    stash()
+    // The server holds what the keepalive save sent: still offered.
+    expect(takeUnsaved('u-1', 'd-1', sent, 2_000)?.soul.length).toBe(200_000)
+    stash()
+    // Something newer landed since (another tab, a later edit): dropped.
+    expect(takeUnsaved('u-1', 'd-1', { ...DRAFT, handle: 'renamed' }, 2_000)).toBeNull()
+    stash()
     // A day later it is not offered.
-    stashUnsaved({ id: 'd-1', form: big, at: 1_000 })
-    expect(takeUnsaved('d-1', DRAFT, 1_000 + 25 * 3600 * 1000)).toBeNull()
+    expect(takeUnsaved('u-1', 'd-1', DRAFT, 1_000 + 25 * 3600 * 1000)).toBeNull()
+    // Sign-out clears every person's stash at this browser.
+    stash()
+    stashUnsaved('u-2', { id: null, form: DRAFT, base: null, sent: null, at: 1_000 })
+    clearUnsavedEdits()
+    expect(store.size).toBe(0)
   })
+
 })

@@ -14,7 +14,7 @@ use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, RedisResult};
 use std::sync::LazyLock;
 
-use crate::record::AgentDesign;
+use crate::record::{AgentDesign, Held};
 
 /// How long a design waits to be hired or discarded: three days, refreshed on
 /// every write. Long enough for a design started on Friday to be reviewed on
@@ -182,4 +182,114 @@ pub async fn mark_watching(conn: &mut ConnectionManager, user_id: &str) -> Redis
 
 pub async fn watched(conn: &mut ConnectionManager, user_id: &str) -> RedisResult<bool> {
     conn.exists(watch_key(user_id)).await
+}
+
+// ── Designs being hired ──────────────────────────────────────────────────────
+//
+// A design spent on a hire leaves the person's slot for `agent-design:<user>:
+// hires`, a hash of `Held` records by design id, so New agent stays open for
+// the next design while the hire runs (minutes on a first pull). A held
+// design is consumed when its hire creates the agent, and handed back into
+// the slot when the hire fails before that — but only into an EMPTY slot: a
+// design the person started meanwhile is never overwritten. Until the slot
+// is free the returned design waits here (and the bell says so).
+
+pub fn hires_key(user_id: &str) -> String {
+    format!("agent-design:{user_id}:hires")
+}
+
+/// Move the slot's record into the hires hash, if the slot still holds the
+/// revision the caller read. ARGV: expected rev, field, held json, ttl.
+static CLAIM: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+local rev = redis.call('HGET', KEYS[1], 'rev') or ''
+if rev ~= ARGV[1] then return 0 end
+redis.call('HSET', KEYS[2], ARGV[2], ARGV[3])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+redis.call('DEL', KEYS[1])
+return 1
+",
+    )
+});
+
+/// Move a held design back into the slot, only if the slot is empty.
+/// ARGV: field, new rev, design json, ttl.
+static RETURN: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+if redis.call('HEXISTS', KEYS[2], ARGV[1]) == 0 then return 0 end
+redis.call('HSET', KEYS[1], 'rev', ARGV[2], 'json', ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+redis.call('HDEL', KEYS[2], ARGV[1])
+return 1
+",
+    )
+});
+
+/// Every design the person has on a hire.
+pub async fn read_held(conn: &mut ConnectionManager, user_id: &str) -> RedisResult<Vec<Held>> {
+    let all: Vec<(String, String)> = conn.hgetall(hires_key(user_id)).await?;
+    Ok(all
+        .into_iter()
+        .filter_map(|(_, json)| serde_json::from_str::<Held>(&json).ok())
+        .collect())
+}
+
+/// Write one held record (a returned mark, a followed retry).
+pub async fn put_held(conn: &mut ConnectionManager, user_id: &str, held: &Held) -> RedisResult<()> {
+    let json = serde_json::to_string(held).expect("a held design serializes");
+    let _: () = conn.hset(hires_key(user_id), &held.design.id, json).await?;
+    conn.expire(hires_key(user_id), DESIGN_TTL_SECS as i64)
+        .await
+}
+
+pub async fn drop_held(
+    conn: &mut ConnectionManager,
+    user_id: &str,
+    design_id: &str,
+) -> RedisResult<()> {
+    conn.hdel(hires_key(user_id), design_id).await
+}
+
+/// The slot's record (at `expected` rev) becomes `held`. False when the slot
+/// moved on since it was read.
+pub async fn claim_into_hires(
+    conn: &mut ConnectionManager,
+    user_id: &str,
+    expected: &str,
+    held: &Held,
+) -> RedisResult<bool> {
+    let json = serde_json::to_string(held).expect("a held design serializes");
+    let moved: i32 = CLAIM
+        .key(key(user_id))
+        .key(hires_key(user_id))
+        .arg(expected)
+        .arg(&held.design.id)
+        .arg(json)
+        .arg(DESIGN_TTL_SECS)
+        .invoke_async(conn)
+        .await?;
+    Ok(moved == 1)
+}
+
+/// The held design `field` becomes the slot's `design`, if the slot is empty.
+pub async fn return_into_slot(
+    conn: &mut ConnectionManager,
+    user_id: &str,
+    field: &str,
+    design: &AgentDesign,
+) -> RedisResult<bool> {
+    let json = serde_json::to_string(design).expect("a design serializes");
+    let moved: i32 = RETURN
+        .key(key(user_id))
+        .key(hires_key(user_id))
+        .arg(field)
+        .arg(uuid::Uuid::new_v4().to_string())
+        .arg(json)
+        .arg(DESIGN_TTL_SECS)
+        .invoke_async(conn)
+        .await?;
+    Ok(moved == 1)
 }

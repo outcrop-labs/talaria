@@ -139,9 +139,6 @@ pub enum Start {
     Existing(AgentDesign),
     /// A fresh record, generating, for the run `run_id` names.
     Fresh(AgentDesign),
-    /// A hire is spending the person's design: New agent waits for it to
-    /// finish (or to hand the design back) rather than replace it.
-    Refused(Refusal),
 }
 
 /// A describe. A record that is generating is returned as it is, unless its
@@ -155,9 +152,6 @@ pub fn start(
     run: RunSeen,
 ) -> Start {
     let (design_id, run_id) = ids;
-    if existing.is_some_and(|d| d.hire_run_id.is_some()) {
-        return Start::Refused(Refusal::Hiring);
-    }
     if let Some(d) = existing
         && d.status == DesignStatus::Generating
         && stalled(d, run, now).is_none()
@@ -212,15 +206,9 @@ pub fn refine(
             Refusal::NothingToRefine
         });
     };
-    if d.hire_run_id.is_some() {
-        return Err(Refusal::Hiring);
-    }
     names(existing, want)?;
     if d.status == DesignStatus::Generating {
         return Err(Refusal::Generating);
-    }
-    if d.hire_run_id.is_some() {
-        return Err(Refusal::Hiring);
     }
     let Some(base) = current.or_else(|| d.draft.clone()) else {
         return Err(Refusal::NothingToRefine);
@@ -298,13 +286,9 @@ pub fn edit(
     now: i64,
     design_id: String,
 ) -> Result<AgentDesign, Refusal> {
-    if existing.is_some_and(|d| d.hire_run_id.is_some()) {
-        return Err(Refusal::Hiring);
-    }
     names(existing, want)?;
     match existing {
         Some(d) if d.status == DesignStatus::Generating => Err(Refusal::Generating),
-        Some(d) if d.hire_run_id.is_some() => Err(Refusal::Hiring),
         // The receipt is the refine's, not the person's: a hand edit after a
         // refine ends it, so typing never reads as "Refine applied".
         Some(d) => Ok(AgentDesign {
@@ -335,53 +319,45 @@ pub fn edit(
     }
 }
 
-/// Spend the design on a hire: refused when it is not the one held, not
-/// ready, or already being hired by a hire that may still finish (`other`
-/// is the claim the caller found and whether its hire is still live).
+/// A design spent on a hire, out of the person's slot (store.rs `hires`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Held {
+    pub design: AgentDesign,
+    /// The hire's run, or the retry the hiring strip started from it.
+    pub hire_run_id: String,
+    pub claimed_at: i64,
+    /// Set when the hire failed before the agent existed: the sentence the
+    /// design comes back with. A returned design waits here only while the
+    /// slot holds another one.
+    #[serde(default)]
+    pub returned: Option<String>,
+}
+
+/// Spend the slot's design on a hire: refused when the caller names another
+/// design (or none is held) or it is still generating.
 pub fn claim(
     existing: Option<&AgentDesign>,
     want: &str,
     hire_run_id: &str,
-    other: Option<(&str, bool)>,
     now: i64,
-) -> Result<AgentDesign, Refusal> {
+) -> Result<Held, Refusal> {
     names(existing, Some(want))?;
     let d = existing.ok_or(Refusal::Stale)?;
     if d.status == DesignStatus::Generating {
         return Err(Refusal::Generating);
     }
-    if let Some(held) = d.hire_run_id.as_deref() {
-        // Only a claim the caller saw ended may be taken over.
-        if other != Some((held, false)) {
-            return Err(Refusal::Hiring);
-        }
-    }
-    Ok(AgentDesign {
-        hire_run_id: Some(hire_run_id.to_string()),
-        released_from: None,
-        error: None,
-        updated_at: now,
-        ..d.clone()
-    })
-}
-
-/// The hiring strip retried the hire `failed` as the run `retry`: the design
-/// spent on it (still held, or already handed back from it and not hired
-/// since) follows the retry, so it is consumed when the retry finishes.
-pub fn follow(d: &AgentDesign, failed: &str, retry: &str, now: i64) -> Option<AgentDesign> {
-    let held = d.hire_run_id.as_deref() == Some(failed);
-    let handed_back = d.hire_run_id.is_none()
-        && d.released_from.as_deref() == Some(failed)
-        && d.status != DesignStatus::Generating;
-    if !held && !handed_back {
-        return None;
-    }
-    Some(AgentDesign {
-        hire_run_id: Some(retry.to_string()),
-        released_from: None,
-        error: None,
-        updated_at: now,
-        ..d.clone()
+    Ok(Held {
+        design: AgentDesign {
+            error: None,
+            released_from: None,
+            hire_run_id: None,
+            updated_at: now,
+            ..d.clone()
+        },
+        hire_run_id: hire_run_id.to_string(),
+        claimed_at: now,
+        returned: None,
     })
 }
 
@@ -390,48 +366,83 @@ pub fn follow(d: &AgentDesign, failed: &str, retry: &str, now: i64) -> Option<Ag
 pub enum HireSeen {
     Live,
     Done,
-    /// Failed or cancelled, with the hire's own sentence when it has one.
-    Failed(Option<String>),
+    /// Failed or cancelled: whether its create stage had made the agent,
+    /// and the hire's own sentence when it has one.
+    Failed {
+        created: bool,
+        why: Option<String>,
+    },
     Missing,
 }
 
-/// What a settled hire does to its design: nothing yet, consumed (the hire
-/// finished), or handed back with the hire's sentence (it failed).
-pub enum Settled {
+/// What a settled hire does to its held design.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HireOutcome {
     Unchanged,
+    /// The agent exists: the design is spent, whatever failed after the
+    /// create (a pull, a boot, a Start) — the hiring strip's Retry and the
+    /// agent's own Start are how that is finished, never this design.
     Consumed,
-    Released(Box<AgentDesign>),
+    /// The hire failed before the agent existed: the design comes back.
+    Returned(String),
 }
 
-pub fn settle_hire(d: &AgentDesign, hire: &HireSeen, now: i64) -> Settled {
-    let Some(_) = d.hire_run_id.as_deref() else {
-        return Settled::Unchanged;
-    };
-    let why = match hire {
-        HireSeen::Live => return Settled::Unchanged,
-        HireSeen::Done => return Settled::Consumed,
-        HireSeen::Failed(e) => e.clone(),
-        HireSeen::Missing if now - d.updated_at > MISSING_RUN_GRACE_MS => None,
-        HireSeen::Missing => return Settled::Unchanged,
-    };
-    Settled::Released(Box::new(release(d, why.as_deref(), now)))
-}
-
-/// Hand the design back after a hire that did not go through.
-pub fn release(d: &AgentDesign, why: Option<&str>, now: i64) -> AgentDesign {
-    let why = why.map(str::trim).filter(|w| !w.is_empty());
-    AgentDesign {
-        released_from: d.hire_run_id.clone(),
-        hire_run_id: None,
-        error: Some(match why {
-            Some(w) => {
-                format!("The hire did not finish: {w}. Check the fields and create it again.")
-            }
-            None => "The hire did not finish. Check the fields and create it again.".to_string(),
-        }),
-        updated_at: now,
-        ..d.clone()
+pub fn settle_held(h: &Held, hire: &HireSeen, now: i64) -> HireOutcome {
+    if h.returned.is_some() {
+        return HireOutcome::Unchanged;
     }
+    match hire {
+        HireSeen::Live => HireOutcome::Unchanged,
+        HireSeen::Done | HireSeen::Failed { created: true, .. } => HireOutcome::Consumed,
+        HireSeen::Failed {
+            created: false,
+            why,
+        } => HireOutcome::Returned(returned_sentence(why.as_deref())),
+        HireSeen::Missing if now - h.claimed_at > MISSING_RUN_GRACE_MS => {
+            HireOutcome::Returned(returned_sentence(None))
+        }
+        HireSeen::Missing => HireOutcome::Unchanged,
+    }
+}
+
+/// Only for a hire that failed before the agent existed, so "create it
+/// again" is what then works.
+fn returned_sentence(why: Option<&str>) -> String {
+    match why.map(str::trim).filter(|w| !w.is_empty()) {
+        Some(w) => format!("The hire did not finish: {w}. Check the fields and create it again."),
+        None => "The hire did not finish. Check the fields and create it again.".to_string(),
+    }
+}
+
+/// The design a returned hold puts back in the slot: ready, saying why.
+pub fn hand_back(h: &Held, now: i64) -> AgentDesign {
+    AgentDesign {
+        status: DesignStatus::Ready,
+        error: h.returned.clone(),
+        released_from: Some(h.hire_run_id.clone()),
+        hire_run_id: None,
+        updated_at: now,
+        ..h.design.clone()
+    }
+}
+
+/// The hiring strip retried `failed` as `retry`: a design held on it follows.
+pub fn follow_held(h: &Held, failed: &str, retry: &str, now: i64) -> Option<Held> {
+    (h.hire_run_id == failed).then(|| Held {
+        hire_run_id: retry.to_string(),
+        claimed_at: now,
+        returned: None,
+        ..h.clone()
+    })
+}
+
+/// …and one already handed back into the slot from it (not hired again
+/// since) is spent on the retry again.
+pub fn follow_back(d: &AgentDesign, failed: &str, retry: &str, now: i64) -> Option<Held> {
+    if d.released_from.as_deref() != Some(failed) || d.status == DesignStatus::Generating {
+        return None;
+    }
+    claim(Some(d), &d.id, retry, now).ok()
 }
 
 /// What a read saw of the run behind a generating record.
@@ -491,7 +502,7 @@ mod tests {
             RunSeen::Live,
         ) {
             Start::Fresh(d) => d,
-            Start::Existing(_) | Start::Refused(_) => unreachable!(),
+            Start::Existing(_) => unreachable!(),
         }
     }
 
@@ -789,119 +800,98 @@ mod tests {
     }
 
     #[test]
-    fn a_hire_claims_the_design_once_and_settles_it() {
+    fn a_hire_moves_the_design_out_of_the_slot_and_settles_it() {
         let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
-        let claimed = claim(Some(&ready), "d-1", "h-1", None, 6_000).unwrap();
-        assert_eq!(claimed.hire_run_id.as_deref(), Some("h-1"));
-        // A second tab, a second hire: refused while the first may finish.
+        let held = claim(Some(&ready), "d-1", "h-1", 6_000).unwrap();
+        assert_eq!(held.hire_run_id, "h-1");
+        assert_eq!(held.design.draft, Some(draft("Scout")));
         assert_eq!(
-            claim(Some(&claimed), "d-1", "h-2", None, 6_500),
-            Err(Refusal::Hiring)
-        );
-        assert_eq!(
-            claim(Some(&claimed), "d-1", "h-2", Some(("h-1", true)), 6_500),
-            Err(Refusal::Hiring)
-        );
-        assert_eq!(
-            claim(Some(&claimed), "d-9", "h-2", None, 6_500),
+            claim(Some(&ready), "d-9", "h-2", 6_000),
             Err(Refusal::Stale)
         );
-        // Not editable or refinable while the hire runs.
+        assert_eq!(claim(None, "d-1", "h-2", 6_000), Err(Refusal::Stale));
         assert_eq!(
-            edit(Some(&claimed), Some("d-1"), draft("X"), 7_000, "d-9".into()),
-            Err(Refusal::Hiring)
+            settle_held(&held, &HireSeen::Live, 7_000),
+            HireOutcome::Unchanged
         );
         assert_eq!(
-            refine(Some(&claimed), Some("d-1"), "x", None, 7_000, "r-2".into()),
-            Err(Refusal::Hiring)
+            settle_held(&held, &HireSeen::Done, 7_000),
+            HireOutcome::Consumed
         );
-        // The hire finished: the design is spent.
-        assert!(matches!(
-            settle_hire(&claimed, &HireSeen::Done, 8_000),
-            Settled::Consumed
-        ));
-        assert!(matches!(
-            settle_hire(&claimed, &HireSeen::Live, 8_000),
-            Settled::Unchanged
-        ));
-        // The hire failed: the design comes back, saying why, and may be hired again.
-        let Settled::Released(back) = settle_hire(
-            &claimed,
-            &HireSeen::Failed(Some("the department research is taken".into())),
-            8_000,
+        // The agent exists: whatever failed after (a pull, a boot), the
+        // design is spent; Retry and Start finish it.
+        assert_eq!(
+            settle_held(
+                &held,
+                &HireSeen::Failed {
+                    created: true,
+                    why: Some("the pull failed".into())
+                },
+                7_000
+            ),
+            HireOutcome::Consumed
+        );
+        // Failed before the agent existed: it comes back, saying why.
+        let HireOutcome::Returned(why) = settle_held(
+            &held,
+            &HireSeen::Failed {
+                created: false,
+                why: Some("the department research is taken".into()),
+            },
+            7_000,
         ) else {
-            panic!("a failed hire hands the design back");
+            panic!("a pre-create failure hands the design back");
         };
-        assert_eq!(back.hire_run_id, None);
+        assert!(why.contains("the department research is taken"));
+        let back = hand_back(
+            &Held {
+                returned: Some(why),
+                ..held.clone()
+            },
+            8_000,
+        );
+        assert_eq!(back.status, DesignStatus::Ready);
         assert_eq!(back.draft, Some(draft("Scout")));
-        assert!(
-            back.error
-                .as_deref()
-                .unwrap()
-                .contains("the department research is taken")
-        );
-        assert!(claim(Some(&back), "d-1", "h-3", None, 9_000).is_ok());
-        // A claim whose hire was seen ended may be taken over.
-        assert!(claim(Some(&claimed), "d-1", "h-3", Some(("h-1", false)), 9_000).is_ok());
+        assert_eq!(back.released_from.as_deref(), Some("h-1"));
         // A hire row that never appeared hands it back after the grace.
+        assert_eq!(
+            settle_held(&held, &HireSeen::Missing, 7_000),
+            HireOutcome::Unchanged
+        );
         assert!(matches!(
-            settle_hire(&claimed, &HireSeen::Missing, 7_000),
-            Settled::Unchanged
+            settle_held(&held, &HireSeen::Missing, 6_000 + MISSING_RUN_GRACE_MS + 1),
+            HireOutcome::Returned(_)
         ));
-        assert!(matches!(
-            settle_hire(
-                &claimed,
-                &HireSeen::Missing,
-                6_000 + MISSING_RUN_GRACE_MS + 1
-            ),
-            Settled::Released(_)
-        ));
-    }
-
-    #[test]
-    fn new_agent_waits_while_a_hire_holds_the_design() {
-        let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
-        let claimed = claim(Some(&ready), "d-1", "h-1", None, 6_000).unwrap();
-        // A describe does not replace it, and a manual save says why.
-        assert_eq!(
-            start(
-                Some(&claimed),
-                "next",
-                7_000,
-                ("d-2".into(), "r-2".into()),
-                RunSeen::Live
-            ),
-            Start::Refused(Refusal::Hiring)
-        );
-        assert_eq!(
-            edit(Some(&claimed), None, draft("Manual"), 7_000, "d-2".into()),
-            Err(Refusal::Hiring)
-        );
-        assert_eq!(
-            refine(Some(&claimed), None, "x", None, 7_000, "r-2".into()),
-            Err(Refusal::Hiring)
-        );
     }
 
     #[test]
     fn a_retried_hire_takes_the_design_with_it() {
         let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
-        let claimed = claim(Some(&ready), "d-1", "h-1", None, 6_000).unwrap();
-        // Retried while still held.
-        let moved = follow(&claimed, "h-1", "h-1r", 7_000).unwrap();
-        assert_eq!(moved.hire_run_id.as_deref(), Some("h-1r"));
-        // Retried after the read handed it back.
-        let Settled::Released(back) = settle_hire(&claimed, &HireSeen::Failed(None), 7_000) else {
-            panic!("handed back");
-        };
-        assert_eq!(back.released_from.as_deref(), Some("h-1"));
-        let moved = follow(&back, "h-1", "h-1r", 8_000).unwrap();
-        assert_eq!(moved.hire_run_id.as_deref(), Some("h-1r"));
-        assert_eq!(moved.error, None);
-        // Another hire's retry is not this design's business.
-        assert_eq!(follow(&claimed, "h-9", "h-9r", 7_000), None);
-        // Hired again from the design since: the old hire's retry is not followed.
-        let again = claim(Some(&back), "d-1", "h-2", None, 9_000).unwrap();
-        assert_eq!(follow(&again, "h-1", "h-1r", 9_500), None);
+        let held = claim(Some(&ready), "d-1", "h-1", 6_000).unwrap();
+        let moved = follow_held(
+            &Held {
+                returned: Some("x".into()),
+                ..held.clone()
+            },
+            "h-1",
+            "h-1r",
+            7_000,
+        )
+        .unwrap();
+        assert_eq!(moved.hire_run_id, "h-1r");
+        assert_eq!(moved.returned, None);
+        assert_eq!(follow_held(&held, "h-9", "h-9r", 7_000), None);
+        // Already handed back into the slot: spent on the retry again.
+        let back = hand_back(
+            &Held {
+                returned: Some("x".into()),
+                ..held.clone()
+            },
+            8_000,
+        );
+        let again = follow_back(&back, "h-1", "h-1r", 9_000).unwrap();
+        assert_eq!(again.hire_run_id, "h-1r");
+        assert_eq!(again.design.error, None);
+        assert_eq!(follow_back(&ready, "h-1", "h-1r", 9_000), None);
     }
 }

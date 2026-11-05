@@ -56,9 +56,23 @@ export interface AgentDesign {
   hireRunId: string | null
 }
 
-/** One read: the record, and how far the server's clock is from this one. */
+/** A design one of the person's hires is spending (out of the slot). */
+export interface HeldSummary {
+  designId: string
+  hireRunId: string
+  name: string
+  /** Set when the hire failed before the agent existed: the design waits to
+   *  come back until the slot is free. */
+  reason?: string
+}
+
+/** One read: the record, the hires, and how far the server's clock is. */
 export interface DesignRead {
   design: AgentDesign | null
+  /** Designs on a hire in flight: New agent stays open meanwhile. */
+  hiring: HeldSummary[]
+  /** Handed back by a failed hire while another design was open. */
+  returned: HeldSummary[]
   /** serverNow − Date.now() at the read. */
   skewMs: number
 }
@@ -82,19 +96,21 @@ export function watchDesign(): () => void {
 }
 
 export async function fetchAgentDesign(watching: boolean): Promise<DesignRead> {
-  const r = await getJson<{ design: AgentDesign | null; now: number }>(watching ? `${URL}?watching=1` : URL)
-  return { design: r.design, skewMs: r.now - Date.now() }
+  const r = await getJson<{ design: AgentDesign | null; hiring?: HeldSummary[]; returned?: HeldSummary[]; now: number }>(
+    watching ? `${URL}?watching=1` : URL,
+  )
+  return { design: r.design, hiring: r.hiring ?? [], returned: r.returned ?? [], skewMs: r.now - Date.now() }
 }
 
 /** How often to read again: quickly while a design generates and someone
  *  is watching, slowly while it generates in the background (the run's
  *  event on the person's stream usually gets there first), and not at all
  *  once it has settled. */
-export function pollEvery(design: AgentDesign | null | undefined, watching: boolean): number | false {
-  if (design?.status === 'generating') return watching ? 2_000 : 5_000
-  // A hire is spending it: New agent waits, and opens again when the read
-  // settles it (consumed, or handed back).
-  if (design?.hireRunId) return watching ? 3_000 : 10_000
+export function pollEvery(read: DesignRead | null | undefined, watching: boolean): number | false {
+  if (read?.design?.status === 'generating') return watching ? 2_000 : 5_000
+  // A hire is spending a design: a read settles it (spent, or handed back),
+  // and the hire's own run events usually get there first.
+  if (read?.hiring.length) return watching ? 5_000 : 10_000
   return false
 }
 
@@ -106,7 +122,7 @@ export function useAgentDesign(enabled: () => boolean = () => true) {
     queryKey: DESIGN_KEY,
     enabled: enabled(),
     queryFn: () => fetchAgentDesign(watchers > 0),
-    refetchInterval: (q: { state: { data?: DesignRead } }) => pollEvery(q.state.data?.design, watchers > 0),
+    refetchInterval: (q: { state: { data?: DesignRead } }) => pollEvery(q.state.data, watchers > 0),
     refetchOnWindowFocus: true,
   }))
 }
@@ -114,7 +130,7 @@ export function useAgentDesign(enabled: () => boolean = () => true) {
 /** Put a verb's answer in the cache, keeping the clock skew last read. */
 function settle(qc: QueryClient, design: AgentDesign | null): AgentDesign | null {
   const prev = qc.getQueryData<DesignRead>(DESIGN_KEY)
-  qc.setQueryData<DesignRead>(DESIGN_KEY, { design, skewMs: prev?.skewMs ?? 0 })
+  qc.setQueryData<DesignRead>(DESIGN_KEY, { design, hiring: prev?.hiring ?? [], returned: prev?.returned ?? [], skewMs: prev?.skewMs ?? 0 })
   return design
 }
 
@@ -149,24 +165,26 @@ export function isConflict(e: unknown): boolean {
 /** Discard the design (and cancel its run). Gone already is done. */
 export async function discardDesign(qc: QueryClient, id?: string): Promise<void> {
   await delJsonGone(URL, id ? { id } : {})
+  const waiting = (qc.getQueryData<DesignRead>(DESIGN_KEY)?.returned.length ?? 0) > 0
   settle(qc, null)
+  // The slot is free: a design a failed hire handed back meanwhile moves in
+  // on the next read, so ask for it now.
+  if (waiting) await qc.invalidateQueries({ queryKey: DESIGN_KEY })
+}
+
+/** Dismiss a design a failed hire handed back while another was open. */
+export async function dismissReturned(qc: QueryClient, id: string): Promise<void> {
+  await delJsonGone(URL, { id })
+  await qc.invalidateQueries({ queryKey: DESIGN_KEY })
 }
 
 // ── Pure helpers over the record ─────────────────────────────────────────────
 
-/** The design the modal, the roster row and the + mark offer: the record,
- *  unless a hire is spending it right now (the hiring strip tells that
- *  story; the record returns here if the hire fails). */
+/** The design the modal, the roster row and the + mark offer. A design on a
+ *  hire is out of the slot (`DesignRead.hiring`), so the slot's record is
+ *  always one the person can work on. */
 export function pendingDesign(design: AgentDesign | null | undefined): AgentDesign | null {
-  return design && !design.hireRunId ? design : null
-}
-
-/** The design a hire is spending right now, if any. While there is one, New
- *  agent waits: a describe or a manual start would have to replace the
- *  design the hire hands back if it fails, so the server refuses both (409)
- *  and the modal says why instead of offering them. */
-export function heldDesign(design: AgentDesign | null | undefined): AgentDesign | null {
-  return design?.hireRunId ? design : null
+  return design ?? null
 }
 
 // ── The edit that could not leave with the page ──────────────────────────────
@@ -177,7 +195,7 @@ export function heldDesign(design: AgentDesign | null | undefined): AgentDesign 
 // on the same design: per-viewer view state, the one thing localStorage is
 // for, never the design itself. A reload that outruns its own keepalive save
 // is caught the same way.
-const UNSAVED_KEY = 'talaria.agent-design.unsaved'
+const UNSAVED_PREFIX = 'talaria.agent-design.unsaved:'
 const UNSAVED_TTL_MS = 24 * 3600 * 1000
 /** Under the browser's keepalive cap, with room for the headers. */
 export const KEEPALIVE_MAX_BYTES = 60_000
@@ -185,24 +203,35 @@ export const KEEPALIVE_MAX_BYTES = 60_000
 export interface UnsavedEdit {
   id: string | null
   form: DraftFields
+  /** The server's draft as this tab last had it, and what the keepalive
+   *  save sent (null when nothing could ride it). The edit is offered back
+   *  only while the server still holds one of these: past them, something
+   *  newer was saved and the stash is dropped. */
+  base: DraftFields | null
+  sent: DraftFields | null
   at: number
 }
 
-export function stashUnsaved(edit: UnsavedEdit): void {
+const unsavedKey = (userId: string) => `${UNSAVED_PREFIX}${userId}`
+
+export function stashUnsaved(userId: string, edit: UnsavedEdit): void {
   try {
-    localStorage.setItem(UNSAVED_KEY, JSON.stringify(edit))
+    localStorage.setItem(unsavedKey(userId), JSON.stringify(edit))
   } catch {
     /* storage unavailable: nothing more this browser can do */
   }
 }
 
-/** The stashed edit for this design, if one is fresh and differs from what
- *  the server holds; it is removed either way once read. */
-export function takeUnsaved(id: string | null, server: DraftFields | null, now: number = Date.now()): DraftFields | null {
+const same = (a: DraftFields | null | undefined, b: DraftFields | null | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+
+/** This person's stashed edit for this design, if it is fresh and the server
+ *  has not moved past it. Removed either way once read: it is offered once,
+ *  when New agent opens. */
+export function takeUnsaved(userId: string, id: string | null, server: DraftFields | null, now: number = Date.now()): DraftFields | null {
   let raw: string | null = null
   try {
-    raw = localStorage.getItem(UNSAVED_KEY)
-    localStorage.removeItem(UNSAVED_KEY)
+    raw = localStorage.getItem(unsavedKey(userId))
+    localStorage.removeItem(unsavedKey(userId))
   } catch {
     return null
   }
@@ -210,23 +239,37 @@ export function takeUnsaved(id: string | null, server: DraftFields | null, now: 
   try {
     const edit = JSON.parse(raw) as UnsavedEdit
     if (edit.id !== id || now - edit.at > UNSAVED_TTL_MS) return null
-    if (server && JSON.stringify(server) === JSON.stringify(edit.form)) return null
+    if (same(server, edit.form)) return null
+    // The server holds what this tab had, or what its own keepalive save
+    // wrote: nothing newer landed, so the edit is still the latest.
+    if (!same(server, edit.base) && !same(server, edit.sent)) return null
     return edit.form
   } catch {
     return null
   }
 }
 
-/** What a pagehide save can send: the whole edit when it fits the
- *  keepalive cap, else the small fields over the server's soul and skills
- *  (the rest waits in `stashUnsaved`). `whole` says which it is. */
-export function keepaliveBody(form: DraftFields, server: DraftFields | null): { fields: DraftFields; whole: boolean } {
-  const size = new TextEncoder().encode(JSON.stringify(form)).length
-  if (size <= KEEPALIVE_MAX_BYTES) return { fields: form, whole: true }
-  return {
-    fields: { ...form, soul: server?.soul ?? '', skills: server?.skills ?? [] },
-    whole: false,
+/** Sign-out: no stashed edit outlives the session on a shared browser. */
+export function clearUnsavedEdits(): void {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i)
+      if (k?.startsWith(UNSAVED_PREFIX)) localStorage.removeItem(k)
+    }
+  } catch {
+    /* storage unavailable */
   }
+}
+
+/** What a pagehide save can send: the whole edit when it fits the
+ *  keepalive cap, else the small fields over the server's soul and skills,
+ *  else (the server's own soul is past the cap) nothing — the edit then
+ *  waits in `stashUnsaved` alone. `whole` says whether the edit went whole. */
+export function keepaliveBody(form: DraftFields, server: DraftFields | null): { fields: DraftFields | null; whole: boolean } {
+  const bytes = (f: DraftFields) => new TextEncoder().encode(JSON.stringify(f)).length
+  if (bytes(form) <= KEEPALIVE_MAX_BYTES) return { fields: form, whole: true }
+  const partial = { ...form, soul: server?.soul ?? '', skills: server?.skills ?? [] }
+  return { fields: bytes(partial) <= KEEPALIVE_MAX_BYTES ? partial : null, whole: false }
 }
 
 /** Where New agent opens. A design that landed, or a refine that failed

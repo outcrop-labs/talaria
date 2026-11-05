@@ -333,10 +333,10 @@ export const USER_STREAM_KEYS = [
 /** Whether a run event is about the person's agent design: its own run, the
  *  hire spending it, or any run while no design is cached. */
 function designRunIs(qc: QueryClient, runId: string): boolean {
-  const read = qc.getQueryData<{ design: { runId: string | null; hireRunId?: string | null } | null }>(['agent-design'])
+  const read = qc.getQueryData<{ design: { runId: string | null } | null; hiring?: Array<{ hireRunId: string }> }>(['agent-design'])
   if (!read) return false // nothing reads the design on this page
   const d = read.design
-  return !d || d.runId === runId || d.hireRunId === runId
+  return !d || d.runId === runId || (read.hiring ?? []).some((h) => h.hireRunId === runId)
 }
 
 /** The app-wide invalidation map, one line per event: what refetches when

@@ -198,7 +198,9 @@ pub struct RetryPlan {
     pub department: String,
     pub name: String,
     pub def_exists: bool,
-    /// Whose hire it was: an agent design spent on it is theirs.
+    /// Who the agent is hired FOR (the input's manager, else the row's
+    /// owner): an agent design spent on it is theirs. A retry's row is owned
+    /// by whoever pressed Retry, so the row alone would follow the wrong slot.
     pub owner: Option<String>,
 }
 
@@ -250,6 +252,11 @@ pub async fn plan_retry(
         .filter(|n| !n.is_empty())
         .unwrap_or(&slug)
         .to_string();
+    let owner = input
+        .get("managerUserId")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or(hire.owner);
     Ok(RetryPlan {
         input,
         retry_id: hire.retry_id,
@@ -257,7 +264,7 @@ pub async fn plan_retry(
         department,
         name,
         def_exists: hire.def_exists,
-        owner: hire.owner,
+        owner,
     })
 }
 

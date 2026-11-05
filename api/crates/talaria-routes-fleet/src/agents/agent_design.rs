@@ -4,8 +4,10 @@
 // doc: a closed tab and a restart. One design per person.
 //
 // /api/fleet/agent-design.
-//   GET    → `{ design, now }`: the design or null, and the server's clock so
-//            the elapsed count agrees across tabs. `?watching=1` is the open
+//   GET    → `{ design, hiring, returned, now }`: the design or null, the
+//            designs the person's hires are spending, any a failed hire handed
+//            back while the slot was taken, and the server's clock so the
+//            elapsed count agrees across tabs. `?watching=1` is the open
 //            modal: a landing in the next few seconds skips the bell.
 //   POST   → start (`{ instruction }`) or refine (`{ instruction, refine:
 //            true, id, current? }`). A start while one generates answers that
@@ -26,8 +28,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_agent_design::{
-    AgentDesign, DesignError, DraftFields, SkillDraft, current_design, discard_design, edit_design,
-    refine_design, start_design,
+    AgentDesign, DesignError, DesignView, DraftFields, SkillDraft, current_design, discard_design,
+    edit_design, refine_design, start_design,
 };
 use talaria_body::{
     array_msg, array_too_big_msg, object_msg, optional_boolean_member, optional_uuid_member, parse,
@@ -55,12 +57,18 @@ fn wire(d: &AgentDesign) -> Value {
     v
 }
 
-fn answer(design: Option<AgentDesign>) -> Response {
+fn answer(view: DesignView) -> Response {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    Json(json!({ "design": design.as_ref().map(wire), "now": now })).into_response()
+    Json(json!({
+        "design": view.design.as_ref().map(wire),
+        "hiring": view.hiring,
+        "returned": view.returned,
+        "now": now,
+    }))
+    .into_response()
 }
 
 fn failed(e: DesignError) -> Response {
@@ -253,5 +261,58 @@ mod tests {
         assert!(draft_fields(six.as_object().unwrap()).is_err());
         let missing = json!({ "name": "a" });
         assert!(draft_fields(missing.as_object().unwrap()).is_err());
+    }
+
+    /// The routes' code, comments dropped, as one string: the wiring tests
+    /// below read what the handlers call, not what their comments say.
+    fn code(src: &str) -> String {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_hire_route_goes_through_the_design_gate() {
+        // `gate_hire` pins claim → enqueue → release; this pins that the
+        // hire route uses it, and enqueues nowhere else.
+        let c = code(include_str!("../fleet/fleet_create.rs"));
+        assert!(
+            c.contains("talaria_agent_design::claim_for_hire("),
+            "the hire claims the design"
+        );
+        assert!(
+            c.contains("talaria_agent_design::gate_hire(claim, enqueued, release)"),
+            "the hire goes through gate_hire"
+        );
+        assert_eq!(
+            c.matches("enqueue(").count(),
+            1,
+            "the only enqueue is the one handed to the gate"
+        );
+        assert!(c.contains("Box::pin(enqueue("));
+        assert!(
+            !c.contains("consume_design"),
+            "the design is never consumed after the enqueue"
+        );
+    }
+
+    #[test]
+    fn the_retry_route_takes_the_design_along_before_it_enqueues() {
+        let c = code(include_str!("../fleet/fleet_hires_id_retry.rs"));
+        let follow = c
+            .find("talaria_agent_design::follow_retry(")
+            .expect("the retry follows the design");
+        let enqueue = c
+            .find("let row = match enqueue(")
+            .expect("the retry enqueues");
+        assert!(
+            follow < enqueue,
+            "the design follows the retry before the retry can finish"
+        );
+        assert!(
+            c.contains(".get(\"managerUserId\")"),
+            "the design is the hirer's, not the retrier's"
+        );
     }
 }

@@ -20,7 +20,7 @@ use talaria_state::AppState;
 use talaria_tasks_types::BUILD_DISPATCH;
 
 use super::*;
-use crate::record::{DraftFields, MISSING_RUN_GRACE_MS, STALLED, SkillDraft};
+use crate::record::{DraftFields, Held, MISSING_RUN_GRACE_MS, STALLED, SkillDraft};
 
 async fn fresh_state() -> AppState {
     let url =
@@ -113,6 +113,7 @@ async fn until_settled(user: &str) -> AgentDesign {
         let d = current_design(&st, user, false)
             .await
             .unwrap()
+            .design
             .expect("a design");
         if d.status != DesignStatus::Generating {
             return d;
@@ -301,6 +302,7 @@ async fn design_live_refine_then_discard() {
         current_design(&fresh_state().await, &user, false)
             .await
             .unwrap()
+            .design
             .is_none()
     );
     assert!(
@@ -327,7 +329,13 @@ async fn design_live_discard_mid_generation_cancels_and_drops_the_answer() {
     assert!(discard_design(&st, &user, None).await.unwrap());
     // The model answers after the discard; the answer finds no record.
     tokio::time::sleep(Duration::from_millis(2_000)).await;
-    assert!(current_design(&st, &user, false).await.unwrap().is_none());
+    assert!(
+        current_design(&st, &user, false)
+            .await
+            .unwrap()
+            .design
+            .is_none()
+    );
     assert_eq!(
         run_state(&st.pg, d.run_id.as_deref().unwrap()).await,
         "cancelled"
@@ -392,7 +400,11 @@ async fn design_live_a_design_whose_run_is_gone_reads_as_stalled() {
     store::update(&mut conn, &user, |_| Write::put(orphan.clone(), ()))
         .await
         .unwrap();
-    let d = current_design(&st, &user, false).await.unwrap().unwrap();
+    let d = current_design(&st, &user, false)
+        .await
+        .unwrap()
+        .design
+        .unwrap();
     assert_eq!(d.status, DesignStatus::Error);
     assert_eq!(d.error.as_deref(), Some(STALLED));
     discard_design(&st, &user, None).await.unwrap();
@@ -468,114 +480,159 @@ async fn design_live_a_stale_tab_cannot_edit_or_refine_the_newer_design() {
         .await,
         Err(DesignError::Refused(Refusal::Stale))
     ));
-    let held = current_design(&st, &user, false).await.unwrap().unwrap();
+    let held = current_design(&st, &user, false)
+        .await
+        .unwrap()
+        .design
+        .unwrap();
     assert_eq!(held.id, z.id);
     assert_eq!(held.draft, z.draft);
     discard_design(&st, &user, None).await.unwrap();
     cleanup(&st.pg, "stale").await;
 }
 
-async fn hire_row(pg: &PgPool, id: &str, state: &str, error: Option<&str>) {
+async fn hire_row(pg: &PgPool, id: &str, state: &str, error: Option<&str>, created: bool) {
+    let checkpoint = if created {
+        serde_json::json!({ "defId": "d-made", "stage": "boot" })
+    } else {
+        serde_json::json!(null)
+    };
     sqlx::query(
-        "insert into runs (id, kind, state, error) values ($1::uuid, 'agent-hire', $2, $3) \
-         on conflict (id) do update set state = excluded.state, error = excluded.error",
+        "insert into runs (id, kind, state, error, checkpoint) values ($1::uuid, 'agent-hire', $2, $3, $4) \
+         on conflict (id) do update set state = excluded.state, error = excluded.error, checkpoint = excluded.checkpoint",
     )
     .bind(id)
     .bind(state)
     .bind(error)
+    .bind(checkpoint)
     .execute(pg)
     .await
     .unwrap();
 }
 
+async fn held_of(st: &AppState, user: &str) -> Vec<Held> {
+    store::read_held(&mut st.redis().await.unwrap(), user)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 #[ignore = "live: set DATABASE_URL and REDIS_URL"]
-async fn design_live_the_design_gates_the_hire() {
-    // S7: one design, one agent. A second hire is refused while the first
-    // may finish; a failed hire hands the design back intact; a finished
-    // hire consumes it.
+async fn design_live_the_design_gates_the_hire_and_new_agent_stays_open() {
+    // S7 + NS5: one design, one agent; the slot is free for the next design
+    // while the hire runs; a pre-create failure hands it back only into an
+    // empty slot and never over the design started meanwhile.
     LazyLock::force(&ARMED);
     let st = fresh_state().await;
     let user = person(&st.pg, "gate").await;
-    start_design(&st, &user, CALLER, "a scout to hire")
-        .await
-        .unwrap();
+    start_design(&st, &user, CALLER, "agent a").await.unwrap();
     leave(&user).await;
-    let d = until_settled(&user).await;
-    // The bell row is filed just after the record lands.
+    let a = until_settled(&user).await;
     for _ in 0..300 {
         if !notices(&st.pg, &user).await.is_empty() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(notices(&st.pg, &user).await.len(), 1);
-    let (h1, h2, h3) = (
-        Uuid::new_v4().to_string(),
-        Uuid::new_v4().to_string(),
-        Uuid::new_v4().to_string(),
-    );
-    claim_for_hire(&st, &user, &d.id, &h1).await.unwrap();
-    // Live as the gate sees it, but parked (`awaiting`), so no reclaim sweep
-    // on a shared dev database tries to drive this stand-in hire.
-    hire_row(&st.pg, &h1, "awaiting", None).await;
-    // Tab two, another handle: refused, and so are edits meanwhile.
+    let (h1, h2) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+    claim_for_hire(&st, &user, &a.id, &h1).await.unwrap();
+    hire_row(&st.pg, &h1, "awaiting", None, false).await;
+    // A second tab hiring the same design: refused.
     assert!(matches!(
-        claim_for_hire(&st, &user, &d.id, &h2).await,
+        claim_for_hire(&st, &user, &a.id, &h2).await,
         Err(DesignError::Refused(Refusal::Hiring))
     ));
-    assert!(matches!(
-        edit_design(&st, &user, Some(&d.id), d.draft.clone().unwrap()).await,
-        Err(DesignError::Refused(Refusal::Hiring))
-    ));
-    // The bell row was read when the person acted on it.
     assert!(
         notices(&st.pg, &user)
             .await
             .iter()
             .all(|(_, _, read)| *read)
     );
-    let spent = current_design(&st, &user, false).await.unwrap().unwrap();
-    assert_eq!(spent.hire_run_id.as_deref(), Some(h1.as_str()));
+    // New agent is open: the slot is empty and a describe of B starts.
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert!(view.design.is_none());
+    assert_eq!(view.hiring.len(), 1);
+    start_design(&st, &user, CALLER, "agent b").await.unwrap();
+    let b = until_settled(&user).await;
 
-    // The hire fails on something the form can fix: the design comes back.
+    // A's hire fails before the agent exists: B stays, A waits (bell).
     hire_row(
         &st.pg,
         &h1,
         "error",
         Some("the department research is taken"),
+        false,
     )
     .await;
-    let back = current_design(&st, &user, false).await.unwrap().unwrap();
-    assert_eq!(back.hire_run_id, None);
-    assert_eq!(back.status, DesignStatus::Ready);
-    assert_eq!(back.draft, d.draft);
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert_eq!(
+        view.design.as_ref().unwrap().id,
+        b.id,
+        "the design started meanwhile is never overwritten"
+    );
+    assert_eq!(view.returned.len(), 1);
+    assert!(
+        view.returned[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("the department research is taken")
+    );
+    let rows = notices(&st.pg, &user).await;
+    assert!(
+        rows.iter()
+            .any(|(t, _, read)| t.starts_with("The hire of") && !read)
+    );
+    // B is discarded: A comes back into the slot, saying why.
+    discard_design(&st, &user, Some(&b.id)).await.unwrap();
+    let back = current_design(&st, &user, false)
+        .await
+        .unwrap()
+        .design
+        .unwrap();
+    assert_eq!(back.id, a.id);
+    assert_eq!(back.draft, a.draft);
     assert!(
         back.error
             .as_deref()
             .unwrap()
             .contains("the department research is taken")
     );
+    assert!(held_of(&st, &user).await.is_empty());
 
-    // Fixed and hired again; this one finishes and spends the design.
-    let mut fixed = d.draft.clone().unwrap();
+    // Fixed and hired again; this hire makes the agent and spends the design
+    // even though its boot failed afterwards (NS8).
+    let mut fixed = a.draft.clone().unwrap();
     fixed.department = "research-2".into();
-    edit_design(&st, &user, Some(&d.id), fixed).await.unwrap();
-    claim_for_hire(&st, &user, &d.id, &h3).await.unwrap();
-    hire_row(&st.pg, &h3, "done", None).await;
-    assert!(current_design(&st, &user, false).await.unwrap().is_none());
+    edit_design(&st, &user, Some(&a.id), fixed).await.unwrap();
+    let h3 = Uuid::new_v4().to_string();
+    claim_for_hire(&st, &user, &a.id, &h3).await.unwrap();
+    hire_row(
+        &st.pg,
+        &h3,
+        "error",
+        Some("the container did not become healthy"),
+        true,
+    )
+    .await;
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert!(view.design.is_none() && view.returned.is_empty() && view.hiring.is_empty());
 
-    // An enqueue that failed hands it straight back.
-    start_design(&st, &user, CALLER, "another scout")
-        .await
-        .unwrap();
-    let e = until_settled(&user).await;
+    // An enqueue that failed hands it straight back into the empty slot.
+    start_design(&st, &user, CALLER, "agent c").await.unwrap();
+    let c = until_settled(&user).await;
     let h4 = Uuid::new_v4().to_string();
-    claim_for_hire(&st, &user, &e.id, &h4).await.unwrap();
+    claim_for_hire(&st, &user, &c.id, &h4).await.unwrap();
     release_hire(st.clone(), user.clone(), h4.clone()).await;
-    let again = current_design(&st, &user, false).await.unwrap().unwrap();
-    assert_eq!(again.hire_run_id, None);
-    assert_eq!(again.id, e.id);
+    assert_eq!(
+        current_design(&st, &user, false)
+            .await
+            .unwrap()
+            .design
+            .unwrap()
+            .id,
+        c.id
+    );
 
     for h in [&h1, &h3] {
         sqlx::query("delete from runs where id = $1::uuid")
@@ -590,47 +647,37 @@ async fn design_live_the_design_gates_the_hire() {
 
 #[tokio::test]
 #[ignore = "live: set DATABASE_URL and REDIS_URL"]
-async fn design_live_new_agent_waits_while_a_hire_holds_the_design() {
-    // NS1: a describe or a manual save during the hire is refused with
-    // Hiring, and the held design (and its hand-back) is kept.
+async fn design_live_a_waiting_returned_design_can_be_dismissed() {
     LazyLock::force(&ARMED);
     let st = fresh_state().await;
-    let user = person(&st.pg, "held").await;
-    start_design(&st, &user, CALLER, "a scout to hire")
+    let user = person(&st.pg, "dismiss").await;
+    start_design(&st, &user, CALLER, "agent a").await.unwrap();
+    let a = until_settled(&user).await;
+    let h1 = Uuid::new_v4().to_string();
+    claim_for_hire(&st, &user, &a.id, &h1).await.unwrap();
+    edit_design(&st, &user, None, draft_for("manual b"))
         .await
         .unwrap();
-    let d = until_settled(&user).await;
-    let h1 = Uuid::new_v4().to_string();
-    claim_for_hire(&st, &user, &d.id, &h1).await.unwrap();
-    hire_row(&st.pg, &h1, "awaiting", None).await;
-    assert!(matches!(
-        start_design(&st, &user, CALLER, "the next agent").await,
-        Err(DesignError::Refused(Refusal::Hiring))
-    ));
-    assert!(matches!(
-        edit_design(&st, &user, None, draft_for("manual")).await,
-        Err(DesignError::Refused(Refusal::Hiring))
-    ));
-    let still = current_design(&st, &user, false).await.unwrap().unwrap();
-    assert_eq!(still.id, d.id);
-    assert_eq!(still.hire_run_id.as_deref(), Some(h1.as_str()));
-    // The hire fails: the design comes back, and New agent is open again.
-    hire_row(&st.pg, &h1, "error", Some("the department is taken")).await;
-    let back = current_design(&st, &user, false).await.unwrap().unwrap();
-    assert_eq!(back.id, d.id);
-    assert_eq!(back.hire_run_id, None);
-    assert!(
-        edit_design(&st, &user, Some(&d.id), d.draft.clone().unwrap())
+    hire_row(&st.pg, &h1, "error", None, false).await;
+    assert_eq!(
+        current_design(&st, &user, false)
             .await
-            .is_ok()
+            .unwrap()
+            .returned
+            .len(),
+        1
     );
+    assert!(discard_design(&st, &user, Some(&a.id)).await.unwrap());
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert!(view.returned.is_empty());
+    assert_eq!(view.design.unwrap().draft.unwrap().name, "Scout");
     sqlx::query("delete from runs where id = $1::uuid")
         .bind(&h1)
         .execute(&st.pg)
         .await
         .unwrap();
     discard_design(&st, &user, None).await.unwrap();
-    cleanup(&st.pg, "held").await;
+    cleanup(&st.pg, "dismiss").await;
 }
 
 #[tokio::test]
@@ -647,19 +694,21 @@ async fn design_live_a_retried_hire_takes_the_design_with_it() {
     let d = until_settled(&user).await;
     let (h1, r1) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
     claim_for_hire(&st, &user, &d.id, &h1).await.unwrap();
-    hire_row(&st.pg, &h1, "error", Some("a transient pull failure")).await;
-    // Read first: the design is handed back from h1.
-    let back = current_design(&st, &user, false).await.unwrap().unwrap();
-    assert_eq!(back.hire_run_id, None);
-    // Retry from the strip: the design follows the retry run.
+    hire_row(&st.pg, &h1, "error", Some("a transient failure"), false).await;
+    let back = current_design(&st, &user, false)
+        .await
+        .unwrap()
+        .design
+        .unwrap();
+    assert_eq!(back.id, d.id, "handed back into the empty slot");
     follow_retry(&st, &user, &h1, &r1).await;
-    hire_row(&st.pg, &r1, "awaiting", None).await;
-    let held = current_design(&st, &user, false).await.unwrap().unwrap();
-    assert_eq!(held.hire_run_id.as_deref(), Some(r1.as_str()));
-    assert_eq!(held.error, None);
-    // The retry hires the agent: the design is spent, not offered again.
-    hire_row(&st.pg, &r1, "done", None).await;
-    assert!(current_design(&st, &user, false).await.unwrap().is_none());
+    hire_row(&st.pg, &r1, "awaiting", None, false).await;
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert!(view.design.is_none());
+    assert_eq!(view.hiring[0].hire_run_id, r1);
+    hire_row(&st.pg, &r1, "done", None, true).await;
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert!(view.design.is_none() && view.hiring.is_empty() && view.returned.is_empty());
     for h in [&h1, &r1] {
         sqlx::query("delete from runs where id = $1::uuid")
             .bind(h)

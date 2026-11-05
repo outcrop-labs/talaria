@@ -81,8 +81,10 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_design.rs`](../../api
 > a closed tab and a restart. One design per person.
 >
 > /api/fleet/agent-design.
->   GET    → `{ design, now }`: the design or null, and the server's clock so
->            the elapsed count agrees across tabs. `?watching=1` is the open
+>   GET    → `{ design, hiring, returned, now }`: the design or null, the
+>            designs the person's hires are spending, any a failed hire handed
+>            back while the slot was taken, and the server's clock so the
+>            elapsed count agrees across tabs. `?watching=1` is the open
 >            modal: a landing in the next few seconds skips the bell.
 >   POST   → start (`{ instruction }`) or refine (`{ instruction, refine:
 >            true, id, current? }`). A start while one generates answers that
@@ -99,7 +101,7 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_design.rs`](../../api
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{design, now}` | 200, 409 | — |
+| GET | `session` + `perm:agents.manage` | — | `{design, hiring, returned, now}` | 200, 409 | — |
 | POST | `session` + `perm:agents.manage` | [body](#post-apifleetagent-design-body) | `{design}` | 200, 400, 409 | — |
 | PATCH | `session` + `perm:agents.manage` | [body](#patch-apifleetagent-design-body) | `{design}` | 200, 400, 409 | — |
 | DELETE | `session` + `perm:agents.manage` | [body](#delete-apifleetagent-design-body) | `{ok}` | 200, 400, 404, 409 | — |
