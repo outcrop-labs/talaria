@@ -330,6 +330,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_tasks.rs`](../..
 | `estimatedHours` | `number? nullable(0, 999)` |  |
 | `parentId` | `uuid?` |  |
 | `tags` | `string[]?(0, 40, 20)` |  |
+| `status` | `string?(40)` |  |
 
 ## `/api/boards/{id}/templates`
 
