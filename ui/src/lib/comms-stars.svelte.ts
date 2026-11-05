@@ -4,8 +4,11 @@
 // (`/api/me/pins`, the `comms_pins` table): one query that the rail, a
 // conversation header's pin and a row's menu all read, so they move together
 // in every tab and on every device. They lived in each browser's
-// localStorage until now; the first load signed in folds anything still
-// stored there into the server once, then clears it.
+// localStorage until now; a load signed in folds anything still stored there
+// into the server, and keeps in the browser only what is worth another try —
+// a star the server refused for good goes, one that met a 5xx, a lapsed
+// session or no answer at all stays for the next load. A pin is never lost to
+// a bad moment.
 //
 // A toggle is optimistic — the row moves under the cursor — and settles on
 // the server's answer either way, so a refused write takes the move back.
@@ -13,7 +16,15 @@
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { delJson, getJson, postJson } from './fetch-json'
 import { toastError } from './toast.svelte'
-import { readStars, starsStorageKey, isStarKey, type StarKey } from './comms-stars'
+import {
+  readStars,
+  starsStorageKey,
+  starsToKeep,
+  uploadOutcome,
+  isStarKey,
+  type StarKey,
+  type UploadOutcome,
+} from './comms-stars'
 import { writeText } from './persist'
 import { resolve, type MaybeGetter } from './reactive-arg'
 
@@ -28,24 +39,37 @@ export interface Stars {
 
 export const pinsQueryKey = (userId: string) => ['comms-pins', userId] as const
 
-/** Fold a browser's old local stars into the server, once per user per
- *  browser: each one the server does not hold yet is pinned, in order, and
- *  the local copy is cleared so it never folds in twice. */
-const imported = new Set<string>()
+/** Fold this browser's old local stars into the server. Each one the server
+ *  does not hold yet is pinned, in order; the local copy then keeps only the
+ *  stars that met a failure worth retrying (comms-stars.ts, uploadOutcome),
+ *  so the next load tries those again and a pass where everything landed or
+ *  was refused for good clears it. One pass per user at a time in a tab.
+ *  Answers whether anything landed, so the caller re-reads the list. */
+const importing = new Set<string>()
 async function importLocalStars(userId: string, held: readonly string[]): Promise<boolean> {
-  if (imported.has(userId)) return false
-  imported.add(userId)
-  const local = readStars(userId).filter((k) => !held.includes(k))
-  for (const key of local) {
-    try {
-      await postJson('/api/me/pins', { key })
-    } catch {
-      // A key the server refuses (a stale shape, the cap) is dropped with
-      // the rest of the local copy: it never showed anywhere else either.
+  const local = readStars(userId)
+  if (local.length === 0 || importing.has(userId)) return false
+  importing.add(userId)
+  try {
+    const results: { key: StarKey; outcome: UploadOutcome }[] = []
+    for (const key of local) {
+      if (held.includes(key)) {
+        results.push({ key, outcome: 'landed' })
+        continue
+      }
+      try {
+        await postJson('/api/me/pins', { key })
+        results.push({ key, outcome: 'landed' })
+      } catch (e) {
+        results.push({ key, outcome: uploadOutcome(e) })
+      }
     }
+    const keep = starsToKeep(results)
+    writeText(starsStorageKey(userId), keep.length > 0 ? JSON.stringify(keep) : null)
+    return results.some((r) => r.outcome === 'landed' && !held.includes(r.key))
+  } finally {
+    importing.delete(userId)
   }
-  writeText(starsStorageKey(userId), null)
-  return local.length > 0
 }
 
 /** Call during component init. */
@@ -78,7 +102,9 @@ export function useStars(userId: MaybeGetter<string | null | undefined>): Stars 
     has: (key) => keys().includes(key as StarKey),
     toggle: (key) => {
       const id = resolve(userId)
-      if (!id || !isStarKey(key)) return
+      // Before the first read lands, "pinned" is unknown: a toggle then would
+      // guess, and an unpin would go out as a pin.
+      if (!id || !isStarKey(key) || query.data === undefined) return
       const qk = pinsQueryKey(id)
       const pinned = keys().includes(key)
       qc.setQueryData<StarKey[]>(qk, (old = []) => (pinned ? old.filter((k) => k !== key) : [...old, key]))

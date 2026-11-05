@@ -1,13 +1,16 @@
 // A PERSON'S TIMED MUTE OF ONE AGENT'S DIRECT MESSAGES (`agent_dm_mutes`).
 //
-// An agent reaches a person two ways that file as `dm`-class rows: its reply
-// in one of their threads (`agent-reply`, `notify_agent_reply`) and its own
-// check-in (`agent-outreach`). This is the channel mute's twin for those
-// (`channel_members.muted_until`): while a mute holds, both producers file
-// their row `quiet` — it lands in-app and counts, and no toast, banner, push
-// or mail goes out. A mute always has an end; "until I turn it back on" is
-// FOREVER_MS, as it is for a channel. An expired row reads as no mute, and
-// unmuting deletes the row.
+// An agent's direct messages are two kinds of `dm`-class row: its reply in
+// one of the person's CHAT threads with it (`agent-reply` on a `chat`
+// conversation, `notify_agent_reply`) and its own check-in (`agent-outreach`,
+// which lands in a chat thread too). This is the channel mute's twin for
+// those (`channel_members.muted_until`): while a mute holds, both producers
+// file their row `quiet` — it lands in-app and counts, and no toast, banner,
+// push or mail goes out. The agent's replies anywhere else — a plan, a
+// research run, a work session, a ticket — are not its DMs and ring as ever.
+// A mute always has an end; "until I turn it back on" is FOREVER_MS, as it is
+// for a channel. An expired row reads as no mute; a write prunes the
+// person's expired rows, and unmuting deletes the row.
 
 use sqlx::PgPool;
 
@@ -56,6 +59,12 @@ pub async fn set_agent_dm_mute(
     agent_model: &str,
     until_ms: Option<i64>,
 ) -> Result<Option<i64>, sqlx::Error> {
+    // Expired rows answer "no mute" already; a write is where they go, so the
+    // table holds only mutes that still mean something.
+    sqlx::query("delete from agent_dm_mutes where user_id = $1::uuid and muted_until <= now()")
+        .bind(user_id)
+        .execute(pg)
+        .await?;
     let Some(ms) = until_ms else {
         sqlx::query("delete from agent_dm_mutes where user_id = $1::uuid and agent_model = $2")
             .bind(user_id)

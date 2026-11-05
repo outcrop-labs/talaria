@@ -311,14 +311,19 @@
     }
   }
 
-  /** Run one row write, then refresh what it changed; a refusal is a toast. */
-  const rowWrite = async (what: string, run: () => Promise<unknown>, keys: string[][]) => {
+  /** Run one row write, then refresh what it changed; a refusal is a toast.
+   *  Answers whether the write went through, for a caller with a follow-up
+   *  that only makes sense after it (unpinning what was archived). */
+  const rowWrite = async (what: string, run: () => Promise<unknown>, keys: string[][]): Promise<boolean> => {
+    let ok = true
     try {
       await run()
     } catch (e) {
+      ok = false
       toastError(`${what} failed`, e)
     }
     for (const queryKey of keys) void qc.invalidateQueries({ queryKey })
+    return ok
   }
 
   // Archiving takes a thread out of the rail (and out of Pinned, if pinned).
@@ -418,9 +423,14 @@
       })
       if (!ok) return
     }
-    await rowWrite(hard ? 'Delete' : 'Archive', () => (hard ? deleteChannel(c.id) : delJson(`/api/channels/${c.id}`)), [['channels']])
+    const done = await rowWrite(
+      hard ? 'Delete' : 'Archive',
+      () => (hard ? deleteChannel(c.id) : delJson(`/api/channels/${c.id}`)),
+      [['channels']],
+    )
+    // A refused archive or delete leaves the channel — and its pin — as it was.
     const key = channelStarKey(c.id)
-    if (stars.has(key)) stars.toggle(key)
+    if (done && stars.has(key)) stars.toggle(key)
   }
 
   const channelActions = (c: Channel, viewProfile?: () => void): ConversationActions => {
@@ -447,7 +457,6 @@
         kind: 'channel',
         id: c.id,
         channelKind: c.kind,
-        groupDm: isGroupDm(c),
         owner: c.role === 'owner',
         unread: c.unreadCount ?? 0,
         active: activeChannelId === c.id,
@@ -457,9 +466,34 @@
       channelActions(c, viewProfile),
     )
 
+  // THE MUTED MARKS RUN OUT ON THEIR OWN. `now` moves when the soonest
+  // running mute ends — one timer on that instant, re-armed for the next, no
+  // polling — so a 1-hour mute's bell-off leaves the row at the hour, not at
+  // the next refetch. A mute past the timer's reach (until turned back on)
+  // never ends on screen, which is right.
+  let now = $state(Date.now())
+  const nextMuteEnd = $derived.by(() => {
+    const ends = [
+      ...channels.map((c) => c.notify?.mutedUntil ?? null),
+      ...fleet.map((a) => agentMutes.mutedUntil(a.id)),
+    ]
+      .map((t) => (t ? Date.parse(t) : NaN))
+      .filter((t) => Number.isFinite(t) && t > now)
+    return ends.length > 0 ? Math.min(...ends) : null
+  })
+  $effect(() => {
+    const at = nextMuteEnd
+    if (at === null) return
+    const wait = at - Date.now() + 50
+    if (wait > 2_147_000_000) return
+    const t = setTimeout(() => (now = Date.now()), Math.max(0, wait))
+    return () => clearTimeout(t)
+  })
+  const agentMuted = (model: string) => isMuted({ mutedUntil: agentMutes.mutedUntil(model) }, now)
+
   const dmMuted = (dmId: string | null) => {
     const n = dmId ? channels.find((c) => c.id === dmId)?.notify : undefined
-    return !!n && isMuted(n, Date.now())
+    return !!n && isMuted(n, now)
   }
 
   const personRowMenu = (u: Person): ContextMenuEntry[] => {
@@ -642,7 +676,7 @@
            `#`; a relay reads `⇄`. -->
       <span class="w-3 shrink-0 text-center opacity-60">{c.kind === 'group' ? '⇄' : '#'}</span>
       <span class={cn('min-w-0 truncate', unreadName(c.unreadCount))}>{c.name}</span>
-      {#if c.notify && isMuted(c.notify, Date.now())}
+      {#if c.notify && isMuted(c.notify, now)}
         <BellOff size={12} class="shrink-0 text-muted" aria-label="Muted" />
       {/if}
       {#if typersIn(c.id, selfId).length > 0}
@@ -833,7 +867,7 @@
             <!-- R19: agents have no photo on the wire yet — initials. -->
             <PresenceAvatar name={a.label} {presence} />
             <span class={cn('min-w-0 flex-1 truncate', unreadName(row.unread))}>{a.label}</span>
-            {#if agentMutes.mutedUntil(a.id)}
+            {#if agentMuted(a.id)}
               <BellOff size={12} class="shrink-0 text-muted" aria-label="DMs muted" />
             {/if}
             <span class={cn('flex shrink-0 items-center gap-1.5', hideOnHover)}>

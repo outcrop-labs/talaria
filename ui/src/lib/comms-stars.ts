@@ -20,7 +20,8 @@
 // Anything else — another kind, a non-string, a duplicate — is dropped on
 // read, and toggling an unknown kind is a no-op.
 
-import { readStored, writeStored } from './persist'
+import { HttpError } from './fetch-json'
+import { readStored } from './persist'
 
 export type StarKey = `channel:${string}` | `agent:${string}` | `thread:${string}`
 export type StarKind = 'channel' | 'agent' | 'thread'
@@ -57,16 +58,24 @@ export function readStars(userId: string): StarKey[] {
   return readStored(starsStorageKey(userId), parseStars, [])
 }
 
-export function isStarred(userId: string, key: string): boolean {
-  return readStars(userId).includes(key as StarKey)
+/** What one legacy star's upload to the server came to. */
+export type UploadOutcome = 'landed' | 'refused' | 'retry'
+
+/** Classify an upload's failure. A 4xx the server will give again — a key it
+ *  will not take, the pin cap — is `refused`: keeping it would retry it on
+ *  every load for ever. No answer at all, a 5xx, a 401 or 403 (a session
+ *  that lapsed or is mid-refresh), a 408 or a 429 is `retry`: the copy stays
+ *  in this browser for the next load. */
+export function uploadOutcome(e: unknown): Exclude<UploadOutcome, 'landed'> {
+  if (!(e instanceof HttpError)) return 'retry'
+  const s = e.status
+  if (s >= 500 || s === 401 || s === 403 || s === 408 || s === 429) return 'retry'
+  return s >= 400 ? 'refused' : 'retry'
 }
 
-/** Star `key`, or unstar it if it is starred. Returns the new list. An unknown
- *  key kind changes nothing. */
-export function toggleStar(userId: string, key: string): StarKey[] {
-  const stars = readStars(userId)
-  if (!isStarKey(key)) return stars
-  const next = stars.includes(key) ? stars.filter((k) => k !== key) : [...stars, key]
-  writeStored(starsStorageKey(userId), next)
-  return next
+/** The legacy stars to keep in this browser after an upload pass: only the
+ *  ones worth another try. Everything that landed or was refused for good
+ *  goes, so a pass where nothing needs retrying clears the copy. */
+export function starsToKeep(results: readonly { key: StarKey; outcome: UploadOutcome }[]): StarKey[] {
+  return results.filter((r) => r.outcome === 'retry').map((r) => r.key)
 }

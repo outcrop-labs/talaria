@@ -525,11 +525,14 @@ pub async fn mark_conversation_read(
 
 /// MARK UNREAD: put the reader's cursor back to just before the thread's
 /// newest turn that counts as unread for them — the agent's, or another
-/// person's — so the thread reads one unread again. The read cursor only ever
+/// person's — so that turn reads unread again. The read cursor otherwise only
 /// advances (`mark_conversation_read`); this is the one deliberate step back,
-/// and it is the reader's own row. Answers whether it moved: false when the
-/// thread holds nothing that could count (an empty thread, or only the
-/// reader's own words), which writes nothing.
+/// on the reader's own row, and it is a step BACK only: `least()` keeps a
+/// cursor that is already behind where it is, so a click made against a stale
+/// count never marks newer turns read. A reader with no cursor row has read
+/// nothing yet, so there is nothing to move. Answers whether the thread now
+/// reads unread: false when it holds nothing that could count (an empty
+/// thread, or only the reader's own words).
 pub async fn mark_conversation_unread(
     pg: &PgPool,
     conversation_id: &str,
@@ -550,10 +553,9 @@ pub async fn mark_conversation_unread(
         return Ok(false);
     };
     sqlx::query(
-        "insert into conversation_reads (conversation_id, user_id, last_read_seq) \
-         values ($1::uuid, $2::uuid, $3) \
-         on conflict (conversation_id, user_id) do update \
-           set last_read_seq = excluded.last_read_seq, updated_at = now()",
+        "update conversation_reads \
+            set last_read_seq = least(last_read_seq, $3), updated_at = now() \
+          where conversation_id = $1::uuid and user_id = $2::uuid",
     )
     .bind(conversation_id)
     .bind(user_id)

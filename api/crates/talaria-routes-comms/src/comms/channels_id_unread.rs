@@ -1,10 +1,12 @@
 // /api/channels/{id}/unread.
 // POST → mark the channel (or DM, or relay) unread for the caller: their
-// channel cursor steps back to just before the newest message on the main
-// feed that counts for them (complete, someone else's), so its badge reads 1
-// again. → { ok, marked }; marked is false, and nothing is written, when the
-// feed holds nothing that could count. The read route's twin on the same cursor. A
-// member only (403 otherwise, whether or not the channel exists — the
+// channel cursor steps back to just before the newest message that counts for
+// them by the badge's own rule (complete, someone else's, not a thread reply
+// they already read in its thread), so the badge reads 1 again — and never
+// forward: a cursor already behind stays put. → { ok, marked }; marked is
+// false, and nothing is written, when nothing could count. The read route's
+// twin on the same cursor, and it tells the caller's other tabs and devices.
+// A member only (403 otherwise, whether or not the channel exists — the
 // channels family's rule). A room whose roster is a board's or a team's has
 // no cursor row of the caller's own to move: 409, as the notify level is.
 
@@ -15,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_channels::{channel_role, mark_channel_unread};
 use talaria_error::{house_error, internal};
+use talaria_notify::{NotifyDeps, publish_own_channel};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -33,7 +36,13 @@ pub async fn post(
         Err(e) => return Ok(internal("[channels] role read on unread failed", e)),
     }
     Ok(match mark_channel_unread(&state.pg, &id, &user.id).await {
-        Ok(Some(marked)) => Json(json!({ "ok": true, "marked": marked })).into_response(),
+        Ok(Some(marked)) => {
+            if marked {
+                let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+                publish_own_channel(&notify, &user.id, &id);
+            }
+            Json(json!({ "ok": true, "marked": marked })).into_response()
+        }
         Ok(None) => house_error(
             StatusCode::CONFLICT,
             "you're in this room through its board or a team, so it has no read marker of your own to move",

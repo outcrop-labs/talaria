@@ -252,6 +252,26 @@ async fn a_muted_agents_reply_files_quietly_until_the_mute_is_lifted() {
         vec!["feed".to_string()]
     );
 
+    // DMs only: the same muted agent's reply in a PLAN is not its DM, and
+    // rings as ever.
+    let plan = create_conversation(&state.pg, &me, &model, "Muted agent's plan", "plan", None)
+        .await
+        .unwrap();
+    let (plan_reply,): (String,) = sqlx::query_as(
+        "insert into messages (conversation_id, seq, role, status, content) \
+         values ($1::uuid, 1, 'assistant', 'complete', 'a plan answer') returning id::text",
+    )
+    .bind(&plan)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    notify_agent_reply(&deps, &plan, &plan_reply).await;
+    assert_eq!(
+        alerts(state.pg.clone(), me.clone()).await,
+        vec!["feed".to_string(), "banner".to_string()],
+        "a plan reply from a muted agent still rings"
+    );
+
     // Unmuted, and read past the first, the next reply rings again.
     let (s, v) = call_json(
         &state,
@@ -277,8 +297,38 @@ async fn a_muted_agents_reply_files_quietly_until_the_mute_is_lifted() {
     notify_agent_reply(&deps, &chat, &second).await;
     assert_eq!(
         alerts(state.pg.clone(), me.clone()).await,
-        vec!["feed".to_string(), "banner".to_string()]
+        vec![
+            "feed".to_string(),
+            "banner".to_string(),
+            "banner".to_string()
+        ]
     );
+
+    // A write prunes the person's expired mutes.
+    sqlx::query(
+        "insert into agent_dm_mutes (user_id, agent_model, muted_until) \
+         values ($1::uuid, 'long-gone', now() - interval '1 day')",
+    )
+    .bind(&me)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    let (s, _) = call_json(
+        &state,
+        "PUT",
+        "/api/me/agent-mutes",
+        Some(&cookie),
+        Some(json!({ "agentModel": model, "mutedUntil": "2099-01-01T00:00:00.000Z" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let rows: i64 =
+        sqlx::query_scalar("select count(*) from agent_dm_mutes where user_id = $1::uuid")
+            .bind(&me)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
+    assert_eq!(rows, 1, "the expired row went with the write");
 
     sweep(&state, &[&me]).await;
 }
@@ -358,6 +408,45 @@ async fn mark_unread_steps_a_thread_back_one_countable_turn() {
         .await
         .unwrap();
     assert_eq!(thread_unread(&state, &cookie, &chat).await, 0);
+
+    // NEVER FORWARD. Two more agent turns land (3 and 5, my 4 between) while
+    // the rail still shows 0, and Mark unread is clicked against that stale
+    // count: the newest countable turn is 5, but the cursor at 2 is already
+    // behind 4, so it stays at 2 and both replies stay unread.
+    for (seq, role, author) in [
+        (3, "assistant", None),
+        (4, "user", Some(&me)),
+        (5, "assistant", None),
+    ] {
+        sqlx::query(
+            "insert into messages (conversation_id, seq, role, status, content, author_user_id) \
+             values ($1::uuid, $2, $3, 'complete', 'x', $4::uuid)",
+        )
+        .bind(&chat)
+        .bind(seq)
+        .bind(role)
+        .bind(author)
+        .execute(&state.pg)
+        .await
+        .unwrap();
+    }
+    assert_eq!(thread_unread(&state, &cookie, &chat).await, 2);
+    let (s, v) = call_json(&state, "POST", &path, Some(&cookie), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        thread_unread(&state, &cookie, &chat).await,
+        2,
+        "nothing was marked read"
+    );
+    let cursor: i32 = sqlx::query_scalar(
+        "select last_read_seq from conversation_reads where conversation_id = $1::uuid and user_id = $2::uuid",
+    )
+    .bind(&chat)
+    .bind(&me)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    assert_eq!(cursor, 2);
 
     // Someone with no access: 403, as the read answers; a mangled id is 404.
     let (s, _) = call_json(&state, "POST", &path, Some(&stranger_cookie), None).await;
@@ -463,17 +552,31 @@ async fn mark_unread_steps_a_channel_back_and_the_list_carries_the_notify_level(
         .unwrap();
     assert_eq!(listed(&state, &cookie, &ch).await["unreadCount"], 0);
 
-    // The newest main-feed message that counts is the mate's at 1 (mine at
-    // 2 never counts, the reply at 3 is not on the feed): the cursor lands at
-    // 0 and the badge reads 1.
+    // The newest message that counts, by the badge's own rule, is the mate's
+    // reply at 3 (mine at 2 never counts; no thread cursor of mine covers the
+    // reply): the cursor lands at 2 and the badge reads exactly 1.
     let path = format!("/api/channels/{ch}/unread");
     let (s, v) = call_json(&state, "POST", &path, Some(&cookie), None).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["marked"], true);
-    // The mate's message at 1 counts again, and so does their reply at 3:
-    // no thread cursor of mine covers it, exactly as before I read the feed.
-    assert_eq!(listed(&state, &cookie, &ch).await["unreadCount"], 2);
-    // With the thread read, only the feed message is unread.
+    assert_eq!(listed(&state, &cookie, &ch).await["unreadCount"], 1);
+    // Read it all again, this time with the thread read in its panel too:
+    // the reply no longer counts, so the newest countable is the feed
+    // message at 1, the cursor lands at 0, and the badge is 1 again.
+    let my_cursor = |seq: i32| {
+        let pg = state.pg.clone();
+        let (ch, me) = (ch.clone(), me.clone());
+        async move {
+            sqlx::query("update channel_members set last_read_seq = $3 where channel_id = $1::uuid and user_id = $2::uuid")
+                .bind(&ch)
+                .bind(&me)
+                .bind(seq)
+                .execute(&pg)
+                .await
+                .unwrap();
+        }
+    };
+    my_cursor(3).await;
     sqlx::query(
         "insert into channel_thread_reads (thread_root_id, user_id, last_read_seq) \
          select id, $2::uuid, 3 from channel_messages where channel_id = $1::uuid and seq = 1",
@@ -483,7 +586,34 @@ async fn mark_unread_steps_a_channel_back_and_the_list_carries_the_notify_level(
     .execute(&state.pg)
     .await
     .unwrap();
+    assert_eq!(listed(&state, &cookie, &ch).await["unreadCount"], 0);
+    let (s, _) = call_json(&state, "POST", &path, Some(&cookie), None).await;
+    assert_eq!(s, StatusCode::OK);
     assert_eq!(listed(&state, &cookie, &ch).await["unreadCount"], 1);
+
+    // NEVER FORWARD: with the cursor at 0 already, two more of the mate's
+    // feed messages (4, 5) make the badge 3; a Mark unread clicked against
+    // a stale badge leaves the cursor at 0 and all three unread.
+    for seq in [4, 5] {
+        sqlx::query(
+            "insert into channel_messages (channel_id, seq, author_type, author, content) \
+             values ($1::uuid, $2, 'user', $3, 'x')",
+        )
+        .bind(&ch)
+        .bind(seq)
+        .bind(&mate_email)
+        .execute(&state.pg)
+        .await
+        .unwrap();
+    }
+    assert_eq!(listed(&state, &cookie, &ch).await["unreadCount"], 3);
+    let (s, _) = call_json(&state, "POST", &path, Some(&cookie), None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        listed(&state, &cookie, &ch).await["unreadCount"],
+        3,
+        "nothing was marked read"
+    );
 
     // Not a member: 403, whether or not it exists (the channels family).
     let (s, _) = call_json(&state, "POST", &path, Some(&outsider_cookie), None).await;

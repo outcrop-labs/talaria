@@ -70,7 +70,6 @@ const channel = (over: Partial<Extract<ConversationRow, { kind: 'channel' }>> = 
   kind: 'channel',
   id: 'c1',
   channelKind: 'channel',
-  groupDm: false,
   owner: true,
   unread: 0,
   active: false,
@@ -199,6 +198,13 @@ test("a member of a channel gets no rename, archive or delete; a room with no le
   assert.ok(!member.includes('Rename…') && !member.includes('Archive') && !member.includes('Delete…'))
   const roster = words(conversationMenu(channel({ notify: { level: 'mentions', mutedUntil: null, settable: false } }), ctx(), convActions()))
   assert.ok(!roster.some((w) => Array.isArray(w)))
+  // …nor a Mark unread, which the server would refuse (409) there. Mark read
+  // still stands: the read route takes it.
+  assert.ok(!roster.includes('Mark unread'), String(roster))
+  const rosterUnread = words(
+    conversationMenu(channel({ unread: 2, notify: { level: 'mentions', mutedUntil: null, settable: false } }), ctx(), convActions()),
+  )
+  assert.ok(rosterUnread.includes('Mark read'))
   const old = words(conversationMenu(channel({ notify: null }), ctx(), convActions()))
   assert.ok(!old.some((w) => Array.isArray(w)))
 })
@@ -210,7 +216,7 @@ test('a DM can be tuned and pinned but never renamed, archived or deleted, even 
     words(conversationMenu(dm, ctx(), a)).map((w) => (Array.isArray(w) ? w[0] : w)),
     ['Open', 'Copy link', 'Open in new tab', 'View profile', '—', 'Mark unread', 'Pin', 'Notifications ▸'],
   )
-  const group = words(conversationMenu(channel({ channelKind: 'dm', groupDm: true }), ctx(), convActions()))
+  const group = words(conversationMenu(channel({ channelKind: 'dm' }), ctx(), convActions()))
   assert.ok(!group.includes('Rename…') && !group.includes('Delete…'))
 })
 

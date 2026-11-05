@@ -242,7 +242,7 @@ export function contextMenuTarget(
     else if (swallowClick) swallowUntil = performance.now() + 600
   }
 
-  // No iOS callout or text selection under a held finger.
+  // No iOS callout (the link/image sheet) under a held finger.
   node.style.setProperty('-webkit-touch-callout', 'none')
   node.addEventListener('contextmenu', onContextMenu)
   node.addEventListener('keydown', onKeydown)

@@ -225,6 +225,32 @@ pub fn briefs_follow_message(deps: NotifyDeps, channel_id: String) {
     });
 }
 
+/// Tell the person's OWN open pages that one of their rail rows moved — a
+/// mark unread, which no other write announces (a read clears bell rows and
+/// says so through `publish_read`; stepping a cursor back touches none). Ids
+/// only, like every user event: each tab refetches its channel or
+/// conversation list, so the badge reads the same on every device.
+pub fn publish_own_channel(deps: &NotifyDeps, user_id: &str, channel_id: &str) {
+    publish_user(
+        &deps.realtime,
+        user_id,
+        &UserEvent::Channel {
+            channel_id: channel_id.to_string(),
+        },
+    );
+}
+
+/// `publish_own_channel` for a conversation (a thread with an agent).
+pub fn publish_own_conversation(deps: &NotifyDeps, user_id: &str, conversation_id: &str) {
+    publish_user(
+        &deps.realtime,
+        user_id,
+        &UserEvent::Conversation {
+            conversation_id: conversation_id.to_string(),
+        },
+    );
+}
+
 /// Ring every member's firehose: a message landed in this channel. Id-shaped
 /// and detached, like the brief nudge it stands beside — a message in a room
 /// of N members is N publishes of a few dozen bytes each, and none of them
@@ -434,8 +460,11 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
             continue; // they have read past this reply — still looking
         }
         // A person who muted this agent's DMs still gets the row, quietly
-        // (agent_mutes.rs): it counts in-app and nothing rings.
-        let quiet = crate::agent_mutes::agent_dm_muted(&deps.pg, &member, &agent_model).await;
+        // (agent_mutes.rs): it counts in-app and nothing rings. DMs only — a
+        // reply in a plan, a research run, a work session or a ticket is not
+        // the agent's DM, and it rings as ever.
+        let quiet = kind == "chat"
+            && crate::agent_mutes::agent_dm_muted(&deps.pg, &member, &agent_model).await;
         let meta = NotifyMeta {
             quiet,
             ..meta.clone()

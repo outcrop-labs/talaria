@@ -379,8 +379,8 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_unread.rs`](../.
 
 > /api/channels/{id}/unread.
 > POST → mark the channel (or DM, or relay) unread for the caller: their
-> channel cursor steps back to just before the newest message on the main
-> feed that counts for them (complete, someone else's), so its badge reads 1
+> channel cursor steps back to just before the newest message that counts for
+> them by the badge's own rule (complete, someone else's, not a thread reply
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -782,7 +782,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_unread.rs`]
 > /api/conversations/{id}/unread.
 > POST → mark the thread unread for the caller: their read cursor steps back
 > to just before the thread's newest turn that counts for them (the agent's,
-> or another person's), so its unread pill reads 1 again. → { ok,
+> or another person's), so that turn reads unread again — and never forward:
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

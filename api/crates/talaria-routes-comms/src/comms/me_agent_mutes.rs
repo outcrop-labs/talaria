@@ -1,11 +1,12 @@
 // /api/me/agent-mutes. The caller's timed mutes of an agent's direct
-// messages — its replies in their threads and its own check-ins
+// messages — its replies in their chat threads with it and its own check-ins;
+// its replies in a plan, research, work session or ticket still ring
 // (talaria_notify::agent_mutes). GET → { mutes: [{ agentModel, mutedUntil }] },
 // only the mutes that still hold. PUT { agentModel, mutedUntil: ISO|null } →
 // { ok, agentModel, mutedUntil }: an ISO time in the future mutes until then
 // ("until I turn it back on" is the far end, 9999-12-31, as for a channel),
-// null unmutes. Muted rows still land in-app, quietly: no toast, push or
-// mail. The caller's own setting, so it names any agent model without an
+// null unmutes; a write also prunes the caller's expired mutes. Muted rows
+// still land in-app, quietly: no toast, push or mail. The caller's own setting, so it names any agent model without an
 // access check — a mute of an agent that never writes to them does nothing.
 
 use axum::Json;
@@ -21,8 +22,8 @@ use talaria_notify::{FOREVER_MS, list_agent_dm_mutes, parse_instant, set_agent_d
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-/// The pin grammar's agent bound (talaria_conversation_layout::pins).
-const MAX_MODEL: usize = 200;
+// The pin grammar's agent bound — one spelling of how long a model may be.
+use talaria_conversation_layout::pins::MAX_AGENT_MODEL as MAX_MODEL;
 
 /// The validated body: the agent, and the mute's end (None unmutes).
 #[derive(Debug, PartialEq, Eq)]

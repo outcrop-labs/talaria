@@ -573,30 +573,35 @@ pub async fn mark_channel_read(
 }
 
 /// MARK UNREAD: put the member's channel cursor back to just before the
-/// newest message on the main feed that counts as unread for them (complete,
-/// someone else's — the listing's own not-self clause), so the channel reads
-/// one unread again. The one deliberate step back from `mark_channel_read`,
-/// on the member's own row. `None` when the caller has no row of their own
-/// (a room whose roster is a board's or a team's holds no cursor to move);
-/// `Some(false)` when nothing on the feed could count, which writes nothing.
-/// A thread reply past the new cursor that the reader's thread cursor does
-/// not cover counts again too, exactly as it did before they read the feed.
+/// newest message that counts as unread for them, by the listing's own
+/// predicate without its cursor clause — complete, someone else's, and not a
+/// thread reply their thread cursor already covers, main feed and replies
+/// alike — so the badge reads exactly 1 again. The one deliberate step back
+/// from `mark_channel_read`, on the member's own row, and a step BACK only:
+/// `least()` keeps a cursor that is already behind where it is, so a click
+/// made against a stale badge never marks newer messages read. `None` when
+/// the caller has no row of
+/// their own (a room whose roster is a board's or a team's holds no cursor
+/// to move); `Some(false)` when nothing could count, which writes nothing.
 pub async fn mark_channel_unread(
     pg: &PgPool,
     channel_id: &str,
     user_id: &str,
 ) -> Result<Option<bool>, sqlx::Error> {
-    let row: Option<(Option<i32>,)> = sqlx::query_as(
+    // `$1` is the reader: thread_read_covers_sql! names them that way.
+    let row: Option<(Option<i32>,)> = sqlx::query_as(concat!(
         "select (select max(msg.seq) from channel_messages msg \
                   where msg.channel_id = m.channel_id and msg.status = 'complete' \
-                    and msg.thread_root_id is null \
                     and not (msg.author_type = 'user' \
-                      and msg.author = coalesce(self.email, self.name, 'user'))) \
+                      and msg.author = coalesce(self.email, self.name, 'user')) \
+                    and not ",
+        thread_read_covers_sql!(),
+        ") \
          from channel_members m join users self on self.id = m.user_id \
-         where m.channel_id = $1::uuid and m.user_id = $2::uuid",
-    )
-    .bind(channel_id)
+         where m.channel_id = $2::uuid and m.user_id = $1::uuid"
+    ))
     .bind(user_id)
+    .bind(channel_id)
     .fetch_optional(pg)
     .await?;
     let Some((newest,)) = row else {
@@ -606,7 +611,7 @@ pub async fn mark_channel_unread(
         return Ok(Some(false));
     };
     sqlx::query(
-        "update channel_members set last_read_seq = $3 \
+        "update channel_members set last_read_seq = least(last_read_seq, $3) \
          where channel_id = $1::uuid and user_id = $2::uuid",
     )
     .bind(channel_id)

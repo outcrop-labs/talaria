@@ -51,8 +51,6 @@ export type ConversationRow =
       kind: 'channel'
       id: string
       channelKind: ChannelRowKind
-      /** A DM with more than one other member or with agents seated. */
-      groupDm: boolean
       /** The caller's channel role is owner. */
       owner: boolean
       unread: number
@@ -153,10 +151,13 @@ export function conversationMenu(row: ConversationRow, ctx: RowMenuContext, a: C
   // A channel's or a relay's name and life are its owner's; a DM has neither
   // a name to change nor a life to end from here.
   const mayManage = row.kind === 'thread' ? row.owner : row.owner && !isDm
+  // A room the person is in through its board or a team has no read marker
+  // of their own to move back (the server answers 409), so it offers none.
+  const ownMarker = row.kind === 'thread' || row.notify?.settable !== false
   const read: ContextMenuItem[] =
     row.unread > 0
       ? [{ label: 'Mark read', onSelect: a.markRead }]
-      : row.active
+      : row.active || !ownMarker
         ? []
         : [{ label: 'Mark unread', onSelect: a.markUnread }]
   const notify: ContextMenuEntry[] = []

@@ -83,10 +83,21 @@ pub enum PinAdd {
 }
 
 /// Pin `key` (already through `parse_pin_key`) for the person.
+///
+/// THE CAP HOLDS UNDER CONCURRENT WRITES: the count and the insert run in one
+/// transaction behind a lock on the person's own `users` row, so two pins
+/// sent at once cannot both read 199 and land 201. A pin whose channel,
+/// thread or agent has since gone still counts toward the cap until it is
+/// unpinned — the rail draws nothing for it, so a person can meet the cap
+/// with fewer rows on screen; the refusal names the cap for that reason.
 pub async fn add_pin(pg: &PgPool, user_id: &str, key: &str) -> Result<PinAdd, sqlx::Error> {
-    // One statement, so the cap and the insert read the same rows: the insert
-    // happens only while the person holds fewer than the cap, and a key they
-    // already hold conflicts into a no-op that keeps its original place.
+    let mut tx = pg.begin().await?;
+    sqlx::query("select 1 from users where id = $1::uuid for update")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    // A key already held conflicts into a no-op that keeps its place; a new
+    // one lands only while the person holds fewer than the cap.
     let inserted = sqlx::query(
         "insert into comms_pins (user_id, pin_key) \
          select $1::uuid, $2 \
@@ -96,20 +107,23 @@ pub async fn add_pin(pg: &PgPool, user_id: &str, key: &str) -> Result<PinAdd, sq
     .bind(user_id)
     .bind(key)
     .bind(MAX_PINS)
-    .execute(pg)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
-    if inserted > 0 {
-        return Ok(PinAdd::Pinned);
-    }
-    let held: bool = sqlx::query_scalar(
-        "select exists (select 1 from comms_pins where user_id = $1::uuid and pin_key = $2)",
-    )
-    .bind(user_id)
-    .bind(key)
-    .fetch_one(pg)
-    .await?;
-    Ok(if held { PinAdd::Pinned } else { PinAdd::Full })
+    let outcome = if inserted > 0 {
+        PinAdd::Pinned
+    } else {
+        let held: bool = sqlx::query_scalar(
+            "select exists (select 1 from comms_pins where user_id = $1::uuid and pin_key = $2)",
+        )
+        .bind(user_id)
+        .bind(key)
+        .fetch_one(&mut *tx)
+        .await?;
+        if held { PinAdd::Pinned } else { PinAdd::Full }
+    };
+    tx.commit().await?;
+    Ok(outcome)
 }
 
 /// Unpin `key`. Unpinning what was never pinned is the same answer.

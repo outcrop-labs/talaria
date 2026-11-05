@@ -198,9 +198,9 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me.rs`](../../api/c
 Source: [`api/crates/talaria-routes-comms/src/comms/me_agent_mutes.rs`](../../api/crates/talaria-routes-comms/src/comms/me_agent_mutes.rs)
 
 > /api/me/agent-mutes. The caller's timed mutes of an agent's direct
-> messages — its replies in their threads and its own check-ins
+> messages — its replies in their chat threads with it and its own check-ins;
+> its replies in a plan, research, work session or ticket still ring
 > (talaria_notify::agent_mutes). GET → { mutes: [{ agentModel, mutedUntil }] },
-> only the mutes that still hold. PUT { agentModel, mutedUntil: ISO|null } →
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
