@@ -284,6 +284,8 @@ pub async fn post(
         "p": clamp_field(parsed.get("args")),
         "r": clamp_field(parsed.get("result")),
         "turn": parsed.get("turnId").and_then(|v| v.as_str()).unwrap_or(""),
+        // Arrival time: the work pulse reads step durations off it.
+        "at": talaria_work_pulse::now_ms(),
     });
     // Scrub at the boundary — the same shapes the transcript capture kills.
     let frame = scrub(&frame.to_string());
@@ -296,11 +298,9 @@ pub async fn post(
                 .arg(format!("{frame}\n"))
                 .query_async::<()>(&mut conn)
                 .await;
-            let _ = redis::cmd("EXPIRE")
-                .arg(&key)
-                .arg(7_200)
-                .query_async::<()>(&mut conn)
-                .await;
+            // The tail and the turn's start marker live as long as frames
+            // keep landing (talaria-work-pulse).
+            let _ = talaria_work_pulse::touch(&mut conn, &run_id).await;
             let _ = redis::cmd("PUBLISH")
                 .arg(&chan)
                 .arg(&frame)

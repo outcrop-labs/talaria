@@ -19,8 +19,8 @@ ticket.
    key). The answer's `provision` says how that went.
    - `provision.state: ready` — the `harnesses[0]` lines are there. Run them.
    - `running` — poll `job_status` until it is `ready`. Do nothing else to the job meanwhile.
-   - `failed` — the step and its output are in the answer and on the ticket,
-     already retried once. It is the platform's to fix, not yours. If it looks
+   - `failed` — the step and its output are in the answer and on the ticket
+     (a step that failed quickly was already retried once). It is the platform's to fix, not yours. If it looks
      transient (a timeout, a network or git-host error), provision again once:
      `prepare_env`, or `job_status` with `retry: true`. If it fails again:
      `report_problem` with the step and output, comment on the ticket, and
@@ -33,9 +33,9 @@ ticket.
 3. First turn: `jsonRun` (else `run`). One scoped ask. Fill `<task>`. It runs
    from any directory: the launcher stands in the workdir and loads the
    project env.
-4. Run every harness turn in the **background** (your terminal's background
-   mode) and wait on the process. A foreground call is cut off at the
-   terminal's timeout, which kills omp mid-edit.
+4. Run every harness turn in the **background** and wait on the process
+   (see "Long steps" below): a foreground call is cut off at the terminal's
+   timeout, which kills omp mid-edit.
 5. Later turns: `continueJsonRun` / `continueRun` (`-c`, same `--session-dir`).
    Read the JSON events (one per line). Steer. Never `--no-session`, never the
    TUI. `--auto-approve` is already on the line so tool calls do not hang.
@@ -46,6 +46,19 @@ ticket.
 
 `doctor` is for when something about the workbench looks wrong outside a job;
 a job does not need it first.
+
+## Long steps
+
+An omp turn, a build or a test suite can run for many minutes, and a
+foreground `terminal` call has a ceiling (about seven minutes). A step the
+ceiling kills starts again from cold. Start anything that may run past five
+minutes with `terminal` and `background: true`, then `process_manage`
+`wait` on its `session_id` with a `timeout` of 300 or less, and `poll` or
+`log` it between waits until it exits. Never `nohup`, `&`, `setsid`, or a
+sleep loop in `execute_code`: the terminal refuses the wrappers, and a loop
+hides the step from the ticket's live view. Other tickets may be live on
+this workbench at the same time. Wait on your own process, never kill one
+you did not start, and give each job its own `--session-dir`.
 
 ## Models
 

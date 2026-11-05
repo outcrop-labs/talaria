@@ -17,9 +17,17 @@
     plan: string
     status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
     prUrl: string | null
-    /** Talaria's provisioning of the job before the agent's first harness
-     *  turn: clone, toolchain, harness, preflight. null = never provisioned. */
-    provision: { state: 'running' | 'ready' | 'failed'; step: string | null; error: string | null; output: string | null } | null
+    /** The job's provisioning (clone, toolchains, Oh My Pi) as
+     *  `GET /api/workbench/jobs` returns it once the workbench provisions jobs
+     *  itself (`workbench_jobs.provision`, #706). Absent before that, and on
+     *  jobs started before it. */
+    provision?: {
+      state: 'running' | 'ready' | 'failed'
+      step: string | null
+      steps?: { step: string; ok: boolean; ms: number; note: string }[]
+      error: string | null
+      output: string | null
+    } | null
   }
 
   /** Workbench jobs on this ticket — the plan-approval gate and PR links live
@@ -111,19 +119,16 @@
             {/if}
           </span>
         </div>
+        {#if j.provision && j.provision.state !== 'ready'}
+          {@const p = j.provision}
+          <p
+            class={cn('mt-1 truncate font-mono text-[11px]', p.state === 'failed' ? 'text-danger' : 'text-muted')}
+            title={p.output ?? p.error ?? undefined}
+          >
+            {#if p.state === 'failed'}provisioning failed{#if p.step} at {p.step}{/if}{#if p.error} · {p.error}{/if}{:else}provisioning{#if p.step} · {p.step}{/if}{/if}
+          </p>
+        {/if}
         {#if j.status === 'awaiting_approval' && j.plan}<p class="mt-1.5 line-clamp-4 whitespace-pre-wrap font-sans text-xs text-muted">{j.plan}</p>{/if}
-        {#if j.status === 'started' && j.provision?.state === 'running'}
-          <p class="mt-1 font-sans text-xs text-muted">{`Setting up the workbench: ${j.provision.step ?? 'starting'}…`}</p>
-        {/if}
-        {#if j.status === 'started' && j.provision?.state === 'failed'}
-          <p class="mt-1 font-sans text-xs text-danger">{`Workbench setup failed at ${j.provision.step ?? '?'}: ${j.provision.error ?? 'no reason given'}`}</p>
-          {#if j.provision.output}
-            <details class="mt-1">
-              <summary class="cursor-pointer font-sans text-xs text-muted">Output</summary>
-              <pre class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-muted">{j.provision.output}</pre>
-            </details>
-          {/if}
-        {/if}
       </div>
     {/each}
   </div>

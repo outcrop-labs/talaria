@@ -90,6 +90,7 @@ mod unreads;
 mod update_live;
 mod uploads_live;
 mod users_link;
+mod work_wait_behind_live;
 mod workbench_provision_live;
 mod workbench_queue;
 mod workchains_live;
