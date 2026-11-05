@@ -198,7 +198,7 @@ composition root that wires the cross-crate seams.
    `-types` crate (`talaria-tasks-types`, `talaria-inbox-focus-types`) so two
    engines can share them without either depending on the other.
 4. **A run kind lives next to its driver** — `talaria-research-def`,
-   `talaria-runs-plan-draft`, `talaria-runs-work-session`… registered in
+   `talaria-runs-plan-draft`, `talaria-runs-work-session`, `talaria-agent-design`… registered in
    `talaria-jobs`' arming census so a kind that falls out fails boot.
 
 ### The crate families

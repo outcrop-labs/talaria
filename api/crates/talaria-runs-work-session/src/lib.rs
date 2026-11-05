@@ -623,19 +623,22 @@ async fn real_turn(
     // run-watch:<id> and appended to its tail, which the watch route replays
     // and relays — the terminal-in-the-browser. The tail resets per turn
     // (each turn is its own transcript) and expires with the session.
+    // The turn's age starts here too (`talaria_work_pulse::turn_key`): the
+    // work pulse reports how long this turn has run, which the run row's
+    // phase line cannot.
     let watch = format!("run-watch:{run_id}");
     {
         let state = state.clone();
-        let key = format!("{watch}:tail");
+        let run_id = run_id.clone();
         let _ = tokio::spawn(async move {
             if let Ok(mut conn) = state.redis().await {
-                let _ = redis::cmd("SET")
-                    .arg(&key)
-                    .arg("")
-                    .arg("EX")
-                    .arg(7_200)
-                    .query_async::<()>(&mut conn)
-                    .await;
+                let _ = talaria_work_pulse::begin_turn(
+                    &mut conn,
+                    &run_id,
+                    turn,
+                    talaria_work_pulse::now_ms(),
+                )
+                .await;
             }
         })
         .await;

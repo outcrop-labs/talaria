@@ -489,6 +489,12 @@ pub fn router(state: AppState) -> Router {
             "/api/channels/{id}/notify",
             put(talaria_routes_comms::comms::channels_id_notify::put).fallback(|| async { method_not_allowed("PUT") }),
         )
+        // Mark unread: the caller's channel cursor steps back one countable
+        // message — the read route's twin, on their own row.
+        .route(
+            "/api/channels/{id}/unread",
+            post(talaria_routes_comms::comms::channels_id_unread::post).fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/channels/{id}/plan",
             get(talaria_routes_comms::comms::channels_id_plan::get)
@@ -543,6 +549,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/conversations/{id}/read",
             post(talaria_routes_comms::comms::conversations_id_read::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations/{id}/unread",
+            post(talaria_routes_comms::comms::conversations_id_unread::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         // Run control on the reply that is streaming NOW: stop it, or say
@@ -956,6 +967,21 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/me/threads",
             get(talaria_routes_comms::comms::me_threads::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        // The caller's Comms rail pins and their agent-DM mutes: per person,
+        // their own filing, no access check on what a key names.
+        .route(
+            "/api/me/pins",
+            get(talaria_routes_comms::comms::me_pins::get)
+                .post(talaria_routes_comms::comms::me_pins::post)
+                .delete(talaria_routes_comms::comms::me_pins::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/me/agent-mutes",
+            get(talaria_routes_comms::comms::me_agent_mutes::get)
+                .put(talaria_routes_comms::comms::me_agent_mutes::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/me/sent",
@@ -1421,6 +1447,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/fleet/create",
             post(talaria_routes_fleet::fleet::fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/fleet/agent-design",
+            get(talaria_routes_fleet::agents::agent_design::get)
+                .post(talaria_routes_fleet::agents::agent_design::post)
+                .patch(talaria_routes_fleet::agents::agent_design::patch)
+                .delete(talaria_routes_fleet::agents::agent_design::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
         )
         .route(
             "/api/fleet/hires",

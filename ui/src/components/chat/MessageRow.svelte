@@ -8,18 +8,20 @@
   import MessageAttachments from '@/components/chat/MessageAttachments.svelte'
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import ChatChips from './ChatChips.svelte'
+  import ContinuationGutter from './ContinuationGutter.svelte'
+  import MessageTime from './MessageTime.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { fade, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import { deleteChannelMessage, editChannelMessage, toggleMessageReaction, type ChannelMessage } from '@/lib/channels.svelte'
   import { actorLabel, threadAvatars, type MessageCtx } from './channel-view'
-  import { turnTime } from './chat-view'
 
   let {
     message: m,
     ctx,
     inThread = false,
+    continued = false,
     onOpenThread,
     onContextMenu,
     onInvoke,
@@ -29,6 +31,9 @@
     ctx: MessageCtx
     /** Rendered inside the thread panel: no thread affordances of its own. */
     inThread?: boolean
+    /** A continuation line of its sender's block (lib/message-groups): no
+     *  avatar, name or header time — its own time sits in the gutter. */
+    continued?: boolean
     onOpenThread?: () => void
     onContextMenu?: (e: MouseEvent) => void
     onInvoke?: (text: string) => void
@@ -36,8 +41,6 @@
   } = $props()
 
   const name = $derived(m.authorType === 'agent' ? ctx.labelFor(m.author) : ctx.userLabel(m.author))
-  // The viewer's zone, the same one the day dividers use.
-  const time = $derived(turnTime(m.createdAt, ctx.timeZone))
   const live = $derived(m.status === 'streaming')
   const own = $derived(m.authorType === 'user' && m.author === ctx.me)
   const picture = $derived(ctx.pictureFor(m.author, m.authorType))
@@ -82,15 +85,20 @@
 <!-- Flattened message row (spec §10): avatar square + name + 10px mono
     timestamp, 14px sans body — no bubble. The row highlights on hover (the
     rail row's hover token) and on keyboard focus within, which is also what
-    reveals the action bar (MessageActions' group/message contract). -->
+    reveals the action bar (MessageActions' group/message contract). A
+    `continued` row is a later line of its sender's block: the gutter holds
+    its time instead of the avatar, and the list cancels its gap. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   in:fade={{ duration: 150 }}
   out:fade={QUICK}
+  data-continued={continued || undefined}
   class="group/message relative -mx-2 flex gap-2.5 rounded-md px-2 py-1 transition-colors hover:bg-card2 focus-within:bg-card2"
   oncontextmenu={onContextMenu}
 >
-  {#if ctx.onOpenProfile}
+  {#if continued}
+    <ContinuationGutter {name} at={m.createdAt} timeZone={ctx.timeZone} />
+  {:else if ctx.onOpenProfile}
     <!-- The avatar and the name open the author's profile (Comms' drawer). -->
     <button type="button" class="mt-0.5 shrink-0 self-start rounded" title={`View ${name}'s profile`} onclick={openProfile}>
       <MessageAvatar {name} src={picture} />
@@ -99,22 +107,25 @@
     <MessageAvatar {name} src={picture} class="mt-0.5" />
   {/if}
   <div class="min-w-0 flex-1">
-    <div class="flex items-baseline gap-2">
-      {#if ctx.onOpenProfile}
-        <button type="button" class="font-sans text-[13px] font-medium text-fg hover:underline" onclick={openProfile}>
-          {name}
-        </button>
-      {:else}
-        <span class="font-sans text-[13px] font-medium text-fg">{name}</span>
-      {/if}
-      {#if m.authorType === 'agent'}
-        <span class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
-          agent
-        </span>
-      {/if}
-      <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{time}</span>
-      {#if m.editedAt}<span class="font-mono text-[10px] text-ink-dim">(edited)</span>{/if}
-    </div>
+    {#if !continued}
+      <div class="flex items-baseline gap-2">
+        {#if ctx.onOpenProfile}
+          <button type="button" class="font-sans text-[13px] font-medium text-fg hover:underline" onclick={openProfile}>
+            {name}
+          </button>
+        {:else}
+          <span class="font-sans text-[13px] font-medium text-fg">{name}</span>
+        {/if}
+        {#if m.authorType === 'agent'}
+          <span class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
+            agent
+          </span>
+        {/if}
+        <!-- The viewer's zone, the same one the day dividers use. -->
+        <MessageTime at={m.createdAt} timeZone={ctx.timeZone} />
+        {#if m.editedAt}<span class="font-mono text-[10px] text-ink-dim">(edited)</span>{/if}
+      </div>
+    {/if}
     <div class="font-sans text-sm">
       {#if editing}
         <div class="mt-1">
@@ -151,6 +162,8 @@
           local transition would be suppressed by the ancestor block toggling. -->
       <GuardCaveat findings={live ? null : m.guard} />
       {#if m.content && live}<span class="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle"></span>{/if}
+      <!-- A continuation line has no header to carry the mark: it trails the body. -->
+      {#if continued && m.editedAt && !editing}<div class="font-mono text-[10px] text-ink-dim">(edited)</div>{/if}
       {#if m.status === 'error'}
         <div class="text-xs" style:color="var(--theme-danger)">
           · interrupted

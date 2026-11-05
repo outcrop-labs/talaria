@@ -58,6 +58,7 @@ talaria-runs-agent-hire = { workspace = true }
 talaria-runs-decide = { workspace = true }
 talaria-runs-define = { workspace = true }
 talaria-runs-plan-draft = { workspace = true }
+talaria-agent-design = { workspace = true }
 talaria-runs-reclaim = { workspace = true }
 talaria-runs-reindex = { workspace = true }
 talaria-runs-run = { workspace = true }

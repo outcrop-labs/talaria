@@ -57,7 +57,7 @@ pub async fn get(
     // younger than a recent finish), then the finished tail newest-first.
     // `subject_id` is TEXT: untyped bind, same as the live read.
     let rows = match sqlx::query(
-        "select id::text, state::text, phase, input, checkpoint, \
+        "select id::text, state::text, phase, input, checkpoint, error, \
                 coalesce(to_char(finished_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') as finished \
          from runs \
          where kind = 'work-session' and subject_id = $1 \
@@ -84,6 +84,11 @@ pub async fn get(
                 "agentModel": input.get("agentModel").and_then(|v| v.as_str()),
                 "turn": checkpoint.get("turn").and_then(|v| v.as_i64()),
                 "finishedAt": if finished.is_empty() { None } else { Some(finished) },
+                // Why a session ended badly, on the log row itself — a red
+                // FAILED chip that makes the reader open the transcript to
+                // learn "the agent's tools failed on every call" hides the
+                // one line they came for.
+                "error": row.get::<Option<String>, _>("error"),
             })
         })
         .collect();

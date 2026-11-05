@@ -12,6 +12,7 @@ workspace = true
 talaria-agent-managers = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-crons = { workspace = true }
+talaria-agent-design = { workspace = true }
 talaria-agent-defs = { workspace = true }
 talaria-agent-mcp = { workspace = true }
 talaria-agent-role-templates = { workspace = true }
@@ -24,6 +25,7 @@ talaria-auth = { workspace = true }
 talaria-auth-config = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-body = { workspace = true }
+talaria-work-pulse = { workspace = true }
 talaria-brain-health = { workspace = true }
 talaria-channels = { workspace = true }
 talaria-chips = { workspace = true }

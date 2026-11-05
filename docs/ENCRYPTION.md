@@ -17,7 +17,8 @@ app's gateway key (`app_llm_keys`, the `tlk_` key the app host makes the app's m
 with). A repo's project env (`repo_env`,
 the values a workbench job's build reads) is sealed the same way and is
 unsealed into one place only, `<workdir>/.talaria/env` inside the job that is
-working that repo, written by `prepare_env` once the checkout exists and removed
+working that repo, written by the job's provisioning once the checkout exists (and again
+by `prepare_env`, which provisions it again), never for a job that has ended, and removed
 when the job ends — never
 a file under `fleet/`.
 

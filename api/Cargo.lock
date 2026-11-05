@@ -3603,6 +3603,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-design"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-config",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-model",
+ "talaria-notify",
+ "talaria-org",
+ "talaria-realtime",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-state",
+ "talaria-tasks-types",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-agent-managers"
 version = "0.1.0"
 dependencies = [
@@ -4005,6 +4031,7 @@ dependencies = [
  "talaria-users",
  "talaria-web-search",
  "talaria-work-dispatch",
+ "talaria-work-pulse",
  "talaria-work-wait",
  "talaria-workbench",
  "talaria-workbench-harnesses",
@@ -5576,6 +5603,7 @@ dependencies = [
  "talaria-me",
  "talaria-persona",
  "talaria-state",
+ "talaria-work-pulse",
  "tokio",
  "tracing",
  "uuid",
@@ -5854,6 +5882,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-design",
  "talaria-agent-skills",
  "talaria-alerts",
  "talaria-app-triggers",
@@ -6931,6 +6960,7 @@ dependencies = [
  "talaria-templates",
  "talaria-uploads",
  "talaria-users",
+ "talaria-work-pulse",
  "talaria-work-wait",
  "talaria-workchains",
  "talaria-workflows",
@@ -7024,6 +7054,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-design",
  "talaria-agent-managers",
  "talaria-agent-mcp",
  "talaria-agent-role-templates",
@@ -7074,6 +7105,7 @@ dependencies = [
  "talaria-uploads",
  "talaria-users",
  "talaria-work-dispatch",
+ "talaria-work-pulse",
  "talaria-workspace-secrets",
  "tokio",
  "tracing",
@@ -7397,6 +7429,7 @@ dependencies = [
  "talaria-state",
  "talaria-statuses",
  "talaria-tasks",
+ "talaria-work-pulse",
  "talaria-workbench-harnesses",
  "talaria-workflows",
  "tokio",
@@ -7981,11 +8014,20 @@ name = "talaria-work-mode"
 version = "0.1.0"
 
 [[package]]
+name = "talaria-work-pulse"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "serde_json",
+]
+
+[[package]]
 name = "talaria-work-wait"
 version = "0.1.0"
 dependencies = [
  "serde_json",
  "sqlx",
+ "talaria-boards",
  "uuid",
 ]
 
@@ -8028,6 +8070,7 @@ dependencies = [
  "talaria-boards",
  "talaria-body",
  "talaria-coding-accounts",
+ "talaria-error",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
@@ -8043,6 +8086,7 @@ dependencies = [
  "talaria-secretbox",
  "talaria-statuses",
  "talaria-tasks",
+ "talaria-work-pulse",
  "talaria-work-wait",
  "talaria-workbench",
  "talaria-workbench-harnesses",
