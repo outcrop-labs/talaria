@@ -4,7 +4,7 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { Square } from '@lucide/svelte'
   import { useStopWorkSession, useWorkSession } from '@/lib/work-session.svelte'
-  import { agentName } from '@/lib/work-pulse'
+  import { agentName, behindLine } from '@/lib/work-pulse'
   import RunDetailModal from './RunDetailModal.svelte'
   import WorkPulse from './WorkPulse.svelte'
 
@@ -75,7 +75,7 @@
           {agentLabel} is queued
           {#if wait.phase}<span class="text-muted"> · {wait.phase}</span>{/if}
           <span class="block truncate text-xs text-muted">
-            {wait.reason}{#if wait.behind?.length} · behind {wait.behind.join(', ')}{/if}
+            {wait.reason}{#if behindLine(wait.behind, wait.behindHidden)} · {behindLine(wait.behind, wait.behindHidden)}{/if}
           </span>
         {/if}
       </span>

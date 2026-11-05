@@ -1520,6 +1520,9 @@ async fn persona_turn(
                         .arg(&line)
                         .query_async::<()>(&mut conn)
                         .await;
+                    if let Some(run_id) = channel.strip_prefix("run-watch:") {
+                        let _ = talaria_work_pulse::touch(&mut conn, run_id).await;
+                    }
                 }
             });
         }) as std::sync::Arc<dyn Fn(&str) + Send + Sync>

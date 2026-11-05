@@ -10,7 +10,9 @@
 import { formatTokens, formatUsd } from '@/lib/format'
 import type { ChipTone } from '@/components/ui/chip'
 
-export type PulseState = 'running' | 'thinking' | 'quiet' | 'sending'
+/** `queued`/`awaiting` come from the run row itself (no turn in flight, or
+ *  parked on a person); `unknown` is a pulse the server could not read. */
+export type PulseState = 'running' | 'thinking' | 'quiet' | 'sending' | 'queued' | 'awaiting' | 'unknown'
 
 export interface PulseStep {
   tool: string
@@ -109,14 +111,41 @@ export function stateChip(
         tone: 'warn',
         title: `The turn was sent and ${agent} has not taken it yet: still starting, at its concurrent-run cap, or unreachable`,
       }
+    case 'queued':
+      return {
+        label: 'queued',
+        tone: 'neutral',
+        title: 'No turn is in flight: the session is waiting to be driven (just dispatched, or picked up again after a restart)',
+      }
+    case 'awaiting':
+      return { label: 'waiting for you', tone: 'warn', title: 'The session is parked until a person answers' }
+    case 'unknown':
+      return { label: 'status unknown', tone: 'neutral', title: 'The live status could not be read just now' }
   }
+}
+
+/** What a queued ticket waits behind, in words: the tickets the reader may
+ *  see by name, the rest as a count (the server never names those). */
+export function behindLine(visible: string[] | undefined, hidden: number | undefined): string {
+  const names = visible ?? []
+  const more = hidden ?? 0
+  if (!names.length && !more) return ''
+  if (!names.length) return `behind ${more} other ticket${more === 1 ? '' : 's'}`
+  const list = names.join(', ')
+  return more ? `behind ${list} and ${more} other ticket${more === 1 ? '' : 's'}` : `behind ${list}`
 }
 
 /** Tokens and cost on one line, or why there is nothing to show. */
 export function spendLine(spend: WorkSpend | null | undefined): { text: string; title: string; muted: boolean } {
   if (!spend) return { text: '', title: '', muted: true }
   if (spend.calls > 0) {
-    const cost = spend.cost == null || spend.unpriced === spend.calls ? 'unpriced' : formatUsd(spend.cost)
+    // A sum that skipped unpriced calls is not the cost: say what it leaves out.
+    const cost =
+      spend.cost == null || spend.unpriced >= spend.calls
+        ? 'unpriced'
+        : spend.unpriced > 0
+          ? `${formatUsd(spend.cost)} + ${spend.unpriced} unpriced`
+          : formatUsd(spend.cost)
     return {
       text: `${formatTokens(spend.tokens)} tok · ${cost}`,
       title: `${spend.calls} model call${spend.calls === 1 ? '' : 's'} on this ticket since the session started${spend.unpriced ? ` (${spend.unpriced} unpriced)` : ''}`,
@@ -126,14 +155,14 @@ export function spendLine(spend: WorkSpend | null | undefined): { text: string; 
   if (spend.missing?.reason === 'untagged') {
     return {
       text: 'not metered to this ticket',
-      title: `This agent made ${spend.missing.calls} model call${spend.missing.calls === 1 ? '' : 's'} since the session started, booked to the agent but not to a ticket: its Hermes does not tag calls with the session it is working (Hermes v0.22 and later do).`,
+      title: `${spend.missing.calls} of this agent's model calls since the session started carry no session tag, so they are booked to the agent but not to a ticket. Hermes before v0.22 does not send the tag.`,
       muted: true,
     }
   }
   if (spend.missing?.reason === 'shared-key') {
     return {
       text: 'not metered to this ticket',
-      title: `${spend.missing.calls} model call${spend.missing.calls === 1 ? '' : 's'} since the session started went through the fleet's shared key, which names no agent. Roll the agent from Agents so it runs on its own key.`,
+      title: `None of this agent's model calls since the session started are booked under its name, while ${spend.missing.calls} came in on the fleet's shared key, which names no agent: its container most likely predates its own key. Roll the agent from Agents.`,
       muted: true,
     }
   }

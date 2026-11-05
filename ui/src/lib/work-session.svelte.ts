@@ -31,8 +31,10 @@ export interface WorkWait {
   position: number
   phase: string
   queuedAt: number
-  /** The tickets the agent is working now — what this one waits behind. */
+  /** The tickets the agent is working now — what this one waits behind —
+   *  on boards the reader can see; `behindHidden` counts the rest. */
   behind?: string[]
+  behindHidden?: number
 }
 
 export function useWorkSession(taskId: () => string | null) {

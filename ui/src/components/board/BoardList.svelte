@@ -37,6 +37,7 @@
   import { EFFORT_LABEL, OFF_BOARD_STATUSES, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, pgNum, pgNumOr, taskTimeSpent, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
   import { relativeTime } from '@/lib/fleet'
   import WorkPulse from './WorkPulse.svelte'
+  import { behindLine } from '@/lib/work-pulse'
   import {
     ALL_KEYS,
     DEFAULT_COLUMNS,
@@ -588,7 +589,7 @@
                             {:else if queued(t.id)}
                               <span class="truncate text-xs text-fg">
                                 {(queued(t.id)!.agentModel ?? 'agent').split('-')[0]} is queued
-                                <span class="text-muted"> · {queued(t.id)!.phase}{#if queued(t.id)!.behind?.length} · behind {queued(t.id)!.behind!.join(', ')}{/if}</span>
+                                <span class="text-muted"> · {queued(t.id)!.phase}{#if behindLine(queued(t.id)!.behind, queued(t.id)!.behindHidden)} · {behindLine(queued(t.id)!.behind, queued(t.id)!.behindHidden)}{/if}</span>
                               </span>
                             {/if}
                           </div>

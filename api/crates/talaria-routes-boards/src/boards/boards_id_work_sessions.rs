@@ -1,8 +1,13 @@
 // GET /api/boards/{id}/work-sessions. The board's LIVE WORK SESSIONS as a
 // taskId → session map — the list view's question ("which cards are being
 // worked right now?") answered in one read instead of one per card. Gated by
-// board visibility exactly like the board read itself; the map carries only
-// what a card renders (agent, turn, phase), never reply content.
+// board visibility exactly like the board read itself. Each session carries
+// what a card renders: agent, turn, phase, and the work status — the
+// running step's command, the last output tail, the agent's last sentence,
+// tokens and cost (work_status.rs). That is the watch tail's content, which
+// `/api/runs/{id}/watch` already replays to the same audience (task subject →
+// board role), so it reaches no one new. A queued card's `behind` names only
+// tickets on boards the reader can see; the rest are a count.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -71,6 +76,7 @@ pub async fn get(
             run_id: run_id.clone(),
             task_id: subject_id.clone(),
             agent_model: agent_model.clone(),
+            run_state: run_state.clone(),
             since_ms,
             agent_run: row
                 .get::<Option<String>, _>("agent_run_id")
@@ -100,15 +106,16 @@ pub async fn get(
         }
     }
     let mut waits = serde_json::Map::new();
-    let mut behind: std::collections::HashMap<String, serde_json::Value> = Default::default();
+    let mut behind: std::collections::HashMap<String, talaria_work_wait::Behind> =
+        Default::default();
     for (task_id, wait) in talaria_work_wait::for_board(&state.pg, &board_id).await {
         if !map.contains_key(&task_id) {
             let mut wire = talaria_work_wait::wire(&wait);
             if !behind.contains_key(&wait.agent_model) {
-                let refs = talaria_work_wait::working_on(&state.pg, &wait.agent_model).await;
-                behind.insert(wait.agent_model.clone(), json!(refs));
+                let b = talaria_work_wait::behind(&state.pg, &user.id, &wait.agent_model).await;
+                behind.insert(wait.agent_model.clone(), b);
             }
-            wire["behind"] = behind[&wait.agent_model].clone();
+            talaria_work_wait::wire_behind(&mut wire, &behind[&wait.agent_model]);
             waits.insert(task_id, wire);
         }
     }

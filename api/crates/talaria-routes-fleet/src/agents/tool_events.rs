@@ -298,11 +298,9 @@ pub async fn post(
                 .arg(format!("{frame}\n"))
                 .query_async::<()>(&mut conn)
                 .await;
-            let _ = redis::cmd("EXPIRE")
-                .arg(&key)
-                .arg(7_200)
-                .query_async::<()>(&mut conn)
-                .await;
+            // The tail and the turn's start marker live as long as frames
+            // keep landing (talaria-work-pulse).
+            let _ = talaria_work_pulse::touch(&mut conn, &run_id).await;
             let _ = redis::cmd("PUBLISH")
                 .arg(&chan)
                 .arg(&frame)

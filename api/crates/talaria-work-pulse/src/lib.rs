@@ -20,8 +20,9 @@
 
 use serde_json::{Value, json};
 
-/// How long a tail and its turn marker outlive their last write — the
-/// tail's own expiry, so the two die together.
+/// How long a tail and its turn marker outlive their last write. Every
+/// writer refreshes both ([`touch`]), so they die together, two hours after
+/// the turn's last frame.
 pub const TAIL_TTL_S: i64 = 7_200;
 
 /// How much of the tail a read parses: its newest end. A turn's tail can run
@@ -52,20 +53,18 @@ pub fn now_ms() -> i64 {
 
 /// Stamp one watch line with its arrival time. Every writer passes its line
 /// through here before APPEND/PUBLISH, so every frame on the tail carries
-/// `at`. A line that is not a one-line JSON object, or already carries an
-/// `at`, is returned as it was: the stamp never corrupts a frame.
+/// `at`. Only a line that parses as one JSON object gets it, and only when
+/// that object has no `at` key of its own — a key test, not a text search,
+/// so a command that merely MENTIONS `"at":` (an `echo '{"at":1}'` in a
+/// preview) is still stamped. Anything else is returned as it was.
 pub fn stamp(line: &str, at_ms: i64) -> String {
-    let trimmed = line.trim_end();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') || trimmed.contains("\"at\":") {
-        return line.to_string();
+    match serde_json::from_str::<Value>(line.trim_end()) {
+        Ok(Value::Object(mut frame)) if !frame.contains_key("at") => {
+            frame.insert("at".into(), json!(at_ms));
+            Value::Object(frame).to_string()
+        }
+        _ => line.to_string(),
     }
-    let body = &trimmed[..trimmed.len() - 1];
-    let sep = if body.trim_end().ends_with('{') {
-        ""
-    } else {
-        ","
-    };
-    format!("{body}{sep}\"at\":{at_ms}}}")
 }
 
 /// One running step: the tool and the argument the agent gave it (a terminal
@@ -219,15 +218,20 @@ pub fn read_tail(tail: &str, partial: bool) -> Pulse {
             "tool" => match status {
                 "running" => {
                     let detail = head_chars(str_of(&f, "p"), 300);
-                    match stack.last_mut() {
-                        // The plugin already opened this call.
-                        Some(top) if top.tool == tool && top.plugin && top.stream_id.is_empty() => {
-                            top.stream_id = id;
-                            if detail.chars().count() > top.detail.chars().count() {
-                                top.detail = detail;
+                    // The plugin already opened this call: the oldest of its
+                    // calls of this tool the stream has not matched yet, so
+                    // parallel calls of one tool pair up in order.
+                    match stack
+                        .iter_mut()
+                        .find(|s| s.tool == tool && s.plugin && s.stream_id.is_empty())
+                    {
+                        Some(open) => {
+                            open.stream_id = id;
+                            if detail.chars().count() > open.detail.chars().count() {
+                                open.detail = detail;
                             }
                         }
-                        _ => stack.push(Step {
+                        None => stack.push(Step {
                             tool,
                             detail,
                             at,
@@ -245,11 +249,10 @@ pub fn read_tail(tail: &str, partial: bool) -> Pulse {
                             s.stream_id == id
                         }
                     });
-                    let started = found.map(|i| {
-                        let s = stack[i].clone();
-                        stack.truncate(i);
-                        s
-                    });
+                    // Only the call that finished leaves the stack: with
+                    // parallel tool calls, another still running stays the
+                    // step.
+                    let started = found.map(|i| stack.remove(i));
                     let detail = started
                         .as_ref()
                         .map(|s| s.detail.clone())
@@ -288,16 +291,16 @@ pub fn read_tail(tail: &str, partial: bool) -> Pulse {
             "toolfull" => {
                 let detail = detail_of(str_of(&f, "p"));
                 match status {
-                    "running" => match stack.last_mut() {
+                    "running" => match stack.iter_mut().find(|s| s.tool == tool && !s.plugin) {
                         // The stream already opened this call: the plugin's
                         // args are the fuller spelling of its argument.
-                        Some(top) if top.tool == tool && !top.plugin => {
-                            top.plugin = true;
-                            if detail.chars().count() > top.detail.chars().count() {
-                                top.detail = detail;
+                        Some(open) => {
+                            open.plugin = true;
+                            if detail.chars().count() > open.detail.chars().count() {
+                                open.detail = detail;
                             }
                         }
-                        _ => stack.push(Step {
+                        None => stack.push(Step {
                             tool,
                             detail,
                             at,
@@ -312,8 +315,7 @@ pub fn read_tail(tail: &str, partial: bool) -> Pulse {
                             .iter()
                             .rposition(|s| s.plugin && s.tool == tool && s.stream_id.is_empty())
                         {
-                            let s = stack[i].clone();
-                            stack.truncate(i);
+                            let s = stack.remove(i);
                             p.steps += 1;
                             p.last = Some(Done {
                                 ms: match (s.at, at) {
@@ -444,8 +446,70 @@ pub async fn begin_turn(
         .await
 }
 
-/// Read the pulse of each run, one round trip. A run with no tail reads as an
-/// empty pulse; a Redis failure is the caller's to treat as "no pulse".
+/// Keep a live turn's tail AND its turn marker alive. Every writer calls
+/// this beside its APPEND: the tail's expiry used to be refreshed by some
+/// writers only, and the marker never, so a turn longer than the TTL lost
+/// its clock while its frames still landed.
+pub async fn touch(
+    conn: &mut redis::aio::ConnectionManager,
+    run_id: &str,
+) -> redis::RedisResult<()> {
+    redis::pipe()
+        .cmd("EXPIRE")
+        .arg(tail_key(run_id))
+        .arg(TAIL_TTL_S)
+        .ignore()
+        .cmd("EXPIRE")
+        .arg(turn_key(run_id))
+        .arg(TAIL_TTL_S)
+        .ignore()
+        .query_async(conn)
+        .await
+}
+
+/// One run's last read: the tail's length and turn marker when it was read,
+/// and what it said.
+struct Cached {
+    len: i64,
+    turn: Option<String>,
+    pulse: Pulse,
+    read_at: std::time::Instant,
+    used_at: std::time::Instant,
+}
+
+static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Cached>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// A pulse read this recently is served again even if frames have landed
+/// since: every viewer of a board polls every 5 s, and an active turn's tail
+/// grows several times a second, so without this each viewer re-reads and
+/// re-parses every live tail on every poll.
+const FRESH: std::time::Duration = std::time::Duration::from_secs(2);
+/// An entry nobody has asked for in this long is dropped.
+const KEEP: std::time::Duration = std::time::Duration::from_secs(600);
+/// Past this many entries the cache starts over (48 live sessions is a busy
+/// instance; this is a bound, not a size anyone tunes).
+const CACHE_CAP: usize = 4_096;
+
+/// Whether a cached read still answers for a tail that is now `len` bytes
+/// under turn marker `turn`: the same turn, and either the same length (an
+/// APPEND-only tail that has not grown says the same thing) or a read young
+/// enough to serve again. A new turn always reads: it resets the tail, and
+/// its marker differs. Pure.
+pub fn reuse(
+    cached_len: i64,
+    cached_turn: Option<&str>,
+    age: std::time::Duration,
+    len: i64,
+    turn: Option<&str>,
+) -> bool {
+    cached_turn == turn && (cached_len == len || age < FRESH)
+}
+
+/// Read the pulse of each run. Two round trips at most: the tails' lengths
+/// and turn markers, then the tails that changed since they were last read
+/// (each bounded to its newest [`READ_BYTES`]). A run with no tail reads as an
+/// empty pulse; a Redis failure is the caller's to show as "unknown".
 pub async fn read_many(
     conn: &mut redis::aio::ConnectionManager,
     run_ids: &[String],
@@ -456,26 +520,76 @@ pub async fn read_many(
     let mut pipe = redis::pipe();
     for id in run_ids {
         pipe.cmd("STRLEN").arg(tail_key(id));
-        pipe.cmd("GETRANGE")
-            .arg(tail_key(id))
-            .arg(-READ_BYTES)
-            .arg(-1);
         pipe.cmd("GET").arg(turn_key(id));
     }
     let raw: Vec<redis::Value> = pipe.query_async(conn).await?;
-    let mut out = Vec::with_capacity(run_ids.len());
+    let mut heads: Vec<(i64, Option<String>)> = Vec::with_capacity(run_ids.len());
     let mut it = raw.into_iter();
-    while let (Some(len), Some(text), Some(turn)) = (it.next(), it.next(), it.next()) {
-        let len: i64 = redis::from_redis_value(len).unwrap_or(0);
-        let text: String = redis::from_redis_value(text).unwrap_or_default();
-        let turn: Option<String> = redis::from_redis_value(turn).unwrap_or(None);
-        let partial = len > READ_BYTES as i64;
-        out.push((
-            read_tail(&text, partial),
-            turn.as_deref().and_then(parse_turn),
+    while let (Some(len), Some(turn)) = (it.next(), it.next()) {
+        heads.push((
+            redis::from_redis_value(len).unwrap_or(0),
+            redis::from_redis_value(turn).unwrap_or(None),
         ));
     }
-    Ok(out)
+    let now = std::time::Instant::now();
+    let mut pulses: Vec<Option<Pulse>> = {
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        run_ids
+            .iter()
+            .zip(&heads)
+            .map(|(id, (len, turn))| {
+                let hit = cache.get_mut(id).filter(|c| {
+                    reuse(
+                        c.len,
+                        c.turn.as_deref(),
+                        now - c.read_at,
+                        *len,
+                        turn.as_deref(),
+                    )
+                })?;
+                hit.used_at = now;
+                Some(hit.pulse.clone())
+            })
+            .collect()
+    };
+    let missing: Vec<usize> = (0..run_ids.len())
+        .filter(|&i| pulses[i].is_none())
+        .collect();
+    if !missing.is_empty() {
+        let mut pipe = redis::pipe();
+        for &i in &missing {
+            pipe.cmd("GETRANGE")
+                .arg(tail_key(&run_ids[i]))
+                .arg(-READ_BYTES)
+                .arg(-1);
+        }
+        let texts: Vec<String> = pipe.query_async(conn).await?;
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() > CACHE_CAP {
+            cache.clear();
+        }
+        cache.retain(|_, c| now.duration_since(c.used_at) < KEEP);
+        for (&i, text) in missing.iter().zip(texts) {
+            let (len, turn) = &heads[i];
+            let pulse = read_tail(&text, *len > READ_BYTES as i64);
+            cache.insert(
+                run_ids[i].clone(),
+                Cached {
+                    len: *len,
+                    turn: turn.clone(),
+                    pulse: pulse.clone(),
+                    read_at: now,
+                    used_at: now,
+                },
+            );
+            pulses[i] = Some(pulse);
+        }
+    }
+    Ok(pulses
+        .into_iter()
+        .zip(heads)
+        .map(|(p, (_, turn))| (p.unwrap_or_default(), turn.as_deref().and_then(parse_turn)))
+        .collect())
 }
 
 #[cfg(test)]
@@ -493,6 +607,56 @@ mod tests {
         assert_eq!(stamp("not json", 7), "not json");
         // A trailing newline is the writer's; the stamp keeps the object whole.
         assert_eq!(stamp("{\"t\":\"r\"}\n", 9), r#"{"t":"r","at":9}"#);
+        // A command that merely mentions `"at":` is still a frame without one.
+        let echo = json!({"t": "tool", "v": "terminal", "p": "echo '{\"at\":1}'"}).to_string();
+        let stamped: Value = serde_json::from_str(&stamp(&echo, 5)).unwrap();
+        assert_eq!(stamped["at"], 5);
+        assert_eq!(stamped["p"], "echo '{\"at\":1}'");
+    }
+
+    #[test]
+    fn a_cached_read_answers_only_for_the_same_turn() {
+        use std::time::Duration;
+        let old = Duration::from_secs(30);
+        // Same turn, nothing appended: the read stands however old it is.
+        assert!(reuse(500, Some("2:9"), old, 500, Some("2:9")));
+        // Frames landed: an old read is read again, a fresh one is served.
+        assert!(!reuse(500, Some("2:9"), old, 900, Some("2:9")));
+        assert!(reuse(
+            500,
+            Some("2:9"),
+            Duration::from_millis(500),
+            900,
+            Some("2:9")
+        ));
+        // A new turn always reads, even at the same length and within FRESH.
+        assert!(!reuse(500, Some("2:9"), Duration::ZERO, 500, Some("3:12")));
+        assert!(!reuse(0, None, Duration::ZERO, 0, Some("1:1")));
+    }
+
+    #[test]
+    fn parallel_calls_keep_the_one_still_running() {
+        let t = tail(&[
+            json!({"t":"tool","v":"terminal","s":"running","id":"m:terminal#1","p":"cargo build","at":10}),
+            json!({"t":"tool","v":"terminal","s":"running","id":"m:terminal#2","p":"cargo test","at":11}),
+            // The first one finishes; the second is still running.
+            json!({"t":"tool","v":"terminal","s":"completed","id":"m:terminal#1","at":50}),
+        ]);
+        let p = read_tail(&t, false);
+        assert_eq!(p.step.unwrap().detail, "cargo test");
+        assert_eq!(p.last.unwrap().detail, "cargo build");
+        // Plugin frames for two parallel calls of one tool pair with the
+        // stream's in order.
+        let t = tail(&[
+            json!({"t":"toolfull","v":"terminal","s":"running","id":"c1","p":"{\"command\":\"cargo build --release\"}","at":10}),
+            json!({"t":"toolfull","v":"terminal","s":"running","id":"c2","p":"{\"command\":\"cargo test --workspace\"}","at":10}),
+            json!({"t":"tool","v":"terminal","s":"running","id":"m:t#1","p":"cargo build","at":11}),
+            json!({"t":"tool","v":"terminal","s":"running","id":"m:t#2","p":"cargo test","at":11}),
+            json!({"t":"tool","v":"terminal","s":"completed","id":"m:t#1","at":40}),
+        ]);
+        let p = read_tail(&t, false);
+        assert_eq!(p.step.unwrap().detail, "cargo test --workspace");
+        assert_eq!(p.last.unwrap().detail, "cargo build --release");
     }
 
     fn tail(frames: &[Value]) -> String {

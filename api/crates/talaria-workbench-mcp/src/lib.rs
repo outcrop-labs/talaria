@@ -3302,11 +3302,7 @@ async fn log_wtool_line(
             .arg(&line)
             .query_async::<()>(&mut conn)
             .await;
-        let _ = redis::cmd("EXPIRE")
-            .arg(&key)
-            .arg(7_200)
-            .query_async::<()>(&mut conn)
-            .await;
+        let _ = talaria_work_pulse::touch(&mut conn, &run_id).await;
         let _ = redis::cmd("PUBLISH")
             .arg(&chan)
             .arg(frame)

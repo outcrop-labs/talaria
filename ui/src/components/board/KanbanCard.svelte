@@ -15,6 +15,7 @@
   import { EFFORT_LABEL, PRIORITY_COLOR, pgNum, type Task } from '@/lib/task-const'
   import type { LiveWorkSession, WorkWait } from '@/lib/work-session.svelte'
   import WorkPulse from './WorkPulse.svelte'
+  import { behindLine } from '@/lib/work-pulse'
 
   let {
     task,
@@ -145,7 +146,7 @@
     {#if wait}
       <span
         class="absolute right-14 top-2 z-10 max-w-[10rem] truncate rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-muted"
-        title="{wait.phase} — {wait.reason}{wait.behind?.length ? ` · behind ${wait.behind.join(', ')}` : ''}"
+        title="{wait.phase} — {wait.reason}{behindLine(wait.behind, wait.behindHidden) ? ` · ${behindLine(wait.behind, wait.behindHidden)}` : ''}"
       >
         queued
       </span>

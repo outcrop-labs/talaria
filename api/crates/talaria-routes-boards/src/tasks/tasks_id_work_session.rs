@@ -72,7 +72,8 @@ pub async fn get(
     let wait = match talaria_work_wait::for_task(&state.pg, &id).await {
         Some(w) => {
             let mut wire = talaria_work_wait::wire(&w);
-            wire["behind"] = json!(talaria_work_wait::working_on(&state.pg, &w.agent_model).await);
+            let b = talaria_work_wait::behind(&state.pg, &user.id, &w.agent_model).await;
+            talaria_work_wait::wire_behind(&mut wire, &b);
             Some(wire)
         }
         None => None,
@@ -94,6 +95,7 @@ pub async fn get(
         run_id: run_id.clone(),
         task_id: id.clone(),
         agent_model: agent_model.clone(),
+        run_state: run_state.clone(),
         since_ms: row.get("since_ms"),
         agent_run: row
             .get::<Option<String>, _>("agent_run_id")
