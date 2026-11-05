@@ -83,6 +83,7 @@ pub async fn request_change(
             parent_id: None,
             tags: &[],
             created_by: requester,
+            status: None,
         },
     )
     .await

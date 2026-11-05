@@ -190,6 +190,19 @@ pub async fn post(
         Ok(v) => v.unwrap_or_default(),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // The column a PERSON chose for it (an "add card" in a column). Agents'
+    // tickets land in the inbox, so an agent naming one is refused. Its
+    // assignees never choose it (create_task).
+    let status = match talaria_body::optional_string_member(obj, "status", 40) {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    if is_agent && status.is_some() {
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "agents cannot choose a new ticket's column — it lands in the inbox for a person to place",
+        ));
+    }
     // Guardrail: agents create into inbox only — assignment stays a human
     // call.
     if is_agent && !assignees.is_empty() {
@@ -249,6 +262,7 @@ pub async fn post(
         parent_id: parent_id.as_deref(),
         tags: &tags,
         created_by: &actor,
+        status: status.as_deref(),
     };
     let deps = talaria_tasks::TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let task = match create_task(&deps, &input).await {

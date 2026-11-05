@@ -766,6 +766,7 @@ pub async fn open_notice(
             parent_id: None,
             tags: &[],
             created_by: UPKEEP_ACTOR,
+            status: None,
         },
     )
     .await

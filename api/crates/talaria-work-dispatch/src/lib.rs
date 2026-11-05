@@ -351,8 +351,11 @@ pub async fn maybe_dispatch_ticket(
 /// The durable stop mark for one (ticket, agent), or `None` when there is
 /// none — or when there WAS one and a person has moved the ticket's status
 /// since, in which case the mark is cleared here and the pair is free again.
-/// "A person" is an actor that is a user id: the agent's own status moves
-/// (and Talaria's lines) do not lift a stop a human placed.
+/// "A person" is an actor that names a user, however the move recorded them:
+/// the board writes a person's moves under their EMAIL and an approval card
+/// under their user id. It used to accept only a user id, so no move a person
+/// made on the board ever lifted their own Stop. The agent's own status moves
+/// (its model) and Talaria's lines name no user and lift nothing.
 async fn dispatch_block(
     pg: &PgPool,
     task_id: &str,
@@ -363,7 +366,8 @@ async fn dispatch_block(
            select 1 from task_activity a \
            where a.task_id = b.task_id and a.type = 'status' \
              and a.created_at > b.created_at \
-             and a.actor ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+             and exists (select 1 from users u \
+                         where u.email = a.actor or u.id::text = a.actor) \
          ) as moved \
          from work_dispatch_blocks b \
          where b.task_id = $1::uuid and b.agent_model = $2",
@@ -1158,5 +1162,362 @@ mod live_db {
             .execute(&pg)
             .await
             .expect("cleanup");
+    }
+
+    // ── Assigning a ticket never moves it or starts work ────────────────────
+    // The owner's report: tickets jumped into the agent column, and the agent
+    // started, the moment they were assigned. Assignment now leaves the
+    // column alone, on create and on update; work starts when a ticket is IN
+    // a pickup column — a person moved it there, or created it there, or an
+    // agent is assigned to a ticket already sitting there. Each test owns its
+    // rows: a user (→ board → tickets cascade), an agent def, their runs.
+    //
+    //   DATABASE_URL=postgres://… REDIS_URL=redis://… \
+    //     cargo test -p talaria-work-dispatch --lib -- --ignored live_db::assign
+
+    struct Fixture {
+        pg: PgPool,
+        user: String,
+        email: String,
+        board: String,
+        agent: String,
+        deps: RunDeps,
+        tasks: tasks::TaskDeps,
+    }
+
+    impl Fixture {
+        async fn new(tag: &str) -> Fixture {
+            let pg = pg().await;
+            let n = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let email = format!("assign-{tag}-{n}@link-test.invalid");
+            let user: String = sqlx::query_scalar(
+                "insert into users (sub, email, name, role) values ($1, $1, 'Assign Live', 'member') \
+                 returning id::text",
+            )
+            .bind(&email)
+            .fetch_one(&pg)
+            .await
+            .expect("insert user");
+            let board: String = sqlx::query_scalar(
+                "insert into boards (name, owner_id) values ('assign-live', $1::uuid) returning id::text",
+            )
+            .bind(&user)
+            .fetch_one(&pg)
+            .await
+            .expect("insert board");
+            sqlx::query(
+                "insert into board_members (board_id, user_id, role) values ($1::uuid, $2::uuid, 'owner')",
+            )
+            .bind(&board)
+            .bind(&user)
+            .execute(&pg)
+            .await
+            .expect("owner row");
+            let agent = format!("assign-live-{tag}-{n}");
+            sqlx::query(
+                "insert into agent_defs (slug, department, model, display_name) \
+                 values ($1, 'personal', $1, 'Assign Live Agent')",
+            )
+            .bind(&agent)
+            .execute(&pg)
+            .await
+            .expect("agent def");
+            sqlx::query("insert into board_agents (board_id, agent_model) values ($1::uuid, $2)")
+                .bind(&board)
+                .bind(&agent)
+                .execute(&pg)
+                .await
+                .expect("board grant");
+            let url = std::env::var("REDIS_URL").expect("set REDIS_URL (source ui/.env)");
+            let redis =
+                redis::aio::ConnectionManager::new(redis::Client::open(url).expect("redis url"))
+                    .await
+                    .expect("redis connects");
+            let rt = talaria_realtime::RealtimeDeps::publish_only(Some(redis.clone()));
+            let deps = dispatch_deps(pg.clone(), redis, rt);
+            // The real push side, so a task write's own detached offer runs:
+            // the dispatch assembly, and the seam the process wires at boot
+            // (talaria-jobs) — unset, a write's push is a quiet no-op.
+            let mut tasks = tasks::TaskDeps::from_route(pg.clone(), None);
+            tasks.dispatch = Some(deps.clone());
+            let _ = talaria_tasks_types::MAYBE_DISPATCH_TICKET.set(std::sync::Arc::new(
+                |pg, dispatch, ticket, only_agents| {
+                    Box::pin(async move {
+                        let Some(deps) = dispatch else { return };
+                        maybe_dispatch_ticket(&pg, &deps, &ticket, only_agents.as_deref()).await;
+                    })
+                },
+            ));
+            Fixture {
+                pg,
+                user,
+                email,
+                board,
+                agent,
+                deps,
+                tasks,
+            }
+        }
+
+        /// A ticket made the way the create route makes one.
+        async fn create(&self, assignees: &[String], status: Option<&str>) -> String {
+            tasks::create_task(
+                &self.tasks,
+                &tasks::NewTask {
+                    board_id: &self.board,
+                    title: "assign-live",
+                    description: None,
+                    priority: None,
+                    effort: None,
+                    assignees,
+                    due_date: None,
+                    start_date: None,
+                    color: None,
+                    estimated_hours: None,
+                    parent_id: None,
+                    tags: &[],
+                    created_by: &self.email,
+                    status,
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("create: {}", e.message()))
+            .id
+        }
+
+        /// A person's write, recorded under `actor` — the board writes a
+        /// person's email, an approval card their user id.
+        async fn write_as(&self, id: &str, patch: tasks::TaskPatch, actor: &str) {
+            tasks::update_task(&self.tasks, id, patch, &tasks::TaskActor::human(actor))
+                .await
+                .unwrap_or_else(|e| panic!("a person's write: {}", e.message()));
+        }
+
+        async fn assign(&self, id: &str) {
+            self.write_as(
+                id,
+                tasks::TaskPatch {
+                    assignees: Some(vec![self.agent.clone()]),
+                    ..Default::default()
+                },
+                &self.email,
+            )
+            .await;
+        }
+
+        async fn move_to(&self, id: &str, status: &str, actor: &str) {
+            self.write_as(
+                id,
+                tasks::TaskPatch {
+                    status: Some(status.into()),
+                    ..Default::default()
+                },
+                actor,
+            )
+            .await;
+        }
+
+        async fn status(&self, id: &str) -> String {
+            sqlx::query_scalar("select status from tasks where id = $1::uuid")
+                .bind(id)
+                .fetch_one(&self.pg)
+                .await
+                .unwrap()
+        }
+
+        async fn moves(&self, id: &str) -> Vec<String> {
+            sqlx::query_scalar(
+                "select description from task_activity where task_id = $1::uuid and type = 'status' \
+                 order by created_at",
+            )
+            .bind(id)
+            .fetch_all(&self.pg)
+            .await
+            .unwrap()
+        }
+
+        async fn sessions(&self, id: &str) -> i64 {
+            sqlx::query_scalar(
+                "select count(*)::bigint from runs where kind = 'work-session' and subject_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&self.pg)
+            .await
+            .unwrap()
+        }
+
+        /// The session count once a write's detached push has landed: polled
+        /// until it reaches `want`, or 15 s pass. A count that must STAY put
+        /// is read after `settle` instead.
+        async fn sessions_reach(&self, id: &str, want: i64) -> i64 {
+            for _ in 0..150 {
+                if self.sessions(id).await >= want {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            self.sessions(id).await
+        }
+
+        /// The gate, asked the way the sweep asks it.
+        async fn offer(&self, id: &str) -> i64 {
+            let task = tasks::get_task(&self.pg, id)
+                .await
+                .unwrap()
+                .expect("ticket");
+            maybe_dispatch_ticket(
+                &self.pg,
+                &self.deps,
+                &tasks::dispatch_ticket_of(&task),
+                None,
+            )
+            .await;
+            settle().await;
+            self.sessions(id).await
+        }
+
+        async fn finish_sessions(&self, id: &str) {
+            sqlx::query(
+                "update runs set state = 'done', updated_at = now() - interval '6 minutes' \
+                 where kind = 'work-session' and subject_id = $1",
+            )
+            .bind(id)
+            .execute(&self.pg)
+            .await
+            .unwrap();
+        }
+
+        async fn drop(self) {
+            sqlx::query(
+                "delete from runs where kind = 'work-session' and input->>'agentModel' = $1",
+            )
+            .bind(&self.agent)
+            .execute(&self.pg)
+            .await
+            .unwrap();
+            sqlx::query("delete from agent_defs where model = $1")
+                .bind(&self.agent)
+                .execute(&self.pg)
+                .await
+                .unwrap();
+            sqlx::query("delete from users where id = $1::uuid")
+                .bind(&self.user)
+                .execute(&self.pg)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// Detached pushes get time to land before a count that must stay put.
+    async fn settle() {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
+    async fn assignment_on_create_or_update_never_moves_a_ticket_or_starts_work() {
+        let f = Fixture::new("assign").await;
+        // Born assigned: intake, no session.
+        let born = f.create(std::slice::from_ref(&f.agent), None).await;
+        settle().await;
+        assert_eq!(
+            f.status(&born).await,
+            "inbox",
+            "an assignee chose the ticket's column"
+        );
+        assert_eq!(
+            f.sessions(&born).await,
+            0,
+            "a ticket born assigned started work"
+        );
+        // Assigned afterwards, by a person: intake, no move line, no session —
+        // and the gate the sweep asks starts nothing either.
+        let later = f.create(&[], None).await;
+        f.assign(&later).await;
+        settle().await;
+        assert_eq!(
+            f.status(&later).await,
+            "inbox",
+            "assignment moved the ticket"
+        );
+        assert!(f.moves(&later).await.is_empty(), "assignment wrote a move");
+        assert_eq!(f.sessions(&later).await, 0, "assignment started work");
+        assert_eq!(
+            f.offer(&later).await,
+            0,
+            "a ticket outside a pickup column started"
+        );
+        f.drop().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
+    async fn assignment_starts_work_only_in_a_pickup_column() {
+        let f = Fixture::new("pickup").await;
+        // A person moves an assigned ticket into the agent column: it starts.
+        let moved = f.create(std::slice::from_ref(&f.agent), None).await;
+        f.move_to(&moved, "assigned", &f.email).await;
+        assert_eq!(
+            f.sessions_reach(&moved, 1).await,
+            1,
+            "a person's move into the pickup column"
+        );
+        // An agent assigned to a ticket ALREADY sitting in a pickup column
+        // starts, as before.
+        let sitting = f.create(&[], None).await;
+        f.move_to(&sitting, "assigned", &f.email).await;
+        settle().await;
+        assert_eq!(f.sessions(&sitting).await, 0, "nobody to start");
+        f.assign(&sitting).await;
+        assert_eq!(
+            f.sessions_reach(&sitting, 1).await,
+            1,
+            "assigned in a pickup column"
+        );
+        // Created in a pickup column BY CHOICE, with an agent: it starts.
+        let chosen = f
+            .create(std::slice::from_ref(&f.agent), Some("assigned"))
+            .await;
+        assert_eq!(f.status(&chosen).await, "assigned");
+        assert_eq!(
+            f.sessions_reach(&chosen, 1).await,
+            1,
+            "created in the pickup column"
+        );
+        f.drop().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
+    async fn a_persons_move_lifts_their_stop_whether_it_names_their_email_or_id() {
+        let f = Fixture::new("stop").await;
+        for actor in [f.email.clone(), f.user.clone()] {
+            let id = f.create(std::slice::from_ref(&f.agent), None).await;
+            f.move_to(&id, "assigned", &f.email).await;
+            assert_eq!(f.sessions_reach(&id, 1).await, 1);
+            f.finish_sessions(&id).await;
+            // A person pressed Stop: the pair is held.
+            sqlx::query(
+                "insert into work_dispatch_blocks (task_id, agent_model, blocked_by) values ($1::uuid, $2, 'Assign Live')",
+            )
+            .bind(&id)
+            .bind(&f.agent)
+            .execute(&f.pg)
+            .await
+            .unwrap();
+            assert_eq!(f.offer(&id).await, 1, "a stopped pair started");
+            // The person moves the ticket again — recorded under `actor`.
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            f.move_to(&id, "in_progress", &actor).await;
+            assert_eq!(
+                f.offer(&id).await,
+                2,
+                "a move recorded as {actor} did not lift the stop"
+            );
+        }
+        f.drop().await;
     }
 }
