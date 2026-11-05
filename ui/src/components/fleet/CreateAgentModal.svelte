@@ -16,6 +16,7 @@
     isConflict,
     keepaliveBody,
     landingKey,
+    leftTheSlot,
     openingStep,
     pendingDesign,
     refineDesign,
@@ -146,7 +147,10 @@
       if (!loaded) return
       if (seededFrom === null) {
         // The first read, for a modal opened before it was in (or the read
-        // after a 409 brought the current design).
+        // after a 409 brought the current design — or none: then the form's
+        // fields belong to nothing any more, and go).
+        if (!d && conflictReseed) resetForm(null)
+        conflictReseed = false
         seededFrom = key
         if (d?.draft) {
           form = { ...EMPTY_FIELDS, ...d.draft }
@@ -154,7 +158,15 @@
         }
         return
       }
-      if (!d || key === seededFrom) return
+      if (!d) {
+        // The design this modal showed left the slot: a hire took it (another
+        // tab's Create), or it ended elsewhere. Its fields go with it, so no
+        // keystroke here saves them as a manual copy of a design being hired.
+        const left = leftTheSlot(seededFrom.split(':')[0] ?? '', read)
+        if (left) resetForm(left.hiredAs)
+        return
+      }
+      if (key === seededFrom) return
       const wasGenerating = seededFrom.endsWith(':-')
       const prevId = seededFrom.split(':')[0]
       seededFrom = key
@@ -180,6 +192,21 @@
       if (wasGenerating && d.status === 'ready' && step === 'describe') step = 'review'
     })
   })
+
+  // A design that left for a hire (from another tab) is named on the empty
+  // describe step this modal falls back to.
+  let leftForHire = $state<string | null>(null)
+  let conflictReseed = false
+  function resetForm(hiredAs: string | null) {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
+    form = { ...EMPTY_FIELDS }
+    soulRev += 1
+    purpose = ''
+    seededFrom = ''
+    leftForHire = hiredAs
+    step = 'describe'
+  }
 
   // THE EDIT THAT COULD NOT LEAVE WITH THE PAGE is offered once, when New
   // agent opens — cold or warm cache — and only if the server has not moved
@@ -230,6 +257,7 @@
         if (isConflict(e)) {
           // Reseed from whatever the read brings (set first: the effect
           // runs as the read lands).
+          conflictReseed = true
           seededFrom = null
           await qc.refetchQueries({ queryKey: DESIGN_KEY })
         }
@@ -341,6 +369,7 @@
 
   const describe = async () => {
     startErr = null
+    leftForHire = null
     try {
       const d = await startDesign(qc, purpose)
       seededFrom = landingKey(d)
@@ -362,6 +391,7 @@
     } catch (e) {
       startErr = errorMessage(e)
       if (isConflict(e)) {
+        conflictReseed = true
         seededFrom = null
         await qc.refetchQueries({ queryKey: DESIGN_KEY })
       }
@@ -433,6 +463,7 @@
         if (r.status === 409 && designId) {
           // Reseed from whatever the read brings (set first: the effect
           // runs as the read lands).
+          conflictReseed = true
           seededFrom = null
           await qc.refetchQueries({ queryKey: DESIGN_KEY })
         }
@@ -457,7 +488,7 @@
     <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-returned">
       The hire of {r.name} did not finish{r.reason ? `: ${r.reason.replace(/^The hire did not finish:?\s*/, '')}` : '.'}
       Its design comes back here once this one is hired or discarded.
-      <button type="button" class="ml-1 underline hover:text-danger" onclick={() => void dismissReturned(qc, r.designId)}>Discard it</button>
+      <button type="button" class="ml-1 underline hover:text-danger" onclick={() => dismissReturned(qc, r.designId).catch((e: unknown) => (startErr = errorMessage(e)))}>Discard it</button>
     </p>
   {/each}
 {/snippet}
@@ -556,6 +587,11 @@
     </AutoHeight>
     {#if genErr || startErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr ?? startErr}</p>{/if}
     {@render returnedNotes()}
+    {#if leftForHire}
+      <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-left-for-hire">
+        {leftForHire} is being hired from another tab. The roster shows its progress.
+      </p>
+    {/if}
     {#if readErr}
       <p transition:slide={{ duration: 150 }} class="text-xs text-danger" data-testid="design-read-error">
         Could not check for a design in progress: {readErr}
