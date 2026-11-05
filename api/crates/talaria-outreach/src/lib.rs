@@ -303,6 +303,9 @@ pub async fn agent_message_user(
     // day): a second check-in the same day re-alerts that row with the newest
     // words and `count + 1` instead of stacking a second one.
     let day = talaria_agent_auth::epoch_ms_to_iso(talaria_agent_auth::now_ms());
+    // A person who muted this agent's DMs still gets the row, quietly: it
+    // counts in-app and nothing rings (talaria_notify::agent_mutes).
+    let quiet = talaria_notify::agent_dm_muted(pg, target_id, agent_model).await;
     let _ = talaria_notify::add_notification_with(
         deps,
         target_id,
@@ -312,7 +315,10 @@ pub async fn agent_message_user(
             body: Some(&notified_body),
             href: Some(&href),
         },
-        &outreach_meta(agent_model, &label, &conv_id, &day[..10]),
+        &talaria_notify::NotifyMeta {
+            quiet,
+            ..outreach_meta(agent_model, &label, &conv_id, &day[..10])
+        },
     )
     .await;
 
