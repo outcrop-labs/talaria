@@ -24,6 +24,7 @@ import {
   showInstancePage,
   snoozeUpdate,
   type Background,
+  type BrowserTab,
   type Instance,
   type LoadFailure,
   type NotificationStatus,
@@ -49,7 +50,6 @@ export interface Problem {
    * and Retry and Back close it first. */
   blocked: boolean
 }
-
 export const shell = $state({
   instances: [] as Instance[],
   view: 'welcome' as ShellSnapshot['view'],
@@ -88,7 +88,13 @@ export const shell = $state({
   unread: {} as Record<string, number>,
   /** The update chip (Rust decides; every view shows the same one). */
   update: null as UpdateOffer | null,
+  /** The Browse view's tabs (TALA-83), pinned first. Absent: a shell that
+   *  predates browse reads as none. */
+  browserTabs: [] as BrowserTab[],
+  /** The Browse view's tab on screen, by local id. */
+  activeTab: null as string | null,
 })
+
 
 let dismissedFailure = 0
 const dismissedNotices = new Set<string>()
@@ -103,17 +109,18 @@ const mostRecent = (instances: Instance[]) =>
 function sync(s: ShellSnapshot) {
   shell.instances = s.instances
   shell.view = s.view
-  shell.activeId = s.activeId
-  shell.titlebar = s.titlebar
+  shell.update = s.update ?? null
+  shell.browserTabs = s.browserTabs ?? []
+  shell.activeTab = s.activeTab ?? null
+  shell.recentId = mostRecent(s.instances)
   shell.suspendAfterMinutes = s.suspendAfterMinutes ?? shell.suspendAfterMinutes
   shell.loaded = s.loaded
-  shell.suspended = s.suspended ?? []
-  shell.notices = s.notices.filter((n) => !dismissedNotices.has(n))
-  shell.background = s.background ?? shell.background
-  shell.closeToBackground = s.closeToBackground ?? shell.closeToBackground
   shell.muted = s.muted ?? []
   shell.unread = s.unread ?? {}
   shell.update = s.update ?? null
+  shell.browserTabs = s.browserTabs ?? []
+  shell.activeTab = s.activeTab ?? null
+  shell.closeToBackground = s.closeToBackground ?? shell.closeToBackground
   shell.recentId = mostRecent(s.instances)
   applyFailure(s.failure)
   if (shell.confirmRemove && !s.instances.some((i) => i.id === shell.confirmRemove)) {
@@ -359,8 +366,13 @@ export function dismissNotice(notice: string) {
 
 /** Boot: subscribe, read the state, and reopen where the person left off —
  * the instance they were in, or nothing if they quit on the launcher. Rust
- * decides which (`reopen`); this probes it first like any cold open. */
-export async function boot() {
+ * decides which (`reopen`); this probes it first like any cold open.
+ *
+ * `asBar` is the browse bar's boot: the same document serves both surfaces
+ * (the bar is its own webview of this same app), and only the bar's boot
+ * skips the reopen — the bar never reopens an instance; it renders the tab
+ * strip of the view it is already in. */
+export async function boot(asBar = false) {
   try {
     await onShellState(sync)
   } catch (e) {
@@ -379,5 +391,9 @@ export async function boot() {
     shell.ready = true
   }
   void readNotify()
-  if (reopen) await open(reopen)
+  // In the browse view the bar shares this document: the launcher webview
+  // (hidden behind the bar) must not reopen the last instance over the
+  // browse view the person is in — `reopen` is offered only until the first
+  // view change, and entering browse already made one, so view decides.
+  if (!asBar && reopen && shell.view === 'welcome') await open(reopen)
 }

@@ -165,6 +165,25 @@ pub fn browse_content_rect(window: &Window) -> Rect {
     content.rect()
 }
 
+/// The rect the browse bar webview is born at and re-placed at on every
+/// resize — the top strip of View::Browse (`creation_rect`'s twin for the
+/// bar slot; same born-in-place reason, tauri#10420).
+pub fn bar_rect(window: &Window) -> Rect {
+    let Ok(size) = window.inner_size() else {
+        return Rect {
+            position: Position::Logical(LogicalPosition::new(0.0, 0.0)),
+            size: Size::Logical(LogicalSize::new(1.0, 1.0)),
+        };
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let (bar, _) = bounds_for(
+        View::Browse,
+        size.width as f64 / scale,
+        size.height as f64 / scale,
+    );
+    bar.rect()
+}
+
 /// The window's opening size on a work area of `avail` logical px: the
 /// configured `want`, shrunk to fit when the screen is smaller (a 1280×800
 /// window on a 1440×900 panel at 167 % scale is 864×540 logical, and the old

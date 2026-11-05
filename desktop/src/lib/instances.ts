@@ -40,7 +40,7 @@ export interface LoadFailure {
 
 /** Everything the launcher renders (commands.rs::ShellSnapshot). */
 export interface ShellSnapshot {
-  view: 'welcome' | 'active'
+  view: 'welcome' | 'active' | 'browse'
   activeId: string | null
   titlebar: TitlebarMode
   /** 0 is Off. */
@@ -67,7 +67,46 @@ export interface ShellSnapshot {
   /** The update chip: a newer Talaria Desktop nobody put off (update.rs).
    *  Absent: a shell that predates the chip. */
   update?: UpdateOffer | null
+  /** The Browse view's tabs, pinned first. Absent: a shell that predates
+   *  browse (TALA-83). */
+  browserTabs?: BrowserTab[]
+  /** The Browse view's tab on screen, by local id. */
+  activeTab?: string | null
 }
+
+/** A Browse view's tab (src-tauri/src/registry.rs `BrowserTab`, camelCase
+ *  serde). Third-party content: the shell remembers the URL, the title and
+ *  whether the person pinned it, and nothing else. */
+export interface BrowserTab {
+  id: string
+  /** Last known page title, best-effort; empty until the page says one. */
+  title: string
+  /** Last active URL, normalized: origin+path+query, no fragment. */
+  url: string
+  pinned: boolean
+  /** Epoch ms. */
+  createdAt: number
+  lastActiveAt: number | null
+}
+
+/** The Browse view's tabs, pinned first. */
+export const listBrowserTabs = () => invoke<BrowserTab[]>('list_browser_tabs')
+
+/** Open a browser tab (the shell normalizes the URL) and bring it forward. */
+export const openBrowserTab = (url: string) => invoke<BrowserTab>('open_browser_tab', { url })
+
+/** Bring a browser tab's webview to the front. */
+export const focusBrowserTab = (id: string) => invoke<void>('focus_browser_tab', { id })
+
+/** Close a browser tab: its webview and saved session go with it. */
+export const closeBrowserTab = (id: string) => invoke<void>('close_browser_tab', { id })
+
+/** Pin or unpin a browser tab — the person's say-so, never the page's. */
+export const setBrowserTabPinned = (id: string, pinned: boolean) =>
+  invoke<BrowserTab>('set_browser_tab_pinned', { id, pinned })
+
+/** Enter or leave the Browse view; leaving returns to the view before it. */
+export const setBrowseMode = (active: boolean) => invoke<void>('set_browse_mode', { active })
 
 /** The update chip's offer, the same in every view (src-tauri/src/update.rs
  *  `Offer`). */

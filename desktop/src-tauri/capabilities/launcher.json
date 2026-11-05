@@ -1,9 +1,9 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "launcher",
-  "description": "IPC for the local launcher webview only. Instance webviews (instance-*) get a runtime grant for the switcher plus window chrome, scoped to that origin: no fs.",
+  "description": "IPC for the local launcher and browse-bar webviews only. Instance webviews (instance-*) get a runtime grant for the switcher plus window chrome, scoped to that origin: no fs.",
   "windows": ["main"],
-  "webviews": ["main"],
+  "webviews": ["main", "browsebar"],
   "permissions": [
     "core:default",
     "allow-list-instances",
