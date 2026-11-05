@@ -81,9 +81,13 @@ impl Teardown {
 const TEARDOWN_SH: &str = r#"
 dir="$1"; mode="$2"; id="${3:-}"; hroot="${4:-}"
 rm -f -- "$dir/.talaria/env"
+clone_prefix="$(dirname "$dir")/.$(basename "$dir").clone."
 in_dir() {
   cwd=$(readlink "$1/cwd" 2>/dev/null) || return 1
   case "$cwd/" in "$dir"/*) return 0 ;; esac
+  # A provisioning clone in flight runs from elsewhere, into the job's temp
+  # clone dir: it would rename itself into the workdir after the teardown.
+  tr '\0' ' ' < "$1/cmdline" 2>/dev/null | grep -qF "$clone_prefix" && return 0
   return 1
 }
 signal_all() {
@@ -671,8 +675,22 @@ mod tests {
         run("remove", "../harness-jobs");
         assert!(hroot.exists() && other.exists());
         std::fs::create_dir_all(&work).unwrap();
+        // A provisioning clone in flight (its cmdline names the temp clone
+        // dir; its cwd is elsewhere) is stopped too.
+        let mut clone = Command::new("sh")
+            // `; true` keeps sh from exec'ing sleep, so the process that
+            // carries the temp dir in its argv is the one that lives on.
+            .args(["-c", "sleep 60; true"])
+            .arg(jobs.join(format!(".{id}.clone.77")))
+            .spawn()
+            .unwrap();
         // Remove: the workdir, its temp clone, and its own harness dir.
         run("remove", id);
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            clone.try_wait().unwrap().is_some()
+        });
+        assert!(gone, "the in-flight clone was killed");
         assert!(!work.exists() && !harness.exists());
         assert!(!jobs.join(format!(".{id}.clone.42")).exists());
         assert!(other.exists(), "another job's harness dir is untouched");

@@ -15,6 +15,10 @@ use talaria_workbench_mcp::{WorkbenchDeps, dispatch_workbench_mcp};
 
 const DEPT: &str = "wb-provision-test";
 
+/// The tests that read or set the org's model roles hold this: the roles are
+/// one row for the whole database, and this module's tests run at once.
+static ROLES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// One test's own rows (its agent; the FK cascade takes its job). Per slug,
 /// never the whole department: the module's tests run concurrently, and a
 /// department-wide delete at one test's end removed another's job mid-test.
@@ -152,6 +156,7 @@ async fn one_run_owns_a_provision_and_a_dead_one_is_taken_over() {
 #[tokio::test]
 #[ignore = "needs a live dev database (source ui/.env)"]
 async fn the_harness_lines_are_withheld_until_the_provision_is_ready() {
+    let _roles = ROLES.lock().await;
     let pg = pg().await;
     reset(&pg, "wb-prov-lines").await;
     let (_, job) = fixture(&pg, "wb-prov-lines").await;
@@ -241,4 +246,149 @@ async fn job_status_provisions_a_failed_job_again_only_when_asked() {
         "still no lines without a ready harness"
     );
     reset(&pg, "wb-prov-retry").await;
+}
+
+/// A ready record as provisioning writes it, for `model_arg`.
+fn ready_for(model_arg: &str) -> Value {
+    let mut r = Record::start(1);
+    r.harness = Some(json!({
+        "omp": format!("omp/{}", talaria_workbench_harnesses::OMP_VERSION),
+        "model": model_arg.trim_start_matches("talaria/"),
+        "modelArg": model_arg,
+        "envPrefix": "",
+    }));
+    r.ready(2);
+    r.to_json(2)
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (source ui/.env)"]
+async fn the_lines_name_the_checked_model_and_a_moved_model_is_provisioned_again() {
+    let _roles = ROLES.lock().await;
+    let pg = pg().await;
+    let slug = "wb-prov-model";
+    reset(&pg, slug).await;
+    let (agent_id, job) = fixture(&pg, slug).await;
+    let saved = talaria_model_roles::get_model_roles(&pg).await;
+    sqlx::query("delete from llm_endpoints where name = 'wbprov-prov-ep'")
+        .execute(&pg)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into llm_endpoints (name, provider, base_url, class, models) \
+         values ('wbprov-prov-ep', 'openai', 'http://127.0.0.1:9/v1', 'cloud', '[\"m-std\", \"m-light\"]'::jsonb)",
+    )
+    .execute(&pg)
+    .await
+    .unwrap();
+    talaria_gateway::registry::invalidate_endpoints_cache();
+    talaria_model_roles::set_model_role(&pg, "code-standard", Some("wbprov-prov-ep/m-std"))
+        .await
+        .unwrap();
+    talaria_model_roles::set_model_role(&pg, "code-light", Some("wbprov-prov-ep/m-light"))
+        .await
+        .unwrap();
+
+    // No coding account: the org's code-standard role is the job's model,
+    // on the gateway, and the line's --model is it.
+    let jm = provision::job_model(&pg, &agent_id, None).await.unwrap();
+    assert!(jm.gateway);
+    assert_eq!(jm.model.as_deref(), Some("wbprov-prov-ep/m-std"));
+    assert_eq!(jm.arg.as_deref(), Some("talaria/wbprov-prov-ep/m-std"));
+    assert_eq!(jm.env_prefix, "");
+
+    // Ready for exactly that model: the lines name what the preflight checked.
+    set_provision(&pg, &job, &ready_for("talaria/wbprov-prov-ep/m-std")).await;
+    let j = job_status(&pg, slug, json!({ "jobId": job })).await;
+    let line = j["harnesses"][0]["jsonRun"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no lines: {j}"));
+    assert!(
+        line.contains("--model talaria/wbprov-prov-ep/m-std "),
+        "{line}"
+    );
+
+    // The role moves after ready: the lines would name a model no preflight
+    // checked, so job_status provisions the job again and hands out none.
+    talaria_model_roles::set_model_role(&pg, "code-standard", Some("wbprov-prov-ep/m-light"))
+        .await
+        .unwrap();
+    let j = job_status(&pg, slug, json!({})).await;
+    assert!(j.get("harnesses").is_none(), "no stale lines: {j}");
+    assert_ne!(j["provision"]["state"], json!("ready"), "{j}");
+
+    // Restore what the database had.
+    talaria_settings::set_setting(&pg, "model_roles", &saved)
+        .await
+        .unwrap();
+    sqlx::query("delete from llm_endpoints where name = 'wbprov-prov-ep'")
+        .execute(&pg)
+        .await
+        .unwrap();
+    talaria_gateway::registry::invalidate_endpoints_cache();
+    reset(&pg, slug).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (source ui/.env)"]
+async fn a_resumed_round_is_provisioned_afresh_when_it_starts() {
+    let pg = pg().await;
+    let slug = "wb-prov-resume";
+    reset(&pg, slug).await;
+    let (agent_id, _) = fixture(&pg, slug).await;
+    let pr = talaria_workbench_mcp::PullRequestRef {
+        url: "https://example.invalid/pr/7".into(),
+        number: 7,
+    };
+    for round in ["awaiting_approval", "queued"] {
+        // The previous round: PR open, its provision ready (its lines still
+        // in the record).
+        let (job,): (String,) = sqlx::query_as(
+            "insert into workbench_jobs \
+               (agent_id, agent_model, task_id, host_id, repo, branch, effort, plan, status) \
+             values ($1::uuid, $2, null, 'github', 'provision-live/repo', 'test/branch', 'heavy', '', 'pr_open') \
+             returning id::text",
+        )
+        .bind(&agent_id)
+        .bind(slug)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        let old = ready_for("talaria/old-round-model");
+        set_provision(&pg, &job, &old).await;
+        let resumed = talaria_workbench_mcp::resume_job_row(
+            &pg,
+            &job,
+            &talaria_workbench_mcp::JobResume {
+                status: round,
+                effort: "heavy",
+                plan: "round two",
+                queue_reason: (round == "queued").then_some("host has 1.0 GiB RAM free"),
+            },
+            &pr,
+        )
+        .await;
+        assert!(resumed.is_some(), "{round}: the round resumed");
+        assert!(
+            provision::read(&pg, &job).await.is_none(),
+            "{round}: the old provision is gone"
+        );
+        // Approved, or promoted from the queue: started, and provisioned
+        // afresh — never the last round's lines.
+        sqlx::query("update workbench_jobs set status = 'started' where id = $1::uuid")
+            .bind(&job)
+            .execute(&pg)
+            .await
+            .unwrap();
+        let j = job_status(&pg, slug, json!({ "jobId": job })).await;
+        assert!(j.get("harnesses").is_none(), "{round}: no old lines: {j}");
+        let now = provision::read(&pg, &job).await.expect("provisioned");
+        assert_ne!(now["runId"], old["runId"], "{round}: a new run: {now}");
+        sqlx::query("update workbench_jobs set status = 'abandoned' where id = $1::uuid")
+            .bind(&job)
+            .execute(&pg)
+            .await
+            .unwrap();
+    }
+    reset(&pg, slug).await;
 }

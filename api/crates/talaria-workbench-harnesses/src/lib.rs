@@ -86,6 +86,15 @@ pub const AGENT_BIN_DIR: &str = "/opt/data/.local/bin";
 /// first 13 to 75 turns finding a bun that worked and a version that started.
 /// A pin moves only when someone bumps it here and the test against
 /// [`HARNESS_BUN`] still passes.
+///
+/// Its transitive dependencies are NOT pinned by a lockfile, on purpose:
+/// omp pins every `@oh-my-pi/*` package it ships exactly, and the carets left
+/// are third-party (`@opentelemetry/*`, `@babel/parser`), resolved once, when
+/// a volume first installs this version — the install is never re-resolved
+/// after that, so a job never sees them move under it. A lockfile would have
+/// to be regenerated, by the pinned bun, on every bump, and would pin the
+/// platform-specific optional packages (`pi-natives-*`) of whatever machine
+/// made it.
 pub const OMP_VERSION: &str = "18.16.0";
 
 /// omp's npm package.
@@ -241,21 +250,46 @@ if ! started; then
       exit 1
     fi
   else
+    # No flock: a lock DIRECTORY, made whole and renamed into place, so it is
+    # never seen without its holder's pid and token. A dead holder's lock is
+    # reclaimed by renaming it away and checking its token is the one read
+    # (two waiters reclaiming the same lock: one rename wins, and a waiter
+    # whose read went stale puts back what it moved). A lock with no pid —
+    # left by an older script — is reclaimed once it is __LOCKSTALE__ s old.
     waited=0
-    until mkdir "$lock.d" 2>/dev/null; do
+    mine="$lock.d.$$"
+    while :; do
+      rm -rf "$mine"
+      mkdir "$mine"
+      echo $$ > "$mine/pid"
+      head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$mine/token"
+      if mv -T "$mine" "$lock.d" 2>/dev/null; then
+        break
+      fi
       holder=$(cat "$lock.d/pid" 2>/dev/null || true)
+      token=$(cat "$lock.d/token" 2>/dev/null || true)
+      stale=""
       if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-        rm -rf "$lock.d"
+        stale=1
+      elif [ -z "$holder" ] && [ -n "$(find "$lock.d" -maxdepth 0 -mmin +$((__LOCKSTALE__ / 60)) 2>/dev/null)" ]; then
+        stale=1
+      fi
+      if [ -n "$stale" ] && mv -T "$lock.d" "$lock.d.reclaim.$$" 2>/dev/null; then
+        if [ "$(cat "$lock.d.reclaim.$$/token" 2>/dev/null || true)" = "$token" ]; then
+          rm -rf "$lock.d.reclaim.$$"
+        else
+          mv -T "$lock.d.reclaim.$$" "$lock.d" 2>/dev/null || rm -rf "$lock.d.reclaim.$$"
+        fi
         continue
       fi
       if [ "$waited" -ge __LOCKWAIT__ ]; then
+        rm -rf "$mine"
         echo "another provision held the Oh My Pi install lock for __LOCKWAIT__ s; provisioning again takes it once that install is done" >&2
         exit 1
       fi
       sleep 2
       waited=$((waited + 2))
     done
-    echo $$ > "$lock.d/pid"
     trap 'rm -rf "$lock.d"' EXIT
   fi
   if ! started; then
@@ -264,6 +298,8 @@ if ! started; then
     # keeps the directory it started from. Nothing here deletes an install.
     new="$root/.__OMPV__.$(date +%s).$$"
     mkdir -p "$new"
+    # omp itself is exact, and so are its own @oh-my-pi packages; its
+    # third-party deps carry carets (OMP_VERSION's doc says why that stands).
     printf '{"name":"talaria-omp","private":true,"dependencies":{"__PKG__":"__OMPV__"}}\n' > "$new/package.json"
     if ! (cd "$new" && BUN_INSTALL_CACHE_DIR="__HROOT__/bun-cache" "$real" install --production --no-progress >"$new/install.log" 2>&1); then
       tail -n 15 "$new/install.log" >&2
@@ -277,23 +313,39 @@ if ! started; then
       exit 1
     fi
     # An install from before installs were swapped is a real directory at the
-    # link's path: move it aside (a rename, so a process in it keeps running).
+    # link's path: move it aside (a rename, so a process in it keeps running)
+    # and stamp it retired, which is when its prune clock starts.
     if [ -d "$link" ] && [ ! -L "$link" ]; then
-      mv "$link" "$root/.__OMPV__.moved.$(date +%s).$$"
+      aside="$root/.__OMPV__.moved.$(date +%s).$$"
+      mv "$link" "$aside"
+      touch "$aside/.retired"
     fi
+    old="$(readlink -f "$link" 2>/dev/null || true)"
     ln -s "$new" "$link.tmp.$$"
     mv -T "$link.tmp.$$" "$link"
+    # The install just swapped out is retired NOW, however old it is: a job
+    # that started on it a minute ago may be running it for hours yet.
+    if [ -n "$old" ] && [ -d "$old" ]; then
+      touch "$old/.retired"
+    fi
   fi
 fi
-# Prune: an install that is not the pinned one, that no running process maps
-# (omp's native addon and chunks are mapped from its own directory), and that
-# nothing has touched for two days. Then any version link left dangling.
+# Prune: an install retired (swapped out, moved aside, or found not current)
+# more than two days ago — its `.retired` stamp, never the install's own age,
+# which says nothing about whether a job still runs it — and that no running
+# process maps (omp's native addon and chunks are mapped from its own dir).
+# One not current and not yet stamped is stamped now: its clock starts here.
+# Then any version link left dangling.
 cur="$(readlink -f "$link" 2>/dev/null || true)"
 for d in "$root"/.[0-9]*; do
   [ -d "$d" ] || continue
   [ "$(readlink -f "$d")" = "$cur" ] && continue
+  if [ ! -e "$d/.retired" ]; then
+    touch "$d/.retired"
+    continue
+  fi
+  [ -n "$(find "$d/.retired" -maxdepth 0 -mmin -__RETIRE_MIN__ 2>/dev/null)" ] && continue
   grep -qsF "$d/" /proc/[0-9]*/maps 2>/dev/null && continue
-  [ -n "$(find "$d" -maxdepth 0 -mmin -2880 2>/dev/null)" ] && continue
   rm -rf "$d"
 done
 for l in "$root"/*; do
@@ -315,6 +367,8 @@ echo "bunPath $real"
     .replace("__OMPDIR__", &link)
     .replace("__ENTRY__", &entry)
     .replace("__LOCKWAIT__", &INSTALL_LOCK_WAIT_SECS.to_string())
+    .replace("__LOCKSTALE__", &PIDLESS_LOCK_STALE_SECS.to_string())
+    .replace("__RETIRE_MIN__", &RETIRED_KEEP_MINS.to_string())
     .replace("__OMPV__", OMP_VERSION)
     .replace("__PKG__", OMP_PACKAGE)
     .replace("__HROOT__", harness_root)
@@ -324,6 +378,15 @@ echo "bunPath $real"
 /// the exec that runs the script (`talaria-workbench-mcp`'s runtime timeout,
 /// 8 min), so a waiter answers with a reason instead of being killed.
 pub const INSTALL_LOCK_WAIT_SECS: u64 = 240;
+
+/// A lock directory with no holder pid (left by an older script) is taken
+/// over once it is this old.
+pub const PIDLESS_LOCK_STALE_SECS: u64 = 120;
+
+/// How long a retired omp install (swapped out, moved aside, or no longer
+/// the pinned version) is kept before the prune may remove it, counted from
+/// its `.retired` stamp: two days.
+pub const RETIRED_KEEP_MINS: u64 = 2 * 24 * 60;
 
 /// What [`harness_runtime_script`] reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,9 +503,9 @@ fn launcher_script_with(
          PATH=\"$MISE_DATA_DIR/shims:$PATH\"\n\
          export PATH\n\
          {key_check}\
-         cd {workdir} || {{ echo \"talaria: this job's checkout ({workdir}) is not there — call job_status\" >&2; exit {code}; }}\n\
+         cd {workdir} || {{ echo \"talaria: this job's checkout ({workdir}) is not there — call prepare_env, which provisions this job again\" >&2; exit {code}; }}\n\
          if [ -f .talaria/env ]; then set -a; . ./.talaria/env; set +a; fi\n\
-         [ -f {entry} ] || {{ echo \"talaria: Oh My Pi {OMP_VERSION} is not installed here any more — call job_status, which provisions this job again\" >&2; exit {code}; }}\n\
+         [ -f {entry} ] || {{ echo \"talaria: Oh My Pi {OMP_VERSION} is not installed here any more — call prepare_env, which provisions this job again\" >&2; exit {code}; }}\n\
          exec {bun} {entry} \"$@\"\n",
         agent = sh_quote(&agent),
         workdir = sh_quote(workdir),
@@ -1001,19 +1064,96 @@ mod tests {
                 .count(),
             2
         );
-        // Made old, and unused, it is pruned on a later run; the current one is not.
-        let aged = Command::new("touch")
-            .args(["-d", "5 days ago"])
-            .arg(&installed)
-            .status()
-            .unwrap();
-        assert!(aged.success());
+        // The install was days old when it was swapped out (the review's
+        // case: an OOM made `--version` fail, a reinstall swapped in). Its
+        // own age says nothing about the job still running it: it is kept,
+        // because it was RETIRED just now.
+        let age = |path: &std::path::Path, ago: &str| {
+            let ok = Command::new("touch")
+                .args(["-d", ago])
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(ok.success());
+        };
+        age(&installed, "5 days ago");
+        assert!(
+            installed.join(".retired").exists(),
+            "the swap stamps the old install retired"
+        );
+        run();
+        assert!(
+            installed.exists(),
+            "an aged install retired a moment ago is kept"
+        );
+        // Retired more than two days ago, and unused: pruned. The current
+        // one never is.
+        age(&installed.join(".retired"), "3 days ago");
         run();
         assert!(
             !installed.exists(),
-            "an unused install two days old is pruned"
+            "an install retired two days ago is pruned"
         );
         assert!(swapped.exists(), "the pinned install never is");
+        // A not-current install the prune finds unstamped (left by a crash
+        // mid-swap) is stamped, not removed: its clock starts there.
+        let orphan = hroot.join("omp").join(format!(".{OMP_VERSION}.1.1"));
+        std::fs::create_dir_all(&orphan).unwrap();
+        age(&orphan, "9 days ago");
+        run();
+        assert!(orphan.exists() && orphan.join(".retired").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_lock_is_taken_and_a_dead_or_pidless_one_reclaimed() {
+        use std::process::Command;
+        let tmp = std::env::temp_dir().join(format!("wbprov-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let bin = tmp.join("bin");
+        let hroot = tmp.join("harness");
+        std::fs::create_dir_all(&bin).unwrap();
+        let bun = fake_bun(&tmp);
+        std::os::unix::fs::symlink(&bun, bin.join("bun")).unwrap();
+        // The script with flock hidden, so the directory lock is the one used.
+        let script = runtime_script_for(
+            tmp.join("xdg").to_str().unwrap(),
+            bin.to_str().unwrap(),
+            hroot.to_str().unwrap(),
+        )
+        .replace("command -v flock", "false");
+        let lock = hroot.join("omp/.install.lock.d");
+        let run = || Command::new("sh").args(["-c", &script]).output().unwrap();
+        // A dead holder's lock: reclaimed, and the install goes ahead.
+        std::fs::create_dir_all(&lock).unwrap();
+        std::fs::write(lock.join("pid"), "999999999").unwrap();
+        std::fs::write(lock.join("token"), "dead").unwrap();
+        let out = run();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!lock.exists(), "released on exit");
+        // A pid-less lock (an older script killed between mkdir and pid)
+        // is reclaimed once it is old enough.
+        std::fs::remove_file(bun.with_file_name("installs")).ok();
+        std::fs::remove_file(hroot.join(format!("omp/{OMP_VERSION}"))).unwrap();
+        std::fs::create_dir_all(&lock).unwrap();
+        let ok = Command::new("touch")
+            .args(["-d", "10 minutes ago"])
+            .arg(&lock)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let out = run();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!lock.exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1232,7 +1372,7 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(gone.status.code(), Some(LAUNCHER_REFUSED));
-        assert!(String::from_utf8_lossy(&gone.stderr).contains("call job_status"));
+        assert!(String::from_utf8_lossy(&gone.stderr).contains("call prepare_env"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

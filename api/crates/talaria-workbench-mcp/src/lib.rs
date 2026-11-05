@@ -10,7 +10,8 @@
 // default at start_job, on whichever registered git host the repo lives on
 // (talaria-git-hosts — GitHub, Forgejo, the operator's choice), the harness
 // works
-// ONLY inside that branch via the authenticated clone URL, finish_job opens
+// ONLY inside that branch, in the checkout provisioning cloned for it (its
+// git authenticates through the sandbox's credential helper), finish_job opens
 // the PR with the templated ticket-linked body. No raw pushes to default —
 // the workbench token is the only credential in the sandbox, and every
 // transition lands in task_activity ON A TICKET STILL OPEN TO AGENTS: an audit
@@ -59,6 +60,9 @@ use talaria_tasks::{
 pub mod devenv;
 pub mod provision;
 pub mod teardown;
+
+/// The PR a revise round resumes — [`resume_job_row`]'s argument.
+pub use talaria_git_hosts::PullRequestRef;
 
 use talaria_workbench_harnesses::{
     DOCTOR_SLOT, MCP_CONFIG_FILE, OMP, SANDBOX_SHAPE_ENV, fill_cmd, fill_cmd_arg, job_agent_dir,
@@ -139,7 +143,7 @@ pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = talaria_fleet_budget::MAX_LIVE_
 
 /// One `workbench_jobs` row as JOB_COLS reads it.
 #[derive(sqlx::FromRow)]
-struct JobRow {
+pub struct JobRow {
     id: String,
     agent_id: String,
     agent_model: String,
@@ -292,7 +296,7 @@ pub fn workbench_tools() -> Vec<Value> {
                     "taskId": { "type": "string", "description": "The ticket this job implements — id or ref (PLAT-118), from list_tickets or the assignment title. A bare number is not an id. ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket. Refused if that ticket is one you may not work: a board you are not allowed on, a closed ticket (done / failed / cancelled), an archived ticket, or a ticket on an archived board (ask for it to be reopened, or work the follow-up ticket); or a workchain step whose earlier step is still open (it starts once that step is signed off)." },
                     "repo": { "type": "string", "description": "owner/name — must be one of your granted repos" },
                     "host": { "type": "string", "description": "The git host the repo is on (list_repos' grants[].host). Needed only when the same owner/name is granted to you on more than one host." },
-                    "effort": { "type": "string", "enum": ["light", "standard", "heavy"], "description": "How hard this work is. Omitted means standard. standard and heavy require `plan` and are refused without it; light does not. heavy then waits for human approval before a clone URL exists." },
+                    "effort": { "type": "string", "enum": ["light", "standard", "heavy"], "description": "How hard this work is. Omitted means standard. standard and heavy require `plan` and are refused without it; light does not. heavy then waits for human approval before the job is provisioned (job_status then answers with its provision and lines)." },
                     "plan": { "type": "string", "description": "Required unless effort is light. Approach, files touched, test strategy. Omitting effort counts as standard, so a call with no plan is refused." },
                 },
                 "required": ["repo"],
@@ -1058,7 +1062,7 @@ async fn call_tool(
             // Plan-first, gated by effort: light auto-proceeds; standard
             // proceeds with the plan posted to the ticket (audit trail);
             // heavy WAITS for a human to approve the plan from the ticket
-            // before any clone URL exists. A refused admission queues —
+            // the job is provisioned at all. A refused admission queues —
             // a heavy job is never queued (it has its own human gate) and
             // an approved one never re-runs the admission door here.
             let gated = effort == "heavy" && task_id.is_some();
@@ -1300,7 +1304,7 @@ async fn call_tool(
             )
             .await;
             // A queued job is DONE for this call: no harness lines, no
-            // clone URL, no workdir — nothing exists to run yet. The agent
+            // provision, no workdir — nothing exists to run yet. The agent
             // gets the queue facts it polls for; the sweep starts the job
             // and job_status then answers with the started shape.
             if job.status == "queued" {
@@ -1320,20 +1324,6 @@ async fn call_tool(
                 }
                 return CallOutcome::Ok(queued);
             }
-            // The model is omp's call: the org's Workbench roles are its
-            // default / smol / slow / plan (rendered into the sandbox), and
-            // the invocation lines carry the default so they run as written.
-            // Effort decided planning and the RAM reserve above, not the model.
-            let HarnessAnswer {
-                harnesses,
-                session_dir,
-                model,
-                models,
-                coding,
-            } = match harness_answer(pg, &job.id, &agent.id, task_id.as_deref()).await {
-                Ok(a) => a,
-                Err(e) => return thrown(e),
-            };
             // One WORKSPACE per job — concurrent jobs never collide — under
             // the persistent volume, so clones and harness sessions survive
             // restarts.
@@ -1367,6 +1357,28 @@ async fn call_tool(
                 provision::wait(pg, &job.id, START_PROVISION_WAIT_MS).await
             };
             let ready = provision::is_ready(provision_state.as_ref());
+            // The model is omp's call: the org's Workbench roles are its
+            // default / smol / slow / plan (rendered into the sandbox), and
+            // the invocation lines carry the default so they run as written.
+            // Effort decided planning and the RAM reserve above, not the model.
+            let HarnessAnswer {
+                harnesses,
+                session_dir,
+                model,
+                models,
+                coding,
+            } = match harness_answer(
+                pg,
+                &job.id,
+                &agent.id,
+                task_id.as_deref(),
+                provision_state.as_ref(),
+            )
+            .await
+            {
+                Ok(a) => a,
+                Err(e) => return thrown(e),
+            };
             let rules = if gated {
                 "Heavy work waits for a human: your plan is on the ticket for approval. Poll job_status — once approved, Talaria provisions the job and job_status returns the lines to run. Do NOT begin building."
                     .to_string()
@@ -1485,7 +1497,19 @@ async fn call_tool(
                     // agent polling a first-time toolchain spends a turn a
                     // minute rather than several.
                     let mut state = provision::read(pg, &job.id).await;
-                    if provision::needs_provision(state.as_ref(), wall_ms(), retry) {
+                    // A ready job whose model moved (a ticket re-pinned, a
+                    // role changed) would hand out a model no preflight
+                    // checked: provision it again.
+                    let moved = match provision::is_ready(state.as_ref()) {
+                        true => match provision::job_model(pg, &agent.id, job.task_id.as_deref())
+                            .await
+                        {
+                            Ok(now) => provision::model_moved(state.as_ref(), &now),
+                            Err(e) => return thrown(e),
+                        },
+                        false => false,
+                    };
+                    if moved || provision::needs_provision(state.as_ref(), wall_ms(), retry) {
                         let pj = provision::ProvisionJob {
                             id: job.id.clone(),
                             agent_id: agent.id.clone(),
@@ -1518,7 +1542,15 @@ async fn call_tool(
                     // default here instead would silently move a pinned
                     // ticket's work onto another plan on its second turn.
                     if provision::is_ready(state.as_ref()) {
-                        match harness_answer(pg, &job.id, &agent.id, job.task_id.as_deref()).await {
+                        match harness_answer(
+                            pg,
+                            &job.id,
+                            &agent.id,
+                            job.task_id.as_deref(),
+                            state.as_ref(),
+                        )
+                        .await
+                        {
                             Ok(a) => {
                                 obj.insert("harnesses".into(), Value::Array(a.harnesses));
                                 obj.insert("sessionDir".into(), json!(a.session_dir));
@@ -2650,10 +2682,12 @@ async fn harness_answer(
     job_id: &str,
     agent_id: &str,
     task_id: Option<&str>,
+    state: Option<&Value>,
 ) -> Result<HarnessAnswer, String> {
-    // The SAME resolution provisioning's preflight checked (ticket pin, then
-    // the agent's plan, then the org's roles), so the line a ready job hands
-    // out names exactly the model that was vouched for.
+    // The resolution (ticket pin, then the agent's plan, then the org's
+    // roles) for the roles map and the coding account; the LINES name what
+    // the ready provision recorded and its preflight checked — job_status
+    // provisions again when the two part (provision::model_moved).
     let provision::JobModel {
         model,
         arg,
@@ -2662,6 +2696,23 @@ async fn harness_answer(
         plan,
         ..
     } = provision::job_model(pg, agent_id, task_id).await?;
+    let recorded = state
+        .filter(|s| provision::is_ready(Some(s)))
+        .and_then(|s| s.get("harness"))
+        .filter(|h| h.get("modelArg").is_some());
+    let (model, arg, env_prefix) = match recorded {
+        Some(h) => (
+            h.get("model").and_then(Value::as_str).map(str::to_string),
+            h.get("modelArg")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            h.get("envPrefix")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        ),
+        None => (model, arg, env_prefix),
+    };
     let session_dir = format!("/opt/data/workbench/sessions/{job_id}");
     // The job's own launcher (provision.rs lays it out): omp pinned, on the
     // harness's bun, in this job's own agent dir, standing in the workdir.
@@ -2994,11 +3045,11 @@ fn pr_next_step(status: &Value) -> &'static str {
 
 /// What a resumed job starts its revise round with — the same fields a new
 /// job row is written with.
-struct JobResume<'a> {
-    status: &'a str,
-    effort: &'a str,
-    plan: &'a str,
-    queue_reason: Option<&'a str>,
+pub struct JobResume<'a> {
+    pub status: &'a str,
+    pub effort: &'a str,
+    pub plan: &'a str,
+    pub queue_reason: Option<&'a str>,
 }
 
 /// Put a `pr_open` job back to work in place for a revise round: its new
@@ -3007,7 +3058,14 @@ struct JobResume<'a> {
 /// sweep, a second start_job) a miss — None — never a double resume.
 /// workspace_cleared_at goes back to null because the row is live again and
 /// that column is the sweep's "removed once" marker.
-async fn resume_job_row(
+///
+/// The previous round's PROVISION goes with it (`provision = null`): a round
+/// that waits in the queue or for approval is provisioned afresh when it
+/// starts (job_status provisions a started job that never was), rather than
+/// handing out the last round's lines over a workdir whose project env the
+/// finish removed — or whose launcher the sweep took with the workspace.
+/// Exported for the live test of exactly that.
+pub async fn resume_job_row(
     pg: &PgPool,
     job_id: &str,
     round: &JobResume<'_>,
@@ -3016,7 +3074,7 @@ async fn resume_job_row(
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update workbench_jobs set status = $2, effort = $3, plan = $4, \
                 queued_at = case when $2 = 'queued' then now() end, \
-                queued_reason = $5, workspace_cleared_at = null, \
+                queued_reason = $5, workspace_cleared_at = null, provision = null, \
                 pr_url = $6, pr_number = $7, updated_at = now() \
          where id = $1::uuid and status = 'pr_open' \
          returning {JOB_COLS}"

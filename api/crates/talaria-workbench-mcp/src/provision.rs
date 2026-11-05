@@ -129,8 +129,14 @@ if ! git -C "$tmp" rev-parse --verify -q HEAD >/dev/null 2>&1; then
   echo "the clone of $branch finished with no HEAD" >&2
   exit 1
 fi
-[ -d "$dir" ] && rmdir "$dir"
-mv "$tmp" "$dir"
+# The workdir must still be empty (or absent): something that appeared in it
+# while the clone ran is not overwritten, and the clone is never nested in it.
+if [ -d "$dir" ] && ! rmdir "$dir" 2>/dev/null; then
+  rm -rf "$tmp"
+  echo "$dir gained files while the repo was cloning, so the clone was not put there" >&2
+  exit 1
+fi
+mv -T "$tmp" "$dir"
 ident
 echo "cloned $branch at $(git -C "$dir" rev-parse --short HEAD)"
 "#;
@@ -265,13 +271,23 @@ pub async fn job_model(
 /// Everything a step printed goes through this before it is stored or shown:
 /// board members read the record, and the output is mise's, apt's, git's and
 /// a repo's own install hooks' — any of which can echo a token (`401 …
-/// Authorization: Bearer …`, a URL with userinfo). `known` holds the values
-/// Talaria handed this job and fleet: the repo's project env and the fleet's
-/// credential-named env, each taken out by value.
+/// Authorization: Bearer …`, a URL with userinfo). `known` holds the secret
+/// values Talaria handed this job and fleet, each taken out by value.
+///
+/// WHICH values: only ones a secret would be. A value is taken out by value
+/// when its key is credential-named (`*KEY*`, `*TOKEN*`, `*SECRET*`,
+/// `*PASSWORD*`, a DSN, …) or the value itself is credential-shaped, AND it
+/// is at least [`KNOWN_MIN_CHARS`] long — or it is a per-agent secret, which
+/// is a secret whatever its name. A project env's `CI=true` or
+/// `NODE_ENV=production` must not turn every `true` or `production` in a
+/// toolchain answer into a redaction.
 #[derive(Default, Clone)]
 pub struct Scrub {
     known: Vec<String>,
 }
+
+/// The shortest value [`Scrub`] takes out by value.
+pub const KNOWN_MIN_CHARS: usize = 8;
 
 impl Scrub {
     pub fn with(known: Vec<String>) -> Scrub {
@@ -282,33 +298,64 @@ impl Scrub {
         talaria_error::scrub_secrets(&talaria_agent_secrets::scrub_text(s, &self.known))
     }
 
-    /// The values to take out for one job: its repo's project env, and the
-    /// fleet's credential-shaped env (`fleet/.env`, each agent's
-    /// `secrets.env`) — what the sandbox it runs in was given.
-    pub async fn for_job(deps: &WorkbenchDeps, repo: &str) -> Scrub {
-        let mut known = Vec::new();
-        if let Ok(Some(body)) = talaria_repo_env::env_file(&deps.pg, &deps.sb, repo).await {
-            known.extend(dotenv_values(&body));
+    /// A JSON value with every STRING in it scrubbed, keys and the rest of
+    /// its shape untouched — never the serialized text, where a redaction can
+    /// land on a `true` or across a quote and break the JSON.
+    pub fn value(&self, v: &Value) -> Value {
+        match v {
+            Value::String(s) => Value::String(self.text(s)),
+            Value::Array(a) => Value::Array(a.iter().map(|x| self.value(x)).collect()),
+            Value::Object(o) => {
+                Value::Object(o.iter().map(|(k, x)| (k.clone(), self.value(x))).collect())
+            }
+            other => other.clone(),
         }
-        let dir = talaria_fleet_layout::fleet_dir();
-        if let Ok(text) = std::fs::read_to_string(dir.join(".env")) {
-            for (k, v) in dotenv_pairs(&text) {
-                if talaria_agent_secrets::may_hold_credential(&k, "x") {
+    }
+
+    /// The values to take out, from what the sandbox was given: the repo's
+    /// project env (dotenv bytes, as `env_file` writes them), the fleet's
+    /// `.env`, and each agent's `secrets.env`. Pure — [`Scrub::for_job`]
+    /// reads the sources.
+    pub fn from_sources(
+        repo_env: Option<&str>,
+        fleet_env: Option<&str>,
+        agent_secrets: &[String],
+    ) -> Scrub {
+        let long = |v: &str| v.chars().count() >= KNOWN_MIN_CHARS;
+        let mut known = Vec::new();
+        for text in [repo_env, fleet_env].into_iter().flatten() {
+            for (k, v) in dotenv_pairs(text) {
+                if long(&v) && talaria_agent_secrets::may_hold_credential(&k, &v) {
                     known.push(v);
                 }
             }
         }
-        if let Ok(agents) = std::fs::read_dir(dir.join("agents")) {
-            for a in agents.flatten() {
-                if let Ok(text) = std::fs::read_to_string(a.path().join("secrets.env")) {
-                    known.extend(dotenv_values(&text));
-                }
-            }
+        for text in agent_secrets {
+            known.extend(dotenv_values(text).into_iter().filter(|v| long(v)));
         }
-        known.retain(|v| v.chars().count() >= 3);
         known.sort();
         known.dedup();
         Scrub { known }
+    }
+
+    /// [`Scrub::from_sources`] for one job: its repo's project env, and the
+    /// fleet dir the sandbox was rendered from.
+    pub async fn for_job(deps: &WorkbenchDeps, repo: &str) -> Scrub {
+        let repo_env = talaria_repo_env::env_file(&deps.pg, &deps.sb, repo)
+            .await
+            .ok()
+            .flatten();
+        let dir = talaria_fleet_layout::fleet_dir();
+        let fleet_env = std::fs::read_to_string(dir.join(".env")).ok();
+        let mut agents = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir.join("agents")) {
+            for a in entries.flatten() {
+                if let Ok(text) = std::fs::read_to_string(a.path().join("secrets.env")) {
+                    agents.push(text);
+                }
+            }
+        }
+        Scrub::from_sources(repo_env.as_deref(), fleet_env.as_deref(), &agents)
     }
 }
 
@@ -480,8 +527,24 @@ pub fn next_step(state: &Value) -> String {
         ),
         Some("failed") => {
             let step = state.get("step").and_then(Value::as_str).unwrap_or("?");
+            // "Retried" only when it was: sandbox and preflight never are, and
+            // neither is a step whose attempt took longer than RETRY_UNDER_MS.
+            let retried = state
+                .get("steps")
+                .and_then(Value::as_array)
+                .and_then(|steps| {
+                    steps.iter().rev().find(|s| {
+                        s.get("step").and_then(Value::as_str) == Some(step)
+                            && s.get("ok") == Some(&json!(false))
+                    })
+                })
+                .and_then(|s| s.get("attempts"))
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                > 1;
             format!(
-                "Provisioning FAILED at `{step}` (already retried once): the platform could not make this job's workbench ready, and it is not yours to repair — do not install, upgrade or work around the harness or toolchain. {}If the output looks transient (a timeout, a network or git-host error, the install lock), provision again ONCE with prepare_env (or job_status with retry: true). If it fails again: report_problem with the step and output, comment on the ticket with what failed, and call report_outcome with errorMessage saying the workbench could not be provisioned.",
+                "Provisioning FAILED at `{step}`{}: the platform could not make this job's workbench ready, and it is not yours to repair — do not install, upgrade or work around the harness or toolchain. {}If the output looks transient (a timeout, a network or git-host error, the install lock), provision again ONCE with prepare_env (or job_status with retry: true). If it fails again: report_problem with the step and output, comment on the ticket with what failed, and call report_outcome with errorMessage saying the workbench could not be provisioned.",
+                if retried { " (already retried once)" } else { "" },
                 if step == "toolchain" {
                     "If the output shows the REPO declares something wrong (a tool or package name or version in its mise.toml or .talaria/workbench.toml), fix that declaration in the checkout and call prepare_env to provision again. "
                 } else {
@@ -515,6 +578,25 @@ pub fn needs_provision(state: Option<&Value>, now: i64, retry: bool) -> bool {
         Some("failed") => retry,
         _ => true,
     }
+}
+
+/// Has the job's model moved since its ready provision checked one — a
+/// ticket re-pinned to another plan, an agent's pick or the org's role
+/// changed? Then the lines it would hand out name a model no preflight
+/// checked, and job_status provisions it again. A record from before the
+/// resolved model was stored (no `modelArg`) is not second-guessed. Pure.
+pub fn model_moved(state: Option<&Value>, now: &JobModel) -> bool {
+    let Some(h) = state
+        .filter(|s| s.get("state").and_then(Value::as_str) == Some("ready"))
+        .and_then(|s| s.get("harness"))
+    else {
+        return false;
+    };
+    let Some(arg) = h.get("modelArg") else {
+        return false;
+    };
+    arg.as_str() != now.arg.as_deref()
+        || h.get("envPrefix").and_then(Value::as_str).unwrap_or("") != now.env_prefix
 }
 
 // ── Claiming ────────────────────────────────────────────────────────────────
@@ -770,17 +852,38 @@ fn ended(step: &str, why: String) -> StepFailure {
     }
 }
 
-/// Begin a step: the job must still be live, and the record says where it is.
+/// May this run keep going? The job is still started with its workspace,
+/// and the record is still THIS run's — a run taken over (its heartbeat
+/// stalled past STALE_AFTER_MS while it was alive) must stop rather than
+/// retry or clone over its successor.
+async fn may_continue(pg: &PgPool, job_id: &str, run_id: &str) -> Result<(), String> {
+    still_live(pg, job_id).await?;
+    let owner: Option<Option<String>> =
+        sqlx::query_scalar("select provision->>'runId' from workbench_jobs where id = $1::uuid")
+            .bind(job_id)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| format!("job read: {e}"))?;
+    match owner.flatten() {
+        Some(o) if o == run_id => Ok(()),
+        _ => Err("a newer provision of this job took over".into()),
+    }
+}
+
+/// Begin a step: the job must still be live and the record this run's; the
+/// record, scrubbed (a mid-run save is on the wire too), says where it is.
 async fn begin(
     pg: &PgPool,
     job: &ProvisionJob,
     rec: &mut Record,
+    scrub: &Scrub,
     step: &str,
 ) -> Result<(), StepFailure> {
-    still_live(pg, &job.id)
+    may_continue(pg, &job.id, &rec.run_id)
         .await
         .map_err(|why| ended(step, why))?;
     rec.begin(step);
+    rec.scrub(scrub);
     if !save(pg, &job.id, rec).await {
         return Err(ended(
             step,
@@ -790,32 +893,29 @@ async fn begin(
     Ok(())
 }
 
-/// Run `attempt` once, and once more after a pause when it failed quickly
-/// (see [`RETRY_UNDER_MS`]) and the job is still live.
-async fn with_retry<T, F, Fut>(
-    pg: &PgPool,
-    job: &ProvisionJob,
+/// Run `attempt` once, and once more after `pause_ms` when it failed quickly
+/// (see [`RETRY_UNDER_MS`]) — and only if `gate` still lets the run go on
+/// (the job live, the record this run's). The second failure carries
+/// `attempts: 2`. Pure policy over its closures, so the tests drive it.
+pub async fn retry_once<T, F, Fut, G, GFut>(
     step: &str,
+    pause_ms: u64,
     mut attempt: F,
+    mut gate: G,
 ) -> Result<(T, u32), StepFailure>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, StepFailure>>,
+    G: FnMut() -> GFut,
+    GFut: std::future::Future<Output = Result<(), String>>,
 {
-    let first = attempt().await;
-    match first {
+    match attempt().await {
         Ok(v) => Ok((v, 1)),
         Err(f) if f.ended || f.ms >= RETRY_UNDER_MS => Err(f),
         Err(f) => {
-            tracing::info!(
-                "[workbench] provision of job {} retries {step} after: {}",
-                job.id,
-                f.error
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(RETRY_PAUSE_MS)).await;
-            still_live(pg, &job.id)
-                .await
-                .map_err(|why| ended(step, why))?;
+            tracing::info!("[workbench] provision retries {step} after: {}", f.error);
+            tokio::time::sleep(std::time::Duration::from_millis(pause_ms)).await;
+            gate().await.map_err(|why| ended(step, why))?;
             match attempt().await {
                 Ok(v) => Ok((v, 2)),
                 Err(mut f2) => {
@@ -827,6 +927,24 @@ where
     }
 }
 
+/// [`retry_once`] for a step of this run.
+async fn with_retry<T, F, Fut>(
+    pg: &PgPool,
+    job: &ProvisionJob,
+    run_id: &str,
+    step: &str,
+    attempt: F,
+) -> Result<(T, u32), StepFailure>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, StepFailure>>,
+{
+    retry_once(step, RETRY_PAUSE_MS, attempt, || {
+        may_continue(pg, &job.id, run_id)
+    })
+    .await
+}
+
 async fn steps(
     deps: &WorkbenchDeps,
     job: &ProvisionJob,
@@ -834,6 +952,7 @@ async fn steps(
     scrub: &Scrub,
 ) -> Result<(), StepFailure> {
     let pg = &deps.pg;
+    let run_id = rec.run_id.clone();
     let container = managed_container(pg, &job.department).await;
     let workdir = job.workdir();
     // References, so each attempt's `async move` copies them, not the strings.
@@ -851,7 +970,7 @@ async fn steps(
     let launcher = wh::job_launcher(&job.id).ok_or_else(|| slot_err("harness"))?;
 
     // sandbox
-    begin(pg, job, rec, "sandbox").await?;
+    begin(pg, job, rec, scrub, "sandbox").await?;
     let t = std::time::Instant::now();
     let shape = docker_exec_as(
         container,
@@ -894,9 +1013,9 @@ async fn steps(
     );
 
     // clone
-    begin(pg, job, rec, "clone").await?;
+    begin(pg, job, rec, scrub, "clone").await?;
     let t = std::time::Instant::now();
-    let (out, attempts) = with_retry(pg, job, "clone", || async move {
+    let (out, attempts) = with_retry(pg, job, &run_id, "clone", || async move {
         let t = std::time::Instant::now();
         let url = match crate::hosts::host(pg, &deps.sb, &job.host_id).await {
             Ok(host) => host.clone_url(&job.repo),
@@ -935,9 +1054,9 @@ async fn steps(
     rec.ok("clone", elapsed_ms(t), attempts, out.trim());
 
     // toolchain
-    begin(pg, job, rec, "toolchain").await?;
+    begin(pg, job, rec, scrub, "toolchain").await?;
     let t = std::time::Instant::now();
-    let (mut toolchain, attempts) = with_retry(pg, job, "toolchain", || async move {
+    let (mut toolchain, attempts) = with_retry(pg, job, &run_id, "toolchain", || async move {
         let t = std::time::Instant::now();
         devenv::prepare_env(pg, &job.department, workdir)
             .await
@@ -954,7 +1073,7 @@ async fn steps(
     .await?;
     // The project env carries the repo's secrets: never written for a job
     // that ended while its toolchain installed.
-    still_live(pg, &job.id)
+    may_continue(pg, &job.id, &rec.run_id)
         .await
         .map_err(|why| ended("toolchain", why))?;
     let env_vars = devenv::deliver_job_env(pg, &deps.sb, &job.department, workdir, &job.repo)
@@ -981,12 +1100,12 @@ async fn steps(
     );
     let talaria_app = toolchain["talariaApp"] == json!(true);
     // The toolchain answer goes to the agent (prepare_env): scrubbed too.
-    rec.toolchain = serde_json::from_str(&scrub.text(&toolchain.to_string())).ok();
+    rec.toolchain = Some(scrub.value(&toolchain));
 
     // harness
-    begin(pg, job, rec, "harness").await?;
+    begin(pg, job, rec, scrub, "harness").await?;
     let t = std::time::Instant::now();
-    let (runtime, attempts) = with_retry(pg, job, "harness", || async move {
+    let (runtime, attempts) = with_retry(pg, job, &run_id, "harness", || async move {
         let t = std::time::Instant::now();
         devenv::ensure_harness_runtime(pg, &job.department)
             .await
@@ -1001,7 +1120,7 @@ async fn steps(
         .map_err(|e| failure("harness", t, e, String::new()))?;
     let text = wh::launcher_script(&job.id, workdir, &runtime.bun_path, jm.gateway)
         .ok_or_else(|| slot_err("harness"))?;
-    still_live(pg, &job.id)
+    may_continue(pg, &job.id, &rec.run_id)
         .await
         .map_err(|why| ended("harness", why))?;
     docker_exec_as(
@@ -1054,6 +1173,10 @@ async fn steps(
         "sessionDir": job.session_dir(),
         "gateway": jm.gateway,
         "model": jm.model,
+        // What the lines will say: handed out FROM here, so they name the
+        // model this preflight checked, not one resolved again later.
+        "modelArg": jm.arg,
+        "envPrefix": jm.env_prefix,
     }));
     rec.ok(
         "harness",
@@ -1064,7 +1187,7 @@ async fn steps(
 
     // preflight — of the model the job's lines will name (job_model, the
     // same resolution harness_answer uses), not some other one.
-    begin(pg, job, rec, "preflight").await?;
+    begin(pg, job, rec, scrub, "preflight").await?;
     let t = std::time::Instant::now();
     let model_check = if jm.gateway {
         match jm.model.as_deref() {
@@ -1173,6 +1296,212 @@ pub async fn preflight(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn quick_fail(step: &str) -> StepFailure {
+        failure(
+            step,
+            std::time::Instant::now(),
+            format!("{step} broke"),
+            String::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_quick_failure_is_retried_once_and_a_slow_or_ended_one_is_not() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let ok_gate = || async { Ok::<(), String>(()) };
+        // Succeeds first time: one attempt.
+        let (v, n) = retry_once("clone", 0, || async { Ok::<_, StepFailure>(7) }, ok_gate)
+            .await
+            .unwrap();
+        assert_eq!((v, n), (7, 1));
+        // Fails quickly, then works: two attempts, and the gate was asked.
+        let calls = AtomicU32::new(0);
+        let gates = AtomicU32::new(0);
+        let (_, n) = retry_once(
+            "clone",
+            0,
+            || async {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(quick_fail("clone"))
+                } else {
+                    Ok(())
+                }
+            },
+            || async {
+                gates.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(gates.load(Ordering::SeqCst), 1);
+        // Fails twice: the failure says it was retried.
+        let f = retry_once(
+            "toolchain",
+            0,
+            || async { Err::<(), _>(quick_fail("toolchain")) },
+            ok_gate,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(f.attempts, 2);
+        // A failure that took RETRY_UNDER_MS is not doubled.
+        let slow = AtomicU32::new(0);
+        let f = retry_once(
+            "clone",
+            0,
+            || async {
+                slow.fetch_add(1, Ordering::SeqCst);
+                let mut f = quick_fail("clone");
+                f.ms = RETRY_UNDER_MS;
+                Err::<(), _>(f)
+            },
+            ok_gate,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!((f.attempts, slow.load(Ordering::SeqCst)), (1, 1));
+        // Taken over (or the job ended) between attempts: no second attempt.
+        let tries = AtomicU32::new(0);
+        let f = retry_once(
+            "clone",
+            0,
+            || async {
+                tries.fetch_add(1, Ordering::SeqCst);
+                Err::<(), _>(quick_fail("clone"))
+            },
+            || async { Err("a newer provision of this job took over".to_string()) },
+        )
+        .await
+        .unwrap_err();
+        assert!(f.ended && f.error.contains("took over"), "{f:?}");
+        assert_eq!(
+            tries.load(Ordering::SeqCst),
+            1,
+            "a run taken over does not retry"
+        );
+    }
+
+    #[test]
+    fn scrub_values_come_from_secrets_not_from_config() {
+        let repo_env = "CI='true'\nNODE_ENV='production'\nBRANCH='main'\nNPM_TOKEN='npm_abcdefghijklmnop'\nSHORT_KEY='abc'\nDATABASE_URL='postgres://app:pw-secret-9@db/app'\n";
+        let fleet = "LLM_WORKBENCH_API_KEY=tlk_fleetkeyvalue123\nAGENT_DNS_1=1.1.1.1\nTZ=Europe/Amsterdam\n";
+        let agent = vec!["ANYNAME=agent-secret-value\nTINY=xy\n".to_string()];
+        let scrub = Scrub::from_sources(Some(repo_env), Some(fleet), &agent);
+        for secret in [
+            "npm_abcdefghijklmnop",
+            "postgres://app:pw-secret-9@db/app",
+            "tlk_fleetkeyvalue123",
+            "agent-secret-value",
+        ] {
+            assert!(
+                scrub.known.iter().any(|k| k == secret),
+                "{secret} is taken out"
+            );
+        }
+        for config in [
+            "true",
+            "production",
+            "main",
+            "abc",
+            "1.1.1.1",
+            "Europe/Amsterdam",
+            "xy",
+        ] {
+            assert!(
+                !scrub.known.iter().any(|k| k == config),
+                "{config} is not a secret"
+            );
+        }
+        let text =
+            scrub.text("deploying main to production with CI=true; token npm_abcdefghijklmnop");
+        assert!(
+            text.contains("main") && text.contains("production") && text.contains("true"),
+            "{text}"
+        );
+        assert!(!text.contains("npm_abcdefghijklmnop"), "{text}");
+    }
+
+    #[test]
+    fn the_toolchain_answer_is_scrubbed_value_by_value_and_keeps_its_shape() {
+        // Even a scrub that knew `true` (the old text scrub took any value
+        // of 3+ characters) cannot touch a JSON boolean: only strings are
+        // scrubbed.
+        let scrub = Scrub::with(vec!["true".into(), "s3cr3t-value-xyz".into()]);
+        let tc = json!({
+            "talariaApp": true,
+            "sccache": true,
+            "tools": ["bun@1.3.14"],
+            "resolved": "bun 1.3.14 ~/mise.toml (fetched with s3cr3t-value-xyz)",
+            "projectEnv": { "vars": 2, "path": "/w/.talaria/env" },
+        });
+        let out = scrub.value(&tc);
+        assert_eq!(out["talariaApp"], json!(true));
+        assert_eq!(out["sccache"], json!(true));
+        assert_eq!(out["projectEnv"]["vars"], json!(2));
+        assert_eq!(out["tools"], json!(["bun@1.3.14"]));
+        assert!(
+            !out["resolved"]
+                .as_str()
+                .unwrap()
+                .contains("s3cr3t-value-xyz")
+        );
+        // And the answer stays an object prepare_env can return.
+        assert!(out.is_object());
+    }
+
+    #[test]
+    fn only_a_step_that_was_retried_says_so() {
+        let mut r = Record::start(1);
+        r.fail(&quick_fail("preflight"), 2);
+        let once = next_step(&r.to_json(2));
+        assert!(!once.contains("already retried"), "{once}");
+        let mut r = Record::start(1);
+        let mut f = quick_fail("clone");
+        f.attempts = 2;
+        r.fail(&f, 2);
+        let twice = next_step(&r.to_json(2));
+        assert!(
+            twice.contains("FAILED at `clone` (already retried once)"),
+            "{twice}"
+        );
+    }
+
+    #[test]
+    fn a_ready_record_whose_model_moved_is_provisioned_again() {
+        let jm = |arg: Option<&str>, prefix: &str| JobModel {
+            gateway: true,
+            model: arg.map(|a| a.trim_start_matches("talaria/").to_string()),
+            arg: arg.map(str::to_string),
+            env_prefix: prefix.to_string(),
+            roles: wh::OmpRoles::default(),
+            plan: None,
+        };
+        let ready =
+            json!({ "state": "ready", "harness": { "modelArg": "talaria/m1", "envPrefix": "" } });
+        assert!(!model_moved(Some(&ready), &jm(Some("talaria/m1"), "")));
+        assert!(
+            model_moved(Some(&ready), &jm(Some("talaria/m2"), "")),
+            "a re-pin"
+        );
+        assert!(
+            model_moved(Some(&ready), &jm(Some("talaria/m1"), "PI_SMOL_MODEL=x ")),
+            "a role moved"
+        );
+        assert!(
+            model_moved(Some(&ready), &jm(None, "")),
+            "no model any more"
+        );
+        let older = json!({ "state": "ready", "harness": { "model": "m1" } });
+        assert!(
+            !model_moved(Some(&older), &jm(Some("talaria/m2"), "")),
+            "not second-guessed"
+        );
+        let failed = json!({ "state": "failed", "harness": { "modelArg": "talaria/m1" } });
+        assert!(!model_moved(Some(&failed), &jm(Some("talaria/m2"), "")));
+    }
 
     #[test]
     fn a_record_runs_then_lands_ready_with_every_step() {
@@ -1524,6 +1853,60 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().contains(".clone."))
             .collect();
         assert!(leftovers.is_empty(), "no temp clone left behind");
+        // Something appears in the workdir while the clone runs (a git that
+        // writes there after cloning stands in for it): the clone is not
+        // nested inside it, and the script fails rather than reporting success.
+        let shim = tmp.join("shim");
+        std::fs::create_dir_all(&shim).unwrap();
+        let real_git = String::from_utf8(
+            Command::new("sh")
+                .args(["-c", "command -v git"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let intruded = tmp.join("jobs/intruded");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let g = shim.join("git");
+            std::fs::write(
+                &g,
+                format!(
+                    "#!/bin/sh\n{} \"$@\"; rc=$?\nif [ \"$1\" = clone ]; then mkdir -p {d} && touch {d}/stray; fi\nexit $rc\n",
+                    real_git.trim(),
+                    d = intruded.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&g, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            shim.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = Command::new("sh")
+            .args(["-c", CLONE_SH, "sh"])
+            .arg(&intruded)
+            .arg(origin.to_str().unwrap())
+            .arg("agent/x")
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(String::from_utf8_lossy(&out.stderr).contains("gained files"));
+        assert!(!intruded.join(".git").exists(), "not a checkout");
+        let names: Vec<String> = std::fs::read_dir(&intruded)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["stray".to_string()], "nothing nested in it");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
