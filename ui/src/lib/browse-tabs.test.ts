@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   assertPinnedFirst,
+  browseFallback,
   displayTitle,
   pinPayload,
   tabGroups,
@@ -100,5 +101,27 @@ describe('pinPayload', () => {
   it('names the command the bridge sends for a pin toggle', () => {
     expect(pinPayload('tab-1', true)).toEqual({ id: 'tab-1', pinned: true })
     expect(pinPayload('tab-9', false)).toEqual({ id: 'tab-9', pinned: false })
+  })
+})
+
+describe('browseFallback', () => {
+  it('a browser gets the honest fallback: the why, and the desktop releases link', () => {
+    const maybeFallback = browseFallback(false)
+    // The shell contract says a browser always gets the block; the assert
+    // both narrows the type and pins that contract here.
+    expect(maybeFallback).not.toBe(null)
+    const fallback = maybeFallback as NonNullable<typeof maybeFallback>
+    expect(fallback.hook).toBe('visible')
+    // The why: one sentence a person can act on — the page cannot render
+    // native webviews, and that is what Browse is.
+    expect(fallback.why).toMatch(/webview/i)
+    // The link: the releases page that carries the installers
+    // (DESKTOP.md: desktop-vX.Y.Z releases are the only ones with installers).
+    expect(fallback.linkUrl).toBe('https://github.com/outcrop-labs/talaria/releases')
+    expect(fallback.linkLabel).toMatch(/desktop/i)
+  })
+
+  it('in the shell there is no fallback to render at all', () => {
+    expect(browseFallback(true)).toBe(null)
   })
 })

@@ -65,3 +65,30 @@ export function displayTitle(tab: BrowserTab): string {
 export function pinPayload(id: string, pinned: boolean): { id: string; pinned: boolean } {
   return { id, pinned }
 }
+
+/** The releases page that carries the desktop installers (DESKTOP.md: only
+ *  `desktop-vX.Y.Z` releases have them; tauri.conf.json's updater feed names
+ *  the same repo). The one download link every surface that points a person
+ *  at the desktop app shares. */
+export const DESKTOP_RELEASES_URL = 'https://github.com/outcrop-labs/talaria/releases'
+
+/** What the /browse route renders when it is NOT in the desktop shell (P3,
+ *  the honest fallback): null in the shell — there is nothing to say. The
+ *  `hook` is the stable QA attribute the fallback container carries
+ *  (data-browse-fallback, the TALA-4 convention): `visible` once the real
+ *  explainer is up, so browser QA can find it and no test mistakes the
+ *  placeholder for the promise. */
+export function browseFallback(inShell: boolean): {
+  hook: 'visible'
+  why: string
+  linkUrl: string
+  linkLabel: string
+} | null {
+  if (inShell) return null
+  return {
+    hook: 'visible',
+    why: 'Browse opens web pages as native webviews inside Talaria Desktop — a browser page cannot embed another site that way.',
+    linkUrl: DESKTOP_RELEASES_URL,
+    linkLabel: 'Get the desktop app',
+  }
+}

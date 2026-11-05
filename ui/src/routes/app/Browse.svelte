@@ -12,7 +12,10 @@
     shellSetBrowserTabPinned,
     shellSetBrowseMode,
   } from '@/lib/desktop-shell'
-  import { assertPinnedFirst, displayTitle, tabGroups } from '@/lib/browse-tabs'
+  import { assertPinnedFirst, browseFallback, displayTitle, tabGroups } from '@/lib/browse-tabs'
+
+  // P3: the honest fallback a browser gets — derived in browse-tabs.ts and
+  // only rendered here. In the shell it is null and this branch never runs.
 
   // The Browse view (TALA-83): tabs and pinned web apps, rendered by the
   // DESKTOP SHELL as native webviews — never iframes (the research verdict:
@@ -75,13 +78,29 @@
   function leave(): void {
     void shellSetBrowseMode(false)
   }
+
+  const fallback = browseFallback(shell)
 </script>
 
-{#if !shell}
-  <!-- P3's honest fallback replaces this block: data-browse-fallback is the
-       stable hook (the TALA-4 QA-hook convention). -->
-  <div data-browse-fallback="pending" class="p-8 font-sans text-sm text-muted">
-    Browse lives in the desktop app.
+{#if fallback}
+  <!-- The honest fallback (P3): a browser cannot render native webviews, and
+       pretending otherwise is worse than saying so. The hook attribute is the
+       stable QA contract (TALA-4's convention): "visible" once this real
+       explainer is up, never "pending" again. -->
+  <div
+    data-browse-fallback={fallback.hook}
+    class="mx-auto max-w-xl px-8 py-16 font-sans"
+  >
+    <div class="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Browse</div>
+    <h1 class="mt-2 text-lg font-medium text-fg">Browse lives in the desktop app</h1>
+    <p class="mt-3 text-sm text-muted">{fallback.why}</p>
+    <a
+      href={fallback.linkUrl}
+      class="mt-5 inline-flex items-center gap-2 rounded-md border border-line bg-panel px-3 py-1.5 text-sm text-fg transition-colors hover:bg-raised"
+      rel="noreferrer"
+    >
+      {fallback.linkLabel}
+    </a>
   </div>
 {:else}
   <div class="flex h-full min-h-0 flex-col">
