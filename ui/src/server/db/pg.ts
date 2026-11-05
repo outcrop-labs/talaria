@@ -4828,6 +4828,29 @@ alter table tasks drop column if exists conversation_id`,
   // does not end a turn in the agent; a stop has to name it, and the api
   // process that read the id may be gone by the time a person presses Stop.
   `alter table runs add column if not exists agent_run_id text`,
+  // WHAT ONE PERSON PINNED TO THE TOP OF THEIR COMMS RAIL: a channel (a relay
+  // and a DM are channels too), an agent, or one thread with an agent, keyed
+  // in the rail's own grammar (`channel:<id>`, `agent:<model>`,
+  // `thread:<id>`). It lived in each browser's localStorage, so a pin made on
+  // the laptop never reached the desktop app. Per person; cascade-deleted
+  // with them. A key whose channel or thread is gone simply lists nothing.
+  `create table if not exists comms_pins (
+     user_id uuid not null references users(id) on delete cascade,
+     pin_key text not null,
+     created_at timestamptz not null default now(),
+     primary key (user_id, pin_key)
+   )`,
+  // A person's timed mute of ONE AGENT's direct messages — its replies in
+  // their threads and its own check-ins. The channel mute's twin
+  // (channel_members.muted_until): the rows still land in-app, quiet, and no
+  // toast, push or mail goes out while it holds. An expired row is the same
+  // as none; unmuting deletes it.
+  `create table if not exists agent_dm_mutes (
+     user_id uuid not null references users(id) on delete cascade,
+     agent_model text not null,
+     muted_until timestamptz not null,
+     primary key (user_id, agent_model)
+   )`,
   // A workbench job's provisioning: Talaria clones the branch, installs the
   // toolchain and the pinned harness, and preflights it before the agent gets
   // a single command. One jsonb record (state ready / running / failed, the

@@ -16,6 +16,7 @@
 use sqlx::PgPool;
 use talaria_realtime::RealtimeDeps;
 
+pub mod agent_mutes;
 pub mod brief;
 pub mod classes;
 pub mod defer;
@@ -30,6 +31,7 @@ pub mod retention;
 pub mod threads;
 pub mod write;
 
+pub use agent_mutes::*;
 pub use brief::*;
 pub use classes::*;
 pub use href::*;

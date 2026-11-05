@@ -31,6 +31,7 @@ mod browser_toolsets_live;
 mod channel_thread_reads;
 mod chips_landing_live;
 mod code_probe_child;
+mod comms_rail_live;
 mod conversation_audience_live;
 mod conversation_layout_live;
 mod conversation_reactions_live;
