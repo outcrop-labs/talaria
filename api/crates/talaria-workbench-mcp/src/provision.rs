@@ -6,7 +6,7 @@
 // fleet every one of those went wrong somewhere, so each job's agent spent its
 // first 13 to 75 turns (1M to 5M tokens) repairing its own harness before the
 // ticket's first real step, and wrote its fixes down as wrappers the next job
-// copied (docs: the 2026-11-04 findings, `release/workbench-provisioning/`).
+// copied.
 //
 // Now Talaria does the chores, in order, as the agent's user inside its
 // sandbox, and checks the result before the agent sees a single command:
@@ -16,15 +16,23 @@
 //   toolchain  — the repo's declared toolchains and packages (prepare_env)
 //   harness    — bun and the PINNED omp, then this job's own harness dir and
 //                launcher (talaria_workbench_harnesses::launcher_script)
-//   preflight  — the launcher starts omp, its dir is writable, the model is in
-//                its catalog, and the gateway accepts the key — no model call
+//   preflight  — the launcher starts omp, its dir is writable, the model the
+//                job's lines name is in its catalog, and the gateway accepts
+//                the key — no model call
 //
 // The state lives on the job row (`workbench_jobs.provision`, jsonb) so the
 // MCP answers, the ticket strip and the Work view all read one record, and so
 // a provision survives the api restarting under it: a run that stops
-// heartbeating is reclaimed by the next job_status. A failure is LOUD: the
-// state names the failing step and what it printed, the ticket gets an audit
-// line, and the agent is given no harness lines to discover the breakage with.
+// heartbeating is taken over by the next job_status. A failure is LOUD: the
+// state names the failing step and what it printed (scrubbed of anything
+// credential-shaped — board members read it), the ticket gets an audit line,
+// and the agent is given no harness lines to discover the breakage with.
+//
+// THE WIRE (`provision` on GET /api/workbench/jobs and the MCP answers) is a
+// contract the Work view reads: `state` (running | ready | failed), `step`,
+// `steps[]` ({step, ok, ms, note, attempts?}), `error`, `output`, `warnings`,
+// `harness` ({omp, bun, launcher, agentDir, sessionDir, gateway, model}),
+// `startedAt`, `finishedAt`. Keep those names.
 
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
@@ -32,9 +40,8 @@ use sqlx::PgPool;
 use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, now_ms};
 use talaria_body::truncate_utf16;
 use talaria_fleet_docker::{docker_exec_as, managed_container};
-use talaria_workbench_harnesses as wh;
-
 use talaria_git_hosts::GitHost;
+use talaria_workbench_harnesses as wh;
 
 use crate::{WorkbenchActor, WorkbenchDeps, devenv, log_ticket};
 
@@ -46,7 +53,7 @@ const HEARTBEAT_MS: u64 = 20_000;
 /// …and one that has not for this long is dead (its api restarted): the next
 /// claim takes it over. Long enough to ride out a slow DB write, short enough
 /// that a job_status a few minutes later restarts it.
-const STALE_AFTER_MS: i64 = 90_000;
+pub const STALE_AFTER_MS: i64 = 90_000;
 
 /// How long `git clone` may take: a large monorepo on a slow link.
 const CLONE_TIMEOUT_MS: u64 = 15 * 60_000;
@@ -55,16 +62,32 @@ const PREFLIGHT_TIMEOUT_MS: u64 = 2 * 60_000;
 /// What a step's failure keeps of its output, for the job row and the agent.
 const OUTPUT_KEEP: usize = 4_000;
 
+/// A step that fails is tried once more — a git host blip, a registry
+/// timeout, the install lock held by a sibling job — unless the attempt that
+/// failed already took this long: a wall-clock timeout is not worth doubling.
+const RETRY_UNDER_MS: u64 = 5 * 60_000;
+const RETRY_PAUSE_MS: u64 = 10_000;
+
 /// Clone the job's branch into its workdir, as the agent's user. Positional:
 /// `$1` workdir, `$2` clone URL (no credential: the sandbox's git asks Talaria
-/// for one), `$3` branch. An existing checkout is NEVER touched — it can hold
-/// the agent's uncommitted work from an earlier round — beyond giving it the
-/// agent's git identity when it has none. Hermes strips nothing git needs,
-/// but commits from a fresh shell still failed live with `unable to
-/// auto-detect email address`, so the identity lives in the repo's own
-/// config, from the author the render stamped on the container.
+/// for one), `$3` branch.
+///
+/// The clone goes to a temp dir beside the workdir and is RENAMED into place
+/// only once it has a HEAD, so a clone that was cut off (the exec's timeout
+/// kills the docker CLI, not the git inside the container) never leaves a
+/// tree that reads as a checkout. A stray clone from an earlier attempt is
+/// killed and removed first.
+///
+/// An existing checkout is NEVER touched — it can hold the agent's
+/// uncommitted work from an earlier round — beyond giving it the agent's git
+/// identity when it has none. One with no HEAD (cut off before this script
+/// cloned to a temp dir) is moved aside, not deleted, and cloned again.
+/// Commits from a fresh shell failed live with `unable to auto-detect email
+/// address`, so the identity lives in the repo's own config, from the author
+/// the render stamped on the container.
 pub const CLONE_SH: &str = r#"set -eu
 dir="$1"; url="$2"; branch="$3"
+parent=$(dirname "$dir"); base=$(basename "$dir")
 ident() {
   if [ -n "${GIT_AUTHOR_NAME:-}" ] && ! git -C "$dir" config --local user.name >/dev/null 2>&1; then
     git -C "$dir" config user.name "$GIT_AUTHOR_NAME"
@@ -73,21 +96,41 @@ ident() {
     git -C "$dir" config user.email "$GIT_AUTHOR_EMAIL"
   fi
 }
+# An earlier attempt's clone, still running or cut off: stop it, drop it.
+for p in /proc/[0-9]*; do
+  [ "${p#/proc/}" = "$$" ] && continue
+  tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -qF "$parent/.$base.clone." && kill -KILL "${p#/proc/}" 2>/dev/null
+done
+rm -rf "$parent/.$base.clone."* 2>/dev/null || true
 if [ -d "$dir/.git" ]; then
-  ident
-  echo "kept the checkout already there: $(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?') at $(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo '?')"
-  exit 0
+  if git -C "$dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    ident
+    echo "kept the checkout already there: $(git -C "$dir" rev-parse --abbrev-ref HEAD) at $(git -C "$dir" rev-parse --short HEAD)"
+    exit 0
+  fi
+  aside="$parent/.$base.broken.$(date +%s)"
+  mv "$dir" "$aside"
+  echo "moved a checkout with no HEAD aside to $aside" >&2
 fi
 if [ -e "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
   echo "$dir exists, is not empty and is not a git checkout, so the repo cannot be cloned into it" >&2
   exit 1
 fi
-mkdir -p "$dir"
+mkdir -p "$parent"
+tmp="$parent/.$base.clone.$$"
 export GIT_TERMINAL_PROMPT=0
-if ! out=$(git clone --quiet --branch "$branch" -- "$url" "$dir" 2>&1); then
+if ! out=$(git clone --quiet --branch "$branch" -- "$url" "$tmp" 2>&1); then
   printf '%s\n' "$out" | tail -n 15 >&2
+  rm -rf "$tmp"
   exit 1
 fi
+if ! git -C "$tmp" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  rm -rf "$tmp"
+  echo "the clone of $branch finished with no HEAD" >&2
+  exit 1
+fi
+[ -d "$dir" ] && rmdir "$dir"
+mv "$tmp" "$dir"
 ident
 echo "cloned $branch at $(git -C "$dir" rev-parse --short HEAD)"
 "#;
@@ -149,12 +192,164 @@ impl ProvisionJob {
     }
 }
 
+// ── Which model the job's lines run ─────────────────────────────────────────
+
+/// The model a job's harness lines name, resolved ONCE for both the lines
+/// (`harness_answer`) and the preflight that vouches for them: the ticket's
+/// pinned plan, else the agent's own plan, else the org's Workbench roles.
+/// A gateway plan that fills no default falls back to the org's default, so
+/// a line is never handed out with `<model>` in it.
+pub struct JobModel {
+    /// The harness authenticates to the Talaria gateway (not a subscription).
+    pub gateway: bool,
+    /// The default role's model as the gateway's catalog lists it (no
+    /// provider prefix) — what the preflight looks for in `models.yml`.
+    pub model: Option<String>,
+    /// The `--model` argument, provider-qualified.
+    pub arg: Option<String>,
+    /// Inline role assignments for a coding-account plan.
+    pub env_prefix: String,
+    pub roles: wh::OmpRoles,
+    pub plan: Option<talaria_coding_accounts::Resolved>,
+}
+
+pub async fn job_model(
+    pg: &PgPool,
+    agent_id: &str,
+    task_id: Option<&str>,
+) -> Result<JobModel, String> {
+    let roles = wh::omp_roles(pg).await?;
+    let plan = talaria_coding_accounts::resolve(pg, agent_id, task_id)
+        .await
+        .unwrap_or(None);
+    Ok(match &plan {
+        Some(p) => {
+            let gateway = p.is_gateway();
+            let model = p
+                .model_for("default")
+                .map(str::to_string)
+                .or_else(|| gateway.then(|| roles.default.clone()).flatten());
+            let arg = p.model_arg("default").or_else(|| {
+                gateway
+                    .then(|| roles.default.as_deref().map(wh::model_arg))
+                    .flatten()
+            });
+            let env_prefix = wh::role_env_prefix(
+                &p.roles
+                    .iter()
+                    .filter_map(|(role, _)| p.model_arg(role).map(|a| (role.clone(), a)))
+                    .collect::<Vec<_>>(),
+            );
+            JobModel {
+                gateway,
+                model,
+                arg,
+                env_prefix,
+                roles,
+                plan,
+            }
+        }
+        None => JobModel {
+            gateway: true,
+            model: roles.default.clone(),
+            arg: roles.default.as_deref().map(wh::model_arg),
+            env_prefix: String::new(),
+            roles,
+            plan: None,
+        },
+    })
+}
+
+// ── Scrubbing what a step printed ───────────────────────────────────────────
+
+/// Everything a step printed goes through this before it is stored or shown:
+/// board members read the record, and the output is mise's, apt's, git's and
+/// a repo's own install hooks' — any of which can echo a token (`401 …
+/// Authorization: Bearer …`, a URL with userinfo). `known` holds the values
+/// Talaria handed this job and fleet: the repo's project env and the fleet's
+/// credential-named env, each taken out by value.
+#[derive(Default, Clone)]
+pub struct Scrub {
+    known: Vec<String>,
+}
+
+impl Scrub {
+    pub fn with(known: Vec<String>) -> Scrub {
+        Scrub { known }
+    }
+
+    pub fn text(&self, s: &str) -> String {
+        talaria_error::scrub_secrets(&talaria_agent_secrets::scrub_text(s, &self.known))
+    }
+
+    /// The values to take out for one job: its repo's project env, and the
+    /// fleet's credential-shaped env (`fleet/.env`, each agent's
+    /// `secrets.env`) — what the sandbox it runs in was given.
+    pub async fn for_job(deps: &WorkbenchDeps, repo: &str) -> Scrub {
+        let mut known = Vec::new();
+        if let Ok(Some(body)) = talaria_repo_env::env_file(&deps.pg, &deps.sb, repo).await {
+            known.extend(dotenv_values(&body));
+        }
+        let dir = talaria_fleet_layout::fleet_dir();
+        if let Ok(text) = std::fs::read_to_string(dir.join(".env")) {
+            for (k, v) in dotenv_pairs(&text) {
+                if talaria_agent_secrets::may_hold_credential(&k, "x") {
+                    known.push(v);
+                }
+            }
+        }
+        if let Ok(agents) = std::fs::read_dir(dir.join("agents")) {
+            for a in agents.flatten() {
+                if let Ok(text) = std::fs::read_to_string(a.path().join("secrets.env")) {
+                    known.extend(dotenv_values(&text));
+                }
+            }
+        }
+        known.retain(|v| v.chars().count() >= 3);
+        known.sort();
+        known.dedup();
+        Scrub { known }
+    }
+}
+
+/// `KEY=value` lines, quotes (and the `'\''` escape `env_file` writes) taken
+/// off the value. Comments and blank lines skipped.
+fn dotenv_pairs(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l.is_empty() || l.starts_with('#') {
+                return None;
+            }
+            let (k, v) = l.split_once('=')?;
+            let v = v.trim();
+            let v = if v.len() >= 2
+                && ((v.starts_with('\'') && v.ends_with('\''))
+                    || (v.starts_with('"') && v.ends_with('"')))
+            {
+                v[1..v.len() - 1].replace("'\\''", "'")
+            } else {
+                v.to_string()
+            };
+            Some((k.trim().to_string(), v))
+        })
+        .collect()
+}
+
+fn dotenv_values(text: &str) -> Vec<String> {
+    dotenv_pairs(text).into_iter().map(|(_, v)| v).collect()
+}
+
 // ── The record ──────────────────────────────────────────────────────────────
 
 /// The provision state as it is stored and put on the wire. Pure, so the
 /// shape is pinned by tests.
 #[derive(Debug, Clone, Default)]
 pub struct Record {
+    /// Which run owns the record: a run writes only while it still does, so
+    /// a run taken over (its heartbeat stalled) cannot overwrite its
+    /// successor's record.
+    pub run_id: String,
     pub state: String,
     pub step: Option<String>,
     pub steps: Vec<Value>,
@@ -169,7 +364,10 @@ pub struct Record {
 
 impl Record {
     pub fn start(now: i64) -> Record {
+        let mut raw = [0u8; 8];
+        let _ = getrandom::fill(&mut raw);
         Record {
+            run_id: raw.iter().map(|b| format!("{b:02x}")).collect(),
             state: "running".into(),
             step: Some(STEPS[0].into()),
             started_ms: now,
@@ -181,20 +379,28 @@ impl Record {
         self.step = Some(step.into());
     }
 
-    pub fn ok(&mut self, step: &str, ms: u64, note: &str) {
-        self.steps.push(json!({
+    pub fn ok(&mut self, step: &str, ms: u64, attempts: u32, note: &str) {
+        let mut s = json!({
             "step": step, "ok": true, "ms": ms, "note": truncate_utf16(note, 400),
-        }));
+        });
+        if attempts > 1 {
+            s["attempts"] = json!(attempts);
+        }
+        self.steps.push(s);
     }
 
-    pub fn fail(&mut self, step: &str, ms: u64, error: &str, output: &str, now: i64) {
-        self.steps.push(json!({
-            "step": step, "ok": false, "ms": ms, "note": truncate_utf16(error, 400),
-        }));
+    pub fn fail(&mut self, f: &StepFailure, now: i64) {
+        let mut s = json!({
+            "step": f.step, "ok": false, "ms": f.ms, "note": truncate_utf16(&f.error, 400),
+        });
+        if f.attempts > 1 {
+            s["attempts"] = json!(f.attempts);
+        }
+        self.steps.push(s);
         self.state = "failed".into();
-        self.step = Some(step.into());
-        self.error = Some(truncate_utf16(error, 1_000).to_string());
-        let output = output.trim();
+        self.step = Some(f.step.clone());
+        self.error = Some(truncate_utf16(&f.error, 1_000).to_string());
+        let output = f.output.trim();
         self.output = (!output.is_empty()).then(|| tail_chars(output, OUTPUT_KEEP));
         self.finished_ms = Some(now);
     }
@@ -203,6 +409,20 @@ impl Record {
         self.state = "ready".into();
         self.step = None;
         self.finished_ms = Some(now);
+    }
+
+    /// Every text a step put on the record, through `scrub`.
+    pub fn scrub(&mut self, scrub: &Scrub) {
+        for s in &mut self.steps {
+            if let Some(n) = s.get("note").and_then(Value::as_str) {
+                s["note"] = json!(scrub.text(n));
+            }
+        }
+        self.error = self.error.as_deref().map(|e| scrub.text(e));
+        self.output = self.output.as_deref().map(|o| scrub.text(o));
+        for w in &mut self.warnings {
+            *w = scrub.text(w);
+        }
     }
 
     /// Stored and wire shape (camelCase, fixed key order).
@@ -219,6 +439,7 @@ impl Record {
             "startedAt": epoch_ms_to_iso(self.started_ms),
             "finishedAt": self.finished_ms.map(epoch_ms_to_iso),
             "heartbeatMs": heartbeat_ms,
+            "runId": self.run_id,
         })
     }
 }
@@ -238,6 +459,7 @@ fn tail_chars(s: &str, keep: usize) -> String {
 pub fn wire(state: &Value) -> Value {
     let mut out: Map<String, Value> = state.as_object().cloned().unwrap_or_default();
     out.remove("heartbeatMs");
+    out.remove("runId");
     // The full toolchain answer belongs to prepare_env's reply, not to every
     // poll; the steps already carry its one-line note.
     out.remove("toolchain");
@@ -246,21 +468,22 @@ pub fn wire(state: &Value) -> Value {
     Value::Object(out)
 }
 
-/// The one thing to do about a provision in this state. Pure.
+/// The one thing to do about a provision in this state. Pure. It never tells
+/// the agent to move the ticket: a person does that (report_outcome records
+/// the agent's result without moving anything).
 pub fn next_step(state: &Value) -> String {
     match state.get("state").and_then(Value::as_str) {
         Some("ready") => "Ready: run the harness lines exactly as given. Do not clone, install, upgrade or wrap anything — Talaria already did, and checked it.".into(),
         Some("running") => format!(
-            "Talaria is provisioning this job (now: {}). Poll job_status until provision.state is ready — about a minute when the toolchain is cached, longer for a first-time toolchain. Do not clone, install or start the harness yourself meanwhile.",
+            "Talaria is provisioning this job (now: {}). Call job_status with this jobId until provision.state is ready — it waits up to a minute for the answer, and a first-time toolchain can take several. Do not clone, install or start the harness yourself meanwhile.",
             state.get("step").and_then(Value::as_str).unwrap_or("starting")
         ),
         Some("failed") => {
             let step = state.get("step").and_then(Value::as_str).unwrap_or("?");
-            let repo_fixable = step == "toolchain";
             format!(
-                "Provisioning FAILED at `{step}`: the platform could not make this job's workbench ready, and it is not yours to repair — do not install, upgrade or work around the harness or toolchain. {}report_problem with the step and output, comment on the ticket, and set it blocked.",
-                if repo_fixable {
-                    "If the output shows the REPO declares something wrong (a tool or package name or version in its mise.toml or .talaria/workbench.toml), fix that declaration in the checkout and call prepare_env to provision again; otherwise "
+                "Provisioning FAILED at `{step}` (already retried once): the platform could not make this job's workbench ready, and it is not yours to repair — do not install, upgrade or work around the harness or toolchain. {}If the output looks transient (a timeout, a network or git-host error, the install lock), provision again ONCE with prepare_env (or job_status with retry: true). If it fails again: report_problem with the step and output, comment on the ticket with what failed, and call report_outcome with errorMessage saying the workbench could not be provisioned.",
+                if step == "toolchain" {
+                    "If the output shows the REPO declares something wrong (a tool or package name or version in its mise.toml or .talaria/workbench.toml), fix that declaration in the checkout and call prepare_env to provision again. "
                 } else {
                     ""
                 }
@@ -275,59 +498,65 @@ pub fn is_ready(state: Option<&Value>) -> bool {
     state.and_then(|s| s.get("state")).and_then(Value::as_str) == Some("ready")
 }
 
-// ── Claiming ────────────────────────────────────────────────────────────────
-
-/// When a caller may (re)start a provision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Claim {
-    /// Anything but a provision that is alive right now: start_job and
-    /// prepare_env, which ask for a fresh one.
-    Fresh,
-    /// Only a job never provisioned, or one whose run died: job_status.
-    IfMissing,
+/// Should job_status (re)start this job's provision? Never provisioned; a
+/// run that died (no heartbeat for [`STALE_AFTER_MS`]); a ready record for
+/// an omp other than the pinned one (its launcher would name an install that
+/// may be pruned); or a failed one the agent asked to retry. Pure.
+pub fn needs_provision(state: Option<&Value>, now: i64, retry: bool) -> bool {
+    let Some(s) = state else { return true };
+    match s.get("state").and_then(Value::as_str) {
+        Some("running") => {
+            s.get("heartbeatMs").and_then(Value::as_i64).unwrap_or(0) < now - STALE_AFTER_MS
+        }
+        Some("ready") => {
+            s.pointer("/harness/omp").and_then(Value::as_str)
+                != Some(format!("omp/{}", wh::OMP_VERSION).as_str())
+        }
+        Some("failed") => retry,
+        _ => true,
+    }
 }
 
-/// Take the job's provision for this process, or learn that someone else has
-/// it. One UPDATE, so two api processes (or two calls) can never both run it.
-async fn claim(pg: &PgPool, job_id: &str, mode: Claim, rec: &Record) -> Result<bool, String> {
+// ── Claiming ────────────────────────────────────────────────────────────────
+
+/// Take the job's provision for a new run, unless one is alive right now (its
+/// heartbeat within [`STALE_AFTER_MS`]) or the job is not started. One UPDATE,
+/// so two api processes (or two calls) can never both run it.
+pub async fn claim(pg: &PgPool, job_id: &str, rec: &Record) -> Result<bool, String> {
     let now = now_ms();
-    let alive_cut = now - STALE_AFTER_MS;
-    let sql = match mode {
-        Claim::Fresh => {
-            "update workbench_jobs set provision = $2::jsonb \
-             where id = $1::uuid and status = 'started' \
-               and (provision is null or provision->>'state' is distinct from 'running' \
-                    or coalesce((provision->>'heartbeatMs')::bigint, 0) < $3::bigint) \
-             returning id::text"
-        }
-        Claim::IfMissing => {
-            "update workbench_jobs set provision = $2::jsonb \
-             where id = $1::uuid and status = 'started' \
-               and (provision is null \
-                    or (provision->>'state' = 'running' \
-                        and coalesce((provision->>'heartbeatMs')::bigint, 0) < $3::bigint)) \
-             returning id::text"
-        }
-    };
-    let got: Option<String> = sqlx::query_scalar(sql)
-        .bind(job_id)
-        .bind(rec.to_json(now))
-        .bind(alive_cut)
-        .fetch_optional(pg)
-        .await
-        .map_err(|e| format!("provision claim: {e}"))?;
+    let got: Option<String> = sqlx::query_scalar(
+        "update workbench_jobs set provision = $2::jsonb \
+         where id = $1::uuid and status = 'started' and workspace_cleared_at is null \
+           and (provision is null or provision->>'state' is distinct from 'running' \
+                or coalesce((provision->>'heartbeatMs')::bigint, 0) < $3::bigint) \
+         returning id::text",
+    )
+    .bind(job_id)
+    .bind(rec.to_json(now))
+    .bind(now - STALE_AFTER_MS)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("provision claim: {e}"))?;
     Ok(got.is_some())
 }
 
-async fn save(pg: &PgPool, job_id: &str, rec: &Record) {
-    if let Err(e) =
-        sqlx::query("update workbench_jobs set provision = $2::jsonb where id = $1::uuid")
-            .bind(job_id)
-            .bind(rec.to_json(now_ms()))
-            .execute(pg)
-            .await
+/// Write the record — only while this run still owns it.
+async fn save(pg: &PgPool, job_id: &str, rec: &Record) -> bool {
+    match sqlx::query(
+        "update workbench_jobs set provision = $2::jsonb \
+         where id = $1::uuid and provision->>'runId' = $3",
+    )
+    .bind(job_id)
+    .bind(rec.to_json(now_ms()))
+    .bind(&rec.run_id)
+    .execute(pg)
+    .await
     {
-        tracing::warn!("[workbench] provision state of job {job_id} not saved: {e}");
+        Ok(r) => r.rows_affected() > 0,
+        Err(e) => {
+            tracing::warn!("[workbench] provision state of job {job_id} not saved: {e}");
+            true
+        }
     }
 }
 
@@ -344,12 +573,11 @@ pub async fn read(pg: &PgPool, job_id: &str) -> Option<Value> {
     .flatten()
 }
 
-/// Start the job's provision when `mode` allows, in the background. Returns
-/// whether this call started one (false: one is alive already, or the job is
-/// not started).
-pub async fn kick(deps: &WorkbenchDeps, job: &ProvisionJob, mode: Claim) -> Result<bool, String> {
+/// Start the job's provision in the background unless one is alive. Returns
+/// whether this call started one.
+pub async fn kick(deps: &WorkbenchDeps, job: &ProvisionJob) -> Result<bool, String> {
     let rec = Record::start(now_ms());
-    if !claim(&deps.pg, &job.id, mode, &rec).await? {
+    if !claim(&deps.pg, &job.id, &rec).await? {
         return Ok(false);
     }
     let deps = deps.clone();
@@ -380,64 +608,63 @@ pub async fn wait(pg: &PgPool, job_id: &str, budget_ms: u64) -> Option<Value> {
 
 // ── The run ─────────────────────────────────────────────────────────────────
 
-/// Which login the job's harness uses: the gateway (with this default model)
-/// or a coding account's subscription.
-async fn harness_plan(pg: &PgPool, job: &ProvisionJob) -> (bool, Option<String>) {
-    let plan = talaria_coding_accounts::resolve(pg, &job.agent_id, job.task_id.as_deref())
-        .await
-        .unwrap_or(None);
-    match plan {
-        Some(p) if !p.is_gateway() => (false, None),
-        _ => (true, wh::omp_roles(pg).await.ok().and_then(|r| r.default)),
-    }
-}
-
 /// Run every step, saving the record as it goes. Never panics out: a step
-/// that cannot run is a failed step.
+/// that cannot run is a failed step, and a job that ended under it stops it.
 pub async fn run(deps: &WorkbenchDeps, job: &ProvisionJob, mut rec: Record) -> Record {
     let pg = &deps.pg;
     // Heartbeat while it runs, so a dead run is reclaimable and a live one
-    // is not.
+    // is not — and only this run's record.
     let beat = {
         let pg = pg.clone();
         let id = job.id.clone();
+        let run_id = rec.run_id.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(HEARTBEAT_MS)).await;
                 let _ = sqlx::query(
                     "update workbench_jobs set provision = jsonb_set(provision, '{heartbeatMs}', to_jsonb($2::bigint)) \
-                     where id = $1::uuid and provision->>'state' = 'running'",
+                     where id = $1::uuid and provision->>'state' = 'running' and provision->>'runId' = $3",
                 )
                 .bind(&id)
                 .bind(now_ms())
+                .bind(&run_id)
                 .execute(&pg)
                 .await;
             }
         })
     };
     let started = std::time::Instant::now();
-    let outcome = steps(deps, job, &mut rec).await;
+    let scrub = Scrub::for_job(deps, &job.repo).await;
+    let outcome = steps(deps, job, &mut rec, &scrub).await;
     beat.abort();
+    let ended = matches!(&outcome, Err(f) if f.ended);
     match outcome {
         Ok(()) => rec.ready(now_ms()),
-        Err(StepFailure {
-            step,
-            ms,
-            error,
-            output,
-        }) => {
-            let error = match rec.warnings.iter().find(|w| w.starts_with("sandbox: ")) {
-                // A stale container is the likeliest cause of whatever broke:
-                // say so in the error itself, not only in a warning beside it.
-                Some(stale) if step != "toolchain" && step != "clone" => {
-                    format!("{error} — and {}", stale.trim_start_matches("sandbox: "))
-                }
-                _ => error,
-            };
-            rec.fail(&step, ms, &error, &output, now_ms())
+        Err(mut f) => {
+            // A stale container is the likeliest cause of whatever broke:
+            // say so in the error itself, not only in a warning beside it.
+            if let Some(stale) = rec.warnings.iter().find(|w| w.starts_with("sandbox: "))
+                && f.step != "toolchain"
+                && f.step != "clone"
+                && !f.ended
+            {
+                f.error = format!(
+                    "{} — and {}",
+                    f.error,
+                    stale.trim_start_matches("sandbox: ")
+                );
+            }
+            rec.fail(&f, now_ms())
         }
     }
-    save(pg, &job.id, &rec).await;
+    rec.scrub(&scrub);
+    if !save(pg, &job.id, &rec).await {
+        // Taken over by a newer run: it owns the record and the ticket line.
+        return rec;
+    }
+    if ended {
+        return rec;
+    }
     let by = WorkbenchActor::Agent(AgentSubject::Model(job.agent_model.clone()));
     let line = match rec.state.as_str() {
         "ready" => format!(
@@ -462,19 +689,27 @@ pub async fn run(deps: &WorkbenchDeps, job: &ProvisionJob, mut rec: Record) -> R
     rec
 }
 
-struct StepFailure {
-    step: String,
-    ms: u64,
-    error: String,
-    output: String,
+/// Why a step stopped the run.
+#[derive(Debug, Clone)]
+pub struct StepFailure {
+    pub step: String,
+    pub ms: u64,
+    pub attempts: u32,
+    pub error: String,
+    pub output: String,
+    /// The job ended (finished, abandoned, swept) while it was provisioning:
+    /// not a failure of the workbench, and nothing more is written for it.
+    pub ended: bool,
 }
 
 fn failure(step: &str, t: std::time::Instant, error: String, output: String) -> StepFailure {
     StepFailure {
         step: step.into(),
         ms: elapsed_ms(t),
+        attempts: 1,
         error,
         output,
+        ended: false,
     }
 }
 
@@ -503,21 +738,123 @@ pub fn reason_and_output(e: &str) -> (String, String) {
     (reason, e.to_string())
 }
 
+/// Is the job still one to provision — started, its workspace not cleared?
+/// Asked before every step and before each write into the sandbox, so a job
+/// abandoned mid-provision gets nothing re-created after its teardown.
+async fn still_live(pg: &PgPool, job_id: &str) -> Result<(), String> {
+    let row: Option<(String, bool)> = sqlx::query_as(
+        "select status, workspace_cleared_at is not null from workbench_jobs where id = $1::uuid",
+    )
+    .bind(job_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("job read: {e}"))?;
+    match row {
+        Some((status, false)) if status == "started" => Ok(()),
+        Some((status, cleared)) => Err(format!(
+            "the job ended ({status}{}) while it was provisioning; nothing more was set up",
+            if cleared { ", workspace cleared" } else { "" }
+        )),
+        None => Err("the job is gone".into()),
+    }
+}
+
+fn ended(step: &str, why: String) -> StepFailure {
+    StepFailure {
+        step: step.into(),
+        ms: 0,
+        attempts: 1,
+        error: why,
+        output: String::new(),
+        ended: true,
+    }
+}
+
+/// Begin a step: the job must still be live, and the record says where it is.
+async fn begin(
+    pg: &PgPool,
+    job: &ProvisionJob,
+    rec: &mut Record,
+    step: &str,
+) -> Result<(), StepFailure> {
+    still_live(pg, &job.id)
+        .await
+        .map_err(|why| ended(step, why))?;
+    rec.begin(step);
+    if !save(pg, &job.id, rec).await {
+        return Err(ended(
+            step,
+            "a newer provision of this job took over".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Run `attempt` once, and once more after a pause when it failed quickly
+/// (see [`RETRY_UNDER_MS`]) and the job is still live.
+async fn with_retry<T, F, Fut>(
+    pg: &PgPool,
+    job: &ProvisionJob,
+    step: &str,
+    mut attempt: F,
+) -> Result<(T, u32), StepFailure>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, StepFailure>>,
+{
+    let first = attempt().await;
+    match first {
+        Ok(v) => Ok((v, 1)),
+        Err(f) if f.ended || f.ms >= RETRY_UNDER_MS => Err(f),
+        Err(f) => {
+            tracing::info!(
+                "[workbench] provision of job {} retries {step} after: {}",
+                job.id,
+                f.error
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(RETRY_PAUSE_MS)).await;
+            still_live(pg, &job.id)
+                .await
+                .map_err(|why| ended(step, why))?;
+            match attempt().await {
+                Ok(v) => Ok((v, 2)),
+                Err(mut f2) => {
+                    f2.attempts = 2;
+                    Err(f2)
+                }
+            }
+        }
+    }
+}
+
 async fn steps(
     deps: &WorkbenchDeps,
     job: &ProvisionJob,
     rec: &mut Record,
+    scrub: &Scrub,
 ) -> Result<(), StepFailure> {
     let pg = &deps.pg;
     let container = managed_container(pg, &job.department).await;
     let workdir = job.workdir();
+    // References, so each attempt's `async move` copies them, not the strings.
+    let (container, workdir) = (&container, &workdir);
+    let slot_err = |step: &str| {
+        failure(
+            step,
+            std::time::Instant::now(),
+            format!("not a job id: {:?}", job.id),
+            String::new(),
+        )
+    };
+    let harness_dir = wh::job_harness_dir(&job.id).ok_or_else(|| slot_err("harness"))?;
+    let agent_dir = wh::job_agent_dir(&job.id).ok_or_else(|| slot_err("harness"))?;
+    let launcher = wh::job_launcher(&job.id).ok_or_else(|| slot_err("harness"))?;
 
     // sandbox
-    rec.begin("sandbox");
-    save(pg, &job.id, rec).await;
+    begin(pg, job, rec, "sandbox").await?;
     let t = std::time::Instant::now();
     let shape = docker_exec_as(
-        &container,
+        container,
         Some(devenv::AGENT_USER),
         &[
             "sh",
@@ -548,6 +885,7 @@ async fn steps(
     rec.ok(
         "sandbox",
         elapsed_ms(t),
+        1,
         if stale.is_some() {
             "sandbox answers, but was created by an older render"
         } else {
@@ -556,58 +894,70 @@ async fn steps(
     );
 
     // clone
-    rec.begin("clone");
-    save(pg, &job.id, rec).await;
+    begin(pg, job, rec, "clone").await?;
     let t = std::time::Instant::now();
-    let url = match crate::hosts::host(pg, &deps.sb, &job.host_id).await {
-        Ok(host) => host.clone_url(&job.repo),
-        Err(e) => {
-            return Err(failure(
-                "clone",
-                t,
-                format!("the git host `{}` is not usable: {e}", job.host_id),
-                String::new(),
-            ));
-        }
-    };
-    let (out, _) = docker_exec_as(
-        &container,
-        Some(devenv::AGENT_USER),
-        &["sh", "-c", CLONE_SH, "sh", &workdir, &url, &job.branch],
-        None,
-        CLONE_TIMEOUT_MS,
-    )
-    .await
-    .map_err(|e| {
-        let (why, out) = reason_and_output(&e);
-        failure(
-            "clone",
-            t,
-            format!(
-                "could not clone {} ({}) into {workdir}: {why}",
-                job.repo, job.branch
-            ),
-            out,
+    let (out, attempts) = with_retry(pg, job, "clone", || async move {
+        let t = std::time::Instant::now();
+        let url = match crate::hosts::host(pg, &deps.sb, &job.host_id).await {
+            Ok(host) => host.clone_url(&job.repo),
+            Err(e) => {
+                return Err(failure(
+                    "clone",
+                    t,
+                    format!("the git host `{}` is not usable: {e}", job.host_id),
+                    String::new(),
+                ));
+            }
+        };
+        docker_exec_as(
+            container,
+            Some(devenv::AGENT_USER),
+            &["sh", "-c", CLONE_SH, "sh", workdir, &url, &job.branch],
+            None,
+            CLONE_TIMEOUT_MS,
         )
-    })?;
-    rec.ok("clone", elapsed_ms(t), out.trim());
-
-    // toolchain
-    rec.begin("toolchain");
-    save(pg, &job.id, rec).await;
-    let t = std::time::Instant::now();
-    let mut toolchain = devenv::prepare_env(pg, &job.department, &workdir)
         .await
+        .map(|(o, _)| o)
         .map_err(|e| {
             let (why, out) = reason_and_output(&e);
             failure(
-                "toolchain",
+                "clone",
                 t,
-                format!("the repo's toolchain did not install: {why}"),
+                format!(
+                    "could not clone {} ({}) into {workdir}: {why}",
+                    job.repo, job.branch
+                ),
                 out,
             )
-        })?;
-    let env_vars = devenv::deliver_job_env(pg, &deps.sb, &job.department, &workdir, &job.repo)
+        })
+    })
+    .await?;
+    rec.ok("clone", elapsed_ms(t), attempts, out.trim());
+
+    // toolchain
+    begin(pg, job, rec, "toolchain").await?;
+    let t = std::time::Instant::now();
+    let (mut toolchain, attempts) = with_retry(pg, job, "toolchain", || async move {
+        let t = std::time::Instant::now();
+        devenv::prepare_env(pg, &job.department, workdir)
+            .await
+            .map_err(|e| {
+                let (why, out) = reason_and_output(&e);
+                failure(
+                    "toolchain",
+                    t,
+                    format!("the repo's toolchain did not install: {why}"),
+                    out,
+                )
+            })
+    })
+    .await?;
+    // The project env carries the repo's secrets: never written for a job
+    // that ended while its toolchain installed.
+    still_live(pg, &job.id)
+        .await
+        .map_err(|why| ended("toolchain", why))?;
+    let env_vars = devenv::deliver_job_env(pg, &deps.sb, &job.department, workdir, &job.repo)
         .await
         .map_err(|e| {
             failure(
@@ -620,36 +970,51 @@ async fn steps(
     if let Some(obj) = toolchain.as_object_mut() {
         obj.insert(
             "projectEnv".into(),
-            devenv::job_env_answer(&workdir, env_vars),
+            devenv::job_env_answer(workdir, env_vars),
         );
     }
-    rec.ok("toolchain", elapsed_ms(t), &toolchain_note(&toolchain));
+    rec.ok(
+        "toolchain",
+        elapsed_ms(t),
+        attempts,
+        &toolchain_note(&toolchain),
+    );
     let talaria_app = toolchain["talariaApp"] == json!(true);
-    rec.toolchain = Some(toolchain);
+    // The toolchain answer goes to the agent (prepare_env): scrubbed too.
+    rec.toolchain = serde_json::from_str(&scrub.text(&toolchain.to_string())).ok();
 
     // harness
-    rec.begin("harness");
-    save(pg, &job.id, rec).await;
+    begin(pg, job, rec, "harness").await?;
     let t = std::time::Instant::now();
-    let runtime = devenv::ensure_harness_runtime(pg, &job.department)
+    let (runtime, attempts) = with_retry(pg, job, "harness", || async move {
+        let t = std::time::Instant::now();
+        devenv::ensure_harness_runtime(pg, &job.department)
+            .await
+            .map_err(|e| {
+                let (why, out) = reason_and_output(&e);
+                failure("harness", t, why, out)
+            })
+    })
+    .await?;
+    let jm = job_model(pg, &job.agent_id, job.task_id.as_deref())
         .await
-        .map_err(|e| {
-            let (why, out) = reason_and_output(&e);
-            failure("harness", t, why, out)
-        })?;
-    let (gateway, model) = harness_plan(pg, job).await;
-    let launcher = wh::job_launcher(&job.id);
-    let text = wh::launcher_script(&job.id, &workdir, &runtime.bun_path, gateway);
+        .map_err(|e| failure("harness", t, e, String::new()))?;
+    let text = wh::launcher_script(&job.id, workdir, &runtime.bun_path, jm.gateway)
+        .ok_or_else(|| slot_err("harness"))?;
+    still_live(pg, &job.id)
+        .await
+        .map_err(|why| ended("harness", why))?;
     docker_exec_as(
-        &container,
+        container,
         Some(devenv::AGENT_USER),
         &[
             "sh",
             "-c",
             &wh::job_harness_script(),
             "sh",
-            &wh::job_harness_dir(&job.id),
+            &harness_dir,
             &job.session_dir(),
+            &format!("{workdir}/.git"),
         ],
         Some(&text),
         30_000,
@@ -666,7 +1031,7 @@ async fn steps(
     // A Talaria app's SDK kit runs on the harness's bun, just ensured.
     if talaria_app {
         let session = crate::record_eval_session(pg, &job.id, job.task_id.as_deref()).await;
-        let kit = devenv::install_app_kit(pg, &job.department, &workdir, session.as_deref())
+        let kit = devenv::install_app_kit(pg, &job.department, workdir, session.as_deref())
             .await
             .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
         if kit.get("ok") == Some(&json!(false)) {
@@ -685,29 +1050,30 @@ async fn steps(
         "omp": runtime.omp,
         "bun": runtime.bun,
         "launcher": launcher,
-        "agentDir": wh::job_agent_dir(&job.id),
+        "agentDir": agent_dir,
         "sessionDir": job.session_dir(),
-        "gateway": gateway,
-        "model": model,
+        "gateway": jm.gateway,
+        "model": jm.model,
     }));
     rec.ok(
         "harness",
         elapsed_ms(t),
+        attempts,
         &format!("{} on bun {}", runtime.omp, runtime.bun),
     );
 
-    // preflight
-    rec.begin("preflight");
-    save(pg, &job.id, rec).await;
+    // preflight — of the model the job's lines will name (job_model, the
+    // same resolution harness_answer uses), not some other one.
+    begin(pg, job, rec, "preflight").await?;
     let t = std::time::Instant::now();
-    let model_check = if gateway {
-        match model.as_deref() {
+    let model_check = if jm.gateway {
+        match jm.model.as_deref() {
             Some(m) => m.to_string(),
             None => {
                 return Err(failure(
                     "preflight",
                     t,
-                    "no Workbench model role resolves to a gateway model, so omp has nothing to run on — an admin sets the code roles on /models".into(),
+                    "no model resolves for this job's harness — no Workbench model role is set (an admin sets the code roles on /models), and neither the ticket nor the agent picks one".into(),
                     String::new(),
                 ));
             }
@@ -716,9 +1082,9 @@ async fn steps(
         String::new()
     };
     let verdict = preflight(
-        &container,
+        container,
         &launcher,
-        &wh::job_agent_dir(&job.id),
+        &agent_dir,
         &model_check,
         &runtime.bun_path,
     )
@@ -728,12 +1094,13 @@ async fn steps(
             rec.ok(
                 "preflight",
                 elapsed_ms(t),
+                1,
                 &format!(
                     "{v} starts; agent dir writable{}",
-                    if gateway {
-                        "; model listed; gateway accepts the key"
+                    if jm.gateway {
+                        format!("; {model_check} listed; gateway accepts the key")
                     } else {
-                        ""
+                        String::new()
                     }
                 ),
             );
@@ -814,7 +1181,7 @@ mod tests {
         assert_eq!(r.to_json(1_000)["step"], "sandbox");
         for s in STEPS {
             r.begin(s);
-            r.ok(s, 5, "fine");
+            r.ok(s, 5, 1, "fine");
         }
         r.ready(2_000);
         let j = r.to_json(2_000);
@@ -830,13 +1197,14 @@ mod tests {
         let mut r = Record::start(1_000);
         r.begin("toolchain");
         let long = "x".repeat(OUTPUT_KEEP + 50) + "\nmise ERROR rust@9.9 not found";
-        r.fail(
+        let mut f = failure(
             "toolchain",
-            7,
-            "the repo's toolchain did not install: mise ERROR",
-            &long,
-            3_000,
+            std::time::Instant::now(),
+            "the repo's toolchain did not install: mise ERROR".into(),
+            long.clone(),
         );
+        f.attempts = 2;
+        r.fail(&f, 3_000);
         let j = r.to_json(3_000);
         assert_eq!(j["state"], "failed");
         assert_eq!(j["step"], "toolchain");
@@ -852,12 +1220,12 @@ mod tests {
     }
 
     #[test]
-    fn next_says_what_to_do_in_every_state_and_never_to_repair() {
+    fn next_says_what_to_do_in_every_state_and_never_to_repair_or_move_the_ticket() {
         let ready = next_step(&json!({ "state": "ready" }));
         assert!(ready.contains("exactly as given"), "{ready}");
         let running = next_step(&json!({ "state": "running", "step": "toolchain" }));
         assert!(
-            running.contains("Poll job_status") && running.contains("toolchain"),
+            running.contains("job_status") && running.contains("toolchain"),
             "{running}"
         );
         let failed = next_step(&json!({ "state": "failed", "step": "preflight" }));
@@ -866,16 +1234,112 @@ mod tests {
             "{failed}"
         );
         assert!(failed.contains("not yours to repair"), "{failed}");
+        // One retry the agent may ask for, then report — never a ticket move.
         assert!(
-            !failed.contains("prepare_env"),
-            "only a repo declaration is the agent's to fix"
+            failed.contains("ONCE with prepare_env") && failed.contains("retry: true"),
+            "{failed}"
         );
+        assert!(
+            failed.contains("report_outcome with errorMessage"),
+            "{failed}"
+        );
+        for state in ["ready", "running", "failed"] {
+            for step in ["clone", "toolchain", "preflight"] {
+                let t = next_step(&json!({ "state": state, "step": step })).to_lowercase();
+                assert!(!t.contains("blocked") && !t.contains("triage"), "{t}");
+            }
+        }
         let repo = next_step(&json!({ "state": "failed", "step": "toolchain" }));
         assert!(
             repo.contains(".talaria/workbench.toml") && repo.contains("prepare_env"),
             "{repo}"
         );
         assert!(next_step(&Value::Null).contains("job_status"));
+    }
+
+    #[test]
+    fn job_status_reprovisions_only_what_needs_it() {
+        let now = 10_000_000;
+        let omp = format!("omp/{}", wh::OMP_VERSION);
+        assert!(needs_provision(None, now, false), "never provisioned");
+        let alive = json!({ "state": "running", "heartbeatMs": now - 5_000 });
+        assert!(
+            !needs_provision(Some(&alive), now, true),
+            "a live run is never doubled"
+        );
+        let dead = json!({ "state": "running", "heartbeatMs": now - STALE_AFTER_MS - 1 });
+        assert!(
+            needs_provision(Some(&dead), now, false),
+            "a dead run is taken over"
+        );
+        let ready = json!({ "state": "ready", "harness": { "omp": omp } });
+        assert!(!needs_provision(Some(&ready), now, true));
+        let old = json!({ "state": "ready", "harness": { "omp": "omp/18.2.4" } });
+        assert!(
+            needs_provision(Some(&old), now, false),
+            "a launcher for another omp is rebuilt"
+        );
+        let failed = json!({ "state": "failed", "step": "clone" });
+        assert!(
+            !needs_provision(Some(&failed), now, false),
+            "a failure stays until asked"
+        );
+        assert!(
+            needs_provision(Some(&failed), now, true),
+            "and is provisioned again when asked"
+        );
+    }
+
+    #[test]
+    fn what_a_step_printed_is_scrubbed_before_anyone_reads_it() {
+        let scrub = Scrub::with(vec!["s3cr3t-project-value".into()]);
+        let mut r = Record::start(1);
+        r.ok("toolchain", 1, 1, "fetched with s3cr3t-project-value");
+        let f = failure(
+            "toolchain",
+            std::time::Instant::now(),
+            "401 from https://bot:hunter2token@registry.example/pkg".into(),
+            "npm ERR! 401 Authorization: Bearer npm_abcdefghijklmnopqrstuvwxyz0123\nusing s3cr3t-project-value".into(),
+        );
+        r.warnings.push("appKit: token=tlk_abcdefghijklmnop".into());
+        r.fail(&f, 2);
+        r.scrub(&scrub);
+        let j = r.to_json(2).to_string();
+        for leaked in [
+            "s3cr3t-project-value",
+            "hunter2token",
+            "npm_abcdefghijklmnopqrstuvwxyz0123",
+            "tlk_abcdefghijklmnop",
+        ] {
+            assert!(!j.contains(leaked), "{leaked} leaked: {j}");
+        }
+        assert!(j.contains("401"), "the reason survives: {j}");
+    }
+
+    #[test]
+    fn dotenv_values_read_what_env_file_writes() {
+        let body = "A='plain'\nB='it'\\''s'\n# note\nC=\"dq\"\n\nD=bare\n";
+        assert_eq!(dotenv_values(body), vec!["plain", "it's", "dq", "bare"]);
+    }
+
+    #[test]
+    fn the_wire_hides_the_run_id_and_heartbeat() {
+        let w = wire(&Record::start(1).to_json(5));
+        assert!(w.get("runId").is_none() && w.get("heartbeatMs").is_none());
+        for key in [
+            "state",
+            "step",
+            "steps",
+            "error",
+            "output",
+            "warnings",
+            "harness",
+            "startedAt",
+            "finishedAt",
+            "next",
+        ] {
+            assert!(w.get(key).is_some(), "{key} is part of the wire");
+        }
     }
 
     #[test]
@@ -1023,6 +1487,43 @@ mod tests {
         let refused = sh(&junk);
         assert!(!refused.status.success());
         assert!(String::from_utf8_lossy(&refused.stderr).contains("not a git checkout"));
+        // A clone cut off before it had a HEAD (the old in-place clone) is
+        // not a checkout: moved aside, cloned again. A temp dir an earlier
+        // attempt left is removed and never becomes the workdir.
+        let cut = tmp.join("jobs/cut");
+        std::fs::create_dir_all(&cut).unwrap();
+        run(&["init", "-q"], &cut);
+        let stray = tmp.join("jobs/.cut.clone.999");
+        std::fs::create_dir_all(stray.join(".git")).unwrap();
+        let healed = sh(&cut);
+        assert!(
+            healed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&healed.stderr)
+        );
+        assert!(String::from_utf8_lossy(&healed.stderr).contains("no HEAD aside"));
+        assert!(String::from_utf8_lossy(&healed.stdout).starts_with("cloned agent/x at "));
+        assert!(!stray.exists(), "an earlier attempt's temp clone is gone");
+        // A branch that does not exist fails, and leaves no workdir behind.
+        let none = tmp.join("jobs/none");
+        let out = Command::new("sh")
+            .args(["-c", CLONE_SH, "sh"])
+            .arg(&none)
+            .arg(origin.to_str().unwrap())
+            .arg("no-such-branch")
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            !none.join(".git").exists(),
+            "a failed clone is never a checkout"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.join("jobs"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".clone."))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp clone left behind");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

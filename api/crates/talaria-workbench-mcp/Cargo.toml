@@ -34,6 +34,7 @@ talaria-mcp-jsonrpc = { workspace = true }
 talaria-plugins = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-repo-env = { workspace = true }
+talaria-error = { workspace = true }
 talaria-runs-define = { workspace = true }
 talaria-scheduler = { workspace = true }
 talaria-secretbox = { workspace = true }

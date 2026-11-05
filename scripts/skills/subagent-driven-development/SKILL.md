@@ -50,8 +50,10 @@ Write it before the job, from the ticket and the code:
 
 1. `get_ticket` — read it like an engineer. Ambiguous scope is a comment on the ticket asking,
    not a guess.
-2. `start_job` with the ticket, the repo, the effort and the plan. Clone into the `workdir` it
-   returns, on the `branch` it names, then `prepare_env` with the jobId. Read the `guide`.
+2. `start_job` with the ticket, the repo, the effort and the plan. Talaria provisions the job:
+   the `workdir` it returns already holds the repo on the `branch` it names, with the toolchain
+   and the harness installed and checked. Do not clone. Wait for `provision.state: ready`
+   (`job_status`), then read the `guide`.
 3. Look at the code in the workdir before you split the work. A plan that names real files beats
    one that names hopes.
 4. Split the plan into tasks (2–5 minutes of harness work each, below) and write them down with
@@ -314,7 +316,7 @@ cause before fix, regression test), then resume the task.
 
 ```
 [get_ticket TALA-35; plan written; start_job (standard, plan) → workdir, branch, jsonRun line]
-[clone, prepare_env; todo with 5 tasks]
+[provision ready (workdir already cloned and set up); todo with 5 tasks]
 
 --- Task 1: User model ---
 [Dispatch implementer (harness driver)]

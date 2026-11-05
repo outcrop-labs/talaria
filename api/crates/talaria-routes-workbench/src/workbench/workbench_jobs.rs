@@ -69,12 +69,14 @@ fn row_wire(r: &Row) -> serde_json::Value {
 /// A job's provisioning record as the ticket strip and the Work view read
 /// it: state (`ready` / `running` / `failed`), the current or failing
 /// `step`, every finished step with its time and one-line note, and on a
-/// failure the `error` and the step's `output` tail. `null` = never
-/// provisioned. The stored row's bookkeeping (heartbeat, the full toolchain
-/// answer the agent's prepare_env reads) stays off this wire.
+/// failure the `error` and the step's `output` tail (scrubbed before it was
+/// stored). `null` = never provisioned. The stored row's bookkeeping (run id,
+/// heartbeat, the full toolchain answer the agent's prepare_env reads) stays
+/// off this wire. The Work view reads these names: keep them.
 fn provision_wire(stored: &serde_json::Value) -> serde_json::Value {
     let mut out = stored.as_object().cloned().unwrap_or_default();
     out.remove("heartbeatMs");
+    out.remove("runId");
     out.remove("toolchain");
     serde_json::Value::Object(out)
 }

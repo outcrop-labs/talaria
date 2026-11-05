@@ -19,9 +19,13 @@ ticket.
    key). The answer's `provision` says how that went.
    - `provision.state: ready` — the `harnesses[0]` lines are there. Run them.
    - `running` — poll `job_status` until it is `ready`. Do nothing else to the job meanwhile.
-   - `failed` — the step and its output are in the answer and on the ticket.
-     It is the platform's to fix, not yours: `report_problem` with them,
-     comment, block. (A `toolchain` failure caused by what the repo declares is
+   - `failed` — the step and its output are in the answer and on the ticket,
+     already retried once. It is the platform's to fix, not yours. If it looks
+     transient (a timeout, a network or git-host error), provision again once:
+     `prepare_env`, or `job_status` with `retry: true`. If it fails again:
+     `report_problem` with the step and output, comment on the ticket, and
+     `report_outcome` with `errorMessage` saying the workbench could not be
+     provisioned. (A `toolchain` failure caused by what the repo declares is
      the one exception: fix the declaration, then `prepare_env`.)
 2. Never clone, install, upgrade, wrap or reconfigure the harness yourself, and
    never reuse a harness dir, wrapper script or key from another job or an

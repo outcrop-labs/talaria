@@ -62,7 +62,7 @@ pub mod teardown;
 
 use talaria_workbench_harnesses::{
     DOCTOR_SLOT, MCP_CONFIG_FILE, OMP, SANDBOX_SHAPE_ENV, fill_cmd, fill_cmd_arg, job_agent_dir,
-    job_launcher, model_arg, omp_roles, role_env_prefix, sandbox_stale_reason,
+    job_launcher, omp_roles, sandbox_stale_reason,
 };
 use teardown::{Teardown, spawn_teardown};
 
@@ -300,8 +300,11 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "job_status",
-            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir — and for a STARTED job its `provision` (ready / running / failed, the steps, and the failing step's output) and, once provision.state is ready, the harness invocation lines (harnesses[0].jsonRun / continueJsonRun), sessionDir and models, so a job you did not start this turn is still drivable. This is where you get the command after a resume; do not go looking for a binary on disk. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no cloneUrl or workdir yet.",
-            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job. Not a ticket ref (TALA-35, omp-tala35). Omit to list your jobs." } } },
+            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir — and for a STARTED job its `provision` (ready / running / failed, the steps, and the failing step's output) and, once provision.state is ready, the harness invocation lines (harnesses[0].jsonRun / continueJsonRun), sessionDir and models, so a job you did not start this turn is still drivable. This is where you get the command after a resume; do not go looking for a binary on disk. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no workdir yet. Asked about one job that is still provisioning, it waits up to a minute before answering. A job whose provisioning FAILED is provisioned again only when you pass retry: true — do that once, for a failure that looks transient.",
+            "inputSchema": { "type": "object", "properties": {
+                "jobId": { "type": "string", "description": "Job uuid from start_job. Not a ticket ref (TALA-35, omp-tala35). Omit to list your jobs." },
+                "retry": { "type": "boolean", "description": "Provision a job whose provisioning failed again (once, for a transient failure: a timeout, a network or git-host error). Ignored for any other state." }
+            } },
         }),
         json!({
             "name": "request_repo",
@@ -713,7 +716,7 @@ async fn call_tool(
             }
             // Probe through the SAME launcher a job gets (its own slot), so a
             // green doctor means what a job will run, not some other omp.
-            let launcher = job_launcher(DOCTOR_SLOT);
+            let launcher = job_launcher(DOCTOR_SLOT).unwrap_or_default();
             let probe = match &runtime {
                 Ok(rt) => match doctor_slot(pg, &agent.department, rt, gateway).await {
                     Ok(()) => harness_probe(pg, &agent.department, &launcher).await,
@@ -749,8 +752,12 @@ async fn call_tool(
                     )),
                 },
             };
-            let writable =
-                harness_writable(pg, &agent.department, &job_agent_dir(DOCTOR_SLOT)).await;
+            let writable = harness_writable(
+                pg,
+                &agent.department,
+                &job_agent_dir(DOCTOR_SLOT).unwrap_or_default(),
+            )
+            .await;
             checks.push(match (&probe, &auth) {
                 (Ok(version), AuthCheck::Ran(Ok(_))) => format!(
                     "harness: {} ({}) runs — {version} — and reached the Talaria gateway (one model call as `{}`), no key needed on your side",
@@ -1354,7 +1361,7 @@ async fn call_tool(
                     host_id: grant.host_id.clone(),
                     task_id: task_id.clone(),
                 };
-                if let Err(e) = provision::kick(deps, &pj, provision::Claim::Fresh).await {
+                if let Err(e) = provision::kick(deps, &pj).await {
                     return thrown(e);
                 }
                 provision::wait(pg, &job.id, START_PROVISION_WAIT_MS).await
@@ -1453,10 +1460,11 @@ async fn call_tool(
                 Ok(rows) => rows,
                 Err(e) => return thrown(format!("job read: {e}")),
             };
-            // Running jobs get a FRESH clone URL each poll (app tokens expire
-            // ~1h); gated jobs stay locked until a human approves from the
-            // ticket; queued jobs get their place in line — no clone URL,
+            // Started jobs answer with their provision (and, once it is
+            // ready, the harness lines); gated jobs stay locked until a human
+            // approves from the ticket; queued jobs get their place in line —
             // no workdir, nothing to run yet.
+            let retry = args.get("retry").and_then(Value::as_bool) == Some(true);
             let mut jobs: Vec<Value> = Vec::with_capacity(rows.len());
             for row in rows {
                 let job = WorkbenchJob::of(row);
@@ -1470,18 +1478,14 @@ async fn call_tool(
                     // A started job that was never provisioned — queued or
                     // gated until now, or started before provisioning existed
                     // — is provisioned now; one whose run died (its api
-                    // restarted) is taken over. Neither waits here: the
-                    // answer says `running`, and the next poll sees it move.
+                    // restarted) is taken over; a ready one built for another
+                    // omp is rebuilt; a failed one is provisioned again when
+                    // the agent asks (`retry`). Asked about ONE job, the
+                    // answer waits for a running provision a while, so an
+                    // agent polling a first-time toolchain spends a turn a
+                    // minute rather than several.
                     let mut state = provision::read(pg, &job.id).await;
-                    let stale_or_missing = match &state {
-                        None => true,
-                        Some(s) => {
-                            s.get("state").and_then(Value::as_str) == Some("running")
-                                && s.get("heartbeatMs").and_then(Value::as_i64).unwrap_or(0)
-                                    < wall_ms() - 90_000
-                        }
-                    };
-                    if stale_or_missing {
+                    if provision::needs_provision(state.as_ref(), wall_ms(), retry) {
                         let pj = provision::ProvisionJob {
                             id: job.id.clone(),
                             agent_id: agent.id.clone(),
@@ -1492,12 +1496,15 @@ async fn call_tool(
                             host_id: job.host_id.clone(),
                             task_id: job.task_id.clone(),
                         };
-                        if let Err(e) =
-                            provision::kick(deps, &pj, provision::Claim::IfMissing).await
-                        {
+                        if let Err(e) = provision::kick(deps, &pj).await {
                             return thrown(e);
                         }
                         state = provision::wait(pg, &job.id, 5_000).await;
+                    }
+                    if job_id.is_some() {
+                        state = provision::wait(pg, &job.id, JOB_STATUS_WAIT_MS)
+                            .await
+                            .or(state);
                     }
                     if let Some(s) = &state {
                         obj.insert("provision".into(), provision::wire(s));
@@ -1574,7 +1581,7 @@ async fn call_tool(
             // toolchain re-read from the repo (so a declaration the agent
             // just fixed takes effect), the harness re-checked. One that is
             // already running is waited on, not doubled.
-            if let Err(e) = provision::kick(deps, &pj, provision::Claim::Fresh).await {
+            if let Err(e) = provision::kick(deps, &pj).await {
                 return thrown(e);
             }
             let state = provision::wait(pg, &job_id, PREPARE_PROVISION_WAIT_MS).await;
@@ -2462,6 +2469,10 @@ fn auth_probe_budget(spent: std::time::Duration) -> Option<u64> {
 /// call timeout with room for the branch and ticket work before it.
 const START_PROVISION_WAIT_MS: u64 = 180_000;
 
+/// How long job_status, asked about one job, waits for its running provision
+/// before answering `running` — inside the 300 s MCP call timeout.
+const JOB_STATUS_WAIT_MS: u64 = 60_000;
+
 /// How long prepare_env waits for the provision it restarts.
 const PREPARE_PROVISION_WAIT_MS: u64 = 240_000;
 
@@ -2534,12 +2545,17 @@ async fn doctor_slot(
     gateway: bool,
 ) -> Result<(), String> {
     let container = managed_container(pg, department).await;
-    let text = talaria_workbench_harnesses::launcher_script(
-        DOCTOR_SLOT,
-        "/opt/data/workbench",
-        &rt.bun_path,
-        gateway,
-    );
+    let (Some(text), Some(dir)) = (
+        talaria_workbench_harnesses::launcher_script(
+            DOCTOR_SLOT,
+            "/opt/data/workbench",
+            &rt.bun_path,
+            gateway,
+        ),
+        talaria_workbench_harnesses::job_harness_dir(DOCTOR_SLOT),
+    ) else {
+        return Err("doctor's harness slot is not a valid slot".into());
+    };
     talaria_fleet_docker::docker_exec_as(
         &container,
         Some(devenv::AGENT_USER),
@@ -2548,8 +2564,9 @@ async fn doctor_slot(
             "-c",
             &talaria_workbench_harnesses::job_harness_script(),
             "sh",
-            &talaria_workbench_harnesses::job_harness_dir(DOCTOR_SLOT),
+            &dir,
             "/opt/data/workbench/sessions/doctor",
+            "/opt/data/workbench",
         ],
         Some(&text),
         30_000,
@@ -2634,31 +2651,21 @@ async fn harness_answer(
     agent_id: &str,
     task_id: Option<&str>,
 ) -> Result<HarnessAnswer, String> {
-    let roles = omp_roles(pg).await?;
-    let plan = talaria_coding_accounts::resolve(pg, agent_id, task_id)
-        .await
-        .unwrap_or(None);
-    let (model, arg, env_prefix) = match &plan {
-        Some(p) => (
-            p.model_for("default").map(str::to_string),
-            p.model_arg("default"),
-            role_env_prefix(
-                &p.roles
-                    .iter()
-                    .filter_map(|(role, _)| p.model_arg(role).map(|a| (role.clone(), a)))
-                    .collect::<Vec<_>>(),
-            ),
-        ),
-        None => (
-            roles.default.clone(),
-            roles.default.as_deref().map(model_arg),
-            String::new(),
-        ),
-    };
+    // The SAME resolution provisioning's preflight checked (ticket pin, then
+    // the agent's plan, then the org's roles), so the line a ready job hands
+    // out names exactly the model that was vouched for.
+    let provision::JobModel {
+        model,
+        arg,
+        env_prefix,
+        roles,
+        plan,
+        ..
+    } = provision::job_model(pg, agent_id, task_id).await?;
     let session_dir = format!("/opt/data/workbench/sessions/{job_id}");
     // The job's own launcher (provision.rs lays it out): omp pinned, on the
     // harness's bun, in this job's own agent dir, standing in the workdir.
-    let launcher = job_launcher(job_id);
+    let launcher = job_launcher(job_id).ok_or_else(|| format!("not a job id: {job_id:?}"))?;
     let fill = |tmpl: &str| {
         format!(
             "{env_prefix}{}",
