@@ -116,6 +116,23 @@ async fn until_settled(user: &str) -> AgentDesign {
             .design
             .expect("a design");
         if d.status != DesignStatus::Generating {
+            // The landing files (or re-alerts) its bell row just after the
+            // record lands and before its run is done: settled means both,
+            // or a test reading the bell races the landing.
+            if let Some(run) = d.run_id.as_deref() {
+                for _ in 0..300 {
+                    let state: Option<(String,)> =
+                        sqlx::query_as("select state from runs where id = $1::uuid")
+                            .bind(run)
+                            .fetch_optional(&st.pg)
+                            .await
+                            .unwrap();
+                    if state.is_none_or(|(s,)| !matches!(s.as_str(), "queued" | "running")) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
             return d;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -290,6 +307,14 @@ async fn design_live_refine_then_discard() {
         Err(DesignError::Refused(Refusal::Generating))
     ));
     let d = until_settled(&user).await;
+    // The landing re-alerts the bell row just after the record lands; wait
+    // for its run to finish so the discard below reads the final row.
+    for _ in 0..300 {
+        if run_state(&st.pg, d.run_id.as_deref().unwrap()).await == "done" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(d.draft.as_ref().unwrap().name, "Terse");
     assert_eq!(d.previous, Some(edited));
     assert_eq!(d.chat.len(), 4);
