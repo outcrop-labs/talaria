@@ -6,8 +6,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 - Talaria Desktop is getting a Browse view: tabs and pinned web apps rendered
   as native webviews beside Talaria instances, with per-tab sessions and a
-  zero-IPC security posture for third-party pages (in progress; the in-app
-  `/browse` route ships first with the shell wiring).
+  zero-IPC security posture for third-party pages (in progress). The in-app
+  `/browse` route and the browse-bar webview ship first, with the shell
+  wiring; agents attach to the shell through tauri-driver
+  (`TAURI_WEBVIEW_AUTOMATION=true` — the browse bar is drivable, a tab's page
+  content is not, see DESKTOP.md "Agent attach").
 
 ## 0.13.0 (2026-11-04)
 

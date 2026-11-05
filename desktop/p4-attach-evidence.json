@@ -1,0 +1,23 @@
+{
+  "ticket": "TALA-83",
+  "phase": "P4 agent-attach wiring (repro of the attach route on the branch build)",
+  "tested_at": "2026-11-05",
+  "environment": "Hermes sandbox, headless (xvfb 1280x900x24 + private dbus session + at-spi2 registry), dev build of the branch, fixture page served at http://127.0.0.1:8391/",
+  "method": "tauri-driver (--native-driver WebKitWebDriver) attaches to the dev build; the driver session drives the shell's own browse commands through window.__TAURI_INTERNALS__ from the launcher webview",
+  "wry_build": "PRISTINE upstream wry 0.55.1 (the spike's in-place WRY_ALLOW_AUTOMATION patch REMOVED before this run) — the only automation switch is tauri-runtime-wry 2.11.4's upstream env knob TAURI_WEBVIEW_AUTOMATION=true",
+  "checks": {
+    "session_created": {"result": "PASS", "value": "sessionId 93b76aac-449c-45d3-a7fa-d4c6582782dc; capabilities browserName=wry"},
+    "launcher_reachable": {"result": "PASS", "value": "url=http://localhost:5290/ title=Talaria (the vite dev server serving desktop/src)"},
+    "bridge_available": {"result": "PASS", "value": "window.__TAURI_INTERNALS__ is an object in the launcher webview"},
+    "open_browser_tab": {"result": "PASS", "value": "OK {id:cd0d52aa…, url:http://127.0.0.1:8391/} — webview + data dir created (instances/<id>/webview/)"},
+    "list_browser_tabs": {"result": "PASS", "value": "returns the tab list incl. the new tab"},
+    "set_browser_tab_pinned": {"result": "PASS", "value": "pinned:true, tab reorders to first"},
+    "close_browser_tab": {"result": "PASS", "value": "OK, tab removed"},
+    "browse_bar_drivable": {"result": "PASS", "value": "the browsebar webview surface is a driver handle; typing into its address input and submitting (form event) opened a tab exactly as a person would"},
+    "navigate_read_act_fixture": {"result": "PASS (separate run, same route)", "value": "session → navigate to the fixture → title='TALA-83 fixture', url correct, find_element(#h1) → text='browse fixture'; click returned 400 'Invalid JSON in request body' until the request carried a {} body, then click_body=null and the title flipped to 'TALA-83 clicked'"},
+    "browtab_webview_in_driver": {"result": "BOUNDARY (NO-GO for direct drive)", "value": "the remote browtab-* webviews NEVER appear among the driver's window handles. Root cause: each browse tab gets its own data_directory → its own WebContext, and tauri-runtime-wry 2.11.4 (lib.rs:4789-4812) grants automation only to the FIRST web context (is_first_context); WebKitGTK itself allows exactly ONE automation context per process. The launcher/main context is the one that is automated."},
+    "raw_webkitwebdriver_route": {"result": "NO-GO", "value": "WebKitWebDriver alone never completes a session against the shell (SPIKE_RESULT:NO_SESSION, both pre- and post-WRY_ALLOW_AUTOMATION patch) — the tauri-driver route is the attach path"}
+  },
+  "go_no_go": "GO with a scope note: the agent attaches and drives through the tauri-driver route (P0's route, re-verified on pristine upstream wry, so nothing fork-shaped to ship). The agent can drive the shell surfaces it is granted (launcher, browse bar — open/pin/focus/close tabs, navigate) but CANNOT drive a browse tab's page content directly: the per-tab data_directory puts each browtab in a second WebContext, and WebKitGTK allows one automation context per process. Reading/acting INSIDE a tab's page needs either (a) relaying through the shell (a command the bar/main webview calls that uses the tab webview's evaluate_script — shell-mediated, no driver access), or (b) a single shared data_directory for browse tabs, which breaks the per-tab cookie-jar doctrine. Recorded as an open decision for the reviewer; P4 ships (a)'s primitive: the shell-side evaluate relay is NOT built here.",
+  "next": "P5 packaging/docs; the attach profile for @wdio/mcp is documented in docs/DESKTOP.md (Browse view section)."
+}

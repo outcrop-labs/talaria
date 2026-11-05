@@ -700,6 +700,35 @@ page that carries the installers — never a broken frame. It is **not
 gateable**: a local capability of the desktop app, not a server view, so it
 is not in `GATEABLE_VIEWS` and no admin grant has any say over it.
 
+### Agent attach
+
+An agent drives the shell the way a person's test harness would: **tauri-driver** — the
+Tauri WebDriver (the same route the P0 spike proved, and re-proved on the branch build)
+speaks the W3C WebDriver protocol on a local port and launches the shell itself:
+
+```sh
+TAURI_WEBVIEW_AUTOMATION=true tauri-driver --port 4444 \
+  --native-driver /usr/bin/WebKitWebDriver   # or wherever the distro's driver lives
+# POST /session {"capabilities":{"alwaysMatch":{"tauri:options":{"application":"/usr/bin/talaria-desktop"}}}}
+```
+
+`TAURI_WEBVIEW_AUTOMATION=true` is the only switch needed: `tauri-runtime-wry` turns
+automation on for the shell's **first** web context when it is set (the launcher and the
+browse bar live there), and WebKitGTK permits exactly one automation context per process.
+Without it the engine refuses the attach. The attach is why the browse bar is local
+launcher content at all — a driver session finds it as a page handle and can read it, type
+into its address input, and press its buttons, so an agent can open, pin, focus and close
+tabs the way a person does (`desktop/p4-attach-evidence.json` is the recorded run).
+
+**The boundary.** A browse tab's page content is NOT reachable through the driver: every
+tab gets its own `data_directory`, so it sits in a second web context, and both
+`tauri-runtime-wry` (which automates only the first) and WebKitGTK (one automation context
+per process) exclude it. An agent that must read or act *inside* a tab's page gets there
+through the shell, never through the driver — a relay command the shell offers, evaluated
+in the tab's own context, is the shape; it does not exist yet, and building one means
+granting the tab's page to the agent's trust boundary, a decision this plan has not
+taken. Until then, the agent attaches to the chrome, not the pages.
+
 ## Development: the box builds, the host runs
 
 A devbox has no display, so the split is: **code and gates in the box, GUI on the host** (the
