@@ -23,6 +23,12 @@
 //! a closing WebKit process can re-create the dir after the remove deleted
 //! it. A dir that no entry owns and no removal recorded is never touched: it
 //! may be the session of an entry a damaged file lost.
+//!
+//! Browser tabs (`browser_tabs.json`, a Browse view's tabs and pinned web
+//! apps) live in their own file beside this one: the registry is the
+//! instances' business, and a third-party page is no origin's business at
+//! all. Same shape and discipline — atomic write, an unreadable file set
+//! aside, never a launch-stopper.
 
 use std::{
     collections::BTreeMap,
@@ -46,6 +52,25 @@ pub struct Instance {
     /// Epoch ms.
     pub created_at: i64,
     pub last_opened_at: Option<i64>,
+}
+/// A Browse view's tab. Third-party content: unlike an `Instance` there is no
+/// beacon and no trust — the shell remembers the URL, the title and whether
+/// the person pinned it, and nothing else. Unwired until the browse
+/// commands land (the next step of TALA-83's P1).
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserTab {
+    /// Local id (uuid v4): webview label "browtab-<id>" and data-dir name.
+    pub id: String,
+    /// Last known page title (shell-side, best-effort).
+    pub title: String,
+    /// Last active URL (normalized origin+path).
+    pub url: String,
+    pub pinned: bool,
+    /// Epoch ms.
+    pub created_at: i64,
+    pub last_active_at: Option<i64>,
 }
 
 /// Where a relaunch lands: the instance the window last showed, or the
@@ -270,6 +295,55 @@ pub fn save(path: &Path, record: &Record<'_>) -> Result<(), String> {
     Ok(())
 }
 
+/// `browser_tabs.json`: just the tabs. A separate file from the registry —
+/// the registry is instances, and an older build that knows nothing of tabs
+/// must keep reading and writing the registry as it always did. Unwired
+/// until the browse commands land (the next step of TALA-83's P1).
+#[allow(dead_code)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TabsFile {
+    tabs: Vec<BrowserTab>,
+}
+
+/// Read `browser_tabs.json`. An absent file is no tabs; a file that does not
+/// parse is set aside beside itself (nothing is lost) and reads as none. A
+/// tab is third-party content: the shell records what it reads and never
+/// lets it stop anything. Unwired until the browse commands land (TALA-83).
+#[allow(dead_code)]
+pub fn load_tabs(path: &Path) -> Vec<BrowserTab> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => {
+            let _ = set_aside(path);
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str::<TabsFile>(&raw) {
+        Ok(file) => file.tabs,
+        Err(_) => {
+            let _ = set_aside(path);
+            Vec::new()
+        }
+    }
+}
+
+/// Write `browser_tabs.json` the way the registry is written: a tmp file,
+/// then a rename, so a crash mid-write can never truncate it. Unwired until
+/// the browse commands land (TALA-83).
+#[allow(dead_code)]
+pub fn save_tabs(path: &Path, tabs: &[BrowserTab]) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp");
+    let json = serde_json::to_string_pretty(&TabsFile {
+        tabs: tabs.to_vec(),
+    })
+    .map_err(|e| format!("serializing browser tabs: {e}"))?;
+    fs::write(&tmp, json).map_err(|e| format!("writing {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|e| format!("replacing {}: {e}", path.display()))?;
+    Ok(())
+}
+
 /// What a boot sweep did: the dirs it deleted, and the removals to keep.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Swept {
@@ -333,6 +407,16 @@ mod tests {
             url: "https://outcrop.example".to_string(),
             created_at: 1_000,
             last_opened_at: None,
+        }
+    }
+    fn tab_sample(id: &str) -> BrowserTab {
+        BrowserTab {
+            id: id.to_string(),
+            title: "Outcrop".to_string(),
+            url: "https://outcrop.example/work".to_string(),
+            pinned: true,
+            created_at: 1_000,
+            last_active_at: Some(2_000),
         }
     }
 
@@ -602,6 +686,104 @@ mod tests {
             assert!(swept.deleted.is_empty(), "launch {launch}");
             assert!(root.join(lost).exists(), "launch {launch}");
         }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn a_tab_serializes_with_camel_case_fields() {
+        let tab = tab_sample("a");
+        assert_eq!(
+            serde_json::to_value(&tab).unwrap(),
+            serde_json::json!({
+                "id": "a",
+                "title": "Outcrop",
+                "url": "https://outcrop.example/work",
+                "pinned": true,
+                "createdAt": 1_000,
+                "lastActiveAt": 2_000,
+            })
+        );
+        // A tab never active keeps the key, null: the shape a file carries.
+        let never = BrowserTab {
+            last_active_at: None,
+            ..tab.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(&never).unwrap().get("lastActiveAt"),
+            Some(&serde_json::Value::Null)
+        );
+        // And the camelCase shape reads back.
+        assert_eq!(
+            serde_json::from_value::<BrowserTab>(serde_json::to_value(&tab).unwrap()).unwrap(),
+            tab
+        );
+    }
+
+    #[test]
+    fn tabs_round_trip_through_browser_tabs_json_beside_instances() {
+        let dir = temp_dir("tabs-roundtrip");
+        let registry_path = dir.join("instances.json");
+        let tabs_path = dir.join("browser_tabs.json");
+        let a = sample("a", "11111111-1111-1111-1111-111111111111");
+        save(
+            &registry_path,
+            &Record {
+                instances: &[a],
+                last_view: None,
+                removed: &[],
+                last_urls: &BTreeMap::new(),
+                muted: &[],
+            },
+        )
+        .unwrap();
+        let a = sample("a", "11111111-1111-1111-1111-111111111111");
+        let mut quiet = tab_sample("b");
+        quiet.pinned = false;
+        quiet.last_active_at = None;
+        save_tabs(&tabs_path, &[tab_sample("a"), quiet.clone()]).unwrap();
+        assert!(
+            tabs_path.exists(),
+            "the tabs file is written beside the registry"
+        );
+        assert!(!tabs_path.with_extension("json.tmp").exists());
+        assert_eq!(load_tabs(&tabs_path), vec![tab_sample("a"), quiet]);
+        let raw = fs::read_to_string(&registry_path).unwrap();
+        assert!(
+            !raw.contains("browserTabs"),
+            "the instance registry never carries tabs"
+        );
+        assert_eq!(load(&registry_path).instances, vec![a]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tabs_file_without_the_field_reads_empty() {
+        let dir = temp_dir("tabs-default");
+        let path = dir.join("browser_tabs.json");
+        assert!(load_tabs(&path).is_empty(), "no file yet is no tabs");
+        fs::write(&path, "{}").unwrap();
+        assert!(
+            load_tabs(&path).is_empty(),
+            "a file with no tabs field is no tabs"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_truncated_tabs_file_is_set_aside_and_starts_empty() {
+        let dir = temp_dir("tabs-truncated");
+        let path = dir.join("browser_tabs.json");
+        fs::write(&path, r#"{"tabs": ["#).unwrap();
+        assert!(load_tabs(&path).is_empty());
+        let aside: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("browser_tabs.json.corrupt-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "the original is kept beside it");
+        // And the next save starts clean.
+        save_tabs(&path, &[tab_sample("a")]).unwrap();
+        assert_eq!(load_tabs(&path), vec![tab_sample("a")]);
         fs::remove_dir_all(&dir).unwrap();
     }
 }
