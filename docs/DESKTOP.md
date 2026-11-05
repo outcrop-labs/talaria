@@ -11,7 +11,7 @@ in [`desktop/`](../desktop).
 
 ## How it works
 
-Two views, one window:
+Three views, one window:
 
 - **welcome** — the launcher (webview label `main`, local content from `desktop/src`) fills the
   window: the wing mark on the signature dither field, the instance list, add. The dither
@@ -24,6 +24,9 @@ Two views, one window:
   Typography is Mercury's IBM Plex pair, shipped inside the app (`@fontsource`, Latin and
   Latin Extended, the two weights the launcher sets): the launcher makes no network request
   before its first paint.
+- **browse** — tabs and pinned web apps beside the instances, its own section ("Browse
+  view" below). It shares the launcher's window, not its role: a place for pages that are
+  not an instance, kept out of the launcher so the launcher stays an instance picker.
 - **active** — the instance's webview IS the window; the launcher is hidden (but alive).
   Switching happens **inside the instance UI**: the desktop switcher
   (`ui/src/components/app/DesktopSwitcher.svelte`) wears the current instance's identity
@@ -627,6 +630,75 @@ a switch to a live webview is 5 ms. A reload of the same page inside an existing
 paints in ~50 ms, so ~0.7 s of a restore is WebKit starting the web process and creating the
 webview. A pre-warm on hover could overlap at most the hover-to-click time with that, at the
 cost of a web process per hovered row; it is not done.
+
+## Browse view
+
+Tabs and pinned web apps, beside instances: a person keeps a web page open in
+the same window as their work, and the agent-attach line (the plan's P0, GREEN)
+can drive it. The engine decision is the same one the rest of the shell makes:
+third-party pages render as native WebKitGTK webviews, never iframes — the
+browser-side web app cannot embed them (X-Frame-Options and CSP
+`frame-ancestors` forbid it; the extension workaround is an attack technique),
+so Browse exists only here.
+
+**The surfaces.** `View::Browse` (lib.rs) adds a third view to welcome and
+active. Two webviews are on screen in it, the only view that ever shows two:
+
+- **The browse bar** — webview label `browsebar`, local content, created
+  lazily on the first entry into browse (`commands.rs` `ensure_browsebar`) and
+  kept for the session. It is the same launcher app (desktop/src) rendered at
+  `layout.rs` `BAR` (44 logical px): the active tab's name, pin toggle, close,
+  an address input, and the way back to the view browse came from
+  (`set_browse_mode(false)`). Its capability is the launcher's
+  (`capabilities/launcher.json` lists the `browsebar` webview): trusted shell
+  chrome, with the shell-state push (`commands.rs` `emit_state`) reaching both
+  local surfaces.
+- **The tab** — webview label `browtab-<id>`, one per tab, remote content at
+  its own `data_directory` under the same `data_root` doctrine as instances
+  (`instances/<tab-id>/webview/`), so cookie jars and localStorage never mix.
+  Tabs stay loaded when switched, like instances; closing one removes its
+  webview and deletes its data dir, and the closing network process's
+  re-creation of the storage dir is caught the same way `remove_instance`
+  catches an instance's.
+
+**The security posture is stricter than an instance's, on purpose.** An
+instance webview is a Talaria the person registered: it gets the switcher
+grant ("Security posture" above). A browser tab is an arbitrary third-party
+origin, so it gets **zero shell IPC** — no capability, not even the way back;
+the bar is the way back. No initialization script is ever injected into it
+(the instance `ESCAPE_HATCH`/`DROP_GUARD` pattern does not extend to
+third-party pages: injecting into an arbitrary origin is a fingerprint and
+attack surface); navigation is refused to local files and unknown schemes
+(`commands.rs` `allowed_navigation`), and that is all the shell says about a
+tab's page. Pinning is the person's say-so, never the page's.
+
+**Persistence is shell-side only.** Tabs live in `browser_tabs.json` beside
+`instances.json` (`registry.rs` `BrowserTab`, `load_tabs`/`save_tabs`) — the
+same atomic tmp-then-rename write, the same set-aside-on-corrupt doctrine, the
+same never-a-launch-stopper rule; the instance registry never carries tabs,
+and an older build reads and writes it as it always did. Pinned tabs come
+first (by creation), decided once at read. There are no server tables: a tab
+is a local fact about one desktop.
+
+**Geometry.** `bounds_for(View::Browse, w, h)` (`layout.rs`) gives the bar the
+top strip and the tab everything beneath it; `relayout` re-applies both on
+every resize, and a newborn tab is born at its final rect
+(`browse_content_rect`) — WebviewBuilder cannot create hidden, and WebKitGTK
+mis-places new children until a `set_bounds` (tauri#10420). The
+one-visible-at-a-time discipline ("WebKitGTK geometry" above) holds with two:
+the bar and the active tab are the only visible children in browse
+(`commands.rs` `set_view` keeps exactly them), every other tab hidden first.
+The two-visible-webview case is new — the geometry probe the plan carries
+(P1) is what proves it stays stable across resize cycles on WebKitGTK, and
+the documented fallback if it does not is the no-persistent-bar layout.
+
+**In the web UI.** `/browse` (ui/src/routes/app/Browse.svelte) exists in every
+copy of the web UI: inside the shell it is the tab strip that drives these
+commands (the bridge in `ui/src/lib/desktop-shell.ts`); in a browser it
+renders the honest fallback instead — one sentence of why, and the Releases
+page that carries the installers — never a broken frame. It is **not
+gateable**: a local capability of the desktop app, not a server view, so it
+is not in `GATEABLE_VIEWS` and no admin grant has any say over it.
 
 ## Development: the box builds, the host runs
 
