@@ -1936,18 +1936,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             );
             obj.insert("pids_limit".into(), json!("${AGENT_WB_PIDS_LIMIT:-2048}"));
             obj.insert("oom_score_adj".into(), json!(500));
-            // No hard CPU quota on a developer agent. Its workbench jobs run
-            // INSIDE this container — every clone, build, test suite and omp
-            // process of up to MAX_LIVE_JOBS_PER_AGENT tickets — so a chassis
-            // `cpus:` written for a chat agent (older templates carried
-            // `cpus: ${AGENT_CPUS:-2}`) puts all of them on two cores. On
-            // outcrop, 2026-11-04, three tickets' cargo builds and tests
-            // shared those two cores at a load average of 15 on a 32-core
-            // host; a cold build ran past Hermes' 420 s tool ceiling, was
-            // killed and was rebuilt, and two of the three sessions spent 40
-            // minutes without reaching their harness. `cpu_shares` (kept)
-            // is the fairness between containers; a hard cap is not.
-            drop_cpu_quota(obj);
+            // The CPU a developer agent gets, written whole: see
+            // `developer_cpu` for the numbers and why.
+            developer_cpu(obj, talaria_fleet_budget::workbench_cpus());
             for (k, v) in talaria_workbench::sandbox_env() {
                 env.insert(k, v);
             }
@@ -2861,21 +2852,45 @@ fn fleet_nous_off(routed: &mut Map<String, Value>) {
     routed.insert("nous".into(), Value::Object(nous));
 }
 
-/// How many subagents this agent may run at once — the def's `max_children`,
-/// under the one key Hermes reads for the delegation cap. The cap is an
-/// operator's decision about the box the fleet runs on, not the agent's about
-/// its own work, so it is written from the column every render and a def
-/// cannot author its way past it. Every OTHER delegation key a def set is left
-/// alone: the rest of that block is the agent's to tune.
-/// The compose keys that cap a container's CPU outright, dropped from a
-/// developer agent's service (see the render's developer block).
-const DEVELOPER_CPU_QUOTA_KEYS: &[&str] = &["cpus", "cpu_quota", "cpu_period"];
-
-fn drop_cpu_quota(service: &mut Map<String, Value>) {
-    for quota in DEVELOPER_CPU_QUOTA_KEYS {
-        service.remove(*quota);
+/// The CPU a developer agent's container gets. Its workbench jobs run INSIDE
+/// it — every clone, build, test suite and omp process of up to
+/// MAX_LIVE_JOBS_PER_AGENT tickets — so the chassis's CPU keys, written for a
+/// chat agent, are replaced rather than inherited:
+///
+/// - `cpus: ${AGENT_WB_CPUS:-<n>}`, `n` = [`talaria_fleet_budget::workbench_cpus`]
+///   (the host's cores less an eighth kept for the platform, at least 2). A
+///   ceiling, not two cores: an older chassis carried `cpus: ${AGENT_CPUS:-2}`,
+///   and on outcrop (2026-11-04) three tickets' builds shared those two cores
+///   at a load average of 15 on a 32-core host; a cold build ran past Hermes'
+///   420 s tool ceiling and was rebuilt from cold. But still a ceiling, not
+///   none: cargo, Go and the JVM size their parallelism from the cgroup's
+///   CPU limit, and with none every build sizes itself to every host core.
+///   `AGENT_WB_CPUS` in fleet/.env overrides it (0 = no limit — compose drops
+///   a zero `cpus`), the same way `AGENT_WB_PIDS_LIMIT` overrides the pids
+///   cap; a chassis `AGENT_CPUS` no longer reaches a developer agent.
+/// - `cpu_shares: ${AGENT_WB_CPU_SHARES:-512}`: half the default weight, so a
+///   container running sixteen builds yields to the app and Postgres (both at
+///   Docker's default 1024) under contention instead of matching them.
+///
+/// `cpu_quota` and `cpu_period` are dropped: Docker refuses them beside
+/// `cpus`, and a chassis that spelled the cap that way would still cap it.
+fn developer_cpu(service: &mut Map<String, Value>, default_cpus: u32) {
+    for quota in ["cpus", "cpu_quota", "cpu_period", "cpu_shares"] {
+        service.remove(quota);
     }
+    service.insert(
+        "cpus".into(),
+        json!(format!("${{AGENT_WB_CPUS:-{default_cpus}}}")),
+    );
+    service.insert(
+        "cpu_shares".into(),
+        json!(format!("${{AGENT_WB_CPU_SHARES:-{DEVELOPER_CPU_SHARES}}}")),
+    );
 }
+
+/// A developer agent's default CPU weight — half Docker's 1024 (see
+/// [`developer_cpu`]).
+const DEVELOPER_CPU_SHARES: u32 = 512;
 
 /// Headroom over the live-job cap for the agent's other turns: chats, crons,
 /// and a ticket's next turn opening while its last is still settling.
@@ -2905,16 +2920,28 @@ fn fleet_api_server_capacity(routed: &mut Map<String, Value>, developer: bool) {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let authored = api.get("max_concurrent_runs").and_then(Value::as_u64);
-    let cap = match authored {
-        Some(n) if n == 0 || n >= floor => n,
-        _ => floor,
-    };
-    api.insert("max_concurrent_runs".into(), json!(cap));
+    // Read the way Hermes reads it — `int(...)`, so a quoted number counts,
+    // and anything at or below 0 is "no cap" — and keep what the def meant:
+    // no cap, or a cap at least the floor. Only a cap below it is raised.
+    let authored = api.get("max_concurrent_runs").and_then(|v| match v {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    });
+    let keep = authored.is_some_and(|n| n <= 0 || n >= floor as i64);
+    if !keep {
+        api.insert("max_concurrent_runs".into(), json!(floor));
+    }
     gateway.insert("api_server".into(), Value::Object(api));
     routed.insert("gateway".into(), Value::Object(gateway));
 }
 
+/// How many subagents this agent may run at once — the def's `max_children`,
+/// under the one key Hermes reads for the delegation cap. The cap is an
+/// operator's decision about the box the fleet runs on, not the agent's about
+/// its own work, so it is written from the column every render and a def
+/// cannot author its way past it. Every OTHER delegation key a def set is left
+/// alone: the rest of that block is the agent's to tune.
 fn fleet_delegation(routed: &mut Map<String, Value>, max_children: i32) {
     let mut cfg = routed
         .get("delegation")
@@ -4745,20 +4772,34 @@ service:
     }
 
     #[test]
-    fn a_developer_service_loses_a_hard_cpu_quota_and_keeps_its_shares() {
-        // outcrop's chassis, seeded 2026-09-02 from a template that still
-        // carried the quota.
+    fn a_developer_service_gets_its_own_cpu_ceiling_and_a_lower_weight() {
+        // outcrop's chassis, seeded 2026-09-02 from the 2026-08-17 template:
+        // a hard two-core quota and no cpu_shares at all.
+        let mut svc = json!({ "cpus": "${AGENT_CPUS:-2}", "mem_limit": "2g" })
+            .as_object()
+            .cloned()
+            .unwrap();
+        developer_cpu(&mut svc, 28);
+        assert_eq!(
+            Value::Object(svc),
+            json!({
+                "mem_limit": "2g",
+                "cpus": "${AGENT_WB_CPUS:-28}",
+                "cpu_shares": "${AGENT_WB_CPU_SHARES:-512}",
+            })
+        );
+        // A chassis that spelled the cap as quota/period, with its own
+        // weight: all of it is replaced, never left to collide with `cpus`.
         let mut svc = json!({
-            "cpus": "${AGENT_CPUS:-2}", "cpu_quota": 200000, "cpu_period": 100000,
-            "cpu_shares": "${AGENT_CPU_SHARES:-1024}", "mem_limit": "2g",
+            "cpu_quota": 200000, "cpu_period": 100000, "cpu_shares": "${AGENT_CPU_SHARES:-1024}",
         })
         .as_object()
         .cloned()
         .unwrap();
-        drop_cpu_quota(&mut svc);
+        developer_cpu(&mut svc, 3);
         assert_eq!(
             Value::Object(svc),
-            json!({ "cpu_shares": "${AGENT_CPU_SHARES:-1024}", "mem_limit": "2g" })
+            json!({ "cpus": "${AGENT_WB_CPUS:-3}", "cpu_shares": "${AGENT_WB_CPU_SHARES:-512}" })
         );
     }
 
@@ -4777,11 +4818,17 @@ service:
             json!(floor)
         );
         assert!(floor > 10, "above Hermes v0.22.4's default of 10");
-        // A def's own larger cap, or 0 (no cap), stands; a smaller one is raised.
+        // A def's own larger cap, or no cap (0, negative, or either quoted —
+        // Hermes `int()`s the value), stands; a smaller one, or junk, is raised.
         for (authored, want) in [
             (json!(64), json!(64)),
+            (json!("64"), json!("64")),
             (json!(0), json!(0)),
+            (json!("0"), json!("0")),
+            (json!(-1), json!(-1)),
             (json!(4), json!(floor)),
+            (json!("4"), json!(floor)),
+            (json!("lots"), json!(floor)),
         ] {
             let mut routed = Map::new();
             routed.insert(

@@ -111,6 +111,30 @@ pub async fn workbench_limit() -> u64 {
     workbench_limit_for(host_mem().await.as_ref())
 }
 
+/// A developer agent's default CPU ceiling on a host with `host_cores`: the
+/// cores less an eighth kept back for the platform (the app, Postgres,
+/// Redis, the other agents), at least one kept, and never below 2 — or the
+/// whole host when it has 2 or fewer, since Docker refuses a `cpus` above
+/// the host's count. 32 cores → 28, 8 → 7, 4 → 3, 2 → 2. The render writes
+/// it as the default of `${AGENT_WB_CPUS:-…}` (fleet-render `developer_cpu`).
+pub fn workbench_cpus_for(host_cores: u32) -> u32 {
+    if host_cores <= 2 {
+        return host_cores.max(1);
+    }
+    host_cores.saturating_sub((host_cores / 8).max(1)).max(2)
+}
+
+/// [`workbench_cpus_for`] this host: its cores as the host's /proc counts
+/// them, else what this process may run on, else 2.
+pub fn workbench_cpus() -> u32 {
+    let cores = talaria_host_metrics::core_count().or_else(|| {
+        std::thread::available_parallelism()
+            .ok()
+            .map(|n| n.get() as u32)
+    });
+    workbench_cpus_for(cores.unwrap_or(2))
+}
+
 pub fn host_safe_ceiling(host_total: u64, reserve: u64, configured: u64) -> u64 {
     let room = host_total.saturating_sub(reserve);
     configured.min(room).max(WB_BASE_RESERVE.min(room))
@@ -496,6 +520,18 @@ pub fn parse_size(raw: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_developer_agent_keeps_most_of_the_host_and_never_a_cpu_it_lacks() {
+        assert_eq!(super::workbench_cpus_for(32), 28);
+        assert_eq!(super::workbench_cpus_for(48), 42);
+        assert_eq!(super::workbench_cpus_for(8), 7);
+        assert_eq!(super::workbench_cpus_for(4), 3);
+        assert_eq!(super::workbench_cpus_for(3), 2);
+        assert_eq!(super::workbench_cpus_for(2), 2);
+        assert_eq!(super::workbench_cpus_for(1), 1);
+        assert_eq!(super::workbench_cpus_for(0), 1);
+    }
+
     use super::*;
 
     #[test]
