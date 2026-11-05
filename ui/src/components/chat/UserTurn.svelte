@@ -5,6 +5,8 @@
   import MessageAttachments from '@/components/chat/MessageAttachments.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import ChatChips from './ChatChips.svelte'
+  import ContinuationGutter from './ContinuationGutter.svelte'
+  import MessageTime from './MessageTime.svelte'
   import type { ChatChip } from '@/lib/chips'
   import { fade } from '@/lib/motion'
   import type { Attachment } from '@/lib/attachments'
@@ -18,7 +20,9 @@
     chips,
     author,
     picture,
-    time,
+    at,
+    timeZone,
+    continued = false,
     reactions = [],
     onReact,
     onContextMenu,
@@ -31,8 +35,12 @@
     author?: string | null
     /** The author's photo (R3) — initials when absent. */
     picture?: string | null
-    /** Send time beside the name (R2); empty → none shown. */
-    time?: string
+    /** Send time beside the name (R2), ISO; absent → none shown. */
+    at?: string
+    /** The viewer's zone for that time. */
+    timeZone?: string | null
+    /** A continuation line of its sender's block (lib/message-groups). */
+    continued?: boolean
     reactions?: ReactionChip[]
     /** Toggle the viewer's reaction. Omitted → no action bar (a row with no
      *  server id yet has nothing to react to). */
@@ -48,15 +56,22 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the message context menu has no keyboard path -->
 <div
   in:fade={{ duration: 150 }}
+  data-continued={continued || undefined}
   class="group/message relative -mx-2 flex gap-2.5 rounded-md px-2 py-1 transition-colors hover:bg-card2 focus-within:bg-card2"
   oncontextmenu={onContextMenu}
 >
-  <MessageAvatar {name} src={picture} class="mt-0.5" />
+  {#if continued}
+    <ContinuationGutter {name} {at} {timeZone} />
+  {:else}
+    <MessageAvatar {name} src={picture} class="mt-0.5" />
+  {/if}
   <div class="min-w-0 flex-1">
-    <div class="flex items-baseline gap-2">
-      <span class="font-sans text-[13px] font-medium text-fg">{name}</span>
-      {#if time}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">{time}</span>{/if}
-    </div>
+    {#if !continued}
+      <div class="flex items-baseline gap-2">
+        <span class="font-sans text-[13px] font-medium text-fg">{name}</span>
+        <MessageTime {at} {timeZone} />
+      </div>
+    {/if}
     <div class="font-sans text-sm text-fg">
       <!-- Markdown, like every other message surface — a user turn was the
           one bubble still rendering raw text. -->
