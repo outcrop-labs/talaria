@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Sparkles } from '@lucide/svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
@@ -8,14 +9,28 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Input from '@/components/ui/Input.svelte'
   import {
-    adoptDesign,
-    clearDesign,
-    currentDesign,
-    ensureDesign,
+    DESIGN_KEY,
+    EMPTY_FIELDS,
+    discardDesign,
+    elapsedSeconds,
+    isConflict,
+    keepaliveBody,
+    landingKey,
+    openingStep,
+    pendingDesign,
     refineDesign,
-    setModalOpen,
+    refineReceipt,
+    saveDesign,
+    stashUnsaved,
     startDesign,
-  } from '@/lib/agent-design.svelte'
+    takeUnsaved,
+    useAgentDesign,
+    dismissReturned,
+    watchDesign,
+    type DraftFields,
+  } from '@/lib/agent-design'
+  import { errorMessage } from '@/lib/fetch-json'
+  import { useSession } from '@/lib/session'
   import Modal from '@/components/ui/Modal.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -23,7 +38,6 @@
   import { hireFleetAgent, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { useRoleTemplates } from '@/lib/agent-role-templates'
   import { fade, listStagger, slide, staggerIn } from '@/lib/motion'
-  import type { AgentDraft } from '@/lib/muse.svelte'
   import RefineBar from './RefineBar.svelte'
   import SkillPreviewRow from './SkillPreviewRow.svelte'
 
@@ -45,12 +59,13 @@
   // Create does not boot anything: it enqueues an agent-hire RUN and closes.
   // The roster's hiring strip shows the phases from there.
   //
-  // TALA-11 part 2: the generation survives the modal. The whole draftAgent()
-  // orchestration — fields, chat window, elapsed tick, refine receipt — lives
-  // in lib/agent-design.svelte (module state, next to the toast store),
-  // because this component REMOUNTS per open (Agents.svelte renders it under
-  // `{#if creating}`) and a background run must not die with its window.
-  // Closing mid-generation leaves the store running; reopening re-enters it.
+  // THE DESIGN IS THE SERVER'S (talaria-agent-design, lib/agent-design.ts).
+  // A describe or a refine is a run; the record — status, chat, draft, error,
+  // the start time — lives in Redis. This component reads it and keeps only
+  // view state: the step, the form as it is typed, a clock for the elapsed
+  // count. Closing the modal, reloading, a second tab: the next open resumes
+  // where the design stands. Hand edits are saved to the record as they are
+  // typed, so they survive the same things.
   let {
     open,
     onClose,
@@ -65,53 +80,230 @@
   } = $props()
 
   const qc = useQueryClient()
-  // svelte-ignore state_referenced_locally -- reason: opening step chosen from the preselect/store once at mount; the modal remounts per open
-  let step = $state<'describe' | 'review'>(preselect ? 'review' : 'describe')
+  const designQuery = useAgentDesign()
+  // This modal is looking: reads say so, and a landing skips the bell.
+  // Duplicate looks at no design, so it must not hold the bell back either.
+  $effect(() => (preselect ? undefined : watchDesign()))
 
-  // The store's design, or null. Every reactive read below flows from here —
-  // the modal owns NO generation state of its own any more.
-  const design = $derived(currentDesign())
+  const read = $derived(designQuery.data)
+  // DUPLICATE IS ITS OWN FORM: a preselected chassis never reads, writes or
+  // spends the person's waiting design. A design on a hire is out of the
+  // slot altogether, so New agent is open for the next one meanwhile.
+  const design = $derived(preselect ? null : pendingDesign(read?.design))
+  // Designs a failed hire handed back while this one was open: each waits
+  // for the slot, and can be dismissed.
+  const returned = $derived(preselect ? [] : (read?.returned ?? []))
+  const session = useSession()
   const generating = $derived(design?.status === 'generating')
-  const genSeconds = $derived(design?.genSeconds ?? 0)
   const genErr = $derived(design?.status === 'error' ? design.error : null)
-  const generated = $derived((design?.chat.length ?? 0) > 0)
-  // svelte-ignore state_referenced_locally -- reason: seeded once at mount from the store's purpose; the modal remounts per open, and editing must not fight the store
-  let purpose = $state(design?.purpose ?? '')
-  // Report open/closed to the store — it gates the "the design landed" toast
-  // (the person standing in the modal already knows). setModalOpen on mount
-  // AND close, because the component unmounts when the modal goes away.
-  setModalOpen(true)
+  // A design handed back by a failed hire says why on the review step.
+  const hireErr = $derived(design?.status === 'ready' ? design.error : null)
+  const generated = $derived((design?.chatLength ?? 0) > 0)
+  const lastChange = $derived(refineReceipt(design))
+  // The first read failed (a 500, a deploy in progress): say so, offer a
+  // retry, and leave describe and "Configure manually" open meanwhile.
+  const readErr = $derived(!preselect && designQuery.isError && !read ? errorMessage(designQuery.error) : null)
+
+  // The step: chosen from the record once it is known (the roster usually
+  // read it already, so this is the first frame), then moved by the person
+  // and by a landing. Null only while the very first read is out.
+  // svelte-ignore state_referenced_locally -- reason: the opening step is chosen once from the preselect and the cached record; the modal remounts per open
+  let step = $state<'describe' | 'review' | null>(preselect ? 'review' : read ? openingStep(pendingDesign(read.design), false) : null)
   $effect(() => {
-    return () => setModalOpen(false)
+    if (step !== null) return
+    if (read) step = openingStep(pendingDesign(read.design), false)
+    else if (designQuery.isError) step = 'describe'
   })
 
-  // A design that landed while the modal was closed: reopen straight onto the
-  // review step, fields applied — the same applyDraft path as before, just
-  // already-applied by the store. An error lands the person back on describe
-  // svelte-ignore state_referenced_locally -- reason: opening step chosen from the store once at mount (the modal remounts per open); later status changes are handled reactively via `generating`
-  if (design?.status === 'ready') step = 'review'
-  // A design that lands while the modal is OPEN moves it to the review step
-  // too. The opening rule above runs once, at mount; without this the splash
-  // gave way to the describe form again when the answer came, and the next
-  // click on "Design agent" replaced the design the person was waiting for.
-  // A failure stays on describe, where its sentence shows.
-  let sawGenerating = false
+  // The elapsed count, on the server's clock: the same number in every tab
+  // and after a reload. A 1 s tick only while something generates.
+  let clock = $state(Date.now())
   $effect(() => {
-    if (generating) sawGenerating = true
-    else if (sawGenerating && design?.status === 'ready') {
-      sawGenerating = false
-      step = 'review'
+    if (!generating) return
+    const t = setInterval(() => (clock = Date.now()), 1000)
+    return () => clearInterval(t)
+  })
+  const genSeconds = $derived(generating ? elapsedSeconds(design, read?.skewMs ?? 0, clock) : 0)
+
+  // svelte-ignore state_referenced_locally -- reason: seeded once at mount from the record's purpose; editing must not fight later reads
+  let purpose = $state(design?.purpose ?? '')
+  let startErr = $state<string | null>(null)
+
+  // THE FORM — view state over the record's draft. Seeded from the server
+  // when a run lands (or at mount), never on the answer to a hand edit's
+  // save: that would overwrite what is being typed.
+  // svelte-ignore state_referenced_locally -- reason: seeded once at mount from the record's draft; later landings reseed through the effect below
+  let form = $state<DraftFields>({ ...EMPTY_FIELDS, ...(design?.draft ?? {}) })
+  // The landing the form was seeded from; null until the first read is in.
+  // svelte-ignore state_referenced_locally -- reason: read once at mount; the effect below moves it
+  let seededFrom = $state<string | null>(read ? landingKey(design) : null)
+  let soulRev = $state(0)
+  $effect(() => {
+    const key = landingKey(design)
+    const d = design
+    const loaded = read !== undefined
+    untrack(() => {
+      if (!loaded) return
+      if (seededFrom === null) {
+        // The first read, for a modal opened before it was in (or the read
+        // after a 409 brought the current design).
+        seededFrom = key
+        if (d?.draft) {
+          form = { ...EMPTY_FIELDS, ...d.draft }
+          soulRev += 1
+        }
+        return
+      }
+      if (!d || key === seededFrom) return
+      const wasGenerating = seededFrom.endsWith(':-')
+      const prevId = seededFrom.split(':')[0]
+      seededFrom = key
+      // ANOTHER DESIGN arrived — handed back by a failed hire into an empty
+      // slot, or started in another tab — and not by this modal's own first
+      // save of a manual start: take its draft, manual or designed, and open
+      // where it stands.
+      if (d.id !== prevId && !(prevId === '' && ownSave)) {
+        form = { ...EMPTY_FIELDS, ...(d.draft ?? {}) }
+        soulRev += 1
+        if (d.status !== 'generating') step = openingStep(d, false)
+        return
+      }
+      // A run starting changes nothing on the form, and a record no run
+      // wrote is the answer to the person's own save.
+      if (d.status === 'generating' || !d.runId) return
+      if (d.draft) {
+        form = { ...EMPTY_FIELDS, ...d.draft }
+        soulRev += 1
+      }
+      // A describe that lands while the modal is open moves it to review;
+      // a failure stays where its sentence shows.
+      if (wasGenerating && d.status === 'ready' && step === 'describe') step = 'review'
+    })
+  })
+
+  // THE EDIT THAT COULD NOT LEAVE WITH THE PAGE is offered once, when New
+  // agent opens — cold or warm cache — and only if the server has not moved
+  // past it (`takeUnsaved`). Never later: a 409's reseed must not bring back
+  // a stash over edits made since.
+  let stashChecked = false
+  $effect(() => {
+    const loaded = read !== undefined
+    const uid = session.data?.id
+    untrack(() => {
+      if (stashChecked || !loaded || !uid || preselect) return
+      stashChecked = true
+      restoreUnsaved(uid, design?.id ?? null, design?.draft ?? null)
+    })
+  })
+
+  // Hand edits: the form now, the record shortly after (one save per pause).
+  // SAVED AS YOU TYPE means no edit is ever lost: a pending save is FLUSHED,
+  // never dropped — on close and on Create as an ordinary save (the app
+  // outlives the modal), and as the page goes away with `keepalive`. A
+  // keepalive body is capped at 64 KiB, so an edit too large for it sends
+  // the small fields and is kept in this browser (`stashUnsaved`) until New
+  // agent next opens on the design; it is never reported saved.
+  let saveTimer: ReturnType<typeof setTimeout> | null = null
+  let saveErr = $state<string | null>(null)
+  let restored = $state(false)
+  // A save is on the wire: what pagehide must still keep, and (for a manual
+  // start) the record its answer creates is this modal's own.
+  let ownSave = false
+  /** Resolves true when the edit reached the server. */
+  const save = (): Promise<boolean> => {
+    // A run is writing the record (a refine): its landing reseeds the form,
+    // and the edits being typed rode in with the refine.
+    if (generating || preselect) return Promise.resolve(true)
+    ownSave = true
+    return saveDesign(qc, $state.snapshot(form), design?.id)
+      .then(() => {
+        saveErr = null
+        return true
+      })
+      .finally(() => {
+        ownSave = false
+      })
+      .catch(async (e: unknown) => {
+        saveErr = errorMessage(e)
+        // The design changed elsewhere (or a hire holds it): show the one
+        // the server holds now, rather than keep typing into a ghost.
+        if (isConflict(e)) {
+          // Reseed from whatever the read brings (set first: the effect
+          // runs as the read lands).
+          seededFrom = null
+          await qc.refetchQueries({ queryKey: DESIGN_KEY })
+        }
+        return false
+      })
+  }
+  const flush = (): Promise<boolean> => {
+    if (!saveTimer) return Promise.resolve(true)
+    clearTimeout(saveTimer)
+    saveTimer = null
+    return save()
+  }
+  // The page is going away: the one save that must outlive it.
+  const flushAway = () => {
+    // Pending (the timer has not fired) or already on the wire (it has, and
+    // the page may not wait for the answer): either way it is kept here.
+    if ((!saveTimer && !ownSave) || generating || preselect) return
+    const uid = session.data?.id
+    if (saveTimer) clearTimeout(saveTimer)
+    const pending = saveTimer !== null
+    saveTimer = null
+    const now = $state.snapshot(form)
+    const base = design?.draft ?? null
+    const { fields } = pending ? keepaliveBody(now, base) : { fields: null }
+    // Kept here first: a reload can outrun its own keepalive save, and an
+    // edit over the cap cannot ride it at all.
+    if (uid) stashUnsaved(uid, { id: design?.id ?? null, form: now, base, sent: fields, at: Date.now() })
+    if (fields) void saveDesign(qc, fields, design?.id, { keepalive: true }).catch(() => {})
+  }
+  // An edit that could not leave with the page, offered back on this design.
+  function restoreUnsaved(uid: string, id: string | null, server: DraftFields | null) {
+    if (preselect) return
+    const back = takeUnsaved(uid, id, server)
+    if (!back) return
+    form = { ...EMPTY_FIELDS, ...back }
+    soulRev += 1
+    restored = true
+    if (step === 'describe' && id) step = 'review'
+    persist()
+  }
+  const persist = () => {
+    // Duplicate holds its own form, and a look at "Configure manually" that
+    // never named anything is not a design worth keeping for three days.
+    if (preselect || generating) return
+    if (!design && !form.name.trim() && !form.handle.trim()) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = setTimeout(() => {
+      saveTimer = null
+      void save()
+    }, 600)
+  }
+  $effect(() => {
+    window.addEventListener('pagehide', flushAway)
+    return () => {
+      window.removeEventListener('pagehide', flushAway)
+      // The modal closing (Cancel, the X, a navigation) saves what was
+      // typed, as an ordinary save: no size cap, and the app is still here.
+      void flush()
     }
   })
-  // Review fields, bound to the store's fields. Hand edits write straight
-  // through to the store (that is what the refine's `current` reads), except
-  // templateId/start/busy/err, which are genuinely per-hire local state. A
-  // manual start (Configure manually, or Duplicate's preselect) has no design
-  // yet: the first edit seeds an empty one (ensureDesign), so the fields
-  // take what is typed and Create enables like on any other path.
-  const displayName = $derived(design?.name ?? '')
-  const slug = $derived(design?.handle ?? '')
-  const department = $derived(design?.department ?? '')
+
+  const set = (patch: Partial<DraftFields>) => {
+    // An editor's autosave of the value it was seeded with is not an edit.
+    if ((Object.keys(patch) as Array<keyof DraftFields>).every((k) => JSON.stringify(form[k]) === JSON.stringify(patch[k]))) return
+    form = { ...form, ...patch }
+    persist()
+  }
+
+  const onName = (v: string) => {
+    const prev = form.name
+    const handle = !form.handle || form.handle === prev.toLowerCase().replace(/[^a-z0-9]/g, '') ? v.toLowerCase().replace(/[^a-z0-9]/g, '') : form.handle
+    set({ name: v, handle })
+  }
+
   // A department is ONE agent's: it names the container and the memory
   // volume, so the hire door refuses one another agent holds (409). Said the
   // moment it is typed, from the whole roster — the page's own cached read,
@@ -120,25 +312,8 @@
   // the whole fleet. A role template or a Muse design can propose a
   // department somebody already has.
   const rosterQuery = useFleetDefs(true)
-  const departmentHolder = $derived((rosterQuery.data?.defs ?? templates).find((t) => t.department === department.trim()) ?? null)
-  const role = $derived(design?.role ?? '')
-  const soul = $derived(design?.soul ?? '')
-  const soulRev = $derived(design?.soulRev ?? 0)
-  const skills = $derived(design?.skills ?? [])
-  const lastChange = $derived(design?.lastChange ?? null)
+  const departmentHolder = $derived((rosterQuery.data?.defs ?? templates).find((t) => t.department === form.department.trim()) ?? null)
 
-  const set = (patch: Partial<{ name: string; handle: string; department: string; role: string; soul: string; skills: AgentDraft['skills'] }>) => {
-    Object.assign(ensureDesign(), patch)
-  }
-
-  const onName = (v: string) => {
-    const d = ensureDesign()
-    const prev = d.name
-    d.name = v
-    if (!d.handle || d.handle === prev.toLowerCase().replace(/[^a-z0-9]/g, '')) {
-      d.handle = v.toLowerCase().replace(/[^a-z0-9]/g, '')
-    }
-  }
   // svelte-ignore state_referenced_locally -- reason: chassis pick seeded from the preselect/roster once at mount; the modal remounts per open
   let templateId = $state(preselect ?? templates[0]?.id ?? '') // '' = platform defaults
   // Role templates, as a query (cached across opens, no hand-rolled fetch to
@@ -156,17 +331,60 @@
     roleSlug = slugPicked
     const t = roleTemplates.find((x) => x.slug === slugPicked)
     if (!t) return
-    // A role pick is a manual start, not a design: it seeds the store with
-    // a ready record and no muse run, so the review step's store bindings
-    // and the refine's `current` read it like any other starting point.
-    adoptDesign({
-      name: t.name,
-      handle: t.slug.replace(/-/g, ''),
-      department: t.department,
-      role: t.role,
-      soul: t.soul,
-    })
+    // A role pick is a manual start, not a design: the server holds it as a
+    // ready record with no run behind it, so it survives a reload too.
+    form = { name: t.name, handle: t.slug.replace(/-/g, ''), department: t.department, role: t.role, soul: t.soul, skills: [] }
+    soulRev += 1
+    persist()
     step = 'review'
+  }
+
+  const describe = async () => {
+    startErr = null
+    try {
+      const d = await startDesign(qc, purpose)
+      seededFrom = landingKey(d)
+    } catch (e) {
+      startErr = errorMessage(e)
+    }
+  }
+
+  const refine = async (text: string) => {
+    startErr = null
+    if (!design) return
+    // The pending edits ride in the refine's `current`; a save fired into
+    // the run it starts would only be refused.
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
+    try {
+      const d = await refineDesign(qc, design.id, text, $state.snapshot(form))
+      seededFrom = landingKey(d)
+    } catch (e) {
+      startErr = errorMessage(e)
+      if (isConflict(e)) {
+        seededFrom = null
+        await qc.refetchQueries({ queryKey: DESIGN_KEY })
+      }
+    }
+  }
+
+  // Discard: the record goes, a run still generating is cancelled, and the
+  // bell row about it is read. Start over from an empty describe.
+  const discard = async () => {
+    startErr = null
+    // A pending save would recreate what is being thrown away.
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
+    try {
+      await discardDesign(qc, design?.id)
+      form = { ...EMPTY_FIELDS }
+      seededFrom = ''
+      purpose = ''
+      roleSlug = ''
+      step = 'describe'
+    } catch (e) {
+      startErr = errorMessage(e)
+    }
   }
 
   // Enqueue the hire and close. The boot (render, up, health wait — minutes on
@@ -174,20 +392,32 @@
   // for it is what made creation feel broken — a stuck spinner, a proxy
   // timeout, an agent that only existed after a refresh. The roster strip
   // shows the phases; the only error that belongs HERE is one the open form
-  // can fix (a taken handle). The design is claimed — the store's run is
-  // over and the hire's phases take over the story.
+  // can fix (a taken handle). The hire names the design: the server spends
+  // it on this hire (a second one is refused), consumes it when the hire
+  // finishes, and hands it back here if the hire fails.
   const create = async () => {
     err = null
     busy = true
     try {
+      // The design this form belongs to, named BEFORE the flush: a flush
+      // that meets a newer design (another tab or device) refetches it, and
+      // its id must never ride out with this form. Such a flush stops the
+      // Create; the person sees the current design and decides again.
+      const designId = design?.id
+      if (!(await flush())) {
+        err = saveErr ?? 'The design changed before it could be hired; check it and create again.'
+        return
+      }
+      const f = form
       const r = await hireFleetAgent({
-        slug,
-        department,
-        displayName,
-        role: role.trim() || null,
+        slug: f.handle,
+        department: f.department,
+        displayName: f.name,
+        role: f.role.trim() || null,
         ...(templateId ? { templateId } : {}),
-        ...(soul.trim() ? { soul } : {}),
-        ...(skills.length ? { skills } : {}),
+        ...(f.soul.trim() ? { soul: f.soul } : {}),
+        ...(f.skills.length ? { skills: f.skills } : {}),
+        ...(designId ? { designId } : {}),
         start,
       })
       if (r.error) {
@@ -198,10 +428,18 @@
         // field says who holds it and Create waits. For any other refusal it
         // is one extra read.
         void qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+        // A 409 may be the design's own (replaced elsewhere, or a hire from
+        // another tab holds it): read it again and show what is current.
+        if (r.status === 409 && designId) {
+          // Reseed from whatever the read brings (set first: the effect
+          // runs as the read lands).
+          seededFrom = null
+          await qc.refetchQueries({ queryKey: DESIGN_KEY })
+        }
         return
       }
       await qc.invalidateQueries({ queryKey: ['fleet-hires'] })
-      clearDesign()
+      void qc.invalidateQueries({ queryKey: DESIGN_KEY })
       onClose()
     } catch (e) {
       err = (e as Error).message
@@ -211,7 +449,29 @@
   }
 </script>
 
-{#if step === 'describe'}
+{#snippet returnedNotes()}
+  <!-- A failed hire handed its design back while this one was open: it
+       waits (and the bell said so) rather than overwrite this one, and comes
+       back here once this one is hired or discarded. Nothing is lost. -->
+  {#each returned as r (r.designId)}
+    <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-returned">
+      The hire of {r.name} did not finish{r.reason ? `: ${r.reason.replace(/^The hire did not finish:?\s*/, '')}` : '.'}
+      Its design comes back here once this one is hired or discarded.
+      <button type="button" class="ml-1 underline hover:text-danger" onclick={() => void dismissReturned(qc, r.designId)}>Discard it</button>
+    </p>
+  {/each}
+{/snippet}
+
+{#if step === null}
+  <!-- The first read of the design is still out (the roster usually has it
+       cached, so this is rare): say so rather than guess a step. -->
+  <Modal {open} {onClose} title="New agent" width="max-w-lg">
+    <div class="flex items-center gap-2 py-6 text-sm text-muted">
+      <WaitingMark site="fleet/agent-design" size={12} />
+      Checking for a design in progress
+    </div>
+  </Modal>
+{:else if step === 'describe'}
   <!-- ── Step 1: describe ─────────────────────────────────────────────────── -->
   <Modal {open} {onClose} title="New agent" width="max-w-lg">
     <!-- The body's two faces — the describe form, and the full-panel splash
@@ -221,8 +481,9 @@
          the form, and a resize the user watches must glide. The footer row
          stays outside the key so the Designing button (its WaitingMark) and
          Cancel remain reachable for the whole wait — and Cancel now really
-         is an exit, not a cancel: the generation keeps running in the store
-         and the roster's status row re-enters it. -->
+         is an exit, not a cancel: the generation keeps running on the
+         server, and the roster's row, the New agent mark and the bell all
+         lead back to it. Discard is the one that stops it. -->
     <AutoHeight>
       {#key generating}
         {#if generating}
@@ -293,16 +554,29 @@
         {/if}
       {/key}
     </AutoHeight>
-    {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
+    {#if genErr || startErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr ?? startErr}</p>{/if}
+    {@render returnedNotes()}
+    {#if readErr}
+      <p transition:slide={{ duration: 150 }} class="text-xs text-danger" data-testid="design-read-error">
+        Could not check for a design in progress: {readErr}
+        <button type="button" class="ml-1 underline hover:text-fg" onclick={() => void designQuery.refetch()}>Retry</button>
+      </p>
+    {/if}
     <div class="flex items-center gap-3 border-t border-line pt-4">
-      <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'review')}>
-        Configure manually →
-      </button>
+      {#if generating}
+        <button type="button" class="text-xs text-muted hover:text-danger" onclick={() => void discard()} data-testid="design-discard">
+          Discard design
+        </button>
+      {:else}
+        <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'review')}>
+          Configure manually →
+        </button>
+      {/if}
       <span class="ml-auto"></span>
       <Button variant="ghost" size="sm" onclick={onClose}>
-        Cancel
+        {generating ? 'Close' : 'Cancel'}
       </Button>
-      <Button onclick={() => (generating ? undefined : startDesign(purpose))} disabled={generating || !purpose.trim()}>
+      <Button onclick={() => (generating ? undefined : void describe())} disabled={generating || !purpose.trim()}>
         {#if generating}<WaitingMark site="fleet/agent-create" size={12} />{/if}
         {generating ? 'Designing' : 'Design agent'}
       </Button>
@@ -315,21 +589,21 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label for="cam-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-          <Input id="cam-name" value={displayName} oninput={(e) => onName(e.currentTarget.value)} placeholder="Research Analyst" autofocus={!generated} />
+          <Input id="cam-name" value={form.name} oninput={(e) => onName(e.currentTarget.value)} placeholder="Research Analyst" autofocus={!generated} />
         </div>
         <div>
           <label for="cam-handle" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
-          <Input id="cam-handle" value={slug} oninput={(e) => set({ handle: e.currentTarget.value })} placeholder="analyst" />
+          <Input id="cam-handle" value={form.handle} oninput={(e) => set({ handle: e.currentTarget.value })} placeholder="analyst" />
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label for="cam-role" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</label>
-          <Input id="cam-role" value={role} oninput={(e) => set({ role: e.currentTarget.value })} placeholder="Research Analyst" />
+          <Input id="cam-role" value={form.role} oninput={(e) => set({ role: e.currentTarget.value })} placeholder="Research Analyst" />
         </div>
         <div>
           <label for="cam-department" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
-          <Input id="cam-department" value={department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" aria-invalid={departmentHolder ? 'true' : undefined} />
+          <Input id="cam-department" value={form.department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" aria-invalid={departmentHolder ? 'true' : undefined} />
           {#if departmentHolder}
             <p transition:slide={{ duration: 150 }} class="mt-1 text-xs text-danger" data-testid="department-taken">
               Taken by {departmentHolder.displayName} — pick another.
@@ -340,7 +614,7 @@
       <p class="-mt-2 font-sans text-xs text-muted">
         Role is the roster title; department is the agent's own key — it names its container and its memory, so no two
         agents share one. The fleet model id becomes
-        <span class="font-mono text-fg">{slug || 'handle'}-{department || 'department'}</span>.
+        <span class="font-mono text-fg">{form.handle || 'handle'}-{form.department || 'department'}</span>.
       </p>
 
       <div>
@@ -357,12 +631,12 @@
 
       <div>
         <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Soul</span>
-        {#if soul.trim()}
+        {#if form.soul.trim()}
           <!-- Rich like the post-creation soul editor; autosave keeps `soul`
                fresh for create + refine, reseeded whenever muse redrafts. -->
           <div class="max-h-72 overflow-y-auto">
             {#key soulRev}
-              <RichEditor value={soul} onSave={(md) => set({ soul: md })} autosave minHeight="9rem" />
+              <RichEditor value={form.soul} onSave={(md) => set({ soul: md })} autosave minHeight="9rem" />
             {/key}
           </div>
         {:else}
@@ -370,12 +644,12 @@
         {/if}
       </div>
 
-      {#if skills.length > 0}
+      {#if form.skills.length > 0}
         <div in:fade={{ duration: 150 }}>
           <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</span>
           <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
-            {#each skills as s (s.name)}
-              <SkillPreviewRow skill={s} onRemove={() => set({ skills: skills.filter((x) => x.name !== s.name) })} />
+            {#each form.skills as s (s.name)}
+              <SkillPreviewRow skill={s} onRemove={() => set({ skills: form.skills.filter((x) => x.name !== s.name) })} />
             {/each}
           </ul>
         </div>
@@ -385,8 +659,8 @@
         <RefineBar
           busy={generating}
           preview={null}
-          error={genErr}
-          onRefine={(text) => refineDesign(text)}
+          error={genErr ?? startErr}
+          onRefine={(text) => void refine(text)}
         />
       {/if}
 
@@ -415,18 +689,26 @@
       {/if}
 
       <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start the container now" class="gap-2 text-sm text-fg" />
-      {#if err}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err}</div>{/if}
+      {@render returnedNotes()}
+      {#if hireErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger" data-testid="design-hire-error">{hireErr}</div>{/if}
+      {#if restored}<div transition:slide={{ duration: 150 }} class="text-sm text-muted" data-testid="design-restored">Restored edits that had not reached the server when the page closed. They are being saved now.</div>{/if}
+      {#if err || saveErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err ?? `Your edits were not saved: ${saveErr}`}</div>{/if}
       <div class="flex items-center gap-2 border-t border-line pt-4">
         {#if !preselect}
           <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'describe')}>
             ← Describe instead
           </button>
         {/if}
+        {#if design && !preselect}
+          <button type="button" class="text-xs text-muted hover:text-danger" onclick={() => void discard()} data-testid="design-discard">
+            Discard design
+          </button>
+        {/if}
         <span class="ml-auto"></span>
         <Button variant="ghost" size="sm" onclick={onClose}>
           Cancel
         </Button>
-        <Button onclick={() => void create()} disabled={busy || generating || !slug || !department || !displayName || !!departmentHolder}>
+        <Button onclick={() => void create()} disabled={busy || generating || !form.handle || !form.department || !form.name || !!departmentHolder}>
           {busy ? 'Hiring' : 'Create agent'}
         </Button>
       </div>

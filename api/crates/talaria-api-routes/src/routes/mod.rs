@@ -1449,6 +1449,14 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::fleet::fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/fleet/agent-design",
+            get(talaria_routes_fleet::agents::agent_design::get)
+                .post(talaria_routes_fleet::agents::agent_design::post)
+                .patch(talaria_routes_fleet::agents::agent_design::patch)
+                .delete(talaria_routes_fleet::agents::agent_design::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
+        )
+        .route(
             "/api/fleet/hires",
             get(talaria_routes_fleet::fleet::fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
         )

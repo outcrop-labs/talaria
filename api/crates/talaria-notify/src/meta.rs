@@ -172,6 +172,10 @@ pub mod group_key {
     pub fn outreach(agent: &str, day: &str) -> String {
         format!("outreach:{agent}:{day}")
     }
+    /// One agent design: its describe and every refine that lands share a row.
+    pub fn agent_design(design_id: &str) -> String {
+        format!("agent-design:{design_id}")
+    }
 }
 
 /// The entity kinds a row can be about (the stored `entity_type`).
@@ -185,6 +189,9 @@ pub mod entity {
     pub const PLAN: &str = "plan";
     pub const RESEARCH_RUN: &str = "research_run";
     pub const KB_DOC: &str = "kb_doc";
+    /// A person's agent design (talaria-agent-design): resolved when it is
+    /// hired, discarded or replaced.
+    pub const AGENT_DESIGN: &str = "agent_design";
 }
 
 #[cfg(test)]
@@ -207,6 +214,8 @@ mod tests {
             group_key::outreach("margaret", "2026-10-31"),
             "outreach:margaret:2026-10-31"
         );
+        assert_eq!(group_key::agent_design("d1"), "agent-design:d1");
+        assert_eq!(entity::AGENT_DESIGN, "agent_design");
         assert_eq!(
             [
                 entity::TASK,

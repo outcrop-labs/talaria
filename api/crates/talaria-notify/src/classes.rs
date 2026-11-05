@@ -78,6 +78,8 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
     ),
     // Outcomes.
     ("research", "work_complete", "Research ready"),
+    // An agent design finished (or failed) while its modal was closed.
+    ("agent-design", "work_complete", "Agent design ready"),
     ("task-status", "work_complete", "Status changed"),
     // An access request's outcome — the request was yours, but the
     // notification is news, not a door.
@@ -271,7 +273,7 @@ pub const CLASSES: &[ClassDef] = &[
     ClassDef {
         id: "work_complete",
         label: "Work finished",
-        blurb: "A ticket moved, or research you asked for is ready.",
+        blurb: "A ticket moved, or research or an agent design you asked for is ready.",
         category: Category::Following,
         defaults: ch(false, false, false),
         breaks_through: false,
@@ -471,6 +473,7 @@ mod tests {
             ("agent-problem", "agent_blocked"),
             ("workbench-repo-request", "agent_blocked"),
             ("research", "work_complete"),
+            ("agent-design", "work_complete"),
             ("task-status", "work_complete"),
             // An access request's outcome — news, not a door. Explicit so the
             // quiet bucket is a decision here, not the fall-through's default.
