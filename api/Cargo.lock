@@ -8070,6 +8070,7 @@ dependencies = [
  "talaria-boards",
  "talaria-body",
  "talaria-coding-accounts",
+ "talaria-error",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-fleet-layout",

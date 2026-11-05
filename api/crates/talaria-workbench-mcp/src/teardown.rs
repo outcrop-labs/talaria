@@ -69,7 +69,9 @@ impl Teardown {
     }
 }
 
-/// Positional args only ($1 = workdir, $2 = mode): nothing is interpolated
+/// Positional args only ($1 = workdir, $2 = mode, $3 = the job's uuid and $4
+/// the harness jobs root, whose `<uuid>` dir goes with the workdir): nothing
+/// is interpolated
 /// into the script. TERM first so a harness can flush its session, KILL for
 /// what ignored it. Matching on cwd catches the whole tree the agent started
 /// there (the shell, cargo, every rustc and test binary) and nothing the
@@ -77,11 +79,15 @@ impl Teardown {
 /// The project env file goes in BOTH modes — it is `devenv::JOB_ENV_FILE`,
 /// spelled here because the script is positional and that path is fixed.
 const TEARDOWN_SH: &str = r#"
-dir="$1"; mode="$2"
+dir="$1"; mode="$2"; id="${3:-}"; hroot="${4:-}"
 rm -f -- "$dir/.talaria/env"
+clone_prefix="$(dirname "$dir")/.$(basename "$dir").clone."
 in_dir() {
   cwd=$(readlink "$1/cwd" 2>/dev/null) || return 1
   case "$cwd/" in "$dir"/*) return 0 ;; esac
+  # A provisioning clone in flight runs from elsewhere, into the job's temp
+  # clone dir: it would rename itself into the workdir after the teardown.
+  tr '\0' ' ' < "$1/cmdline" 2>/dev/null | grep -qF "$clone_prefix" && return 0
   return 1
 }
 signal_all() {
@@ -93,7 +99,16 @@ signal_all() {
 signal_all TERM
 sleep 3
 signal_all KILL
-if [ "$mode" = remove ]; then rm -rf -- "$dir"; fi
+if [ "$mode" = remove ]; then
+  rm -rf -- "$dir"
+  # A clone cut off, or a no-HEAD checkout provisioning moved aside.
+  rm -rf -- "$(dirname "$dir")/.$(basename "$dir").clone."* "$(dirname "$dir")/.$(basename "$dir").broken."*
+  # The job's own harness dir: only ever a uuid under the harness jobs root.
+  case "$id" in
+    ""|*[!0-9a-f-]*) ;;
+    *) [ -n "$hroot" ] && rm -rf -- "$hroot/$id" ;;
+  esac
+fi
 "#;
 
 /// Deleting a cold `target/` takes minutes on a busy disk; the stop half is
@@ -246,13 +261,26 @@ pub async fn teardown_job(
     job_id: &str,
     mode: Teardown,
 ) -> Result<(), String> {
-    let Some(dir) = job_workdir(job_id) else {
+    let Ok(id) = uuid::Uuid::parse_str(job_id) else {
         return Err(format!("not a job id: {job_id:?}"));
     };
+    // The PARSED id, never the caller's string, reaches the `rm -rf`s.
+    let id = id.to_string();
+    let dir = format!("{JOBS_ROOT}/{id}");
     let container = managed_container(pg, department).await;
     docker_exec(
         &container,
-        &["sh", "-c", TEARDOWN_SH, "sh", &dir, mode.as_str()],
+        &[
+            "sh",
+            "-c",
+            TEARDOWN_SH,
+            "sh",
+            &dir,
+            mode.as_str(),
+            // The job's own harness dir (provision.rs) goes with its workdir.
+            &id,
+            talaria_workbench_harnesses::JOB_HARNESS_ROOT,
+        ],
         TEARDOWN_TIMEOUT_MS,
     )
     .await?;
@@ -601,6 +629,74 @@ pub fn job_sweep_spec(pg: PgPool, upkeep: Option<UpkeepRun>) -> talaria_schedule
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_takes_the_workdir_and_its_harness_dir_and_nothing_else() {
+        use std::process::Command;
+        let tmp = std::env::temp_dir().join(format!("wbprov-teardown-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let id = "11111111-2222-4333-8444-555555555555";
+        let jobs = tmp.join("jobs");
+        let hroot = tmp.join("harness-jobs");
+        let work = jobs.join(id);
+        let harness = hroot.join(id);
+        let other = hroot.join("22222222-2222-4333-8444-555555555555");
+        for d in [
+            &work,
+            &harness.join("agent"),
+            &other,
+            &jobs.join(format!(".{id}.clone.42")),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::create_dir_all(work.join(".talaria")).unwrap();
+        std::fs::write(work.join(".talaria/env"), "K=v").unwrap();
+        let run = |mode: &str, id: &str| {
+            let out = Command::new("sh")
+                .args(["-c", TEARDOWN_SH, "sh"])
+                .arg(&work)
+                .arg(mode)
+                .arg(id)
+                .arg(&hroot)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        // Stop: processes and the env file only.
+        run("stop", id);
+        assert!(!work.join(".talaria/env").exists());
+        assert!(work.exists() && harness.exists());
+        // A hostile id never reaches the rm, whatever the mode.
+        run("remove", "../harness-jobs");
+        assert!(hroot.exists() && other.exists());
+        std::fs::create_dir_all(&work).unwrap();
+        // A provisioning clone in flight (its cmdline names the temp clone
+        // dir; its cwd is elsewhere) is stopped too.
+        let mut clone = Command::new("sh")
+            // `; true` keeps sh from exec'ing sleep, so the process that
+            // carries the temp dir in its argv is the one that lives on.
+            .args(["-c", "sleep 60; true"])
+            .arg(jobs.join(format!(".{id}.clone.77")))
+            .spawn()
+            .unwrap();
+        // Remove: the workdir, its temp clone, and its own harness dir.
+        run("remove", id);
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            clone.try_wait().unwrap().is_some()
+        });
+        assert!(gone, "the in-flight clone was killed");
+        assert!(!work.exists() && !harness.exists());
+        assert!(!jobs.join(format!(".{id}.clone.42")).exists());
+        assert!(other.exists(), "another job's harness dir is untouched");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     use super::*;
 
     #[test]

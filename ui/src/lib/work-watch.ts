@@ -21,7 +21,12 @@ export type HarnessTurn = {
   running: boolean
 }
 
-const HARNESS = /pi-coding-agent|oh-my-pi|\bopencode\b/
+/** The harness, named. The invoke lines used to be `npx …pi-coding-agent@latest`;
+ *  since provisioning they start with the job's own launcher,
+ *  `/opt/data/workbench/harness/jobs/<jobId>/omp`, which names no package at
+ *  all — so the launcher's path is matched too, or no omp run since then would
+ *  read as a harness turn. */
+const HARNESS = /pi-coding-agent|oh-my-pi|\bopencode\b|\/harness\/jobs\/[^/\s"']+\/omp\b/
 
 /** Tools that can RUN something. Naming the harness is not invoking it:
  *  `skill_view` of the oh-my-pi skill is documentation, `read_file` is

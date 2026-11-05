@@ -4851,6 +4851,12 @@ alter table tasks drop column if exists conversation_id`,
      muted_until timestamptz not null,
      primary key (user_id, agent_model)
    )`,
+  // A workbench job's provisioning: Talaria clones the branch, installs the
+  // toolchain and the pinned harness, and preflights it before the agent gets
+  // a single command. One jsonb record (state ready / running / failed, the
+  // steps, the failing step's output, a heartbeat) that the MCP answers, the
+  // ticket strip and the Work view all read. NULL = never provisioned.
+  `alter table workbench_jobs add column if not exists provision jsonb`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]
