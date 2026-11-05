@@ -90,6 +90,19 @@
   // already-applied by the store. An error lands the person back on describe
   // svelte-ignore state_referenced_locally -- reason: opening step chosen from the store once at mount (the modal remounts per open); later status changes are handled reactively via `generating`
   if (design?.status === 'ready') step = 'review'
+  // A design that lands while the modal is OPEN moves it to the review step
+  // too. The opening rule above runs once, at mount; without this the splash
+  // gave way to the describe form again when the answer came, and the next
+  // click on "Design agent" replaced the design the person was waiting for.
+  // A failure stays on describe, where its sentence shows.
+  let sawGenerating = false
+  $effect(() => {
+    if (generating) sawGenerating = true
+    else if (sawGenerating && design?.status === 'ready') {
+      sawGenerating = false
+      step = 'review'
+    }
+  })
   // Review fields, bound to the store's fields. Hand edits write straight
   // through to the store (that is what the refine's `current` reads), except
   // templateId/start/busy/err, which are genuinely per-hire local state. A

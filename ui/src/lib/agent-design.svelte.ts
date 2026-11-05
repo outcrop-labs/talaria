@@ -195,7 +195,15 @@ export function startDesign(purpose: string): number {
     lastChange: null,
   }
   store.design = design
-  void run(design, purpose.trim(), false)
+  // THE RUN WRITES THROUGH THE STORE'S PROXY, never the literal above.
+  // Assigning into `$state` wraps the object in a proxy whose signals start
+  // from the literal's values on first read and never look at it again: a
+  // run handed the literal wrote `status: 'ready'` where no reader could see
+  // it, so a modal or roster row that had looked once said "Designing" for
+  // good while the server had answered in 20 s. The server-compiled unit
+  // suite cannot see this (there `$state` is a plain object); the runes
+  // suite (agent-design.svelte.test.ts) pins it.
+  void run(store.design, purpose.trim(), false)
   return design.id
 }
 
