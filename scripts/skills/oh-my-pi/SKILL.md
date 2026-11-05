@@ -25,6 +25,19 @@ ticket.
 7. Git over https:// just works. Never `gh`, never a token in a URL.
 8. `git diff`, verify, `finish_job`.
 
+## Long steps
+
+An omp turn, a build or a test suite can run for many minutes, and a
+foreground `terminal` call has a ceiling (about seven minutes). A step the
+ceiling kills starts again from cold. Start anything that may run past five
+minutes with `terminal` and `background: true`, then `process_manage`
+`wait` on its `session_id` with a `timeout` of 300 or less, and `poll` or
+`log` it between waits until it exits. Never `nohup`, `&`, `setsid`, or a
+sleep loop in `execute_code`: the terminal refuses the wrappers, and a loop
+hides the step from the ticket's live view. Other tickets may be live on
+this workbench at the same time. Wait on your own process, never kill one
+you did not start, and give each job its own `--session-dir`.
+
 ## Models
 
 omp picks its own models from the org's Workbench roles: `--model` on the
