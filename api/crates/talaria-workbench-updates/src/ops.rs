@@ -141,7 +141,7 @@ impl Ops for Live {
         Box::pin(async move {
             let keys: Vec<String> = keep
                 .iter()
-                .map(|v| talaria_workbench_harnesses::lock_key(v))
+                .map(talaria_workbench_harnesses::lock_key)
                 .collect();
             if let Err(e) =
                 sqlx::query("delete from app_settings where key like $1 and not (key = any($2))")

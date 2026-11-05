@@ -3015,8 +3015,14 @@ mod tests {
             ..RuntimeRun::provision(&v)
         };
         let s = harness_runtime_script(&run).unwrap();
-        assert!(s.contains("export BUN_CONFIG_REGISTRY=\"https://npm.example.com/mirror/\""), "{s}");
+        assert!(
+            s.contains("export BUN_CONFIG_REGISTRY=\"https://npm.example.com/mirror/\""),
+            "{s}"
+        );
         let none = harness_runtime_script(&RuntimeRun::provision(&v)).unwrap();
-        assert!(none.contains("if [ -n \"\" ]; then export BUN_CONFIG_REGISTRY"), "no mirror, no override");
+        assert!(
+            none.contains("if [ -n \"\" ]; then export BUN_CONFIG_REGISTRY"),
+            "no mirror, no override"
+        );
     }
 }
