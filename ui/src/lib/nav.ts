@@ -15,6 +15,7 @@ import {
   Bot,
   Cpu,
   FileBox,
+  Globe,
   Hexagon,
   Inbox,
   LayoutGrid,
@@ -114,6 +115,12 @@ export const NAV: NavSection[] = [
       { to: '/boards', label: 'Boards', icon: LayoutGrid },
       { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
       { to: '/artifacts', label: 'Files', icon: FileBox },
+      // Browse (TALA-83): tabs and pinned web apps as native webviews in the
+      // desktop shell. Rendered always; the route body itself branches — a
+      // browser gets the honest placeholder, not a hidden item. NOT
+      // gateable: a local capability, not a server view (plan §4), so it is
+      // absent from GATEABLE_VIEWS by design.
+      { to: '/browse', label: 'Browse', icon: Globe },
     ],
   },
   {

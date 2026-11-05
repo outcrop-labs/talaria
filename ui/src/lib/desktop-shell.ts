@@ -243,3 +243,68 @@ export async function shellOsIdleMs(): Promise<number | null> {
     return null
   }
 }
+
+// ─── The Browse view (TALA-83) ─────────────────────────────────────────────
+//
+// Browser tabs live shell-side in browser_tabs.json (registry::BrowserTab,
+// camelCase serde) and are driven only from Talaria's own surfaces — this
+// page and, later, the browse bar. A browser tab's webview itself gets ZERO
+// shell IPC (the plan's locked posture): it can never call any of these.
+
+/** Mirror of the shell's browser-tab entry (registry.rs `BrowserTab`). */
+export interface BrowserTab {
+  id: string
+  /** Last known page title, best-effort; empty until the page says one. */
+  title: string
+  /** Last active URL, normalized: origin+path+query, no fragment. */
+  url: string
+  pinned: boolean
+  /** Epoch ms. */
+  createdAt: number
+  lastActiveAt: number | null
+}
+
+/** The Browse view's tabs as the shell knows them, pinned first. A
+ *  browser gets an empty list, as shellListInstances does. */
+export async function shellListBrowserTabs(): Promise<BrowserTab[]> {
+  if (!inDesktopShell()) return []
+  return ipc().then((invoke) => invoke<BrowserTab[]>('list_browser_tabs'))
+}
+
+/** Open a browser tab at `url` (the shell normalizes: bare hosts get
+ *  https, only http(s), credentials stripped, the path and query stay —
+ *  a tab is not an app pin). */
+export async function shellOpenBrowserTab(url: string): Promise<BrowserTab | null> {
+  if (!inDesktopShell()) return null
+  try {
+    return await ipc().then((invoke) => invoke<BrowserTab>('open_browser_tab', { url }))
+  } catch {
+    return null
+  }
+}
+
+/** Bring a browser tab to the front. */
+export async function shellFocusBrowserTab(id: string): Promise<void> {
+  if (!inDesktopShell()) return
+  await ipc().then((invoke) => invoke('focus_browser_tab', { id }))
+}
+
+/** Close a browser tab: its webview and its saved session go with it. */
+export async function shellCloseBrowserTab(id: string): Promise<void> {
+  if (!inDesktopShell()) return
+  await ipc().then((invoke) => invoke('close_browser_tab', { id }))
+}
+
+/** Pin or unpin a browser tab — the person's say-so, never the page's. */
+export async function shellSetBrowserTabPinned(id: string, pinned: boolean): Promise<void> {
+  if (!inDesktopShell()) return
+  await ipc().then((invoke) =>
+    invoke('set_browser_tab_pinned', { id, pinned })
+  )
+}
+
+/** Enter or leave the Browse view; leaving returns to the view before it. */
+export async function shellSetBrowseMode(active: boolean): Promise<void> {
+  if (!inDesktopShell()) return
+  await ipc().then((invoke) => invoke('set_browse_mode', { active }))
+}

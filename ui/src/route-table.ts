@@ -195,6 +195,11 @@ export const routes = {
       '/': () => import('./routes/app/Observability.svelte'),
       '/:tab': () => import('./routes/app/Observability.svelte'),
     },
+    // The Browse view (TALA-83): tabs and pinned web apps, driven by the
+    // desktop shell's browtab-* webviews. A browser gets the honest
+    // placeholder (P3 replaces it); it is not a gateable view — a local
+    // capability, not a server grant (plan §4).
+    '/browse': () => import('./routes/app/Browse.svelte'),
     '/apps': () => import('./routes/app/Apps.svelte'),
     // The control plane's front door: what needs attention across agents,
     // models, MCP, spend and apps, with each view's own page one click away
