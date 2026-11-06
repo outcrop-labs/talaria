@@ -209,12 +209,11 @@ pub fn should_reclaim(
     bytes >= ceiling.saturating_mul(1024 * 1024 * 1024)
 }
 
-/// A job status that could still be building. `pr_open` and
-/// `awaiting_approval` cannot be, by definition — the agent is waiting on a
-/// person. `started` might be, so the script checks for live processes and
-/// refuses; this only decides who is worth asking.
 fn reclaim_candidate(status: &str) -> bool {
-    matches!(status, "started" | "awaiting_approval" | "pr_open")
+    matches!(
+        status,
+        "started" | "awaiting_approval" | "pr_open" | "superseded"
+    )
 }
 
 /// Drop a job's rebuildable output. `Ok(None)` means the job was busy and
@@ -344,13 +343,16 @@ pub fn sweep_action(
     match (job_status, ticket_closed) {
         ("abandoned", _) => SweepAction::Remove,
         ("started" | "awaiting_approval", Some(true)) => SweepAction::AbandonAndRemove,
-        ("pr_open", Some(true)) => SweepAction::Remove,
+        ("pr_open" | "superseded", Some(true)) => SweepAction::Remove,
         // No ticket (ad-hoc job, or the ticket was deleted and the FK nulled
         // it) says nothing about whether the work is over — only time does.
         ("started" | "awaiting_approval", None)
             if idle_secs.is_some_and(|s| s >= TICKETLESS_STALE_AFTER_SECS) =>
         {
             SweepAction::AbandonAndRemove
+        }
+        ("superseded", None) if idle_secs.is_some_and(|s| s >= TICKETLESS_STALE_AFTER_SECS) => {
+            SweepAction::Remove
         }
         ("queued", _) if idle_secs.is_some_and(|s| s >= QUEUED_STALE_AFTER_SECS) => {
             SweepAction::Abandon
@@ -381,7 +383,10 @@ pub async fn sweep_job_workspaces(pg: &PgPool) -> Result<Option<String>, String>
          join agent_defs d on d.id = j.agent_id \
          left join tasks t on t.id = j.task_id \
          where j.workspace_cleared_at is null \
-           and j.status in ('started', 'awaiting_approval', 'pr_open', 'abandoned', 'queued') \
+           and j.status in ('started', 'awaiting_approval', 'pr_open', 'abandoned', 'queued', \
+                            'superseded') \
+           and not (j.status = 'superseded' \
+                    and exists (select 1 from run_checkpoints c where c.job_id = j.id)) \
          order by j.updated_at",
     )
     .fetch_all(pg)
@@ -521,7 +526,7 @@ async fn reclaim_pass(pg: &PgPool) -> Result<u64, String> {
          from workbench_jobs j \
          join agent_defs d on d.id = j.agent_id \
          where j.workspace_cleared_at is null \
-           and j.status in ('started', 'awaiting_approval', 'pr_open') \
+           and j.status in ('started', 'awaiting_approval', 'pr_open', 'superseded') \
          order by j.updated_at",
     )
     .fetch_all(pg)
@@ -754,10 +759,32 @@ mod tests {
         assert!(reclaim_candidate("started"));
         assert!(reclaim_candidate("awaiting_approval"));
         assert!(reclaim_candidate("pr_open"));
+        assert!(reclaim_candidate("superseded"));
         // Abandoned is the status pass's business — it removes the whole
         // workdir, so reclaiming part of it first would be wasted work.
         assert!(!reclaim_candidate("abandoned"));
         assert!(!reclaim_candidate("merged"));
+    }
+
+    #[test]
+    fn a_superseded_job_goes_only_when_its_ticket_does() {
+        let week = TICKETLESS_STALE_AFTER_SECS;
+        assert_eq!(
+            sweep_action("superseded", Some(false), Some(week * 4)),
+            SweepAction::Leave
+        );
+        assert_eq!(
+            sweep_action("superseded", Some(true), Some(0)),
+            SweepAction::Remove
+        );
+        assert_eq!(
+            sweep_action("superseded", None, Some(week - 1)),
+            SweepAction::Leave
+        );
+        assert_eq!(
+            sweep_action("superseded", None, Some(week)),
+            SweepAction::Remove
+        );
     }
 
     #[test]

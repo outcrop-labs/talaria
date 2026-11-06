@@ -59,6 +59,7 @@ use talaria_tasks::{
 };
 pub mod devenv;
 pub mod provision;
+pub mod rewind;
 pub mod teardown;
 
 /// The PR a revise round resumes — [`resume_job_row`]'s argument.
@@ -124,6 +125,8 @@ pub struct WorkbenchJob {
     /// The admission refusal that parked this job, verbatim. `None` =
     /// not queued (cleared on promotion).
     pub queued_reason: Option<String>,
+    /// The job a rewind replaced this one with.
+    pub superseded_by: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -136,7 +139,8 @@ const JOB_COLS: &str = "id::text as id, agent_id::text as agent_id, agent_model,
                         effort, plan, status, pr_url, summary, \
                         (trunc(extract(epoch from queued_at) * 1000))::bigint as queued_ms, queued_reason, \
                         (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
-                        (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms, pr_number";
+                        (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms, pr_number, \
+                        superseded_by::text as superseded_by";
 
 /// Runaway guard only. Host packing (`fleet::budget`) is the real queue.
 pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT;
@@ -161,6 +165,7 @@ pub struct JobRow {
     created_ms: i64,
     updated_ms: i64,
     pr_number: Option<i64>,
+    superseded_by: Option<String>,
 }
 
 impl WorkbenchJob {
@@ -181,6 +186,7 @@ impl WorkbenchJob {
             summary: r.summary,
             queued_at_ms: r.queued_ms,
             queued_reason: r.queued_reason,
+            superseded_by: r.superseded_by,
             created_at: epoch_ms_to_iso(r.created_ms),
             updated_at: epoch_ms_to_iso(r.updated_ms),
         }
@@ -239,6 +245,9 @@ impl WorkbenchJob {
                     .map(Value::String)
                     .unwrap_or(Value::Null),
             );
+        }
+        if let Some(current) = &self.superseded_by {
+            out.insert("supersededBy".into(), json!(current));
         }
         Value::Object(out)
     }
@@ -918,6 +927,12 @@ async fn call_tool(
         }
 
         "start_job" => {
+            if let Some(attempt) = rewind::attempt_of_call(pg, &agent.model, args).await
+                && let rewind::RewindStart::Answered(answer) =
+                    rewind::start_job(deps, subject, &agent, args, &attempt).await
+            {
+                return answer;
+            }
             let effort = match args.get("effort").and_then(Value::as_str) {
                 Some(e) if e == "light" || e == "heavy" => e.to_string(),
                 _ => "standard".to_string(),
@@ -1030,6 +1045,10 @@ async fn call_tool(
                 Some(task_id) => resumable_job(deps, &agent.id, task_id, &grant).await,
                 None => None,
             };
+            let run_id = match &task_id {
+                Some(task_id) => live_session(pg, &agent.model, task_id).await,
+                None => None,
+            };
             // Mint the branch under the repo's own branch law: a grant with a
             // configured prefix gets the job branch under it, so the name
             // git's push gate (and the sandbox push check) will actually
@@ -1047,6 +1066,7 @@ async fn call_tool(
                         } else {
                             slugify(&title)
                         },
+                        None,
                     )
                     .await
                 }
@@ -1091,6 +1111,7 @@ async fn call_tool(
                             effort: &effort,
                             plan: &plan,
                             queue_reason: queue_reason.as_deref(),
+                            taking_over: run_id.as_deref(),
                         },
                         pr,
                     )
@@ -1108,9 +1129,9 @@ async fn call_tool(
                     sqlx::query_as(sqlx::AssertSqlSafe(format!(
                         "insert into workbench_jobs \
                      (agent_id, agent_model, task_id, repo, branch, effort, plan, status, \
-                      queued_at, queued_reason, host_id) \
+                      queued_at, queued_reason, host_id, run_id) \
                      values ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, \
-                             case when $8 = 'queued' then now() end, $9, $10) \
+                             case when $8 = 'queued' then now() end, $9, $10, $11::uuid) \
                      returning {JOB_COLS}"
                     )))
                     .bind(&agent.id)
@@ -1123,6 +1144,7 @@ async fn call_tool(
                     .bind(status)
                     .bind(queue_reason.as_deref())
                     .bind(&grant.host_id)
+                    .bind(&run_id)
                     .fetch_one(pg)
                     .await
                 }
@@ -1594,8 +1616,9 @@ async fn call_tool(
             if let Some(error) = bad_job_id(&job_id) {
                 return CallOutcome::Fail(error);
             }
-            let owned: Option<String> = match sqlx::query_scalar(
-                "select status from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
+            let row: Option<(String, Option<String>)> = match sqlx::query_as(
+                "select status, superseded_by::text from workbench_jobs \
+                 where id = $1::uuid and agent_id = $2::uuid",
             )
             .bind(&job_id)
             .bind(&agent.id)
@@ -1605,10 +1628,16 @@ async fn call_tool(
                 Ok(row) => row,
                 Err(e) => return thrown(format!("job read: {e}")),
             };
-            match owned.as_deref() {
+            match row {
                 None => return CallOutcome::Fail("unknown job".into()),
-                Some("started") => {}
-                Some(other) => return CallOutcome::Fail(format!("job is {other}")),
+                Some((status, _)) if status == "started" => {}
+                Some((status, current)) if status == "superseded" => {
+                    return CallOutcome::Fail(rewind::superseded_refusal(
+                        &job_id,
+                        current.as_deref(),
+                    ));
+                }
+                Some((other, _)) => return CallOutcome::Fail(format!("job is {other}")),
             }
             let pj = match provision::ProvisionJob::load(pg, &job_id).await {
                 Ok(Some(pj)) => pj,
@@ -1827,6 +1856,12 @@ async fn call_tool(
                 return CallOutcome::Fail("unknown job".into());
             };
             let job = WorkbenchJob::of(row);
+            if job.status == "superseded" {
+                return CallOutcome::Fail(rewind::superseded_refusal(
+                    &job.id,
+                    job.superseded_by.as_deref(),
+                ));
+            }
             // Abandon works from ANY live state — including a still-gated
             // plan. The job row is this agent's own (the select filters on
             // agent_id), so the state change needs no ticket permission; the
@@ -3056,6 +3091,7 @@ pub struct JobResume<'a> {
     pub effort: &'a str,
     pub plan: &'a str,
     pub queue_reason: Option<&'a str>,
+    pub taking_over: Option<&'a str>,
 }
 
 /// Put a `pr_open` job back to work in place for a revise round: its new
@@ -3081,7 +3117,8 @@ pub async fn resume_job_row(
         "update workbench_jobs set status = $2, effort = $3, plan = $4, \
                 queued_at = case when $2 = 'queued' then now() end, \
                 queued_reason = $5, workspace_cleared_at = null, provision = null, \
-                pr_url = $6, pr_number = $7, updated_at = now() \
+                pr_url = $6, pr_number = $7, run_id = coalesce($8::uuid, run_id), \
+                updated_at = now() \
          where id = $1::uuid and status = 'pr_open' \
          returning {JOB_COLS}"
     )))
@@ -3092,6 +3129,7 @@ pub async fn resume_job_row(
     .bind(round.queue_reason)
     .bind(&pr.url)
     .bind(pr.number)
+    .bind(round.taking_over)
     .fetch_optional(pg)
     .await
     .ok()
@@ -3181,6 +3219,7 @@ fn composed_job_branch(
     repo: &str,
     ticket_ref: &str,
     title_slug: &str,
+    attempt: Option<i32>,
 ) -> String {
     let prefix = prefix
         .map(str::trim)
@@ -3205,14 +3244,15 @@ fn composed_job_branch(
         let s = if s.is_empty() { "work".to_string() } else { s };
         format!("{r}-{s}")
     };
-    let budget = 80usize.saturating_sub(prefix.map_or(0, |p| p.chars().count() + 1));
+    let suffix = attempt.map_or(String::new(), |n| format!("-a{n}"));
+    let budget = 80usize.saturating_sub(prefix.map_or(0, |p| p.chars().count() + 1) + suffix.len());
     let body = truncate_utf16(&stem, budget).trim_matches('/').to_string();
     let body = if body.is_empty() {
         "work".to_string()
     } else {
         body
     };
-    join_branch(prefix, &body)
+    join_branch(prefix, &format!("{body}{suffix}"))
 }
 
 /// The one branch join. Trims a stored `agent/` and collapses `//` so the
@@ -3245,17 +3285,25 @@ fn join_branch(prefix: Option<&str>, body: &str) -> String {
     out.trim_matches('/').to_string()
 }
 
-async fn job_branch_name(
+/// `attempt` is a rewind's attempt number: its job's branch ends `-a<n>`.
+pub async fn job_branch_name(
     pg: &PgPool,
     agent_id: &str,
     grant: &hosts::RepoRef,
     ticket_ref: &str,
     title_slug: &str,
+    attempt: Option<i32>,
 ) -> String {
     let prefix = hosts::repo_rule(pg, agent_id, &grant.host_id, &grant.repo)
         .await
         .and_then(|r| r.branch_prefix);
-    composed_job_branch(prefix.as_deref(), &grant.repo, ticket_ref, title_slug)
+    composed_job_branch(
+        prefix.as_deref(),
+        &grant.repo,
+        ticket_ref,
+        title_slug,
+        attempt,
+    )
 }
 
 // ── JSON-RPC surface (the shared dispatcher; this surface's tools + call) ────
@@ -3377,18 +3425,7 @@ async fn wtool_run_for(pg: &PgPool, model: &str, args: &Map<String, Value>) -> O
         _ => None,
     };
     match task_id {
-        Some(task_id) => sqlx::query_scalar::<_, String>(
-            "select id::text from runs \
-             where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
-               and input->>'agentModel' = $1 and input->>'taskId' = $2 \
-             order by created_at desc limit 1",
-        )
-        .bind(model)
-        .bind(&task_id)
-        .fetch_optional(pg)
-        .await
-        .ok()
-        .flatten(),
+        Some(task_id) => live_session(pg, model, &task_id).await,
         None => sqlx::query_scalar::<_, String>(
             "select id::text from runs \
              where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
@@ -3401,6 +3438,21 @@ async fn wtool_run_for(pg: &PgPool, model: &str, args: &Map<String, Value>) -> O
         .ok()
         .flatten(),
     }
+}
+
+async fn live_session(pg: &PgPool, model: &str, task_id: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>(
+        "select id::text from runs \
+         where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
+           and input->>'agentModel' = $1 and input->>'taskId' = $2 \
+         order by created_at desc limit 1",
+    )
+    .bind(model)
+    .bind(task_id)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten()
 }
 
 async fn log_wtool_line(
@@ -3587,7 +3639,8 @@ mod tests {
                 None,
                 "outcrop-labs/talaria",
                 "TALA-37",
-                "finish-job-dead-ends"
+                "finish-job-dead-ends",
+                None
             ),
             "talaria/tala-37-finish-job-dead-ends"
         );
@@ -3597,13 +3650,14 @@ mod tests {
                 Some("agent"),
                 "outcrop-labs/talaria",
                 "TALA-37",
-                "fix-the-thing"
+                "fix-the-thing",
+                None
             ),
             "agent/tala-37-fix-the-thing"
         );
         // An empty prefix string is no rule at all.
         assert_eq!(
-            composed_job_branch(Some(""), "o/r", "TALA-9", "x"),
+            composed_job_branch(Some(""), "o/r", "TALA-9", "x", None),
             "talaria/tala-9-x"
         );
         // A prefix STORED with slashes (typed "agent/", the TALA-35 shape)
@@ -3614,12 +3668,13 @@ mod tests {
                 Some("agent/"),
                 "outcrop-labs/talaria",
                 "TALA-35",
-                "workchains-the-node-canvas"
+                "workchains-the-node-canvas",
+                None
             ),
             "agent/tala-35-workchains-the-node-canvas"
         );
         assert_eq!(
-            composed_job_branch(Some("/agent/"), "o/r", "TALA-9", "x"),
+            composed_job_branch(Some("/agent/"), "o/r", "TALA-9", "x", None),
             "agent/tala-9-x"
         );
         // The self-referential contract: a minted branch passes the very
@@ -3636,6 +3691,7 @@ mod tests {
             "outcrop-labs/talaria",
             "TALA-37",
             "fix-the-thing",
+            None,
         );
         hosts::push_allowed(&rule, "main", &format!("refs/heads/{branch}"))
             .expect("a minted job branch must pass its own repo's push rule");
@@ -3644,7 +3700,7 @@ mod tests {
             .expect_err("a talaria/* branch under an agent/* rule is the dead end");
         // Ticketless mint under a stored "agent/" — the Sep log shape
         // `agent//job-outcrop-labs-talaria-…`. Same join as the ticket slug.
-        let job = composed_job_branch(Some("agent/"), "outcrop-labs/talaria", "", "");
+        let job = composed_job_branch(Some("agent/"), "outcrop-labs/talaria", "", "", None);
         assert!(job.starts_with("agent/job-outcrop-labs-talaria-"), "{job}");
         assert!(!job.contains("//"), "{job}");
         let slashed = hosts::RepoRule {
@@ -3657,10 +3713,25 @@ mod tests {
         hosts::push_allowed(&slashed, "main", &format!("refs/heads/{job}"))
             .expect("a ticketless mint under agent/ must pass the stored prefix");
         // Ticketless mint keeps the random suffix and the 80-char budget.
-        let job = composed_job_branch(Some("agent"), "o/some-repo", "", "");
+        let job = composed_job_branch(Some("agent"), "o/some-repo", "", "", None);
         assert!(job.starts_with("agent/job-o-some-repo-"));
         assert!(job.chars().count() <= 80);
         assert!(!job.contains("//"));
+    }
+
+    #[test]
+    fn a_rewind_attempts_branch_keeps_its_suffix_inside_the_budget() {
+        assert_eq!(
+            composed_job_branch(None, "o/r", "TALA-9", "x", Some(2)),
+            "talaria/tala-9-x-a2"
+        );
+        let long = "t".repeat(40);
+        let plain = composed_job_branch(Some("agent"), "o/r", &long, &long, None);
+        let rewound = composed_job_branch(Some("agent"), "o/r", &long, &long, Some(12));
+        assert_eq!(plain.chars().count(), 80, "{plain}");
+        assert_eq!(rewound.chars().count(), 80, "{rewound}");
+        assert!(rewound.ends_with("-a12"), "{rewound}");
+        assert_ne!(plain, rewound);
     }
 
     #[test]
@@ -3828,6 +3899,7 @@ mod tests {
             summary: String::new(),
             queued_at_ms: Some(1_700_000_000_000),
             queued_reason: None,
+            superseded_by: None,
             created_at: "2026-01-01T00:00:00.000Z".into(),
             updated_at: "2026-01-01T00:00:00.000Z".into(),
         };
@@ -3884,6 +3956,7 @@ mod tests {
             summary: String::new(),
             queued_at_ms: None,
             queued_reason: None,
+            superseded_by: None,
             created_at: "2026-01-01T00:00:00.000Z".into(),
             updated_at: "2026-01-01T00:00:00.000Z".into(),
         };
@@ -4186,11 +4259,19 @@ mod tests {
                 // request_repo asks GitHub which installation owns the org.
                 ("GET", "/orgs/acme/installation") => (200, r#"{"id":70001}"#.into()),
                 ("GET", "/orgs/ghost/installation") => (404, r#"{"message":"Not Found"}"#.into()),
+                ("GET", path) if path.starts_with("/repos/acme/widgets/git/ref/heads/") => {
+                    (200, r#"{"object":{"sha":"cafe"}}"#.into())
+                }
                 _ => (500, r#"{"message":"unexpected in this test"}"#.into()),
             }
         }
 
         async fn reset(pg: &PgPool) {
+            sqlx::query("delete from runs where input->>'agentModel' = $1")
+                .bind(MODEL)
+                .execute(pg)
+                .await
+                .unwrap();
             sqlx::query("delete from agent_defs where department = $1")
                 .bind(DEPT)
                 .execute(pg)
@@ -4227,6 +4308,375 @@ mod tests {
             .fetch_one(pg)
             .await
             .unwrap()
+        }
+
+        #[derive(Clone, Copy)]
+        struct Rewound<'a> {
+            root: &'a str,
+            attempt_no: i32,
+        }
+
+        async fn ticket(pg: &PgPool, board_id: &str, title: &str) -> String {
+            sqlx::query_scalar(
+                "insert into tasks (board_id, title) values ($1::uuid, $2) returning id::text",
+            )
+            .bind(board_id)
+            .bind(title)
+            .fetch_one(pg)
+            .await
+            .unwrap()
+        }
+
+        async fn session(
+            pg: &PgPool,
+            task_id: &str,
+            state: &str,
+            rewound: Option<Rewound<'_>>,
+        ) -> String {
+            let root = rewound.map(|r| r.root);
+            let attempt_no = rewound.map(|r| r.attempt_no);
+            sqlx::query_scalar(
+                "insert into runs (kind, subject_type, subject_id, state, input, \
+                                   lineage_id, rewound_from_run_id, rewound_from_seq, attempt_no) \
+                 values ('work-session', 'task', $1, $2, $3, $4::uuid, $5::uuid, \
+                         case when $5 is null then null else 1 end, coalesce($6, 1)) \
+                 returning id::text",
+            )
+            .bind(task_id)
+            .bind(state)
+            .bind(json!({ "agentModel": MODEL, "taskId": task_id }))
+            .bind(root)
+            .bind(root)
+            .bind(attempt_no)
+            .fetch_one(pg)
+            .await
+            .unwrap()
+        }
+
+        async fn set_state(pg: &PgPool, run_id: &str, state: &str) {
+            sqlx::query("update runs set state = $2 where id = $1::uuid")
+                .bind(run_id)
+                .bind(state)
+                .execute(pg)
+                .await
+                .unwrap();
+        }
+
+        async fn owned_job(
+            pg: &PgPool,
+            agent_id: &str,
+            task_id: &str,
+            run_id: &str,
+            branch: &str,
+        ) -> String {
+            sqlx::query_scalar(
+                "insert into workbench_jobs \
+                   (agent_id, agent_model, task_id, host_id, repo, branch, effort, plan, status, run_id) \
+                 values ($1::uuid, $2, $3::uuid, 'github', $4, $5, 'light', '', 'started', $6::uuid) \
+                 returning id::text",
+            )
+            .bind(agent_id)
+            .bind(MODEL)
+            .bind(task_id)
+            .bind(REPO)
+            .bind(branch)
+            .bind(run_id)
+            .fetch_one(pg)
+            .await
+            .unwrap()
+        }
+
+        async fn lineage_row(
+            pg: &PgPool,
+            job_id: &str,
+        ) -> (String, Option<String>, Option<String>) {
+            sqlx::query_as(
+                "select status, superseded_by::text, run_id::text from workbench_jobs \
+                 where id = $1::uuid",
+            )
+            .bind(job_id)
+            .fetch_one(pg)
+            .await
+            .unwrap()
+        }
+
+        fn refused(outcome: CallOutcome) -> String {
+            match outcome {
+                CallOutcome::Fail(why) => why,
+                CallOutcome::Ok(v) => panic!("answered: {v}"),
+                CallOutcome::Throw(e) => panic!("threw: {e}"),
+            }
+        }
+
+        async fn a_revise_round_moves_its_job_to_the_new_run(
+            deps: &WorkbenchDeps,
+            me: &AgentSubject,
+            agent_id: &str,
+            board_id: &str,
+        ) {
+            let pg = &deps.pg;
+            let task_id = ticket(pg, board_id, "Revise me").await;
+            let first_run = session(pg, &task_id, "done", None).await;
+            let open = owned_job(pg, agent_id, &task_id, &first_run, BRANCH).await;
+            sqlx::query("update workbench_jobs set status = 'pr_open' where id = $1::uuid")
+                .bind(&open)
+                .execute(pg)
+                .await
+                .unwrap();
+            let next_run = session(pg, &task_id, "running", None).await;
+            let round = ok(call_tool(
+                deps,
+                me,
+                "start_job",
+                &args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" })),
+            )
+            .await);
+            assert_eq!(round["jobId"], json!(open));
+            assert_eq!(round["branch"], BRANCH);
+            assert_eq!(round["prNumber"], 41);
+            assert_eq!(lineage_row(pg, &open).await.2, Some(next_run));
+            sqlx::query("update workbench_jobs set status = 'abandoned' where id = $1::uuid")
+                .bind(&open)
+                .execute(pg)
+                .await
+                .unwrap();
+        }
+
+        async fn a_rewind_attempt_gets_its_own_job(
+            deps: &WorkbenchDeps,
+            me: &AgentSubject,
+            agent_id: &str,
+            board_id: &str,
+            seen: &Arc<Mutex<Vec<Seen>>>,
+        ) {
+            let pg = &deps.pg;
+            let task_id = ticket(pg, board_id, "Rewind me").await;
+            let start = args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" }));
+            let root = session(pg, &task_id, "cancelled", None).await;
+            let source = owned_job(pg, agent_id, &task_id, &root, BRANCH).await;
+            let second = session(
+                pg,
+                &task_id,
+                "running",
+                Some(Rewound {
+                    root: &root,
+                    attempt_no: 2,
+                }),
+            )
+            .await;
+            let second_branch = format!("{BRANCH}-a2");
+            let allocated = owned_job(pg, agent_id, &task_id, &second, &second_branch).await;
+
+            let asked_before = seen.lock().unwrap().len();
+            let answer = ok(call_tool(deps, me, "start_job", &start).await);
+            assert_eq!(answer["jobId"], json!(allocated));
+            assert_eq!(answer["branch"], json!(second_branch));
+            assert_eq!(answer["attempt"], 2);
+            assert_eq!(
+                answer["workdir"],
+                json!(teardown::job_workdir(&allocated).unwrap())
+            );
+            assert!(
+                !seen.lock().unwrap()[asked_before..]
+                    .iter()
+                    .any(|r| r.path.contains("/git/")),
+                "a rewind attempt's branch is never cut"
+            );
+            assert_eq!(
+                lineage_row(pg, &source).await,
+                (
+                    "superseded".into(),
+                    Some(allocated.clone()),
+                    Some(root.clone())
+                )
+            );
+            let again = ok(call_tool(deps, me, "start_job", &start).await);
+            assert_eq!(again["jobId"], json!(allocated), "asking twice is one job");
+
+            for (tool, ask) in [
+                ("finish_job", json!({ "jobId": source, "summary": "stale" })),
+                ("finish_job", json!({ "jobId": source, "abandon": true })),
+                ("prepare_env", json!({ "jobId": source })),
+            ] {
+                let why = refused(call_tool(deps, me, tool, &args(ask)).await);
+                assert!(why.contains(&allocated), "{tool}: {why}");
+            }
+            assert_eq!(lineage_row(pg, &source).await.0, "superseded");
+            let read =
+                ok(call_tool(deps, me, "job_status", &args(json!({ "jobId": source }))).await);
+            assert_eq!(read["jobs"][0]["status"], "superseded");
+            assert_eq!(read["jobs"][0]["supersededBy"], json!(allocated));
+
+            set_state(pg, &second, "cancelled").await;
+            let third = session(
+                pg,
+                &task_id,
+                "running",
+                Some(Rewound {
+                    root: &root,
+                    attempt_no: 3,
+                }),
+            )
+            .await;
+            let latest = owned_job(pg, agent_id, &task_id, &third, &format!("{BRANCH}-a3")).await;
+            let answer = ok(call_tool(deps, me, "start_job", &start).await);
+            assert_eq!(answer["jobId"], json!(latest));
+            for retired in [&source, &allocated] {
+                let (status, current, _) = lineage_row(pg, retired).await;
+                assert_eq!(
+                    (status.as_str(), current),
+                    ("superseded", Some(latest.clone()))
+                );
+            }
+
+            let grant = hosts::RepoRef {
+                host_id: "github".into(),
+                repo: REPO.into(),
+            };
+            sqlx::query(
+                "update workbench_jobs set pr_url = 'https://github.com/acme/widgets/pull/41', \
+                 pr_number = 41 where id = $1::uuid",
+            )
+            .bind(&source)
+            .execute(pg)
+            .await
+            .unwrap();
+            assert!(
+                resumable_job(deps, agent_id, &task_id, &grant)
+                    .await
+                    .is_none(),
+                "a superseded job is never a revise round's"
+            );
+
+            set_state(pg, &third, "cancelled").await;
+            session(
+                pg,
+                &task_id,
+                "running",
+                Some(Rewound {
+                    root: &root,
+                    attempt_no: 4,
+                }),
+            )
+            .await;
+            let why = refused(call_tool(deps, me, "start_job", &start).await);
+            assert!(why.contains("no job allocated"), "{why}");
+        }
+
+        /// J1 retired for J2, and a revise round then moved J2 to the ordinary
+        /// run `moved`. Answers (ticket, root run, J1, J2, moved).
+        async fn a_job_a_revise_round_moved(
+            deps: &WorkbenchDeps,
+            me: &AgentSubject,
+            agent_id: &str,
+            board_id: &str,
+            title: &str,
+        ) -> (String, String, String, String, String) {
+            let pg = &deps.pg;
+            let task_id = ticket(pg, board_id, title).await;
+            let root = session(pg, &task_id, "cancelled", None).await;
+            let first = owned_job(pg, agent_id, &task_id, &root, BRANCH).await;
+            let rewound = Rewound {
+                root: &root,
+                attempt_no: 2,
+            };
+            let second_run = session(pg, &task_id, "running", Some(rewound)).await;
+            let second =
+                owned_job(pg, agent_id, &task_id, &second_run, &format!("{BRANCH}-a2")).await;
+            let start = args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" }));
+            ok(call_tool(deps, me, "start_job", &start).await);
+            set_state(pg, &second_run, "done").await;
+            let moved = session(pg, &task_id, "done", None).await;
+            sqlx::query(
+                "update workbench_jobs set status = 'pr_open', run_id = $2::uuid where id = $1::uuid",
+            )
+            .bind(&second)
+            .bind(&moved)
+            .execute(pg)
+            .await
+            .unwrap();
+            (task_id, root, first, second, moved)
+        }
+
+        /// Rewinding the faded attempt reaches the job a revise round took out
+        /// of its lineage.
+        async fn rewinding_the_faded_attempt_reaches_the_moved_job(
+            deps: &WorkbenchDeps,
+            me: &AgentSubject,
+            agent_id: &str,
+            board_id: &str,
+        ) {
+            let pg = &deps.pg;
+            let (task_id, root, first, second, _) =
+                a_job_a_revise_round_moved(deps, me, agent_id, board_id, "Rewind the faded").await;
+            let start = args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" }));
+            let rewound = Rewound {
+                root: &root,
+                attempt_no: 3,
+            };
+            let third_run = session(pg, &task_id, "running", Some(rewound)).await;
+            let third =
+                owned_job(pg, agent_id, &task_id, &third_run, &format!("{BRANCH}-a3")).await;
+            ok(call_tool(deps, me, "start_job", &start).await);
+            for retired in [&first, &second] {
+                let (status, current, _) = lineage_row(pg, retired).await;
+                assert_eq!(
+                    (status.as_str(), current),
+                    ("superseded", Some(third.clone()))
+                );
+            }
+        }
+
+        /// Rewinding the run that took the job leaves no retired job naming it.
+        async fn rewinding_the_moved_run_repoints_earlier_jobs(
+            deps: &WorkbenchDeps,
+            me: &AgentSubject,
+            agent_id: &str,
+            board_id: &str,
+        ) {
+            let pg = &deps.pg;
+            let (task_id, _, first, second, moved) =
+                a_job_a_revise_round_moved(deps, me, agent_id, board_id, "Rewind the mover").await;
+            let start = args(json!({ "taskId": task_id, "repo": REPO, "effort": "light" }));
+            let rewound = Rewound {
+                root: &moved,
+                attempt_no: 2,
+            };
+            let run = session(pg, &task_id, "running", Some(rewound)).await;
+            let latest = owned_job(pg, agent_id, &task_id, &run, &format!("{BRANCH}-b2")).await;
+            let unrelated_ticket = ticket(pg, board_id, "Unrelated").await;
+            let unrelated_run = session(pg, &unrelated_ticket, "running", None).await;
+            let unrelated = owned_job(
+                pg,
+                agent_id,
+                &unrelated_ticket,
+                &unrelated_run,
+                "talaria/other",
+            )
+            .await;
+            let colleague: String = sqlx::query_scalar(
+                "insert into agent_defs (slug, department, model, display_name) \
+                 values ('wbrevise-colleague', $1, 'wbrevise-colleague', 'Colleague') \
+                 returning id::text",
+            )
+            .bind(DEPT)
+            .fetch_one(pg)
+            .await
+            .unwrap();
+            let colleagues = owned_job(pg, &colleague, &task_id, &moved, "talaria/theirs").await;
+
+            ok(call_tool(deps, me, "start_job", &start).await);
+            for retired in [&first, &second] {
+                let (status, current, _) = lineage_row(pg, retired).await;
+                assert_eq!(
+                    (status.as_str(), current),
+                    ("superseded", Some(latest.clone()))
+                );
+            }
+            assert_eq!(lineage_row(pg, &unrelated).await.0, "started");
+            assert_eq!(lineage_row(pg, &colleagues).await.0, "started");
+            set_state(pg, &unrelated_run, "cancelled").await;
+            set_state(pg, &run, "cancelled").await;
         }
 
         fn ok(outcome: CallOutcome) -> Value {
@@ -4386,6 +4836,7 @@ mod tests {
                         effort: "light",
                         plan: "",
                         queue_reason: None,
+                        taking_over: None,
                     },
                     &pr,
                 )
@@ -4404,7 +4855,8 @@ mod tests {
                             status: "started",
                             effort: "light",
                             plan: "",
-                            queue_reason: None
+                            queue_reason: None,
+                            taking_over: None,
                         },
                         &pr,
                     )
@@ -4451,6 +4903,15 @@ mod tests {
                         "{seen:?}"
                     );
                 }
+
+                talaria_boards::add_board_agent_row(&pg, &board_id, MODEL)
+                    .await
+                    .unwrap();
+                a_revise_round_moves_its_job_to_the_new_run(&deps, &me, &agent_id, &board_id).await;
+                a_rewind_attempt_gets_its_own_job(&deps, &me, &agent_id, &board_id, &seen).await;
+                rewinding_the_moved_run_repoints_earlier_jobs(&deps, &me, &agent_id, &board_id).await;
+                rewinding_the_faded_attempt_reaches_the_moved_job(&deps, &me, &agent_id, &board_id)
+                    .await;
 
                 // 6. request_repo. In PAT mode it is refused up front: the
                 //    approval could never create the repo.
@@ -4575,6 +5036,7 @@ mod tests {
             summary: String::new(),
             queued_at_ms: Some(1_700_000_000_000),
             queued_reason: Some("host has 1.0 GiB RAM free".into()),
+            superseded_by: None,
             created_at: "2026-01-01T00:00:00.000Z".into(),
             updated_at: "2026-01-01T00:00:00.000Z".into(),
         };

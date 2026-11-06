@@ -15,7 +15,7 @@
     branch: string
     effort: string
     plan: string
-    status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
+    status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned' | 'superseded'
     prUrl: string | null
     /** The job's provisioning (clone, toolchains, Oh My Pi) as
      *  `GET /api/workbench/jobs` returns it once the workbench provisions jobs
@@ -60,7 +60,7 @@
     }
     await qc.invalidateQueries({ queryKey: ['workbench-jobs', taskId] })
   }
-  const live = $derived((jobs ?? []).filter((j) => j.status !== 'abandoned'))
+  const live = $derived((jobs ?? []).filter((j) => j.status !== 'abandoned' && j.status !== 'superseded'))
 </script>
 
 <!-- Which coding plan this ticket runs on, ABOVE the jobs and outside their

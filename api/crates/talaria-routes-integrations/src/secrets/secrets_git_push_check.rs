@@ -13,6 +13,10 @@
 // A DENY NEVER LEAVES THE CONTAINER AS DATA: the hook turns it into git's
 // own "pre-push declined" with the sentence on stderr, so the agent reads
 // the rule where it reads every other git fact.
+//
+// An allowed push is recorded against the run that owns the branch's job, so a
+// person can read what a run did outside its workspace. A push to a branch a
+// rewind retired is declined: the attempt's own branch is where its work goes.
 
 use axum::Json;
 use axum::extract::State;
@@ -131,6 +135,48 @@ pub async fn post(
                 .into_response());
         }
     }
+    let branches: Vec<&str> = refs
+        .iter()
+        .filter_map(|r| r.strip_prefix("refs/heads/"))
+        .collect();
+    let jobs = match deciding_job_per_branch(&state.pg, &agent_id, &rule.host_id, &repo, &branches)
+        .await
+    {
+        Ok(jobs) => jobs,
+        Err(e) => {
+            tracing::error!("[secrets] push attribution read failed for {repo}: {e}");
+            Vec::new()
+        }
+    };
+    if let Some(retired) = jobs.iter().find(|j| j.status == "superseded") {
+        let current = retired
+            .superseded_by
+            .as_deref()
+            .map_or(String::new(), |id| {
+                format!(" — this work continues in job {id}")
+            });
+        let sentence = format!(
+            "{} belongs to job {}, which a rewind superseded{current}",
+            retired.branch, retired.id,
+        );
+        tracing::warn!(
+            "[secrets] {} push to {repo} declined — {sentence}",
+            caller.model
+        );
+        return Ok((
+            StatusCode::FORBIDDEN,
+            [(axum::http::header::CACHE_CONTROL, "no-store")],
+            Json(json!({ "error": sentence })),
+        )
+            .into_response());
+    }
+    for job in &jobs {
+        if let Some(run_id) = &job.run_id
+            && let Err(e) = record_push(&state.pg, run_id, job).await
+        {
+            tracing::error!("[secrets] push on job {} not recorded: {e}", job.id);
+        }
+    }
     tracing::warn!(
         "[secrets] {} push to {repo} ({} ref(s)) allowed by repo rules",
         caller.model,
@@ -142,4 +188,122 @@ pub async fn post(
         Json(json!({ "ok": true })),
     )
         .into_response())
+}
+
+#[derive(sqlx::FromRow)]
+struct BranchJob {
+    id: String,
+    run_id: Option<String>,
+    status: String,
+    branch: String,
+    superseded_by: Option<String>,
+}
+
+async fn deciding_job_per_branch(
+    pg: &sqlx::PgPool,
+    agent_id: &str,
+    host_id: &str,
+    repo: &str,
+    branches: &[&str],
+) -> Result<Vec<BranchJob>, sqlx::Error> {
+    sqlx::query_as(
+        "select distinct on (branch) id::text as id, run_id::text as run_id, status, branch, \
+                superseded_by::text as superseded_by \
+         from workbench_jobs \
+         where agent_id = $1::uuid and host_id = $2 and lower(repo) = lower($3) \
+           and branch = any($4) \
+         order by branch, \
+                  status in ('started', 'queued', 'awaiting_approval', 'pr_open') desc, \
+                  created_at desc",
+    )
+    .bind(agent_id)
+    .bind(host_id)
+    .bind(repo)
+    .bind(branches)
+    .fetch_all(pg)
+    .await
+}
+
+async fn record_push(pg: &sqlx::PgPool, run_id: &str, job: &BranchJob) -> Result<(), sqlx::Error> {
+    sqlx::query("insert into run_pushes (run_id, job_id, branch) values ($1::uuid, $2::uuid, $3)")
+        .bind(run_id)
+        .bind(&job.id)
+        .bind(&job.branch)
+        .execute(pg)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MODEL: &str = "push-check-test";
+    const BRANCH: &str = "talaria/push-check";
+
+    async fn job(pg: &sqlx::PgPool, agent: &str, status: &str, age_mins: i32) -> String {
+        sqlx::query_scalar(
+            "insert into workbench_jobs \
+               (agent_id, agent_model, host_id, repo, branch, status, created_at) \
+             values ($1::uuid, $2, 'github', 'acme/widgets', $3, $4, \
+                     now() - make_interval(mins => $5)) \
+             returning id::text",
+        )
+        .bind(agent)
+        .bind(MODEL)
+        .bind(BRANCH)
+        .bind(status)
+        .bind(age_mins)
+        .fetch_one(pg)
+        .await
+        .unwrap()
+    }
+
+    async fn deciding(pg: &sqlx::PgPool, agent: &str) -> String {
+        let jobs = deciding_job_per_branch(pg, agent, "github", "acme/widgets", &[BRANCH])
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        jobs[0].id.clone()
+    }
+
+    async fn reset(pg: &sqlx::PgPool) {
+        sqlx::query("delete from agent_defs where model = $1")
+            .bind(MODEL)
+            .execute(pg)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live database (DATABASE_URL)"]
+    async fn the_live_job_decides_a_branch_whatever_its_age() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let pg = sqlx::PgPool::connect(&url).await.unwrap();
+        reset(&pg).await;
+        let agent: String = sqlx::query_scalar(
+            "insert into agent_defs (slug, department, model, display_name) \
+             values ($1, $1, $1, 'Push') returning id::text",
+        )
+        .bind(MODEL)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+
+        let resumed = job(&pg, &agent, "started", 60).await;
+        let retired = job(&pg, &agent, "superseded", 30).await;
+        assert_eq!(deciding(&pg, &agent).await, resumed);
+
+        sqlx::query("update workbench_jobs set status = 'abandoned' where id = $1::uuid")
+            .bind(&resumed)
+            .execute(&pg)
+            .await
+            .unwrap();
+        assert_eq!(
+            deciding(&pg, &agent).await,
+            retired,
+            "with nothing live, the newest job still speaks"
+        );
+        reset(&pg).await;
+    }
 }
