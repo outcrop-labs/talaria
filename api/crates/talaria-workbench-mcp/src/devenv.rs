@@ -1035,7 +1035,7 @@ fn release_missing(why: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
         Regex::new(
-            r"(?ix) \s-\s404\b | \(404\s | \b404\ Not\ Found | ETARGET | E404 | no\ version\ matching | no\ matching\ version
+            r"(?ix) \s-\s404\b | \(404\s | \b404\ Not\ Found | ETARGET | \bE404\b | no\ version\ matching | no\ matching\ version
             | version\ not\ found | no\ such\ version | EINTEGRITY | integrity\ check\ failed",
         )
         .expect("a valid pattern")
@@ -1917,6 +1917,11 @@ mod tests {
                 "error: ConnectionClosed downloading tarball zod@3.25.76\ntalaria-fault: install",
                 false,
             ),
+            // `e404` inside a revision hash is not a 404.
+            (
+                "bun install v1.9.9 (ae404b1c)\nerror: failed to extract tarball\ntalaria-fault: install",
+                false,
+            ),
             (
                 "Oh My Pi 18.17.0 was killed (exit 137: the OOM killer, or its bound's kill)\ntalaria-fault: host",
                 false,
@@ -1978,7 +1983,8 @@ mod tests {
         }
         // A start or install past its bound is a strike, never a hold by itself.
         for why in [
-            "Oh My Pi 18.17.0 did not finish starting within 60 s on bun 1.4.4\ntalaria-fault: timeout",
+            "could not provision bun 1.4.4 and Oh My Pi 18.17.0 for the harness: Oh My Pi 18.17.0 on bun 1.4.4 did not finish starting within 60 s\ntalaria-fault: timeout",
+            "the preflight's start timed out: the launcher's `--version` did not finish within 60 s\ntalaria-fault: timeout",
             "Oh My Pi 18.17.0 did not finish installing within 240 s\ntalaria-fault: timeout",
             "bun 1.4.5 did not finish installing within 180 s\ntalaria-fault: timeout",
         ] {

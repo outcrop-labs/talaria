@@ -516,17 +516,17 @@ What a release goes through:
 - **Smoke test, then swap**: on one running Developer Agent's workbench (the one whose host
   fails least), the pair is installed beside whatever the volume runs (#706's
   `omp/.<version>.<stamp>` dir, swapped in by renaming the `omp/<version>` symlink; bun through
-  mise, side by side) **by its own versioned paths only** — the volume's shell `bun`
-  (`mise use -g`, the `~/.local/bin/bun` link) is not touched until a provision promotes a
-  verified pair, and a candidate bun is installed under a mise data dir of its own
-  (`harness/smoke-mise`), never the shared one every job's mise resolves from: a repo pinning
-  `bun = "1.4"` resolves the newest *installed* 1.4.x, and would otherwise switch to an
-  unverified bun mid-job. A provision of the adopted pair installs it into the shared dir — started (`--version` on its bun), laid out in a job-shaped slot
-  (`harness/jobs/update-check`) with the same launcher a job gets, and put through the
-  provisioning preflight in the agent's terminal shell: the launcher there, omp answering
-  exactly the candidate, the agent dir writable. No model is called. Only then is the pair what
-  every new job runs; the pair before it is kept as the fallback. A Pin or Unpin an admin makes
-  while the smoke test runs wins: the pair is not adopted.
+  mise, side by side) **by its own versioned paths only**, then started (`--version` on its
+  bun), laid out in a job-shaped slot (`harness/jobs/update-check`) with the same launcher a job
+  gets, and put through the provisioning preflight in the agent's terminal shell: the launcher
+  there, omp answering exactly the candidate, the agent dir writable. No model is called. Only
+  then is the pair what every new job runs; the pair before it is kept as the fallback. The
+  volume's shell `bun` (`mise use -g`, the `~/.local/bin/bun` link) is not touched until a
+  provision promotes a verified pair, and a candidate bun is installed under a mise data dir of
+  its own (`harness/smoke-mise`), never the shared one every job's mise resolves from: a repo
+  pinning `bun = "1.4"` resolves the newest *installed* 1.4.x, and would otherwise switch to an
+  unverified bun mid-job. A provision of the adopted pair installs it into the shared dir. A Pin
+  or Unpin an admin makes while the smoke test runs wins: the pair is not adopted.
 - **Bounded, so a hang never wedges anything**: every step that runs or downloads a release —
   each `--version` (the preflight's through the launcher too), `bun install`,
   `mise install bun@…`, `mise where` and mise's own download — runs under `timeout` (60 s a

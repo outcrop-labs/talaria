@@ -386,12 +386,13 @@ pub async fn step(ops: &dyn Ops, tuning: &Tuning) -> Result<Option<String>, Stri
         }
         // A release that timed out once is tried on another workbench when
         // there is one: two timeouts on two hosts say more than two on one.
-        let struck = s
-            .tool(mv.tool)
-            .strikes
-            .get(&mv.version)
-            .map(|k| k.departments.clone())
-            .unwrap_or_default();
+        // Its strikes are kept under the culprit's release (a move of both
+        // may have struck either), so every release the move installs counts.
+        let struck: Vec<String> = Tool::ALL
+            .iter()
+            .filter_map(|t| s.tool(*t).strikes.get(t.of(&mv.to)).cloned())
+            .flat_map(|k| k.departments)
+            .collect();
         let Some(w) = wbs
             .iter()
             .find(|w| !struck.contains(&w.department))
@@ -509,17 +510,22 @@ async fn reread(ops: &dyn Ops, mv: &Move, before: &State) -> Result<Option<Strin
 }
 
 /// Which release a failed move is held against: the move's own, except
-/// when it moved both and the failure names the new bun (`bun <v> …`).
+/// when it moved both and the failure is one of bun's OWN steps — a line
+/// that starts `bun <v> ` or `could not install bun <v> ` (after the
+/// provision's `… for the harness: ` prefix, which the first line carries).
+/// An Oh My Pi step names the bun it ran on mid-line (`Oh My Pi <v> on bun
+/// <b> did not finish starting …`), and that is Oh My Pi's.
 fn culprit(mv: &Move, from: &Versions, why: &str) -> (Tool, String) {
     let both = mv.to.bun != from.bun && mv.to.omp != from.omp;
-    let names_bun = [
-        format!("bun {} installed but does not start", mv.to.bun),
-        format!("bun {} did not finish", mv.to.bun),
-        format!("could not install bun {}", mv.to.bun),
-        format!("bun {} is not at", mv.to.bun),
-    ]
-    .iter()
-    .any(|p| why.contains(p.as_str()));
+    let own = format!("bun {} ", mv.to.bun);
+    let install = format!("could not install bun {} ", mv.to.bun);
+    let names_bun = why.lines().any(|l| {
+        let l = l.trim();
+        let l = l
+            .split_once(" for the harness: ")
+            .map_or(l, |(_, rest)| rest);
+        l.starts_with(&own) || l.starts_with(&install)
+    });
     if both && names_bun {
         (Tool::Bun, mv.to.bun.clone())
     } else {
@@ -575,6 +581,10 @@ async fn verify_move(
                     );
                     s.host_failures = 0;
                     s.retry_at = None;
+                    // It passed: whatever timed out before was the host's.
+                    for t in Tool::ALL {
+                        s.tool_mut(t).strikes.remove(t.of(&to));
+                    }
                     if (s.tool(Tool::Bun).pinned, s.tool(Tool::Omp).pinned) != pins {
                         s.event(now, late);
                         return;
@@ -584,9 +594,6 @@ async fn verify_move(
                         s.previous = Some(prev);
                     }
                     s.current = Some(Pair::of(&to, now));
-                    for t in Tool::ALL {
-                        s.tool_mut(t).strikes.remove(t.of(&to));
-                    }
                     for t in Tool::ALL {
                         let ts = s.tool_mut(t);
                         if ts.forced.as_deref() == Some(version.as_str()) {
@@ -691,6 +698,10 @@ async fn verify_move(
                     ops,
                     Box::new(move |s: &mut State| {
                         s.tool_mut(tool).strikes.remove(&version);
+                        if s.tool(tool).forced.as_deref() == Some(version.as_str()) {
+                            s.tool_mut(tool).forced = None;
+                        }
+                        s.host_failures = 0;
                         s.hold(
                             tool,
                             &version,
@@ -1475,7 +1486,7 @@ mod tests {
         f.fail.lock().unwrap().insert(
             ("1.4.4".into(), "18.17.0".into()),
             VerifyFailure::Timeout(
-                "Oh My Pi 18.17.0 did not finish starting within 60 s\ntalaria-fault: timeout"
+                "could not provision bun 1.4.4 and Oh My Pi 18.17.0 for the harness: Oh My Pi 18.17.0 on bun 1.4.4 did not finish starting within 60 s\ntalaria-fault: timeout"
                     .into(),
             ),
         );
@@ -1575,6 +1586,72 @@ mod tests {
         // Every document is read at once: answering takes one fetch's time.
         f.slow.store(false, std::sync::atomic::Ordering::Relaxed);
         assert!(check(&f).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_move_of_both_holds_the_bun_only_for_buns_own_steps() {
+        // The lines the runtime script prints, as they arrive through the
+        // provision's `… for the harness: ` prefix (the first line) and on.
+        let from = pair("1.3.14", "18.13.2");
+        let mv = Move {
+            to: pair("1.4.5", "18.18.0"),
+            tool: Tool::Omp,
+            version: "18.18.0".into(),
+            why: "both together".into(),
+        };
+        let p = "could not provision bun 1.4.5 and Oh My Pi 18.18.0 for the harness: ";
+        for (why, held) in [
+            (format!("{p}Oh My Pi 18.18.0 on bun 1.4.5 did not finish starting within 60 s\ntalaria-fault: timeout"), Tool::Omp),
+            (format!("{p}Oh My Pi 18.18.0 installed but does not start on bun 1.4.5: error: x\ntalaria-fault: start"), Tool::Omp),
+            ("the preflight's start timed out: the launcher's `--version` did not finish within 60 s\ntalaria-fault: timeout".to_string(), Tool::Omp),
+            (format!("{p}could not install bun 1.4.5 with mise (exit 124): …\nbun 1.4.5 did not finish installing within 180 s\ntalaria-fault: timeout"), Tool::Bun),
+            (format!("{p}bun 1.4.5 installed but does not start: Illegal instruction\ntalaria-fault: start"), Tool::Bun),
+            (format!("{p}bun 1.4.5 did not finish starting within 60 s\ntalaria-fault: timeout"), Tool::Bun),
+        ] {
+            assert_eq!(culprit(&mv, &from, &why).0, held, "{why}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_move_of_both_whose_omp_start_hangs_holds_the_omp_on_the_second_workbench() {
+        let f = Fake::with(&["eng", "ops"]);
+        f.release(Tool::Bun, "1.3.14", None, false);
+        f.release(Tool::Bun, "1.4.5", None, true);
+        f.release(Tool::Omp, "18.13.2", Some(">=1.3.14 <1.4.5"), false);
+        f.release(Tool::Omp, "18.18.0", Some(">=1.4.5"), true);
+        {
+            let mut s = f.state.lock().unwrap();
+            s.current = Some(Pair::of(&pair("1.3.14", "18.13.2"), 0));
+            s.next_check_at = Some(0);
+        }
+        f.fail.lock().unwrap().insert(
+            ("1.4.5".into(), "18.18.0".into()),
+            VerifyFailure::Timeout(
+                "could not provision bun 1.4.5 and Oh My Pi 18.18.0 for the harness: Oh My Pi 18.18.0 on bun 1.4.5 did not finish starting within 60 s\ntalaria-fault: timeout".into(),
+            ),
+        );
+        f.at(1_000);
+        settle(&f, 1).await;
+        assert_eq!(
+            f.verified.lock().unwrap()[0],
+            ("eng".to_string(), pair("1.4.5", "18.18.0")),
+            "both together"
+        );
+        assert!(
+            f.s().tool(Tool::Omp).strikes.contains_key("18.18.0"),
+            "struck against Oh My Pi"
+        );
+        assert!(f.s().tool(Tool::Bun).strikes.is_empty());
+        f.at(f.s().retry_at.unwrap());
+        settle(&f, 1).await;
+        assert_eq!(
+            f.verified.lock().unwrap()[1].0,
+            "ops",
+            "the second try is on the other workbench"
+        );
+        let s = f.s();
+        assert!(s.tool(Tool::Omp).held.contains_key("18.18.0"));
+        assert!(s.tool(Tool::Bun).held.is_empty(), "the bun is not blamed");
     }
 
     #[tokio::test]
