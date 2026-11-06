@@ -1387,6 +1387,25 @@ CREATE TABLE public.research_teams (
     team_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.run_checkpoints (
+    run_id uuid NOT NULL,
+    seq bigint NOT NULL,
+    kind text NOT NULL,
+    turn bigint,
+    agent_turn_id text,
+    step_no bigint,
+    tool_call_id text,
+    tool text,
+    title text,
+    status text,
+    job_id uuid,
+    workspace_commit text,
+    workspace_tree text,
+    restorable boolean DEFAULT false NOT NULL,
+    unrestorable_reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT run_checkpoints_kind_check CHECK ((kind = ANY (ARRAY['turn'::text, 'step'::text])))
+);
 CREATE TABLE public.runs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     kind text NOT NULL,
@@ -1409,7 +1428,8 @@ CREATE TABLE public.runs (
     started_at timestamp with time zone,
     finished_at timestamp with time zone,
     crashes integer DEFAULT 0 NOT NULL,
-    agent_run_id text
+    agent_run_id text,
+    checkpoint_seq bigint DEFAULT 0 NOT NULL
 );
 CREATE TABLE public.schema_migrations (
     id integer NOT NULL,
@@ -2100,6 +2120,10 @@ ALTER TABLE ONLY public.research_sources
     ADD CONSTRAINT research_sources_run_id_idx_key UNIQUE (run_id, idx);
 ALTER TABLE ONLY public.research_teams
     ADD CONSTRAINT research_teams_pkey PRIMARY KEY (run_id, team_id);
+ALTER TABLE ONLY public.run_checkpoints
+    ADD CONSTRAINT run_checkpoints_pkey PRIMARY KEY (run_id, seq);
+ALTER TABLE ONLY public.run_checkpoints
+    ADD CONSTRAINT run_checkpoints_run_id_tool_call_id_key UNIQUE (run_id, tool_call_id);
 ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.schema_migrations
@@ -2616,6 +2640,8 @@ ALTER TABLE ONLY public.research_teams
     ADD CONSTRAINT research_teams_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.research_runs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.research_teams
     ADD CONSTRAINT research_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.run_checkpoints
+    ADD CONSTRAINT run_checkpoints_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.runs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.secret_folder_grants
