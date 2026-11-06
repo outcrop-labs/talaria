@@ -78,6 +78,8 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
     ),
     // Outcomes.
     ("research", "work_complete", "Research ready"),
+    // An agent design finished (or failed) while its modal was closed.
+    ("agent-design", "work_complete", "Agent design ready"),
     ("task-status", "work_complete", "Status changed"),
     // An access request's outcome — the request was yours, but the
     // notification is news, not a door.
@@ -109,6 +111,15 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
         "hermes_channel_stuck",
         "gap_reported",
         "Agent image updates stuck",
+    ),
+    // The workbench harness channel held a release (Oh My Pi or the
+    // harness's bun would not install or start on a workbench), or cannot
+    // verify one for days. Every job keeps the version it runs. The
+    // workspace's own health, for admins, like the agent image's.
+    (
+        "workbench_harness_update_failed",
+        "gap_reported",
+        "Workbench harness update held",
     ),
 ];
 
@@ -271,7 +282,7 @@ pub const CLASSES: &[ClassDef] = &[
     ClassDef {
         id: "work_complete",
         label: "Work finished",
-        blurb: "A ticket moved, or research you asked for is ready.",
+        blurb: "A ticket moved, or research or an agent design you asked for is ready.",
         category: Category::Following,
         defaults: ch(false, false, false),
         breaks_through: false,
@@ -471,6 +482,7 @@ mod tests {
             ("agent-problem", "agent_blocked"),
             ("workbench-repo-request", "agent_blocked"),
             ("research", "work_complete"),
+            ("agent-design", "work_complete"),
             ("task-status", "work_complete"),
             // An access request's outcome — news, not a door. Explicit so the
             // quiet bucket is a decision here, not the fall-through's default.
@@ -484,6 +496,8 @@ mod tests {
             // The stable channel's stopped rollout: the workspace's health.
             ("hermes_update_failed", "gap_reported"),
             ("hermes_channel_stuck", "gap_reported"),
+            // The workbench harness channel's held release: the same health.
+            ("workbench_harness_update_failed", "gap_reported"),
             // Every class id is its own kind.
             ("judge_escalation", "judge_escalation"),
             ("gap_reported", "gap_reported"),

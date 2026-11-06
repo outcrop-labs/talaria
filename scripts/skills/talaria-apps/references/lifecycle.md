@@ -33,8 +33,9 @@ Refusals, and what to do:
 
 ## 2. The job, and the kit — `start_job`, `prepare_env`
 
-`start_job` (`taskId`, `repo`, `effort`, `plan`) and the clone into its `workdir` are any job's.
-Then:
+`start_job` (`taskId`, `repo`, `effort`, `plan`) is any job's: Talaria provisions it, so the
+`workdir` already holds the repo, its toolchain and — when the repo has a `talaria.json` — the
+kit. Do not clone. Then:
 
 1. **A new repo gets a seed manifest first.** `prepare_env` installs the kit only for a repo
    with a `talaria.json` at its root, and a new repo has only its README:
@@ -43,7 +44,8 @@ Then:
    printf '{"name": "Field Notes", "slug": "field-notes"}\n' > talaria.json
    ```
 
-2. **`prepare_env`** (`jobId`). Besides the repo's toolchains (and a node for the kit's checkers
+2. **`prepare_env`** (`jobId`) — for a new repo, after the seed: it provisions the job again,
+   which now installs the kit. Besides the repo's toolchains (and a node for the kit's checkers
    when the repo pins none), a Talaria app's answer carries `talariaApp: true` and `appKit`:
 
    ```json
@@ -53,8 +55,8 @@ Then:
 
    The kit is fetched from this instance as you, installed once per kit version, and
    `talaria-app` is linked onto your terminal's PATH. `evalSession` is the key that books
-   `talaria-app eval --gateway` to this job's ticket; git never sees it. Call `prepare_env` at
-   the start of every job: a host upgrade brings a new kit.
+   `talaria-app eval --gateway` to this job's ticket; git never sees it. Every job is
+   provisioned when it starts, so a host upgrade's new kit arrives with the next job.
    - No `appKit` in the answer: there was no `talaria.json` at the root when it looked.
    - `"appKit": { "ok": false, "error": "the SDK kit could not be installed: …" }`: the instance
      refused or could not be reached. `report_problem` with the sentence.

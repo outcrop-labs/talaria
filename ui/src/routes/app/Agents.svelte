@@ -2,7 +2,9 @@
   import PageSurface from '@/components/app/PageSurface.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { CircleAlert, Import, LayoutGrid, List, Plus, Repeat } from '@lucide/svelte'
-  import { currentDesign } from '@/lib/agent-design.svelte'
+  import { designHeadline, pendingDesign, useAgentDesign } from '@/lib/agent-design'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
+  import { searchParams } from 'sv-router'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import CloseButton from '@/components/ui/CloseButton.svelte'
@@ -158,15 +160,21 @@
   let duplicateFrom = $state<AgentDef | null>(null)
   let federateOpen = $state(false)
   let sealOpen = $state(false)
-  // The background design row (TALA-11): headline = first words of the
-  // purpose while generating/erroring, the designed agent's name once
-  // landed. Null when the store holds nothing.
-  const design = $derived(currentDesign())
-  const designRow = $derived.by(() => {
-    if (!design) return null
-    if (design.status === 'ready') return { status: 'ready' as const, headline: design.name || 'the design' }
-    const first = design.purpose.split(/\s+/).slice(0, 7).join(' ').replace(/[.,;:!?]+$/, '')
-    return { status: design.status, headline: first || 'the new agent' }
+  // The design row and the New agent mark (TALA-11): the SERVER's design
+  // (lib/agent-design.ts), so a reload, a second tab or another device shows
+  // the same thing. Headline = first words of the purpose while generating
+  // or failed, the designed agent's name once landed. Null when there is
+  // none. Read only where the person may hire.
+  const designQuery = useAgentDesign(() => canHire)
+  const design = $derived(pendingDesign(designQuery.data?.design))
+  const designRow = $derived(design ? { status: design.status, headline: designHeadline(design) } : null)
+  // The bell's link back (`/agents?design=open`): open New agent on the
+  // design, then drop the parameter so a reload does not reopen it.
+  $effect(() => {
+    if (searchParams.get('design') && canHire) {
+      creating = true
+      searchParams.delete('design')
+    }
   })
 
   // Defs AND containers gate the roster together: tiles built from
@@ -262,9 +270,24 @@
           onChange={(id) => (view = id)}
         />
         {#if canHire}
-          <Button size="sm" class="w-9 px-0" onclick={() => (creating = true)} title="New agent" aria-label="New agent">
-            <Plus size={16} />
-          </Button>
+          <!-- The mark: a design generating or waiting for review keeps a dot
+               on the entry point, wherever the row has scrolled to. -->
+          <span class="relative inline-flex">
+            <Button
+              size="sm"
+              class="w-9 px-0"
+              onclick={() => (creating = true)}
+              title={designRow ? (designRow.status === 'generating' ? 'New agent — a design is generating' : designRow.status === 'ready' ? 'New agent — a design is waiting for review' : 'New agent — the design failed') : 'New agent'}
+              aria-label="New agent"
+            >
+              <Plus size={16} />
+            </Button>
+            {#if designRow}
+              <span class="pointer-events-none absolute -right-0.5 -top-0.5 flex" data-testid="design-mark" data-status={designRow.status}>
+                <StatusDot status={designRow.status === 'error' ? 'danger' : 'accent'} pulse={designRow.status === 'generating'} class="h-2 w-2" />
+              </span>
+            {/if}
+          </span>
           {#if isAdmin}
             <Button
               variant="outline"

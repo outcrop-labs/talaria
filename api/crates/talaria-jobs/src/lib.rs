@@ -1,5 +1,5 @@
 // The boot assembly — the one place the job bodies become a running schedule,
-// and the one place the six armed run steps get their deps.
+// and the one place the seven armed run steps get their deps.
 //
 // Every job module owns its own `register_*_job(deps)`: the deps are runtime
 // values (the pool, the realtime fan-out, the secretbox), so registration
@@ -66,6 +66,7 @@ fn live_secretbox(state: &AppState) -> talaria_push::SecretBoxSource {
 /// what the registry keys on. Arming with fewer means the sweep strands rows
 /// of the missing kinds (see the header).
 const BOOT_RUN_KINDS: &[&str] = &[
+    "agent-design",
     "agent-hire",
     "plan-draft",
     "rag-backfill",
@@ -877,6 +878,17 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
             realtime: rt.clone(),
         },
     }));
+    // The workbench harnesses (Oh My Pi and the harness's bun) follow their
+    // upstream releases: checked, smoke-tested on a workbench, then adopted
+    // for new jobs, a step a minute (talaria-workbench-updates). Optional
+    // like the agent image's: its absence leaves every job on what it runs.
+    talaria_workbench_updates::register_job(Arc::new(talaria_workbench_updates::Live {
+        pg: state.pg.clone(),
+        notify: talaria_notify::NotifyDeps {
+            pg: state.pg.clone(),
+            realtime: rt.clone(),
+        },
+    }));
 }
 
 /// The census kinds this build cannot define. Empty is arming's
@@ -929,13 +941,16 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
         .await
         .map_err(|e| format!("the secretbox did not load: {e}"))?;
 
-    // The six armed run steps: their deps are the AppState's edges, and an
+    // The seven armed run steps: their deps are the AppState's edges, and an
     // unarmed step is the loud refusal in the def — reached only by a driver
     // armed before its deps, which this order makes impossible.
     talaria_research_def::arm_research_step(talaria_research_def::real_research_deps(
         state.clone(),
     ));
     talaria_runs_plan_draft::arm_plan_draft_step(talaria_runs_plan_draft::real_plan_draft_deps(
+        state.clone(),
+    ));
+    talaria_agent_design::arm_agent_design_step(talaria_agent_design::real_agent_design_deps(
         state.clone(),
     ));
     talaria_runs_work_session::arm_work_session_step(
@@ -952,6 +967,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     // hold arming to the census's table.
     let _ = talaria_research_def::research_run();
     let _ = talaria_runs_plan_draft::plan_draft_run();
+    let _ = talaria_agent_design::agent_design_run();
     let _ = talaria_runs_work_session::work_session_run();
     let _ = talaria_runs_agent_hire::agent_hire_run();
     let _ = talaria_runs_reindex::backfill_run();
@@ -1130,6 +1146,16 @@ mod tests {
             !REQUIRED_JOBS.contains(&JobName::HermesChannel),
             "hermes-channel must stay optional: an operator's HERMES_IMAGE legitimately turns it off"
         );
+        // The workbench harness channel: out of the table, every workbench
+        // runs the compiled bootstrap forever, with nothing to say so.
+        assert!(
+            names.contains(&JobName::WorkbenchHarnessChannel),
+            "workbench-harness-channel fell out of the job table — workbenches would never follow Oh My Pi or bun"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::WorkbenchHarnessChannel),
+            "workbench-harness-channel must stay optional: an instance with no Developer Agents runs it as a no-op"
+        );
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This
         // OnceLock is how the reconcile crate reaches the renderer, and an
@@ -1252,6 +1278,7 @@ mod tests {
         // a real boot and not whatever earlier tests loaded.
         let _ = talaria_research_def::research_run();
         let _ = talaria_runs_plan_draft::plan_draft_run();
+        let _ = talaria_agent_design::agent_design_run();
         let _ = talaria_runs_work_session::work_session_run();
         let _ = talaria_runs_agent_hire::agent_hire_run();
         let _ = talaria_runs_reindex::backfill_run();

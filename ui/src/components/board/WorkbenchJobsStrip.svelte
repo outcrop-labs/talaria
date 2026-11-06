@@ -90,7 +90,11 @@
       <div
         class={cn(
           'rounded-lg border px-4 py-2.5 text-sm',
-          j.status === 'awaiting_approval' ? 'border-warning/40 bg-warning/5' : 'border-line bg-card/40',
+          j.status === 'awaiting_approval'
+            ? 'border-warning/40 bg-warning/5'
+            : j.status === 'started' && j.provision?.state === 'failed'
+              ? 'border-danger/40'
+              : 'border-line bg-card/40',
         )}
       >
         <div class="flex items-center gap-2">

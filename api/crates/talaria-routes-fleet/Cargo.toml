@@ -12,6 +12,7 @@ workspace = true
 talaria-agent-managers = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-crons = { workspace = true }
+talaria-agent-design = { workspace = true }
 talaria-agent-defs = { workspace = true }
 talaria-agent-mcp = { workspace = true }
 talaria-agent-role-templates = { workspace = true }

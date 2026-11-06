@@ -125,6 +125,10 @@ pub enum JobName {
     /// The agent image's Hermes stable channel (talaria-hermes-channel):
     /// the check, the preparation and the rollout, one step a minute.
     HermesChannel,
+    /// The workbench harness channel (talaria-workbench-updates): Oh My Pi
+    /// and the harness's bun checked upstream, smoke-tested on a workbench,
+    /// then adopted for new jobs, one step a minute.
+    WorkbenchHarnessChannel,
 }
 
 impl JobName {
@@ -158,6 +162,7 @@ impl JobName {
             JobName::NotifyRetention => "notify-retention",
             JobName::PushPrune => "push-prune",
             JobName::HermesChannel => "hermes-channel",
+            JobName::WorkbenchHarnessChannel => "workbench-harness-channel",
         }
     }
 }

@@ -89,6 +89,8 @@ struct HireBody {
     soul: Option<String>,
     skills: Vec<SkillSeed>,
     start: bool,
+    /// The agent design this hire came from: spent once the hire is queued.
+    design_id: Option<String>,
 }
 
 fn validate_body(obj: &serde_json::Map<String, Value>) -> Result<HireBody, String> {
@@ -116,6 +118,7 @@ fn validate_body(obj: &serde_json::Map<String, Value>) -> Result<HireBody, Strin
         }
     };
     let start = optional_boolean_member(obj, "start")?.unwrap_or(true);
+    let design_id = optional_uuid_member(obj, "designId")?;
     Ok(HireBody {
         slug,
         department,
@@ -125,6 +128,7 @@ fn validate_body(obj: &serde_json::Map<String, Value>) -> Result<HireBody, Strin
         soul,
         skills,
         start,
+        design_id,
     })
 }
 
@@ -172,6 +176,7 @@ pub async fn post(
     // name, else the id.
     let def = agent_hire_run();
     let actor = talaria_session::actor_of(&user);
+    let design_id = body.design_id.clone();
     let input = AgentHireInput {
         slug: body.slug.clone(),
         department: body.department,
@@ -203,11 +208,22 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => return Ok(internal("[fleet] hire input serialize failed", e)),
     };
-    let row = match enqueue(
+    // THE DESIGN IS A GATE: spent on this hire before it is enqueued, so a
+    // second tab cannot hire a second agent from it (409). It is consumed
+    // when the hire finishes and handed back if the hire fails
+    // (talaria-agent-design settles both on read). The order is
+    // `gate_hire`'s, where a test pins it.
+    let hire_id = uuid::Uuid::new_v4().to_string();
+    let claim = design_id.as_deref().map(|id| {
+        Box::pin(talaria_agent_design::claim_for_hire(
+            &state, &user.id, id, &hire_id,
+        )) as futures_util::future::BoxFuture<'_, _>
+    });
+    let enqueued = Box::pin(enqueue(
         def,
         input,
         EnqueueOptions {
-            id: Some(uuid::Uuid::new_v4().to_string()),
+            id: Some(hire_id.clone()),
             owner_user_id: Some(user.id.clone()),
             subject_type: Some("agent-hire".into()),
             subject_id: Some(body.slug),
@@ -217,11 +233,21 @@ pub async fn post(
             start: Some(true),
         },
         &deps,
-    )
-    .await
-    {
-        Ok(row) => row,
-        Err(e) => return Ok(internal("[fleet] hire enqueue failed", e)),
+    ));
+    let (st, owner, held) = (state.clone(), user.id.clone(), hire_id.clone());
+    let release = move || {
+        Box::pin(talaria_agent_design::release_hire(st, owner, held))
+            as futures_util::future::BoxFuture<'static, ()>
+    };
+    let row = match talaria_agent_design::gate_hire(claim, enqueued, release).await {
+        Ok(Ok(row)) => row,
+        Ok(Err(e)) => return Ok(internal("[fleet] hire enqueue failed", e)),
+        Err(talaria_agent_design::DesignError::Refused(r)) => {
+            return Ok(house_error(StatusCode::CONFLICT, r.sentence()));
+        }
+        Err(talaria_agent_design::DesignError::Fault(e)) => {
+            return Ok(internal("[fleet] design claim failed", e));
+        }
     };
     Ok(Json(json!({
         "ok": true,

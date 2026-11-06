@@ -1747,7 +1747,8 @@ CREATE TABLE public.workbench_jobs (
     queued_at timestamp with time zone,
     queued_reason text,
     pr_number bigint,
-    host_id text DEFAULT 'github'::text NOT NULL
+    host_id text DEFAULT 'github'::text NOT NULL,
+    provision jsonb
 );
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
