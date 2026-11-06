@@ -10,6 +10,8 @@
   import Button from '@/components/ui/Button.svelte'
   import ChatWaiting from './ChatWaiting.svelte'
   import ChatChips from './ChatChips.svelte'
+  import ContinuationGutter from './ContinuationGutter.svelte'
+  import MessageTime from './MessageTime.svelte'
   import { fade } from '@/lib/motion'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import { readFlag, writeFlag } from '@/lib/persist'
@@ -23,7 +25,9 @@
     agentModel,
     agentLabel,
     live,
-    time,
+    at,
+    timeZone,
+    continued = false,
     reactions = [],
     onReact,
     onContextMenu,
@@ -36,8 +40,12 @@
     agentModel: string
     agentLabel: string
     live: boolean
-    /** Send time beside the name (R2); empty → none shown. */
-    time?: string
+    /** Send time beside the name (R2), ISO; absent → none shown. */
+    at?: string
+    /** The viewer's zone for that time. */
+    timeZone?: string | null
+    /** A continuation line of the agent's block (lib/message-groups). */
+    continued?: boolean
     reactions?: ReactionChip[]
     /** Toggle the viewer's reaction. Omitted → no action bar: the caller
      *  withholds it while the turn streams or before it has a server id. */
@@ -81,19 +89,26 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the message context menu has no keyboard path -->
 <div
   in:fade={{ duration: 150 }}
+  data-continued={continued || undefined}
   class="group/message relative -mx-2 flex gap-2.5 rounded-md px-2 py-1 transition-colors hover:bg-card2 focus-within:bg-card2"
   oncontextmenu={onContextMenu}
 >
   <!-- Agents have no image field yet (R19): initials. -->
-  <MessageAvatar name={agentLabel} class="mt-0.5" />
+  {#if continued}
+    <ContinuationGutter name={agentLabel} {at} {timeZone} />
+  {:else}
+    <MessageAvatar name={agentLabel} class="mt-0.5" />
+  {/if}
   <div class="min-w-0 flex-1 space-y-2">
-    <div class="flex items-baseline gap-2">
-      <span class="font-sans text-[13px] font-medium text-fg">{agentLabel}</span>
-      <span class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
-        agent
-      </span>
-      {#if time}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">{time}</span>{/if}
-    </div>
+    {#if !continued}
+      <div class="flex items-baseline gap-2">
+        <span class="font-sans text-[13px] font-medium text-fg">{agentLabel}</span>
+        <span class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
+          agent
+        </span>
+        <MessageTime {at} {timeZone} />
+      </div>
+    {/if}
 
     {#if hasReasoning}
       <!-- The preference is what the Disclosure's DEFAULT is, and Disclosure

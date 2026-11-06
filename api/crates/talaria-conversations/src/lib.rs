@@ -523,6 +523,48 @@ pub async fn mark_conversation_read(
     Ok(())
 }
 
+/// MARK UNREAD: put the reader's cursor back to just before the thread's
+/// newest turn that counts as unread for them — the agent's, or another
+/// person's — so that turn reads unread again. The read cursor otherwise only
+/// advances (`mark_conversation_read`); this is the one deliberate step back,
+/// on the reader's own row, and it is a step BACK only: `least()` keeps a
+/// cursor that is already behind where it is, so a click made against a stale
+/// count never marks newer turns read. A reader with no cursor row has read
+/// nothing yet, so there is nothing to move. Answers whether the thread now
+/// reads unread: false when it holds nothing that could count (an empty
+/// thread, or only the reader's own words).
+pub async fn mark_conversation_unread(
+    pg: &PgPool,
+    conversation_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    // The same predicate the list's unread count uses, so the step back lands
+    // exactly one countable turn behind.
+    let newest: Option<i32> = sqlx::query_scalar(
+        "select max(m.seq) from messages m \
+         where m.conversation_id = $1::uuid and m.status = 'complete' \
+           and (m.role = 'assistant' or m.author_user_id is distinct from $2::uuid)",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_one(pg)
+    .await?;
+    let Some(newest) = newest else {
+        return Ok(false);
+    };
+    sqlx::query(
+        "update conversation_reads \
+            set last_read_seq = least(last_read_seq, $3), updated_at = now() \
+          where conversation_id = $1::uuid and user_id = $2::uuid",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .bind(newest - 1)
+    .execute(pg)
+    .await?;
+    Ok(true)
+}
+
 /// The thread's highest landed seq — the "mark to latest" arm of the read
 /// route, for callers who know WHICH thread but haven't loaded its seqs.
 /// An empty thread reads as 0, which the counting floor (-1) treats as

@@ -198,6 +198,7 @@
                   task={t}
                   session={working(t.id)}
                   wait={queued(t.id)}
+                  receivedAt={work.dataUpdatedAt}
                   pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
                   subtasks={childrenOf.get(t.id) ?? []}
                   parentRef={parentRef(t)}

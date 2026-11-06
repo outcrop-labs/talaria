@@ -13,6 +13,9 @@
   import { cn } from '@/lib/cn'
   import { plainText } from '@/lib/plain-text'
   import { EFFORT_LABEL, PRIORITY_COLOR, pgNum, type Task } from '@/lib/task-const'
+  import type { LiveWorkSession, WorkWait } from '@/lib/work-session.svelte'
+  import WorkPulse from './WorkPulse.svelte'
+  import { behindLine } from '@/lib/work-pulse'
 
   let {
     task,
@@ -28,10 +31,13 @@
     onWatch,
     session = null,
     wait = null,
+    receivedAt = 0,
   }: {
     task: Task
-    session?: { runId: string; agentModel: string | null; turn: number | null } | null
-    wait?: { reason: string; phase: string } | null
+    session?: LiveWorkSession | null
+    wait?: WorkWait | null
+    /** When the board's work read arrived, for the pulse's clocks. */
+    receivedAt?: number
     onWatch?: () => void
     pillCtx: PillCtx
     subtasks: Task[]
@@ -140,7 +146,7 @@
     {#if wait}
       <span
         class="absolute right-14 top-2 z-10 max-w-[10rem] truncate rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-muted"
-        title="{wait.phase} — {wait.reason}"
+        title="{wait.phase} — {wait.reason}{behindLine(wait.behind, wait.behindHidden) ? ` · ${behindLine(wait.behind, wait.behindHidden)}` : ''}"
       >
         queued
       </span>
@@ -177,6 +183,11 @@
         <div class="font-sans text-[15px] font-medium leading-snug text-fg">{task.title}</div>
         {#if task.description}
           <div class="mt-1 line-clamp-3 font-sans text-xs leading-relaxed text-muted">{plainText(task.description)}</div>
+        {/if}
+        {#if session?.activity}
+          <!-- What the agent is doing on this ticket right now: the card is
+               where a board of several live tickets is read at a glance. -->
+          <WorkPulse {session} {receivedAt} compact class="mt-1.5" />
         {/if}
       </div>
     </div>

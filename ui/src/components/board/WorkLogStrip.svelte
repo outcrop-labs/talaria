@@ -26,6 +26,7 @@
     completed: 'border-line-subtle text-muted',
     cancelled: 'border-danger/40 text-danger',
     failed: 'border-danger/40 text-danger',
+    error: 'border-danger/40 text-danger',
   }
   const stateTone = (state: string) => STATE_TONE[state] ?? 'border-line-subtle text-muted'
 </script>
@@ -43,7 +44,7 @@
     <div class="px-3 pb-1 pt-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Work log</div>
     <ul class="divide-y divide-line-subtle">
       {#each sessions as s (s.runId)}
-        <li class="flex items-center gap-2 px-3 py-1.5">
+        <li class="flex flex-wrap items-center gap-2 px-3 py-1.5">
           <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{s.agentModel}</span>
           <span
             class={cn(
@@ -65,6 +66,11 @@
           >
             <Eye size={13} />
           </button>
+          {#if s.error && s.state !== 'done' && s.state !== 'completed'}
+            <!-- Why it ended, on the row: the reason a session failed is the
+                 line the reader came for. -->
+            <span class="w-full truncate text-xs text-danger" title={s.error}>{s.error}</span>
+          {/if}
         </li>
       {/each}
     </ul>

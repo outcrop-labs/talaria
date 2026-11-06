@@ -3341,6 +3341,8 @@ async fn log_wtool_line(
                 talaria_body::truncate_utf16(e, 2_000).to_string(),
             ),
         },
+        "ok": matches!(outcome, ToolOutcome::Ok(_)),
+        "at": talaria_work_pulse::now_ms(),
     })
     .to_string();
     let line = format!("{frame}\n");
@@ -3353,11 +3355,7 @@ async fn log_wtool_line(
             .arg(&line)
             .query_async::<()>(&mut conn)
             .await;
-        let _ = redis::cmd("EXPIRE")
-            .arg(&key)
-            .arg(7_200)
-            .query_async::<()>(&mut conn)
-            .await;
+        let _ = talaria_work_pulse::touch(&mut conn, &run_id).await;
         let _ = redis::cmd("PUBLISH")
             .arg(&chan)
             .arg(frame)
