@@ -58,7 +58,16 @@ const memory = viewMemory<KbTreeState>('talaria:knowledge-tree-state', parse)
 const store = $state<KbTreeState>({ docs: {}, spaces: {} })
 let hydrated = false
 
-/** Pull the persisted shape into the reactive store, once per session. */
+/** Pull the persisted shape into the reactive store, once per session.
+ *
+ * WHY THIS IS PUBLIC ON THE OBJECT: the first read of a stored shape
+ * writes $state right here, and Svelte forbids writing state inside
+ * $derived(...) or a template expression (state_unsafe_mutation) — the
+ * live crash we hit on /knowledge with a stored key, because KbDocRow
+ * reads `docExpanded` in a $derived and Knowledge.svelte reads
+ * `sectionExpanded` in an {#if}. Knowledge.svelte calls this once in its
+ * instance script — a plain statement, before anything renders — so
+ * every later derived/template read is a pure read. */
 function hydrate(): void {
   if (hydrated) return
   hydrated = true
@@ -77,6 +86,11 @@ function persist(): void {
 }
 
 export const kbTreeState = {
+  /** Pull the persisted shape into the store now, idempotently. Call
+   *  once from a non-reactive context (Knowledge.svelte's instance
+   *  script) BEFORE any derived/template read, so the $state write above
+   *  never happens inside $derived evaluation or a template expression. */
+  hydrate,
   /** Whether a doc node's children are shown. Absent = collapsed. */
   docExpanded(id: string): boolean {
     hydrate()
