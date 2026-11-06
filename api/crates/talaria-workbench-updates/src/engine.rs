@@ -63,6 +63,8 @@ pub const HOST_RETRY_MS: i64 = 15 * 60 * 1000;
 pub const HOST_RETRY_MAX_MS: i64 = 6 * 60 * 60 * 1000;
 /// A volume that would not take the verified pair is tried again after this.
 pub const VOLUME_RETRY_MS: i64 = 6 * 60 * 60 * 1000;
+/// Every document a check reads, read at once, under this one bound.
+pub const CHECK_BOUND_MS: u64 = 30_000;
 
 /// A Developer Agent's workbench: its department's volume and container.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +79,10 @@ pub type Patch<'a> = Box<dyn FnOnce(&mut State) + Send + 'a>;
 /// What a smoke test is told besides the pair.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Smoke {
+    /// A candidate (installed apart from what jobs resolve, and promoted by
+    /// a provision once adopted), or the verified pair a prewarm installs
+    /// the way a provision does.
+    pub candidate: bool,
     /// Oh My Pi releases whose installs must survive it (current, fallback).
     pub keep: Vec<String>,
     /// npm's integrity for the Oh My Pi tarball.
@@ -166,6 +172,7 @@ fn keep_of(s: &State) -> Vec<String> {
 /// What the smoke test of `v` is told.
 fn smoke_of(s: &State, v: &Versions) -> Smoke {
     Smoke {
+        candidate: true,
         keep: keep_of(s),
         integrity: s
             .tool(Tool::Omp)
@@ -182,31 +189,64 @@ pub async fn check(ops: &dyn Ops) -> Result<Vec<String>, String> {
     let snapshot = ops.load().await?;
     let running = snapshot.running();
     let mut lines = Vec::new();
-    // (tool, newest, documents re-read, versions upstream no longer has)
+    // Every document at once, under one overall bound, so Check now answers
+    // well inside a proxy's limit: each harness's newest, and what this
+    // instance runs, falls back to and pins — read again on every check, so a
+    // deprecation or a withdrawal after adoption is noticed.
+    let wants: Vec<(Tool, Vec<String>)> = Tool::ALL
+        .iter()
+        .map(|&t| {
+            let mut want: Vec<String> = vec![t.of(&running).to_string()];
+            if let Some(p) = &snapshot.previous {
+                want.push(t.of(&p.versions()).to_string());
+            }
+            want.extend(snapshot.tool(t).pinned.clone());
+            want.sort();
+            want.dedup();
+            (t, want)
+        })
+        .collect();
+    let all = futures_util::future::join_all(wants.iter().map(|(t, want)| async move {
+        let (latest, docs) = futures_util::future::join(
+            ops.fetch(*t, None),
+            futures_util::future::join_all(want.iter().map(|v| ops.fetch(*t, Some(v)))),
+        )
+        .await;
+        (latest, docs)
+    }));
+    let Ok(all) = tokio::time::timeout(std::time::Duration::from_millis(CHECK_BOUND_MS), all).await
+    else {
+        let why = format!("upstream did not answer within {} s", CHECK_BOUND_MS / 1000);
+        let retry = now + HOST_RETRY_MS;
+        let w = why.clone();
+        write(
+            ops,
+            Box::new(move |s: &mut State| {
+                for t in Tool::ALL {
+                    s.tool_mut(t).last_check = Some(crate::state::LastCheck {
+                        at: now,
+                        latest: None,
+                        error: Some(w.clone()),
+                    });
+                }
+                s.next_check_at = Some(retry);
+            }),
+        )
+        .await?;
+        return Err(why);
+    };
+    // (tool, newest, documents re-read, versions upstream answered 404 for)
     let mut found: Vec<(Tool, Result<Release, String>, Vec<Release>, Vec<String>)> = Vec::new();
-    for t in Tool::ALL {
-        let latest = match ops.fetch(t, None).await {
+    for ((t, want), (latest, docs)) in wants.into_iter().zip(all) {
+        let latest = match latest {
             Ok(Some(r)) => Ok(r),
             Ok(None) => Err("upstream has no release".to_string()),
             Err(e) => Err(e),
         };
-        // What this instance runs and pins is read again on every check: a
-        // deprecation or a withdrawal after adoption must be noticed.
-        let ts = snapshot.tool(t);
         let mut extra = Vec::new();
         let mut gone = Vec::new();
-        let mut want: Vec<String> = vec![t.of(&running).to_string()];
-        if let Some(p) = &snapshot.previous {
-            want.push(t.of(&p.versions()).to_string());
-        }
-        want.extend(ts.pinned.clone());
-        want.sort();
-        want.dedup();
-        for v in want {
-            if latest.as_ref().is_ok_and(|r| r.version == v) {
-                continue;
-            }
-            match ops.fetch(t, Some(&v)).await {
+        for (v, doc) in want.into_iter().zip(docs) {
+            match doc {
                 Ok(Some(r)) => extra.push(r),
                 Ok(None) => gone.push(v),
                 Err(_) => {}
@@ -226,17 +266,9 @@ pub async fn check(ops: &dyn Ops) -> Result<Vec<String>, String> {
                 for r in &extra {
                     s.saw(t, r, now);
                 }
+                // A 404 is a withdrawal only the second time in a row.
                 for v in &gone {
-                    s.saw(
-                        t,
-                        &Release {
-                            version: v.clone(),
-                            requires_bun: s.tool(t).seen.get(v).and_then(|x| x.requires_bun.clone()),
-                            deprecated: Some("withdrawn: upstream no longer has it".into()),
-                            integrity: None,
-                        },
-                        now,
-                    );
+                    s.missed(t, v, now);
                 }
                 match latest {
                     Ok(r) => {
@@ -352,7 +384,19 @@ pub async fn step(ops: &dyn Ops, tuning: &Tuning) -> Result<Option<String>, Stri
         if s.retry_at.is_some_and(|at| at > now) {
             return Ok(joined(said));
         }
-        let Some(w) = wbs.first() else {
+        // A release that timed out once is tried on another workbench when
+        // there is one: two timeouts on two hosts say more than two on one.
+        let struck = s
+            .tool(mv.tool)
+            .strikes
+            .get(&mv.version)
+            .map(|k| k.departments.clone())
+            .unwrap_or_default();
+        let Some(w) = wbs
+            .iter()
+            .find(|w| !struck.contains(&w.department))
+            .or(wbs.first())
+        else {
             return Ok(joined(said));
         };
         if let Some(line) = reread(ops, &mv, &s).await? {
@@ -401,6 +445,30 @@ async fn reread(ops: &dyn Ops, mv: &Move, before: &State) -> Result<Option<Strin
                 let now = ops.now();
                 write(ops, Box::new(move |s: &mut State| s.saw(t, &r, now))).await?;
             }
+            Ok(None) => {
+                // One 404 is a blip: this step does not smoke-test it, and
+                // the next reads it again; the second in a row withdraws it.
+                let now = ops.now();
+                let s = write(
+                    ops,
+                    Box::new(move |s: &mut State| {
+                        s.missed(t, &v, now);
+                    }),
+                )
+                .await?;
+                let v = t.of(&mv.to).to_string();
+                return Ok(Some(if s.is_bad(t, &v) {
+                    format!(
+                        "{} {v} was not smoke-tested: upstream withdrew it (two 404s in a row)",
+                        t.label()
+                    )
+                } else {
+                    format!(
+                        "{} {v} was not smoke-tested this step: upstream answered 404 for it once",
+                        t.label()
+                    )
+                }));
+            }
             Ok(found) => {
                 let now = ops.now();
                 let why = found
@@ -438,6 +506,25 @@ async fn reread(ops: &dyn Ops, mv: &Move, before: &State) -> Result<Option<Strin
         }
     }
     Ok(None)
+}
+
+/// Which release a failed move is held against: the move's own, except
+/// when it moved both and the failure names the new bun (`bun <v> …`).
+fn culprit(mv: &Move, from: &Versions, why: &str) -> (Tool, String) {
+    let both = mv.to.bun != from.bun && mv.to.omp != from.omp;
+    let names_bun = [
+        format!("bun {} installed but does not start", mv.to.bun),
+        format!("bun {} did not finish", mv.to.bun),
+        format!("could not install bun {}", mv.to.bun),
+        format!("bun {} is not at", mv.to.bun),
+    ]
+    .iter()
+    .any(|p| why.contains(p.as_str()));
+    if both && names_bun {
+        (Tool::Bun, mv.to.bun.clone())
+    } else {
+        (mv.tool, mv.version.clone())
+    }
 }
 
 async fn verify_move(
@@ -498,6 +585,9 @@ async fn verify_move(
                     }
                     s.current = Some(Pair::of(&to, now));
                     for t in Tool::ALL {
+                        s.tool_mut(t).strikes.remove(t.of(&to));
+                    }
+                    for t in Tool::ALL {
                         let ts = s.tool_mut(t);
                         if ts.forced.as_deref() == Some(version.as_str()) {
                             ts.forced = None;
@@ -526,6 +616,7 @@ async fn verify_move(
             }
         }
         Err(VerifyFailure::Candidate(why)) => {
+            let (tool, version) = culprit(mv, &from, &why);
             let reason = tail(&why, 1500);
             let line = format!(
                 "held {} {version}: it failed its smoke test on {agent}'s workbench: {}",
@@ -559,6 +650,80 @@ async fn verify_move(
                     s.host_failures = 0;
                     s.event(now, text);
                     s.alert(now, &topic, &title, &body);
+                }),
+            )
+            .await?;
+            Ok(line)
+        }
+        Err(VerifyFailure::Timeout(why)) => {
+            let (tool, version) = culprit(mv, &from, &why);
+            let reason = tail(&why, 1500);
+            let prior = before
+                .tool(tool)
+                .strikes
+                .get(&version)
+                .cloned()
+                .unwrap_or_default();
+            if prior.count >= 1 {
+                // The second timeout in a row, on a separate attempt: held.
+                let places = {
+                    let mut d = prior.departments.clone();
+                    if !d.contains(&dept) {
+                        d.push(dept.clone());
+                    }
+                    d.join(", ")
+                };
+                let line = format!(
+                    "held {} {version}: it timed out twice in a row (on {places}): {}",
+                    tool.label(),
+                    first_line(&reason)
+                );
+                let text = line.clone();
+                let title = format!("Workbench harness update held: {} {version}", tool.label());
+                let body = format!(
+                    "{} {version} ran past its bound twice in a row, on separate tries (workbenches: {places}), so it was not adopted:\n\n{reason}\n\nEvery job keeps running Oh My Pi {} on bun {}, and so do new jobs. Allow it again on Manage → Workbench harnesses if the host was the slow one.",
+                    tool.label(),
+                    from.omp,
+                    from.bun
+                );
+                let topic = format!("held:{}:{version}", tool.slug());
+                write(
+                    ops,
+                    Box::new(move |s: &mut State| {
+                        s.tool_mut(tool).strikes.remove(&version);
+                        s.hold(
+                            tool,
+                            &version,
+                            Held {
+                                reason,
+                                at: now,
+                                department: Some(dept),
+                            },
+                        );
+                        s.event(now, text);
+                        s.alert(now, &topic, &title, &body);
+                    }),
+                )
+                .await?;
+                return Ok(line);
+            }
+            let line = format!(
+                "{} {version} timed out on {agent}'s workbench, once: tried again in 15 min (on another workbench when there is one); held only if it times out again",
+                tool.label()
+            );
+            let text = line.clone();
+            write(
+                ops,
+                Box::new(move |s: &mut State| {
+                    let k = s.tool_mut(tool).strikes.entry(version).or_default();
+                    k.count = k.count.saturating_add(1);
+                    if !k.departments.contains(&dept) {
+                        k.departments.push(dept);
+                    }
+                    k.at = now;
+                    k.why = reason;
+                    s.retry_at = Some(now + HOST_RETRY_MS);
+                    s.event(now, text);
                 }),
             )
             .await?;
@@ -613,7 +778,12 @@ async fn prewarm(
     let dept = w.department.clone();
     let agent = w.agent.clone();
     let p = pair.clone();
-    let smoke = smoke_of(s, pair);
+    // A verified pair: installed the way a provision does (into the shared
+    // mise dir), not apart like a candidate.
+    let smoke = Smoke {
+        candidate: false,
+        ..smoke_of(s, pair)
+    };
     match ops.verify(w, pair, &smoke).await {
         Ok(_) => {
             let line = format!(
@@ -637,7 +807,8 @@ async fn prewarm(
             .await?;
             Ok(line)
         }
-        Err(VerifyFailure::Host(why)) => {
+        // A verified pair that times out here is this host being slow.
+        Err(VerifyFailure::Host(why) | VerifyFailure::Timeout(why)) => {
             // This volume's own backoff: the channel's moves, and the other
             // volumes' prewarms, go on.
             let why = tail(&why, 600);
@@ -730,6 +901,8 @@ mod tests {
         locks: Mutex<BTreeMap<String, (String, Option<String>)>>,
         /// Runs once, mid-smoke-test (an admin acting meanwhile).
         delay: Mutex<Option<Box<dyn FnOnce(&Fake) + Send>>>,
+        /// Upstream that takes a minute to answer each document.
+        slow: std::sync::atomic::AtomicBool,
     }
 
     impl Fake {
@@ -801,6 +974,9 @@ mod tests {
             version: Option<&'a str>,
         ) -> BoxFuture<'a, Result<Option<Release>, String>> {
             Box::pin(async move {
+                if self.slow.load(std::sync::atomic::Ordering::Relaxed) {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
                 let v = match version {
                     Some(v) => v.to_string(),
                     None => match self.latest.lock().unwrap().get(&tool) {
@@ -1287,6 +1463,144 @@ mod tests {
                 "lock-for-18.17.0".to_string(),
                 Some("sha512-18170".to_string())
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timeout_is_a_strike_held_only_on_the_second_in_a_row_on_another_workbench() {
+        let f = Fake::with(&["eng", "ops"]);
+        f.release(Tool::Bun, "1.4.4", None, true);
+        f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+        f.state.lock().unwrap().next_check_at = Some(0);
+        f.fail.lock().unwrap().insert(
+            ("1.4.4".into(), "18.17.0".into()),
+            VerifyFailure::Timeout(
+                "Oh My Pi 18.17.0 did not finish starting within 60 s\ntalaria-fault: timeout"
+                    .into(),
+            ),
+        );
+        f.at(1_000);
+        settle(&f, 1).await;
+        let s = f.s();
+        assert!(
+            s.tool(Tool::Omp).held.is_empty(),
+            "never held on the first timeout"
+        );
+        assert_eq!(
+            s.tool(Tool::Omp).strikes["18.17.0"].departments,
+            vec!["eng".to_string()]
+        );
+        assert!(f.told.lock().unwrap().is_empty());
+        assert_eq!(s.host_failures, 0, "a strike is not a host failure");
+        let again = s.retry_at.unwrap();
+        // The second try goes to the other workbench, and holds it.
+        f.at(again);
+        settle(&f, 1).await;
+        let tried: Vec<String> = f
+            .verified
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(d, _)| d.clone())
+            .collect();
+        assert_eq!(tried, vec!["eng".to_string(), "ops".to_string()]);
+        let s = f.s();
+        assert!(
+            s.tool(Tool::Omp).held["18.17.0"]
+                .reason
+                .contains("did not finish starting")
+        );
+        assert!(s.tool(Tool::Omp).strikes.is_empty());
+        let told = f.told.lock().unwrap().clone();
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].2.contains("twice in a row"), "{told:?}");
+        // A strike that then passes is cleared, and adopted.
+        let f = Fake::with(&["eng"]);
+        f.release(Tool::Bun, "1.4.4", None, true);
+        f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+        f.state.lock().unwrap().next_check_at = Some(0);
+        f.fail.lock().unwrap().insert(
+            ("1.4.4".into(), "18.17.0".into()),
+            VerifyFailure::Timeout("slow\ntalaria-fault: timeout".into()),
+        );
+        f.at(1_000);
+        settle(&f, 1).await;
+        f.fail.lock().unwrap().clear();
+        f.at(f.s().retry_at.unwrap());
+        settle(&f, 1).await;
+        assert_eq!(f.s().running(), pair("1.4.4", "18.17.0"));
+        assert!(f.s().tool(Tool::Omp).strikes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_404_on_what_jobs_run_is_a_blip_and_the_second_withdraws_it() {
+        let f = Fake::with(&["eng"]);
+        f.release(Tool::Bun, "1.4.4", None, true);
+        f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+        {
+            let mut s = f.state.lock().unwrap();
+            s.current = Some(Pair::of(&pair("1.4.4", "18.16.5"), 0));
+            s.previous = Some(Pair::of(&Versions::bootstrap(), 0));
+        }
+        f.at(1_000);
+        check(&f).await.unwrap();
+        assert!(!f.s().is_bad(Tool::Omp, "18.16.5"), "one 404 is a blip");
+        assert!(f.told.lock().unwrap().is_empty());
+        check(&f).await.unwrap();
+        assert!(
+            f.s().is_bad(Tool::Omp, "18.16.5"),
+            "two in a row withdraw it"
+        );
+        // Found again: it heals.
+        f.release(Tool::Omp, "18.16.5", Some(">=1.4.4"), false);
+        check(&f).await.unwrap();
+        assert!(!f.s().is_bad(Tool::Omp, "18.16.5"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check_now_answers_within_its_bound_when_upstream_does_not() {
+        let f = Fake::with(&["eng"]);
+        f.release(Tool::Bun, "1.4.4", None, true);
+        f.release(Tool::Omp, "18.17.0", Some(">=1.4.4"), true);
+        f.slow.store(true, std::sync::atomic::Ordering::Relaxed);
+        let t = tokio::time::Instant::now();
+        let e = check(&f).await.unwrap_err();
+        assert!(e.contains("did not answer within 30 s"), "{e}");
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(31),
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(f.s().tool(Tool::Omp).last_check.unwrap().error.is_some());
+        // Every document is read at once: answering takes one fetch's time.
+        f.slow.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(check(&f).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_move_of_both_holds_the_bun_when_the_new_bun_is_what_failed() {
+        let from = pair("1.3.14", "18.13.2");
+        let mv = Move {
+            to: pair("1.4.4", "18.16.0"),
+            tool: Tool::Omp,
+            version: "18.16.0".into(),
+            why: "both together".into(),
+        };
+        assert_eq!(
+            culprit(
+                &mv,
+                &from,
+                "bun 1.4.4 installed but does not start: Illegal instruction\ntalaria-fault: start"
+            ),
+            (Tool::Bun, "1.4.4".to_string())
+        );
+        assert_eq!(
+            culprit(
+                &mv,
+                &from,
+                "Oh My Pi 18.16.0 installed but does not start on bun 1.4.4: …\ntalaria-fault: start"
+            ),
+            (Tool::Omp, "18.16.0".to_string())
         );
     }
 }

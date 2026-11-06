@@ -464,7 +464,9 @@ mise, the volume's toolchain manager, is installed once when missing and is not 
 repo toolchain's shims run through it and are shared by every job on the volume, so it cannot
 change under one job and not another. It is the **pinned** release binary
 (`MISE_VERSION` in `talaria-workbench-harnesses`, the workbench image's `ARG` too), checked
-against its published SHA-256 before it runs — never `curl https://mise.run | sh`. The agents'
+against its published SHA-256 before it runs — never `curl https://mise.run | sh` — and a
+volume that still has an unpinned one (an older Talaria's) gets the pinned one at its next
+provision. The agents'
 `agent-browser` follows the Hermes image's own lock, so the agent image channel moves it.
 
 **A job never resolves a version.** Provisioning installs the pair the channel last verified on a
@@ -479,7 +481,11 @@ release (`app_settings` `workbench_harness_lock:<version>`). Every later install
 release — on any volume, a reinstall after a prune, a new department — is
 `bun install --frozen-lockfile` from it, and an install whose lockfile differs is replaced, so
 no transitive dependency moves after the smoke test. The bun binary itself is mise's download
-of bun's GitHub release, as checked as mise checks it. A fresh instance's first move is to
+of bun's GitHub release, as checked as mise checks it. The per-volume bun download cache
+(`harness/bun-cache`) is trusted the way the volume is: a frozen install verifies each
+tarball's integrity when it downloads it, but takes one already in that cache as it is — the
+cache is the agent user's, written by the same jobs that run on the volume, so it carries
+exactly a job's trust and no more. A fresh instance's first move is to
 smoke-test the compiled pair once, so its lockfile is kept too; until then (no Developer Agent
 running yet) a provision installs the compiled pair unfrozen.
 
@@ -491,7 +497,9 @@ What a release goes through:
   what the instance runs, falls back to and pins. A version must be a plain `x.y.z`; a bun
   release must be tagged `bun-v<x.y.z>` and be neither a draft nor a prerelease; an npm release
   marked deprecated is never adopted or pinned. A release newer than what upstream now calls
-  newest was withdrawn, and is forgotten. A release jobs run that upstream deprecates or
+  newest was withdrawn, and is forgotten; a document that answers 404 is withdrawn only on the
+  second 404 in a row (one is a blip). The documents are read all at once under one 30 s bound,
+  so **Check now** answers well inside a proxy's limit. A release jobs run that upstream deprecates or
   withdraws later is said to the admins once, and new jobs move off it: to a newer release once
   one has soaked, else to the previous verified pair, else to the compiled one.
 - **Soak**: each release waits `TALARIA_HARNESS_MIN_AGE_HOURS` (default 24; `0` turns it off)
@@ -510,16 +518,24 @@ What a release goes through:
   `omp/.<version>.<stamp>` dir, swapped in by renaming the `omp/<version>` symlink; bun through
   mise, side by side) **by its own versioned paths only** — the volume's shell `bun`
   (`mise use -g`, the `~/.local/bin/bun` link) is not touched until a provision promotes a
-  verified pair — started (`--version` on its bun), laid out in a job-shaped slot
+  verified pair, and a candidate bun is installed under a mise data dir of its own
+  (`harness/smoke-mise`), never the shared one every job's mise resolves from: a repo pinning
+  `bun = "1.4"` resolves the newest *installed* 1.4.x, and would otherwise switch to an
+  unverified bun mid-job. A provision of the adopted pair installs it into the shared dir — started (`--version` on its bun), laid out in a job-shaped slot
   (`harness/jobs/update-check`) with the same launcher a job gets, and put through the
   provisioning preflight in the agent's terminal shell: the launcher there, omp answering
   exactly the candidate, the agent dir writable. No model is called. Only then is the pair what
   every new job runs; the pair before it is kept as the fallback. A Pin or Unpin an admin makes
   while the smoke test runs wins: the pair is not adopted.
-- **Bounded, so a hang is the release's**: every step that runs or downloads a release — each
-  `--version`, `bun install`, `mise install bun@…` and mise's own download — runs under
-  `timeout` (60 s a start, 240 s an install, 180 s for mise), with the install lock's fd closed
-  for it, so nothing a hung step leaves behind can keep the volume's lock. The whole run sits
+- **Bounded, so a hang never wedges anything**: every step that runs or downloads a release —
+  each `--version` (the preflight's through the launcher too), `bun install`,
+  `mise install bun@…`, `mise where` and mise's own download — runs under `timeout` (60 s a
+  start, 240 s an install, 180 s for mise), with the install lock's fd closed for it, so
+  nothing a hung step leaves behind can keep the volume's lock. A step past its bound (124) is a
+  **strike** against the release, not a hold: a slow or stalled host times out too, so it is
+  tried again 15 min later, on another workbench when there is one, and held only when it times
+  out twice in a row. A step killed (137 — the OOM killer, or the bound's kill of a step that
+  ignored TERM) is the host's. The whole run sits
   under an in-container bound just inside the exec's own limit (18 min), and when the client's
   limit hits anyway, the run's process group in the container is killed.
 - **Running jobs keep their install.** A job's launcher names the version link it was
@@ -530,14 +546,17 @@ What a release goes through:
   left on it. doctor's slot and the smoke-test slot hold nothing.
 - **Hold and tell — only a release's own fault**: a candidate that is not there to install (a
   404, no matching version), whose tarball is not the documented one, that installed and would
-  not start, that did not start or install within its bound, or whose launcher fails the
-  preflight is **held**, every admin is told (`workbench_harness_update_failed`, once a day per
+  not start, that timed out twice in a row, or whose launcher fails the preflight is **held**, every admin is told (`workbench_harness_update_failed`, once a day per
   release), and every job keeps running what it runs. **Allow again** lifts it. The runtime
   script names the failing step on its last line (`talaria-fault: start|timeout|install|host`).
   A failure that is the host's or the network's — docker refusing or timing out, another
   provision holding the install lock, mise's own download, DNS, a refused or reset connection,
   TLS, a full disk, a 5xx or 429 from npm or GitHub, the agent dir not writable — is never
-  held: it is tried again in 15 min, then twice as long each time to 6 h, and the third in a row
+  held, including bun's own names for them (`DNSResolveFailed`, `FailedToOpenSocket`,
+  `ConnectionClosed`, … `downloading package manifest|tarball`): the `… failed to resolve`
+  line bun prints after any manifest error says nothing about the release. A move of both bun
+  and Oh My Pi that fails holds the bun when the failure names the new bun, else the Oh My Pi.
+  A host failure is tried again in 15 min, then twice as long each time to 6 h, and the third in a row
   tells the admins.
 - **Prewarm**: with nothing to move, one other running workbench a step is given the verified
   pair, so a job does not pay the install. Each volume backs off on its own when its host fails

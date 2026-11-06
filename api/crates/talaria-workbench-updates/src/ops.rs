@@ -101,6 +101,7 @@ impl Ops for Live {
                 v,
                 &smoke.keep,
                 smoke.integrity.as_deref(),
+                smoke.candidate,
             )
             .await
             .map(|(_, lock)| lock)

@@ -81,6 +81,9 @@ pub struct ToolState {
     pub last_check: Option<LastCheck>,
     /// Why the newest release is not what jobs run yet (the panel's line).
     pub detail: Option<String>,
+    /// Releases whose smoke test timed out, by version: held on the second
+    /// in a row, never on the first (a slow or stalled host times out too).
+    pub strikes: BTreeMap<String, Strike>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -94,6 +97,20 @@ pub struct Seen {
     pub deprecated: Option<String>,
     /// npm's `dist.integrity` for the tarball.
     pub integrity: Option<String>,
+    /// Upstream answered 404 for its document this many times in a row: two
+    /// mark it withdrawn, one is a blip.
+    pub missing: u32,
+}
+
+/// A release's smoke tests that ran past a bound, in a row.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Strike {
+    pub count: u32,
+    /// The workbenches it timed out on (the next try prefers another).
+    pub departments: Vec<String>,
+    pub at: i64,
+    pub why: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -231,6 +248,22 @@ impl State {
             .is_some_and(|s| s.deprecated.is_some())
     }
 
+    /// Upstream answered 404 for `version` of `t`'s document. The second in a
+    /// row marks it withdrawn (never adopted, and moved off if jobs run it);
+    /// one is a blip. Whether it is withdrawn now.
+    pub fn missed(&mut self, t: Tool, version: &str, now: i64) -> bool {
+        let ts = self.tool_mut(t);
+        let e = ts.seen.entry(version.to_string()).or_insert(Seen {
+            first_seen_at: now,
+            ..Default::default()
+        });
+        e.missing = e.missing.saturating_add(1);
+        if e.missing >= 2 && e.deprecated.is_none() {
+            e.deprecated = Some("withdrawn: upstream no longer has it".into());
+        }
+        e.missing >= 2
+    }
+
     /// Record a release a check (or a Pin) read. Its soak clock starts the
     /// first time it is seen and never restarts.
     pub fn saw(&mut self, t: Tool, rel: &crate::upstream::Release, now: i64) {
@@ -241,6 +274,7 @@ impl State {
         });
         e.requires_bun = rel.requires_bun.clone();
         e.deprecated = rel.deprecated.clone();
+        e.missing = 0;
         if rel.integrity.is_some() {
             e.integrity = rel.integrity.clone();
         }

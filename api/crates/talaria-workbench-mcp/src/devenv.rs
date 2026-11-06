@@ -934,7 +934,13 @@ pub async fn ensure_versions(
                 let _ = docker_exec_as(
                     &container,
                     Some(AGENT_USER),
-                    &["sh", "-c", talaria_workbench_harnesses::KILL_RUNTIME_SH],
+                    &[
+                        "sh",
+                        "-c",
+                        talaria_workbench_harnesses::KILL_RUNTIME_SH,
+                        "sh",
+                        talaria_workbench_harnesses::RUNTIME_MARKER,
+                    ],
                     None,
                     30_000,
                 )
@@ -983,9 +989,15 @@ pub enum VerifyFailure {
     Candidate(String),
     /// The host's or the network's: docker, a timeout of the whole exec, the
     /// install lock, mise's own download, DNS, a refused or reset connection,
-    /// TLS, a full disk, a 5xx or 429 from npm or GitHub. Tried again later
-    /// with backoff; never held.
+    /// TLS, a full disk, a 5xx or 429 from npm or GitHub, a step killed (137:
+    /// the OOM killer, or `timeout`'s own kill). Tried again later with
+    /// backoff; never held.
     Host(String),
+    /// A start, install or preflight of the release that ran past its bound
+    /// (`timeout`'s 124). On a slow or stalled host that is not proof of the
+    /// release, so the channel holds it only when it times out twice in a
+    /// row, on separate attempts — on another workbench when there is one.
+    Timeout(String),
 }
 
 /// Failures the network or the disk caused, whatever step met them.
@@ -994,7 +1006,14 @@ fn environment_failure(why: &str) -> bool {
     let re = RE.get_or_init(|| {
         Regex::new(
             r"(?ix)
-            ENOTFOUND | EAI_AGAIN | getaddrinfo | name\ resolution | could\ not\ resolve
+            # bun names its own network errors (captured from bun 1.3.14 and
+            # 1.4.4 in the Hermes image): DNSResolveFailed, FailedToOpenSocket,
+            # ConnectionClosed, ConnectionRefused, … `downloading package
+            # manifest|tarball`. A missing release is `GET … - 404` instead.
+            \b[A-Z][A-Za-z]+\ downloading\ (?:package\ manifest|tarball)\b
+            | DNSResolveFailed | FailedToOpenSocket | ConnectionClosed
+            | error\ sending\ request | dns\ error | operation\ timed\ out
+            | ENOTFOUND | EAI_AGAIN | getaddrinfo | name\ resolution | could\ not\ resolve
             | ECONNREFUSED | ConnectionRefused | connection\ refused
             | ECONNRESET | ConnectionReset | connection\ reset | ETIMEDOUT | ConnectionTimeout
             | network\ is\ unreachable | no\ route\ to\ host | ENETUNREACH | EHOSTUNREACH
@@ -1016,8 +1035,8 @@ fn release_missing(why: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
         Regex::new(
-            r"(?ix) \b404\b | ETARGET | E404 | no\ version\ matching | no\ matching\ version
-            | version\ not\ found | no\ such\ version | failed\ to\ resolve | EINTEGRITY | integrity\ check\ failed",
+            r"(?ix) \s-\s404\b | \(404\s | \b404\ Not\ Found | ETARGET | E404 | no\ version\ matching | no\ matching\ version
+            | version\ not\ found | no\ such\ version | EINTEGRITY | integrity\ check\ failed",
         )
         .expect("a valid pattern")
     });
@@ -1027,20 +1046,24 @@ fn release_missing(why: &str) -> bool {
 /// Sort a runtime-script failure. The script says which step failed on its
 /// last line (`talaria-fault: …`, `talaria_workbench_harnesses::runtime_fault_phase`);
 /// only a proven fault of the release holds it:
-/// - `start`: it installed and would not start, or did not start in time;
-///   or its tarball was not the documented one — the release's (a full disk
-///   is still the host's);
-/// - `timeout`: its install did not finish in time — the release's;
+/// - `start`: it installed and would not start, or its tarball was not the
+///   documented one — the release's (a full disk is still the host's);
+/// - `timeout`: a start or install ran past its bound (124) — a strike
+///   ([`VerifyFailure::Timeout`]), held only on the second in a row;
 /// - `install`: the install failed — the network's or the disk's when it
-///   says so, the release's when it is not there (a 404, no matching
-///   version, an integrity mismatch), and otherwise the host's;
-/// - `host`, or no line at all (docker, the exec's own limit): the host's.
+///   says so (bun's own `DNSResolveFailed`/`ConnectionClosed`/… names
+///   included: the `… failed to resolve` line bun prints after any manifest
+///   error says nothing about the release), the release's when it is not
+///   there (a 404, no matching version, an integrity mismatch), and
+///   otherwise the host's;
+/// - `host`, a step killed (137), or no line at all (docker, the exec's own
+///   limit): the host's.
 pub fn classify_runtime_failure(why: &str) -> VerifyFailure {
     let candidate = || VerifyFailure::Candidate(why.to_string());
     let host = || VerifyFailure::Host(why.to_string());
     match talaria_workbench_harnesses::runtime_fault_phase(why) {
         Some("start") if !why.contains("ENOSPC") && !why.contains("No space left") => candidate(),
-        Some("timeout") => candidate(),
+        Some("timeout") => VerifyFailure::Timeout(why.to_string()),
         Some("install") if environment_failure(why) => host(),
         Some("install") if release_missing(why) => candidate(),
         _ => host(),
@@ -1064,12 +1087,17 @@ pub fn classify_runtime_failure(why: &str) -> VerifyFailure {
 /// candidate's tarball. An Oh My Pi with a verified lockfile already is
 /// installed frozen from it; one without is installed fresh, and the
 /// lockfile that install wrote is what Ok carries, to be kept with the pair.
+///
+/// `candidate` false is a PREWARM of the verified pair: it is installed the
+/// way a provision does (its bun into the shared mise dir, the shell's `bun`
+/// promoted), then checked the same way.
 pub async fn verify_harness(
     pg: &PgPool,
     department: &str,
     v: &talaria_workbench_harnesses::Versions,
     keep: &[String],
     integrity: Option<&str>,
+    candidate: bool,
 ) -> Result<(talaria_workbench_harnesses::Runtime, Option<String>), VerifyFailure> {
     use talaria_workbench_harnesses as wh;
     let container = managed_container(pg, department).await;
@@ -1082,7 +1110,7 @@ pub async fn verify_harness(
     let registry = harness_registry();
     let run = wh::RuntimeRun {
         v,
-        smoke: true,
+        smoke: candidate,
         keep,
         frozen: lock.is_some(),
         integrity: integrity.filter(|i| wh::plain_integrity(i)),
@@ -1131,7 +1159,15 @@ pub async fn verify_harness(
         Ok(_) => {}
         // The preflight not running at all, or the volume's own permissions,
         // are the host's; the launcher and the version are the release's.
-        Err((check, detail)) if check == "preflight" || check == "writable" => {
+        // The launcher's start ran past its bound: a strike, like any timeout.
+        Err((check, detail)) if check == "timeout" => {
+            return Err(VerifyFailure::Timeout(format!(
+                "the preflight's start timed out: {detail}"
+            )));
+        }
+        Err((check, detail))
+            if check == "preflight" || check == "writable" || check == "killed" =>
+        {
             return Err(VerifyFailure::Host(detail));
         }
         Err((check, detail)) => {
@@ -1828,19 +1864,21 @@ mod tests {
                 true,
             ),
             (
-                "Oh My Pi 18.17.0 did not finish starting within 60 s on bun 1.4.4\ntalaria-fault: start",
-                true,
-            ),
-            (
-                "Oh My Pi 18.17.0 did not finish installing within 240 s\ntalaria-fault: timeout",
-                true,
-            ),
-            (
                 "error: GET https://registry.npmjs.org/@oh-my-pi%2fpi-coding-agent - 404\ncould not install Oh My Pi 99.0.0 (bun install, above)\ntalaria-fault: install",
                 true,
             ),
             (
                 "error: No version matching \"99.0.0\" found for specifier\ntalaria-fault: install",
+                true,
+            ),
+            // bun's own words, captured in the Hermes image (bun 1.3.14 and
+            // 1.4.4 against a registry with no such release, and with one).
+            (
+                "bun install v1.4.4 (38afee6c8)\nResolving dependencies\nResolved, downloaded and extracted [1]\nerror: GET http://172.17.0.1:5963/@oh-my-pi%2fpi-coding-agent - 404\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                true,
+            ),
+            (
+                "bun install v1.3.14 (0d9b296a)\nResolving dependencies\nResolved, downloaded and extracted [1]\nerror: No version matching \"18.99.0\" found for specifier \"@oh-my-pi/pi-coding-agent\" (but package exists)\nerror: @oh-my-pi/pi-coding-agent@18.99.0 failed to resolve\ncould not install Oh My Pi 18.99.0 (bun install, above)\ntalaria-fault: install",
                 true,
             ),
             (
@@ -1855,7 +1893,34 @@ mod tests {
                 "Oh My Pi 18.17.0 installed a tarball whose integrity is not the one npm documents\ntalaria-fault: start",
                 true,
             ),
-            // The network's, the disk's, the host's.
+            // The network's, the disk's, the host's — bun's own words first,
+            // captured in the Hermes image: an unresolvable registry, a
+            // server that drops the connection, a 500. Each is followed by
+            // the `… failed to resolve` line, which is not a missing release.
+            (
+                "bun install v1.4.4 (38afee6c8)\nResolving dependencies\nResolved, downloaded and extracted [6]\nerror: DNSResolveFailed downloading package manifest @oh-my-pi/pi-coding-agent\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "bun install v1.3.14 (0d9b296a)\nResolving dependencies\nResolved, downloaded and extracted [6]\nerror: FailedToOpenSocket downloading package manifest @oh-my-pi/pi-coding-agent\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "bun install v1.4.4 (38afee6c8)\nResolving dependencies\nResolved, downloaded and extracted [6]\nerror: ConnectionClosed downloading package manifest @oh-my-pi/pi-coding-agent\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "bun install v1.3.14 (0d9b296a)\nResolving dependencies\nResolved, downloaded and extracted [6]\nerror: GET http://172.17.0.1:5962/@oh-my-pi%2fpi-coding-agent - 500\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "error: ConnectionClosed downloading tarball zod@3.25.76\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "Oh My Pi 18.17.0 was killed (exit 137: the OOM killer, or its bound's kill)\ntalaria-fault: host",
+                false,
+            ),
             (
                 "error: getaddrinfo ENOTFOUND registry.npmjs.org\ntalaria-fault: install",
                 false,
@@ -1910,6 +1975,17 @@ mod tests {
             ),
         ] {
             assert_eq!(cand(why), held, "{why}");
+        }
+        // A start or install past its bound is a strike, never a hold by itself.
+        for why in [
+            "Oh My Pi 18.17.0 did not finish starting within 60 s on bun 1.4.4\ntalaria-fault: timeout",
+            "Oh My Pi 18.17.0 did not finish installing within 240 s\ntalaria-fault: timeout",
+            "bun 1.4.5 did not finish installing within 180 s\ntalaria-fault: timeout",
+        ] {
+            assert!(
+                matches!(classify_runtime_failure(why), VerifyFailure::Timeout(_)),
+                "{why}"
+            );
         }
     }
 
