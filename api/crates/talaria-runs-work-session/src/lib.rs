@@ -395,6 +395,13 @@ pub type RecentActivityFn = Arc<
         + Sync,
 >;
 pub type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
+/// Every row of the persona's session for a run, oldest first, or None when
+/// the container could not say. The arguments are the agent model and the
+/// run id, which is the session id (`session_for_turn`).
+pub type SessionMessagesFn =
+    Arc<dyn Fn(String, String) -> BoxFuture<'static, Option<Vec<Value>>> + Send + Sync>;
+/// The same rows plus the ones a compaction archived.
+pub type SessionArchiveFn = SessionMessagesFn;
 
 /// The two destinations the dispatch prompt may name. From `status_meta`, so
 /// they come from `placeable` like every other destination in the product.
@@ -421,6 +428,10 @@ pub struct WorkSessionDeps {
     /// it had.
     pub recent_activity: RecentActivityFn,
     pub now: NowFn,
+    /// The session's transcript, read once per recorded turn to put the
+    /// ledger's step rows in the order the agent actually took them.
+    pub session_messages: SessionMessagesFn,
+    pub session_archive: SessionArchiveFn,
 }
 
 /// The real edges. `state` carries the pool every dep reads and the harness
@@ -484,6 +495,67 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
             })
         }),
         now: Arc::new(wall_ms),
+        session_messages: Arc::new(|agent_model, run_id| {
+            Box::pin(async move {
+                talaria_gateway::fleet_chat::session_messages(&agent_model, &run_id).await
+            })
+        }),
+        session_archive: Arc::new(|agent_model, run_id| {
+            Box::pin(async move {
+                talaria_gateway::fleet_chat::session_messages_archived(&agent_model, &run_id).await
+            })
+        }),
+    }
+}
+
+/// The tool call ids the live transcript still carries.
+pub fn present_call_ids(rows: &[Value]) -> Vec<String> {
+    rows.iter()
+        .filter(|r| r.get("role").and_then(Value::as_str) == Some("tool"))
+        .filter_map(|r| r.get("tool_call_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+/// After turn `turn` is recorded, judge the run's step rows by the session's
+/// own transcript: a step the live read holds keeps its standing, one only
+/// the archived read holds was compacted away, one neither holds was never
+/// a turn of the session's own. The ledger's `seq` is read first, so a frame
+/// that lands during the reads is not judged by a transcript that could not
+/// hold it. Best-effort by contract: a transcript the container cannot give,
+/// or one too long to read whole, changes nothing. Nothing here fails the
+/// step.
+async fn verify_session_steps(d: &WorkSessionDeps, agent_model: &str, run_id: &str, turn: i64) {
+    let through = match talaria_runs_store::checkpoint_seq(&d.state.pg, run_id).await {
+        Ok(seq) => seq,
+        Err(e) => {
+            tracing::warn!("{LOG} {run_id}: ledger seq unreadable at turn {turn}: {e}");
+            return;
+        }
+    };
+    let (live, archived) = tokio::join!(
+        (d.session_messages)(agent_model.to_string(), run_id.to_string()),
+        (d.session_archive)(agent_model.to_string(), run_id.to_string()),
+    );
+    let (Some(live), Some(archived)) = (live, archived) else {
+        tracing::debug!(
+            "{LOG} {run_id}: transcript not readable at turn {turn}; steps keep their standing"
+        );
+        return;
+    };
+    let live = present_call_ids(&live);
+    let archived = present_call_ids(&archived);
+    if let Err(e) = talaria_runs_store::settle_unverified(&d.state.pg, run_id, &live).await {
+        tracing::warn!("{LOG} {run_id}: settling waiting steps failed at turn {turn}: {e}");
+    }
+    match talaria_runs_store::verify_steps(&d.state.pg, run_id, through, &live, &archived).await {
+        Ok(retired) if retired > 0 => {
+            tracing::info!(
+                "{LOG} {run_id}: {retired} step row(s) retired by the transcript at turn {turn}"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("{LOG} {run_id}: transcript check failed at turn {turn}: {e}"),
     }
 }
 
@@ -1000,6 +1072,31 @@ pub async fn live_work_session_for(
         "select id::text from runs \
          where kind = 'work-session' and id = $2::uuid \
            and state in ('queued', 'running', 'awaiting') \
+           and input->>'agentModel' = $1",
+    )
+    .bind(agent_model)
+    .bind(session_id)
+    .fetch_optional(pg)
+    .await
+}
+
+/// The same key for a work session that has just ended: the step after a
+/// turn's last tool call reaches the platform after the run finished, and a
+/// rewind to it is still the person's to make. Ten minutes covers a plugin
+/// queue that drained late; a frame older than that names nothing.
+pub async fn settled_work_session_for(
+    pg: &PgPool,
+    agent_model: &str,
+    session_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    if uuid::Uuid::parse_str(session_id).is_err() {
+        return Ok(None);
+    }
+    sqlx::query_scalar(
+        "select id::text from runs \
+         where kind = 'work-session' and id = $2::uuid \
+           and state in ('done', 'error', 'cancelled') \
+           and finished_at > now() - interval '10 minutes' \
            and input->>'agentModel' = $1",
     )
     .bind(agent_model)
@@ -1618,6 +1715,7 @@ pub async fn work_session_step(
                     .await;
                 }
             }
+            verify_session_steps(d, &agent_model, &ctx.run.id, *turn).await;
             return Ok(StepResult::Next {
                 checkpoint: json!(WorkSessionCheckpoint::Send {
                     turn: turn + 1,
@@ -2210,6 +2308,23 @@ mod tests {
     // ── Checkpoint wire shape ───────────────────────────────────────────────
 
     #[test]
+    fn the_live_transcript_names_the_calls_it_still_holds() {
+        let rows = vec![
+            json!({"role": "user", "content": "turn 1"}),
+            json!({"role": "assistant", "tool_calls": [{"id": "c1"}, {"id": "c2"}]}),
+            json!({"role": "tool", "tool_call_id": "c1", "tool_name": "terminal"}),
+            json!({"role": "tool", "tool_call_id": "c2", "tool_name": "terminal"}),
+            json!({"role": "tool", "content": "a row with no call id names no step"}),
+            json!({"role": "user", "content": "turn 2", "display_kind": "internal_notification"}),
+        ];
+        assert_eq!(
+            present_call_ids(&rows),
+            vec!["c1".to_string(), "c2".to_string()]
+        );
+        assert!(present_call_ids(&[]).is_empty());
+    }
+
+    #[test]
     fn checkpoints_round_trip_the_db_spellings() {
         // A send checkpoint, with and without notBefore.
         let send: WorkSessionCheckpoint = serde_json::from_value(
@@ -2395,6 +2510,8 @@ mod tests {
                 Box::pin(async move { Ok(recent_for_read.lock().unwrap().clone()) })
             }),
             now: Arc::new(|| 1_788_045_420_000),
+            session_messages: Arc::new(|_agent, _run| Box::pin(async { None })),
+            session_archive: Arc::new(|_agent, _run| Box::pin(async { None })),
         };
         (deps, Recorder { lines, recent })
     }

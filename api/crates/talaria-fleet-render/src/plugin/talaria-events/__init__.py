@@ -34,6 +34,19 @@ id — at every turn until the platform has confirmed it, then no more — and
 the relay can then book the turn's calls, auxiliary and subagent calls
 included, to the flow that drove it.
 
+A work session's rewind points are reported here too. `pre_api_request`
+fires once per model call, after the tool calls the previous call asked for
+have all finished and their results sit at the end of the history — the one
+moment a batch of up to eight parallel tools is known to be complete. The
+hook names that batch, takes a git snapshot of the job's checkout through
+a temporary index (the agent's own index, status and log never change), and
+reports the boundary to the tool-events door as a `snapshot` frame, which
+becomes a step row in the run's checkpoint ledger. Which checkout a session
+owns is learned from the raw answers of the workbench's start_job and
+job_status calls, the only place the job id and workdir are said. A step
+with no known checkout, or whose snapshot fails, is reported with the
+reason and the run goes on: a snapshot never fails a run.
+
 A screenshot is the same gap with bytes in it. `browser_vision` writes a PNG
 inside this container and reports its PATH — a path that means nothing to the
 platform and is gone with the next roll. When that tool answers with one, the
@@ -53,8 +66,11 @@ import base64
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import queue
+import tempfile
 import threading
 import time
 import urllib.request
@@ -101,6 +117,46 @@ _AFFINITY_SEEN_CAP = 4096
 _queue: "queue.Queue[dict]" = queue.Queue(maxsize=_QUEUE_CAP)
 _started = False
 _start_lock = threading.Lock()
+
+# The workbench tools whose answers name a job and its workdir, as Hermes
+# registers an MCP tool (`mcp__<server>__start_job`): the server's name is the
+# org's to choose, the prefix and the tool are not. A job's checkout is only
+# ever the jobs root plus its own id, so an answer naming any other path, or a
+# job that is not a uuid, binds nothing: the path goes to `git -C`.
+_JOB_TOOL = re.compile(r"mcp__[A-Za-z0-9_]+__(start_job|job_status)")
+_JOB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_JOBS_ROOT = "/opt/data/workbench/jobs"
+# The platform's own secret file in a checkout (devenv::JOB_ENV_FILE): a job
+# that is not running does not hold it, and the start_job that resumes a job
+# writes it again, so a snapshot keeps it out.
+_JOB_ENV_FILE = ".talaria/env"
+# The session's binding, kept on the agent's volume so a container restart
+# mid-run does not forget the job until the next job_status call. One file
+# per session, holding the job id; the workdir follows from it.
+_STATE_DIR = "/opt/data/talaria-events/checkouts"
+# Untracked, unignored bytes a step may add before the snapshot is skipped
+# instead: the plan's 250 ms per snapshot and 50 MB of .git per run, against
+# a measured 24 ms per MB of fresh content.
+_UNTRACKED_BUDGET = 16 * 1024 * 1024
+_GIT_TIMEOUT = 10.0
+_SNAPSHOT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Talaria checkpoint",
+    "GIT_AUTHOR_EMAIL": "checkpoint@talaria.invalid",
+    "GIT_COMMITTER_NAME": "Talaria checkpoint",
+    "GIT_COMMITTER_EMAIL": "checkpoint@talaria.invalid",
+}
+# Per session: the (job id, workdir) its job answers named, each tool call's
+# status until the boundary that consumes them, the last boundary reported
+# (a retried model call fires the hook again on the same history), and the
+# last (tree, commit) so an unchanged checkout points at the commit it
+# already has. Bounded like the affinity set: a long-lived container forgets
+# the oldest sessions and at worst snapshots one of them from scratch.
+_checkouts: dict[str, tuple[str, str]] = {}
+_call_status: dict[str, dict[str, str]] = {}
+_last_boundary: dict[str, str] = {}
+_last_tree: dict[str, tuple[str, str]] = {}
+_SESSIONS_CAP = 256
+_REF_SAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def _config() -> tuple[str, dict[str, str]] | None:
@@ -358,6 +414,13 @@ def on_post_tool_call(
     # result string. `error` is accepted when the harness passes one.
     failed = error is not None and error != "" and error is not False
     status = "error" if (failed or _is_error_result(result)) else "completed"
+    if session_id and tool_call_id:
+        _bounded(_call_status, session_id).setdefault(session_id, {}).setdefault(tool_call_id, status)
+    if session_id and _JOB_TOOL.fullmatch(tool_name):
+        try:
+            _learn_checkout(session_id, tool_name, args, result)
+        except Exception:
+            pass
     event = {
         "sessionId": session_id,
         "toolName": tool_name,
@@ -474,6 +537,375 @@ def on_subagent_stop(
     )
 
 
+def _bounded(table: dict, session_id: str) -> dict:
+    """The table with room for `session_id`: the oldest session goes when
+    the table is full."""
+    if session_id not in table and len(table) >= _SESSIONS_CAP:
+        table.pop(next(iter(table)))
+    return table
+
+
+def _job_answer(result: Any) -> dict | None:
+    """The object a workbench job tool answered, out of the MCP envelope the
+    harness hands the hook: `{"result": "<json text>"}`, with the same object
+    as `structuredContent` when the server sends both."""
+    outer: Any = result
+    if isinstance(result, str):
+        try:
+            outer = json.loads(result)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(outer, dict):
+        return None
+    structured = outer.get("structuredContent")
+    if isinstance(structured, dict):
+        return structured
+    inner = outer.get("result", outer)
+    if isinstance(inner, str):
+        try:
+            inner = json.loads(inner)
+        except (ValueError, TypeError):
+            return None
+    return inner if isinstance(inner, dict) else None
+
+
+def _learn_checkout(session_id: str, tool_name: str, args: Any, result: Any) -> None:
+    """Bind the session to the job its answer names: start_job's one job, or
+    the job a job_status call asked for by id. A listing nobody asked for
+    names the agent's jobs, not this session's, and binds nothing; a queued
+    job has no workdir yet and binds nothing either."""
+    answer = _job_answer(result)
+    if answer is None:
+        return
+    asked = args.get("jobId") if isinstance(args, dict) else None
+    if tool_name.endswith("__job_status") and not isinstance(asked, str):
+        return
+    jobs = answer.get("jobs") if isinstance(answer.get("jobs"), list) else [answer]
+    named = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_id = job.get("jobId") or job.get("id")
+        workdir = job.get("workdir")
+        if not (isinstance(job_id, str) and isinstance(workdir, str)):
+            continue
+        job_id = job_id.lower()
+        own = os.path.join(_JOBS_ROOT, job_id)
+        if _JOB_ID.fullmatch(job_id) and os.path.normpath(workdir) == own and (asked is None or job_id == asked.lower()):
+            named.append((job_id, own))
+    if len(named) == 1:
+        _bounded(_checkouts, session_id)[session_id] = named[0]
+        _keep_checkout(session_id, named[0][0])
+
+
+def _keep_checkout(session_id: str, job_id: str) -> None:
+    """Write the binding to the volume, whole or not at all: a temp file
+    beside it is renamed over it, so a restart reads the old binding or the
+    new one and never a torn one. The session id is the file name, so only an
+    id of the shape Talaria mints becomes one, and a path that is a symlink
+    is left alone rather than written through."""
+    if not _JOB_ID.fullmatch(session_id):
+        return
+    target = os.path.join(_STATE_DIR, session_id)
+    try:
+        os.makedirs(_STATE_DIR, mode=0o700, exist_ok=True)
+        if os.path.islink(target):
+            return
+        fd, tmp = tempfile.mkstemp(prefix=".", suffix=".tmp", dir=_STATE_DIR)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(job_id)
+            os.replace(tmp, target)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            # Neither the new binding nor the old may stand after a failed
+            # write: a restart that read the old one would snapshot the
+            # wrong checkout.
+            try:
+                os.unlink(target)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        pass
+
+
+def _checkout_for(session_id: str) -> tuple[str, str] | None:
+    """The session's (job id, workdir): from memory, else from the volume,
+    which is where a restarted container finds it. A file that is a symlink,
+    unreadable, or not a job id binds nothing."""
+    found = _checkouts.get(session_id)
+    if found is not None or not _JOB_ID.fullmatch(session_id):
+        return found
+    try:
+        fd = os.open(os.path.join(_STATE_DIR, session_id), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            job_id = handle.read(128).decode("ascii", "replace").strip().lower()
+    except OSError:
+        return None
+    if not _JOB_ID.fullmatch(job_id):
+        return None
+    found = (job_id, os.path.join(_JOBS_ROOT, job_id))
+    _bounded(_checkouts, session_id)[session_id] = found
+    return found
+
+
+def _untracked_bytes(root: str, budget: int) -> int | None:
+    """Bytes of untracked, unignored files under the checkout, counted only
+    until the budget is passed. None when git could not list them."""
+    done = subprocess.run(
+        ["git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True, timeout=_GIT_TIMEOUT,
+    )
+    if done.returncode != 0:
+        return None
+    total = 0
+    for name in done.stdout.split(b"\0"):
+        if not name or name == _JOB_ENV_FILE.encode():
+            continue
+        try:
+            total += os.lstat(os.path.join(root.encode(), name)).st_size
+        except OSError:
+            continue
+        if total > budget:
+            break
+    return total
+
+
+def _trailing_batch(history: Any) -> list[tuple[str, str]]:
+    """The tool calls whose results end the history, oldest first, as
+    (call id, tool name): the batch the model call about to be made will
+    read. Empty when the history ends with anything else, which is the first
+    call of a turn."""
+    batch: list[tuple[str, str]] = []
+    if not isinstance(history, list):
+        return batch
+    for row in reversed(history):
+        if not isinstance(row, dict) or row.get("role") != "tool":
+            break
+        call_id = row.get("tool_call_id")
+        name = row.get("tool_name") or row.get("name") or ""
+        if isinstance(call_id, str) and call_id:
+            batch.append((call_id, str(name)[:120]))
+    batch.reverse()
+    return batch
+
+
+def _git_root(workdir: str) -> str | None:
+    """The checkout under a job's workdir: the workdir itself once the agent
+    cloned into it, or the one directory it cloned beneath it."""
+    if os.path.isdir(os.path.join(workdir, ".git")):
+        return workdir
+    try:
+        kids = [k for k in os.listdir(workdir) if os.path.isdir(os.path.join(workdir, k, ".git"))]
+    except OSError:
+        return None
+    return os.path.join(workdir, kids[0]) if len(kids) == 1 else None
+
+
+class _Skipped(Exception):
+    """A snapshot not taken on purpose; the reason is the message."""
+
+
+class _GitFailed(Exception):
+    """A git stage of the snapshot failed; the message names the stage. The
+    stage's own stderr stays out: it reaches people as a reason, and a path
+    or a fatal line is not a sentence."""
+
+
+def _alternates(root: str) -> str:
+    """The real store, plus whatever it already borrows from."""
+    store = os.path.join(root, ".git", "objects")
+    extra = []
+    try:
+        with open(os.path.join(store, "info", "alternates")) as handle:
+            extra = [line.strip() for line in handle if line.strip()]
+    except OSError:
+        pass
+    return ":".join([store, *extra])
+
+
+def _adopt_objects(quarantine: str, root: str) -> None:
+    """Move the snapshot's new objects into the real store. An object the
+    store already has is left as it is; git's objects are immutable."""
+    store = os.path.join(root, ".git", "objects")
+    for fan in os.listdir(quarantine):
+        if len(fan) != 2:
+            continue
+        os.makedirs(os.path.join(store, fan), exist_ok=True)
+        for name in os.listdir(os.path.join(quarantine, fan)):
+            dest = os.path.join(store, fan, name)
+            if os.path.exists(dest):
+                continue
+            os.rename(os.path.join(quarantine, fan, name), dest)
+
+
+def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
+    """Commit the checkout's tracked and untracked files (ignored ones and
+    the platform's env file stay out) through a copy of the index, and point
+    `refs/talaria/ckpt/...` at it. The agent's index, HEAD, status and log do
+    not change. A tree equal to the session's last snapshot is that snapshot:
+    its commit is reused and no ref is written, so refs grow with the work,
+    not with the steps.
+
+    The snapshot's objects are written to a quarantine of its own beside the
+    real store, which git reads through as an alternate, and they move into
+    the store only once the commit exists. A snapshot that fails, or is cut
+    short, leaves the store exactly as it was, and nothing here ever deletes
+    from the store, so a `git gc` or `git add` the agent runs beside it keeps
+    every temp file of its own."""
+    untracked = _untracked_bytes(root, _UNTRACKED_BUDGET)
+    if untracked is not None and untracked > _UNTRACKED_BUDGET:
+        raise _Skipped(
+            f"untracked content {untracked / 1048576:.1f} MiB is over the "
+            f"{_UNTRACKED_BUDGET // 1048576} MiB snapshot budget"
+        )
+    fd, index = tempfile.mkstemp(prefix="talaria-ckpt-")
+    os.close(fd)
+    # git reads an empty index file as corrupt, so the temp name is handed
+    # over empty: either a copy of the agent's index or nothing at all.
+    os.unlink(index)
+    quarantine = tempfile.mkdtemp(prefix="talaria-ckpt-objects-", dir=os.path.join(root, ".git"))
+    env = {
+        **os.environ,
+        **_SNAPSHOT_IDENTITY,
+        "GIT_INDEX_FILE": index,
+        "GIT_OBJECT_DIRECTORY": quarantine,
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": _alternates(root),
+    }
+
+    def git(*args: str, **kw: Any) -> str:
+        done = subprocess.run(
+            ["git", "-C", root, *args], capture_output=True, text=True, timeout=_GIT_TIMEOUT, **kw
+        )
+        if done.returncode != 0:
+            raise _GitFailed(args[0])
+        return done.stdout.strip()
+
+    try:
+        live = os.path.join(root, ".git", "index")
+        if os.path.exists(live):
+            shutil.copy(live, index)
+        git("add", "-A", "--", ".", f":(exclude){_JOB_ENV_FILE}", env=env)
+        tree = git("write-tree", env=env)
+        last = _last_tree.get(session_id)
+        if last is not None and last[0] == tree:
+            return last
+        head = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--verify", "-q", "HEAD"],
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT,
+        ).stdout.strip()
+        parent = ["-p", head] if head else []
+        commit = git("commit-tree", tree, *parent, "-m", f"talaria checkpoint {ref_name}", env=env)
+        # The ref first, while the commit still lives in the quarantine git
+        # reads as its store here: once the ref names it, a gc that prunes
+        # unreachable objects cannot take the commit between its adoption
+        # and the ref.
+        git("update-ref", f"refs/talaria/ckpt/{ref_name}", commit, env=env)
+        try:
+            _adopt_objects(quarantine, root)
+        except BaseException:
+            subprocess.run(
+                ["git", "-C", root, "update-ref", "-d", f"refs/talaria/ckpt/{ref_name}"],
+                capture_output=True, timeout=_GIT_TIMEOUT, env=env,
+            )
+            raise
+    finally:
+        shutil.rmtree(quarantine, ignore_errors=True)
+        for leftover in (index, index + ".lock"):
+            try:
+                os.unlink(leftover)
+            except OSError:
+                pass
+    _bounded(_last_tree, session_id)[session_id] = (tree, commit)
+    return tree, commit
+
+
+def on_pre_api_request(*, platform: str = "", **kw: Any) -> None:
+    """Report the step boundary the model call about to be made stands at,
+    with a snapshot of the job's checkout. Nothing here may raise into the
+    agent's turn, whatever the harness or a tool answer hands over."""
+    if platform == "cron":
+        return None
+    try:
+        _report_step(**kw)
+    except Exception:
+        pass
+    return None
+
+
+def _report_step(
+    *,
+    session_id: str = "",
+    task_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    conversation_history: Any = None,
+    **_: Any,
+) -> None:
+    if not session_id:
+        return
+    # A turn of the session's own carries the session as its task. Hermes's
+    # post-turn background review runs on the same session object under
+    # another task id, and its tool calls never enter the session's
+    # transcript: they are not steps of this run.
+    if task_id and task_id != session_id:
+        return
+    batch = _trailing_batch(conversation_history)
+    if not batch:
+        return
+    boundary = batch[-1][0]
+    if _last_boundary.get(session_id) == boundary:
+        return
+    _bounded(_last_boundary, session_id)[session_id] = boundary
+    statuses = _call_status.pop(session_id, {})
+    event: dict[str, Any] = {
+        "kind": "snapshot",
+        "sessionId": session_id,
+        "turnId": turn_id,
+        "apiRequestId": api_request_id,
+        "calls": [
+            {"id": call_id, "name": name, "status": statuses.get(call_id, "completed")}
+            for call_id, name in batch
+        ],
+        "at": int(time.time() * 1000),
+    }
+    checkout = _checkout_for(session_id)
+    if checkout is None:
+        event["reason"] = "no workbench job known for this session"
+    else:
+        job_id, workdir = checkout
+        event["jobId"] = job_id
+        root = _git_root(workdir)
+        if root is None:
+            event["reason"] = f"no git checkout under {workdir}"
+        else:
+            started = time.monotonic()
+            try:
+                ref_name = f"{_REF_SAFE.sub('-', session_id)}/{_REF_SAFE.sub('-', boundary)}"
+                tree, commit = _snapshot(session_id, root, ref_name)
+                event["tree"] = tree
+                event["commit"] = commit
+            except _Skipped as skip:
+                event["reason"] = f"snapshot skipped: {skip}"
+            except _GitFailed as stage:
+                event["reason"] = f"snapshot failed: git {stage} failed in the job's checkout"
+            except subprocess.TimeoutExpired:
+                event["reason"] = f"snapshot failed: git took longer than {_GIT_TIMEOUT:.0f} s and was stopped"
+            except OSError:
+                event["reason"] = "snapshot failed: the checkout's object store could not be written"
+            except Exception as ex:
+                event["reason"] = f"snapshot failed: an unexpected error in the plugin ({type(ex).__name__})"
+            event["ms"] = int((time.monotonic() - started) * 1000)
+    _enqueue(event)
+
+
 def on_post_llm_call(
     *,
     session_id: str = "",
@@ -557,3 +989,4 @@ def register(ctx) -> None:
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_hook("subagent_stop", on_subagent_stop)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
+    ctx.register_hook("pre_api_request", on_pre_api_request)

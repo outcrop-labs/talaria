@@ -4900,6 +4900,9 @@ alter table tasks drop column if exists conversation_id`,
    )`,
   `create index if not exists run_pushes_run_idx on run_pushes (run_id, created_at)`,
   `create index if not exists usage_events_ref_idx on usage_events (ref_id) where ref_id is not null`,
+  // One counter per turn, bumped in the statement that takes a step's seq, so
+  // two frames landing at once never share a step number.
+  `alter table runs add column if not exists step_counts jsonb not null default '{}'::jsonb`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -4,7 +4,7 @@
 // Forgejo. It is the fixture the checkpoint-rewind lanes run.
 //
 //   node scripts/rewind-fixture.mjs setup    --stack <checkout> [--agent atlas] [--model <id>]
-//   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait]
+//   node scripts/rewind-fixture.mjs ticket   --stack <checkout> [--agent atlas] [--no-wait] [--batched|--direct|--long]
 //   node scripts/rewind-fixture.mjs teardown --stack <checkout>
 //
 // `<checkout>` is a checkout made by `bun talaria worktree`, with `talaria dev`
@@ -46,6 +46,19 @@ Do these in order, one at a time:
 5. Run \`python3 test_calc.py\` and confirm it passes.
 
 Commit on the job's branch, finish the job, then move this ticket to review.`,
+}
+
+// The same ticket with one step the agent is asked to do as a batch: several
+// tool calls in a single response. A lane that must see a batched turn files
+// this one; whether the model batches is its own choice, so the lane reads
+// the transcript to know.
+const BATCHED_TICKET = {
+  ...TICKET,
+  title: 'Add subtract and multiply to the fixture calculator (batched reads)',
+  description: TICKET.description.replace(
+    'Do these in order, one at a time:',
+    'First, in ONE response, make three tool calls at the same time: read `calc.py`, read `README.md`, and run `ls -la`. Do not make them one at a time. Then do these in order:',
+  ),
 }
 
 const sh = (cmd, args, opts = {}) => {
@@ -432,11 +445,42 @@ async function report(stack, api, task, readToken) {
   return { run, job, ticket: { id: task.id, ref: task.ticketRef, status, category }, tools, files }
 }
 
-async function ticket(stack, slug, wait) {
+// The same ticket with the agent told to edit through its own shell and file
+// tools and to leave the coding harness alone, so the job's tree changes
+// across several steps even where the harness cannot run.
+const DIRECT_TICKET = {
+  ...TICKET,
+  title: 'Add subtract and multiply to the fixture calculator (direct edits)',
+  description: TICKET.description.replace(
+    'Use a light-effort workbench job.',
+    'Use a light-effort workbench job. Make every edit yourself with your terminal and file tools: do NOT run the Oh My Pi harness (no jsonRun, run or continueJsonRun) and do not call prepare_env. Make each file change as its own step, and commit after each step.',
+  ),
+}
+
+// Four steps in the first turn and the fifth in the next: a session whose
+// first turn holds many snapshots and that Hermes then compacts at the turn
+// boundary, when the stack's agent config sets compression.threshold_tokens
+// low. A lane that must see a compaction cut past restorable steps files
+// this one.
+const LONG_TICKET = {
+  ...TICKET,
+  title: 'Add subtract and multiply over two turns (long session)',
+  description: `Repository: ${REPO} on the ${HOST_ID} host. Use a light-effort workbench job. Make every edit yourself with your terminal and file tools: do NOT run the Oh My Pi harness and do not call prepare_env.
+
+This turn: do steps 1 to 4, committing on the job's branch after each step, then END YOUR TURN with a one-sentence reply saying which steps you finished. Do NOT do step 5 in this turn, do not finish the job and do not move this ticket yet; you will be prompted again, and step 5 is for that next turn.
+1. Add a \`subtract(a, b)\` function to \`calc.py\`.
+2. Add a \`multiply(a, b)\` function to \`calc.py\`.
+3. Create \`test_calc.py\` with one plain \`assert\` test per function.
+4. Add a \`Usage\` section to \`README.md\` listing the three functions.
+5. Next turn only: run \`python3 test_calc.py\`, finish the job, then move this ticket to review.`,
+}
+
+async function ticket(stack, slug, wait, variant) {
   const api = apiClient(stack, mintSession(stack))
   const agent = agentRow(stack, slug)
   const board = await ensureBoard(stack, api, agent)
-  const { task } = await api('POST', `/api/boards/${board.id}/tasks`, { ...TICKET, assignees: [agent.model] })
+  const body = { batched: BATCHED_TICKET, direct: DIRECT_TICKET, long: LONG_TICKET }[variant] ?? TICKET
+  const { task } = await api('POST', `/api/boards/${board.id}/tasks`, { ...body, assignees: [agent.model] })
   say(`filed ${task.ticketRef} (${task.id})`)
   if (!wait) {
     process.stdout.write(`${JSON.stringify({ taskId: task.id, ticketRef: task.ticketRef, boardId: board.id })}\n`)
@@ -470,13 +514,16 @@ const { values, positionals } = parseArgs({
     agent: { type: 'string', default: 'atlas' },
     model: { type: 'string', default: DEFAULT_MODEL },
     'no-wait': { type: 'boolean', default: false },
+    batched: { type: 'boolean', default: false },
+    direct: { type: 'boolean', default: false },
+    long: { type: 'boolean', default: false },
   },
 })
 const [command] = positionals
 if (!values.stack || !['setup', 'ticket', 'teardown'].includes(command)) {
-  die('usage: rewind-fixture.mjs setup|ticket|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait]')
+  die('usage: rewind-fixture.mjs setup|ticket|teardown --stack <checkout> [--agent atlas] [--model id] [--no-wait] [--batched|--direct|--long]')
 }
 const stack = readStack(resolve(values.stack))
 if (command === 'setup') await setup(stack, values.agent, values.model)
-if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'])
+if (command === 'ticket') await ticket(stack, values.agent, !values['no-wait'], values.long ? 'long' : values.direct ? 'direct' : values.batched ? 'batched' : 'plain')
 if (command === 'teardown') teardown(stack)

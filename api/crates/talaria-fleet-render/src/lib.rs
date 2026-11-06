@@ -1012,10 +1012,45 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# Written by Talaria (fleet-render). Git gives this hook the refs about\n",
     "# to be pushed; Talaria answers allow/deny against this agent's repo rules.\n",
-    "# The repo's own hook (if any) runs FIRST and its verdict stands.\n",
+    "# stdin is read ONCE, here, and handed to each reader as a copy: the\n",
+    "# repo's own hook may read it to its end, and the checkpoint guard\n",
+    "# below must still see every line.\n",
+    "input=$(cat)\n",
+    "# THE CHECKPOINT GUARD runs before anything else. A checkpoint ref\n",
+    "# (refs/talaria/*) is the platform's own snapshot of this checkout and\n",
+    "# never leaves it, whatever the remote or the rules; and a checkpoint\n",
+    "# COMMIT pushed under any other name is the same snapshot leaving, so\n",
+    "# every push is searched for the identity each snapshot is authored with.\n",
+    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
+    "zero=0000000000000000000000000000000000000000\n",
+    "while read -r local_ref local_sha remote_ref remote_sha; do\n",
+    "  [ -n \"$local_ref\" ] || continue\n",
+    "  case \"$remote_ref\" in refs/talaria/*)\n",
+    "    echo \"talaria: push declined — $remote_ref is a checkpoint ref and is never pushed\" >&2; exit 1 ;; esac\n",
+    "  case \"$local_ref\" in refs/talaria/*)\n",
+    "    echo \"talaria: push declined — $local_ref is a checkpoint ref and is never pushed, as $remote_ref or any other name\" >&2; exit 1 ;; esac\n",
+    "  case \"$local_sha\" in \"$zero\"|\"\") continue ;; esac\n",
+    "  exclude=\"\"; case \"$remote_sha\" in \"$zero\"|\"\") ;; *) exclude=\"^$remote_sha\" ;; esac\n",
+    "  hit=$(git rev-list --max-count=1 --author=checkpoint@talaria.invalid \"$local_sha\" $exclude 2>/dev/null)\n",
+    "  if [ -n \"$hit\" ]; then\n",
+    "    echo \"talaria: push declined — $remote_ref carries checkpoint commit $hit, which is never pushed\" >&2; exit 1\n",
+    "  fi\n",
+    "done <<TALARIA_REFS\n",
+    "$input\n",
+    "TALARIA_REFS\n",
+    "# The repo's own hook (if any) runs next and its verdict stands.\n",
     "if [ -x \"$GIT_DIR/hooks/pre-push\" ] && [ \"$GIT_DIR\" != \".\" ]; then\n",
-    "  \"$GIT_DIR/hooks/pre-push\" \"$@\" || exit 1\n",
+    "  printf '%s\\n' \"$input\" | \"$GIT_DIR/hooks/pre-push\" \"$@\" || exit 1\n",
     "fi\n",
+    "refs=\"\"; n=0\n",
+    "while read -r _ _ remote_ref _; do\n",
+    "  [ -n \"$remote_ref\" ] || continue\n",
+    "  case \"$remote_ref\" in refs/heads/*) ;; *) continue ;; esac\n",
+    "  n=$((n+1)); refs=\"$refs\\\"$remote_ref\\\",\"\n",
+    "done <<TALARIA_REFS\n",
+    "$input\n",
+    "TALARIA_REFS\n",
+    "[ \"$n\" -gt 0 ] || exit 0\n",
     "remote=\"\"\n",
     "# $1 is the remote name; resolve its URL from the config.\n",
     "remote_url=$(git config --get \"remote.$1.url\" 2>/dev/null)\n",
@@ -1026,14 +1061,6 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "# And the host (with any port) the remote is on: the same owner/repo on\n",
     "# two git hosts is two repositories with two sets of rules.\n",
     "host=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://([^@/]+@)?([^/]+)/.*$#\\2#p' -e 's#^([^@]+@)?([^:/]+):.*$#\\2#p')\n",
-    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
-    "refs=\"\"; n=0\n",
-    "while read -r _ _ remote_ref _; do\n",
-    "  [ -n \"$remote_ref\" ] || continue\n",
-    "  case \"$remote_ref\" in refs/heads/*) ;; *) continue ;; esac\n",
-    "  n=$((n+1)); refs=\"$refs\\\"$remote_ref\\\",\"\n",
-    "done\n",
-    "[ \"$n\" -gt 0 ] || exit 0\n",
     "refs=\"${refs%,}\"\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-push-check\"\n",
     "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"host\\\":\\\"$host\\\",\\\"refs\\\":[$refs]}\"\n",
@@ -6958,6 +6985,173 @@ empty_list: []
         assert!(
             err.contains("push declined") && err.contains("not yours"),
             "the refusal must carry the route's sentence: {err}"
+        );
+    }
+
+    /// A checkpoint ref never leaves the container. The branch check skips
+    /// every ref that is not a branch, so a mirror or an explicit push of
+    /// `refs/talaria/ckpt/...` used to pass with no policy at all; the hook
+    /// refuses it itself, before any check is asked, and says which ref.
+    #[test]
+    fn the_pre_push_hook_refuses_a_checkpoint_ref_before_asking_anyone() {
+        let dir = std::env::temp_dir().join(format!("talaria-hookref-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
+        let refs_file = dir.join("refs.txt");
+        // The checkpoint ref on the LOCAL side, pushed under a branch name:
+        // the sentence names the checkpoint ref, not the branch.
+        std::fs::write(
+            &refs_file,
+            b"refs/heads/x 0 refs/heads/agent/y 0\nrefs/talaria/ckpt/run/call 0 refs/heads/leak 0\n",
+        )
+        .unwrap();
+        // No remote, no PATH stub, no curl: a refusal here comes from the
+        // hook alone.
+        let out = std::process::Command::new("sh")
+            .arg("pre-push")
+            .arg("origin")
+            .current_dir(dir.join("repo"))
+            .env("GIT_DIR", ".git")
+            .stdin(std::fs::File::open(&refs_file).unwrap())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains("refs/talaria/ckpt/run/call") && stderr.contains("never pushed"),
+            "{stderr}"
+        );
+        assert!(
+            !stderr.contains("refs/heads/leak is a checkpoint ref"),
+            "the branch is not the checkpoint ref: {stderr}"
+        );
+    }
+
+    /// The repository's own hook runs first and may read stdin to its end;
+    /// the checkpoint guard then had nothing to inspect. The guard reads
+    /// stdin once, judges it, and hands the same bytes to the repo's hook.
+    #[test]
+    fn a_repo_hook_that_eats_stdin_does_not_blind_the_checkpoint_guard() {
+        let dir = std::env::temp_dir().join(format!("talaria-hookeat-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("repo/.git/hooks")).unwrap();
+        std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
+        std::fs::write(
+            dir.join("repo/.git/hooks/pre-push"),
+            "#!/bin/sh\ncat > /dev/null\nexit 0\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            dir.join("repo/.git/hooks/pre-push"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let refs_file = dir.join("refs.txt");
+        std::fs::write(
+            &refs_file,
+            b"refs/talaria/ckpt/run/call 0 refs/talaria/ckpt/run/call 0\n",
+        )
+        .unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("pre-push")
+            .arg("origin")
+            .current_dir(dir.join("repo"))
+            .env("GIT_DIR", ".git")
+            .stdin(std::fs::File::open(&refs_file).unwrap())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("never pushed"), "{stderr}");
+    }
+
+    /// A checkpoint commit pushed under any other name is still a checkpoint
+    /// leaving the container: the guard looks at what the push carries, by
+    /// the identity every snapshot commit is authored with.
+    #[test]
+    fn a_checkpoint_commit_pushed_under_another_name_is_refused() {
+        let dir = std::env::temp_dir().join(format!("talaria-hooksha-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.join("repo"))
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ]);
+        let base = git(&["rev-parse", "HEAD"]);
+        let tree = git(&["write-tree"]);
+        let ckpt = git(&[
+            "-c",
+            "user.email=checkpoint@talaria.invalid",
+            "-c",
+            "user.name=Talaria checkpoint",
+            "commit-tree",
+            &tree,
+            "-p",
+            &base,
+            "-m",
+            "talaria checkpoint x",
+        ]);
+        let refs_file = dir.join("refs.txt");
+        std::fs::write(
+            &refs_file,
+            format!("{ckpt} {ckpt} refs/heads/leak 0000000000000000000000000000000000000000\n"),
+        )
+        .unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("pre-push")
+            .arg("origin")
+            .current_dir(dir.join("repo"))
+            .env("GIT_DIR", ".git")
+            .stdin(std::fs::File::open(&refs_file).unwrap())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("checkpoint commit"), "{stderr}");
+    }
+
+    /// The plugin's snapshot half, driven against a real git repository by
+    /// its own test file. The Python is the artifact that ships, so the
+    /// Rust side only runs it; python3 is on every CI runner and dev box.
+    #[test]
+    fn the_events_plugin_snapshot_test_passes() {
+        let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/src/plugin/talaria-events");
+        let out = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(format!("{plugin}/snapshot_test.py"))
+            .arg(format!("{plugin}/__init__.py"))
+            .output()
+            .expect("python3 runs the plugin's test");
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 

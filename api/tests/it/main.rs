@@ -85,6 +85,7 @@ mod task_move_live;
 mod task_refs_live;
 mod teams_move_live;
 mod ticket_threads_live;
+mod tool_snapshots_live;
 mod turn_stop_live;
 mod typed_binds;
 mod typing_live;

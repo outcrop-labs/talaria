@@ -1441,6 +1441,7 @@ CREATE TABLE public.runs (
     attempt_no integer DEFAULT 1 NOT NULL,
     rewound_from_run_id uuid,
     rewound_from_seq bigint,
+    step_counts jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT runs_attempt_shape CHECK ((((lineage_id IS NULL) AND (rewound_from_run_id IS NULL) AND (rewound_from_seq IS NULL) AND (attempt_no = 1)) OR ((lineage_id IS NOT NULL) AND (rewound_from_run_id IS NOT NULL) AND (rewound_from_seq IS NOT NULL) AND (attempt_no > 1))))
 );
 CREATE TABLE public.schema_migrations (
