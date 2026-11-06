@@ -562,19 +562,22 @@ pub fn is_ready(state: Option<&Value>) -> bool {
 }
 
 /// Should job_status (re)start this job's provision? Never provisioned; a
-/// run that died (no heartbeat for [`STALE_AFTER_MS`]); a ready record for
-/// an omp other than the pinned one (its launcher would name an install that
-/// may be pruned); or a failed one the agent asked to retry. Pure.
+/// run that died (no heartbeat for [`STALE_AFTER_MS`]); or a failed one the
+/// agent asked to retry. Pure.
+///
+/// A READY job is never re-provisioned because the harness channel adopted a
+/// newer Oh My Pi or bun since: a running job keeps the release it started
+/// on until it ends. Its launcher names that install's version link, the
+/// runtime script's prune keeps any install a job's launcher names, and the
+/// job's teardown removes the launcher. (A ready record used to be rebuilt
+/// whenever its omp was not the compiled pin.)
 pub fn needs_provision(state: Option<&Value>, now: i64, retry: bool) -> bool {
     let Some(s) = state else { return true };
     match s.get("state").and_then(Value::as_str) {
         Some("running") => {
             s.get("heartbeatMs").and_then(Value::as_i64).unwrap_or(0) < now - STALE_AFTER_MS
         }
-        Some("ready") => {
-            s.pointer("/harness/omp").and_then(Value::as_str)
-                != Some(format!("omp/{}", wh::OMP_VERSION).as_str())
-        }
+        Some("ready") => false,
         Some("failed") => retry,
         _ => true,
     }
@@ -1107,7 +1110,7 @@ async fn steps(
     let t = std::time::Instant::now();
     let (runtime, attempts) = with_retry(pg, job, &run_id, "harness", || async move {
         let t = std::time::Instant::now();
-        devenv::ensure_harness_runtime(pg, &job.department)
+        devenv::ensure_harness_runtime_noted(pg, &job.department)
             .await
             .map_err(|e| {
                 let (why, out) = reason_and_output(&e);
@@ -1118,7 +1121,11 @@ async fn steps(
     let jm = job_model(pg, &job.agent_id, job.task_id.as_deref())
         .await
         .map_err(|e| failure("harness", t, e, String::new()))?;
-    let text = wh::launcher_script(&job.id, workdir, &runtime.bun_path, jm.gateway)
+    let (runtime, fell_back) = runtime;
+    if let Some(note) = fell_back {
+        rec.warnings.push(note);
+    }
+    let text = wh::launcher_script(&job.id, workdir, &runtime, jm.gateway)
         .ok_or_else(|| slot_err("harness"))?;
     may_continue(pg, &job.id, &rec.run_id)
         .await
@@ -1210,6 +1217,7 @@ async fn steps(
         &agent_dir,
         &model_check,
         &runtime.bun_path,
+        runtime.omp_version(),
     )
     .await;
     match verdict {
@@ -1278,8 +1286,9 @@ pub async fn preflight(
     agent_dir: &str,
     model: &str,
     bun_path: &str,
+    omp_version: &str,
 ) -> Result<String, (String, String)> {
-    let script = wh::preflight_script(bun_path);
+    let script = wh::preflight_script(bun_path, omp_version);
     let stripped_names = talaria_agent_secrets::hermes_stripped_names();
     let mut extra: Vec<&str> = vec![launcher, agent_dir, model];
     extra.extend(stripped_names.iter().map(String::as_str));
@@ -1605,8 +1614,8 @@ mod tests {
         assert!(!needs_provision(Some(&ready), now, true));
         let old = json!({ "state": "ready", "harness": { "omp": "omp/18.2.4" } });
         assert!(
-            needs_provision(Some(&old), now, false),
-            "a launcher for another omp is rebuilt"
+            !needs_provision(Some(&old), now, false),
+            "a running job keeps the release it started on: a newer one adopted since never moves it"
         );
         let failed = json!({ "state": "failed", "step": "clone" });
         assert!(

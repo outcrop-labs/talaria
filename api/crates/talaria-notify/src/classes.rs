@@ -112,6 +112,15 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
         "gap_reported",
         "Agent image updates stuck",
     ),
+    // The workbench harness channel held a release (Oh My Pi or the
+    // harness's bun would not install or start on a workbench), or cannot
+    // verify one for days. Every job keeps the version it runs. The
+    // workspace's own health, for admins, like the agent image's.
+    (
+        "workbench_harness_update_failed",
+        "gap_reported",
+        "Workbench harness update held",
+    ),
 ];
 
 /// Where a class sits in the center and the matrix.
@@ -487,6 +496,8 @@ mod tests {
             // The stable channel's stopped rollout: the workspace's health.
             ("hermes_update_failed", "gap_reported"),
             ("hermes_channel_stuck", "gap_reported"),
+            // The workbench harness channel's held release: the same health.
+            ("workbench_harness_update_failed", "gap_reported"),
             // Every class id is its own kind.
             ("judge_escalation", "judge_escalation"),
             ("gap_reported", "gap_reported"),
