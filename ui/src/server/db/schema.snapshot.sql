@@ -1760,6 +1760,7 @@ CREATE TABLE public.workbench_jobs (
     queued_reason text,
     pr_number bigint,
     host_id text DEFAULT 'github'::text NOT NULL,
+    provision jsonb,
     run_id uuid,
     superseded_by uuid
 );

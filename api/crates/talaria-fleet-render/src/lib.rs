@@ -1967,6 +1967,13 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             for (k, v) in talaria_workbench_harnesses::omp_env() {
                 env.insert(k, v);
             }
+            // Which render created this container, in the one place a
+            // container cannot be updated behind: its env. The workbench's
+            // provisioning reads it back to tell a stale sandbox from a
+            // current one (talaria_workbench_harnesses::SANDBOX_SHAPE).
+            for (k, v) in talaria_workbench_harnesses::shape_env() {
+                env.insert(k, v);
+            }
             for (k, v) in omp_roles.env() {
                 env.insert(k, v);
             }
@@ -3872,6 +3879,7 @@ own() {
 # dir does not come out root-owned.
 mkdir -p \
   /opt/data/workbench/harness/pi \
+  /opt/data/workbench/harness/jobs \
   /opt/data/workbench/harness/xdg \
   /opt/data/workbench/harness/playwright \
   /opt/data/workbench/harness/npm \
@@ -3881,6 +3889,7 @@ mkdir -p \
 own /opt/data/workbench
 own /opt/data/workbench/harness
 own /opt/data/workbench/harness/pi
+own /opt/data/workbench/harness/jobs
 own /opt/data/workbench/harness/xdg
 own /opt/data/workbench/harness/playwright
 own /opt/data/workbench/harness/npm
@@ -3897,8 +3906,14 @@ own /opt/data/workbench/sessions
 # to the user's own mise config on the persistent volume, so it survives the
 # container and costs nothing after the first boot. Best effort: no mise yet
 # means prepare_env has not run on this volume, and it pins bun too.
+#
+# Only on a volume the workbench has not provisioned yet (no bun linked): once
+# it has, the harness channel owns which bun this is (it moves to bun's newer
+# releases after one has installed and started on a workbench), and every
+# provision re-pins and re-links the one it verified. A boot must not pull the
+# volume back to the compiled fallback below.
 mise=/opt/data/.local/bin/mise
-if [ -x "$mise" ]; then
+if [ -x "$mise" ] && [ ! -x /opt/data/.local/bin/bun ]; then
   runuser -u hermes -- sh -lc "\"$mise\" use -g bun@__BUN__ >/dev/null 2>&1" || true
   # And put it where EVERY shell looks. mise's shims reach a login shell's
   # PATH only through prepare_env's profile block; a plain `bash -c` — how
@@ -3923,8 +3938,9 @@ fi
 ln -sfn /opt/data/.local/bin/bun /usr/local/bin/bun 2>/dev/null || true
 "#;
 
-// The bun the coding harness runs on — one pin, shared with the workbench's
-// own provisioning (`talaria_workbench_harnesses::HARNESS_BUN`).
+// The bun the coding harness runs on when nothing newer has been verified —
+// the bootstrap fallback, shared with the workbench's own provisioning
+// (`talaria_workbench_harnesses::HARNESS_BUN`).
 use talaria_workbench_harnesses::{HARNESS_BUN, HARNESS_XDG_DATA_HOME};
 
 /// `HARNESS_OWN_SCRIPT` with the bun pin and mise's data dir filled in.
@@ -7056,6 +7072,10 @@ empty_list: []
         // Globally, because a shim with no version is the whole bug: a Rust
         // job pins rust and mold, and omp is a bun program wherever it runs.
         assert!(filled.contains("use -g bun@"));
+        // Only before the workbench first provisions the volume: after that
+        // the harness channel's verified bun is the one linked and pinned,
+        // and a boot must not pull it back to the compiled fallback.
+        assert!(filled.contains("if [ -x \"$mise\" ] && [ ! -x /opt/data/.local/bin/bun ]; then"));
         assert!(
             !HARNESS_OWN_SCRIPT.contains("chown -R"),
             "a recursive chown retakes the :ro policy files"

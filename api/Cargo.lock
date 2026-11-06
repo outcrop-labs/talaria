@@ -3603,6 +3603,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-design"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-config",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-model",
+ "talaria-notify",
+ "talaria-org",
+ "talaria-realtime",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-state",
+ "talaria-tasks-types",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-agent-managers"
 version = "0.1.0"
 dependencies = [
@@ -4011,6 +4037,7 @@ dependencies = [
  "talaria-workbench-harnesses",
  "talaria-workbench-mcp",
  "talaria-workbench-queue",
+ "talaria-workbench-updates",
  "talaria-workchains",
  "talaria-workflows",
  "talaria-workspace-handles",
@@ -5856,6 +5883,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-design",
  "talaria-agent-skills",
  "talaria-alerts",
  "talaria-app-triggers",
@@ -5929,6 +5957,7 @@ dependencies = [
  "talaria-work-dispatch",
  "talaria-workbench-mcp",
  "talaria-workbench-queue",
+ "talaria-workbench-updates",
  "talaria-workchains",
  "tokio",
  "tracing",
@@ -7028,6 +7057,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-design",
  "talaria-agent-managers",
  "talaria-agent-mcp",
  "talaria-agent-role-templates",
@@ -7210,6 +7240,7 @@ dependencies = [
  "talaria-teams",
  "talaria-users",
  "talaria-work-wait",
+ "talaria-workbench-updates",
  "tokio",
  "tracing",
 ]
@@ -8021,6 +8052,7 @@ dependencies = [
  "sqlx",
  "talaria-gateway",
  "talaria-model-roles",
+ "tracing",
 ]
 
 [[package]]
@@ -8044,6 +8076,7 @@ dependencies = [
  "talaria-boards",
  "talaria-body",
  "talaria-coding-accounts",
+ "talaria-error",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
@@ -8081,6 +8114,26 @@ dependencies = [
  "talaria-work-wait",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "talaria-workbench-updates"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-docker",
+ "talaria-notify",
+ "talaria-scheduler",
+ "talaria-workbench-harnesses",
+ "talaria-workbench-mcp",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

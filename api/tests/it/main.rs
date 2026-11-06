@@ -95,6 +95,7 @@ mod users_link;
 mod work_sessions_history_live;
 mod work_wait_behind_live;
 mod workbench_approval_race_live;
+mod workbench_provision_live;
 mod workbench_queue;
 mod workchains_live;
 mod yaml_stringify;

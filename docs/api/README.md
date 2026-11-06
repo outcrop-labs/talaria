@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-370 routes across 24 groups.
+372 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -19,7 +19,7 @@
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 36 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 19 |
-| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 29 |
+| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 30 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
 | [`internal`](./internal.md) | Service-to-service calls from the app host — never a user's or an agent's. | 4 |
@@ -33,7 +33,7 @@
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 13 |
 | [`teams`](./teams.md) | Teams and their members. | 6 |
-| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 20 |
+| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 21 |
 
 **Auth vocabulary** (the route's guard class — resource-level ACLs like board
 membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTIONS.md)):

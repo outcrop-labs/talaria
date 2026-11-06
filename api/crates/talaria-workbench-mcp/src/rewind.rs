@@ -2,15 +2,14 @@ use serde_json::{Map, Value, json};
 use sqlx::{FromRow, PgPool};
 
 use talaria_agent_auth::AgentSubject;
-use talaria_git_hosts::GitHost;
 use talaria_runs_store::{LINEAGE_COLS, RunLineage};
 use talaria_tasks::{ResolvedTaskId, resolve_task_id};
 
 use crate::teardown::{Teardown, job_workdir, spawn_teardown};
 use crate::{
-    AgentCtx, CallOutcome, HarnessAnswer, JOB_COLS, JobRow, WorkbenchActor, WorkbenchDeps,
-    WorkbenchJob, devenv, harness_answer, hosts, live_session, log_ticket, sync_agent_budget,
-    thrown, ticket_arg,
+    AgentCtx, CallOutcome, HarnessAnswer, JOB_COLS, JobRow, START_PROVISION_WAIT_MS,
+    WorkbenchActor, WorkbenchDeps, WorkbenchJob, devenv, harness_answer, hosts, live_session,
+    log_ticket, provision, sync_agent_budget, thrown, ticket_arg,
 };
 
 pub(crate) struct RewindAttempt {
@@ -149,20 +148,37 @@ pub(crate) async fn start_job(
         Ok(base) => base,
         Err(e) => return RewindStart::Answered(thrown(e)),
     };
+    let pj = match provision::ProvisionJob::load(pg, &job.id).await {
+        Ok(Some(pj)) => pj,
+        Ok(None) => return RewindStart::Answered(CallOutcome::Fail("job is not started".into())),
+        Err(e) => return RewindStart::Answered(thrown(e)),
+    };
+    if let Err(e) = provision::kick(deps, &pj).await {
+        return RewindStart::Answered(thrown(e));
+    }
+    let provision_state = provision::wait(pg, &job.id, START_PROVISION_WAIT_MS).await;
+    let ready = provision::is_ready(provision_state.as_ref());
     let HarnessAnswer {
         harnesses,
         session_dir,
         model,
         models,
         coding,
-    } = match harness_answer(pg, &job.id, &agent.id, task_id.as_deref()).await {
+    } = match harness_answer(
+        pg,
+        &job.id,
+        &agent.id,
+        task_id.as_deref(),
+        provision_state.as_ref(),
+    )
+    .await
+    {
         Ok(answer) => answer,
         Err(e) => return RewindStart::Answered(thrown(e)),
     };
     let Some(workdir) = job_workdir(&job.id) else {
         return RewindStart::Answered(thrown(format!("not a job id: {:?}", job.id)));
     };
-    let runtime = devenv::ensure_harness_runtime(pg, &agent.department).await;
     let attempt_no = attempt.lineage.attempt_no;
     let branch = &job.branch;
     log_ticket(
@@ -186,12 +202,8 @@ pub(crate) async fn start_job(
     value.insert("status".into(), json!(job.status));
     value.insert("workdir".into(), json!(workdir));
     value.insert("sessionDir".into(), json!(session_dir));
-    value.insert("cloneUrl".into(), json!(host.clone_url(&job.repo)));
-    if let Err(why) = &runtime {
-        value.insert(
-            "harnessRuntime".into(),
-            json!({ "ok": false, "error": why, "next": "call doctor; if bun still cannot be provisioned, report_problem — do not hand-code the ticket" }),
-        );
+    if let Some(state) = &provision_state {
+        value.insert("provision".into(), provision::wire(state));
     }
     value.insert("effort".into(), json!(job.effort));
     value.insert(
@@ -202,14 +214,19 @@ pub(crate) async fn start_job(
     if let Some(plan) = coding {
         value.insert("codingAccount".into(), plan);
     }
-    value.insert("harnesses".into(), Value::Array(harnesses));
-    value.insert(
-        "rules".into(),
-        json!(format!(
-            "This is rewind attempt {attempt_no}. {workdir} already holds the files as they stood at the step you were rewound to, on {branch}: do not clone over it. Any other job id, branch or workdir earlier in this conversation is retired, and calls naming a retired job are refused. Work ONLY here, and never touch {base}. Call prepare_env with this jobId first (it writes this project's env to {workdir}/{env_file}). Oh My Pi starts fresh, so give it the context it needs. Push to {branch}, then finish_job.",
+    let rules = if ready {
+        value.insert("harnesses".into(), Value::Array(harnesses));
+        format!(
+            "This is rewind attempt {attempt_no}. {workdir} already holds the files as they stood at the step you were rewound to, on {branch}: Talaria kept that checkout, wrote this project's env (if it has one) to {workdir}/{env_file}, and checked the toolchains and Oh My Pi for this job. Do NOT clone, install, upgrade or wrap anything. Any other job id, branch or workdir earlier in this conversation is retired, and calls naming a retired job are refused. Work ONLY here, and never touch {base}. Oh My Pi starts fresh, so give it the context it needs. Push to {branch}, then finish_job.",
             env_file = devenv::JOB_ENV_FILE,
-        )),
-    );
+        )
+    } else {
+        provision_state
+            .as_ref()
+            .map(provision::next_step)
+            .unwrap_or_else(|| provision::next_step(&Value::Null))
+    };
+    value.insert("rules".into(), json!(rules));
     sync_agent_budget(pg, &agent.department, &agent.id).await;
     RewindStart::Answered(CallOutcome::Ok(Value::Object(value)))
 }
