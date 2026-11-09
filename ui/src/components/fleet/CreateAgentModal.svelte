@@ -11,10 +11,12 @@
   import {
     DESIGN_KEY,
     EMPTY_FIELDS,
+    didNotFinish,
     discardDesign,
     elapsedSeconds,
     isConflict,
     keepaliveBody,
+    keepsTypedInput,
     landingKey,
     leftTheSlot,
     openingStep,
@@ -90,7 +92,15 @@
   // DUPLICATE IS ITS OWN FORM: a preselected chassis never reads, writes or
   // spends the person's waiting design. A design on a hire is out of the
   // slot altogether, so New agent is open for the next one meanwhile.
-  const design = $derived(preselect ? null : pendingDesign(read?.design))
+  const slot = $derived(preselect ? null : pendingDesign(read?.design))
+  // A design a failed hire handed back into the slot while the person was
+  // typing into an empty New agent is OFFERED, never taken in over the
+  // typing (`keepsTypedInput`): the form stays theirs, and every verb here
+  // acts on `design`, the one the form belongs to — none. Opening it is the
+  // person's choice; a describe or a manual start sets it aside to wait.
+  let offered = $state<string | null>(null)
+  const design = $derived(slot && slot.id !== offered ? slot : null)
+  const arrived = $derived(slot && slot.id === offered ? slot : null)
   // Designs a failed hire handed back while this one was open: each waits
   // for the slot, and can be dismissed.
   const returned = $derived(preselect ? [] : (read?.returned ?? []))
@@ -140,11 +150,14 @@
   let seededFrom = $state<string | null>(read ? landingKey(design) : null)
   let soulRev = $state(0)
   $effect(() => {
-    const key = landingKey(design)
-    const d = design
+    const key = landingKey(slot)
+    const d = slot
     const loaded = read !== undefined
     untrack(() => {
       if (!loaded) return
+      // The offered design left the slot (set aside by what was typed here,
+      // discarded, or hired elsewhere): nothing is offered any more.
+      if (offered && d?.id !== offered) offered = null
       if (seededFrom === null) {
         // The first read, for a modal opened before it was in (or the read
         // after a 409 brought the current design — or none: then the form's
@@ -166,14 +179,21 @@
         if (left) resetForm(left.hiredAs)
         return
       }
-      if (key === seededFrom) return
+      if (d.id === offered || key === seededFrom) return
+      // A FAILED HIRE'S DESIGN, handed back into what the server saw as an
+      // empty slot, while the person types into this empty New agent: it is
+      // offered beside the typing, never put in its place (NN12).
+      if (keepsTypedInput(d, seededFrom, $state.snapshot(form), purpose)) {
+        offered = d.id
+        return
+      }
       const wasGenerating = seededFrom.endsWith(':-')
       const prevId = seededFrom.split(':')[0]
       seededFrom = key
       // ANOTHER DESIGN arrived — handed back by a failed hire into an empty
-      // slot, or started in another tab — and not by this modal's own first
-      // save of a manual start: take its draft, manual or designed, and open
-      // where it stands.
+      // slot with nothing typed here, or started in another tab — and not by
+      // this modal's own first save of a manual start: take its draft, manual
+      // or designed, and open where it stands.
       if (d.id !== prevId && !(prevId === '' && ownSave)) {
         form = { ...EMPTY_FIELDS, ...(d.draft ?? {}) }
         soulRev += 1
@@ -236,14 +256,19 @@
   // A save is on the wire: what pagehide must still keep, and (for a manual
   // start) the record its answer creates is this modal's own.
   let ownSave = false
+  // The record this form's nameless save created (a manual start): the one
+  // a Create right after it must spend, not leave behind in New agent.
+  let made: string | null = null
   /** Resolves true when the edit reached the server. */
   const save = (): Promise<boolean> => {
     // A run is writing the record (a refine): its landing reseeds the form,
     // and the edits being typed rode in with the refine.
     if (generating || preselect) return Promise.resolve(true)
     ownSave = true
-    return saveDesign(qc, $state.snapshot(form), design?.id)
-      .then(() => {
+    const id = design?.id
+    return saveDesign(qc, $state.snapshot(form), id)
+      .then((d) => {
+        if (!id) made = d.id
         saveErr = null
         return true
       })
@@ -417,6 +442,25 @@
     }
   }
 
+  // The offered design (see `offered`), taken in because the person chose
+  // it: what they typed here gives way to it, as any open would.
+  const openOffered = () => {
+    const d = arrived
+    if (!d) return
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
+    offered = null
+    seededFrom = landingKey(d)
+    form = { ...EMPTY_FIELDS, ...(d.draft ?? {}) }
+    soulRev += 1
+    step = openingStep(d, false)
+  }
+  // …or thrown away, leaving what is typed here where it is.
+  const discardOffered = () => {
+    const d = arrived
+    if (d) discardDesign(qc, d.id).catch((e: unknown) => (startErr = errorMessage(e)))
+  }
+
   // Enqueue the hire and close. The boot (render, up, health wait — minutes on
   // a cold pull) is the run's work, not the modal's: holding the modal open
   // for it is what made creation feel broken — a stuck spinner, a proxy
@@ -434,10 +478,14 @@
       // its id must never ride out with this form. Such a flush stops the
       // Create; the person sees the current design and decides again.
       const designId = design?.id
+      made = null
       if (!(await flush())) {
         err = saveErr ?? 'The design changed before it could be hired; check it and create again.'
         return
       }
+      // A manual start the flush itself saved is this form's own record:
+      // spent on the hire like any design, not left in New agent behind it.
+      const spend = designId ?? made
       const f = form
       const r = await hireFleetAgent({
         slug: f.handle,
@@ -447,7 +495,7 @@
         ...(templateId ? { templateId } : {}),
         ...(f.soul.trim() ? { soul: f.soul } : {}),
         ...(f.skills.length ? { skills: f.skills } : {}),
-        ...(designId ? { designId } : {}),
+        ...(spend ? { designId: spend } : {}),
         start,
       })
       if (r.error) {
@@ -460,7 +508,7 @@
         void qc.invalidateQueries({ queryKey: ['fleet-defs'] })
         // A 409 may be the design's own (replaced elsewhere, or a hire from
         // another tab holds it): read it again and show what is current.
-        if (r.status === 409 && designId) {
+        if (r.status === 409 && spend) {
           // Reseed from whatever the read brings (set first: the effect
           // runs as the read lands).
           conflictReseed = true
@@ -486,11 +534,22 @@
        back here once this one is hired or discarded. Nothing is lost. -->
   {#each returned as r (r.designId)}
     <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-returned">
-      The hire of {r.name} did not finish{r.reason ? `: ${r.reason.replace(/^The hire did not finish:?\s*/, '')}` : '.'}
+      {didNotFinish(r.name, r.reason)}
       Its design comes back here once this one is hired or discarded.
       <button type="button" class="ml-1 underline hover:text-danger" onclick={() => dismissReturned(qc, r.designId).catch((e: unknown) => (startErr = errorMessage(e)))}>Discard it</button>
     </p>
   {/each}
+  <!-- A failed hire's design came back into New agent while the person was
+       typing into it: offered beside what is typed, never put in its place. -->
+  {#if arrived}
+    <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-arrived">
+      {didNotFinish(arrived.draft?.name.trim() || 'the designed agent', arrived.error)}
+      Its design is back:
+      <button type="button" class="underline hover:text-fg" onclick={openOffered}>Open it</button>
+      in place of what you have typed here, or carry on, and it waits until this one is hired or discarded.
+      <button type="button" class="ml-1 underline hover:text-danger" onclick={discardOffered}>Discard it</button>
+    </p>
+  {/if}
 {/snippet}
 
 {#if step === null}

@@ -915,6 +915,171 @@ async fn design_live_the_waiting_bell_row_is_filed_once() {
 
 #[tokio::test]
 #[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_a_hire_stopped_before_its_checkpoint_still_spends_the_design() {
+    // NN11 (#712's fix, pinned here): a hire cancelled (or out of crashes)
+    // between inserting the agent and checkpointing it has no `defId`, but
+    // the agent exists under its hirer — the design is spent, not handed
+    // back for an agent that is already there. A hire whose slug names no
+    // agent of the hirer's is still handed back.
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "stopped").await;
+    let slug = format!("stopped{}", &Uuid::new_v4().simple().to_string()[..8]);
+    let (made,): (String,) = sqlx::query_as(
+        "insert into agent_defs (slug, department, model, display_name, managed, source) \
+         values ($1, $1, $1, 'Stopped', true, 'created') returning id::text",
+    )
+    .bind(&slug)
+    .fetch_one(&st.pg)
+    .await
+    .unwrap();
+    sqlx::query("insert into agent_managers (agent_id, user_id) values ($1::uuid, $2::uuid)")
+        .bind(&made)
+        .bind(&user)
+        .execute(&st.pg)
+        .await
+        .unwrap();
+    for (purpose, hire_slug, spent) in [
+        ("agent made", slug.as_str(), true),
+        ("agent not made", "nosuchagentslug", false),
+    ] {
+        start_design(&st, &user, CALLER, purpose).await.unwrap();
+        leave(&user).await;
+        let d = until_settled(&user).await;
+        let h = Uuid::new_v4().to_string();
+        claim_for_hire(&st, &user, &d.id, &h).await.unwrap();
+        sqlx::query(
+            "insert into runs (id, kind, state, error, input) \
+             values ($1::uuid, 'agent-hire', 'cancelled', 'cancelled', $2)",
+        )
+        .bind(&h)
+        .bind(serde_json::json!({ "slug": hire_slug, "managerUserId": user }))
+        .execute(&st.pg)
+        .await
+        .unwrap();
+        let view = current_design(&st, &user, false).await.unwrap();
+        assert!(
+            view.hiring.is_empty() && view.returned.is_empty(),
+            "{purpose}"
+        );
+        assert_eq!(
+            view.design.as_ref().map(|x| x.id.as_str()),
+            (!spent).then_some(d.id.as_str()),
+            "{purpose}"
+        );
+        sqlx::query("delete from runs where id = $1::uuid")
+            .bind(&h)
+            .execute(&st.pg)
+            .await
+            .unwrap();
+        discard_design(&st, &user, None).await.unwrap();
+    }
+    sqlx::query("delete from agent_defs where id = $1::uuid")
+        .bind(&made)
+        .execute(&st.pg)
+        .await
+        .unwrap();
+    cleanup(&st.pg, "stopped").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
+async fn design_live_a_new_design_over_an_untouched_hand_back_sets_it_aside() {
+    // NN12, the server's half: a hand-back that lands in an empty slot while
+    // the person types into New agent is not the end of what they typed. A
+    // manual start or a describe over it takes the slot, and the hand-back
+    // waits for it — never refused (typing lost), never replaced (design lost).
+    LazyLock::force(&ARMED);
+    let st = fresh_state().await;
+    let user = person(&st.pg, "aside").await;
+    let (a, h) = failed_hold(&st, &user, "agent a").await;
+    let back = current_design(&st, &user, false)
+        .await
+        .unwrap()
+        .design
+        .unwrap();
+    assert_eq!(back.id, a.id, "handed back into the empty slot");
+    assert_eq!(back.released_from.as_deref(), Some(h.as_str()));
+
+    // The manual start that was being typed when it came back.
+    let typed = DraftFields {
+        name: "Typed".into(),
+        handle: "typed".into(),
+        department: "ops".into(),
+        role: String::new(),
+        soul: "What the person was typing.".into(),
+        skills: Vec::new(),
+    };
+    let manual = edit_design(&st, &user, None, typed.clone())
+        .await
+        .expect("a manual start over an untouched hand-back is not refused");
+    assert_ne!(manual.id, a.id);
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert_eq!(view.design.as_ref().unwrap().draft, Some(typed));
+    assert_eq!(view.returned.len(), 1);
+    assert_eq!(view.returned[0].design_id, a.id);
+    assert!(
+        view.returned[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("the department is taken")
+    );
+    // Once the typed one goes, the hand-back comes back exactly as it was.
+    discard_design(&st, &user, Some(&manual.id)).await.unwrap();
+    let again = current_design(&st, &user, false)
+        .await
+        .unwrap()
+        .design
+        .unwrap();
+    assert_eq!(again.id, a.id);
+    assert_eq!(again.draft, a.draft);
+    assert_eq!(again.error, back.error);
+    assert_eq!(again.released_from.as_deref(), Some(h.as_str()));
+
+    // A describe over it: the same.
+    let d = start_design(&st, &user, CALLER, "slow agent b")
+        .await
+        .unwrap();
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert_eq!(view.design.as_ref().unwrap().id, d.id);
+    assert_eq!(view.returned.len(), 1);
+    assert_eq!(view.returned[0].design_id, a.id);
+    until_settled(&user).await;
+    discard_design(&st, &user, Some(&d.id)).await.unwrap();
+    let mine = current_design(&st, &user, false)
+        .await
+        .unwrap()
+        .design
+        .unwrap();
+    assert_eq!(mine.id, a.id);
+
+    // Once the person has edited it, it is theirs: a describe replaces it,
+    // and a stale nameless save is refused, as before.
+    let mut fixed = a.draft.clone().unwrap();
+    fixed.department = "research-2".into();
+    edit_design(&st, &user, Some(&a.id), fixed).await.unwrap();
+    assert!(matches!(
+        edit_design(&st, &user, None, draft_for("x")).await,
+        Err(DesignError::Refused(Refusal::Stale))
+    ));
+    start_design(&st, &user, CALLER, "agent c").await.unwrap();
+    let view = current_design(&st, &user, false).await.unwrap();
+    assert!(view.returned.is_empty() && view.hiring.is_empty());
+    assert!(held_of(&st, &user).await.is_empty());
+
+    until_settled(&user).await;
+    sqlx::query("delete from runs where id = $1::uuid")
+        .bind(&h)
+        .execute(&st.pg)
+        .await
+        .unwrap();
+    discard_design(&st, &user, None).await.unwrap();
+    cleanup(&st.pg, "aside").await;
+}
+
+#[tokio::test]
+#[ignore = "live: set DATABASE_URL and REDIS_URL"]
 async fn design_live_a_bell_row_about_a_design_gone_is_read() {
     // NN10: a design that expired (or ended elsewhere) leaves no row pointing at it.
     LazyLock::force(&ARMED);
