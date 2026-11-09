@@ -463,7 +463,11 @@ pub fn set_aside(d: &AgentDesign, now: i64) -> Option<Held> {
         hire_run_id: hire,
         claimed_at: now,
         returned: Some(d.error.clone().unwrap_or_else(|| returned_sentence(None))),
-        noticed: false,
+        // Noticed already: the person is in New agent, where the note on the
+        // waiting design says what the bell would, and set it aside from
+        // there. Filing the row again would ring a failure they have read,
+        // once per describe or manual start over it.
+        noticed: true,
     })
 }
 
@@ -1018,7 +1022,10 @@ mod tests {
         assert_eq!(aside.returned.as_deref(), Some(why));
         assert_eq!(aside.design.error, None);
         assert_eq!(aside.design.released_from, None);
-        assert!(!aside.noticed);
+        assert!(
+            aside.noticed,
+            "the person is looking at it: no bell row again"
+        );
         assert_eq!(
             hand_back(&aside, 9_000),
             AgentDesign {

@@ -53,6 +53,15 @@ describe('CreateAgentModal save wiring', () => {
     expect(save).toContain('if (!id) made = d.id')
   })
 
+  it('a flush waits for a save already on the wire, not only a pending one', () => {
+    // Review of #720, N3: past the debounce, a Create read no design id
+    // while the manual start's save was still out, and left a copy behind.
+    const save = code.slice(code.indexOf('const save = '), code.indexOf('const flush = '))
+    expect(save).toContain('inFlight = sent')
+    const flush = code.slice(code.indexOf('const flush = '), code.indexOf('const flushAway'))
+    expect(flush).toContain('if (!saveTimer) return inFlight ?? Promise.resolve(true)')
+  })
+
   it('a hand-back arriving over typing is offered, never taken in over it (NN12)', () => {
     // The reseed reads the SLOT; every verb acts on `design`, the form's own.
     expect(code).toContain('const design = $derived(slot && slot.id !== offered ? slot : null)')

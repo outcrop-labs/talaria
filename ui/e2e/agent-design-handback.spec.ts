@@ -217,3 +217,37 @@ test('a design handed back under a manual form being typed waits for it once it 
     await tidy(p, hires)
   }
 })
+
+test('a Create clicked while a manual start’s save is on the wire spends the design it made', async ({ browser }) => {
+  // Past the 600 ms debounce the save has gone out. A Create before its
+  // answer read no design id and hired without one, leaving a copy of the
+  // agent it hired behind in New agent. The save is held on the wire here,
+  // and the hire is caught, never sent: what Create asks for is the point.
+  const p = await person('inflight')
+  const ctx = await contextFor(browser, p)
+  const page = await ctx.newPage()
+  try {
+    await page.route('**/api/fleet/agent-design', async (route) => {
+      if (route.request().method() === 'PATCH') await new Promise((r) => setTimeout(r, 2_500))
+      await route.continue()
+    })
+    const caught: { hire: Record<string, unknown> | null } = { hire: null }
+    await page.route('**/api/fleet/create', async (route) => {
+      caught.hire = route.request().postDataJSON() as Record<string, unknown>
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, hire: { id: randomUUID(), state: 'queued', phase: 'queued' } }) })
+    })
+    await openNewAgent(page)
+    await page.getByRole('button', { name: /Configure manually/ }).click()
+    await page.locator('#cam-department').fill(`inflight-${randomUUID().slice(0, 8)}`)
+    await page.locator('#cam-name').fill('Inflight Agent')
+    await page.waitForTimeout(1_000) // the save is out, and not yet answered
+    await page.getByRole('button', { name: 'Create agent' }).click()
+    await expect.poll(() => caught.hire, { timeout: 15_000 }).not.toBeNull()
+    const saved = await slot(p)
+    expect(saved?.draft?.name, 'the save reached the server before the hire went out').toBe('Inflight Agent')
+    expect(caught.hire?.['designId'], 'the hire names the design its own save made').toBe(saved?.id)
+  } finally {
+    await ctx.close()
+    await tidy(p, [])
+  }
+})

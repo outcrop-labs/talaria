@@ -544,6 +544,15 @@ async fn held_of(st: &AppState, user: &str) -> Vec<Held> {
         .collect()
 }
 
+/// How many "The hire of … did not finish" rows the person has been filed.
+async fn waits_filed(pg: &PgPool, user: &str) -> usize {
+    notices(pg, user)
+        .await
+        .iter()
+        .filter(|(t, _, _)| t.starts_with("The hire of"))
+        .count()
+}
+
 /// A design on a stand-in hire that has just failed before create.
 async fn failed_hold(st: &AppState, user: &str, purpose: &str) -> (AgentDesign, String) {
     start_design(st, user, CALLER, purpose).await.unwrap();
@@ -1025,6 +1034,14 @@ async fn design_live_a_new_design_over_an_untouched_hand_back_sets_it_aside() {
             .unwrap()
             .contains("the department is taken")
     );
+    // Set aside from New agent, where its note says why: the bell does not
+    // file that sentence again (nor its toast, push or mail), on any read.
+    current_design(&st, &user, false).await.unwrap();
+    assert_eq!(
+        waits_filed(&st.pg, &user).await,
+        0,
+        "a set-aside rang the bell"
+    );
     // Once the typed one goes, the hand-back comes back exactly as it was.
     discard_design(&st, &user, Some(&manual.id)).await.unwrap();
     let again = current_design(&st, &user, false)
@@ -1046,6 +1063,11 @@ async fn design_live_a_new_design_over_an_untouched_hand_back_sets_it_aside() {
     assert_eq!(view.returned.len(), 1);
     assert_eq!(view.returned[0].design_id, a.id);
     until_settled(&user).await;
+    assert_eq!(
+        waits_filed(&st.pg, &user).await,
+        0,
+        "a set-aside rang the bell"
+    );
     discard_design(&st, &user, Some(&d.id)).await.unwrap();
     let mine = current_design(&st, &user, false)
         .await

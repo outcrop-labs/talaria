@@ -259,6 +259,11 @@
   // The record this form's nameless save created (a manual start): the one
   // a Create right after it must spend, not leave behind in New agent.
   let made: string | null = null
+  // The save on the wire, if any. A flush waits for it as well as for a
+  // pending one: a Create that read the design id while a manual start's
+  // save was still out went without it, and left a copy of the agent it
+  // hired behind in New agent.
+  let inFlight: Promise<boolean> | null = null
   /** Resolves true when the edit reached the server. */
   const save = (): Promise<boolean> => {
     // A run is writing the record (a refine): its landing reseeds the form,
@@ -266,7 +271,7 @@
     if (generating || preselect) return Promise.resolve(true)
     ownSave = true
     const id = design?.id
-    return saveDesign(qc, $state.snapshot(form), id)
+    const sent = saveDesign(qc, $state.snapshot(form), id)
       .then((d) => {
         if (!id) made = d.id
         saveErr = null
@@ -288,9 +293,15 @@
         }
         return false
       })
+    inFlight = sent
+    void sent.then(() => {
+      if (inFlight === sent) inFlight = null
+    })
+    return sent
   }
+  /** The pending save sent now, or the one already on the wire, answered. */
   const flush = (): Promise<boolean> => {
-    if (!saveTimer) return Promise.resolve(true)
+    if (!saveTimer) return inFlight ?? Promise.resolve(true)
     clearTimeout(saveTimer)
     saveTimer = null
     return save()
