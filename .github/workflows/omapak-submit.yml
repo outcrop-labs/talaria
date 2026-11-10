@@ -147,6 +147,11 @@ jobs:
           git -C omapak config user.name "talaria-release"
           git -C omapak config user.email "talaria-release@users.noreply.github.com"
           git -C omapak fetch origin main
+          # The checkout fetched main alone. With no remote-tracking ref for a
+          # branch an earlier attempt already pushed, --force-with-lease below
+          # expects it absent and refuses the re-run as "stale info". A first
+          # attempt has no such branch, so a failed fetch is expected there.
+          git -C omapak fetch origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || true
           # Always from main, so a re-run of the same tag replaces the branch
           # instead of stacking a second edit on the previous attempt.
           git -C omapak checkout -B "$branch" origin/main
