@@ -43,7 +43,43 @@ describe('CreateAgentModal save wiring', () => {
     const flushed = create.indexOf('if (!(await flush()))')
     expect(named).toBeGreaterThan(-1)
     expect(flushed).toBeGreaterThan(named)
-    expect(create).toContain('...(designId ? { designId } : {})')
+    // The id that rides out is the one named before the flush, or the record
+    // this form's own nameless save created during it — never one a flush
+    // refetched from elsewhere.
+    expect(create).toContain('const spend = designId ?? made')
+    expect(create.indexOf('made = null')).toBeLessThan(flushed)
+    expect(create).toContain('...(spend ? { designId: spend } : {})')
+    const save = code.slice(code.indexOf('const save = '), code.indexOf('const flush = '))
+    expect(save).toContain('if (!id) made = d.id')
+  })
+
+  it('a flush waits for a save already on the wire, not only a pending one', () => {
+    // Review of #720, N3: past the debounce, a Create read no design id
+    // while the manual start's save was still out, and left a copy behind.
+    const save = code.slice(code.indexOf('const save = '), code.indexOf('const flush = '))
+    expect(save).toContain('inFlight = sent')
+    const flush = code.slice(code.indexOf('const flush = '), code.indexOf('const flushAway'))
+    expect(flush).toContain('if (!saveTimer) return inFlight ?? Promise.resolve(true)')
+  })
+
+  it('a hand-back arriving over typing is offered, never taken in over it (NN12)', () => {
+    // The reseed reads the SLOT; every verb acts on `design`, the form's own.
+    expect(code).toContain('const design = $derived(slot && slot.id !== offered ? slot : null)')
+    expect(code).toContain('const key = landingKey(slot)')
+    // The branch for a design arriving in the slot after the first read.
+    const arriving = code.slice(code.indexOf('if (d.id === offered || key === seededFrom) return'), code.indexOf('// A design that left for a hire'))
+    const guard = arriving.indexOf('if (keepsTypedInput(d, seededFrom,')
+    expect(guard).toBeGreaterThan(-1)
+    // Before the form is reseeded from the arriving design, or marked seeded.
+    expect(guard).toBeLessThan(arriving.indexOf('seededFrom = key'))
+    expect(guard).toBeLessThan(arriving.indexOf('form = { ...EMPTY_FIELDS, ...(d.draft'))
+    expect(arriving.slice(guard, guard + 160)).toContain('offered = d.id')
+    // Taken in only by the person's choice, and offered where both steps show it.
+    const open = code.slice(code.indexOf('const openOffered'), code.indexOf('const discardOffered'))
+    expect(open).toContain('offered = null')
+    expect(open).toContain('form = { ...EMPTY_FIELDS, ...(d.draft ?? {}) }')
+    expect(code).toContain('data-testid="design-arrived"')
+    expect(code.match(/\{@render returnedNotes\(\)\}/g) ?? []).toHaveLength(2)
   })
 
   it('a design that leaves the slot resets the form, never leaves it to be saved as a copy', () => {

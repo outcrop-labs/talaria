@@ -224,6 +224,11 @@ pub fn refine(
         started_at: Some(now),
         finished_at: None,
         updated_at: now,
+        // A refine changes the design as much as a hand edit does (`edit`),
+        // so it ends a hand-back's link to its failed hire the same way: the
+        // strip's Retry replays that hire's old input and must not spend the
+        // refined design on it.
+        released_from: None,
         ..d.clone()
     })
 }
@@ -433,6 +438,55 @@ pub fn hand_back(h: &Held, now: i64) -> AgentDesign {
         updated_at: now,
         ..h.design.clone()
     }
+}
+
+/// A design a failed hire handed back into an empty slot (`hand_back`) that
+/// nobody has edited or refined since, put back to wait: the hold it came
+/// from, still returned with the hire's sentence. It came back on its own,
+/// into a New agent the person may have been typing into, so a describe or a
+/// manual start over it sets it aside, as if the slot had been taken when it
+/// came back, rather than replacing it (the design lost) or refusing the
+/// start (the typing lost). None for any other record: a design the person
+/// has touched is theirs, and a describe over it replaces it as before.
+pub fn set_aside(d: &AgentDesign, now: i64) -> Option<Held> {
+    let hire = d.released_from.clone()?;
+    if d.status == DesignStatus::Generating {
+        return None;
+    }
+    Some(Held {
+        design: AgentDesign {
+            error: None,
+            released_from: None,
+            hire_run_id: None,
+            ..d.clone()
+        },
+        hire_run_id: hire,
+        claimed_at: now,
+        returned: Some(d.error.clone().unwrap_or_else(|| returned_sentence(None))),
+        // Noticed already: the person is in New agent, where the note on the
+        // waiting design says what the bell would, and set it aside from
+        // there. Filing the row again would ring a failure they have read,
+        // once per describe or manual start over it.
+        noticed: true,
+    })
+}
+
+/// `edit`, except that a manual start (`want` None) over a hand-back nobody
+/// touched sets that design aside (`set_aside`) and starts the new one in
+/// the slot, where `edit` alone would refuse it as stale.
+pub fn edit_over(
+    existing: Option<&AgentDesign>,
+    want: Option<&str>,
+    fields: DraftFields,
+    now: i64,
+    design_id: String,
+) -> Result<(AgentDesign, Option<Held>), Refusal> {
+    if want.is_none()
+        && let Some(held) = existing.and_then(|d| set_aside(d, now))
+    {
+        return edit(None, None, fields, now, design_id).map(|d| (d, Some(held)));
+    }
+    edit(existing, want, fields, now, design_id).map(|d| (d, None))
 }
 
 /// The hiring strip retried `failed` as `retry`: a design held on it follows.
@@ -927,5 +981,77 @@ mod tests {
         .unwrap();
         assert_eq!(edited.released_from, None);
         assert!(follow_back(&edited, "h-1", "h-1r", 9_000).is_none());
+    }
+
+    #[test]
+    fn a_refine_after_a_hand_back_is_not_spent_on_the_old_hires_retry() {
+        // NN13's other path: a refine changes the design as much as a hand
+        // edit, and the old hire's Retry must not spend it once it lands.
+        let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
+        let held = claim(Some(&ready), "d-1", "h-1", 6_000).unwrap();
+        let back = hand_back(
+            &Held {
+                returned: Some("x".into()),
+                ..held
+            },
+            7_000,
+        );
+        let r = refine(Some(&back), Some("d-1"), "terse", None, 8_000, "r-2".into()).unwrap();
+        assert_eq!(r.released_from, None);
+        let refined = land(&r, "r-2", draft("Terse"), 9_000).unwrap();
+        assert!(follow_back(&refined, "h-1", "h-1r", 10_000).is_none());
+    }
+
+    #[test]
+    fn an_untouched_hand_back_steps_aside_for_a_new_design() {
+        // NN12: a design a failed hire handed back into an empty slot is set
+        // aside, still returned with its sentence, when the person starts a
+        // design over it — and comes back from there exactly as it was.
+        let ready = land(&fresh("a scout", "r-1"), "r-1", draft("Scout"), 5_000).unwrap();
+        let held = claim(Some(&ready), "d-1", "h-1", 6_000).unwrap();
+        let why = "The hire did not finish: the department research is taken. Check the fields and create it again.";
+        let back = hand_back(
+            &Held {
+                returned: Some(why.into()),
+                ..held
+            },
+            7_000,
+        );
+        let aside = set_aside(&back, 8_000).unwrap();
+        assert_eq!(aside.hire_run_id, "h-1");
+        assert_eq!(aside.returned.as_deref(), Some(why));
+        assert_eq!(aside.design.error, None);
+        assert_eq!(aside.design.released_from, None);
+        assert!(
+            aside.noticed,
+            "the person is looking at it: no bell row again"
+        );
+        assert_eq!(
+            hand_back(&aside, 9_000),
+            AgentDesign {
+                updated_at: 9_000,
+                ..back.clone()
+            }
+        );
+        // A manual start over it takes the slot instead of being refused.
+        let (manual, set) =
+            edit_over(Some(&back), None, draft("Hand"), 8_000, "d-2".into()).unwrap();
+        assert_eq!(manual.id, "d-2");
+        assert_eq!(manual.draft, Some(draft("Hand")));
+        assert_eq!(set, Some(aside));
+        // Anything the person touched is theirs: no set-aside, and the
+        // nameless save over it is the stale tab's 409 as before.
+        let edited = edit(Some(&back), Some("d-1"), draft("Mine"), 8_000, "d-9".into()).unwrap();
+        assert_eq!(set_aside(&edited, 9_000), None);
+        assert_eq!(set_aside(&ready, 9_000), None);
+        assert_eq!(
+            edit_over(Some(&edited), None, draft("X"), 9_000, "d-3".into()),
+            Err(Refusal::Stale)
+        );
+        // A named edit of the hand-back itself is an edit, not a set-aside.
+        let (named, none) =
+            edit_over(Some(&back), Some("d-1"), draft("Mine"), 8_000, "d-9".into()).unwrap();
+        assert_eq!(named.id, "d-1");
+        assert_eq!(none, None);
     }
 }
