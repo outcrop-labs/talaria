@@ -277,6 +277,10 @@ does not merge. That needs a repository secret `OMAPAK_SUBMIT_TOKEN` (a
 fine-grained PAT or GitHub App token with contents and pull-requests write
 on `outcrop-labs/omapak`). Without it the job fails on purpose: a rolled
 release that never reaches the store is a red run, not a quiet success.
+Before any work the job asks GitHub's git server whether the token may push
+(receive-pack's ref advertisement), and a token that may not fails there with
+the reason: rejected outright, or valid without Contents write. Then
+regenerate it and re-run the job by dispatch with the tag.
 A server `v*` release does not submit: it carries no desktop build.
 
 Nothing is signed or notarized yet. That is a provisioning decision, not an
