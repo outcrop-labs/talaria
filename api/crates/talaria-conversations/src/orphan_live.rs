@@ -224,6 +224,49 @@ mod lease {
         cleanup(&pg, "held").await;
     }
 
+    /// A sweep already under way when a reply is held, which reaches the
+    /// database only after the reply has gone quiet, leaves it alone. The
+    /// sweep read the holds before its statement ran: a hold in between was
+    /// in neither, and the reply was closed under its writer. That is how a
+    /// sibling test's sweep took the held rows above, one CI run in a few
+    /// dozen. Here the sweep's pool has one connection, checked out, so the
+    /// sweep starts and then waits while the reply is held and goes quiet.
+    #[tokio::test]
+    #[ignore = "needs a live dev database (DATABASE_URL)"]
+    async fn a_sweep_under_way_when_a_reply_is_held_leaves_it_alone() {
+        let pg = pg().await;
+        let conv = thread(&pg, "under-way").await;
+        let id = reply(&pg, &conv, 1, "thinking", 0.0).await;
+        let url = std::env::var("DATABASE_URL").unwrap();
+        let one = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        let busy = one.acquire().await.unwrap();
+        let mut sweep = std::pin::pin!(sweep_orphaned_replies(&one));
+        let started = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(sweep.as_mut(), cx).is_pending())
+        })
+        .await;
+        assert!(started, "the sweep waits for its pool's one connection");
+
+        let writer = ReplyWriter::hold(&id);
+        sqlx::query(
+            "update messages set streamed_at = now() - interval '20 minutes' where id = $1::uuid",
+        )
+        .bind(&id)
+        .execute(&pg)
+        .await
+        .unwrap();
+        drop(busy);
+        let closed = sweep.await.unwrap();
+        assert!(!closed.iter().any(|(m, _)| m == &id));
+        assert_eq!(row(&pg, &id).await.0, "streaming");
+        drop(writer);
+        cleanup(&pg, "under-way").await;
+    }
+
     /// The boot sweep: every orphan in the database, whatever thread it is
     /// in, and only orphans.
     #[tokio::test]
