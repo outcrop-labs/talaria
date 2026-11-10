@@ -878,6 +878,17 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
             realtime: rt.clone(),
         },
     }));
+    // The workbench harnesses (Oh My Pi and the harness's bun) follow their
+    // upstream releases: checked, smoke-tested on a workbench, then adopted
+    // for new jobs, a step a minute (talaria-workbench-updates). Optional
+    // like the agent image's: its absence leaves every job on what it runs.
+    talaria_workbench_updates::register_job(Arc::new(talaria_workbench_updates::Live {
+        pg: state.pg.clone(),
+        notify: talaria_notify::NotifyDeps {
+            pg: state.pg.clone(),
+            realtime: rt.clone(),
+        },
+    }));
 }
 
 /// The census kinds this build cannot define. Empty is arming's
@@ -1134,6 +1145,16 @@ mod tests {
         assert!(
             !REQUIRED_JOBS.contains(&JobName::HermesChannel),
             "hermes-channel must stay optional: an operator's HERMES_IMAGE legitimately turns it off"
+        );
+        // The workbench harness channel: out of the table, every workbench
+        // runs the compiled bootstrap forever, with nothing to say so.
+        assert!(
+            names.contains(&JobName::WorkbenchHarnessChannel),
+            "workbench-harness-channel fell out of the job table — workbenches would never follow Oh My Pi or bun"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::WorkbenchHarnessChannel),
+            "workbench-harness-channel must stay optional: an instance with no Developer Agents runs it as a no-op"
         );
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This

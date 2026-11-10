@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-20 routes.
+21 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -40,6 +40,8 @@
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | PUT | `admin` |
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | DELETE | `admin` |
 | [`/api/workbench/git-hosts/{id}/test`](#apiworkbenchgit-hostsidtest) | POST | `admin` |
+| [`/api/workbench/harnesses`](#apiworkbenchharnesses) | GET | `admin` |
+| [`/api/workbench/harnesses`](#apiworkbenchharnesses) | POST | `admin` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | GET | `session` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | PUT | `session` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | GET | `admin` |
@@ -419,6 +421,29 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `admin` | — | `{ok, status, repoCount, repos, reposError}` | 200, 404 | — |
+
+## `/api/workbench/harnesses`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_harnesses.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_harnesses.rs)
+
+> /api/workbench/harnesses — the workbench harness channel: Oh My Pi and the
+> harness's own bun, kept current from upstream (talaria-workbench-updates;
+> docs/UPDATES.md, "The workbench harnesses"). Admin.
+>   GET   per harness: the version every new job runs (verified here, or the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{ok, status}` | 200, 409 | — |
+| POST | `admin` | [body](#post-apiworkbenchharnesses-body) | `{ok, message, status}` | 200, 400, 409 | audit |
+
+### POST `/api/workbench/harnesses` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `enum(check|update|pin|unpin|allow|reset)?` |  |
+| `tool` | `enum(omp|bun)?` |  |
+| `version` | `string?(16)` |  |
 
 ## `/api/workbench/jobs`
 

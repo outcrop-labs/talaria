@@ -38,6 +38,7 @@ talaria-tasks = { workspace = true }
 talaria-teams = { workspace = true }
 talaria-users = { workspace = true }
 talaria-work-wait = { workspace = true }
+talaria-workbench-updates = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

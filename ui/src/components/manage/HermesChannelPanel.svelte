@@ -9,7 +9,7 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
-  import { relativeTime } from '@/lib/fleet'
+  import { relativeTime, untilTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
 
   // THE AGENT IMAGE: which Hermes every agent runs, and the stable channel
@@ -89,13 +89,7 @@
   const s = $derived(query.data)
 
   const ago = (ms: number | null | undefined) => (ms ? relativeTime(new Date(ms).toISOString()) : 'never')
-  const until = (ms: number | null | undefined) => {
-    if (!ms) return null
-    const mins = Math.round((ms - Date.now()) / 60_000)
-    if (mins <= 1) return 'within a minute'
-    if (mins < 90) return `in ${mins} min`
-    return `in about ${Math.round(mins / 60)} h`
-  }
+  const until = untilTime
 
   const PHASE: Record<RolloutView['phase'], string> = {
     preparing: 'Waiting its time on stable, then downloading and inspecting',

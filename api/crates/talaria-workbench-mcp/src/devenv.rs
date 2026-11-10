@@ -191,14 +191,16 @@ pub const AGENT_TERMINAL_HOME: &str = "/opt/data/home";
 /// $5 = the agent terminal's HOME ([`AGENT_TERMINAL_HOME`]).
 const USER_SH: &str = r#"
 set -e
+__INSTALL_MISE__
 home="$1"; root="$2"; wrote="$3"; sccache_dir="$4"; term_home="$5"
 export HOME="$home" MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/data/workbench/jobs
 bin="$home/.local/bin"
 export PATH="$bin:$PATH"
 if ! command -v mise >/dev/null 2>&1; then
-  mkdir -p "$bin"
-  curl -fsSL https://mise.run | MISE_INSTALL_PATH="$bin/mise" sh >/dev/null
-  command -v mise >/dev/null 2>&1 || { echo "could not download mise (https://mise.run)" >&2; exit 1; }
+  # The pinned mise, checksum-verified (install_mise, prepended by
+  # user_sh()); never an installer piped to a shell.
+  install_mise "$bin/mise" || exit 1
+  command -v mise >/dev/null 2>&1 || { echo "could not install mise into $bin" >&2; exit 1; }
 fi
 # Where this install keeps its tools and its global config, resolved NOW, as
 # mise resolves them for this user: MISE_DATA_DIR, else XDG_DATA_HOME/mise
@@ -261,6 +263,14 @@ fi
 echo "=== resolved"
 mise ls --current 2>&1
 "#;
+
+/// [`USER_SH`] with the pinned mise installer in it.
+fn user_sh() -> String {
+    USER_SH.replace(
+        "__INSTALL_MISE__",
+        &talaria_workbench_harnesses::install_mise_sh(180),
+    )
+}
 
 /// One compile cache per department, on the shared harness volume beside the
 /// npm cache and Playwright browsers, so every agent's jobs feed one cache.
@@ -749,8 +759,10 @@ pub fn parse_scan(out: &str) -> Option<Scan> {
 /// spares doctor and provisioning an exec on calls a minute apart.
 const RUNTIME_OK_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// Long enough for a first-time mise + bun + omp download on a slow link.
-const RUNTIME_TIMEOUT_MS: u64 = 8 * 60_000;
+/// The exec limit for one run of the runtime script: every step in it is
+/// bounded on its own, and the script runs under an in-container bound a
+/// little shorter than this (`talaria_workbench_harnesses::RUNTIME_EXEC_SECS`).
+const RUNTIME_TIMEOUT_MS: u64 = talaria_workbench_harnesses::RUNTIME_EXEC_SECS * 1000;
 
 type RuntimeCache =
     std::collections::HashMap<String, (std::time::Instant, talaria_workbench_harnesses::Runtime)>;
@@ -769,46 +781,179 @@ fn runtime_ok_cache() -> &'static std::sync::Mutex<RuntimeCache> {
 /// terminal ran without a login shell, met `env: 'bun': No such file or
 /// directory` — and the agent, correctly, refused to start jobs. This runs the
 /// shared bootstrap (`talaria_workbench_harnesses::harness_runtime_script`) as
-/// the agent's own user: mise if missing, bun pinned and installed, `bun`
-/// linked onto the PATH every shell has, and the PINNED Oh My Pi installed
-/// and started once. Idempotent; Ok carries what runs and where its bun is.
+/// the agent's own user: mise if missing, bun installed, `bun` linked onto the
+/// PATH every shell has, and Oh My Pi installed and started once. Idempotent;
+/// Ok carries what runs and where its bun is.
+///
+/// WHICH versions is the harness channel's call, never this one's: the pair it
+/// last verified on a workbench, else the compiled bootstrap
+/// (`talaria_workbench_harnesses::attempts_from`). No registry is asked here.
+/// A volume that already refused the verified pair goes straight to the
+/// previous verified pair, and the compiled bootstrap is the last resort; a
+/// release that will not install HERE is recorded, so the next job does not
+/// pay for trying it again. A verified pair installs from its verified
+/// lockfile, frozen.
 pub async fn ensure_harness_runtime(
     pg: &PgPool,
     department: &str,
 ) -> Result<talaria_workbench_harnesses::Runtime, String> {
+    ensure_harness_runtime_noted(pg, department)
+        .await
+        .map(|(rt, _)| rt)
+}
+
+/// [`ensure_harness_runtime`], with the sentence to show when this volume ran
+/// something other than the verified pair.
+pub async fn ensure_harness_runtime_noted(
+    pg: &PgPool,
+    department: &str,
+) -> Result<(talaria_workbench_harnesses::Runtime, Option<String>), String> {
+    use talaria_workbench_harnesses as wh;
+    let state = wh::channel_state(pg).await?;
+    let eff = wh::effective_from(state.as_ref());
+    let (attempts, skipped) = wh::attempts_from(state.as_ref(), department);
+    let keep = eff.keep();
+    let registry = harness_registry();
+    let mut tried: Vec<String> = skipped.into_iter().collect();
+    let mut last = String::new();
+    for v in &attempts {
+        let lock = wh::verified_lock(pg, v).await?;
+        let run = wh::RuntimeRun {
+            v,
+            smoke: false,
+            keep: &keep,
+            frozen: lock.is_some(),
+            integrity: None,
+            registry: registry.as_deref(),
+        };
+        match ensure_versions(pg, department, &run, lock.as_ref().map(|l| l.lock.as_str())).await {
+            Ok(rt) => {
+                let note = (*v != eff.target || !tried.is_empty()).then(|| {
+                    format!(
+                        "harness: {}; this job runs Oh My Pi {} on bun {}",
+                        if tried.is_empty() {
+                            "the verified pair did not install on this workbench".to_string()
+                        } else {
+                            tried.join("; ")
+                        },
+                        v.omp,
+                        v.bun
+                    )
+                });
+                return Ok((rt, note));
+            }
+            Err(why) => {
+                tracing::warn!(
+                    "[workbench] {department}: bun {} + Oh My Pi {} would not install here: {why}",
+                    v.bun,
+                    v.omp
+                );
+                if *v == eff.target
+                    && eff.source == "verified"
+                    && matches!(classify_runtime_failure(&why), VerifyFailure::Candidate(_))
+                {
+                    wh::record_refusal(pg, department, v, &why).await;
+                }
+                tried.push(format!(
+                    "Oh My Pi {} on bun {} would not install here ({})",
+                    v.omp,
+                    v.bun,
+                    why.lines().next().unwrap_or("no reason given")
+                ));
+                last = why;
+            }
+        }
+    }
+    Err(last)
+}
+
+/// The npm registry the operator pointed the harness check at
+/// (`TALARIA_HARNESS_NPM_REGISTRY`): `bun install` resolves from it too, so
+/// the check and the install never disagree about what a release is.
+pub fn harness_registry() -> Option<String> {
+    std::env::var("TALARIA_HARNESS_NPM_REGISTRY")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| talaria_workbench_harnesses::plain_registry(v))
+}
+
+/// Install (if missing) and start exactly `run.v` on `department`'s volume,
+/// from `lock` when the pair has a verified lockfile. The one place a harness
+/// runtime is put on a volume: a provision, doctor, and the harness
+/// channel's smoke test all come through here.
+pub async fn ensure_versions(
+    pg: &PgPool,
+    department: &str,
+    run: &talaria_workbench_harnesses::RuntimeRun<'_>,
+    lock: Option<&str>,
+) -> Result<talaria_workbench_harnesses::Runtime, String> {
+    let v = run.v;
     let container = managed_container(pg, department).await;
-    // Keyed by the pins too: a build that bumps either must not trust what an
-    // older pin provisioned.
-    let key = format!(
-        "{container}|{}|{}",
-        talaria_workbench_harnesses::HARNESS_BUN,
-        talaria_workbench_harnesses::OMP_VERSION
-    );
-    if let Some((at, rt)) = runtime_ok_cache()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(&key)
+    // Keyed by the versions too: a move to another pair must not trust what
+    // an older one provisioned. A smoke test is never cached.
+    let key = format!("{container}|{}|{}", v.bun, v.omp);
+    if !run.smoke
+        && let Some((at, rt)) = runtime_ok_cache()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
         && at.elapsed() < RUNTIME_OK_FOR
     {
         return Ok(rt.clone());
     }
-    let script = talaria_workbench_harnesses::harness_runtime_script();
-    let (out, err) = docker_exec_as(
-        &container,
-        Some(AGENT_USER),
-        &["sh", "-c", &script],
-        None,
-        RUNTIME_TIMEOUT_MS,
-    )
-    .await
-    .map_err(|e| {
+    let script = talaria_workbench_harnesses::harness_runtime_script(run).ok_or_else(|| {
         format!(
-            "could not provision bun {} and Oh My Pi {} for the harness: {}",
-            talaria_workbench_harnesses::HARNESS_BUN,
-            talaria_workbench_harnesses::OMP_VERSION,
-            e.trim()
+            "bun {:.40} / Oh My Pi {:.40} is not a plain release",
+            v.bun, v.omp
         )
     })?;
+    let inner = (talaria_workbench_harnesses::RUNTIME_EXEC_SECS
+        - talaria_workbench_harnesses::RUNTIME_INNER_SLACK_SECS)
+        .to_string();
+    let out = docker_exec_as(
+        &container,
+        Some(AGENT_USER),
+        &[
+            "sh",
+            "-c",
+            talaria_workbench_harnesses::BOUNDED_EXEC_SH,
+            "sh",
+            &inner,
+            &script,
+        ],
+        if run.frozen { lock } else { None },
+        RUNTIME_TIMEOUT_MS,
+    )
+    .await;
+    let (out, err) = match out {
+        Ok(o) => o,
+        Err(e) => {
+            if e.ends_with("timed out") {
+                // The client gave up; make sure nothing of the run goes on
+                // in the container (holding the lock, or a hung release).
+                let _ = docker_exec_as(
+                    &container,
+                    Some(AGENT_USER),
+                    &[
+                        "sh",
+                        "-c",
+                        talaria_workbench_harnesses::KILL_RUNTIME_SH,
+                        "sh",
+                        talaria_workbench_harnesses::RUNTIME_MARKER,
+                    ],
+                    None,
+                    30_000,
+                )
+                .await;
+            }
+            return Err(format!(
+                "could not provision bun {} and Oh My Pi {} for the harness: {}",
+                v.bun,
+                v.omp,
+                e.trim()
+            ));
+        }
+    };
     let rt = talaria_workbench_harnesses::parse_runtime(&out).ok_or_else(|| {
         let why = format!("{out}\n{err}");
         let why = why
@@ -819,11 +964,239 @@ pub async fn ensure_harness_runtime(
             .to_string();
         format!("the harness runtime did not answer after provisioning: {why}")
     })?;
-    runtime_ok_cache()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert(key, (std::time::Instant::now(), rt.clone()));
+    if rt.versions() != *v {
+        return Err(format!(
+            "asked for bun {} + Oh My Pi {}, the volume answered bun {} + {}\ntalaria-fault: host",
+            v.bun, v.omp, rt.bun, rt.omp
+        ));
+    }
+    if !run.smoke {
+        runtime_ok_cache()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(key, (std::time::Instant::now(), rt.clone()));
+    }
     Ok(rt)
+}
+
+/// Why a candidate did not pass [`verify_harness`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyFailure {
+    /// The candidate's own: it is not there to install (a 404, no matching
+    /// version), its tarball is not the one npm documents, or it installed
+    /// and would not start, or did not start or install in time, or its
+    /// launcher failed the preflight. Held for an admin.
+    Candidate(String),
+    /// The host's or the network's: docker, a timeout of the whole exec, the
+    /// install lock, mise's own download, DNS, a refused or reset connection,
+    /// TLS, a full disk, a 5xx or 429 from npm or GitHub, a step killed (137:
+    /// the OOM killer, or `timeout`'s own kill). Tried again later with
+    /// backoff; never held.
+    Host(String),
+    /// A start, install or preflight of the release that ran past its bound
+    /// (`timeout`'s 124). On a slow or stalled host that is not proof of the
+    /// release, so the channel holds it only when it times out twice in a
+    /// row, on separate attempts — on another workbench when there is one.
+    Timeout(String),
+}
+
+/// Failures the network or the disk caused, whatever step met them.
+fn environment_failure(why: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?ix)
+            # bun names its own network errors (captured from bun 1.3.14 and
+            # 1.4.4 in the Hermes image): DNSResolveFailed, FailedToOpenSocket,
+            # ConnectionClosed, ConnectionRefused, … `downloading package
+            # manifest|tarball`. A missing release is `GET … - 404` instead.
+            \b[A-Z][A-Za-z]+\ downloading\ (?:package\ manifest|tarball)\b
+            | DNSResolveFailed | FailedToOpenSocket | ConnectionClosed
+            | error\ sending\ request | dns\ error | operation\ timed\ out
+            | ENOTFOUND | EAI_AGAIN | getaddrinfo | name\ resolution | could\ not\ resolve
+            | ECONNREFUSED | ConnectionRefused | connection\ refused
+            | ECONNRESET | ConnectionReset | connection\ reset | ETIMEDOUT | ConnectionTimeout
+            | network\ is\ unreachable | no\ route\ to\ host | ENETUNREACH | EHOSTUNREACH
+            | certificate | \btls\b | \bssl\b | handshake
+            | ENOSPC | no\ space\ left | EDQUOT | disk\ quota
+            | too\ many\ requests | rate\ limit
+            | bad\ gateway | service\ unavailable | gateway\ time-?out | internal\ server\ error
+            | \s-\s(?:429|5\d\d)\b | \((?:429|5\d\d)\s | status\D{0,15}(?:429|5\d\d)\b | HTTP/\d(?:\.\d)?\s(?:429|5\d\d)\b
+            ",
+        )
+        .expect("a valid pattern")
+    });
+    re.is_match(why)
+}
+
+/// The release is not what was asked for: npm or GitHub has no such
+/// version, or the tarball is not the documented one.
+fn release_missing(why: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?ix) \s-\s404\b | \(404\s | \b404\ Not\ Found | ETARGET | \bE404\b | no\ version\ matching | no\ matching\ version
+            | version\ not\ found | no\ such\ version | EINTEGRITY | integrity\ check\ failed",
+        )
+        .expect("a valid pattern")
+    });
+    re.is_match(why)
+}
+
+/// Sort a runtime-script failure. The script says which step failed on its
+/// last line (`talaria-fault: …`, `talaria_workbench_harnesses::runtime_fault_phase`);
+/// only a proven fault of the release holds it:
+/// - `start`: it installed and would not start, or its tarball was not the
+///   documented one — the release's (a full disk is still the host's);
+/// - `timeout`: a start or install ran past its bound (124) — a strike
+///   ([`VerifyFailure::Timeout`]), held only on the second in a row;
+/// - `install`: the install failed — the network's or the disk's when it
+///   says so (bun's own `DNSResolveFailed`/`ConnectionClosed`/… names
+///   included: the `… failed to resolve` line bun prints after any manifest
+///   error says nothing about the release), the release's when it is not
+///   there (a 404, no matching version, an integrity mismatch), and
+///   otherwise the host's;
+/// - `host`, a step killed (137), or no line at all (docker, the exec's own
+///   limit): the host's.
+pub fn classify_runtime_failure(why: &str) -> VerifyFailure {
+    let candidate = || VerifyFailure::Candidate(why.to_string());
+    let host = || VerifyFailure::Host(why.to_string());
+    match talaria_workbench_harnesses::runtime_fault_phase(why) {
+        Some("start") if !why.contains("ENOSPC") && !why.contains("No space left") => candidate(),
+        Some("timeout") => VerifyFailure::Timeout(why.to_string()),
+        Some("install") if environment_failure(why) => host(),
+        Some("install") if release_missing(why) => candidate(),
+        _ => host(),
+    }
+}
+
+/// THE HARNESS CHANNEL'S SMOKE TEST: install `v` beside whatever the volume
+/// runs (the runtime script's versioned dir and atomic swap — a job already
+/// running keeps its own install), by its own versioned paths only — the
+/// volume's shell `bun` is not touched until a provision promotes a verified
+/// pair — start it (`--version` on its bun), lay out
+/// [`talaria_workbench_harnesses::UPDATE_SLOT`] with the same layout and
+/// launcher a job gets, and run the provisioning preflight through that
+/// launcher in the agent's terminal shell: the launcher there, omp answering
+/// exactly `v.omp`, the agent dir writable. No model is called; the model
+/// catalog and gateway checks stay with each job's own preflight, because
+/// they test the instance, not the release.
+///
+/// `keep` names the Oh My Pi releases whose installs must survive the run
+/// (the channel's current and fallback); `integrity` is npm's for the
+/// candidate's tarball. An Oh My Pi with a verified lockfile already is
+/// installed frozen from it; one without is installed fresh, and the
+/// lockfile that install wrote is what Ok carries, to be kept with the pair.
+///
+/// `candidate` false is a PREWARM of the verified pair: it is installed the
+/// way a provision does (its bun into the shared mise dir, the shell's `bun`
+/// promoted), then checked the same way.
+pub async fn verify_harness(
+    pg: &PgPool,
+    department: &str,
+    v: &talaria_workbench_harnesses::Versions,
+    keep: &[String],
+    integrity: Option<&str>,
+    candidate: bool,
+) -> Result<(talaria_workbench_harnesses::Runtime, Option<String>), VerifyFailure> {
+    use talaria_workbench_harnesses as wh;
+    let container = managed_container(pg, department).await;
+    if !talaria_fleet_docker::container_running(&container).await {
+        return Err(VerifyFailure::Host(format!("{container} is not running")));
+    }
+    let lock = wh::verified_lock(pg, v)
+        .await
+        .map_err(VerifyFailure::Host)?;
+    let registry = harness_registry();
+    let run = wh::RuntimeRun {
+        v,
+        smoke: candidate,
+        keep,
+        frozen: lock.is_some(),
+        integrity: integrity.filter(|i| wh::plain_integrity(i)),
+        registry: registry.as_deref(),
+    };
+    let rt = ensure_versions(pg, department, &run, lock.as_ref().map(|l| l.lock.as_str()))
+        .await
+        .map_err(|e| classify_runtime_failure(&e))?;
+    let slot = wh::UPDATE_SLOT;
+    let (Some(text), Some(dir), Some(launcher), Some(agent_dir)) = (
+        wh::launcher_script(slot, "/opt/data/workbench", &rt, false),
+        wh::job_harness_dir(slot),
+        wh::job_launcher(slot),
+        wh::job_agent_dir(slot),
+    ) else {
+        return Err(VerifyFailure::Candidate(format!(
+            "Oh My Pi {} is not a plain release",
+            v.omp
+        )));
+    };
+    docker_exec_as(
+        &container,
+        Some(AGENT_USER),
+        &[
+            "sh",
+            "-c",
+            &wh::job_harness_script(),
+            "sh",
+            &dir,
+            "/opt/data/workbench/sessions/update-check",
+            "/opt/data/workbench",
+        ],
+        Some(&text),
+        30_000,
+    )
+    .await
+    .map_err(|e| {
+        VerifyFailure::Host(format!(
+            "could not lay out the smoke-test slot: {}",
+            e.trim()
+        ))
+    })?;
+    match crate::provision::preflight(&container, &launcher, &agent_dir, "", &rt.bun_path, &v.omp)
+        .await
+    {
+        Ok(_) => {}
+        // The preflight not running at all, or the volume's own permissions,
+        // are the host's; the launcher and the version are the release's.
+        // The launcher's start ran past its bound: a strike, like any timeout.
+        Err((check, detail)) if check == "timeout" => {
+            return Err(VerifyFailure::Timeout(format!(
+                "the preflight's start timed out: {detail}"
+            )));
+        }
+        Err((check, detail))
+            if check == "preflight" || check == "writable" || check == "killed" =>
+        {
+            return Err(VerifyFailure::Host(detail));
+        }
+        Err((check, detail)) => {
+            return Err(VerifyFailure::Candidate(format!(
+                "the preflight failed at {check}: {detail}"
+            )));
+        }
+    }
+    // The lockfile to keep with the pair: the one it was installed from, or
+    // the one this install wrote.
+    if let Some(l) = lock {
+        return Ok((rt, Some(l.lock)));
+    }
+    let link = wh::omp_install_dir(&v.omp);
+    let (written, _) = docker_exec_as(
+        &container,
+        Some(AGENT_USER),
+        &["cat", &format!("{link}/bun.lock")],
+        None,
+        30_000,
+    )
+    .await
+    .map_err(|e| {
+        VerifyFailure::Host(format!(
+            "could not read the install's lockfile: {}",
+            e.trim()
+        ))
+    })?;
+    Ok((rt, Some(written).filter(|w| !w.trim().is_empty())))
 }
 
 // ── The SDK kit: a Talaria app's toolchain ─────────────────────────────────
@@ -1156,7 +1529,7 @@ pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result
             "--",
             "sh",
             "-c",
-            USER_SH,
+            &user_sh(),
             "sh",
             &home,
             &scan.root,
@@ -1482,6 +1855,147 @@ mod tests {
     }
 
     #[test]
+    fn only_a_proven_fault_of_the_release_holds_it() {
+        let cand = |w: &str| matches!(classify_runtime_failure(w), VerifyFailure::Candidate(_));
+        for (why, held) in [
+            // The release's own.
+            (
+                "Oh My Pi 18.17.0 installed but does not start on bun 1.4.4: error: Bun runtime must be >= 1.4.5\ntalaria-fault: start",
+                true,
+            ),
+            (
+                "error: GET https://registry.npmjs.org/@oh-my-pi%2fpi-coding-agent - 404\ncould not install Oh My Pi 99.0.0 (bun install, above)\ntalaria-fault: install",
+                true,
+            ),
+            (
+                "error: No version matching \"99.0.0\" found for specifier\ntalaria-fault: install",
+                true,
+            ),
+            // bun's own words, captured in the Hermes image (bun 1.3.14 and
+            // 1.4.4 against a registry with no such release, and with one).
+            (
+                "bun install v1.4.4 (38afee6c8)\nResolving dependencies\nResolved, downloaded and extracted [1]\nerror: GET http://172.17.0.1:5963/@oh-my-pi%2fpi-coding-agent - 404\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                true,
+            ),
+            (
+                "bun install v1.3.14 (0d9b296a)\nResolving dependencies\nResolved, downloaded and extracted [1]\nerror: No version matching \"18.99.0\" found for specifier \"@oh-my-pi/pi-coding-agent\" (but package exists)\nerror: @oh-my-pi/pi-coding-agent@18.99.0 failed to resolve\ncould not install Oh My Pi 18.99.0 (bun install, above)\ntalaria-fault: install",
+                true,
+            ),
+            (
+                "error: Integrity check failed for tarball: @oh-my-pi/pi-coding-agent\ntalaria-fault: install",
+                true,
+            ),
+            (
+                "could not install bun 9.9.9 with mise (exit 1): HTTP status client error (404 Not Found)\ntalaria-fault: install",
+                true,
+            ),
+            (
+                "Oh My Pi 18.17.0 installed a tarball whose integrity is not the one npm documents\ntalaria-fault: start",
+                true,
+            ),
+            // The network's, the disk's, the host's — bun's own words first,
+            // captured in the Hermes image: an unresolvable registry, a
+            // server that drops the connection, a 500. Each is followed by
+            // the `… failed to resolve` line, which is not a missing release.
+            (
+                "bun install v1.4.4 (38afee6c8)\nResolving dependencies\nResolved, downloaded and extracted [6]\nerror: DNSResolveFailed downloading package manifest @oh-my-pi/pi-coding-agent\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "bun install v1.3.14 (0d9b296a)\nResolving dependencies\nResolved, downloaded and extracted [6]\nerror: FailedToOpenSocket downloading package manifest @oh-my-pi/pi-coding-agent\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "bun install v1.4.4 (38afee6c8)\nResolving dependencies\nResolved, downloaded and extracted [6]\nerror: ConnectionClosed downloading package manifest @oh-my-pi/pi-coding-agent\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "bun install v1.3.14 (0d9b296a)\nResolving dependencies\nResolved, downloaded and extracted [6]\nerror: GET http://172.17.0.1:5962/@oh-my-pi%2fpi-coding-agent - 500\nerror: @oh-my-pi/pi-coding-agent@18.16.0 failed to resolve\ncould not install Oh My Pi 18.16.0 (bun install, above)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "error: ConnectionClosed downloading tarball zod@3.25.76\ntalaria-fault: install",
+                false,
+            ),
+            // `e404` inside a revision hash is not a 404.
+            (
+                "bun install v1.9.9 (ae404b1c)\nerror: failed to extract tarball\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "Oh My Pi 18.17.0 was killed (exit 137: the OOM killer, or its bound's kill)\ntalaria-fault: host",
+                false,
+            ),
+            (
+                "error: getaddrinfo ENOTFOUND registry.npmjs.org\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "error: ConnectionRefused downloading package manifest\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "error: GET https://registry.npmjs.org/zod - 503\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "error: GET https://registry.npmjs.org/zod - 429\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "mise ERROR HTTP status server error (502 Bad Gateway)\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "error: certificate has expired\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "error: ENOSPC: no space left on device, write\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "bun install exited 1 with nothing we know\ntalaria-fault: install",
+                false,
+            ),
+            (
+                "another provision held the Oh My Pi install lock for 240 s\ntalaria-fault: host",
+                false,
+            ),
+            (
+                "could not download mise 2026.10.19 from GitHub\ntalaria-fault: host",
+                false,
+            ),
+            (
+                "could not provision bun 1.4.4 and Oh My Pi 18.17.0 for the harness: docker exec c …: timed out",
+                false,
+            ),
+            (
+                "Error response from daemon: container abc is not running",
+                false,
+            ),
+            (
+                "asked for bun 1.4.5 + Oh My Pi 18.17.0, the volume answered bun 1.4.4 + omp/18.17.0\ntalaria-fault: host",
+                false,
+            ),
+        ] {
+            assert_eq!(cand(why), held, "{why}");
+        }
+        // A start or install past its bound is a strike, never a hold by itself.
+        for why in [
+            "could not provision bun 1.4.4 and Oh My Pi 18.17.0 for the harness: Oh My Pi 18.17.0 on bun 1.4.4 did not finish starting within 60 s\ntalaria-fault: timeout",
+            "the preflight's start timed out: the launcher's `--version` did not finish within 60 s\ntalaria-fault: timeout",
+            "Oh My Pi 18.17.0 did not finish installing within 240 s\ntalaria-fault: timeout",
+            "bun 1.4.5 did not finish installing within 180 s\ntalaria-fault: timeout",
+        ] {
+            assert!(
+                matches!(classify_runtime_failure(why), VerifyFailure::Timeout(_)),
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
     fn prepare_env_leaves_the_global_bun_pin_to_the_harness_runtime() {
         assert!(
             !USER_SH.contains("bun@"),
@@ -1506,7 +2020,7 @@ mod tests {
         std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::process::Command::new("sh")
             .arg("-c")
-            .arg(USER_SH)
+            .arg(user_sh())
             .arg("sh")
             .args([
                 home.to_str().unwrap(),

@@ -96,10 +96,26 @@ jobs:
           # repo is public), the push answers 403 "Permission … denied", and
           # the sentence names the account rather than the token. Ask GitHub
           # what the token may do BEFORE the work, and say what to regenerate.
-          who=$(GH_TOKEN="$TOKEN" gh api user --jq .login 2>/dev/null || echo '?')
-          push=$(GH_TOKEN="$TOKEN" gh api repos/outcrop-labs/omapak --jq '.permissions.push // false' 2>/dev/null || echo false)
-          if [ "$push" != true ]; then
-            echo "::error::OMAPAK_SUBMIT_TOKEN (account: $who) cannot push to outcrop-labs/omapak. Regenerate it as a fine-grained PAT whose repository access lists outcrop-labs/omapak with Contents: read and write and Pull requests: read and write (an expired or repo-less token reads the public repo fine and fails only at the push), then: gh secret set OMAPAK_SUBMIT_TOKEN --repo $GITHUB_REPOSITORY. Re-run this workflow by dispatch with the tag."
+          #
+          # Ask the git server, not the REST API. `.permissions.push` on
+          # `gh api repos/…` is the ACCOUNT's role on the repo, not what a
+          # fine-grained token was granted, so desktop-v0.12.0's token passed
+          # it and still got the 403 at the push. The push's own first request
+          # — receive-pack's ref advertisement — answers 200 only to a
+          # credential that may push, 403 to one that may not, and 401 to an
+          # expired or unknown token, the same way the push itself would.
+          # (gh prints a refusal's JSON body on stdout, so a failed lookup
+          # assigns '?' rather than appending to whatever it printed.)
+          who=$(GH_TOKEN="$TOKEN" gh api user --jq .login 2>/dev/null) || who='?'
+          code=$(curl -s -o /dev/null -w '%{http_code}' -u "x-access-token:$TOKEN" \
+            'https://github.com/outcrop-labs/omapak.git/info/refs?service=git-receive-pack') || code=000
+          if [ "$code" != 200 ]; then
+            case "$code" in
+              401) why='GitHub does not accept it (expired, revoked or mistyped)' ;;
+              403) why='it is valid but was not granted Contents: write on outcrop-labs/omapak' ;;
+              *) why="GitHub answered $code to the push check" ;;
+            esac
+            echo "::error::OMAPAK_SUBMIT_TOKEN (account: $who) cannot push to outcrop-labs/omapak: $why. Regenerate it as a fine-grained PAT whose repository access lists outcrop-labs/omapak with Contents: read and write and Pull requests: read and write, then: gh secret set OMAPAK_SUBMIT_TOKEN --repo $GITHUB_REPOSITORY. Re-run this workflow by dispatch with the tag."
             exit 1
           fi
           echo "token for $who may push to outcrop-labs/omapak"
@@ -131,6 +147,11 @@ jobs:
           git -C omapak config user.name "talaria-release"
           git -C omapak config user.email "talaria-release@users.noreply.github.com"
           git -C omapak fetch origin main
+          # The checkout fetched main alone. With no remote-tracking ref for a
+          # branch an earlier attempt already pushed, --force-with-lease below
+          # expects it absent and refuses the re-run as "stale info". A first
+          # attempt has no such branch, so a failed fetch is expected there.
+          git -C omapak fetch origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || true
           # Always from main, so a re-run of the same tag replaces the branch
           # instead of stacking a second edit on the previous attempt.
           git -C omapak checkout -B "$branch" origin/main
