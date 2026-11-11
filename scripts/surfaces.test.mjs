@@ -568,6 +568,16 @@ await check('light: the lockfile maps to the members it changed', () => {
   ok(p.packages.includes('talaria-work-pulse') && p.itModules[0] === '*', JSON.stringify(p))
   eq(light(['api/Cargo.lock']).scope, 'workspace', 'a lockfile with no base to compare widens')
 })
+await check('light: a file another package reads by its path tests that reader too', () => {
+  const sandbox = light(['api/crates/talaria-fitness-toolbox/src/sandbox.rs'])
+  ok(sandbox.packages.includes('talaria-fitness-toolbox') && sandbox.packages.includes('talaria-harness-defs'),
+    `talaria-harness-defs include_str!s the toolbox's sandbox.rs: ${JSON.stringify(sandbox.packages)}`)
+  const grants = light(['api/tests/it/fixtures/app-grants.json'])
+  ok(grants.packages.includes('talaria-users') && grants.packages.includes('talaria-api'),
+    `talaria-users include_str!s the grants fixture: ${JSON.stringify(grants.packages)}`)
+  eq(grants.itModules, ['*'], 'a fixture still runs every live module')
+  eq(light(['api/tests/it/runs_store.rs']).packages, ['talaria-api'], 'a live module file names no other reader')
+})
 await check('light: an input outside api/ maps to the crates that read it', () =>
   ok(light(['scripts/hermes-toolsets.json']).packages.includes('talaria-agent-defs'), 'talaria-agent-defs reads it'))
 await check('light widens on the toolchain, the cargo config, the job files and an unmapped crate', () => {

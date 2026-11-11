@@ -860,6 +860,10 @@ jobs:
           path: ${{ runner.temp }}/bin/talaria-api
           retention-days: 3
           if-no-files-found: error
+          # A re-run of this job (or "re-run all jobs" after another job's
+          # flake) uploads the same name into the same run; v4 refuses a
+          # duplicate name unless told to replace it.
+          overwrite: true
 
   # The migration array (ui/src/server/db/pg.ts), replayed. Formerly
   # migrations.yml, which a `paths:` filter kept off the required list; as a job

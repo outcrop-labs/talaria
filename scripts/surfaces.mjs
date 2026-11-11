@@ -526,7 +526,9 @@ export function needsFull(branch) {
 // mode, and the root package depends on every crate, so a crate's library that
 // no longer compiles against a dependency's change is red in every mode. What
 // a light run narrows is the TESTS (and the test code they compile): the
-// packages the diff touches, and the live modules that reach them.
+// packages the diff touches, the packages that read a touched file by its path
+// (a shared fixture, another crate's source), and the live modules that reach
+// them.
 // Integration (testing) and full (rc, main, a release) test the workspace and
 // run every live module, so the light run's narrower answer is checked again
 // before anything ships.
@@ -1136,12 +1138,23 @@ export function planApi({ mode, all, files, root = process.cwd(), baseText, head
       const name = dir ? readPackageName(`api/crates/${dir}/Cargo.toml`, root) : null
       if (!name) return wide(`${file} maps to no package`)
       pkgs.add(name)
+      // Another package that reads this file by its path tests too:
+      // talaria-harness-defs holds a table to talaria-fitness-toolbox's
+      // sandbox.rs (`include_str!("../../talaria-fitness-toolbox/src/…")`).
+      for (const reader of packagesReading(file.slice('api/crates/'.length), root)) pkgs.add(reader)
     } else if (file.startsWith('api/tests/')) {
       // One live module's own file runs that module; the shared support,
       // the module list (main.rs) and the fixtures run them all.
       const m = /^api\/tests\/it\/([A-Za-z0-9_]+)\.rs$/.exec(file)
       if (m && m[1] !== 'main') itStems.add(m[1])
       else everyModule ||= `${file} is shared by every live module`
+      // A crate whose own tests read the file tests too: the shared fixtures
+      // (app-grants.json, collation.json, the github pem…) are include_str!'d
+      // by crates as `../../../tests/it/fixtures/…`. The root package is the
+      // module rule above.
+      for (const reader of packagesReading(file.slice('api/'.length), root)) {
+        if (reader !== layout.root) pkgs.add(reader)
+      }
     } else if (file.startsWith('api/src/') || file === 'api/build.rs') {
       pkgs.add(layout.root)
     } else if (file === 'api/Cargo.lock' || file === 'api/Cargo.toml') {
