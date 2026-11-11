@@ -324,6 +324,10 @@ from another base is refused until a push re-runs its checks, because CI does no
 on a base change and the checks it has were run in the old base's mode. Into `main`,
 the head must be this repository's `rc`.
 
+The same text in an ordinary commit message skips that commit's own push runs — the
+`ci/<branch>` offload included — and GitHub matches it anywhere in the message, so a
+commit *about* these markers has to describe them rather than quote them.
+
 It deliberately cannot tell a reviewed pull request merge from a local
 `git merge` into `rc` — that is branch protection's job, and it is the reason the
 rules above are the ones worth checking from a client: they fail closed on the

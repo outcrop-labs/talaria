@@ -68,7 +68,9 @@
 //            GitHub skip the push's workflows ([skip ci] and kin, or a
 //            `skip-checks: true` trailer). The merge commit carries both (the
 //            repository writes the title and body into it), so the branch push
-//            would land with no CI and no guard run on it.
+//            would land with no CI and no guard run on it. (The same holds
+//            for any commit message, quoted or not: a commit that names the
+//            markers literally starts no push run of its own.)
 //     into rc or main — a pull request RETARGETED there is refused until a
 //            push re-runs its checks: they ran in the mode the old base chose
 //            (light, for anything but rc or main), and CI does not re-run on a
