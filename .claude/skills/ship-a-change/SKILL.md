@@ -199,7 +199,7 @@ done when it runs on the testing instance and you have exercised it there.
    squash. `--admin` bypasses the review rule (`testing-review`), never the checks
    (`testing-checks` binds admins): a merge while a required check is pending or red is
    refused, which is the point. Without admin rights — the Talaria App, an outside
-   contributor — the merge waits for an admin's code-owner approval: report the green PR as
+   contributor — the merge waits for an approving review: report the green PR as
    "not ready to merge: waiting on review", and stop there.
 2. **Start the deploy watch in the background:**
    `node scripts/hooks/testing-watch.mjs <n>` (Claude Code: `run_in_background`). Merge to

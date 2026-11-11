@@ -201,4 +201,4 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 |---|---|
 | [`HANDOFF.md`](./HANDOFF.md) | Where to start; the old phase log lives in history |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | PR norms: verify, exercise, changelog, and the pull request against `testing` |
-| [`docs/BRANCHES.md`](./docs/BRANCHES.md) | The branch model: `testing` the integration lane, `rc` by snapshot + staging, `main` by promotion only, the gates and the rulesets that enforce them |
+| [`docs/BRANCHES.md`](./docs/BRANCHES.md) | The branch model: `testing` the integration lane, `rc` by snapshot + staging, `main` by promotion only, the gates and the repository settings that enforce them |

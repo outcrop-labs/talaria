@@ -35,7 +35,7 @@ git push origin origin/testing:refs/heads/promote/testing-$(git rev-parse --shor
 gh pr create --base rc --head promote/testing-<sha12> --title "promote: testing → rc"
 ```
 
-The snapshot never moves: full CI runs once (macOS, Windows, iOS, e2e), a code owner reviews,
+The snapshot never moves: full CI runs once (macOS, Windows, iOS, e2e), someone approves it,
 a person merges it as a merge commit. `pr target (flow)` refuses it while rc holds anything
 testing lacks — merge the open `sync: rc → testing` back-flow first, then cut a fresh
 snapshot. Never open a pull request from `testing` itself: a moving head restarts the battery

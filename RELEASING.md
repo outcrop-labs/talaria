@@ -31,7 +31,7 @@ are deployed and verified first:
 **The lanes into rc.** Features land on `testing` and are exercised there;
 `rc` takes them as a batch, by snapshot — `gh workflow run promote-testing.yml
 --ref main -f open=true` cuts `promote/testing-<sha12>` at testing's tip and
-opens its pull request into `rc` (full CI on every platform, a code-owner
+opens its pull request into `rc` (full CI on every platform, an approving
 review). The snapshot never moves, so the battery runs once per candidate and
 the commit merged is the commit checked. Besides it, `rc` takes only what is
 cut from `rc` itself: a `hotfix/` (no migrations), the changelog roll

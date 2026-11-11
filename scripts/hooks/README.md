@@ -106,7 +106,8 @@ Five entry points:
 
 A git hook is bypassable (`git push --no-verify`) and a stop gate is not a wall either; both
 are there so the right thing is the easy thing. What makes the branch model hold is the
-server-side half — the rulesets, and `flow.yml` failing the push after the fact.
+server-side half — branch protection and testing's rulesets, and `flow.yml` failing the push
+after the fact.
 
 ## Adding a hook
 

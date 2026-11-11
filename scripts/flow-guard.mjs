@@ -98,7 +98,7 @@
 //
 // WHAT IT DELIBERATELY CANNOT SEE, and who covers it. That a merge into rc or
 //   testing came from a reviewed PR rather than a local `git merge`: that is
-//   the rulesets' job ("require a pull request before merging" — the required
+//   branch protection's job ("require a pull request before merging" — the required
 //   settings are in docs/BRANCHES.md). What is left for a client-side
 //   check is the content shapes only a bypass produces, and those are the rules
 //   above. They fail closed on an unknown: an unresolvable base, a missing
