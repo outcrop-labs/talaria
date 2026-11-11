@@ -271,17 +271,26 @@ const STAMP = /^\uFEFF?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/
 // eslint-disable-next-line no-control-regex
 const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g
 
+/** A test runner's line for a test that PASSED — bun's `(pass) …`, vitest's
+ *  `✓ …`. A red's tail is for the failure: bun prints every passing test, so
+ *  80 lines of them hid the one that failed (the cli job's first red here). */
+const PASSED = /^\s*(?:\(pass\) |✓ )/
+
 /**
- * A job log, cut to what a reader needs: no timestamps or colour codes; ended
- * at the failing step (`##[error]Process completed with exit code`) or, with
- * none, before the post-job cleanup; then the last `maxLines` lines, and at
- * most `maxChars` characters, whole lines first.
+ * A job log, cut to what a reader needs: no timestamps, colour codes, blank
+ * lines, passing-test lines or the groups they leave empty; ended at the failing step (`##[error]Process completed
+ * with exit code`) or, with none, before the post-job cleanup; then the last
+ * `maxLines` lines, and at most `maxChars` characters, whole lines first.
  */
 export function trimLog(text, maxLines = 80, maxChars = 12000) {
   let lines = String(text ?? '')
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .map((l) => l.replace(STAMP, '').replace(ANSI, ''))
+    .filter((l) => l.trim() && !PASSED.test(l))
+  // A group left empty once its passing tests are gone (bun prints one per
+  // test file) says nothing.
+  lines = lines.filter((l, i, all) => !(l.startsWith('##[group]') && all[i + 1] === '##[endgroup]') && !(l === '##[endgroup]' && all[i - 1]?.startsWith('##[group]')))
   const failed = lines.findIndex((l) => l.startsWith('##[error]Process completed with exit code'))
   if (failed >= 0) lines = lines.slice(0, failed + 1)
   else {
@@ -680,8 +689,8 @@ async function watch(gh, id, { deadline, minAttempt = 1, settle = false }) {
       if (v.kind !== 'wait' && !(settle && runRow.status !== 'completed')) return { run: runRow, verdict: v }
       if (left <= 0) return { run: runRow, verdict: { ...v, kind: 'timeout' } }
       delay = nextDelay(delay, left)
-      const total = jobs.length
-      const done = total - v.pending.length
+      const done = v.ran.length + v.skipped.length + v.failing.length
+      const total = done + v.pending.length
       progress('waiting', `${runRow.html_url} — ${done}/${total} job(s) done${v.pending.length ? `; running: ${v.pending.join(', ')}` : ''} — next poll in ${delay}s, ${Math.ceil(left / 60)}m left`)
     } else {
       if (left <= 0) return { run: runRow, verdict: { kind: 'timeout', ran: [], skipped: [], failing: [], pending: [] } }

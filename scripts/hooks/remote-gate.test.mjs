@@ -270,6 +270,27 @@ check('trimLog: no timestamps or colour, cut at the failing step, not the post-j
   eq(trimLog(undefined), '')
 })
 
+check('trimLog: passing-test lines are dropped, so the failure is what the tail holds', () => {
+  // The shape of the cli job's red on run 42953027808: bun prints every pass.
+  const bun = [
+    ...Array.from({ length: 120 }, (_, i) => `2026-11-11T03:29:01.0000000Z (pass) box new > case ${i} [0.20ms]`),
+    '2026-11-11T03:29:01.0000000Z src/zz.test.ts:',
+    '2026-11-11T03:29:01.0000000Z error: expect(received).toBe(expected)',
+    '2026-11-11T03:29:01.0000000Z Expected: 3',
+    '2026-11-11T03:29:01.0000000Z Received: 2',
+    '2026-11-11T03:29:01.0000000Z (fail) remote-gate red probe [0.18ms]',
+    ...Array.from({ length: 120 }, (_, i) => `2026-11-11T03:29:02.0000000Z (pass) app new > case ${i} [0.03ms]`),
+    '2026-11-11T03:29:02.0000000Z  482 pass',
+    '2026-11-11T03:29:02.0000000Z  1 fail',
+    '2026-11-11T03:29:02.0000000Z ##[error]Process completed with exit code 1.',
+  ].join('\n')
+  const tail = trimLog(bun)
+  ok(tail.includes('Expected: 3') && tail.includes('(fail) remote-gate red probe'), tail)
+  ok(!tail.includes('(pass)'), tail)
+  ok(tail.includes(' 482 pass'), 'the summary is not a passing-test line')
+  eq(trimLog('   ✓ src/a.test.ts > adds 2ms\n   × src/a.test.ts > subtracts 1ms'), '   × src/a.test.ts > subtracts 1ms')
+})
+
 check('trimLog: at most maxLines lines and maxChars characters, whole lines first', () => {
   const many = Array.from({ length: 500 }, (_, i) => `line ${i}`).join('\n')
   const tail = trimLog(many, 80, 12000).split('\n')
