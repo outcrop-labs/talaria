@@ -822,8 +822,8 @@ await check("ci.yml's image job builds the app image when its surface moved, and
   ok(/docker build\b/.test(body) && !/docker (push|login)\b/.test(body), 'the image job must build and never log in or push')
   ok(/persist-credentials: false/.test(body), 'the image job keeps no credential in the checkout')
 })
-await check("ci.yml's header lists the contexts docs/BRANCHES.md's rulesets require, and each is a job", () => {
-  // The header's REQUIRED CONTEXTS table: `<context>  <rulesets…>` rows.
+await check("ci.yml's header lists the contexts docs/BRANCHES.md requires per branch, and each is a job", () => {
+  // The header's REQUIRED CONTEXTS table: `<context>  <branches…>` rows.
   const block = /^# REQUIRED CONTEXTS\.[\s\S]*?\n#\s*\n([\s\S]*?)\n#\s*\n/m.exec(ciYml)
   ok(block, 'the header has no REQUIRED CONTEXTS table')
   const header = new Map(['testing', 'rc', 'main'].map((b) => [b, new Set()]))
@@ -835,12 +835,21 @@ await check("ci.yml's header lists the contexts docs/BRANCHES.md's rulesets requ
   const flowYml = readFileSync(join(ROOT, '.github/workflows/flow.yml'), 'utf8')
   const names = new Set([...ciYml.matchAll(/^ {4}name: (.+)$/gm), ...flowYml.matchAll(/^ {4}name: (.+)$/gm)].map((m) => m[1].trim()))
   const doc = readFileSync(join(ROOT, 'docs/BRANCHES.md'), 'utf8')
+  // testing: the testing-checks ruleset. rc and main: the classic protection
+  // table's "Required checks" row — rc's cell, then main's (`none` is empty).
+  const ruleset = /^\{"name":"testing-checks".*$/m.exec(doc)
+  ok(ruleset, 'docs/BRANCHES.md has no testing-checks ruleset')
+  const classic = /^\| Required checks[^|]*\|([^|]*)\|([^|]*)\|\s*$/m.exec(doc)
+  ok(classic, "docs/BRANCHES.md's protection table has no Required checks row")
+  const cell = (c) => [...c.matchAll(/`([^`]+)`/g)].map((m) => m[1])
+  const required = new Map([
+    ['testing', JSON.parse(ruleset[0]).rules[0].parameters.required_status_checks.map((c) => c.context)],
+    ['rc', cell(classic[1])],
+    ['main', cell(classic[2])],
+  ])
   for (const [branch, set] of header) {
     for (const ctx of set) ok(names.has(ctx), `${ctx} is in the header but is no job name in ci.yml or flow.yml`)
-    const m = new RegExp(`^\\{"name":"${branch}-checks".*$`, 'm').exec(doc)
-    ok(m, `docs/BRANCHES.md has no ${branch}-checks ruleset`)
-    const required = JSON.parse(m[0]).rules[0].parameters.required_status_checks.map((c) => c.context).sort()
-    eq([...set].sort(), required, `${branch}-checks`)
+    eq([...set].sort(), required.get(branch).sort(), `${branch}'s required checks`)
   }
 })
 await check('ci-offload.yml calls ci.yml with a mode, under a name that is not CI', () => {

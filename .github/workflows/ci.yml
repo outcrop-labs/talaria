@@ -52,33 +52,34 @@
 #   long-lived branches check everything since their own last GREEN push run,
 #   so a push whose run was cancelled or went red is covered by the next one.
 #
-# REQUIRED CONTEXTS. Job names are contexts — never rename one. The rulesets
-#   (docs/BRANCHES.md → The required settings) match a job's `name:` string,
-#   so a renamed job leaves the old context pending for ever and the new one
-#   unrequired. Each row is a context and the rulesets that require it
-#   (testing-checks, rc-checks, main-checks); scripts/surfaces.test.mjs holds
-#   the table to those rulesets and to the job names here and in flow.yml:
+# REQUIRED CONTEXTS. Job names are contexts — never rename one. The branch
+#   rules (docs/BRANCHES.md → The required settings) match a job's `name:`
+#   string, so a renamed job leaves the old context pending for ever and the
+#   new one unrequired. Each row is a context and the branches that require it:
+#   testing by its `testing-checks` ruleset, rc by its classic branch
+#   protection, main by nothing today. scripts/surfaces.test.mjs holds the
+#   table to docs/BRANCHES.md's lists and to the job names here and in flow.yml:
 #
-#     what changed                                      testing rc main
-#     invariants (no deps)                              testing rc main
+#     what changed                                      testing rc
+#     invariants (no deps)                              testing rc
 #     test + typecheck (ui)                             testing rc
 #     typecheck + build (mcp)                           testing rc
 #     typecheck + test (cli)                            testing rc
 #     fmt + clippy + test (api)                         testing rc
-#     migrations (replay + upgrade)                     testing rc
-#     app image builds (docker)                         testing rc
+#     migrations (replay + upgrade)                     testing
+#     app image builds (docker)                         testing
 #     fmt + clippy + test + typecheck (desktop)         testing rc
-#     test + assemble (mobile)                          testing rc
+#     test + assemble (mobile)                          testing
 #     clippy + test + connect smoke (desktop macos)     rc
 #     clippy + test + connect smoke (desktop windows)   rc
-#     compile + link (mobile ios)                       rc
-#     mcp end-to-end (playwright)                       rc
-#     pr target (flow)                                  testing rc main
-#     promotion gate (rc verified)                      main
+#     pr target (flow)                                  testing
 #
-#   The last two are flow.yml's. A job skipped by its job-level `if` reports
-#   success, so a surface that did not move satisfies its context (the
-#   `paths:` note below). Called from another workflow, the same jobs report as
+#   `pr target (flow)` and `promotion gate (rc verified)` are flow.yml's; both
+#   report on pull requests into rc and main without being required there,
+#   and so do `compile + link (mobile ios)` and `mcp end-to-end (playwright)`.
+#   A context joins a list only once that branch's own ci.yml reports it. A
+#   job skipped by its job-level `if` reports success, so a surface that did
+#   not move satisfies its context (the `paths:` note below). Called from another workflow, the same jobs report as
 #   `<caller job> / <name>` (`offload / …`, `ci / …`), which is why an offload
 #   or a release run can never satisfy, or shadow, a required context.
 #
@@ -169,7 +170,7 @@
 #     skipped by a job-level `if` counts as a SUCCESSFUL required check, so a
 #     skipped surface cannot wedge a merge either (GitHub's documented behavior
 #     for skipped jobs; it is the workflow-level filter that reports nothing at
-#     all). These jobs are required checks on testing, rc and main (REQUIRED
+#     all). These jobs are required checks on testing and rc (REQUIRED
 #     CONTEXTS above) — which is exactly why there is no `paths:` filter on
 #     this file's triggers.
 #
