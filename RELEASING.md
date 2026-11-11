@@ -78,7 +78,11 @@ the notes, so change the entries, not the Release page.
 
 A malformed tag (`v1.0`, `v1.0.0-beta.1`, `v1.0.0-RC.1` — the grammar is
 `vX.Y.Z-rc.N`, lowercase, exactly) fails the workflow loudly rather than
-publishing anything. Delete a misfire by deleting the tag.
+publishing anything. So does a tag on the wrong branch. `release.yml` publishes
+a `vX.Y.Z-rc.N` only when its commit is on `rc`, and a stable `vX.Y.Z` only
+when its commit is on `main`. A tag cut on `testing` or on a feature branch is
+refused before CI starts, because a release publishes only promoted code.
+Delete a misfire by deleting the tag.
 
 One trap when you re-cut a tag that already opened a release: **GitHub converts
 that release to a draft** when its tag goes away, and the next run finds the
@@ -302,8 +306,13 @@ update until Desktop passed 0.13. A `desktop-v*` release carries linux
 `.deb`/`.rpm`/`AppImage`/`.pkg.tar.zst`/`.flatpak`, macOS a universal `.dmg`
 (and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, a `SHA256SUMS`
 over all of them, and the `latest.json` and `.sig` files the updater reads,
-which need the `TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey
-is in `desktop/src-tauri/tauri.conf.json`).
+which need `TAURI_SIGNING_PRIVATE_KEY` (the matching pubkey is in
+`desktop/src-tauri/tauri.conf.json`). That key is a secret of the
+`desktop-release` environment, which admits only `main` and `desktop-v*` tags.
+So only those refs sign or publish: a `desktop-package` dispatch from any other
+branch builds every installer unsigned and attaches nothing. That is how to
+exercise an edit to the workflow, which no longer mints a release when it reaches
+main (only `desktop/` and the dither file do).
 
 A trunk build that touches `desktop/` IS a desktop release — the auto-minor channel: once
 every platform job is green, `desktop-package.yml` mints `desktop-vX.Y.0`
@@ -330,9 +339,9 @@ A published `desktop-v*` release also opens
 a pull request on [omapak](https://github.com/outcrop-labs/omapak) that moves
 `app.talaria.desktop` to that tag and regenerates the vendored cargo and bun
 sources (`omapak-submit.yml`). The store judge still scores it; the workflow
-does not merge. That needs a repository secret `OMAPAK_SUBMIT_TOKEN` (a
-fine-grained PAT or GitHub App token with contents and pull-requests write
-on `outcrop-labs/omapak`). Without it the job fails on purpose: a rolled
+does not merge. That needs `OMAPAK_SUBMIT_TOKEN`, a secret of the same
+`desktop-release` environment (a fine-grained PAT or GitHub App token with
+contents and pull-requests write on `outcrop-labs/omapak`). Without it the job fails on purpose: a rolled
 release that never reaches the store is a red run, not a quiet success.
 Before any work the job asks GitHub's git server whether the token may push
 (receive-pack's ref advertisement), and a token that may not fails there with

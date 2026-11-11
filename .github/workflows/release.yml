@@ -77,6 +77,15 @@
 #   machine invents a version: the version is in a reviewed file before any tag
 #   names it, and the tag follows a person's merge (RELEASING.md).
 #
+# WHERE A TAG MAY POINT. Only at promoted code. `resolve` refuses a stable
+#   vX.Y.Z whose commit is not on main, and a vX.Y.Z-rc.N whose commit is not
+#   on rc. A tag is a single push for anyone with write access. Without the
+#   check, a tag on testing, where code integrates before rc stages it, or on
+#   a feature branch would publish `latest` or `rc` from code that never passed
+#   rc's review and staging deploy. A tag ruleset can limit who may push v*
+#   tags. This check holds with or without one, because it judges the commit
+#   the tag names, not the person who pushed it.
+#
 # DELIBERATELY LEFT OUT (do not treat these as oversights):
 #   - Nightly GitHub Releases. 365 prereleases a year is tag noise with no
 #     reader; the dated image tags carry the history, RELEASING.md says where
@@ -120,9 +129,10 @@ permissions:
   contents: read # escalated per-job in `publish` only
 
 jobs:
-  # Pure event→outputs math, no checkout. Everything downstream (which ref to
-  # test and build, which tags to push, whether a Release opens) is decided
-  # HERE, once, in one place a human can read.
+  # Event→outputs math, no checkout. A tag run also fetches main's and rc's
+  # commits, with no files, for its provenance check. Everything downstream
+  # (which ref to test and build, which tags to push, whether a Release opens)
+  # is decided HERE, once, in one place a human can read.
   resolve:
     name: resolve channel
     runs-on: ubuntu-latest
@@ -163,6 +173,34 @@ jobs:
             fi
             EVENT=push
           fi
+          # TAG PROVENANCE: a release publishes only promoted code. A stable
+          # vX.Y.Z must name a commit on main, and a vX.Y.Z-rc.N one on rc.
+          # Anyone with write access can push a tag, and testing carries code
+          # that rc has not staged yet. Without this check, a tag on testing or
+          # on a feature branch would publish `latest` or `rc` from code that
+          # skipped rc's review and staging deploy. The branches are read as
+          # GitHub has them now, in a treeless fetch: commits only, no files,
+          # so this job still checks nothing out. The tag's own ref comes too,
+          # so the tagged commit is there to compare even when it is on
+          # neither branch. Schedule and channel dispatches build the rc tip by
+          # name and skip this, because no tag vouches for anything. A dispatch
+          # at a tag became a push above and is checked like one.
+          on_branch() {
+            local home=$1 prov="$RUNNER_TEMP/provenance" auth
+            git init -q "$prov"
+            git -C "$prov" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+            if ! git -C "$prov" -c "http.extraheader=$auth" fetch --no-tags --quiet --filter=tree:0 \
+                origin main rc "+$GITHUB_REF:$GITHUB_REF"; then
+              echo "::error::could not fetch main, rc and $GITHUB_REF to check where $GITHUB_REF_NAME points, so not publishing. Re-run once GitHub answers."
+              exit 1
+            fi
+            if ! git -C "$prov" merge-base --is-ancestor "$GITHUB_SHA" "origin/$home" 2>/dev/null; then
+              echo "::error::tag $GITHUB_REF_NAME points at ${GITHUB_SHA:0:12}, which is not on $home — a release publishes only promoted code. A stable vX.Y.Z is cut on main and a vX.Y.Z-rc.N on rc (RELEASING.md)."
+              exit 1
+            fi
+            echo "provenance: $GITHUB_REF_NAME (${GITHUB_SHA:0:12}) is on $home"
+          }
           case "$EVENT" in
             schedule)
               channel=nightly; ref=rc
@@ -186,9 +224,11 @@ jobs:
               if   [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
                 channel=rc; ref="$tag"; version="${tag#v}"
                 tags=("$version" rc); moving=rc; release=true; prerelease=true
+                on_branch rc
               elif [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                 channel=stable; ref="$tag"; version="${tag#v}"
                 tags=("$version" latest); moving=latest; release=true; prerelease=false
+                on_branch main
               else
                 echo "::error::$tag is neither vX.Y.Z nor vX.Y.Z-rc.N — refusing to publish. A malformed tag must fail loudly, not fall through to latest."
                 exit 1

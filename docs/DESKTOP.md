@@ -943,7 +943,9 @@ launcher's Check for updates and Settings → Profile say how to update instead 
 package or `.msi` from the Releases page — and the chip offers Later only; `install_update`
 refuses with the same sentence, for an older instance UI that still shows Install.
 
-Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
+Signing uses `TAURI_SIGNING_PRIVATE_KEY`, a secret of the `desktop-release` GitHub
+environment, which only `main` and `desktop-v*` tags reach. A build from any other branch
+is unsigned (RELEASING.md, "The desktop installers"). Losing that key
 means installed copies can no longer verify a new payload. OS code signing
 (Gatekeeper / SmartScreen) is still absent; this signature is the updater's own.
 
