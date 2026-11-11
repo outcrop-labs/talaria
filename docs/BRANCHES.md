@@ -24,8 +24,10 @@ graph LR
   A[working branch] -->|pull request| B[rc]
   B -->|CI + rc-deploy.yml| C{verified?}
   C -->|yes| D[promote.yml: verify, open rc → main]
+  B -->|changelog/ has entries| R[promote.yml: open the roll against rc]
+  R -->|a human merges| B
   D -->|checks green, a human merges| E[main]
-  E -->|human pushes a tag| F[release.yml publishes]
+  E -->|tag-release.yml tags the new section| F[release.yml publishes]
 ```
 
 1. **Open a pull request against `rc`.** Not `main` — `main` accepts one source
@@ -56,7 +58,9 @@ graph LR
 6. **The promotion gate re-checks the evidence.** On the promotion pull request,
    `flow.yml`'s `promotion-gate` reads the Actions API and requires a green CI run
    *and* a green `rc-deploy` run for the head commit — the same query
-   `promote.yml` makes for the body, so the two cannot disagree. The pull
+   `promote.yml` makes for the body, so the two cannot disagree. It also fails
+   while the head carries `changelog/` entries: every promotion is a release, so
+   they are rolled into a section first, and the roll's merge re-runs the gate. The pull
    request's checks fire the moment `rc` is pushed, which is the same moment
    those two runs *start*, so the gate waits for both to finish rather than
    failing ahead of its own evidence: a failed required check is never
@@ -67,9 +71,11 @@ graph LR
    Deliberately not automatic by default: a merge performed with `GITHUB_TOKEN`
    would land on `main` and start nothing — not `ci.yml`, not the push guard, and
    not the trunk image feed the in-app updater rolls from.
-8. **Cut a release when you mean to.** An RC tag on `rc` (`vX.Y.Z-rc.N`) or a
-   stable tag on `main` (`vX.Y.Z`) is a human's decision; `release.yml` does the
-   rest. [`RELEASING.md`](../RELEASING.md) has the channel machinery.
+8. **The release follows the merge.** A person decided the version by merging
+   the changelog roll, so `tag-release.yml` tags `main` `vX.Y.Z` when the
+   promotion lands a section no tag names yet, and `release.yml` does the rest.
+   An RC tag on `rc` (`vX.Y.Z-rc.N`) is still cut by hand.
+   [`RELEASING.md`](../RELEASING.md) has the channel machinery.
 
 Nothing in that flow is a judgement call, and no step is skipped by aiming
 somewhere else: the only door into `main` is the promotion, and the promotion
@@ -84,7 +90,7 @@ cannot open until the commit has been deployed.
 | `ci.yml` | pull requests, pushes to `rc`/`main`, and every publish | the tripwire: each surface's tests, typecheck, and the prod-bundle SPA smoke |
 | `migrations.yml` | migration-touching changes | the array replays from zero *and* upgrades a baseline, with the schema snapshot undrifted |
 | `rc-deploy.yml` | every push to `rc` | the commit's own image boots as a fresh instance and answers — the staging deploy |
-| `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc`: CI green, deploy green |
+| `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc` (CI green, deploy green) and carries no unrolled `changelog/` entries |
 | `mobile-package.yml` | pull requests touching `mobile/`, pushes to rc/main, and on demand | a debug-signed Android APK attached to the run, for testing on a real device against a real instance. Debug-signed is not distributable — the debug keystore ships with every Android SDK — so it is an `adb install` artifact and nothing else |
 | `judge.yml` | every pull request | the standards half: the flow, the changelog claim against the surfaces touched, tests, generated trees, commit subjects — plus one sticky comment. Not a required check yet, on purpose |
 | `branch-push` (flow.yml) | pushes to `main`, `rc`, `testing` | content provenance: what a push introduces came from where it is allowed to come from |

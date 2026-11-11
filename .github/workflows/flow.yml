@@ -16,7 +16,9 @@
 #   promotion-gate a pull request to main requires rc's head commit to have a
 #                  green CI run AND a green rc-deploy run, read from the
 #                  Actions API. This is "verified in RC before it reaches
-#                  main", checked rather than assumed.
+#                  main", checked rather than assumed. The head must also
+#                  carry no changelog/ entries: every promotion is a release,
+#                  so its changes are rolled into a section first.
 #   branch-push    a push to main may carry only commits that were already on
 #                  rc; a push to rc must be a merge commit (what a PR merge
 #                  leaves) or a fast-forward of main. The rules and their
@@ -184,6 +186,24 @@ jobs:
                   else "red" end
                 end'
           }
+
+          # Rolled first. Every promotion is a release (tag-release.yml tags
+          # main when CHANGELOG.md has an untagged section), and its notes are
+          # that section, so a head still carrying changelog/ entries would
+          # ship them outside it. promote.yml offers the roll; its merge moves
+          # rc, and the `synchronize` it causes runs this gate again.
+          if listing=$(gh api "repos/$REPO/contents/changelog?ref=$SHA" 2>&1); then
+            entries=$(printf '%s' "$listing" | jq '[.[] | select(.name | endswith(".md"))] | length')
+          elif printf '%s' "$listing" | grep -q 'HTTP 404'; then
+            entries=0
+          else
+            echo "::error::could not list changelog/ at $SHA: $listing"
+            exit 1
+          fi
+          if [ "$entries" -gt 0 ]; then
+            echo "::error::$SHA carries $entries changelog/ entr$([ "$entries" = 1 ] && echo y || echo ies) that no release section holds. Merge the changelog roll's pull request against rc first (promote.yml opens it; RELEASING.md, \"Promoting to stable\"). This gate runs again when rc moves."
+            exit 1
+          fi
 
           waited=0
           absent_since=

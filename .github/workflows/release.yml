@@ -142,11 +142,22 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           DISPATCH_CHANNEL: ${{ inputs.channel }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           # A dispatch AT a tag is that tag's release (tag-release.yml's hand-off):
-          # the tag name below is the version, exactly as for a pushed tag.
+          # the tag name below is the version, exactly as for a pushed tag. A
+          # stable one must be the newest stable tag, so a dispatch at an old
+          # tag (the ref picker makes that one click) can't move `latest` back.
           if [ "$EVENT" = workflow_dispatch ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              newest=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | sub("^refs/tags/"; "")' \
+                | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+              if [ "$GITHUB_REF_NAME" != "$newest" ]; then
+                echo "::error::$GITHUB_REF_NAME is not the newest stable tag ($newest), and publishing it would move latest backwards. Re-publish an old stable by pushing its tag again only if that is what you mean."
+                exit 1
+              fi
+            fi
             EVENT=push
           fi
           case "$EVENT" in

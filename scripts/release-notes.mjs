@@ -46,12 +46,32 @@ export function sectionOf(changelog, version) {
   return body
 }
 
-/** A section's entries: each starts at a `- **` line and runs to the next. */
+/** Everything a version ships: its own section, and for a stable, the
+ *  `X.Y.Z-rc.N` sections cut on the way to it. With more than one, each
+ *  keeps its heading as a `###` line, so the full text says which was which. */
+export function sectionsFor(changelog, version) {
+  const own = sectionOf(changelog, version)
+  if (!own || !parse(version)) return own
+  const rcs = changelog
+    .split('\n')
+    .map((l) => new RegExp(`^## (${version.replace(/\./g, '\\.')}-rc\\.\\d+) \\(`).exec(l)?.[1])
+    .filter(Boolean)
+  if (!rcs.length) return own
+  const heading = (v) => changelog.split('\n').find((l) => l.startsWith(`## ${v} (`)).slice(3)
+  return [version, ...rcs].flatMap((v, i) => [...(i ? [''] : []), `### ${heading(v)}`, '', ...sectionOf(changelog, v)])
+}
+
+/** A section's entries: each starts at a `- **` line and runs to the next
+ *  entry or heading. */
 export function entriesOf(section) {
   const entries = []
+  let open = false
   for (const line of section) {
-    if (/^- \*\*/.test(line)) entries.push([line])
-    else if (entries.length) entries.at(-1).push(line)
+    if (/^- \*\*/.test(line)) {
+      entries.push([line])
+      open = true
+    } else if (line.startsWith('#')) open = false
+    else if (open) entries.at(-1).push(line)
   }
   return entries.map((e) => {
     while (e.length && e.at(-1).trim() === '') e.pop()
@@ -189,7 +209,7 @@ if (import.meta.main ?? process.argv[1] === import.meta.filename) {
     process.exit(2)
   }
   const changelog = fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8')
-  const section = sectionOf(changelog, version)
+  const section = sectionsFor(changelog, version)
   if (!section) {
     console.error(`release-notes: CHANGELOG.md has no "## ${version} (" section`)
     process.exit(1)

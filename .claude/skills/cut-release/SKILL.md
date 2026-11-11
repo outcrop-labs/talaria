@@ -38,9 +38,9 @@ git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 ```
 
 Roll the changelog BEFORE tagging — the tagged tree must carry the section, so the tag says
-what it holds and the promotion carries it to main. (The release's notes link is
-`blob/main/CHANGELOG.md`, not the tag: an RC's section shows there only after rc is
-promoted.) **Never push the roll commit to rc
+what it holds and the promotion carries it to main. (The release's notes are built from
+that section by `scripts/release-notes.mjs`, linking `blob/<tag>/CHANGELOG.md`.) **Never
+push the roll commit to rc
 yourself:** `scripts/flow-guard.mjs` refuses an rc tip that is not a merge (the pre-push
 hook locally, `flow.yml` in CI), so the roll lands the way everything does — a pull request
 against rc. Hold other merges to rc between the roll's merge and the tag: a PR that lands in
@@ -52,8 +52,8 @@ Tag the tip whose staging deploy you watched (Actions → rc-deploy); that deplo
 is supposed to carry. Nothing else needs advancing first — `rc` is where the work is.
 
 The tag push runs the release workflow: full CI against the tag, images land on GHCR as
-`0.2.0-rc.1` + (moving) `rc`, and a GitHub **prerelease** opens with a stub body pointing
-at CHANGELOG.md — edit the notes after if you want more, or leave the stub.
+`0.2.0-rc.1` + (moving) `rc`, and a GitHub **prerelease** opens with notes built from the
+`## 0.2.0-rc.1` section. A re-run rewrites them, so fix the entries rather than the page.
 
 **Tag grammar is exact:** `vX.Y.Z-rc.N`, lowercase, exactly. `v1.0`, `v1.0.0-beta.1`,
 `v1.0.0-RC.1` all fail the workflow loudly rather than publishing. A misfire is deleted
@@ -81,10 +81,13 @@ Two steps, in this order: the promotion, then the tag.
 # 1. main catches up — promote.yml verifies rc's tip once its deploy is green and
 #    offers the rc → main PR (opened for you when a PROMOTION_TOKEN is set).
 #    Merge it as a merge commit. Actions → promote if it has not appeared.
-# 2. tag what main now is:
+# 2. tag what main now is (tag-release.yml does this when a section is pending):
 git switch main && git pull
-git tag v0.2.0 && git push origin v0.2.0
+git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
 ```
+
+If `tag-release.yml` pushed the tag but its dispatch failed, re-run it (it re-dispatches a
+tag at HEAD that has no Release), or `gh workflow run release.yml --ref v0.2.0`.
 
 A stable's notes come from the same roll. If entries landed on rc after the last RC's roll,
 roll them the same way — a pull request against rc — before step 1, under the stable's own

@@ -7,8 +7,8 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bumpOf, lastStable, next, pending } from './release-version.mjs'
-import { entriesOf, leadOf, migrationCount, render, sectionOf, upgradesOf } from './release-notes.mjs'
+import { bumpOf, lastStable, next, pending, rcFloor } from './release-version.mjs'
+import { entriesOf, leadOf, migrationCount, render, sectionOf, sectionsFor, upgradesOf } from './release-notes.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 let failed = 0
@@ -40,7 +40,7 @@ function throws(fn, pattern) {
   throw new Error(`did not throw ${pattern}`)
 }
 
-const TAGS = ['v0.12.0', 'v0.13.0', 'v0.13.1', 'v0.13.2', 'v0.14.0-rc.1', 'desktop-v0.12.0', 'mobile-v0.2.0']
+const TAGS = ['v0.12.0', 'v0.13.0', 'v0.13.1', 'v0.13.2', 'v0.13.0-rc.1', 'desktop-v0.12.0', 'mobile-v0.2.0']
 const changelog = (top) => `# Changelog\n\n## [Unreleased]\n\n## ${top} (2026-11-10)\n\n- **x.**\n`
 const minor = '- **New: a thing.**\n\n<!-- bump: minor -->\n'
 
@@ -65,6 +65,18 @@ check('an override must be X.Y.Z and newer than the newest tag', () => {
   throws(() => next({ tags: TAGS, changelog: changelog('0.13.2'), entries: [], override: 'v1.0' }), /not X\.Y\.Z/)
 })
 check('an unknown bump level is refused', () => throws(() => bumpOf('- **a.**\n<!-- bump: huge -->\n'), /huge/))
+check('an indented marker counts; a malformed one is refused; prose quoting one is not a marker', () => {
+  eq(bumpOf('- **a.**\n\n  <!-- bump: minor -->\n'), 'minor')
+  throws(() => bumpOf('- **a.**\n<!-- bump minor -->\n'), /not a bump marker/)
+  eq(bumpOf('- **a.** Ask with a `<!-- bump: minor -->` line.\n'), 'patch')
+})
+check('an RC newer than the newest stable is the floor', () => {
+  const tags = [...TAGS, 'v0.14.0-rc.1']
+  eq(rcFloor(tags), '0.14.0')
+  eq(rcFloor(TAGS), null)
+  eq(next({ tags, changelog: changelog('0.13.2'), entries: ['- **a.**\n'] }), { version: '0.14.0', mode: 'new', level: 'patch' })
+  eq(next({ tags, changelog: changelog('0.13.2'), entries: ['- **a.**\n<!-- bump: major -->\n'] }).version, '1.0.0')
+})
 
 // ── changelog-roll ──────────────────────────────────────────────────────────
 function rollIn(changelogText, entries, args) {
@@ -77,12 +89,14 @@ function rollIn(changelogText, entries, args) {
     for (const [name, body] of Object.entries(entries)) writeFileSync(join(dir, 'changelog', name), body)
     const r = spawnSync(process.execPath, [join(dir, 'scripts', 'changelog-roll.mjs'), ...args], { encoding: 'utf8' })
     if (r.status !== 0) throw new Error(`roll exited ${r.status}: ${r.stderr}`)
-    return { text: readFileSync(join(dir, 'CHANGELOG.md'), 'utf8'), left: readdirSync(join(dir, 'changelog')) }
+    // The roll dates its heading itself; a run straddling midnight must not fail.
+    const text = readFileSync(join(dir, 'CHANGELOG.md'), 'utf8').replace(new RegExp(`^## ${args[0].replace(/\./g, '\\.')} \\(\\d{4}-\\d{2}-\\d{2}\\)$`, 'm'), `## ${args[0]} (TODAY)`)
+    return { text, left: readdirSync(join(dir, 'changelog')) }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 }
-const today = new Date().toISOString().slice(0, 10)
+const today = 'TODAY'
 const base = '# Changelog\n\n## [Unreleased]\n\n## 0.13.3 (2026-11-01)\n\n- **Old pending.**\n\n## 0.13.2 (2026-10-01)\n\n- **Released.**\n'
 
 check('a new roll opens a section and strips the bump line', () => {
@@ -93,6 +107,34 @@ check('a new roll opens a section and strips the bump line', () => {
 check('--extend folds entries into the pending section and re-heads it', () => {
   const { text } = rollIn(base, { '2026-11-02-a.md': '- **Late fix.**\n\n  Verified: yes.\n' }, ['0.13.3', '--extend'])
   eq(text, `# Changelog\n\n## [Unreleased]\n\n## 0.13.3 (${today})\n\n- **Old pending.**\n\n- **Late fix.**\n\n  Verified: yes.\n\n## 0.13.2 (2026-10-01)\n\n- **Released.**\n`)
+})
+check('in a git checkout, the roll refuses a new section over a pending one, and --extend onto a tagged one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'release-chain-'))
+  const git = (...a) => {
+    const r = spawnSync('git', a, { cwd: dir, encoding: 'utf8' })
+    if (r.status !== 0) throw new Error(`git ${a.join(' ')}: ${r.stderr}`)
+  }
+  const roll = (...a) => spawnSync(process.execPath, [join(dir, 'scripts', 'changelog-roll.mjs'), ...a], { cwd: dir, encoding: 'utf8' })
+  try {
+    mkdirSync(join(dir, 'scripts'))
+    mkdirSync(join(dir, 'changelog'))
+    for (const f of ['changelog-roll.mjs', 'release-version.mjs']) copyFileSync(join(ROOT, 'scripts', f), join(dir, 'scripts', f))
+    writeFileSync(join(dir, 'CHANGELOG.md'), base)
+    writeFileSync(join(dir, 'changelog', '2026-11-02-a.md'), '- **Late.**\n')
+    git('init', '-q')
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base')
+    git('tag', 'v0.13.2')
+    let r = roll('0.13.4')
+    eq(r.status, 1)
+    if (!/## 0\.13\.3 is rolled but not tagged/.test(r.stderr)) throw new Error(r.stderr)
+    git('tag', 'v0.13.3')
+    r = roll('0.13.3', '--extend')
+    eq(r.status, 1)
+    if (!/already tagged/.test(r.stderr)) throw new Error(r.stderr)
+    eq(roll('0.13.4').status, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 check('--check names an entry with an unknown bump level', () => {
   const dir = mkdtempSync(join(tmpdir(), 'release-chain-'))
@@ -168,6 +210,15 @@ check('with nothing to do, the notes say so; an RC names the rc tag', () => {
   const body = render({ version: '0.14.0-rc.1', repo: 'o/t', section, prs: new Map(), migrations: { before: 1, after: 1 }, desktop: null, prev: 'v0.13.2' })
   if (!body.includes('- **No database migrations.**\n- No entry in this release asks for a step')) throw new Error(body)
   if (!body.includes('and the moving `rc`')) throw new Error(body)
+})
+check('a stable folds in its RC sections, each under its heading', () => {
+  const text = '## [Unreleased]\n\n## 0.14.0 (2026-12-01)\n\n- **Late.**\n\n## 0.14.0-rc.1 (2026-11-20)\n\n- **Early.**\n\n  Upgrade: roll.\n\n## 0.13.2 (2026-11-10)\n\n- **Old.**\n'
+  const s = sectionsFor(text, '0.14.0')
+  eq(s, ['### 0.14.0 (2026-12-01)', '', '- **Late.**', '', '### 0.14.0-rc.1 (2026-11-20)', '', '- **Early.**', '', '  Upgrade: roll.'])
+  eq(entriesOf(s).map(leadOf), ['Late.', 'Early.'])
+  eq(entriesOf(s).flatMap(upgradesOf), ['roll.'])
+  eq(sectionsFor(text, '0.14.0-rc.1'), ['- **Early.**', '', '  Upgrade: roll.'])
+  eq(sectionsFor(text, '0.13.2'), ['- **Old.**'])
 })
 check('a section past the body limit keeps the list and drops the full text', () => {
   const section = ['- **Big.**', '', `  ${'x'.repeat(130_000)}`]

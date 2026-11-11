@@ -52,10 +52,10 @@ git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 
 The roll comes first because the tagged tree must carry the version's
 section: a checkout of the tag then says what it holds, and the promotion
-carries the same section to main. The release's notes link is not pinned to
-the tag: `release.yml` points it at `blob/main/CHANGELOG.md`, so an RC's
-section shows behind that link only once rc is promoted, and until then it is
-in rc's CHANGELOG.md. It is a pull
+carries the same section to main. The release's notes are built from that
+section, and their full-changelog link points at the tag
+(`blob/vX.Y.Z-rc.N/CHANGELOG.md`), so it resolves from the moment the tag
+exists. It is a pull
 request because rc moves only by merges — `scripts/flow-guard.mjs` refuses a
 hand-made commit pushed to rc, in the pre-push hook and in `flow.yml` alike.
 Hold other merges to rc until the tag is cut: a pull request that lands in
@@ -70,11 +70,11 @@ rc-deploy).
 
 The tag push runs the release workflow: the full CI suite against the tag,
 then the image builds and lands on GHCR as `0.2.0-rc.1` and (moving) `rc`,
-and a GitHub **prerelease** opens with a stub body. No desktop installers ride
-it: Talaria Desktop ships only as `desktop-v*` releases ("The desktop
-installers", below). The changelog is the
-record — edit the release notes afterwards if you want them to say more,
-or leave the stub pointing at CHANGELOG.md.
+and a GitHub **prerelease** opens with notes from `scripts/release-notes.mjs`,
+built from the `## 0.2.0-rc.1` section (a tag with no section gets a stub). No
+desktop installers ride it: Talaria Desktop ships only as `desktop-v*`
+releases ("The desktop installers", below). A re-run of the same tag rewrites
+the notes, so change the entries, not the Release page.
 
 A malformed tag (`v1.0`, `v1.0.0-beta.1`, `v1.0.0-RC.1` — the grammar is
 `vX.Y.Z-rc.N`, lowercase, exactly) fails the workflow loudly rather than
@@ -149,8 +149,10 @@ promotion, the tag, the images and the notes.
 - The roll's section is "pending", newer than every tag. The next verified rc
   gets a new roll pull request that extends that section, re-headed with
   today's date.
-- An open promotion is held until it merges: auto-merge goes off, and its body
-  says what it's waiting for.
+- An open promotion is held until it merges. `flow.yml`'s promotion gate fails
+  while `changelog/` has entries, auto-merge goes off, and the body says what
+  it's waiting for. `tag-release.yml` also refuses to tag a main that carries
+  unrolled entries.
 
 **The notes** are deterministic. Reviewers saw everything they say in the
 pull requests:
@@ -177,7 +179,9 @@ tag and the release need no token.
 git switch -c release/roll-0.2.0 origin/rc
 bun scripts/changelog-roll.mjs 0.2.0      # --extend to add to a pending section
 # 2. once rc verifies, open the promotion and merge it as a merge commit:
-#    tag-release.yml tags it. Tag by hand only if that run failed:
+#    tag-release.yml tags it. Tag by hand only if that run failed before
+#    tagging (if it tagged but the dispatch failed, re-run it: it dispatches a
+#    tag at HEAD that has no Release, or `gh workflow run release.yml --ref v0.2.0`):
 git switch main && git pull
 git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
 ```

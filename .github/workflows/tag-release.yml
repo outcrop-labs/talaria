@@ -20,6 +20,14 @@
 #   refuses anything else), so HEAD having a second parent is the check that
 #   this push is a promotion and not something flow.yml is about to go red on.
 #   A section a person already tagged by hand is not pending, and nothing runs.
+#   A head that still carries changelog/ entries isn't tagged either: they'd
+#   ship outside the section the notes are built from (flow.yml's gate refuses
+#   that promotion, and this is the second lock).
+#
+# WHY A TAGGED SECTION WITH NO RELEASE IS DISPATCHED AGAIN. If the tag pushed
+#   and the dispatch then failed, the section is no longer pending, so a re-run
+#   would find nothing to do. When the top section's tag names HEAD and no
+#   GitHub Release exists for it, the run dispatches release.yml at that tag.
 #
 # WHY THE DISPATCH IS LIMITED TO main. Re-running a release whose tag step
 #   failed is the dispatch's purpose; a dispatch from any other ref would run a
@@ -60,13 +68,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          sha=$(git rev-parse HEAD)
           version=$(node scripts/release-version.mjs pending)
           if [ -z "$version" ]; then
+            top=$(node scripts/release-version.mjs top)
+            if [ -n "$top" ] && [ "$(git rev-parse -q --verify "refs/tags/v$top^{commit}" || true)" = "$sha" ] \
+              && ! gh release view "v$top" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$top"
+              echo "::notice::v$top names this commit but has no GitHub Release; dispatched release.yml at it again"
+              exit 0
+            fi
             echo "CHANGELOG.md's top section is already tagged — this push releases nothing."
             exit 0
           fi
           tag="v$version"
-          sha=$(git rev-parse HEAD)
+          left=$(git ls-tree --name-only HEAD changelog/ | grep -c '\.md$' || true)
+          if [ "$left" -gt 0 ]; then
+            echo "::error::main at ${sha:0:12} carries ## $version and $left changelog/ entries outside it — not tagging. Roll them into ## $version against rc, promote again, and this tags the result."
+            exit 1
+          fi
           if ! git rev-parse -q --verify "$sha^2" >/dev/null; then
             echo "::warning::main at ${sha:0:12} carries ## $version but is not a merge — not tagging. main moves only by rc's promotion merge; flow.yml says what went wrong."
             exit 0

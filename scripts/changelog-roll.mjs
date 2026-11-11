@@ -39,7 +39,8 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { BUMP_RE, bumpOf } from './release-version.mjs'
+import { execFileSync } from 'node:child_process'
+import { BUMP_RE, bumpOf, pending } from './release-version.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const CHANGELOG = path.join(ROOT, 'CHANGELOG.md')
@@ -181,6 +182,25 @@ if (!headingArg || headingArg.startsWith('-')) {
     process.exit(1)
   }
   const extend = process.argv.includes('--extend')
+  // A pending section (rolled, newer than every tag) is a release in waiting:
+  // a second section above it would leave that version never tagged, and
+  // --extend onto a TAGGED section would rewrite a release that shipped.
+  // Outside a git checkout there are no tags to read, and nothing is checked.
+  let tags = null
+  try {
+    tags = execFileSync('git', ['tag', '--list', 'v*'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean)
+  } catch {}
+  if (tags) {
+    const held = pending({ tags, changelog: fs.readFileSync(CHANGELOG, 'utf8') })
+    if (held && !extend) {
+      console.error(`refusing to roll: ## ${held} is rolled but not tagged yet. Add these entries to it with --extend (scripts/release-version.mjs next says which version)`)
+      process.exit(1)
+    }
+    if (!held && extend) {
+      console.error('refusing to --extend: the top section is already tagged, so it has shipped. Roll a new version without --extend')
+      process.exit(1)
+    }
+  }
   const body = []
   for (const f of files) {
     const entry = fs.readFileSync(path.join(ENTRIES_DIR, f), 'utf8').replace(/\n$/, '')
