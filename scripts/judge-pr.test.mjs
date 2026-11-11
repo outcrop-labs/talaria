@@ -4,8 +4,9 @@
 // template — filled or not — and filling it in never cleared the ask. A wrong
 // answer the other way waves an untouched template through as an answer.
 // Then the lanes, on a scratch repository: what the judge skips (promotions,
-// snapshots, back-flows, syncs; the CHANGELOG.md checks on a roll) and the
-// musts that guard them (a hotfix migration, a promoted entry rewritten).
+// snapshots, back-flows, syncs; the CHANGELOG.md checks on a roll), the musts
+// that guard them (a hotfix migration, a promoted entry rewritten, a feature
+// aimed at rc), and the diff base it picks when none is said.
 // Run by `bun run check`.
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -319,7 +320,8 @@ claim('ciyml', 'Verified: the ci.yml step ran.')
 rgit('switch', '-q', 'rc')
 
 function judgeLane({ head, base = 'origin/rc', target, source, json = true, env = {} }) {
-  const args = [JUDGE, '--base', base, '--head', head]
+  // base: null says no --base at all, so the judge picks its own.
+  const args = [JUDGE, ...(base === null ? [] : ['--base', base]), '--head', head]
   if (target) args.push('--target', target)
   if (source) args.push('--source', source)
   if (json) args.push('--json')
@@ -406,10 +408,78 @@ check('hotfix-adds-migration: a line inside MIGRATIONS on a hotfix into rc is a 
 
 check('hotfix-adds-migration: pg.ts code outside the array, or a migration that is not a hotfix into rc, is not', () => {
   eq(ids(judgeLane({ head: 'hotfix/code', target: 'rc', source: 'hotfix/code' })), [])
-  eq(ids(judgeLane({ head: 'hotfix/mig', target: 'rc', source: 'wt/x' })), [])
+  // a feature into rc is the wrong door (its own must), not a hotfix
+  eq(ids(judgeLane({ head: 'hotfix/mig', target: 'rc', source: 'wt/x' })), ['feature-targets-rc'])
   eq(ids(judgeLane({ head: 'hotfix/mig', target: 'testing', source: 'hotfix/mig' })).includes('hotfix-adds-migration'), false)
-  // no source said: not a hotfix
-  eq(ids(judgeLane({ head: 'hotfix/mig', target: 'rc' })), [])
+  // no source said: not a hotfix — and not a lane into rc either
+  eq(ids(judgeLane({ head: 'hotfix/mig', target: 'rc' })), ['feature-targets-rc'])
+})
+
+check('feature-targets-rc: a feature into rc is a must, with the retarget to testing', () => {
+  for (const source of ['wt/x', 'agent/x', 'backflow/rc-0123456789ab', 'someone/talaria:hotfix/x', undefined]) {
+    const r = judgeLane({ head: 'hotfix/code', target: 'rc', source })
+    eq([source, r.status, ids(r)], [source, 2, ['feature-targets-rc']])
+    const f = r.findings[0]
+    eq(f.severity, 'must')
+    ok(f.fix.some((l) => l.includes('gh pr edit <n> --base testing')), JSON.stringify(f.fix))
+  }
+})
+
+check('feature-targets-rc: the lanes into rc, and anything into testing, are not', () => {
+  for (const source of ['hotfix/code', 'release/roll-0.1.0', 'sync/main-into-rc', 'promote/testing-0123456789ab']) {
+    ok(!ids(judgeLane({ head: 'hotfix/code', target: 'rc', source })).includes('feature-targets-rc'), source)
+  }
+  ok(!ids(judgeLane({ head: 'claim/remote', base: 'origin/testing', target: 'testing', source: 'wt/x' })).includes('feature-targets-rc'), 'into testing')
+  // no target said: a local run is not a claim about where the change goes
+  ok(!ids(judgeLane({ head: 'hotfix/code' })).includes('feature-targets-rc'), 'no target')
+})
+
+check('feature-targets-rc: dormant while origin/rc predates the rule, as pr-target is', () => {
+  // rc's own flow-guard decides: without its rc-head rule, rc still takes features
+  const rc = rgit('rev-parse', 'refs/remotes/origin/rc')
+  const withGuard = (text) => {
+    rgit('switch', '-q', '--detach', rc)
+    put('scripts/flow-guard.mjs', text)
+    rgit('add', 'scripts/flow-guard.mjs')
+    rgit('commit', '-q', '-m', 'flow: a guard on rc — the fixture needs one')
+    rgit('update-ref', 'refs/remotes/origin/rc', 'HEAD')
+    rgit('switch', '-q', 'rc')
+  }
+  try {
+    withGuard('// the policy before the cutover\nexport function decidePrBase() {}\n')
+    ok(!ids(judgeLane({ head: 'hotfix/code', target: 'rc', source: 'wt/x' })).includes('feature-targets-rc'), 'before the cutover')
+    withGuard('// the policy after it\nfunction decideRcHead() {}\n')
+    ok(ids(judgeLane({ head: 'hotfix/code', target: 'rc', source: 'wt/x' })).includes('feature-targets-rc'), 'after the cutover')
+  } finally {
+    rgit('update-ref', 'refs/remotes/origin/rc', rc)
+  }
+})
+
+check('targets-main: the fix says retarget at testing', () => {
+  const f = judgeLane({ head: 'hotfix/code', target: 'main', source: 'wt/x' }).findings.find((x) => x.id === 'targets-main')
+  ok(f.fix.join(' ').includes('Retarget the pull request at `testing`'), JSON.stringify(f.fix))
+})
+
+check('the diff base: the pull request\'s own base in CI, else origin/testing, else origin/rc', () => {
+  // CI: GITHUB_BASE_REF names it
+  eq(judgeLane({ head: 'claim/remote', base: null, env: { GITHUB_BASE_REF: 'rc' } }).base, 'rc')
+  eq(judgeLane({ head: 'claim/remote', base: null, env: { GITHUB_BASE_REF: 'testing' } }).base, 'testing')
+  // locally: testing, which this clone has
+  eq(judgeLane({ head: 'claim/remote', base: null }).base, 'testing')
+  // a clone without origin/testing falls back to rc
+  const testing = rgit('rev-parse', 'refs/remotes/origin/testing')
+  rgit('update-ref', '-d', 'refs/remotes/origin/testing')
+  try {
+    eq(judgeLane({ head: 'hotfix/code', base: null }).base, 'rc')
+  } finally {
+    rgit('update-ref', 'refs/remotes/origin/testing', testing)
+  }
+})
+
+check('the diff base: one that does not resolve could not run, and names the fetch', () => {
+  const run = spawnSync(process.execPath, [JUDGE, '--base', 'origin/nope', '--head', 'hotfix/code'], { cwd: repo, encoding: 'utf8', env: laneEnv })
+  eq(run.status, 1)
+  ok(run.stderr.includes('git fetch origin testing rc main'), run.stderr)
 })
 
 check('changelog-entry-rewritten: editing or deleting an entry origin/rc has, into testing, is a must', () => {

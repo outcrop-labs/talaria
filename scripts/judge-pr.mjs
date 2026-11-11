@@ -4,8 +4,9 @@
 // WHY IT EXISTS. The gates answer "does it pass". They cannot answer "is this
 // the change this repository asked for": that the changelog claims a
 // verification the diff does not support, that a behaviour change arrived with
-// no test, that the pull request is aimed at `main`, that a generated file moved
-// with nothing regenerating it, that a commit subject broke the house style.
+// no test, that the pull request is aimed at `main` (or a feature at `rc`),
+// that a generated file moved with nothing regenerating it, that a commit
+// subject broke the house style.
 // Those are decidable from the diff, and that is this file. The half that is NOT
 // decidable — "does this actually work in Talaria" — is the skill beside it
 // (`.claude/skills/judge-pr/SKILL.md`), because it needs someone to read the
@@ -31,18 +32,19 @@
 // `release/*` head into `rc` is the changelog roll, which writes CHANGELOG.md
 // by design, so the CHANGELOG.md checks skip it. A `hotfix/*` head into `rc`
 // may not add a migration; a pull request into `testing` may not rewrite an
-// entry `rc` already has.
+// entry `rc` already has. Anything else into `rc` is a feature aimed at the
+// wrong branch: feature pull requests target `testing`.
 //
 // USAGE
 //   node scripts/judge-pr.mjs [--base <ref>] [--head <ref>] [--target <branch>]
 //                             [--source <branch>] [--pr-body <file>]
 //                             [--summary] [--json]
 //
-//   --base defaults to GITHUB_BASE_REF (CI) or origin/rc (the integration
-//   branch, i.e. what a pull request would be measured against locally). The
-//   range is `merge-base(base, head)..head` — three dots, so the report is about
-//   this change and not about everything the base gained meanwhile (ci.yml's
-//   `changes` job makes the same choice).
+//   --base defaults to origin/<GITHUB_BASE_REF> (CI: the pull request's base),
+//   else origin/testing when this clone has it (where a feature pull request
+//   goes), else origin/rc. The range is `merge-base(base, head)..head` — three
+//   dots, so the report is about this change and not about everything the base
+//   gained meanwhile (ci.yml's `changes` job makes the same choice).
 //
 //   --target is the pull request's base branch (GITHUB_BASE_REF in CI);
 //   --source is its head branch (GITHUB_HEAD_REF in CI). Both are only what
@@ -74,7 +76,21 @@ const arg = (name) => {
 }
 const flag = (name) => argv.includes(name)
 
-const baseArg = arg('--base') ?? 'origin/rc'
+/** Does `ref` name a commit in this clone? */
+const resolves = (ref) => {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: ROOT, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The diff base: what was said, else the pull request's own base (CI), else
+// where a feature pull request goes — testing, when this clone has it.
+const baseArg =
+  arg('--base') ??
+  (process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : resolves('origin/testing') ? 'origin/testing' : 'origin/rc')
 const headArg = arg('--head') ?? 'HEAD'
 const prBodyPath = arg('--pr-body')
 // The pull request's TARGET branch, when something actually knows it: CI does
@@ -109,7 +125,7 @@ try {
   changed = git('diff', '--name-only', range).split('\n').filter(Boolean)
 } catch (e) {
   couldNotRun(
-    `cannot diff ${baseArg}...${headArg} — fetch the base first (\`git fetch origin rc main\`). ${e instanceof Error ? e.message : String(e)}`
+    `cannot diff ${baseArg}...${headArg} — fetch the base first (\`git fetch origin testing rc main\`). ${e instanceof Error ? e.message : String(e)}`
   )
 }
 
@@ -223,9 +239,46 @@ if (targetBranch === 'main' && sourceBranch !== 'rc') {
     `this change is aimed at \`main\``,
     ['main takes one input: the promotion of `rc`, whole, once its staging deploy is green.'],
     [
-      'Retarget the pull request at `rc` — review, CI and the staging deploy all happen there,',
-      'and the promotion follows on its own. `flow.yml` refuses a pull request to main from',
-      'anywhere but rc, so this is a red check as well as a wrong door: docs/BRANCHES.md.',
+      'Retarget the pull request at `testing` — it lands there at green and is exercised on the',
+      'testing instance; rc takes a snapshot of testing, and main takes rc. `flow.yml` refuses a',
+      'pull request to main from anywhere but rc, so this is a red check as well as a wrong door:',
+      'docs/BRANCHES.md.',
+    ]
+  )
+}
+
+// rc takes the lanes and nothing else: a snapshot of testing (`promote/*`,
+// which skipped the judge above), a hotfix, the roll, a sync. A source that is
+// none of them — or no source at all, or a fork's (judge.yml qualifies it) —
+// is a feature aimed at the wrong branch.
+//
+// Once rc enforces it. The judge raises no `must` the target's own policy does
+// not hold: the change that brings this rule to rc is judged by rc's previous
+// flow-guard in `pr target (flow)` (flow.yml reads the policy from the base),
+// and the judge follows the same revision. So the rule wakes when origin/rc's
+// flow-guard.mjs has its rc-head rule (`decideRcHead`, anchored by
+// check-invariants.mjs); a clone with no such file at origin/rc is judged by it.
+const RC_LANES = ['promote/', 'hotfix/', 'release/', 'sync/']
+const rcRefusesFeatures = (() => {
+  try {
+    return git('show', 'origin/rc:scripts/flow-guard.mjs').includes('decideRcHead')
+  } catch {
+    return true
+  }
+})()
+if (targetBranch === 'rc' && rcRefusesFeatures && !RC_LANES.some((p) => sourceBranch?.startsWith(p))) {
+  finding(
+    'must',
+    'feature-targets-rc',
+    'this change is aimed at `rc`, and feature pull requests target `testing`',
+    [
+      `rc takes a snapshot of testing (\`promote/*\`) and the \`hotfix/\`, \`release/\`, \`sync/\` lanes cut from rc${sourceBranch ? `; \`${sourceBranch}\` is none of them` : ''}.`,
+    ],
+    [
+      'Retarget the pull request at `testing`: `gh pr edit <n> --base testing`. It lands there at',
+      'green and is exercised on the testing instance; the next snapshot carries it to rc.',
+      '`flow.yml` refuses it into rc too, so this is a red check as well as a wrong door:',
+      'docs/BRANCHES.md.',
     ]
   )
 }
