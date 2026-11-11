@@ -1195,8 +1195,13 @@ function devboxHome(root) {
  * distinction is not "has this branch got commits in the base" but "did this
  * branch's work land", and that fact lives on the PR.
  *
- * A local prefilter keeps the network call rare: a branch still ahead of the
- * base is obviously unfinished, so it never reaches `gh`. Everything fails
+ * A local prefilter keeps the network call rare: a branch still ahead of
+ * every base it could have merged into is obviously unfinished, so it never
+ * reaches `gh`. The bases are `rc` and `testing` (a feature merges into
+ * either; mergedPrefilter): a worktree merged into `testing` is 0 ahead of
+ * origin/testing and still ahead of origin/rc until the next promotion, and
+ * reading only rc kept it forever. A base whose ref does not resolve here —
+ * no `testing` on this clone — is no answer and is ignored. Everything fails
  * OPEN — no `gh`, no auth, no network, no PR all read as "not merged", so a
  * tree is never reclaimed on a guess.
  *
@@ -1207,8 +1212,11 @@ function devboxHome(root) {
  * earlier), so a stack minutes old was read as finished and torn down.
  */
 function isMerged(dir, branch) {
-  const ahead = tryGit(['rev-list', '--count', 'origin/rc..HEAD'], dir)
-  if (ahead === null || Number(ahead) > 0) return false
+  const ahead = (base) => {
+    const n = tryGit(['rev-list', '--count', `${base}..HEAD`], dir)
+    return n === null ? null : Number(n)
+  }
+  if (!mergedPrefilter(ahead('origin/rc'), ahead('origin/testing'))) return false
   const head = tryGit(['rev-parse', 'HEAD'], dir)
   if (!head) return false
   try {
@@ -1221,6 +1229,14 @@ function isMerged(dir, branch) {
   } catch {
     return false
   }
+}
+
+/** May this branch have merged — is it 0 commits ahead of a base? `aheadRc`
+ *  and `aheadTesting` are `git rev-list --count origin/<base>..HEAD`, or null
+ *  when that ref does not resolve (an unknown base is ignored, not a 0). Only
+ *  a "maybe" reaches `gh`: the PR still decides (mergedAtHead). */
+export function mergedPrefilter(aheadRc, aheadTesting) {
+  return aheadRc === 0 || aheadTesting === 0
 }
 
 /** Did a pull request whose head is `head` merge? `prs` is `gh pr list

@@ -11,15 +11,26 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  MERGE_BASES,
+  OFFLOAD_PREFIX,
+  branchNote,
   classify,
+  conflictBody,
+  dropOffload,
   headCheck,
+  inheritedFrom,
+  isOffloadRun,
   isPromotion,
+  laneOf,
   latestChecks,
   latestRuns,
   normalize,
+  offloadWorkflowName,
   parseRepo,
   ghApiArgs,
+  promotionFix,
   readHeadFacts,
+  redText,
   repoArgOf,
   repoFlagOf,
   resolveCiWorkflow,
@@ -535,7 +546,8 @@ check('end to end: --repo, or a PR URL, sends the CI name read and gh run list t
   writeFileSync(join(scratch, '.github', 'workflows', 'ci.yml'), 'name: Local CI\non: push\n')
   const bin = mkdtempSync(join(tmpdir(), 'pr-watch-bin-'))
   try {
-    const pr = { ...asOpen(PR599), ...prAt(B), number: 1, url: 'https://github.com/other-org/other-repo/pull/1', baseRefName: 'rc' }
+    // Into testing: the integration lane reads exactly like rc.
+    const pr = { ...asOpen(PR599), ...prAt(B), number: 1, url: 'https://github.com/other-org/other-repo/pull/1', baseRefName: 'testing' }
     const runs = RUNS599.map((r) => ({ ...r, headSha: B, workflowName: r.workflowName === 'CI' ? 'Pipeline' : r.workflowName }))
     writeFileSync(join(bin, 'pr.json'), JSON.stringify(pr))
     writeFileSync(join(bin, 'runs.json'), JSON.stringify(runs))
@@ -578,7 +590,7 @@ check('end to end: --repo, or a PR URL, sends the CI name read and gh run list t
       eq([run.status, run.stderr], [0, ''])
       const out = JSON.parse(run.stdout)
       eq([out.token, out.ciWorkflow], ['green', { name: 'Pipeline', source: `other-org/other-repo@${B.slice(0, 12)}`, note: '' }])
-      ok(run.calls.includes(`run list --commit ${B} --limit 100 --json databaseId,workflowName,event,status,conclusion,headSha,createdAt,url --repo github.com/other-org/other-repo`), run.calls.join('\n'))
+      ok(run.calls.includes(`run list --commit ${B} --limit 100 --json databaseId,workflowName,event,status,conclusion,headSha,createdAt,url,headBranch --repo github.com/other-org/other-repo`), run.calls.join('\n'))
       const api = run.calls.filter((c) => c.startsWith('api '))
       ok(api.length > 0 && api.every((c) => c.includes(' --hostname github.com')), api.join('\n'))
     }
@@ -678,6 +690,96 @@ check('end to end: every gh read reaches the PR\'s host — GitHub Enterprise, a
   }
 })
 
+/** A fake gh for the red path: the PR, the head's runs (offload included), the
+ *  CI name, the failed-job logs, and the base branch's own push run and its
+ *  jobs. A file that is not there is a failed read. */
+function fakeGhRed(dir) {
+  const { appendFileSync, existsSync, readFileSync } = require('node:fs')
+  const args = process.argv.slice(2)
+  appendFileSync(`${dir}/calls.log`, `${args.join(' ')}\n`)
+  const serve = (file) => {
+    if (!existsSync(`${dir}/${file}`)) {
+      process.stderr.write(`HTTP 502: ${file}\n`)
+      process.exit(1)
+    }
+    process.stdout.write(readFileSync(`${dir}/${file}`, 'utf8'))
+    process.exit(0)
+  }
+  if (args[0] === 'pr') serve('pr.json')
+  if (args[0] === 'api' && args[1].includes('/contents/')) serve('ci.yml')
+  if (args[0] === 'run' && args[1] === 'list') serve(args.includes('--branch') ? 'base-runs.json' : 'runs.json')
+  if (args[0] === 'run' && args[1] === 'view' && args.includes('--log-failed')) serve('log.txt')
+  if (args[0] === 'run' && args[1] === 'view' && args.includes('jobs')) serve('base-jobs.json')
+  process.stderr.write(`unexpected: gh ${args.join(' ')}\n`)
+  process.exit(1)
+}
+
+check('end to end: a red the base branch already has is named inherited; anything less is an ordinary red', () => {
+  const bin = mkdtempSync(join(tmpdir(), 'pr-watch-bin-'))
+  try {
+    writeFileSync(join(bin, 'gh.cjs'), `(${fakeGhRed.toString()})(${JSON.stringify(bin)})\n`)
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh\nexec "${process.execPath}" "${join(bin, 'gh.cjs')}" "$@"\n`, { mode: 0o755 })
+    const baseSha = 'd'.repeat(40)
+    // This clone is on wt/x at B, pushed: the head check needs no gh at all.
+    const pr = { ...asOpen(PR575), ...prAt(B), number: 1, url: 'https://github.com/outcrop-labs/talaria/pull/1', baseRefName: 'rc', baseRefOid: baseSha }
+    writeFileSync(join(bin, 'pr.json'), JSON.stringify(pr))
+    writeFileSync(join(bin, 'ci.yml'), 'name: CI\non: pull_request\n')
+    writeFileSync(join(bin, 'log.txt'), 'error: the log line\n')
+    // The head's runs, with an in-progress offload of the same sha that must not matter.
+    const offload = { databaseId: 5, workflowName: 'CI offload', event: 'push', status: 'in_progress', conclusion: '', headSha: B, headBranch: 'ci/wt/x', createdAt: '2026-10-23T16:40:00Z', url: 'https://github.com/outcrop-labs/talaria/actions/runs/5' }
+    writeFileSync(join(bin, 'runs.json'), JSON.stringify([...RUNS575.map((r) => ({ ...r, headSha: B, headBranch: 'wt/x' })), offload]))
+    const baseRun = { databaseId: 777, status: 'completed', conclusion: 'failure', url: 'https://github.com/outcrop-labs/talaria/actions/runs/777' }
+    writeFileSync(join(bin, 'base-runs.json'), JSON.stringify([baseRun]))
+    const job = (name, conclusion) => ({ name, conclusion, status: 'completed' })
+    const failing = ['fmt + clippy + test (api)', 'mcp end-to-end (playwright)', 'test + typecheck (ui)']
+    const watch = () => {
+      writeFileSync(join(bin, 'calls.log'), '')
+      const run = spawnSync(process.execPath, [join(HERE, 'pr-watch.mjs'), '--once', '--json', '--pr', '1'], {
+        cwd: scratch,
+        encoding: 'utf8',
+        timeout: 20_000,
+        env: { ...cleanEnv, PATH: `${bin}:${process.env.PATH}` },
+      })
+      return { ...run, calls: readFileSync(join(bin, 'calls.log'), 'utf8').trim().split('\n') }
+    }
+
+    // Every failing job is red on rc's own push run at the PR's base commit.
+    writeFileSync(join(bin, 'base-jobs.json'), JSON.stringify({ jobs: [...failing.map((n) => job(n, 'failure')), job('what changed', 'success')] }))
+    const inherited = watch()
+    eq(inherited.status, 2)
+    const lines = inherited.stderr.split('\n')
+    eq(lines[0], 'pr-watch: red')
+    eq(lines[1], 'inherited from `rc` @ dddddddddddd (https://github.com/outcrop-labs/talaria/actions/runs/777) — the same jobs are red on the base itself; not self-fixable from this branch: report it.')
+    ok(!/Diagnose from the log/.test(inherited.stderr) && /error: the log line/.test(inherited.stderr), inherited.stderr)
+    eq(JSON.parse(inherited.stdout).inherited, { base: 'rc', sha: baseSha, url: baseRun.url })
+    ok(inherited.calls.includes(`run list --branch rc --event push --commit ${baseSha} --workflow CI --json databaseId,status,conclusion,url --limit 1 --repo github.com/outcrop-labs/talaria`), inherited.calls.join('\n'))
+    ok(inherited.calls.includes('run view 777 --json jobs --repo github.com/outcrop-labs/talaria'), inherited.calls.join('\n'))
+    // The offload run was not taken for the PR's: no pending, and it is not among the failing.
+    ok(!JSON.parse(inherited.stdout).failing.some((c) => /offload/i.test(c.name)), inherited.stdout)
+
+    // One of the PR's failures is its own: an ordinary red, with the fix advice.
+    writeFileSync(join(bin, 'base-jobs.json'), JSON.stringify({ jobs: failing.slice(0, 2).map((n) => job(n, 'failure')) }))
+    const own = watch()
+    eq([own.status, own.stderr.split('\n')[0]], [2, 'pr-watch: red'])
+    ok(!/inherited from/.test(own.stderr) && /Diagnose from the log, fix, commit and push to `wt\/x` only/.test(own.stderr), own.stderr)
+    eq(JSON.parse(own.stdout).inherited, null)
+
+    // The same jobs only cancelled on the base (superseded, stopped): not the base's red.
+    writeFileSync(join(bin, 'base-jobs.json'), JSON.stringify({ jobs: failing.map((n) => job(n, 'cancelled')) }))
+    const cancelled = watch()
+    eq([cancelled.status, cancelled.stderr.split('\n')[0]], [2, 'pr-watch: red'])
+    ok(!/inherited from/.test(cancelled.stderr) && /Diagnose from the log/.test(cancelled.stderr), cancelled.stderr)
+
+    // The base's run could not be read: the ordinary red, never a guess.
+    rmSync(join(bin, 'base-runs.json'))
+    const unread = watch()
+    eq([unread.status, unread.stderr.split('\n')[0]], [2, 'pr-watch: red'])
+    ok(!/inherited from/.test(unread.stderr) && /Diagnose from the log/.test(unread.stderr), unread.stderr)
+  } finally {
+    rmSync(bin, { recursive: true, force: true })
+  }
+})
+
 rmSync(scratch, { recursive: true, force: true })
 
 check('no head facts is pending, never green', () => {
@@ -697,11 +799,12 @@ check('an empty rollup is pending even with every run settled', () => {
   eq(classify(asOpen(PR599, { statusCheckRollup: [] }), { head: HEAD_OK, runs: RUNS599 }).kind, 'pending')
 })
 
-check('merged needs no head or run read; closed and a non-rc base keep their tokens', () => {
+check('merged needs no head or run read; closed and a base in no lane keep their tokens', () => {
   const merged = classify(PR599, {})
   eq([merged.kind, merged.merged], ['green', true])
   eq(classify({ ...PR599, state: 'CLOSED' }, {}).kind, 'closed')
   eq(classify(asOpen(PR599, { baseRefName: 'main' }), { head: HEAD_OK, runs: RUNS599 }).kind, 'base')
+  eq(classify(asOpen(PR599, { baseRefName: 'ckpt/x' }), { head: HEAD_OK, runs: RUNS599 }).kind, 'base')
 })
 
 // ── the promotion (cli-3) ──────────────────────────────────────────────────
@@ -713,7 +816,7 @@ const RUNS597 = fixture('runs-597.json')
 
 check('the #597 fixture really is the promotion: rc into main, same repository, open', () => {
   eq([PR597.headRefName, PR597.baseRefName, PR597.isCrossRepository, PR597.state], ['rc', 'main', false, 'OPEN'])
-  eq(isPromotion(PR597), true)
+  eq([isPromotion(PR597), laneOf(PR597)], [true, 'promotion:rc→main'])
 })
 
 check('the promotion is watched like any PR: its recorded state is green, not base', () => {
@@ -751,8 +854,13 @@ check('the promotion still goes red, conflicted and pending', () => {
 check('main still takes nothing else: another branch, or a fork\'s rc, into main is base', () => {
   eq(classify({ ...PR597, headRefName: 'wt/x' }, { head: HEAD_OK, runs: RUNS597 }).kind, 'base')
   eq(classify({ ...PR597, isCrossRepository: true }, { head: HEAD_OK, runs: RUNS597 }).kind, 'base')
+  eq(classify({ ...PR597, headRefName: 'promote/testing-abc' }, { head: HEAD_OK, runs: RUNS597 }).kind, 'base')
   eq(isPromotion({ ...PR597, baseRefName: 'rc' }), false)
   eq(isPromotion({ ...PR597, headRefName: 'main', baseRefName: 'rc' }), false)
+  eq(isPromotion({ ...PR597, baseRefName: 'testing' }), false)
+  // the snapshot is the other promotion; a fork's is not
+  eq(isPromotion({ ...PR597, headRefName: 'promote/testing-abc', baseRefName: 'rc' }), true)
+  eq(isPromotion({ ...PR597, headRefName: 'promote/testing-abc', baseRefName: 'rc', isCrossRepository: true }), false)
 })
 
 check("a promotion's head is rc on GitHub, even from a checkout on a local rc", () => {
@@ -781,6 +889,249 @@ check('latestRuns: one per workflow and event, the newest id, only for the head'
   eq(latest.map((r) => `${r.workflow}:${r.conclusion}`).sort(), ['CI:SUCCESS', 'api-integration:SUCCESS', 'judge:SUCCESS', 'migrations:SUCCESS'])
   eq(latestRuns([...RUNS599].reverse(), PR599.headRefOid).find((r) => r.workflow === 'judge').conclusion, 'SUCCESS')
   eq(latestRuns(RUNS599, 'not-this-head'), [])
+})
+
+// ── the lanes ──────────────────────────────────────────────────────────────
+// A pull request is read when it is in a lane this repository merges through
+// (docs/BRANCHES.md): features into testing or rc, the two promotions, the
+// back-flow, and the hotfix/, release/ and sync/ heads into rc. Every lane but
+// a feature is same-repository only.
+
+const lanePr = (base, head, over = {}) => ({ baseRefName: base, headRefName: head, isCrossRepository: false, ...over })
+
+check('laneOf names every lane', () => {
+  eq(laneOf(lanePr('main', 'rc')), 'promotion:rc→main')
+  eq(laneOf(lanePr('rc', 'promote/testing-0123456789ab')), 'promotion:testing→rc')
+  eq(laneOf(lanePr('testing', 'backflow/rc-0123456789ab')), 'backflow')
+  for (const head of ['hotfix/login', 'release/roll', 'sync/main-into-rc']) eq(laneOf(lanePr('rc', head)), 'rc-lane')
+  eq(laneOf(lanePr('testing', 'wt/x')), 'feature')
+  eq(laneOf(lanePr('rc', 'wt/x')), 'feature')
+  // a lane's head into the other base is just a feature
+  eq(laneOf(lanePr('testing', 'promote/testing-abc')), 'feature')
+  eq(laneOf(lanePr('rc', 'backflow/rc-abc')), 'feature')
+  eq(laneOf(lanePr('testing', 'hotfix/x')), 'feature')
+  // any other base is no lane at all
+  for (const base of ['main', 'ckpt/x', 'wt/y', undefined]) eq(laneOf(lanePr(base, 'wt/x')), null)
+  eq(MERGE_BASES, ['testing', 'rc'])
+})
+
+check('every lane but a feature is same-repository only', () => {
+  const fork = { isCrossRepository: true }
+  eq(laneOf(lanePr('main', 'rc', fork)), null)
+  eq(laneOf(lanePr('rc', 'promote/x', fork)), 'feature')
+  eq(laneOf(lanePr('testing', 'backflow/x', fork)), 'feature')
+  eq(laneOf(lanePr('rc', 'hotfix/x', fork)), 'feature')
+  eq(laneOf(lanePr('testing', 'wt/x', fork)), 'feature')
+  eq(classify(asOpen(PR599, { baseRefName: 'rc', headRefName: 'promote/x', isCrossRepository: true }), { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'CI' }).promotion, undefined)
+})
+
+check('a pull request into testing classifies exactly like one into rc', () => {
+  for (const [pr, runs] of [[PR599, RUNS599], [PR575, RUNS575]]) {
+    const rc = classify(asOpen(pr, { baseRefName: 'rc' }), { head: HEAD_OK, runs, ciWorkflow: 'CI' })
+    const testing = classify(asOpen(pr, { baseRefName: 'testing' }), { head: HEAD_OK, runs, ciWorkflow: 'CI' })
+    eq({ ...testing, lane: 'x' }, { ...rc, lane: 'x' })
+    eq([rc.lane, testing.lane], ['feature', 'feature'])
+  }
+  eq(classify(asOpen(PR599, { baseRefName: 'testing' }), { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'CI' }).kind, 'green')
+  eq(classify(asOpen(PR599, { baseRefName: 'testing', mergeable: 'CONFLICTING' }), { head: HEAD_OK, runs: RUNS599 }).kind, 'conflict')
+})
+
+check('a promote/ snapshot into rc is a promotion: watched, its head read on GitHub', () => {
+  const snap = { ...structuredClone(PR597), baseRefName: 'rc', headRefName: 'promote/testing-0123456789ab' }
+  const r = classify(snap, { head: HEAD_OK, runs: RUNS597, ciWorkflow: 'CI' })
+  eq([r.kind, r.promotion, r.lane], ['green', true, 'promotion:testing→rc'])
+  const calls = []
+  const io = {
+    branch: 'promote/testing-0123456789ab',
+    git: (args) => {
+      calls.push(`git ${args.join(' ')}`)
+      return { ok: true, out: 'f'.repeat(40), status: 0 }
+    },
+    gh: (args) => {
+      calls.push(`gh ${args.join(' ')}`)
+      return { status: 0, stdout: `${snap.headRefOid}\n` }
+    },
+  }
+  eq(readHeadFacts(snap, targetRepoOf(snap), io).onBranch, false)
+  eq(calls.filter((c) => c.startsWith('git ')), [])
+})
+
+// ── offload runs are not the PR's evidence ────────────────────────────────
+// `bun run gate:remote` pushes the PR's very commit to ci/<branch>, and the
+// `CI offload` workflow runs there. GitHub lists its runs and checks with the
+// PR's own (same sha): in progress it held a green PR pending, and cancelled
+// it turned it red for good.
+
+const OFFLOAD_RUN = 4242424242
+const offloadRow = (over = {}) => ({
+  databaseId: OFFLOAD_RUN,
+  workflowName: 'CI offload',
+  event: 'push',
+  status: 'in_progress',
+  conclusion: '',
+  headSha: PR599.headRefOid,
+  headBranch: 'ci/full/wt/x',
+  createdAt: '2026-10-26T19:00:00Z',
+  url: `https://github.com/outcrop-labs/talaria/actions/runs/${OFFLOAD_RUN}`,
+})
+const offloadCheck = (name, over = {}) => ({
+  __typename: 'CheckRun',
+  name,
+  status: 'IN_PROGRESS',
+  conclusion: '',
+  startedAt: '2026-10-26T19:00:05Z',
+  completedAt: '0001-01-01T00:00:00Z',
+  detailsUrl: `https://github.com/outcrop-labs/talaria/actions/runs/${OFFLOAD_RUN}/job/${900000000000 + name.length}`,
+  workflowName: 'CI offload',
+  ...over,
+})
+
+check('isOffloadRun: a run whose head branch is ci/…, nothing else', () => {
+  eq(OFFLOAD_PREFIX, 'ci/')
+  eq([isOffloadRun(offloadRow()), isOffloadRun({ headBranch: 'ci/wt/x' })], [true, true])
+  eq([isOffloadRun({ headBranch: 'wt/ci/x' }), isOffloadRun({ headBranch: 'rc' }), isOffloadRun({}), isOffloadRun(null)], [false, false, false, false])
+  // a pull_request run is the PR's own, whatever its head is called
+  eq([isOffloadRun({ headBranch: 'ci/branch-flow', event: 'pull_request' }), isOffloadRun({ headBranch: 'ci/branch-flow', event: 'push' })], [false, true])
+})
+
+check('a PR whose own head is named ci/… keeps its pull_request runs and checks', () => {
+  // ci/branch-flow, ci/gate-waits-for-evidence and ci/desktop-autoversion were
+  // real PR heads. Their pull_request runs carry that head branch; dropping
+  // them left the PR with no checks and no CI run — pending to the wall clock.
+  const pr = asOpen(PR599, { headRefName: 'ci/branch-flow' })
+  const runs = RUNS599.map((r) => ({ ...r, headBranch: 'ci/branch-flow' }))
+  const r = classify(pr, { head: HEAD_OK, runs, ciWorkflow: 'CI' })
+  eq([r.kind, r.offload, r.checks], ['green', 0, 13])
+  // an offload push of that same branch is still dropped
+  pr.statusCheckRollup.push(offloadCheck('offload / what changed'))
+  const withOffload = classify(pr, { head: HEAD_OK, runs: [...runs, offloadRow({ headBranch: 'ci/ci/branch-flow' })], ciWorkflow: 'CI' })
+  eq([withOffload.kind, withOffload.offload, withOffload.checks], ['green', 1, 13])
+})
+
+check('an in-progress CI offload run on the head sha does not hold a green PR', () => {
+  const pr = asOpen(PR599)
+  pr.statusCheckRollup.push(offloadCheck('offload / what changed'), offloadCheck('offload / test + typecheck (ui)'))
+  // the raw rows, as gh run list hands them back: the offload run is among them
+  const r = classify(pr, { head: HEAD_OK, runs: [...RUNS599, offloadRow()], ciWorkflow: 'CI' })
+  eq([r.kind, r.offload, r.pending.length, r.checks], ['green', 2, 0, 13])
+  // without the runs to place them, the offload workflow's name still drops them
+  const byName = classify(pr, { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'CI', offloadWorkflow: 'CI offload' })
+  eq([byName.kind, byName.offload], ['green', 2])
+})
+
+check('a cancelled CI offload run does not turn the PR red', () => {
+  const pr = asOpen(PR599)
+  pr.statusCheckRollup.push(offloadCheck('offload / fmt + clippy + test (api)', { status: 'COMPLETED', conclusion: 'CANCELLED' }))
+  const row = offloadRow({ status: 'completed', conclusion: 'cancelled' })
+  const r = classify(pr, { head: HEAD_OK, runs: [...RUNS599, row], ciWorkflow: 'CI' })
+  eq([r.kind, r.failing], ['green', []])
+  // and a failed run with no jobs (no rollup check) is not added as a "(workflow run)" failure
+  const startup = classify(asOpen(PR599), { head: HEAD_OK, runs: [...RUNS599, offloadRow({ status: 'completed', conclusion: 'startup_failure' })], ciWorkflow: 'CI' })
+  eq([startup.kind, startup.failing], ['green', []])
+  eq(latestRuns([...RUNS599, row], PR599.headRefOid).some((x) => x.workflow === 'CI offload'), false)
+})
+
+check('a rollup entry of the CI offload workflow is ignored, by name, with no run to place it', () => {
+  const pr = asOpen(PR599)
+  pr.statusCheckRollup.push(offloadCheck('offload / mcp end-to-end (playwright)', { status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: '' }))
+  eq(classify(pr, { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'CI', offloadWorkflow: 'CI offload' }).kind, 'green')
+  // with no ci-offload.yml (no name) and no offload run, it is just a check like any other
+  eq(classify(pr, { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'CI' }).kind, 'red')
+  // a check of the PR's own CI is never dropped by an offload name
+  const own = normalize(PR599.statusCheckRollup.find((c) => c.workflowName === 'CI'))
+  eq(dropOffload([own], { workflow: 'CI offload', runIds: [String(OFFLOAD_RUN)] }).length, 1)
+})
+
+check('offloadWorkflowName reads ci-offload.yml beside it, and is null without one', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pr-watch-offload-'))
+  try {
+    eq(offloadWorkflowName(root), null)
+    mkdirSync(join(root, '.github', 'workflows'), { recursive: true })
+    writeFileSync(join(root, '.github', 'workflows', 'ci-offload.yml'), 'name: CI offload\non:\n  push:\n    branches: [\'ci/**\']\n')
+    eq(offloadWorkflowName(root), 'CI offload')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// ── a red the base already has ────────────────────────────────────────────
+
+check('inheritedFrom: every failing check is failing on the base too', () => {
+  eq(inheritedFrom(['a', 'b'], ['a', 'b', 'c']), true)
+  eq(inheritedFrom(['a'], ['a']), true)
+  eq(inheritedFrom(['a', 'judge (standards)'], ['a', 'b']), false)
+  eq(inheritedFrom([], ['a']), false)
+  eq(inheritedFrom(['a'], []), false)
+  eq(inheritedFrom(['a'], null), false)
+})
+
+// ── the bodies, by lane ───────────────────────────────────────────────────
+
+const RED575 = classify(asOpen(PR575), { head: HEAD_OK, runs: RUNS575, ciWorkflow: 'CI' })
+
+check('the red body: CI is the compile; no `bun run gate`, and never main, rc or testing', () => {
+  const body = redText(asOpen(PR575), RED575, { here: 'wt/hx-skills' })
+  ok(!/bun run gate/.test(body), body)
+  ok(/Diagnose from the log, fix, commit and push to `wt\/hx-skills` only — CI is the compile and the test\./.test(body), body)
+  ok(/`cargo test -p <crate> <test>`; never a workspace cargo/.test(body), body)
+  ok(/Never `main`, `rc` or `testing`, never `--force`/.test(body), body)
+  ok(/is not self-fixable/.test(body), body)
+  ok(!/inherited from/.test(body), body)
+})
+
+check('an inherited red says so first, and does not send the agent to fix it', () => {
+  const result = { ...RED575, inherited: { base: 'rc', sha: 'd'.repeat(40), url: 'https://github.com/outcrop-labs/talaria/actions/runs/7' } }
+  const body = redText(asOpen(PR575), result, { here: 'wt/hx-skills' })
+  eq(body.split('\n')[0], 'inherited from `rc` @ dddddddddddd (https://github.com/outcrop-labs/talaria/actions/runs/7) — the same jobs are red on the base itself; not self-fixable from this branch: report it.')
+  ok(!/Diagnose from the log/.test(body), body)
+  ok(/fmt \+ clippy \+ test \(api\)/.test(body), body)
+})
+
+check('the promotions\' red advice points at the branch each came from', () => {
+  eq(promotionFix('feature'), '')
+  ok(/fix\/<name> origin\/rc/.test(promotionFix('promotion:rc→main')), promotionFix('promotion:rc→main'))
+  const snap = promotionFix('promotion:testing→rc')
+  ok(/frozen snapshot of `testing`/.test(snap) && /fix\/<name> origin\/testing/.test(snap) && /dispatch promote-testing again/.test(snap), snap)
+  ok(/refs\/heads\/promote\/testing-\$\(git rev-parse --short=12 origin\/testing\)/.test(snap), snap)
+  const pr = { ...asOpen(PR575), baseRefName: 'rc', headRefName: 'promote/testing-0123456789ab' }
+  const body = redText(pr, { ...RED575, promotion: true, lane: 'promotion:testing→rc' }, { here: 'wt/elsewhere' })
+  ok(/push to that fix branch only/.test(body) && /is a frozen snapshot of `testing`/.test(body), body)
+})
+
+check('the testing → rc snapshot\'s conflict waits on the back-flow', () => {
+  const pr = { ...asOpen(PR575, { mergeable: 'CONFLICTING' }), baseRefName: 'rc', headRefName: 'promote/testing-0123456789ab' }
+  const r = classify(pr, { head: HEAD_OK, runs: RUNS575 })
+  eq([r.kind, r.lane], ['conflict', 'promotion:testing→rc'])
+  const body = conflictBody(pr, r, 'wt/elsewhere')
+  ok(/head backflow\/rc-<sha12>/.test(body) && /`sync: rc → testing`/.test(body) && /promote a fresh snapshot/.test(body), body)
+  ok(!/git merge origin\//.test(body), body)
+})
+
+check('a back-flow\'s conflict merges origin/testing into its own head', () => {
+  const pr = { ...asOpen(PR575, { mergeable: 'CONFLICTING' }), baseRefName: 'testing', headRefName: 'backflow/rc-0123456789ab' }
+  const r = classify(pr, { head: HEAD_OK, runs: RUNS575 })
+  eq([r.kind, r.lane], ['conflict', 'backflow'])
+  const body = conflictBody(pr, r, 'backflow/rc-0123456789ab')
+  ok(/git fetch origin testing && git merge origin\/testing/.test(body), body)
+  ok(/push to `backflow\/rc-0123456789ab` only \(never `main`, `rc` or `testing`/.test(body), body)
+})
+
+check('every other lane merges its own base — rc no longer hard-coded', () => {
+  for (const [base, head] of [['testing', 'wt/x'], ['rc', 'wt/x'], ['rc', 'hotfix/login']]) {
+    const pr = { ...asOpen(PR599, { mergeable: 'CONFLICTING' }), baseRefName: base, headRefName: head }
+    const body = conflictBody(pr, classify(pr, { head: HEAD_OK, runs: RUNS599 }), head)
+    ok(body.includes(`git fetch origin ${base} && git merge origin/${base}`), body)
+    ok(body.startsWith(`#${pr.number} conflicts with \`${base}\``), body)
+  }
+  // the promotion of rc is unchanged
+  const promo = conflictBody({ ...PR597, mergeable: 'CONFLICTING' }, classify({ ...PR597, mergeable: 'CONFLICTING' }, { head: HEAD_OK, runs: RUNS597 }), 'rc')
+  ok(/git switch -c sync\/main-into-rc origin\/rc && git merge origin\/main/.test(promo), promo)
+})
+
+check('branchNote: the snapshot is read-only; a feature on its own branch says nothing', () => {
+  ok(/frozen snapshot of `testing`/.test(branchNote({ ...lanePr('rc', 'promote/testing-abc'), number: 9 }, 'promote/testing-abc')), 'snapshot note')
+  eq(branchNote({ ...lanePr('testing', 'wt/x'), number: 9 }, 'wt/x'), '')
+  ok(/This checkout is on `wt\/y`/.test(branchNote({ ...lanePr('testing', 'wt/x'), number: 9 }, 'wt/y')), 'another branch')
 })
 
 check('importing the watcher does not poll; a direct run still answers --help', () => {
