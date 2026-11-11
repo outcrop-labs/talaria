@@ -75,9 +75,10 @@ forwards the refs a push is about to send to
 [`scripts/flow-guard.mjs`](../scripts/flow-guard.mjs), which is the same policy
 [`../.github/workflows/flow.yml`](../.github/workflows/flow.yml) runs server-side. `talaria setup`
 sets `core.hooksPath`, so it is on by default in any clone that has been set up. An agent
-therefore learns "pull requests target `rc`, and `main` takes the promotion of a verified `rc`"
-from a refused push — the message names the rule and the way to do it instead — rather than from
-a document it may not have read. The model:
+therefore learns "pull requests target `testing`; `rc` takes a snapshot of testing and the
+hotfix/release/sync lanes; `main` takes the promotion of a verified `rc`" from a refused push or
+a red `pr target (flow)` — the message names the rule and the way to do it instead — rather than
+from a document it may not have read. The model:
 [`docs/BRANCHES.md`](./BRANCHES.md).
 
 ## Compiles run on CI
@@ -96,9 +97,9 @@ lives in `api/.cargo/config.toml`. CI lifts it. The procedure is
 
 ## The CI gates — before and after the pull request opens
 
-The stop gate cannot see CI, and it cannot see `rc` move under an open pull request. Two
-scripts read CI, and both speak the same exit contract (0 green, 2 with the reason on
-stderr, anything else not a pass):
+The stop gate cannot see CI, and it cannot see a base branch move under an open pull
+request. Three scripts read CI and what follows it, and all speak the same exit contract
+(0 green, 2 with the reason on stderr, anything else not a pass):
 
 - [`scripts/hooks/remote-gate.mjs`](../scripts/hooks/remote-gate.mjs) (`bun run
   gate:remote`) — before a pull request exists. It pushes HEAD to `ci/<branch>`
@@ -109,14 +110,21 @@ stderr, anything else not a pass):
   that PR's checks are the proof.
 - [`scripts/hooks/pr-watch.mjs`](../scripts/hooks/pr-watch.mjs) — after. It polls check
   runs and mergeable state: 0 only when checks are green and the PR does not conflict with
-  `rc`. Green is the latest run of each check, on the commit that was pushed, with the CI
-  workflow's run for it finished. `CI offload` runs are not the PR's, so it ignores them.
+  its base (`testing` for a feature). Green is the latest run of each check, on the commit
+  that was pushed, with the CI workflow's run for it finished. `CI offload` runs are not the
+  PR's, so it ignores them. Green is when the author merges into testing
+  (`gh pr merge <n> --merge --admin`).
+- [`scripts/hooks/testing-watch.mjs`](../scripts/hooks/testing-watch.mjs) — after the merge.
+  It polls the [testing instance](./TESTING-INSTANCE.md)'s `/api/healthz` until the version it
+  runs contains the merge, then prints one proof line; red on a failed `testing-deploy`, an
+  instance that is down, or a timeout. It needs `TESTING_URL` (the repository variable) or
+  `TALARIA_TESTING_URL`. Live is when the change gets exercised there.
 
-Neither edits code; the only thing either pushes is remote-gate's own `ci/` ref. Both wait
+None edits code; the only thing any of them pushes is remote-gate's own `ci/` ref. All wait
 minutes, so the procedure starts them in the harness's background mode (Claude Code:
 `run_in_background`) and acts on the exit. The procedure — when to run them, how a red
-check or a conflict is fixed, when to stop and report — is
-[`ship-a-change`](../.claude/skills/ship-a-change/SKILL.md). Neither is a Stop hook:
+check or a conflict is fixed, when to merge, when to stop and report — is
+[`ship-a-change`](../.claude/skills/ship-a-change/SKILL.md). None is a Stop hook:
 whether a harness should spawn them on its own is an open call, and a gate a harness skips
 is still a rule in [`AGENTS.md`](../AGENTS.md).
 

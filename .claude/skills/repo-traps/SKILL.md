@@ -82,6 +82,20 @@ thing. `REDIS_URL` comes from `ui/.env` — in a worktree, that stack's own Redi
 api/src/session.rs (`SESSION_COOKIE`, `key()`) is the source of truth; re-verify against
 it before relying on the field list.
 
+**On the testing instance** — where a merged change is exercised (ship-a-change, section 7)
+— it is the same recipe over SSH, against that stack's own Redis container, as the
+**non-admin test user** (`"role":"member"`; its `id` and `sub` from that user's row on the
+instance), never an admin or the account that claimed it:
+
+```bash
+ssh -i ~/.ssh/talaria-testing talaria@<vm> \
+  "docker exec talaria-redis-1 redis-cli SET 'sess:<sid>' '<json>' EX 604800"
+curl -H 'Cookie: talaria_session=<sid>' https://<host>/api/<route>
+```
+
+`~/.ssh/talaria-testing` opens that VM and nothing else.
+[`docs/TESTING-INSTANCE.md`](../../../docs/TESTING-INSTANCE.md) ("Agent access") has the rest.
+
 ## 6. A stash pop across a branch switch can leave conflict markers a blind add then COMMITS
 
 **Symptom:** CHANGELOG (or any file both branches touched) carries `<<<<<<< Updated

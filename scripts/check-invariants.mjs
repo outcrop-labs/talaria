@@ -2339,8 +2339,9 @@ const UNSET_SEAM_CENSUS = [
 // THE BRANCH MODEL IS MACHINERY, AND MACHINERY GETS AN ANCHOR.
 //
 // docs/BRANCHES.md describes three long-lived branches — testing (the
-// integration lane), rc (the release candidate) and main (the trunk, which
-// takes only rc's verified promotion). On its own that page is worth nothing:
+// integration lane every feature pull request targets), rc (the release
+// candidate, which takes snapshots of testing and the hotfix/release/sync
+// lanes) and main (the trunk, which takes only rc's verified promotion). On its own that page is worth nothing:
 // what makes it true is .github/workflows/flow.yml (the server-side tripwire),
 // scripts/flow-guard.mjs (the rules), scripts/hooks/pre-push (the local
 // wiring), promote.yml (the promotion) and — outside this tree — the branch
@@ -2360,7 +2361,7 @@ const UNSET_SEAM_CENSUS = [
   if (doc === null) {
     found.push({ path: 'docs/BRANCHES.md', line: 0, text: 'the branch model has no home' })
   } else {
-    for (const branch of ['rc', 'main']) {
+    for (const branch of ['testing', 'rc', 'main']) {
       if (!new RegExp(`^\\|\\s*\`${branch}\``, 'm').test(doc)) {
         found.push({
           path: 'docs/BRANCHES.md',
@@ -2384,6 +2385,8 @@ const UNSET_SEAM_CENSUS = [
     ['scripts/flow-guard.mjs', "'main'", 'the trunk the policy polices'],
     ['scripts/flow-guard.mjs', "'rc'", 'the release candidate the policy polices'],
     ['scripts/flow-guard.mjs', "'testing'", 'the integration lane the policy polices'],
+    ['scripts/flow-guard.mjs', 'function decideRcHead(', "rc's lanes — and judge-pr's feature-targets-rc wakes on this name at origin/rc"],
+    ['scripts/judge-pr.mjs', 'decideRcHead', 'the judge reads whether rc enforces its lanes by this name'],
   ]
   for (const [file, needle, why] of wired) {
     const text = read(file)
@@ -2559,7 +2562,7 @@ const UNSET_SEAM_CENSUS = [
 // THE POST-PR WATCHER IS THE GATE THE STOP GATE CANNOT BE.
 //
 // AGENTS.md says an agent may not report done while its open pull request has
-// failing checks, pending checks, or merge conflicts against rc. The stop gate
+// failing checks, pending checks, or merge conflicts against its base. The stop gate
 // sees the local tree. What makes the sentence true is scripts/hooks/pr-watch.mjs
 // (the exit) and the ship-a-change skill (the procedure that runs it and fixes).
 // Delete either, or stop the script from blocking on a red check and a conflict,
@@ -2588,7 +2591,7 @@ const UNSET_SEAM_CENSUS = [
       what: 'the post-PR watcher and the no-done rule have drifted apart',
       fix: [
         'AGENTS.md forbids reporting dev work done while an open PR has failing checks, pending',
-        'checks, or merge conflicts against rc. scripts/hooks/pr-watch.mjs is the gate (exit 2',
+        'checks, or merge conflicts against its base. scripts/hooks/pr-watch.mjs is the gate (exit 2',
         'on red and on conflict; exit 0 only when checks are green and mergeable). The procedure',
         'is .claude/skills/ship-a-change/SKILL.md. If one of them moved, update this check in the',
         'same commit — an anchor that points at nothing passes while guarding nothing.',
@@ -2619,6 +2622,13 @@ const UNSET_SEAM_CENSUS = [
     ['.github/actions/setup-runtime/action.yml', 'CARGO_BUILD_JOBS', 'CI lifts the cap, or the api job inherits 2 and times out'],
     ['api/package.Dockerfile', 'ARG CARGO_BUILD_JOBS=2', 'a package build without the lift stays capped'],
     ['.github/workflows/api-package.yml', 'CARGO_BUILD_JOBS=$(nproc)', 'the package workflow is the lift'],
+    // CI is the compile: the offload before a pull request exists, and the
+    // merge into testing that is only done once it is live and exercised.
+    ['AGENTS.md', 'bun run gate:remote', 'the offload is the rule'],
+    ['.claude/skills/ship-a-change/SKILL.md', 'bun run gate:remote', 'the procedure offloads'],
+    ['.claude/skills/ship-a-change/SKILL.md', 'testing-watch.mjs', 'merged means live, then exercised'],
+    ['scripts/hooks/remote-gate.mjs', "block('red',", 'a red run blocks'],
+    ['package.json', '"gate:remote"', 'the runner-hub entry'],
   ]
   for (const [file, needle, why] of wired) {
     const text = read(file)
@@ -2637,6 +2647,9 @@ const UNSET_SEAM_CENSUS = [
         '(`api:check`, `desktop:check`, `cargo test` without `-p`) is not it — that locks',
         'api/target and pins the machine. scripts/gate.mjs is the gate. jobs = 2 in both cargo',
         'configs is the cap. setup-runtime and api-package.yml lift it for dedicated runners.',
+        'The compile itself is CI: `bun run gate:remote` (scripts/hooks/remote-gate.mjs, red at',
+        'the first failing job) before a pull request exists, and ship-a-change merges into',
+        'testing and waits on scripts/hooks/testing-watch.mjs before the change is exercised.',
         'If one of them moved, update this check in the same commit — an anchor that points at',
         'nothing passes while guarding nothing.',
       ],

@@ -1,6 +1,6 @@
 ---
 name: cut-release
-description: Cut a release — tag an RC on rc or a stable release on main, and know what the release workflow publishes to GHCR. Use when cutting an RC or stable release, re-running a nightly, or diagnosing why a channel or image tag did not move.
+description: Cut a release — promote a snapshot of testing into rc, tag an RC on rc or a stable release on main, and know what the release workflow publishes to GHCR. Use when promoting testing, cutting an RC or stable release, re-running a nightly, or diagnosing why a channel or image tag did not move.
 ---
 
 # Cut a release
@@ -9,21 +9,43 @@ RELEASING.md is the contract — this is the working procedure distilled from it
 that shape everything: **git tags are the version authority** (no file carries the version —
 no version-bump commit; the one file a release changes is CHANGELOG.md, through the roll's
 pull request below), and **a release is cut from a branch that has already been deployed**:
-`rc` for a candidate, `main` for a stable.
+`rc` for a candidate, `main` for a stable. What reaches `rc` got there as a frozen snapshot
+of `testing`, where every feature lands first.
 The branch model behind that: [`docs/BRANCHES.md`](../../../docs/BRANCHES.md).
 
 ## The branches
 
 | Branch | Role | How it moves | Tag cut on it |
 |---|---|---|---|
-| `rc` | integration + staging; every PR targets it | merging pull requests | `vX.Y.Z-rc.N` |
+| `testing` | the integration lane; every feature PR targets it; deploys the testing instance | merging pull requests (the author, at green) and the back-flow from rc; never rewritten or deleted | — (its images are `testing`, `testing-<sha12>`) |
+| `rc` | release candidate + staging | a `promote/testing-<sha12>` snapshot, or a `hotfix/`, `release/`, `sync/` branch cut from rc — a person merges | `vX.Y.Z-rc.N` |
 | `main` | the release trunk | the promotion merge of `rc`, once its deploy is green | `vX.Y.Z` |
-| `testing` | the integration lane, coming back — nightly still builds `rc`'s tip | merging pull requests; never deleted | — |
+
+## Promote testing into rc
+
+On demand, when testing holds a candidate worth a release (its readiness summary — the
+weekday `promote-testing` run — says what it has over rc and whether its CI, deploy and
+daily full battery are green):
+
+```bash
+gh workflow run promote-testing.yml --ref main -f open=true
+# by hand, when there is no PROMOTION_TOKEN:
+git fetch origin testing
+git push origin origin/testing:refs/heads/promote/testing-$(git rev-parse --short=12 origin/testing)
+gh pr create --base rc --head promote/testing-<sha12> --title "promote: testing → rc"
+```
+
+The snapshot never moves: full CI runs once (macOS, Windows, iOS, e2e), a code owner reviews,
+a person merges it as a merge commit. `pr target (flow)` refuses it while rc holds anything
+testing lacks — merge the open `sync: rc → testing` back-flow first, then cut a fresh
+snapshot. Never open a pull request from `testing` itself: a moving head restarts the battery
+on every merge into testing, and `pr-target` refuses it. The merge's rc push runs
+`rc-deploy.yml`, and from there the chain below takes over.
 
 ## Cut an RC
 
 ```bash
-# 1. the roll, as a pull request against rc — like every other change
+# 1. the roll, as a release/ pull request against rc — like everything on rc
 git fetch origin && git switch -c release/roll-0.2.0-rc.1 origin/rc
 bun scripts/changelog-roll.mjs 0.2.0-rc.1      # folds changelog/*.md into a section, deletes them
 git add CHANGELOG.md changelog/
@@ -43,13 +65,16 @@ that section by `scripts/release-notes.mjs`, linking `blob/<tag>/CHANGELOG.md`.)
 push the roll commit to rc
 yourself:** `scripts/flow-guard.mjs` refuses an rc tip that is not a merge (the pre-push
 hook locally, `flow.yml` in CI), so the roll lands the way everything does — a pull request
-against rc. Hold other merges to rc between the roll's merge and the tag: a PR that lands in
-between ships in the tag with its entry still in `changelog/`, outside the section. The roll
+against rc. rc moves only on snapshots, hotfixes, rolls and syncs, so the window between the
+roll's merge and the tag is quiet by itself — but do not merge a snapshot into it: that
+would ship in the tag with its entries still in `changelog/`, outside the section. The roll
 refuses to run on an empty `changelog/`; if it does, that is a prompt to read the entries,
-not a step to force.
+not a step to force. After the roll merges, `promote-testing.yml` opens the back-flow
+(`sync: rc → testing`, from `backflow/rc-<sha12>`) so testing carries the roll too — merge it,
+or the next snapshot is refused.
 
 Tag the tip whose staging deploy you watched (Actions → rc-deploy); that deploy is what an RC
-is supposed to carry. Nothing else needs advancing first — `rc` is where the work is.
+is supposed to carry. Nothing else needs advancing first — `rc` already holds the snapshot.
 
 The tag push runs the release workflow: full CI against the tag, images land on GHCR as
 `0.2.0-rc.1` + (moving) `rc`, and a GitHub **prerelease** opens with notes built from the
@@ -63,9 +88,11 @@ by deleting the tag.
 
 **CI runs the chain** (RELEASING.md, "Promoting to stable"):
 
+0. A snapshot of testing has been promoted into rc (above), and rc-deploy is green.
 1. On a verified rc with `changelog/` entries, `promote.yml` opens the roll's pull request
    from `release/roll`. `scripts/release-version.mjs` picks the version: the next patch, an
-   entry's `<!-- bump: minor -->`, or a `version` dispatch.
+   entry's `<!-- bump: minor -->`, or a `version` dispatch. The roll's merge moves rc, so the
+   back-flow into testing follows automatically.
 2. Once that merges and rc verifies, it opens `promote: rc → main — vX.Y.Z`.
 3. Its merge makes `tag-release.yml` tag main and dispatch `release.yml` at the tag. That
    publishes the images and a Release whose notes come from `scripts/release-notes.mjs`.
@@ -129,11 +156,13 @@ no logs (RELEASING.md has the story).
 | Tag | Moves when | Immutable? |
 |---|---|---|
 | `nightly` / `rc` / `latest` / `main` | their build, tag or promotion | no — pointers |
-| `nightly-YYYYMMDD` / `X.Y.Z-rc.N` / `X.Y.Z` | their build or tag | yes |
+| `testing` | every push to testing (`testing-deploy.yml`) | no — a pointer the testing instance follows |
+| `nightly-YYYYMMDD` / `X.Y.Z-rc.N` / `X.Y.Z` / `testing-<sha12>` | their build, tag or testing push | yes |
 
 Everything is `ghcr.io/outcrop-labs/talaria` (the app) and `ghcr.io/outcrop-labs/talaria-api`
-(the api package — same tags **plus** an immutable `sha-<sha12>` per commit; that sha tag
-is what a release's app-image build is pinned to, and what `rc-deploy.yml` pins for staging).
+(the api package — same tags **plus** an immutable `sha-<sha12>` per commit, `sha-<sha12>-dev`
+for a dev-profile build — the nightly and rc channels, testing's deploy; that sha tag is what a release's
+app-image build is pinned to, and what `rc-deploy.yml` and `testing-deploy.yml` pin).
 
 Production instances run from a separately operated infrastructure deployment — this repo
 ends at the published images. The changelog is already maintained by PRs (one entry file
