@@ -45,11 +45,13 @@ toolchain (`docker/devbox.Dockerfile`, pinned like `api/rust-toolchain.toml`).
 Local cargo is capped at 2 jobs — `api/.cargo/config.toml`, and the same number
 in `desktop/src-tauri/.cargo/config.toml`. That cap is the CPU cap and the RAM
 cap: each rustc is a multi-GB process on cargo's jobserver, and an uncapped
-workspace `cargo test` pins the host. Agents run `bun run gate`, which compiles
-only the packages the diff touches, and do not lift the cap. CI lifts it
-(`CARGO_BUILD_JOBS` from `setup-runtime`, and the same build-arg on the package
-image). `bun run api:check` remains the CI api job's local spelling, not the
-command an agent runs before a pull request.
+workspace `cargo test` pins the host. CI is the proof: agents let the pull
+request's checks, or `bun run gate:remote` before one exists, compile and test
+the api, and a local compile is only for reproducing one failure CI reported —
+`cargo test -p <crate> <test>`, under the cap, which agents do not lift. CI lifts
+it (`CARGO_BUILD_JOBS` from `setup-runtime`, and the same build-arg on the
+package image). `bun run api:check` is the CI api job's spelling — CI's job,
+never local.
 
 ## The rules
 
@@ -101,7 +103,9 @@ command an agent runs before a pull request.
    `typed_binds` and `update_live`, which need more than Postgres+Redis, stay).
    `bun run verify` never scans `api/`; the CI gate is `bun run
    api:check` (fmt + clippy `-D warnings` + test) and the `api` CI job, with
-   `api-integration.yml` the depth gate behind them. Locally that command is not the one to run — `bun run gate` compiles the packages the diff touches, under the job cap above.
+   `api-integration.yml` the depth gate behind them. That command is CI's job,
+   never local: the pull request's checks (or `bun run gate:remote`) are the
+   proof, and a local compile only reproduces one failure they reported.
 10. **App modules are customer code, never port surface.** Building a microapp
     with the SDK stays a TS/node experience: an app's internal APIs are the
     author's own code, talking to the host through the same `/api` and UI
@@ -215,8 +219,10 @@ composition root that wires the cross-crate seams.
 Names follow the module they replaced: `src/tasks.rs` → `talaria-tasks`,
 `src/google/drive.rs` → `talaria-google-drive`. When you extract the next
 one, keep the moves mechanical — rewrites to crate paths, the OnceLock only
-where a cycle forces it — and run the full gate (`clippy -D warnings`,
-`cargo test --workspace`, `bun run check`) before committing.
+where a cycle forces it — run `bun run check` before committing, and let CI run
+the full gate (fmt, `clippy -D warnings`, the workspace's tests): the pull
+request's checks, or `bun run gate:remote` before one exists. Never a
+workspace `cargo test` on this machine.
 
 `Cargo.lock` is committed, as `bun.lock` is. The shared target dir stays
 `api/target` so `.dockerignore` and the package Dockerfile's context keep

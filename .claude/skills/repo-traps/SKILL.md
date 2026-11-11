@@ -114,7 +114,7 @@ with an `i32` bind (or an explicit `::int` cast). Same for `days`.
 
 **Check:** a workspace cargo — `bun run api:check`, `bun run desktop:check`, `cargo test` or `cargo clippy` without `-p`. Those take an exclusive lock on `api/target` for the whole workspace, and an uncapped cargo takes every core and a matching pile of RAM (each rustc is a multi-GB process on the same jobserver).
 
-**Fix:** stop it. The local gate is `bun run gate`, which compiles only the packages the diff touches. Reproduce a CI failure with `cargo test -p <the crate the log names>`, never the workspace. The cap is `jobs = 2` in `api/.cargo/config.toml` (and the desktop workspace's copy); do not raise it, and do not set `CARGO_BUILD_JOBS`, to make a compile faster. CI lifts the cap on dedicated runners. A human alone on a build machine may export `CARGO_BUILD_JOBS` for that one shell; an agent may not.
+**Fix:** stop it. CI is the compile: the pull request's own checks, or `bun run gate:remote` before a PR exists, both in the background (the ship-a-change skill). Reproduce one CI failure with `cargo test -p <crate> <test>` only — the crate and the test the log names, never the workspace. The cap is `jobs = 2` in `api/.cargo/config.toml` (and the desktop workspace's copy); do not raise it, and do not set `CARGO_BUILD_JOBS`, to make a compile faster. CI lifts the cap on dedicated runners. A human alone on a build machine may export `CARGO_BUILD_JOBS` for that one shell; an agent may not.
 
 **Maintenance rule:** this list is earned experience, not theory. When you hit a NEW trap
 with a generalizable check, add it here — symptom, check, fix — and keep the incident

@@ -1,6 +1,6 @@
 ---
 name: dev-loop
-description: Run and exercise the Talaria dev stack — bring-up, ports, worktree/devbox isolation, seeding, and the check/verify gates. Use when starting or restarting the stack, choosing between a worktree and a devbox, seeding realistic data, or deciding which command verifies which surface.
+description: Run and exercise the Talaria dev stack — bring-up, ports, worktree/devbox isolation, seeding, and the gates (a local check; CI is the compile). Use when starting or restarting the stack, choosing between a worktree and a devbox, seeding realistic data, or deciding which command verifies which surface.
 ---
 
 # Dev loop
@@ -30,16 +30,25 @@ Reset a wedged stack with `bun talaria reset <mode>`; snapshot and restore with
 
 ## The gates, and what each proves
 
-| Gate | Proves | Cost |
-|---|---|---|
-| `bun run check` | invariants + every doc link resolves + generated references not drifted | seconds, **no install needed** |
-| `bun run gate` | `check`, plus compile/test only for the surfaces and packages the diff touches — the local pre-push gate | the compiles you actually changed |
-| `bun run api:check` | fmt + clippy `-D warnings` + cargo tests of the whole api workspace — what the CI api job runs | minutes, locks `api/target`, pins the machine. Not the local default |
-| `bun run desktop:check` | the same for `desktop/` — what the CI desktop job runs | same. Not the local default |
-| `bun run typecheck` | svelte-check over the ui (it checks `.svelte` files — tsc alone doesn't) | ~a minute |
-| `bun run verify` | check + typecheck + ui test — CI's ui/mcp coverage | the sum. Not the local default |
+| Gate | Where | Proves | Cost |
+|---|---|---|---|
+| `bun run check` | local | invariants + every doc link resolves + generated references not drifted | seconds, **no install needed** |
+| the PR's CI (`node scripts/hooks/pr-watch.mjs`), or `bun run gate:remote` before a PR exists | GitHub | compile + test — the proof. `gate:remote` is light (Linux jobs, the surfaces the branch moved); a PR into `rc` runs full | minutes on free runners, nothing on this machine |
+| `bun run gate:remote --full` | GitHub, full | every surface, plus macOS, Windows, iOS and e2e | longer; still nothing on this machine |
+| `bun run gate` | local, reproduce only | `check`, plus compile/test of what the diff touches | the compiles you changed — only to reproduce one failure CI reported |
+| `api:check`, `desktop:check`, `verify`, `typecheck` | CI's jobs | the whole api / desktop / ui surface | minutes, locks `api/target`, pins the machine — never local |
 
-Use `bun run check` as the fast inner gate everywhere — it runs in a fresh worktree before any install. `bun run gate` is the pre-push gate (see the ship-a-change skill). Do not run a workspace cargo locally, and do not set `CARGO_BUILD_JOBS`: the cap in `api/.cargo/config.toml` is what keeps a compile from pinning the host.
+Locally: `bun run check` — it runs in a fresh worktree before any install — and cheap
+targeted runs (one `bunx vitest run <file>`, one `bun test <file>`, `cargo fmt`). The
+compile is CI's: the pull request's own checks, or `bun run gate:remote` before there is
+one (the ship-a-change skill). Do not run a workspace cargo locally, and do not set
+`CARGO_BUILD_JOBS`: the cap in `api/.cargo/config.toml` is what keeps a compile from pinning
+the host.
+
+**Background.** Both CI gates wait minutes; a harness kills a foreground command long before
+(Claude Code at 10). Start `pr-watch` and `gate:remote` in the harness's background mode
+(Claude Code: `run_in_background`) and act on the exit. A killed one loses nothing:
+`gate:remote --watch <run-id>` resumes, and `pr-watch` re-reads the PR from scratch.
 
 ## Exercising the path you changed
 

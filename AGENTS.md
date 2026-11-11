@@ -31,11 +31,12 @@ Bun is the runner for the whole repo (the root `package.json` is the hub):
 | `bun run dev` | full dev stack → <http://localhost:5273> |
 | `bun run api` | the Rust api (`cargo run`, :5274) |
 | `bun run check` | invariants + doc links + generated-reference drift — seconds, **needs no install** |
-| `bun run gate` | local pre-push — `check`, then compile/test only what the diff touches |
-| `bun run api:check` | fmt + clippy `-D warnings` + cargo tests — the CI api job, not the local default |
+| `bun run gate:remote` | compile + test on GitHub before a PR exists: pushes HEAD to `ci/<branch>`, reports the first red job with its log — run it in the background (`--full` adds macOS/Windows/iOS/e2e) |
+| `bun run gate` | local scoped compile — only to reproduce one failure CI reported |
+| `bun run api:check` | fmt + clippy `-D warnings` + cargo tests — CI's api job; never local |
 | `bun run desktop` | Talaria Desktop (`tauri dev`) — run on the **host**, never in a box (no display); `docs/DESKTOP.md` |
-| `bun run desktop:check` | fmt + clippy + cargo tests + svelte-check — the CI desktop job, not the local default |
-| `bun run verify` | check + typecheck + ui test — CI's ui/mcp coverage, not the local default |
+| `bun run desktop:check` | fmt + clippy + cargo tests + svelte-check — CI's desktop job; never local |
+| `bun run verify` | check + typecheck + ui test — CI's ui/mcp job; never local |
 | `bun run test` / `typecheck` / `build` / `start` | the ui/ scripts (typecheck is svelte-check) |
 | `bun run docs:api` | regenerate the generated references |
 
@@ -66,7 +67,7 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
   [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md), [`docs/api/`](./docs/api/README.md)
   and the talaria-apps skill's `references/skeleton.md` all come out of the generator behind
   `bun run check` — change the source, run `bun run docs:api`.
-- Local pre-push is `bun run gate` ([`scripts/gate.mjs`](./scripts/gate.mjs)): `check` always; compile and test only the surfaces and packages the diff touches. Do not run a workspace cargo (`api:check`, `desktop:check`, `cargo test` / `clippy` without `-p`) — it locks `api/target` and pins the machine. CI runs the full surface job.
+- Compile and test on GitHub, not on this machine. Locally: `bun run check` (seconds) and cheap targeted runs — one `bunx vitest run <file>`, one `bun test <file>`, `cargo fmt`. The proof is CI: the pull request's own checks (watched by `scripts/hooks/pr-watch.mjs`), or `bun run gate:remote` before a PR exists — both in the background. A heavy build — `cargo build`/`test`/`clippy`, gradle, a whole-project svelte-check, a docker build — runs locally only to reproduce one failure CI reported, one `-p` crate or one test; `bun run gate` ([`scripts/gate.mjs`](./scripts/gate.mjs)) scopes it to the diff. Do not run a workspace cargo (`api:check`, `desktop:check`, `cargo test` / `clippy` without `-p`) — it locks `api/target` and pins the machine.
 - Do not report dev work done while its open pull request has failing checks, pending
   checks, or merge conflicts against `rc`. Local gates cannot see that. The watcher is
   [`scripts/hooks/pr-watch.mjs`](./scripts/hooks/pr-watch.mjs); the procedure is
@@ -85,7 +86,7 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
   seeded DB, its own ports); `talaria dev` **refuses** to start in a worktree lacking the
   setup marker, for exactly this reason ([`docs/WORKTREES.md`](./docs/WORKTREES.md)).
 - `bun run check` runs with no `node_modules` at all — everything under `scripts/` is
-  stdlib-only. Use it as the fast inner gate anywhere, any time.
+  stdlib-only. Use it as the inner gate anywhere, any time; CI is the compile.
 - Parallel *agent* sessions: devboxes give each task a container with the agent CLIs inside
   ([`docs/DEVBOX.md`](./docs/DEVBOX.md)). Never share a host `~/.claude` across concurrent
   CLIs — it corrupts `.claude.json`.
@@ -133,7 +134,7 @@ One line each — the full symptom → check → fix procedure is the
 - Docker builds fail resolving hosts → the daemon's resolver config; builds may need
   `--network=host`.
 - Authed curl without a browser → mint a Redis session directly.
-- A cargo test or clippy pins the machine and locks `api/target` → `bun run gate`, never a workspace cargo. The cap is `api/.cargo/config.toml`.
+- A cargo test or clippy pins the machine → don't; CI is the compile (`bun run gate:remote`). The cap is `api/.cargo/config.toml`.
 
 ## The stop gate
 
