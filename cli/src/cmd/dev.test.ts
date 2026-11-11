@@ -4,12 +4,14 @@
 // is what prints it), so refusals are asserted on the throw.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { apiEnv, portHolder, runDev, rustApi, viteArgs } from './dev'
+import { apiEnv, devCommand, devOpts, portHolder, prebuiltApi, runDev, rustApi, viteArgs } from './dev'
+import { parseArgs } from '../cli'
+import { API_BINARY_INPUTS } from '../ci-artifact'
 import { WORKTREE_COMPOSE, pgReadyArgs } from '../compose'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
@@ -881,5 +883,87 @@ describe('talaria dev — a taken app port', () => {
   test('vite is always strict', () => {
     expect(viteArgs('5310')).toEqual(['run', 'dev', '--', '--port', '5310', '--strictPort'])
     expect(viteArgs(undefined)).toEqual(['run', 'dev', '--', '--strictPort'])
+  })
+})
+
+// ── A prebuilt api in cargo's place: --api-bin, --api-from-ci ──────────────
+describe('talaria dev — a prebuilt api binary', () => {
+  const flags = (...argv: string[]) => devOpts(parseArgs(argv, devCommand.flags ?? [], 'talaria dev'))
+  const execFile = (dir: string, name = 'talaria-api') => {
+    const p = join(dir, name)
+    writeFileSync(p, '#!/bin/sh\nexit 0\n')
+    chmodSync(p, 0o755)
+    return p
+  }
+  const dies = async (p: Promise<unknown>): Promise<string> => {
+    try {
+      await p
+      return ''
+    } catch (e) {
+      return e instanceof CliError ? e.message : `<unexpected throw: ${String(e)}>`
+    }
+  }
+
+  test('the flags parse; neither one is plain `talaria dev`, which stays cargo', async () => {
+    expect(flags()).toEqual({ apiBin: undefined, apiFromCi: false })
+    expect(flags('--api-from-ci')).toEqual({ apiBin: undefined, apiFromCi: true })
+    expect(flags('--api-bin', 'x/talaria-api')).toEqual({ apiBin: 'x/talaria-api', apiFromCi: false })
+    const ctx = fakeCtx()
+    expect(await prebuiltApi(ctx, flags(), async () => 'never')).toBeUndefined()
+    expect(ctx.calls).toEqual([])
+  })
+
+  test('--api-bin resolves from where you stand and must be an executable file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'talaria-dev-bin-'))
+    try {
+      const bin = execFile(dir)
+      const ctx = fakeCtx({ cwd: dir })
+      expect(await prebuiltApi(ctx, flags('--api-bin', 'talaria-api'))).toBe(bin)
+      writeFileSync(join(dir, 'plain'), 'not executable')
+      expect(await dies(prebuiltApi(ctx, flags('--api-bin', 'plain')))).toBe(`--api-bin ${join(dir, 'plain')}: not an executable file`)
+      expect(await dies(prebuiltApi(ctx, flags('--api-bin', 'missing')))).toContain('not an executable file')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('contradictions are refused: both flags, or either with TALARIA_API=off', async () => {
+    const both = await dies(prebuiltApi(fakeCtx(), flags('--api-from-ci', '--api-bin', 'x')))
+    expect(both).toBe('--api-bin and --api-from-ci contradict each other: one names the binary, the other fetches it')
+    const off = fakeCtx({ env: { TALARIA_API: 'off' } })
+    expect(await dies(prebuiltApi(off, flags('--api-from-ci'), async () => 'never'))).toBe(
+      'TALARIA_API=off starts no api, and --api-from-ci names one to start — drop one of them',
+    )
+  })
+
+  test('--api-from-ci with uncommitted api changes stops dev before any container starts', async () => {
+    const root = makeTree()
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    ctx.plant(['git', ['diff', '--quiet', 'HEAD', '--', ...API_BINARY_INPUTS]], Object.assign(new Error('exit 1'), { code: 1 }))
+    try {
+      const msg = await dies(runDev(ctx, { apiFromCi: true }))
+      expect(msg).toContain("uncommitted api changes: CI's binary would not contain them")
+      expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
+      expect(ctx.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'dev')).toBe(false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('an api already listening is adopted, and the prebuilt binary is not started; cargo is never looked for', async () => {
+    const srv = createServer((_req, res) => res.end('ok'))
+    const port = await new Promise<number>((r) => srv.listen(0, '127.0.0.1', () => r((srv.address() as AddressInfo).port)))
+    try {
+      const ctx = fakeCtx({ env: { TALARIA_API_PORT: String(port) } })
+      await rustApi(ctx, 'DATABASE_URL=x\n', '/w/api/.ci-bin/abc/talaria-api')
+      expect(ctx.logLines).toEqual([
+        { kind: 'say', msg: `rust api → already listening on :${port}; adopting it (/w/api/.ci-bin/abc/talaria-api is not started)` },
+      ])
+      expect(ctx.calls).toEqual([])
+    } finally {
+      await new Promise((r) => srv.close(r))
+    }
   })
 })

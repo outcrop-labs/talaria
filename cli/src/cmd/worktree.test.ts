@@ -25,7 +25,7 @@ import {
   worktreeSlot,
   worktreeCommand,
 } from './worktree'
-import { parseArgs } from '../cli'
+import { dispatch, parseArgs } from '../cli'
 import { WORKTREE_COMPOSE, pgReadyArgs } from '../compose'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
@@ -969,11 +969,12 @@ describe('runWorktree — what the seed copied', () => {
 })
 
 describe('runWorktree — the Rust build cache', () => {
-  // A new worktree used to start with an empty api/target and pay a cold
-  // build, writing its own copy of every third-party artifact. The seed
-  // reflinks the registry crates' units from an idle checkout instead
-  // (src/targetseed.ts). These tests drive the step through the command;
-  // what a seed copies is targetseed.test.ts's.
+  // A new worktree starts with no api/target: exercising a change runs the
+  // binary CI built (`talaria dev --api-from-ci`), and compile and test are
+  // CI's. `--seed` reflinks the registry crates' units from an idle checkout
+  // for the one case that still runs cargo here (src/targetseed.ts). These
+  // tests drive the step through the command; what a seed copies is
+  // targetseed.test.ts's.
   const H = '0123456789abcdef'
   const LOCK = '[[package]]\nname = "itoa"\nversion = "1.0.14"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n'
   function fixture(name: string) {
@@ -1020,16 +1021,77 @@ describe('runWorktree — the Rust build cache', () => {
     }
   })
 
-  test('--no-seed copies nothing and says the first build is cold', async () => {
+  test('by default nothing is seeded: api/target starts empty, and the log says how to opt in', async () => {
     const { ctx, wt, done } = fixture('cold')
     try {
-      await runWorktree(ctx, 'cold', 'HEAD', { seed: false })
+      await runWorktree(ctx, 'cold')
       expect(ctx.calls.some((c) => c.cmd === 'flock' || (c.cmd === 'cp' && c.args.includes('--reflink=always')))).toBe(false)
-      expect(ctx.logLines).toContainEqual({ kind: 'skip', msg: '--no-seed: the first build is cold' })
+      expect(ctx.logLines).toContainEqual({ kind: 'skip', msg: 'api/target starts empty (pass --seed to reflink one)' })
       expect(existsSync(join(wt, 'api/target'))).toBe(false)
     } finally {
       done()
     }
+  })
+
+  test('--seed reflinks from the best idle checkout (none here: it says so, and the stack is whole)', async () => {
+    const { ctx, wt, done } = fixture('optin')
+    try {
+      expect(await runWorktree(ctx, 'optin', 'HEAD', { seed: true })).toBe(0)
+      expect(ctx.logLines.some((l) => l.msg === 'api/target starts empty (pass --seed to reflink one)')).toBe(false)
+      expect(ctx.logLines.some((l) => l.kind === 'skip' && l.msg.startsWith('api/target not seeded — '))).toBe(true)
+      expect(existsSync(join(wt, 'ui/.env'))).toBe(true)
+    } finally {
+      done()
+    }
+  })
+
+  test('the command line: --seed, --seed-from and --desktop seed; nothing, or the deprecated --no-seed, does not', async () => {
+    const cases: [string[], boolean][] = [
+      [[], false],
+      [['origin/rc'], false],
+      [['--seed'], true],
+      [['origin/rc', '--seed'], true],
+      [['--seed-from', '../talaria'], true],
+      [['--desktop'], true],
+      [['--no-seed'], false],
+    ]
+    const seen: boolean[] = []
+    for (const [i, [rest]] of cases.entries()) {
+      const name = `flags${i}`
+      const { ctx, done } = fixture(name)
+      try {
+        await worktreeCommand.run(ctx, parseArgs([name, ...rest], worktreeCommand.flags ?? [], 'talaria worktree'))
+        seen.push(!ctx.logLines.some((l) => l.msg === 'api/target starts empty (pass --seed to reflink one)'))
+        const add = ctx.calls.find((c) => c.cmd === 'git' && c.args[0] === 'worktree' && c.args[1] === 'add')
+        expect(add?.args.at(-1)).toBe(rest[0] === 'origin/rc' ? 'origin/rc' : 'HEAD')
+        if (rest.includes('--no-seed')) {
+          expect(ctx.logLines).toContainEqual({ kind: 'warn', msg: '--no-seed is the default now and does nothing — drop it (--seed opts in)' })
+        }
+      } finally {
+        done()
+      }
+    }
+    expect(seen).toEqual(cases.map(([, seed]) => seed))
+  })
+
+  test('the router parses the flags after <name> [base-ref] — they are not a third positional or the base ref', async () => {
+    // `positionals.multiple` was a passthrough: `talaria worktree demo
+    // --no-seed` reached the command as the base ref `--no-seed`.
+    let got: { positionals: string[]; flags: Record<string, unknown> } | undefined
+    const leaf = { ...worktreeCommand, run: (_ctx: unknown, a: typeof got) => ((got = a), 0) }
+    const ctx = fakeCtx()
+    const root = { kind: 'group' as const, name: 'talaria', summary: 't', children: [leaf as typeof worktreeCommand] }
+    expect(await dispatch(ctx, root, ['worktree', 'demo', 'origin/rc', '--seed', '--seed-from', '../talaria'])).toBe(0)
+    expect(got).toEqual({ positionals: ['demo', 'origin/rc'], flags: { seed: true, 'seed-from': '../talaria' } })
+    expect(await dispatch(ctx, root, ['worktree', 'demo', 'origin/rc', 'extra'])).toBe(1)
+    expect(ctx.logLines.at(-1)).toEqual({ kind: 'fail', msg: 'talaria worktree: unexpected argument `extra`' })
+  })
+
+  test('--seed and --no-seed together is refused before anything is made', () => {
+    const ctx = mainCtx()
+    const args = parseArgs(['demo', '--seed', '--no-seed'], worktreeCommand.flags ?? [], 'talaria worktree')
+    expect(() => worktreeCommand.run(ctx, args)).toThrow('--seed and --no-seed contradict each other')
+    expect(ctx.calls).toEqual([])
   })
 
   test('a filesystem without reflink gets a cold build and a warning, and the stack is still whole', async () => {
