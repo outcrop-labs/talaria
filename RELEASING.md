@@ -240,15 +240,15 @@ was refused for asking `packages: write` under a `contents: read` caller. Those
 grants now sit on the calls in `release.yml` — if a new nested call is added and
 the tag or nightly dies as a startup failure, that is the first thing to look at.
 
-The retired `testing` branch used to be this section's problem: it had to be
+The `testing` branch used to be this section's problem: it had to be
 fast-forwarded by hand, nothing enforced that, and a stale channel published
 stale code with today's date on it. `rc` cannot go stale the same way — it is
 where every pull request lands, and `main` is kept current by the promotion —
 which is the other half of why the nightly feed moved onto it.
 
-Delete it when convenient: `git push origin :testing`. Until then, pushes to it
-are refused by `scripts/flow-guard.mjs`, so it cannot quietly come back to life
-as a second feed.
+`testing` is not deleted: it is coming back as the integration lane
+([`docs/BRANCHES.md`](./docs/BRANCHES.md)), and nightly still builds `rc`.
+`scripts/flow-guard.mjs` refuses its deletion and judges every push to it.
 
 ## The tags on `ghcr.io/outcrop-labs/talaria`
 
