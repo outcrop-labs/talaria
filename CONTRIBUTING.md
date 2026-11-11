@@ -13,7 +13,7 @@ commit once that is green, and every push to `testing` deploys the
 [testing instance](./docs/TESTING-INSTANCE.md), where changes are exercised
 together. `rc` is the release candidate and the staging environment: it takes a
 frozen snapshot of `testing` (`promote/testing-<sha12>`, full CI on every
-platform, a code-owner review), and every push to it is deployed and smoke-tested
+platform, an approving review), and every push to it is deployed and smoke-tested
 by `.github/workflows/rc-deploy.yml`. `main` is the release trunk, and it takes
 one input only — a promotion of the whole of `rc`, offered by
 `.github/workflows/promote.yml` once that deploy is green. The model, the gates
@@ -27,8 +27,8 @@ automatically.
 
 **Who merges.** Into `testing`, the author, once the checks are green (maintainers
 with admin rights merge their own; an outside contributor's pull request waits
-for a code owner's approval). Into `rc` and `main`, a maintainer, after a
-code-owner review — always as a merge commit.
+for an approving review). Into `rc` and `main`, a maintainer, after an
+approving review — always as a merge commit.
 
 You do not have to remember any of that from a doc: `scripts/flow-guard.mjs`
 refuses a feature aimed at `rc` or `main`, refuses a direct or squashed push to

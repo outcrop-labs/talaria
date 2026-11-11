@@ -65,7 +65,7 @@ graph LR
 6. **A snapshot is promoted into `rc`.** On demand,
    `gh workflow run promote-testing.yml --ref main -f open=true` cuts
    `promote/testing-<sha12>` at testing's tip and opens its pull request into
-   `rc`: full CI (macOS, Windows, iOS, e2e), a code-owner review, a person
+   `rc`: full CI (macOS, Windows, iOS, e2e), an approving review, a person
    merges. The snapshot never moves, so the battery runs once per candidate.
 7. **`rc-deploy.yml` deploys `rc`.** Every push to `rc` builds the commit's
    api package and app image, boots it as a fresh instance, and checks it —
@@ -266,8 +266,8 @@ Decisions that shape this, stated because they are policy rather than accident:
 
 | Into | Who | How |
 | :--- | :--- | :--- |
-| `testing` | the author, once pr-watch is green | `gh pr merge <n> --merge --admin`. An agent on the host does this with the owner's credentials. `--admin` bypasses `testing-review`, never `testing-checks`: a merge while a required check is pending or red is refused. A pull request the Talaria App opened waits for an admin's code-owner approval. |
-| `rc` | a person, after a code-owner review | the snapshot, a hotfix, the roll, a sync — merge commit only. Admins may bypass the review only through the pull request; the checks bind everyone. |
+| `testing` | the author, once pr-watch is green | `gh pr merge <n> --merge --admin`. An agent on the host does this with the owner's credentials. `--admin` bypasses `testing-review`, never `testing-checks`: a merge while a required check is pending or red is refused. A pull request the Talaria App or a bot opened waits for an approving review. |
+| `rc` | a person, after an approving review | the snapshot, a hotfix, the roll, a sync — merge commit only, under rc's classic protection (below). |
 | `main` | a person (or auto-merge, where `PROMOTION_TOKEN` opened it and the gate is required) | the promotion of `rc`, merge commit only |
 
 Deliberately never `GITHUB_TOKEN` for a merge into `rc` or `main`: a merge made
@@ -276,10 +276,28 @@ with it starts nothing — not `ci.yml`, not the push guard, not the image feeds
 ## The required settings
 
 The guards in the repo are tripwires: they report, and somebody acts. What
-*stops* a push is the repository's rulesets, and those live in the repository,
-not in this tree — they are the one part of this model a commit cannot
-enforce. Apply them once (an admin), and again if one is ever edited. They
-replace the classic branch protection on `rc` and `main`.
+*stops* a push is GitHub's branch protection and rulesets, and those live in the
+repository, not in this tree — they are the one part of this model a commit
+cannot enforce. Apply them once (an admin), and again if one is ever edited.
+
+**`rc` and `main` keep their classic branch protection, unchanged.** The testing
+lane adds rules for `testing` only. As set today (read back with
+`gh api repos/outcrop-labs/talaria/branches/<branch>/protection`):
+
+| | `rc` | `main` |
+| :--- | :--- | :--- |
+| Required checks (`strict` off) | `what changed`, `invariants (no deps)`, `test + typecheck (ui)`, `typecheck + build (mcp)`, `typecheck + test (cli)`, `fmt + clippy + test (api)`, `fmt + clippy + test + typecheck (desktop)`, `clippy + test + connect smoke (desktop windows)`, `clippy + test + connect smoke (desktop macos)` | none |
+| Approvals | 1 from any reviewer; stale approvals dismissed; conversations resolved | 1 from any reviewer |
+| Admins | may bypass (`enforce_admins` off) | may bypass (`enforce_admins` off) |
+
+`pr target (flow)` and `promotion gate (rc verified)` run and report on every
+pull request into `rc` and `main`, but neither is required there: a red one is
+the merging person's stop sign, as it is today. Adding a context to either list
+is the owner's call, one call per context:
+
+```bash
+gh api -X POST repos/outcrop-labs/talaria/branches/rc/protection/required_status_checks/contexts -f 'contexts[]=pr target (flow)'
+```
 
 Repository-wide, first: merge commits only.
 
@@ -288,7 +306,8 @@ gh api -X PATCH repos/outcrop-labs/talaria -F allow_rebase_merge=false -F allow_
 ```
 
 The integrity ruleset `talaria-production`: no deletion and no force-push on any
-of the three, and no bypass.
+of the three, and no bypass. It adds nothing on `rc` that its classic
+protection does not already forbid; on `testing` it is the only thing that does.
 
 ```bash
 gh api -X PUT repos/outcrop-labs/talaria/rulesets/21662214 --input - <<'EOF'
@@ -304,50 +323,17 @@ gh api -X POST repos/outcrop-labs/talaria/rulesets --input - <<'EOF'
 EOF
 ```
 
-`testing-review` — one code-owner approval, which binds the Talaria App and any
-bot. Admins bypass it, so the author merges at green with `--admin`; the checks
-above still bind them.
+`testing-review` — one approving review from anyone with write access, which
+binds the Talaria App and any bot. Admins bypass it, so the author merges at
+green with `--admin`; the checks above still bind them.
 
 ```bash
 gh api -X POST repos/outcrop-labs/talaria/rulesets --input - <<'EOF'
-{"name":"testing-review","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/testing"],"exclude":[]}},"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_code_owner_review":true,"require_last_push_approval":false,"required_review_thread_resolution":false,"allowed_merge_methods":["merge"]}}]}
+{"name":"testing-review","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/testing"],"exclude":[]}},"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_code_owner_review":false,"require_last_push_approval":false,"required_review_thread_resolution":false,"allowed_merge_methods":["merge"]}}]}
 EOF
 ```
 
-`rc-checks` — the testing list plus the platforms only full mode runs. No bypass.
-
-```bash
-gh api -X POST repos/outcrop-labs/talaria/rulesets --input - <<'EOF'
-{"name":"rc-checks","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/rc"],"exclude":[]}},"bypass_actors":[],"rules":[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"do_not_enforce_on_create":false,"required_status_checks":[{"context":"what changed","integration_id":15368},{"context":"invariants (no deps)","integration_id":15368},{"context":"test + typecheck (ui)","integration_id":15368},{"context":"typecheck + build (mcp)","integration_id":15368},{"context":"typecheck + test (cli)","integration_id":15368},{"context":"fmt + clippy + test (api)","integration_id":15368},{"context":"fmt + clippy + test + typecheck (desktop)","integration_id":15368},{"context":"clippy + test + connect smoke (desktop macos)","integration_id":15368},{"context":"clippy + test + connect smoke (desktop windows)","integration_id":15368},{"context":"test + assemble (mobile)","integration_id":15368},{"context":"compile + link (mobile ios)","integration_id":15368},{"context":"mcp end-to-end (playwright)","integration_id":15368},{"context":"migrations (replay + upgrade)","integration_id":15368},{"context":"pr target (flow)","integration_id":15368}]}}]}
-EOF
-```
-
-`main-checks` — the promotion runs on rc's evidence, so main requires the gate
-that reads it. No bypass.
-
-```bash
-gh api -X POST repos/outcrop-labs/talaria/rulesets --input - <<'EOF'
-{"name":"main-checks","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"bypass_actors":[],"rules":[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"do_not_enforce_on_create":false,"required_status_checks":[{"context":"what changed","integration_id":15368},{"context":"invariants (no deps)","integration_id":15368},{"context":"pr target (flow)","integration_id":15368},{"context":"promotion gate (rc verified)","integration_id":15368}]}}]}
-EOF
-```
-
-`rc-main-review` — one code-owner approval and resolved threads, merge commits
-only. Admins may bypass the review, but only through a pull request.
-
-```bash
-gh api -X POST repos/outcrop-labs/talaria/rulesets --input - <<'EOF'
-{"name":"rc-main-review","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/rc","~DEFAULT_BRANCH"],"exclude":[]}},"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"pull_request"}],"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"dismiss_stale_reviews_on_push":true,"require_code_owner_review":true,"require_last_push_approval":false,"required_review_thread_resolution":true,"allowed_merge_methods":["merge"]}}]}
-EOF
-```
-
-Once `gh api repos/outcrop-labs/talaria/rules/branches/testing` (and `…/rc`,
-`…/main`) read back as above, delete the classic protections so the rulesets are
-the one source of truth:
-
-```bash
-gh api -X DELETE repos/outcrop-labs/talaria/branches/rc/protection
-gh api -X DELETE repos/outcrop-labs/talaria/branches/main/protection
-```
+Check them with `gh api repos/outcrop-labs/talaria/rules/branches/testing`.
 
 And the deployment environment `testing`, deployable only from `testing`, with
 no reviewers (testing-deploy's verify job runs in it):
@@ -367,8 +353,11 @@ Things about those lists that are easy to get wrong:
   job-level `if` reports success; a workflow that never starts (a `paths:`
   filter) reports nothing, which a ruleset reads as pending for ever. That is
   why `migrations (replay + upgrade)` and the platform jobs are `ci.yml` jobs.
-- **The checks bind admins.** Only the review rules have bypass actors: an
+- **`testing-checks` binds admins; rc's and main's protection does not.** An
   author merging into testing with `--admin` skips the review and nothing else.
+  On `rc` and `main` an admin can still merge past a red or pending check, as
+  today — the full battery and the promotion gate report there, and the person
+  merging reads them.
 - **`strict` is off everywhere**, for two reasons. A pull request's checks run
   against GitHub's merge commit either way, so an up-to-date base only adds
   churn; and after a promotion, main's tip is a merge commit rc does not
@@ -376,15 +365,16 @@ Things about those lists that are easy to get wrong:
 - **`PROMOTION_TOKEN` decides whether the workflows can open pull requests at
   all.** Without it, `promote.yml` and `promote-testing.yml` print the commands
   instead. With it, turn on **Allow auto-merge** (Settings → General) if the
-  promotion should merge itself; auto-merge is armed only when `main-checks`
-  names `promotion gate (rc verified)`.
+  promotion should merge itself; auto-merge is armed only when main's required
+  checks name `promotion gate (rc verified)` — today they name nothing, so a
+  person merges every promotion.
 - **The judge is deliberately NOT on any list.** `judge.yml` fails on a `must`,
   and it stays advisory because a judge with a false positive that blocks a
-  merge teaches everyone to route around it. `pr target (flow)` already refuses
+  merge teaches everyone to route around it. `pr target (flow)` already flags
   the wrong door; add `judge (standards)` once its findings have earned it.
 - **`app image builds (docker)` joins `testing-checks`** once the change that
-  adds it lands on testing, and `rc-checks` once it reaches rc — appended to the
-  ruleset, the same way every other check here was.
+  adds it lands on testing — appended to the ruleset, the same way every other
+  check here was.
 
 ## What the guard can see, and what it cannot
 
@@ -403,7 +393,7 @@ and no client-side check can ask. What it reads is where the commits came from:
   parent is on `testing` must carry that parent's tree — rc takes testing whole,
   the same claim main makes of rc. This rule cannot see INSIDE a hotfix's merge
   — a local merge that adds a file is indistinguishable from a reviewed one —
-  which is why the rulesets require a pull request.
+  which is why rc's protection requires a pull request.
 - **`testing`**: the tip must be a merge commit, or every introduced commit must
   already be reachable from `rc` or `main` — a fast-forward to content those
   branches already verified (how the lane was first brought up to `rc`).
@@ -450,8 +440,9 @@ doing the same. The order matters:
    a direct push.
 3. **Retarget the open feature pull requests** to testing, then lift the freeze:
    `gh pr list --base rc --state open --json number,headRefName --jq '.[] | select(.headRefName | test("^(hotfix|release|sync|promote)/") | not) | .number' | xargs -r -n1 gh pr edit --base testing`
-4. **Apply the rulesets** above, delete the classic protections, and create the
-   `testing` environment.
+4. **Apply the testing rulesets** above (`talaria-production` widened,
+   `testing-checks`, `testing-review`) and create the `testing` environment. rc's
+   and main's classic protection stays as it is.
 5. **Set each instance's workbench repo flow base** for this repository to `testing`.
 6. **Confirm the machinery**: `gh workflow run promote-testing.yml --ref main` prints a
    readiness summary; on a throwaway pull request into testing,
@@ -476,8 +467,8 @@ doing the same. The order matters:
   starts no workflows, so its checks never report. Close it and open one yourself, or add
   the `PROMOTION_TOKEN` secret.
 - **Auto-merge never fired.** Its log says which case it hit: the required checks could
-  not be read, `main-checks` does not include `promotion gate (rc verified)`, or the API
-  refused to arm it. All three are merge-by-hand plus a settings fix.
+  not be read, main's required checks do not include `promotion gate (rc verified)` (today
+  they include nothing), or the API refused to arm it. All three are merge-by-hand plus a settings fix.
 - **The gate reports no green run for a commit that otherwise looks green.** It reads runs
   by commit, so the run has to be of that exact commit: a re-run of `rc-deploy` (or a
   dispatch of it from `rc`) verifies the same tree; a re-run of a pull request's checks is
