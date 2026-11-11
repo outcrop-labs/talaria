@@ -313,8 +313,9 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // live-turn rung read an unset OnceLock and silently fell to the hirer on
     // every install. Nothing noticed for the same reason nothing ever does: an
     // unset optional rung answers SOMEONE, just the wrong one. The live suite's
-    // first CI run (api-integration.yml, attribution's
-    // a_live_turn_outranks_the_hirer) is what caught it.
+    // first CI run (then api-integration.yml, now ci.yml's api job and its
+    // live-DB steps; attribution's a_live_turn_outranks_the_hirer) is what
+    // caught it.
     let _ = talaria_attribution::CONVERSATION_OWNER.set(std::sync::Arc::new(|pg, id| {
         Box::pin(async move { talaria_conversations::conversation_owner(&pg, &id).await })
     }));

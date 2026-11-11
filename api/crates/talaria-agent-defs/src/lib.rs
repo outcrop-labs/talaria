@@ -2073,8 +2073,8 @@ mod tests {
     /// The one-agent rule against a migrated database: a second agent is
     /// refused the department, the same slug re-upserting its own department
     /// is not, and two writers racing into one fresh department land one row
-    /// between them. `#[ignore]`d — it needs a database; CI's api-integration
-    /// job runs it:
+    /// between them. `#[ignore]`d — it needs a database; ci.yml's api job
+    /// runs it in its live-DB steps:
     ///
     ///   DATABASE_URL=postgres://… cargo test -p talaria-agent-defs --lib -- --ignored live_
     #[tokio::test]

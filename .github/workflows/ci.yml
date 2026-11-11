@@ -9,7 +9,9 @@
 #     cd ui && bun run typecheck                (svelte-check)
 #     cd mcp && typecheck + build
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
-#     cd api && fmt + clippy + cargo test       (the Rust port)
+#     cd api && fmt + clippy + cargo test       (the Rust port, and its
+#                                               live-database suite)
+#     the migration array: replay + upgrade     (scratch postgres)
 #     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
 #     cd desktop/src-tauri && clippy + cargo test on macOS and Windows  (their own code)
 #     the desktop connect smoke on Linux, macOS and Windows  (does it open an instance)
@@ -264,6 +266,17 @@ jobs:
       desktop: ${{ steps.plan.outputs.desktop }}
       mobile: ${{ steps.plan.outputs.mobile }}
       e2e: ${{ steps.plan.outputs.e2e }}
+      db: ${{ steps.plan.outputs.db }}
+      # The api job's plan (scripts/surfaces.mjs, API_KEYS) and the array the
+      # migrations job upgrades from.
+      api_scope: ${{ steps.plan.outputs.api_scope }}
+      api_packages: ${{ steps.plan.outputs.api_packages }}
+      api_lib_packages: ${{ steps.plan.outputs.api_lib_packages }}
+      api_it: ${{ steps.plan.outputs.api_it }}
+      api_it_modules: ${{ steps.plan.outputs.api_it_modules }}
+      api_live: ${{ steps.plan.outputs.api_live }}
+      api_bin: ${{ steps.plan.outputs.api_bin }}
+      migration_baseline: ${{ steps.plan.outputs.migration_baseline }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -307,6 +320,8 @@ jobs:
           REF: ${{ github.ref }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
+          # Same repository or a fork: only a same-repo PR uploads the api binary.
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           CALLED_REF: ${{ inputs.ref }}
           CALLED_MODE: ${{ inputs.mode }}
           BEFORE: ${{ github.event.before }}
@@ -318,9 +333,20 @@ jobs:
 
       # FAIL CLOSED: an older planner copy (main's ci.yml, or a PR base's)
       # that lacks a newer key runs more, never less. A missing mode is full;
-      # a missing or garbled surface is true.
+      # a missing or garbled surface is true. A missing api plan is the
+      # workspace with every live module; a missing binary flag builds the
+      # binary where a planner would (a same-repo pull request, a push to
+      # testing, an offload); a missing baseline is the pull request's base,
+      # else origin/main.
       - name: Normalize the plan (fail closed)
         id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          CALLED_MODE: ${{ inputs.mode }}
         run: |
           set -eu
           out="$RUNNER_TEMP/plan.out"
@@ -337,7 +363,7 @@ jobs:
             echo "range=$(get range)"
             echo "reason=$(get reason)"
           } >> "$GITHUB_OUTPUT"
-          for key in ui mcp cli api desktop mobile e2e; do
+          for key in ui mcp cli api desktop mobile e2e db; do
             value=$(get "$key")
             case "$value" in
               true|false) ;;
@@ -348,6 +374,58 @@ jobs:
             echo "$key=$value" >> "$GITHUB_OUTPUT"
             echo "  $key: $value"
           done
+
+          # The api plan. Package names and module stems are plain words, or
+          # the plan is unreadable and the workspace runs.
+          scope=$(get api_scope)
+          pkgs=$(get api_packages)
+          libpkgs=$(get api_lib_packages)
+          it=$(get api_it)
+          modules=$(get api_it_modules)
+          live=$(get api_live)
+          bin=$(get api_bin)
+          words='^[A-Za-z0-9_ -]*$'
+          if [ "$scope" = packages ] && printf '%s\n' "$pkgs" | grep -qE "$words" && printf '%s\n' "$libpkgs" | grep -qE "$words" \
+            && printf '%s\n' "$modules" | grep -qE '^([*]|[A-Za-z0-9_ ]*)$'; then
+            case "$it" in true|false) ;; *) it=true; modules='*' ;; esac
+            case "$live" in true|false) ;; *) live=true ;; esac
+            if [ "$it" = true ]; then
+              live=true
+              [ -n "$modules" ] || modules='*'
+            fi
+          else
+            [ "$scope" = workspace ] || echo "::warning::the planner emitted no usable api plan, so the api job tests the workspace"
+            scope=workspace; pkgs=''; libpkgs=''; it=true; modules='*'; live=true
+          fi
+          case "$bin" in
+            true|false) ;;
+            *)
+              bin=false
+              case "$EVENT" in
+                pull_request) [ -z "$HEAD_REPO" ] || [ "$HEAD_REPO" != "$REPO" ] || bin=true ;;
+                push) [ "$REF" != refs/heads/testing ] || bin=true ;;
+              esac
+              case "$REF:$CALLED_MODE" in refs/heads/ci/*:light|refs/heads/ci/*:full) bin=true ;; esac ;;
+          esac
+          baseline=$(get migration_baseline)
+          if ! printf '%s\n' "$baseline" | grep -qE '^origin/[A-Za-z0-9._/-]+$'; then
+            baseline=origin/main
+            if [ "$EVENT" = pull_request ] && printf '%s\n' "$BASE_REF" | grep -qE '^[A-Za-z0-9._/-]+$'; then
+              baseline="origin/$BASE_REF"
+            fi
+          fi
+          {
+            echo "api_scope=$scope"
+            echo "api_packages=$pkgs"
+            echo "api_lib_packages=$libpkgs"
+            echo "api_it=$it"
+            echo "api_it_modules=$modules"
+            echo "api_live=$live"
+            echo "api_bin=$bin"
+            echo "migration_baseline=$baseline"
+          } >> "$GITHUB_OUTPUT"
+          echo "  api: scope=$scope packages=[${pkgs}] it=$it modules=[${modules}] live=$live bin=$bin"
+          echo "  migration baseline: $baseline"
           echo "plan: mode=$mode range=$(get range)"
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
@@ -497,24 +575,47 @@ jobs:
         run: bun test
 
   # The Rust port of the API (docs/RUST-MIGRATION.md) — the same tripwire
-  # treatment for api/ that the jobs above give ui/, mcp/ and cli/: the three
-  # gates the port develops under (`bun run api:check` from the root runs the
-  # same list). The unit suite is PURE — no postgres, no redis, no network —
-  # by the same house rule that keeps the ui suite service-free: the #[ignore]d
-  # integration tests that do touch the dev DB run locally (`cargo test --
-  # --ignored`) and never here, so a red build always names a commit's bug.
+  # treatment for api/ that the jobs above give ui/, mcp/ and cli/: fmt, clippy
+  # and the tests (`bun run api:check` from the root runs the first three),
+  # then the live-database suite against a scratch postgres and redis.
+  #
+  # WHY THE LIVE SUITE RIDES HERE. It used to be api-integration.yml, its own
+  # workflow, and that cost twice. It recompiled the same lib-test binaries this
+  # job had just built — 249 of them, 11 of its 22.7 minutes, to run 86 tests —
+  # and a workflow filtered by `paths:` can never be a required check (one that
+  # never starts reports nothing, and protection reads that as pending for
+  # ever), so the window's best real-bug catcher (runs_store's compare-and-set,
+  # four times; design_live, brief_verdict, the TALA-90 bootstrap) stayed
+  # advisory. Here the live steps reuse this job's build, and the job is
+  # required. A publish runs it too: release.yml calls this file in full mode.
+  #
+  # THE SCOPE (scripts/surfaces.mjs, planApi). Integration and full runs test
+  # the workspace and run every live module. A light run tests the packages its
+  # diff touches, and only the api/tests/it modules that reach them; postgres
+  # and redis start only when a live test is in scope. Clippy runs the same in
+  # every mode, and the root package depends on every crate, so it checks
+  # every crate's library: one that stops compiling against a dependency's
+  # change is red here even when its tests are not in scope. (A crate's own
+  # test code is compiled only when its tests are.)
+  #
+  # NO RECOMPILE BETWEEN STEPS. Every cargo invocation below selects the SAME
+  # packages ($API_SEL): cargo resolves features per selection, and a
+  # dev-dependency's features (tokio's test-util, for one) are on only when the
+  # selection's tests are built. A different `-p` list, or a `cargo build` after
+  # `cargo test`, resolves them differently and rebuilds tokio and every crate
+  # above it.
   api:
     name: fmt + clippy + test (api)
     needs: [changes]
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
-    # 30, not the tripwire 15: the workspace split multiplied test binaries
+    # 45, not the tripwire 15: the workspace split multiplied test binaries
     # (one per crate where the monolith built a handful), and a COLD run —
     # first push of a lockfile change — links ~200 of them after clippy's
-    # check-only artifacts prove unusable for cargo test. rust-cache makes
-    # every rerun after the first minutes; the timeout has to fit the cold
-    # one or the cache never gets written.
-    timeout-minutes: 30
+    # check-only artifacts prove unusable for cargo test; the live suite then
+    # runs on top. rust-cache makes every rerun after the first minutes; the
+    # timeout has to fit the cold one or the cache never gets written.
+    timeout-minutes: 45
 
     defaults:
       run:
@@ -525,21 +626,69 @@ jobs:
       # local edit history, so a cached incremental dir is junk to the next
       # run. Full non-incremental units are what the cache can actually reuse.
       CARGO_INCREMENTAL: '0'
+      # The plan. No database settings here: the unit suite is pure, and only
+      # the live steps below are handed postgres and redis.
+      MODE: ${{ needs.changes.outputs.mode }}
+      SCOPE: ${{ needs.changes.outputs.api_scope }}
+      PKGS: ${{ needs.changes.outputs.api_packages }}
+      LIBPKGS: ${{ needs.changes.outputs.api_lib_packages }}
+      MODULES: ${{ needs.changes.outputs.api_it_modules }}
+      # The live steps run when the plan says so, and always outside light
+      # mode: a garbled plan on an rc run must not skip the database suite.
+      LIVE: ${{ needs.changes.outputs.api_live == 'true' || needs.changes.outputs.mode != 'light' }}
+      IT: ${{ needs.changes.outputs.api_it == 'true' || needs.changes.outputs.mode != 'light' }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref }}
 
-      # Rust only: the pinned toolchain (not stable), for the reason the
-      # header's NOTES give — the crate pins it in rust-toolchain.toml and
-      # devboxes install the same one, so CI must not drift ahead of the
-      # environments the port runs in. The action installs rustfmt + clippy,
-      # which the fmt/clippy gates below need; the toolchain pin itself is
-      # honored by rustup from the checked-out rust-toolchain.toml.
+      # FAIL CLOSED. Anything but light tests the workspace; a scope this step
+      # does not know is a red job, never a skipped test; an empty selection is
+      # an answer only a light plan may give.
+      - name: Scope
+        run: |
+          set -eu
+          if [ "$MODE" != light ]; then SCOPE=workspace; fi
+          case "$SCOPE" in
+            workspace) sel=--workspace ;;
+            packages) sel=$(for p in $PKGS; do printf -- '-p %s ' "$p"; done) ;;
+            *) echo "::error::unknown api_scope '$SCOPE'"; exit 1 ;;
+          esac
+          if [ -z "$sel" ] && [ "$MODE" != light ]; then
+            echo '::error::empty package selection outside light mode'; exit 1
+          fi
+          echo "API_SEL=$sel" >> "$GITHUB_ENV"
+          echo "mode $MODE, scope $SCOPE: cargo test ${sel:-(no package)}; live modules: ${MODULES:-none}"
+
+      # The live suite's containers, started before the toolchain so they boot
+      # while it installs and clippy runs; the Bootstrap step waits for them.
+      # The container MUST be named talaria-mig-pg: check-migrations.ts's
+      # PG_DUMP default is `docker exec talaria-mig-pg pg_dump -U talaria`, so
+      # the bootstrap doubles as the schema-snapshot check with no extra
+      # wiring. Same image as prod sidecars. Redis on 6399, the dev port, not
+      # 6379: fitness_arming and llm_models fall back to
+      # redis://127.0.0.1:6399 when REDIS_URL is unset, and mapping the host
+      # port to the dev number makes even those fallbacks correct.
+      - name: Start scratch postgres + redis (early)
+        if: env.LIVE == 'true'
+        run: |
+          docker run -d --name talaria-mig-pg \
+            -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
+            -p 127.0.0.1:55441:5432 postgres:16-alpine
+          docker run -d --name talaria-ci-redis -p 127.0.0.1:6399:6379 redis:7-alpine
+
+      # Rust: the pinned toolchain (not stable), for the reason the header's
+      # NOTES give — the crate pins it in rust-toolchain.toml and devboxes
+      # install the same one, so CI must not drift ahead of the environments the
+      # port runs in. The action installs rustfmt + clippy, which the fmt/clippy
+      # gates below need; the toolchain pin itself is honored by rustup from the
+      # checked-out rust-toolchain.toml. Bun (seconds) and, only when the live
+      # steps run, the ui install: the migration replay runs on its postgres
+      # driver.
       - uses: ./.github/actions/setup-runtime
         with:
-          bun: ''
           node: ''
+          install-dir: ${{ env.LIVE == 'true' && 'ui' || '' }}
 
       # The ONE actions/cache use in this file (see the header's amended "no
       # cache" note): cargo's cold build of the dependency tree is minutes on
@@ -573,19 +722,357 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # The full TS MIGRATIONS array into the scratch postgres, so the live
+      # tests meet the exact schema a deployed instance would — and the replay
+      # doubles as the snapshot check. Probe TCP (-h 127.0.0.1), never the
+      # socket: the image's initdb phase runs a temporary server that answers
+      # socket probes before the real one listens.
+      - name: Bootstrap schema (full migration replay + snapshot check)
+        if: env.LIVE == 'true'
+        working-directory: ui
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+          # The secretbox load demands a key; never a real one — these
+          # containers die with the job.
+          TALARIA_SECRET_KEY: ci-scratch-key
+        run: |
+          set -eu
+          for i in $(seq 1 30); do
+            docker exec talaria-mig-pg pg_isready -h 127.0.0.1 -U talaria -q && break
+            sleep 1
+          done
+          docker exec talaria-mig-pg pg_isready -h 127.0.0.1 -U talaria -q \
+            || { echo "postgres never became ready"; docker logs talaria-mig-pg; exit 1; }
+          bun run migrations:check
+
       - name: Test
-        # --workspace, NOT bare `cargo test`. api/Cargo.toml is a workspace
-        # root that ALSO carries a root package (talaria-api) and declares no
-        # default-members, so bare `cargo test` selects that one package and
-        # nothing else — three test binaries, none of the ~200 under crates/.
-        # Every per-crate unit test in this tree was therefore never run here.
-        # api-integration.yml does not cover it either: its
-        # `--workspace --lib -- --ignored` runs ONLY ignored tests.
+        # --workspace (the selection's workspace form), NOT bare `cargo test`.
+        # api/Cargo.toml is a workspace root that ALSO carries a root package
+        # (talaria-api) and declares no default-members, so bare `cargo test`
+        # selects that one package and nothing else — three test binaries, none
+        # of the ~200 under crates/. Every per-crate unit test in this tree was
+        # therefore never run here.
         # --no-fail-fast because cargo stops at the first failing test BINARY,
         # and with ~200 of them one broken crate hides every crate after it
         # alphabetically. The first discovery run showed exactly that:
         # talaria-fitness failed, so talaria-harness-defs onward never ran.
-        run: cargo test --workspace --no-fail-fast --quiet
+        run: |
+          set -eu
+          read -r -a sel <<< "$API_SEL"
+          if [ "${#sel[@]}" -eq 0 ]; then echo 'no package in scope'; exit 0; fi
+          cargo test "${sel[@]}" --no-fail-fast --quiet
+
+      # The #[ignore]d tests inside the crates (talaria-runs-store's, among
+      # others) against the scratch database. Same selection, profile and flags
+      # as Test, so nothing recompiles: these binaries are the ones Test built,
+      # run again with --ignored.
+      - name: Ignored in-crate tests (live DB)
+        if: env.LIVE == 'true'
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+          REDIS_URL: redis://127.0.0.1:6399
+          TALARIA_SECRET_KEY: ci-scratch-key
+        run: |
+          set -eu
+          read -r -a sel <<< "$API_SEL"
+          if [ "${sel[*]}" != --workspace ] && [ -z "$LIBPKGS" ]; then
+            echo 'no library in scope: no ignored in-crate tests to run'; exit 0
+          fi
+          cargo test "${sel[@]}" --no-fail-fast --quiet --lib -- --ignored
+
+      - name: Live integration modules (tests/it)
+        if: env.IT == 'true'
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+          REDIS_URL: redis://127.0.0.1:6399
+          TALARIA_SECRET_KEY: ci-scratch-key
+        run: |
+          set -eu
+          # Every planned module of the one integration binary (api/tests/it/)
+          # runs with --ignored; `*` is every module, so a new
+          # tests/it/<file>.rs is picked up with no edit here. The only
+          # committed knowledge is what CANNOT run here — each exclusion says
+          # why, at the exclusion.
+          #
+          # One module per run, not the whole binary in one go: the files were
+          # separate binaries until they were merged to link once, so tests
+          # from different files have never shared the scratch database
+          # concurrently. Test built the binary (the root package is in every
+          # selection that plans a module); a plan with no package (a schema
+          # change alone) builds it on the first module here. The rest only
+          # filter it. A failing module does not hide the next one.
+          if [ "$MODE" != light ]; then MODULES='*'; fi
+          if [ "$MODULES" = '*' ]; then
+            modules=$(/bin/ls tests/it/*.rs | sed 's|^tests/it/||; s|\.rs$||')
+          else
+            modules=$MODULES
+          fi
+          # The selection Test used; a plan with no package is the root
+          # package's binary alone.
+          read -r -a sel <<< "$API_SEL"
+          [ "${#sel[@]}" -gt 0 ] || sel=(-p talaria-api)
+          failed=""
+          for t in $modules; do
+            case "$t" in
+              # typed_binds: needs the dev retrieval containers (qdrant + TEI
+              # embeddings). Stays a local suite against talaria dev infra.
+              typed_binds) continue ;;
+              # main is the crate root that declares the modules, not a suite.
+              main) continue ;;
+              # update_live: reads the real ghcr.io registry — network-shaped,
+              # not a per-push gate.
+              update_live) continue ;;
+            esac
+            skips=()
+            # llm_models/minted_key_lists_the_catalog wants a minted tlk_ key
+            # (TALARIA_LLM_TEST_KEY) this job does not create.
+            [ "$t" = "llm_models" ] && skips=(--skip llm_models::minted_key_lists_the_catalog)
+            echo "== $t =="
+            cargo test "${sel[@]}" --quiet --test it -- --ignored "$t::" "${skips[@]}" || failed="$failed $t"
+          done
+          [ -z "$failed" ] || { echo "::error::live modules failed:$failed"; exit 1; }
+
+      # The dev binary `talaria dev --api-from-ci` runs instead of `cargo run`.
+      # Test already built it: cargo builds a package's binaries for its
+      # integration tests (tests/it), into target/debug/, with the selection's
+      # features. A `cargo build --bin talaria-api` here would resolve features
+      # without the dev-dependencies' and rebuild tokio and every crate above
+      # it (the NO RECOMPILE note above), so it runs only if that binary is
+      # somehow missing. rust-cache never restores it: it keeps only build/,
+      # deps/ and .fingerprint/ of a profile dir.
+      - name: Build the api binary for `talaria dev --api-from-ci`
+        if: needs.changes.outputs.api_bin == 'true'
+        run: |
+          set -eu
+          if [ ! -x target/debug/talaria-api ]; then
+            echo "::warning::Test left no target/debug/talaria-api; building it"
+            cargo build --bin talaria-api
+          fi
+          install -D target/debug/talaria-api "$RUNNER_TEMP/bin/talaria-api"
+          strip --strip-debug "$RUNNER_TEMP/bin/talaria-api"
+          ls -l "$RUNNER_TEMP/bin/talaria-api"
+
+      - name: Upload the api binary
+        if: needs.changes.outputs.api_bin == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: talaria-api-linux-x64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/bin/talaria-api
+          retention-days: 3
+          if-no-files-found: error
+          # A re-run of this job (or "re-run all jobs" after another job's
+          # flake) uploads the same name into the same run; v4 refuses a
+          # duplicate name unless told to replace it.
+          overwrite: true
+
+  # The migration array (ui/src/server/db/pg.ts), replayed. Formerly
+  # migrations.yml, which a `paths:` filter kept off the required list; as a job
+  # here it skips per job like the others (the planner's `db` surface), so it
+  # can be required.
+  #
+  # WHAT THIS DOES
+  #   - boots a scratch postgres:16-alpine (the exact image prod sidecars run)
+  #   - replays the ENTIRE MIGRATIONS array against it from zero — proving a
+  #     fresh database reaches the full schema, and that no statement in the
+  #     array has a syntax error or bad column reference
+  #   - runs the pass a second time and requires `applied: 0` (exactly-once,
+  #     the same property boot relies on after a crash mid-pass)
+  #   - replays the UPGRADE path too: the baseline's array into a second
+  #     scratch postgres, then this tree's array on top of it — a mid-array
+  #     insert or in-place edit trips the append-only checksum guard there,
+  #     exactly where a deployed instance would trip it at boot. The baseline
+  #     is the branch the change lands on (surfaces.mjs, migrationBaseline).
+  #   - refuses a hotfix/* pull request that appends a migration
+  #   - pg_dump --schema-only inside that container and diffs it against the
+  #     committed ui/src/server/db/schema.snapshot.sql — drift fails with the
+  #     regen command, so every schema-touching PR carries the real schema
+  #     diff as its review artifact
+  #   - runs ui/scripts/check-git-hosts-mirror.sql on both databases: the
+  #     compensating git-hosts statements (#651) DO what they say, not only
+  #     apply — the defaults land, the copy-back holds what the baseline had,
+  #     and both mirror triggers fire in each direction
+  #
+  # WHY `docker run` INSTEAD OF jobs.services. The same container that serves
+  #   the replay also runs pg_dump, so the dump tool can never skew from the
+  #   server version — and readiness is pg_isready-polled by us, not raced by
+  #   the runner. Prod is postgres:16-alpine; so is this.
+  #
+  # The migration RULES (the array's append-only shape, the
+  # destructive-statement marking, the baseline guard; check-invariants.mjs)
+  # run on every push through `bun run check` in the invariants job, api/...
+  # changes included: the api does not own the migrations (api/src/db.rs says
+  # so) and cannot touch them.
+  migrations:
+    name: migrations (replay + upgrade)
+    needs: [changes]
+    if: needs.changes.outputs.db == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Placeholders in main's github_config shape, never a real token: the
+      # upgrade pass seeds it, and the mirror check holds the result to it.
+      GITHUB_CONFIG_SEED: '{"mode": "app", "pat": {"tokenEnc": null}, "app": {"appId": "123456", "installationIds": ["7890"], "privateKeyEnc": "v1:ci-placeholder-sealed-key"}, "repoCreationOrgs": ["ci-org"]}'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: ./.github/actions/setup-runtime
+        with:
+          # Bun only; the ui install is the workspace the replay runs in.
+          node: ''
+          rust: ''
+          install-dir: ui
+
+      - name: Start scratch postgres 16
+        run: |
+          docker run -d --name talaria-mig-pg \
+            -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
+            -p 127.0.0.1:55441:5432 postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec talaria-mig-pg pg_isready -h 127.0.0.1 -U talaria -q && echo "postgres ready" && exit 0
+            sleep 1
+          done
+          echo "postgres never became ready"; docker logs talaria-mig-pg; exit 1
+
+      - name: Replay the full migration array
+        working-directory: ui
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+          # The pass ends by loading the secretbox, which demands a key even
+          # on a schema-only replay. Never a real one — this database dies
+          # with the job.
+          TALARIA_SECRET_KEY: ci-scratch-key
+        run: bun run migrations:check
+
+      # The fresh replay above proves the array runs on a virgin database —
+      # which is exactly why it cannot catch a mid-array insert: a fresh
+      # database has no ledger, so the append-only guard never fires. Deployed
+      # instances DO. (2026-09-18: #394's workchains statements landed
+      # mid-array; CI was green, and the first fleet roll refused to boot with
+      # "migration 338 changed after it was applied".) This pass is that
+      # upgrade, replayed: apply the baseline's array to a second scratch
+      # database, then this tree's array against the SAME database — the
+      # checksum guard, the appended statements, and the snapshot all have to
+      # hold on a database that already has the baseline's ledger, or the PR
+      # is red.
+      #
+      # THE BASELINE is the branch the change lands on, from the plan: a pull
+      # request into testing extends testing's array (what the testing
+      # instance applied); a promotion or a hotfix into rc extends rc's; a push
+      # to testing extends rc's, and a push to rc or main extends main's. It
+      # was origin/main for every run while pull requests went straight to rc.
+      # The repair that introduced this check (#398) pinned e9f08476 instead —
+      # main's tip then carried the mid-array insert no deployed database ever
+      # applied (the boot guard refused fleet-wide), so the last array any
+      # instance actually ran was the honest baseline. Pin a sha with
+      # MIGRATION_BASELINE ONLY for that kind of transition, and flip back in
+      # the very next migrations PR: a stale baseline weakens the guard to
+      # inserts above the pinned prefix.
+      - name: Upgrade pass — baseline migrations into a second scratch postgres
+        env:
+          BASELINE: ${{ needs.changes.outputs.migration_baseline }}
+        run: |
+          set -eu
+          b=${BASELINE#origin/}
+          git fetch --no-tags --depth=1 origin "$b"
+          base="${MIGRATION_BASELINE:-$BASELINE}"
+          echo "upgrade baseline: $base"
+          # A pinned baseline sha (set via env above) is an ancestor the
+          # depth-1 fetch does not carry — fetch it by sha (GitHub allows
+          # want-by-sha) and fail loud rather than silently comparing
+          # against the wrong array.
+          if ! git cat-file -e "$base" 2>/dev/null; then
+            git fetch --no-tags origin "$base"
+          fi
+          git show "$base":ui/src/server/db/pg.ts > ui/src/server/db/pg.main-upgrade.ts
+          docker run -d --name talaria-mig-pg-up \
+            -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
+            -p 127.0.0.1:55442:5432 postgres:16-alpine
+          # Probe TCP (-h 127.0.0.1), never the unix socket: the image's
+          # initdb phase runs a TEMP server that answers socket probes but
+          # has listen_addresses='' — a socket-ready check passes seconds
+          # before the real server exists, and the next step's first
+          # connection dies with ECONNRESET (seen on the first run of this
+          # step; the first container above only dodged it because bun
+          # install sat between start and first query).
+          for i in $(seq 1 30); do
+            docker exec talaria-mig-pg-up pg_isready -h 127.0.0.1 -U talaria -q && break
+            sleep 1
+          done
+          docker exec talaria-mig-pg-up pg_isready -h 127.0.0.1 -U talaria -q \
+            || { echo "postgres never became ready"; docker logs talaria-mig-pg-up; exit 1; }
+
+      - name: Upgrade pass — this tree's array on top of the baseline's ledger
+        working-directory: ui
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55442/talaria
+          TALARIA_SECRET_KEY: ci-scratch-key
+          # The snapshot diff must come from THIS database — the upgraded
+          # schema has to land where the fresh replay lands.
+          PG_DUMP: docker exec talaria-mig-pg-up pg_dump -U talaria
+        run: |
+          set -o pipefail
+          bun run migrate-file src/server/db/pg.main-upgrade.ts
+          rm src/server/db/pg.main-upgrade.ts
+          # A connected GitHub on the baseline, in the shape main's
+          # set_github_config writes it, so the upgrade has a real config to
+          # move into the `github` row and copy back (the mirror check below).
+          # (stdin, not -c: psql does not interpolate :'seed' into a -c string)
+          echo "insert into app_settings (key, value) values ('github_config', :'seed'::jsonb)
+                on conflict (key) do update set value = excluded.value, updated_at = now();" \
+            | docker exec -i talaria-mig-pg-up psql -U talaria -d talaria -v ON_ERROR_STOP=1 -v "seed=$GITHUB_CONFIG_SEED"
+          # What this tree's array applied on top of the baseline's ledger:
+          # the hotfix check below reads it.
+          bun run migrations:check | tee "$RUNNER_TEMP/upgrade-apply.out"
+
+      # A hotfix lands in rc and flows back into testing, and testing's array
+      # (and the testing instance) is ahead of rc's: a statement a hotfix
+      # appended would land at one index on rc and another on testing, and the
+      # back-flow would trip the checksum guard on every instance that has
+      # both. So a hotfix carries code, never a migration — the step above
+      # applied this tree's array on rc's ledger, and it must have applied
+      # nothing. github.head_ref is empty outside a pull request, so an
+      # offload of a hotfix/ branch skips this; its pull request into rc is
+      # where it gates.
+      - name: Hotfixes add no migrations
+        if: startsWith(github.head_ref, 'hotfix/')
+        run: |
+          out="$RUNNER_TEMP/upgrade-apply.out"
+          if ! grep -q 'applied: 0' "$out"; then
+            sed -n 's/^\[migrations\] //p' "$out"
+            echo "::error::a hotfix may not add migrations (rules: docs/BRANCHES.md)"
+            exit 1
+          fi
+          echo "the hotfix appends no migration"
+
+      # The compensating git-hosts statements (#651, pg.ts "The git-hosts move,
+      # made roll-safe") exist for what the previous release does on this
+      # schema, and the snapshot only pins their text. This runs them: the
+      # host_id defaults, the setting folded back from the row, and both
+      # triggers in each direction, inside a transaction it rolls back. On the
+      # upgraded database it also requires the baseline's GitHub config to
+      # come through the move and back unchanged. Delete it with the contract
+      # release that drops the mirrors (the file's header).
+      - name: The git-hosts mirror holds, fresh and upgraded
+        run: |
+          set -eu
+          echo "fresh replay:"
+          docker exec -i talaria-mig-pg psql -U talaria -d talaria -v ON_ERROR_STOP=1 -q \
+            < ui/scripts/check-git-hosts-mirror.sql
+          echo "upgrade from the baseline, which had GitHub connected:"
+          docker exec -i talaria-mig-pg-up psql -U talaria -d talaria -v ON_ERROR_STOP=1 -q -v "seeded=$GITHUB_CONFIG_SEED" \
+            < ui/scripts/check-git-hosts-mirror.sql
+
+      - name: Replay again — nothing new may apply
+        working-directory: ui
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+          TALARIA_SECRET_KEY: ci-scratch-key
+        run: |
+          out=$(bun run migrations:check)
+          echo "$out"
+          grep -q 'applied: 0' <<<"$out"
 
   # The desktop shell (docs/DESKTOP.md) — the same tripwire treatment for
   # desktop/ that the jobs above give ui/, mcp/, cli/ and api/: fmt + clippy +
@@ -920,7 +1407,7 @@ jobs:
   #
   # WHY docker run AND NOT `services:`. `bun run migrations:check` pg_dumps
   # through `docker exec talaria-mig-pg`, so the container needs that NAME —
-  # the same bootstrap api-integration.yml uses, which doubles as the
+  # the same bootstrap the api job's live steps use, which doubles as the
   # schema-snapshot check.
   #
   # WHY THE STUBS ARE HTTPS. The mirror installs only https remotes, so the

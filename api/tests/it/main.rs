@@ -9,9 +9,9 @@
 //     cargo test -p talaria-api --test it runs_run::
 //     cargo test -p talaria-api --test it plan_row_live:: -- --ignored
 //
-// CI's live suite (api-integration.yml) still runs module by module, so tests
-// from different files never share the scratch database concurrently, exactly
-// as when they were separate binaries.
+// CI's live suite (ci.yml's api job, its live-DB steps) still runs module by
+// module, so tests from different files never share the scratch database
+// concurrently, exactly as when they were separate binaries.
 
 mod support;
 

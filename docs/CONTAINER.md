@@ -425,7 +425,7 @@ appended statement in the `MIGRATIONS` array (`ui/src/server/db/pg.ts`) and
 applies itself on the next boot, exactly once per database, under an advisory
 lock. A fix that lived only in someone's shell history did not ship: the next
 fresh install won't have it. Two gates keep a bad migration out: CI
-(`migrations.yml`) replays the whole array against a scratch
+(ci.yml's `migrations (replay + upgrade)` job) replays the whole array against a scratch
 `postgres:16-alpine` and diffs the resulting schema against the committed
 snapshot (`ui/src/server/db/schema.snapshot.sql` — regenerate with
 `cd ui && bun run migrations:snapshot`; the diff in the PR is the schema

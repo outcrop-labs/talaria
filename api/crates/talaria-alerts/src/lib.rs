@@ -917,8 +917,8 @@ mod tests {
 
 /// LIVE: the unpriced alert clears for HISTORY, not only new usage, the
 /// moment a price lands — rows booked through the relay's own writer, the
-/// real priced view, the real `cost_overview`. `#[ignore]`d; the
-/// api-integration job runs it with the workspace's ignored lib tests.
+/// real priced view, the real `cost_overview`. `#[ignore]`d; ci.yml's api
+/// job runs it with the ignored lib tests in its live-DB steps.
 ///
 ///   DATABASE_URL=postgres://… cargo test -p talaria-alerts --lib -- --ignored live
 #[cfg(test)]
