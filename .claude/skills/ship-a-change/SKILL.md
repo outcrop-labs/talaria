@@ -106,14 +106,18 @@ bullet. The changelog is the record reviewers and release-notes readers actually
 - If a check match was a false positive, the argument lives in the PR where a reviewer
   can veto it.
 
-CI comes in three weights, planned by `scripts/surfaces.mjs`. **Light** — Linux jobs for the
-surfaces the branch moved — runs on a `ci/<branch>` offload and a pull request into
-`testing`. **Integration** — every Linux surface since testing's last green run — runs on
-the push to `testing` your merge makes, beside `testing-deploy.yml`. **Full** — every
-surface, plus macOS, Windows, iOS and e2e — runs on a pull request into `rc` or `main` (the
-snapshot, a hotfix), a push to either, the daily battery of testing, and `ci/full/<branch>`
-(`gate:remote --full`). A platform break your light run could not see turns up there, and
-comes back to you as a fix into testing.
+CI comes in three weights, and one mode for the promotion, all planned by
+`scripts/surfaces.mjs`. **Light** — Linux jobs for the surfaces the branch moved — runs on
+a `ci/<branch>` offload and a pull request into `testing`. **Integration** — every Linux
+surface since testing's last green run — runs on the push to `testing` your merge makes,
+beside `testing-deploy.yml`. **Full** — every surface, plus macOS, Windows, iOS and e2e —
+runs on a pull request into `rc` (the snapshot, a hotfix), a push to `rc` or `main`, the
+daily battery of testing, and `ci/full/<branch>` (`gate:remote --full`). A platform break
+your light run could not see turns up there, and comes back to you as a fix into testing.
+The `rc → main` pull request runs in **promotion** mode — `what changed` and the
+invariants only — because its tree is rc's tip, which rc's push CI and `rc-deploy` already
+verified. A pull request that touches the app image's build context also builds the image
+(`app image builds (docker)`), so a broken `.dockerignore` fails before the merge.
 
 **A hotfix** is the one change that goes to `rc` directly: a fix rc needs before the next
 snapshot. Cut it from `origin/rc` (`git switch -c hotfix/<name> origin/rc`), never from
