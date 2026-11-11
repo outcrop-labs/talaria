@@ -270,8 +270,9 @@ which is the other half of why the nightly feed moved onto it.
 Pin anything you care about to the right-hand column.
 
 The api package — `ghcr.io/outcrop-labs/talaria-api` — carries these same
-tags, plus an immutable `sha-<sha12>` per commit; that sha tag is what a
-release's app-image build is actually pinned to.
+tags, plus an immutable `sha-<sha12>` per commit (`sha-<sha12>-dev` when the
+build used the dev profile: nightly, rc, and the testing lane's deploy); that
+sha tag is what a release's app-image build is actually pinned to.
 
 **What the api bits are compiled with.** `main` (the feed the in-app updater
 rolls from) and every stable tag carry the api built for release. The two
