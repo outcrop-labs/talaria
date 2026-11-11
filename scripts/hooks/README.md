@@ -22,7 +22,7 @@ knowing: **git refuses a push on any non-zero hook exit**, so exit 1 from
 decides for itself what exit 1 means. Neither ever treats "could not run" as a pass — that
 is the part that matters.
 
-Three entry points:
+Four entry points:
 
 - [`stop-check.mjs`](./stop-check.mjs) — runs `bun run check` (invariants + doc links +
   generated-reference drift) and then [`../cleanup-sweep.mjs`](../cleanup-sweep.mjs) `--gate`
@@ -58,6 +58,25 @@ Three entry points:
   runs it, because whether a harness should spawn it on its own is an open call. Exit 0
   prints one proof line to stdout (the state an agent may cite); every other rule of this
   contract holds, including "could not run is not a pass".
+- [`remote-gate.mjs`](./remote-gate.mjs) — `bun run gate:remote`: CI before a pull request
+  exists. It refuses a tree with tracked changes, `main`/`rc`/`testing`, and a branch that
+  already has an open PR (that PR's CI is the proof; `pr-watch.mjs` reads it). Then it runs
+  `bun run check` and `cargo fmt --check` (rustfmt, no compile) on the touched crates,
+  force-pushes HEAD to `ci/<branch>` (`--full`, or a `hotfix/`, `release/`, `sync/`,
+  `promote/` or `backflow/` branch: `ci/full/<branch>`), and watches the new `CI offload` run
+  ([`../../.github/workflows/ci-offload.yml`](../../.github/workflows/ci-offload.yml)). It is
+  red the moment any job fails, with that job's log tail, while the rest still run. Exit 0
+  prints one proof line naming the run, and deletes the ref. Exit 2's verdict opens with
+  the token line: `remote-gate: dirty`, `base`, `has-pr`, `check`, `fmt`, `no-run`, `red`,
+  `cancelled`, `timeout` or `pending` (`--detach`). Anything on stderr before it is
+  progress (always `remote-gate: <word> — …`), `bun run check`'s output, or `bun run`'s own
+  `$ node …` echo. A red, cancelled or timed-out ref is kept, for
+  `--rerun` (re-run the failed jobs and watch the new attempt; refused once the ref holds
+  another commit, whose run a re-run would cancel) and `--watch <run-id>` (resume). It talks to GitHub over REST with a token — `GH_TOKEN`, `GITHUB_TOKEN`, or `gh
+  auth token` — so a devbox needs no gh (`talaria box new <name> --env GH_TOKEN=…`).
+  Procedure-invoked, not a hook: it runs for minutes, so run it in the harness's background
+  mode and act on the exit. Nothing it leaves lasts: ci-offload's daily prune deletes `ci/**`
+  refs older than 24 hours, and the cleanup sweep deletes a merged worktree's.
 
 ## Wiring it
 
@@ -68,6 +87,7 @@ Three entry points:
 | Pi, Oh My Pi, opencode | no main-agent Stop event that can block a turn. A settle hook also fires for subagents, so it is not wired — the full check on every subagent is not a lifecycle. The rule in [`AGENTS.md`](../../AGENTS.md) still binds: run [`stop-check.mjs`](./stop-check.mjs) at the done-moment and honor exit 2. |
 | git (works under any harness) | `talaria setup` sets `core.hooksPath` to this directory, which is what makes [`pre-push`](./pre-push) run; per-clone by hand: `git config core.hooksPath scripts/hooks` |
 | CI | nothing to do — [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs `bun run check` itself, and [`../../.github/workflows/flow.yml`](../../.github/workflows/flow.yml) runs the branch policy. CI has no one's worktrees. |
+| Before a PR exists, any harness | `bun run gate:remote` ([`remote-gate.mjs`](./remote-gate.mjs)) in the background (Claude Code: `run_in_background`); honor exit 2. Not a Stop hook: a run takes minutes. Needs a GitHub token (gh's login, or `GH_TOKEN` in a devbox). |
 | anything else | run [`stop-check.mjs`](./stop-check.mjs) before you claim done, and [`pr-watch.mjs`](./pr-watch.mjs) after the PR opens; honor exit 2. Removing the local workspace is still your step — the sweep does not delete a fresh one. |
 
 A git hook is bypassable (`git push --no-verify`) and a stop gate is not a wall either; both
