@@ -38,9 +38,10 @@
 // GITHUB OVER REST, NOT gh — gate:remote's rules (scripts/hooks/
 // remote-gate.mjs): the token is GH_TOKEN, else GITHUB_TOKEN, else `gh auth
 // token`; the repository is origin's; the zip's redirect to signed storage on
-// another host is followed by hand, without the token. So a devbox with no gh
-// can run it, where its glibc is new enough for a binary built on
-// ubuntu-latest (smokeVerdict says so when it is not).
+// another host is followed by hand, without the token. So it needs no gh —
+// but a binary built on ubuntu-latest needs glibc 2.39 (GLIBC_2.38 and 2.39
+// symbols, read from the 2026-11-10 build), and the devbox image is bookworm
+// (2.36): in a box the smoke run fails and smokeVerdict says to use cargo.
 //
 // The tests are ci-artifact.test.ts: pure, no network.
 

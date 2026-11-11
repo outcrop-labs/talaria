@@ -27,9 +27,10 @@ that changed the api gets its binary from its own CI run: the pull request's, or
 `bun run gate:remote` (`--full` when the change is in a crate other than talaria-api,
 since a light run builds the binary only when talaria-api is in scope). Uncommitted
 api changes are refused, because no CI binary contains them. It reads GitHub the way
-`gate:remote` does (`GH_TOKEN`, `GITHUB_TOKEN` or gh's login). The binary is built on
-ubuntu-latest: a devbox with an older glibc (bookworm) says so and needs plain
-`talaria dev` or the host. `--api-bin <path>` runs any binary you already have.
+`gate:remote` does (`GH_TOKEN`, `GITHUB_TOKEN` or gh's login). **Host only, for now.**
+The binary is built on ubuntu-latest and needs glibc 2.39, while the devbox image is
+bookworm with glibc 2.36. In a box the flag stops and says so, so use plain
+`talaria dev` there. `--api-bin <path>` runs any binary you already have.
 Plain `talaria dev`, with `cargo run`, is for api work you are reproducing locally.
 
 Reset a wedged stack with `bun talaria reset <mode>`; snapshot and restore with
