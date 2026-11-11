@@ -12,11 +12,21 @@
 # everywhere it runs. api/package.Dockerfile is the build itself.
 #
 # TAGS on ghcr.io/outcrop-labs/talaria-api:
-#   sha-<sha12>   immutable, per commit. The provenance tag: release.yml pins
-#                 THIS one into the app image it builds, so a released image
-#                 names the exact api bits it carries (its revision label
-#                 agrees). rc-deploy.yml pins it the same way for a staging
-#                 deploy.
+#   sha-<sha12>   immutable, per commit, release profile. The provenance tag:
+#                 release.yml pins THIS one into the app image it builds, so a
+#                 released image names the exact api bits it carries (its
+#                 revision label agrees). rc-deploy.yml pins it the same way for
+#                 a staging deploy, and app-image.yml polls for it on a main
+#                 push that touched api/.
+#   sha-<sha12>-dev
+#                 immutable, per commit, dev profile: the nightly and rc
+#                 channels' builds (release.yml) and the testing lane's
+#                 (testing-deploy.yml). Its own tag, so a dev build of a commit
+#                 never overwrites that commit's release build: a nightly of
+#                 rc's tip used to re-point the `sha-<sha12>` rc-deploy had
+#                 just pushed for the same commit, and anything that later
+#                 pinned that tag (a release, app-image.yml's poll) got the
+#                 dev-compiled bits.
 #   main          tracks MAIN's api source — the root Dockerfile's default
 #                 ARG, because main is the ref checkout-builds build. Pushed
 #                 only when the run's own ref is main: a called workflow sees
@@ -90,7 +100,7 @@ on:
         default: 'release'
     outputs:
       image:
-        description: 'the sha-tagged package release.yml pins into the app image'
+        description: 'the immutable sha-tagged package (sha-<sha12>, or sha-<sha12>-dev for the dev profile) a caller pins into the app image'
         value: ${{ jobs.package.outputs.image }}
 
 permissions:
@@ -120,9 +130,15 @@ jobs:
     outputs:
       image: ${{ steps.build.outputs.image }}
     steps:
+      # persist-credentials: false — this job holds `packages: write`, and
+      # nothing after the checkout needs git to authenticate. The build context
+      # already excludes .git (.dockerignore); this is defense in depth, so the
+      # token is not on disk beside a tree the testing lane merges with one
+      # approval (check-invariants.mjs, `lane-write-jobs`).
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
 
       # The workflow's own token, same as release.yml's publish job: GHCR
       # accepts GITHUB_TOKEN for push within the same repo/org.
@@ -134,9 +150,15 @@ jobs:
       # Registry cache, not the gha backend: this file is also called by
       # release.yml (workflow_call), and the gha cache backend does not work
       # from a called workflow's token. The cache rides the same GHCR repo as
-      # the package itself (:buildcache), is exported with mode=max so the
-      # cargo-chef DEPENDENCY layers inside package.Dockerfile survive, and
-      # turns every cold hosted runner into "rebuild our crates only".
+      # the package itself, is exported with mode=max so the cargo-chef
+      # DEPENDENCY layers inside package.Dockerfile survive, and turns every
+      # cold hosted runner into "rebuild our crates only".
+      #
+      # ONE CACHE REF PER PROFILE (:buildcache for release, :buildcache-dev for
+      # dev). A single ref was written by the dev nightlies and the release
+      # builds alike, and each export evicted the other profile's cook layer:
+      # an rc-deploy with no api change took 32.5 min after a dev nightly had
+      # run, because the release dependencies it needed were gone.
       - name: Set up buildx
         uses: docker/setup-buildx-action@v3
 
@@ -154,6 +176,14 @@ jobs:
         run: |
           set -eu
           sha=$(git rev-parse HEAD | cut -c1-12)
+          # The immutable tag and the cache ref are the profile's own (the
+          # header's TAGS, and the cache note above). An unknown profile is
+          # refused here, before anything is built or pushed.
+          case "$PROFILE" in
+            dev)     imm="sha-$sha-dev"; cache="$IMAGE:buildcache-dev" ;;
+            release) imm="sha-$sha";     cache="$IMAGE:buildcache" ;;
+            *) echo "::error::unknown profile $PROFILE (release | dev)"; exit 1 ;;
+          esac
           # Immutable first: the sha tag, then the caller's channel tags
           # (resolve already ordered them dated/versioned before moving), then
           # `main` — and ONLY when this run's ref IS main.
@@ -166,19 +196,21 @@ jobs:
           # Dockerfile's default ARG, and the digest app-image.yml pins for a
           # main push that did not touch api/ — so a re-point silently bakes an
           # rc-built api into the trunk app image the updater rolls from.
-          tags=("sha-$sha")
+          tags=("$imm")
           for t in $EXTRA_TAGS; do tags+=("$t"); done
-          if [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then tags+=(main); fi
+          # And only for a release build: `main` is what checkout builds pin by
+          # default, and a dev-profile compile never stands in for it.
+          if [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ] && [ "$PROFILE" = release ]; then tags+=(main); fi
           args=(-f api/package.Dockerfile
                 --platform linux/amd64
                 --build-arg "PROFILE=$PROFILE"
                 --build-arg "CARGO_BUILD_JOBS=$(nproc)"
                 --build-arg "REVISION=$(git rev-parse HEAD)"
                 --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-                --cache-from "type=registry,ref=$IMAGE:buildcache"
-                --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max"
+                --cache-from "type=registry,ref=$cache"
+                --cache-to "type=registry,ref=$cache,mode=max"
                 --push)
           for t in "${tags[@]}"; do args+=( -t "$IMAGE:$t" ); done
           docker buildx build "${args[@]}" .
-          echo "image=$IMAGE:sha-$sha" >> "$GITHUB_OUTPUT"
-          echo "pushed $IMAGE for: ${tags[*]} (profile: $PROFILE, cache: $IMAGE:buildcache)"
+          echo "image=$IMAGE:$imm" >> "$GITHUB_OUTPUT"
+          echo "pushed $IMAGE for: ${tags[*]} (profile: $PROFILE, cache: $cache)"

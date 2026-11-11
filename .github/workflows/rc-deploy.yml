@@ -1,4 +1,6 @@
-# The staging deploy — this file is what "verified in RC" MEANS.
+# The staging deploy — this file is what "verified in RC" MEANS. One deploy per
+# candidate: rc moves only by a promotion, a hotfix or a roll, and each of
+# those pushes gets a deploy that runs to the end.
 #
 # WHY IT EXISTS. The promotion rule is "rc's tip is deployed and verified before
 # it reaches main" (docs/BRANCHES.md; .github/workflows/promote.yml acts on it).
@@ -28,13 +30,17 @@
 # reads this workflow's runs for the head sha, so clearing a flake is a re-run
 # (workflow_dispatch below, dispatched from rc).
 #
-# WHY cancel-in-progress IS SAFE HERE, unlike every other publishing workflow in
-# this repo. Each run builds and boots its own throwaway stack; no moving
-# channel tag and no shared environment is at stake, so a superseded run's
-# answer is worthless and cancelling it costs nothing. The one non-idempotent
-# step is api-package's own push, and a cancelled buildx run leaves the
-# immutable sha tag either absent or complete — buildx pushes the manifest last,
-# and this same commit re-pushes it on the next attempt.
+# WHY A DEPLOY IS NEVER CANCELLED MID-RUN (cancel-in-progress: false). It used
+# to be: each run boots its own throwaway stack, so a superseded run's answer
+# looked worthless. Its BUILD is not. api-package exports its registry cache
+# only when the compile finishes, so a release build cancelled halfway
+# discards the cache the next run needs — and rc's pushes come in pairs (a
+# promotion, then its roll), so the roll's rc-deploy paid the whole release
+# compile again on the path to main. rc moves only on promotions, hotfixes
+# and rolls, so a run is rarely superseded at all; when it is, GitHub keeps
+# the run in flight and replaces the pending one with the newest push, and
+# the tip still gets its own deploy. testing-deploy.yml holds the same rule
+# for the same reason.
 #
 # WHY THE WHOLE WORKFLOW IS GATED ON ITS DISPATCH REF. A workflow_dispatch run
 # executes the workflow file AT THE REF DISPATCHED, carrying this file's token
@@ -54,10 +60,10 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  # Per-branch, cancelled: a newer push to rc has already replaced this
-  # commit's answer.
+  # Per-branch, queued: the run in flight finishes (its cache export is the
+  # next run's head start), and only the newest pending push waits behind it.
   group: rc-deploy-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read

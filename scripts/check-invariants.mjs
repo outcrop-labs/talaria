@@ -3343,6 +3343,230 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
+// ── No repository script in a write job the lanes can start ────────────────
+// testing takes merges with one approval, or none by an admin; a ci/** push
+// and a same-repository pull request run whatever their branch holds. GHCR's
+// package write is not scoped by tag, so a job holding `packages: write` that
+// runs a script from such a tree can re-point `:main` (the in-app updater's
+// feed), `:latest` or `:nightly`; with `contents: write` it can push. So for
+// every workflow whose `on:` takes a push to testing or ci/**, or a pull
+// request, each job that holds `packages: write` or `contents: write` — its
+// own grant, or the workflow's when it has none — may run no repository
+// script: no `node scripts/`, `bun scripts/`, `bun run `, `./scripts/` or
+// `bash scripts/` in a run line, and no local action (`uses: ./…`). A job that
+// calls a local workflow with such a grant is followed into that workflow.
+// testing-deploy.yml's split is the pattern: build and smoke under
+// `packages: read`, publish from an artifact with no checkout.
+//
+// A job whose token is declared nowhere takes the repository's default
+// workflow permissions (Settings → Actions → General, which should be read);
+// those are named in the note, not failed. The rule proves itself on a
+// fixture before it reads the tree.
+{
+  const dir = join(ROOT, '.github', 'workflows')
+  const FORBIDDEN = /\bnode scripts\/|\bbun scripts\/|\bbun run |(?:^|[\s;&|(])\.\/scripts\/|\bbash scripts\//
+  const strip = (raw) => raw.replace(/\s+#.*$/, '').replace(/^\s*#.*$/, '')
+  const indent = (l) => /^ */.exec(l)[0].length
+
+  // The lines of a top-level key's block, and its inline value.
+  const topBlock = (lines, keyRe) => {
+    const at = lines.findIndex((l) => keyRe.test(l))
+    if (at === -1) return null
+    const inline = lines[at].replace(keyRe, '').trim()
+    const body = []
+    for (let i = at + 1; i < lines.length; i++) {
+      if (/^\S/.test(lines[i])) break
+      body.push({ n: i + 1, text: lines[i] })
+    }
+    return { line: at + 1, inline, body }
+  }
+  // The keys at one indentation inside a block: name → {inline, body}.
+  const keysAt = (body, depth) => {
+    const out = new Map()
+    let cur = null
+    for (const l of body) {
+      if (l.text.trim() === '') continue
+      const m = new RegExp(`^ {${depth}}([A-Za-z0-9_-]+):\\s*(.*)$`).exec(l.text)
+      if (m && indent(l.text) === depth) {
+        cur = { line: l.n, inline: m[2].trim(), body: [] }
+        out.set(m[1], cur)
+      } else if (cur && indent(l.text) > depth) {
+        cur.body.push(l)
+      } else if (indent(l.text) <= depth) {
+        cur = null
+      }
+    }
+    return out
+  }
+  const writes = (perm) => {
+    if (!perm) return null // declared nowhere
+    const text = [perm.inline, ...perm.body.map((l) => l.text)].join(' ')
+    return /\bwrite-all\b/.test(text) || /\b(contents|packages):\s*write\b/.test(text)
+  }
+  const globRe = (g) =>
+    new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\u0000/g, '.*')}$`)
+  const listOf = (key) => {
+    if (!key) return []
+    const inline = /^\[(.*)\]$/.exec(key.inline)
+    const items = inline ? inline[1].split(',') : key.body.map((l) => l.text.trim()).filter((t) => t.startsWith('- ')).map((t) => t.slice(2))
+    return items.map((s) => s.trim().replace(/^(['"])(.*)\1$/, '$2')).filter(Boolean)
+  }
+  // Does `on:` take a push to testing or ci/**, or a pull request?
+  const laneTriggered = (text) => {
+    const lines = text.split('\n').map(strip)
+    const on = topBlock(lines, /^(?:on|"on"|'on'):/)
+    if (!on) return false
+    if (on.inline) {
+      const events = on.inline.replace(/[[\]{}]/g, ' ').split(/[\s,]+/)
+      return events.some((e) => /^(pull_request|pull_request_target|push)$/.test(e))
+    }
+    const events = keysAt(on.body, 2)
+    if (events.has('pull_request') || events.has('pull_request_target')) return true
+    const push = events.get('push')
+    if (!push) return false
+    const flow = /branches:\s*\[([^\]]*)\]/.exec(push.inline)
+    const sub = keysAt(push.body, 4)
+    const branches = flow ? flow[1].split(',').map((s) => s.trim().replace(/^(['"])(.*)\1$/, '$2')) : listOf(sub.get('branches'))
+    const filtered = flow || sub.has('branches') || sub.has('branches-ignore') || sub.has('tags') || sub.has('tags-ignore') || /\b(tags|branches-ignore)\b/.test(push.inline)
+    if (!filtered) return true // every push
+    if (sub.has('branches-ignore')) return true // the safe side: too many branches to rule out
+    return branches.filter((b) => !b.startsWith('!')).some((b) => ['testing', 'ci/x', 'ci/full/x'].some((name) => globRe(b).test(name)))
+  }
+  const jobsIn = (text) => {
+    const lines = text.split('\n').map(strip)
+    const jobs = topBlock(lines, /^jobs:/)
+    const perm = topBlock(lines, /^permissions:/)
+    return { workflowPerm: perm, jobs: jobs ? keysAt(jobs.body, 2) : new Map() }
+  }
+  // The run lines (inline, or a block scalar's lines) and local uses of a job.
+  const stepsOf = (job) => {
+    const runs = []
+    const local = []
+    let block = -1
+    for (const l of job.body) {
+      if (block >= 0) {
+        if (l.text.trim() === '' || indent(l.text) > block) {
+          runs.push(l)
+          continue
+        }
+        block = -1
+      }
+      const m = /^( *)(- )?(run|uses):\s*(.*)$/.exec(l.text)
+      if (!m) continue
+      const value = m[4].trim()
+      if (m[3] === 'uses') {
+        if (/^['"]?\.\//.test(value) && m[2]) local.push(l)
+        continue
+      }
+      if (/^[|>][-+0-9]*$/.test(value)) block = m[1].length + (m[2] ? 2 : 0)
+      else runs.push(l)
+    }
+    return { runs, local }
+  }
+
+  // files: Map<file name, text>. → {found, inspected, scope, undeclared}
+  const scan = (files) => {
+    const found = []
+    const inspected = []
+    const scope = []
+    const undeclared = []
+    const visit = (file, jobId, job, grant, via, depth) => {
+      const rel = `.github/workflows/${file}`
+      inspected.push(`${file}:${jobId}`)
+      const { runs, local } = stepsOf(job)
+      for (const l of runs) {
+        if (FORBIDDEN.test(l.text)) {
+          found.push({ path: rel, line: l.n, text: `job \`${jobId}\`${via} holds ${grant} and runs \`${l.text.trim()}\`` })
+        }
+      }
+      for (const l of local) {
+        found.push({ path: rel, line: l.n, text: `job \`${jobId}\`${via} holds ${grant} and runs a local action: \`${l.text.trim()}\`` })
+      }
+      const call = /^\.\/\.github\/workflows\/([^'"\s]+)/.exec(job.inline === '' ? (job.body.find((b) => /^ {4}uses:/.test(b.text))?.text.replace(/^ {4}uses:\s*['"]?/, '') ?? '') : '')
+      if (!call || depth > 3) return
+      const called = files.get(call[1])
+      if (called === undefined) return
+      const inner = jobsIn(called)
+      for (const [id, j] of inner.jobs) {
+        const own = keysAt(j.body, 4).get('permissions')
+        const w = writes(own) ?? writes(inner.workflowPerm) ?? true // nothing declared: the caller's grant
+        if (w) visit(call[1], id, j, grant, ` (called from ${file}:${jobId})`, depth + 1)
+      }
+    }
+    for (const [file, text] of files) {
+      if (!laneTriggered(text)) continue
+      scope.push(file)
+      const { workflowPerm, jobs } = jobsIn(text)
+      for (const [id, job] of jobs) {
+        const own = keysAt(job.body, 4).get('permissions')
+        const w = writes(own) ?? writes(workflowPerm)
+        if (w === null) {
+          undeclared.push(`${file}:${id}`)
+          continue
+        }
+        if (!w) continue
+        const permText = [...(own ? [own.inline, ...own.body.map((l) => l.text)] : [workflowPerm.inline, ...workflowPerm.body.map((l) => l.text)])].join(' ')
+        const grant = /write-all/.test(permText) ? '`write-all`' : [...permText.matchAll(/\b(contents|packages):\s*write\b/g)].map((m) => `\`${m[1]}: write\``).join(' and ')
+        visit(file, id, job, grant, '', 0)
+      }
+    }
+    return { found, inspected, scope, undeclared }
+  }
+
+  // The fixture: two violations the rule exists for, and the shape it allows.
+  const FIXTURE = new Map([
+    ['lane.yml', [
+      'on:', '  push:', "    branches: ['testing']", 'permissions:', '  contents: write', 'jobs:',
+      '  smoke:', '    runs-on: ubuntu-latest', '    steps:', '      - run: |', '          set -eu', '          node scripts/deploy-smoke.mjs --image x',
+      '  pub:', '    uses: ./.github/workflows/pkg.yml', '    permissions:', '      packages: write',
+      '  read:', '    permissions: {contents: read}', '    runs-on: ubuntu-latest', '    steps:', '      - run: bun run check',
+    ].join('\n')],
+    ['pkg.yml', [
+      'on:', '  workflow_call: {}', 'jobs:', '  package:', '    permissions:', '      packages: write', '    steps:',
+      '      - uses: ./.github/actions/setup-runtime', '      - run: docker buildx build .',
+    ].join('\n')],
+    ['offload.yml', ['on:', '  push:', "    branches: ['ci/**']", 'jobs:', '  prune:', '    permissions:', '      contents: write', '    steps:', '      - run: gh api x'].join('\n')],
+    ['tags.yml', ['on:', '  push:', "    tags: ['v*']", 'permissions: write-all', 'jobs:', '  rel:', '    steps:', '      - run: bun run release'].join('\n')],
+  ])
+  const self = scan(FIXTURE)
+  const want = ['lane.yml:12', 'pkg.yml:8']
+  const got = self.found.map((f) => `${f.path.split('/').pop()}:${f.line}`).sort()
+  const selfWrong = JSON.stringify(got) !== JSON.stringify(want) || !self.scope.includes('offload.yml') || self.scope.includes('tags.yml')
+  const files = new Map()
+  for (const file of readdirSync(dir).sort()) {
+    if (file.endsWith('.yml') || file.endsWith('.yaml')) files.set(file, readFileSync(join(dir, file), 'utf8'))
+  }
+  const tree = scan(files)
+  const found = [...tree.found]
+  if (selfWrong) {
+    found.push({ path: 'scripts/check-invariants.mjs', line: 0, text: `lane-write-jobs self-test: expected findings ${want.join(', ')} and offload.yml in scope, got ${got.join(', ') || 'none'} (scope: ${self.scope.join(', ')})` })
+  }
+  // The job this rule was written for has to be among those it reads.
+  if (!tree.inspected.includes('testing-deploy.yml:publish')) {
+    found.push({ path: '.github/workflows/testing-deploy.yml', line: 0, text: '`publish` was not inspected — the rule no longer sees the job it exists for; move the rule with the workflow' })
+  }
+  if (found.length) {
+    failures.push({
+      id: 'lane-write-jobs',
+      what: 'code merged with one approval (or none, by an admin) must never run in a job that can write packages or contents — GHCR write is not scoped by tag',
+      fix: [
+        'Split the job: everything that runs the tree (a build, a smoke test, a script) goes in a job',
+        'with `packages: read` and `contents: read` and a checkout with `persist-credentials: false`;',
+        'it hands its result on as an artifact. The job that writes checks out nothing and runs only',
+        'docker, gh and git against that artifact. testing-deploy.yml (build-smoke, then publish) is',
+        'the pattern. If a write job only needs a value the tree computes, compute it in the read job',
+        'and pass it as an output.',
+      ],
+      found,
+    })
+  } else {
+    notes.push(
+      `lane write jobs run no repository script: ${tree.inspected.join(', ') || 'none'} (in ${tree.scope.length} lane-triggered workflows)` +
+        (tree.undeclared.length ? `; token undeclared, so the repository default (read): ${[...new Set(tree.undeclared.map((j) => j.split(':')[0]))].join(', ')}` : ''),
+    )
+  }
+}
+
 // ── GitHub's Latest release is the desktop updater feed ─────────────────────
 // The shell's updater reads /releases/latest/download/latest.json, and GitHub
 // marks a new non-prerelease release Latest unless told not to. A stable
