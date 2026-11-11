@@ -3,8 +3,9 @@
 # WHY THIS FILE EXISTS. The gates answer "does it pass". They cannot answer "is
 # this the change this repository asked for": that the changelog claims a
 # verification the diff does not support, that a behaviour change arrived with no
-# test, that the pull request is aimed at `main`, that a generated reference was
-# hand-edited, that a commit subject broke the house style. scripts/judge-pr.mjs
+# test, that the pull request is aimed at `main`, that a hotfix adds a migration,
+# that a generated reference was hand-edited, that a commit subject broke the
+# house style. scripts/judge-pr.mjs
 # decides those from the diff (its header lists them and their reasoning); this
 # file runs it on the pull request's own range and puts the answer where the
 # author will read it — one sticky comment, edited in place, plus the job
@@ -60,10 +61,18 @@ jobs:
           # reads the commit subjects in that range.
           fetch-depth: 0
 
-      - name: Fetch the base branch
+      # The base is the diff's; main and rc are the lanes' (a promoted entry is
+      # one origin/rc has). testing may not exist yet, so its fetch is tolerant.
+      - name: Fetch the base branch and the long-lived branches
         env:
           BASE: ${{ github.base_ref }}
-        run: git fetch --no-tags origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
+        run: |
+          set -eu
+          git fetch --no-tags origin \
+            "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
+            '+refs/heads/main:refs/remotes/origin/main' \
+            '+refs/heads/rc:refs/remotes/origin/rc'
+          git fetch --no-tags origin '+refs/heads/testing:refs/remotes/origin/testing' || echo "origin has no testing branch"
 
       - name: Write the pull request body out
         env:
@@ -73,16 +82,28 @@ jobs:
       # `continue-on-error` so the comment and the failure below both happen: a
       # judge that hides its report when it finds a `must` is a judge nobody
       # reads.
+      #
+      # `pipefail`, because the report goes through `tee`. Without it the
+      # pipeline's status was tee's, exit 2 was masked, and 'Fail on a `must`'
+      # never fired: promotion #722 reported 2 musts and passed. (Both were
+      # false positives — the promotion judged as a feature — which the lanes
+      # in judge-pr.mjs now skip.)
+      #
+      # SOURCE is the head branch, for the lanes. A fork's is qualified with its
+      # repository, so a fork's `rc` or `promote/x` never matches a lane.
       - name: Judge the diff
         id: judge
         continue-on-error: true
+        shell: bash
         env:
           BASE: ${{ github.base_ref }}
+          SOURCE: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || format('{0}:{1}', github.event.pull_request.head.repo.full_name, github.head_ref) }}
         run: |
-          set -eu
+          set -euo pipefail
           node scripts/judge-pr.mjs \
             --base "origin/$BASE" \
             --target "$BASE" \
+            --source "$SOURCE" \
             --pr-body "$RUNNER_TEMP/body.md" \
             --summary | tee "$RUNNER_TEMP/report.md"
 

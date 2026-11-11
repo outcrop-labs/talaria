@@ -10,16 +10,17 @@
 // WHAT IT DOES NOT DO. It does not edit, merge, push, comment, or re-run a
 // job. Diagnosis and the self-fix belong to the agent, and the procedure is
 // the last step of `.claude/skills/ship-a-change/SKILL.md`. A self-fix push
-// goes to the agent's own branch — flow-guard refuses `main` and `rc` — and
-// this script never decides to notify a reviewer. Whether a harness should
+// goes to the agent's own branch — flow-guard refuses `main`, `rc` and
+// `testing` — and this script never decides to notify a reviewer. Whether a harness should
 // spawn it on its own, and whether a re-push should ping, are open human
 // calls; the default is the skill runs it, and a push stays silent.
 //
 // THE CONTRACT (scripts/hooks/README.md). stdin is tolerated and never read.
 //   exit 0 — checks green AND GitHub reports the PR mergeable (no conflict
-//            with its base, which must be `rc` — or `main` for the promotion
-//            of `rc` itself, below). One proof line on stdout, the only state
-//            an agent may cite. Nothing on stderr.
+//            with its base, which must be the PR's lane's: `testing` or `rc`
+//            for a feature, `main` for the promotion of `rc` itself — THE
+//            LANES, below). One proof line on stdout, the only state an agent
+//            may cite. Nothing on stderr.
 //   exit 2 — block. The first stderr line is exactly one of:
 //            `pr-watch: red`, `pr-watch: conflict`, `pr-watch: pending`,
 //            `pr-watch: timeout`, `pr-watch: closed`, `pr-watch: base`.
@@ -35,7 +36,7 @@
 // GitHub computes it asynchronously, and "not yet known" is not "mergeable".
 // CONFLICTING or mergeStateStatus DIRTY is a conflict even when checks are
 // also red: the red run is against a head the merge will replace. BEHIND is
-// not a conflict (`strict` is off on `rc`); it is named in the proof line and
+// not a conflict (`strict` is off on `rc` and `testing`); it is named in the proof line and
 // does not block.
 //
 // ONE VERDICT PER CHECK, AND ONLY FOR THE COMMIT YOU PUSHED. The rollup GitHub
@@ -85,15 +86,40 @@
 // `gh run view` get `--repo HOST/OWNER/REPO` for the same reason: gh reads a
 // bare `OWNER/REPO` against GH_HOST too.
 //
-// THE PROMOTION IS WATCHED TOO. Work targets `rc`; the one pull request into
-// `main` is `rc` itself (docs/BRANCHES.md), and its checks and mergeability
-// are what the release waits on. Refusing it as `base` hid them: `--pr 597`
-// exited before it read a check. A same-repository `rc` → `main` PR is
-// therefore read like any other, with two differences. Its head is `rc` on
-// GitHub, never this checkout's (nobody pushes `rc`). And the red and conflict
-// advice points at a pull request into `rc`, because pushing to `rc` is the
-// one fix flow-guard refuses. Any other base, a fork's `rc` included, is
-// still `base`.
+// THE LANES (laneOf). A pull request is read when it is in a lane this
+// repository merges through (docs/BRANCHES.md), and its advice is the lane's:
+//   feature              any head into the PR's base, `testing` or `rc` (a
+//                        feature into `rc` stays valid until the cutover;
+//                        flow.yml refuses it after).
+//   promotion:rc→main    `rc` itself into `main`.
+//   promotion:testing→rc a frozen snapshot of `testing` (`promote/*`) into `rc`.
+//   backflow             `backflow/*` into `testing`: what `rc` gained, back.
+//   rc-lane              `hotfix/`, `release/` or `sync/` heads into `rc`.
+// Every lane but `feature` is same-repository only: a fork's `rc` or
+// `promote/x` is a feature at most, and anything else is `base`.
+//
+// THE PROMOTIONS ARE WATCHED TOO. The one pull request into `main` is `rc`
+// itself, and its checks and mergeability are what the release waits on.
+// Refusing it as `base` hid them: `--pr 597` exited before it read a check. A
+// promotion is read like any other PR, with two differences. Its head is read
+// on GitHub, never this checkout's (nobody pushes `rc` or a snapshot). And the
+// red and conflict advice points at a pull request into the branch the
+// promotion came from, because pushing to its head is the one fix flow-guard
+// refuses (or that a frozen snapshot must never take).
+//
+// OFFLOAD RUNS ARE NOT THIS PR'S. `bun run gate:remote` pushes the same commit
+// to `ci/<branch>`, and the `CI offload` workflow runs there. Its check runs
+// land on the same sha, so the rollup and `gh run list --commit` both carry
+// them: an offload run still in progress would hold the PR pending, and a
+// cancelled one would turn it red for good. Rows whose head branch is `ci/…`
+// are dropped, and so are rollup checks of the offload workflow (named by
+// ci-offload.yml's `name:` in this script's own repository; none when the file
+// is absent) or of a dropped run.
+//
+// A RED THE BASE ALREADY HAS is still `red`, but the body says so: when every
+// failing check is also failing in the base branch's own push run of the CI
+// workflow at the PR's base commit, the fix is not on this branch. Any lookup
+// failure falls back to the ordinary red body.
 //
 // BOUNDS. First poll is immediate. Then exponential backoff from 20s, capped
 // at 2min, until a 45-minute wall clock. The skill quotes these numbers; they
@@ -112,7 +138,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -166,6 +192,7 @@ const FIELDS = [
   'mergeable',
   'mergeStateStatus',
   'baseRefName',
+  'baseRefOid',
   'headRefName',
   'headRefOid',
   'headRepository',
@@ -175,7 +202,15 @@ const FIELDS = [
   'title',
 ].join(',')
 
-const RUN_FIELDS = 'databaseId,workflowName,event,status,conclusion,headSha,createdAt,url'
+const RUN_FIELDS = 'databaseId,workflowName,event,status,conclusion,headSha,createdAt,url,headBranch'
+
+/** `bun run gate:remote` pushes a commit to `ci/<branch>` (or `ci/full/<branch>`)
+ *  and the `CI offload` workflow runs it there. A run whose head branch starts
+ *  with this is that offload, never the pull request's own evidence. */
+export const OFFLOAD_PREFIX = 'ci/'
+
+/** The branches a feature merges into. */
+export const MERGE_BASES = ['testing', 'rc']
 
 function couldNotRun(why) {
   console.error(`pr-watch: could not run — not a pass: ${why}`)
@@ -186,8 +221,8 @@ function printHelp() {
   console.log(`pr-watch — poll a pull request's checks and mergeable state.
 
 exit 0   checks green (the latest run of each) on the pushed head, the CI workflow's
-         run for that head finished, and the PR mergeable against rc (or, for the
-         promotion of rc, against main). Proof line on stdout.
+         run for that head finished, and the PR mergeable against the PR's base
+         (testing or rc; main for the promotion of rc). Proof line on stdout.
 exit 2   red | conflict | pending (--once, or a head that waiting cannot fix) | timeout |
          closed | base. Reason on stderr.
 exit 1   could not run. Not a pass.
@@ -197,7 +232,9 @@ exit 1   could not run. Not a pass.
 
 No --pr: the open PR for the current branch. --repo: the PR's repository when it is not
 this checkout's; the CI workflow's name is read from that repository's ci.yml at the PR
-head. The procedure is .claude/skills/ship-a-change/SKILL.md. This script does not edit or push.`)
+head. A bun run gate:remote (CI offload) run of the same sha is not this PR's run and
+is ignored. The procedure is .claude/skills/ship-a-change/SKILL.md. This script does not
+edit or push.`)
   process.exit(0)
 }
 
@@ -306,6 +343,39 @@ export function withEvents(checks, runs) {
   })
 }
 
+/** A `gh run list` row for an offload push (`ci/…`, OFFLOAD_PREFIX): never
+ *  this PR's evidence, whatever sha it ran on. */
+export function isOffloadRun(r) {
+  return String(r?.headBranch || '').startsWith(OFFLOAD_PREFIX)
+}
+
+/** The rollup without the offload's checks. They land on the PR's head sha
+ *  because the offload pushed that very commit, so GitHub lists them with the
+ *  PR's own. Dropped: a check of the offload workflow (`workflow`, ci-offload.yml's
+ *  name, when this repository has that file), and a check of any run of a
+ *  `ci/…` push (`runIds`, matched by the run id in the check's URL). */
+export function dropOffload(checks, { workflow = null, runIds = [] } = {}) {
+  const ids = new Set([...runIds].map(String))
+  return checks.filter((c) => {
+    if (workflow && c.workflow === workflow) return false
+    const run = /\/actions\/runs\/(\d+)/.exec(c.url)?.[1]
+    return !(run && ids.has(run))
+  })
+}
+
+/** ci-offload.yml's top-level `name:` in this script's own repository — the
+ *  one whose `bun run gate:remote` pushes the offload — or null when the file
+ *  is absent; then no rollup check is dropped by name (runs of `ci/…` pushes
+ *  still are). */
+export function offloadWorkflowName(root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')) {
+  const file = resolve(root, '.github/workflows/ci-offload.yml')
+  try {
+    return existsSync(file) ? workflowNameOf(readFileSync(file, 'utf8')) : null
+  } catch {
+    return null
+  }
+}
+
 /** One entry per workflow + check name, per event it ran for: the latest.
  *  The rollup also carries the runs that a newer one superseded (a cancelled judge beside the re-run
  *  a body edit started); `gh pr checks` drops those, and so does this. */
@@ -333,6 +403,8 @@ export function latestRuns(rows, headSha) {
   const latest = new Map()
   for (const r of rows || []) {
     if (headSha && r.headSha && r.headSha !== headSha) continue
+    // readRuns already dropped these; a caller handing raw rows gets the same answer.
+    if (isOffloadRun(r)) continue
     const key = `${r.workflowName}\u0000${r.event}`
     const seen = latest.get(key)
     const id = Number(r.databaseId) || 0
@@ -354,10 +426,32 @@ export function latestRuns(rows, headSha) {
   })
 }
 
-/** The promotion: `rc` itself, from this repository, into `main`
- *  (docs/BRANCHES.md). The one PR whose base may be other than `rc`. */
+/** The lane a pull request is in (docs/BRANCHES.md), or null when its base
+ *  is not a branch this repository merges into:
+ *    'promotion:rc→main'     `rc` itself into `main`
+ *    'promotion:testing→rc'  a frozen snapshot of `testing` (`promote/*`) into `rc`
+ *    'backflow'              `backflow/*` into `testing`
+ *    'rc-lane'               a `hotfix/`, `release/` or `sync/` head into `rc`
+ *    'feature'               anything else into `testing` or `rc`
+ *  Every lane but 'feature' is same-repository only: a fork's `rc` into `main`
+ *  is no lane, and a fork's `promote/x` into `rc` is a feature. A feature into
+ *  `rc` stays valid until the cutover; flow.yml refuses it after. */
+export function laneOf(pr) {
+  const base = pr?.baseRefName
+  const head = String(pr?.headRefName ?? '')
+  if (pr?.isCrossRepository !== true) {
+    if (base === 'main' && head === 'rc') return 'promotion:rc→main'
+    if (base === 'rc' && head.startsWith('promote/')) return 'promotion:testing→rc'
+    if (base === 'testing' && head.startsWith('backflow/')) return 'backflow'
+    if (base === 'rc' && /^(hotfix|release|sync)\//.test(head)) return 'rc-lane'
+  }
+  return MERGE_BASES.includes(base) ? 'feature' : null
+}
+
+/** A promotion — `rc` into `main`, or a snapshot of `testing` into `rc`. Its
+ *  head is a branch nobody pushes, so it is read on GitHub and fixed upstream. */
 export function isPromotion(pr) {
-  return pr?.baseRefName === 'main' && pr?.headRefName === 'rc' && pr?.isCrossRepository !== true
+  return laneOf(pr)?.startsWith('promotion:') === true
 }
 
 /** Is the PR's head the commit that was pushed? `facts` is readHeadFacts():
@@ -427,7 +521,12 @@ export function headCheck(pr, facts) {
  *  `ctx.ciWorkflow` the CI workflow's name. Merged and closed PRs skip the
  *  head and run checks: there is no push left to wait for. */
 export function classify(pr, ctx = {}) {
-  const all = withEvents((pr.statusCheckRollup || []).map(normalize), ctx.runs)
+  const rollup = (pr.statusCheckRollup || []).map(normalize)
+  const offloadRunIds = [
+    ...(ctx.offloadRunIds || []),
+    ...(Array.isArray(ctx.runs) ? ctx.runs.filter(isOffloadRun).map((r) => r.databaseId) : []),
+  ]
+  const all = withEvents(dropOffload(rollup, { workflow: ctx.offloadWorkflow, runIds: offloadRunIds }), ctx.runs)
   const checks = latestChecks(all)
   const failing = checks.filter((c) => c.verdict === 'fail')
   const pending = checks.filter((c) => c.verdict === 'pending')
@@ -450,12 +549,14 @@ export function classify(pr, ctx = {}) {
     mergeState,
     checks: checks.length,
     superseded: all.length - checks.length,
+    offload: rollup.length - all.length,
+    lane: laneOf(pr),
     waiting: [],
     note: '',
   }
 
   if (pr.state === 'CLOSED') return { kind: 'closed', ...base }
-  if (pr.baseRefName !== 'rc' && !isPromotion(pr)) return { kind: 'base', ...base }
+  if (!MERGE_BASES.includes(pr.baseRefName) && !isPromotion(pr)) return { kind: 'base', ...base }
   if (isPromotion(pr)) base.promotion = true
 
   if (pr.state !== 'MERGED') {
@@ -645,8 +746,9 @@ function relationOf(pr, local, want, target, io) {
  *  the real git reads against a scratch repository. */
 export function readHeadFacts(pr, target, io = { branch: currentBranch(), git, gh }) {
   const want = String(pr.headRefOid)
-  // A promotion's head is `rc` as GitHub has it. A local `rc` is not what
-  // anybody pushed, and "push it" is the one advice flow-guard refuses.
+  // A promotion's head is `rc`, or a frozen `promote/*` snapshot, as GitHub has
+  // it. A local copy is not what anybody pushed, and "push it" is the one
+  // advice flow-guard refuses (or a snapshot must never take).
   if (io.branch !== pr.headRefName || isPromotion(pr)) return { onBranch: false, ...readRemoteHead(pr, target, io) }
   const local = io.git(['rev-parse', 'HEAD']).out
   const tracking = io.git(['rev-parse', '--verify', '-q', `refs/remotes/origin/${pr.headRefName}`])
@@ -659,15 +761,24 @@ export function readHeadFacts(pr, target, io = { branch: currentBranch(), git, g
   return { ...facts, ...readRemoteHead(pr, target, io) }
 }
 
+/** The head's workflow runs, without the offload's: a `ci/…` push of the same
+ *  sha is `bun run gate:remote`, not this PR. Their ids are kept, so the
+ *  rollup checks of those runs are dropped too (dropOffload). */
 function readRuns(sha, repoFlag) {
   const args = ['run', 'list', '--commit', String(sha), '--limit', '100', '--json', RUN_FIELDS]
   if (repoFlag) args.push('--repo', repoFlag)
   const run = gh(args, 60_000)
   if (run.status !== 0) return { runs: null, runsError: ghFailure(run).split('\n')[0] }
+  let rows
   try {
-    return { runs: JSON.parse(run.stdout) }
+    rows = JSON.parse(run.stdout)
   } catch (e) {
     return { runs: null, runsError: `gh run list did not return JSON (${e.message})` }
+  }
+  if (!Array.isArray(rows)) return { runs: null, runsError: 'gh run list did not return a list' }
+  return {
+    runs: rows.filter((r) => !isOffloadRun(r)),
+    offloadRunIds: rows.filter(isOffloadRun).map((r) => String(r.databaseId)),
   }
 }
 
@@ -723,6 +834,7 @@ function payloadOf(pr, result, ci) {
     baseRefName: pr.baseRefName,
     headRefName: pr.headRefName,
     headRefOid: pr.headRefOid,
+    lane: result.lane ?? null,
     promotion: Boolean(result.promotion),
     mergeable: result.mergeable,
     mergeStateStatus: result.mergeState,
@@ -730,9 +842,11 @@ function payloadOf(pr, result, ci) {
     pending: result.pending.map((c) => ({ name: c.name, conclusion: c.conclusion, url: c.url })),
     waiting: result.waiting,
     needsAction: Boolean(result.needsAction),
+    inherited: result.inherited ?? null,
     passing: result.passing.length,
     skipped: result.passing.filter((c) => c.conclusion === 'SKIPPED').length,
     superseded: result.superseded,
+    offload: result.offload ?? 0,
     ciWorkflow: ci ? { name: ci.name, source: ci.source, note: ci.note } : null,
   }
 }
@@ -748,10 +862,15 @@ function emit(code, line, body, payload) {
   process.exit(code)
 }
 
-function branchNote(pr) {
-  const here = currentBranch()
-  if (isPromotion(pr)) {
+/** A line saying whose branch this is, when it is not this checkout's to push.
+ *  `here` is this checkout's branch (injected by the test). */
+export function branchNote(pr, here = currentBranch()) {
+  const lane = laneOf(pr)
+  if (lane === 'promotion:rc→main') {
     return `#${pr.number} is the promotion of \`rc\` into \`main\`. Reading only — nobody pushes \`rc\` or \`main\`; a fix reaches \`rc\` through its own pull request.\n`
+  }
+  if (lane === 'promotion:testing→rc') {
+    return `#${pr.number} is a frozen snapshot of \`testing\` (\`${pr.headRefName}\`) promoted into \`rc\`. Reading only — nobody pushes a snapshot; a fix reaches \`testing\` through its own pull request.\n`
   }
   if (!here || here === pr.headRefName) return ''
   return (
@@ -760,10 +879,87 @@ function branchNote(pr) {
   )
 }
 
-/** A promotion's head is `rc`, which nobody pushes: its fix is a branch of
- *  its own and a pull request into `rc`. */
-const PROMOTION_FIX =
-  'This is the promotion of `rc`, and nobody pushes `rc`. The fix lands on `rc` through its own pull request (`git fetch origin && git switch -c fix/<name> origin/rc`, then a PR against `rc`); once it merges, `rc` moves and this promotion with it.\n\n'
+/** A promotion's head is a branch nobody pushes — `rc`, or a frozen snapshot
+ *  of `testing` — so its fix is a branch of its own and a pull request into
+ *  the branch the promotion came from. Empty for every other lane. */
+export function promotionFix(lane) {
+  if (lane === 'promotion:rc→main') {
+    return 'This is the promotion of `rc`, and nobody pushes `rc`. The fix lands on `rc` through its own pull request (`git fetch origin && git switch -c fix/<name> origin/rc`, then a PR against `rc`); once it merges, `rc` moves and this promotion with it.\n\n'
+  }
+  if (lane === 'promotion:testing→rc') {
+    return 'This is a frozen snapshot of `testing` (promote/testing-<sha12>); nobody pushes it. The fix lands in `testing` through its own pull request (`git fetch origin && git switch -c fix/<name> origin/testing`). Once it merges, dispatch promote-testing again (or push a new snapshot: `git push origin origin/testing:refs/heads/promote/testing-$(git rev-parse --short=12 origin/testing)` and open a PR into rc) and close this one.\n\n'
+  }
+  return ''
+}
+
+/** True when the PR's failing checks are all failing on the base branch too —
+ *  in its own push run of the CI workflow at the PR's base commit. Nothing
+ *  failing is never inherited. */
+export function inheritedFrom(failingNames, baseFailingNames) {
+  const base = new Set(baseFailingNames || [])
+  return Array.isArray(failingNames) && failingNames.length > 0 && failingNames.every((n) => base.has(n))
+}
+
+/** The base branch's own red: its push run of the CI workflow at the PR's base
+ *  commit, and the names of that run's failing jobs. null on any failure to
+ *  read — the caller then says nothing about the base. */
+function readBaseRed(pr, ciName, repoFlag) {
+  const base = pr.baseRefName
+  const sha = pr.baseRefOid
+  if (!base || !sha || !ciName) return null
+  const repoArgs = repoFlag ? ['--repo', repoFlag] : []
+  const list = gh(
+    ['run', 'list', '--branch', base, '--event', 'push', '--commit', String(sha), '--workflow', ciName,
+      '--json', 'databaseId,status,conclusion,url', '--limit', '1', ...repoArgs],
+    60_000,
+  )
+  if (list.status !== 0) return null
+  try {
+    const row = JSON.parse(list.stdout)?.[0]
+    if (!row?.databaseId) return null
+    const view = gh(['run', 'view', String(row.databaseId), '--json', 'jobs', ...repoArgs], 60_000)
+    if (view.status !== 0) return null
+    const jobs = JSON.parse(view.stdout)?.jobs
+    if (!Array.isArray(jobs)) return null
+    const failing = jobs.filter((j) => FAIL.has(String(j?.conclusion || '').toUpperCase())).map((j) => j.name)
+    return { base, sha: String(sha), url: row.url || '', failing }
+  } catch {
+    return null
+  }
+}
+
+/** `{ base, sha, url }` when the PR's red is the base's own (inheritedFrom), else null. */
+function inheritedRed(pr, result, ciName, repoFlag) {
+  const red = readBaseRed(pr, ciName, repoFlag)
+  if (!red || !inheritedFrom(result.failing.map((c) => c.name), red.failing)) return null
+  return { base: red.base, sha: red.sha, url: red.url }
+}
+
+/** The red body, from what was read: `logs` are the failing checks' log
+ *  tails, and `result.inherited` the base's own red, when it is one. */
+export function redText(pr, result, { logs = [], here } = {}) {
+  const more =
+    result.failing.length > 3
+      ? `\n${result.failing.length - 3} more failing check(s) not logged; the URLs are above.`
+      : ''
+  const inh = result.inherited
+  const inherited = inh
+    ? `inherited from \`${inh.base}\` @ ${short(inh.sha)} (${inh.url || 'no run url'}) — the same jobs are red on the base itself; not self-fixable from this branch: report it.\n\n`
+    : ''
+  const to = result.promotion ? 'that fix branch' : `\`${pr.headRefName}\``
+  const fix = inh
+    ? ''
+    : `${result.promotion ? promotionFix(result.lane) : ''}Diagnose from the log, fix, commit and push to ${to} only — CI is the compile and the test. Reproduce one failing test locally only if the log is not enough (\`cargo test -p <crate> <test>\`; never a workspace cargo). Never \`main\`, \`rc\` or \`testing\`, never \`--force\`. Then run this watcher again.\n\n`
+  return `${inherited}${branchNote(pr, here)}#${pr.number} is not done — failing checks. Do not claim done.
+${pr.url}
+head ${pr.headRefName} @ ${short(pr.headRefOid)}
+
+${result.failing.map(checkLine).join('\n')}
+
+${fix}The same check still red after a push that was supposed to fix it is not self-fixable. A product decision, a review request, or infra you cannot fix from this branch (runner, registry, a secret) is not self-fixable either. Report the job link. Do not claim done.
+${more}
+${logs.join('\n\n')}`
+}
 
 function redBody(pr, result) {
   const repoFlag = repoArgOf(targetRepoOf(pr, repo))
@@ -771,48 +967,45 @@ function redBody(pr, result) {
     const tail = logTail(c.url, repoFlag)
     return `--- log: ${c.name} (last ${logLines} lines) ---\n${tail}`
   })
-  const more =
-    result.failing.length > 3
-      ? `\n${result.failing.length - 3} more failing check(s) not logged; the URLs are above.`
-      : ''
-  return `${branchNote(pr)}#${pr.number} is not done — failing checks. Do not claim done.
-${pr.url}
-head ${pr.headRefName} @ ${String(pr.headRefOid).slice(0, 12)}
-
-${result.failing.map(checkLine).join('\n')}
-
-${result.promotion ? PROMOTION_FIX : ''}Diagnose from the log, fix, re-run \`bun run gate\` (it compiles only what this diff touches; if the log names a crate the diff did not, \`cargo test -p <that crate>\` — never a workspace cargo, never \`api:check\`), and push to ${result.promotion ? 'that fix branch' : `\`${pr.headRefName}\``} only. Never \`main\`, never \`rc\`, never \`--force\`. Then run this watcher again.
-
-The same check still red after a push that was supposed to fix it is not self-fixable. A product decision, a review request, or infra you cannot fix from this branch (runner, registry, a secret) is not self-fixable either. Report the job link. Do not claim done.
-${more}
-${logs.join('\n\n')}`
+  return redText(pr, result, { logs })
 }
 
-function conflictBody(pr, result) {
+/** The conflict body, by lane. `here` is this checkout's branch (injected by the test). */
+export function conflictBody(pr, result, here = currentBranch()) {
   const also = result.failing.length
     ? `\nAlso failing (the merge will replace this head — fix the conflict first):\n${result.failing.map(checkLine).join('\n')}\n`
     : ''
-  if (result.promotion) {
+  const lane = result.lane ?? laneOf(pr)
+  const head = `${pr.url}
+head ${pr.headRefName} @ ${short(pr.headRefOid)}
+${also}`
+  if (lane === 'promotion:rc→main') {
     // `rc` contains everything `main` has by construction, so a conflict here
     // means `main` took something `rc` lacks. It comes back into `rc` the way
     // everything does: through a pull request against `rc`.
-    return `${branchNote(pr)}#${pr.number} conflicts with \`main\` (mergeable=${result.mergeable}, mergeStateStatus=${result.mergeState}). Do not claim done.
-${pr.url}
-head ${pr.headRefName} @ ${String(pr.headRefOid).slice(0, 12)}
-${also}
+    return `${branchNote(pr, here)}#${pr.number} conflicts with \`main\` (mergeable=${result.mergeable}, mergeStateStatus=${result.mergeState}). Do not claim done.
+${head}
 \`main\` has something \`rc\` lacks. Bring it into \`rc\` through a pull request against \`rc\` (never a push to \`rc\` or \`main\`, never \`--force\`), then run this watcher again once it merges:
 
   git fetch origin && git switch -c sync/main-into-rc origin/rc && git merge origin/main
 
 A resolution you cannot make honestly is not self-fixable. Report this state instead of pushing a guess.`
   }
-  return `${branchNote(pr)}#${pr.number} conflicts with \`${pr.baseRefName}\` (mergeable=${result.mergeable}, mergeStateStatus=${result.mergeState}). Do not claim done.
-${pr.url}
-head ${pr.headRefName} @ ${String(pr.headRefOid).slice(0, 12)}
-${also}
-Merge \`rc\` in, resolve, re-run the gates, push to \`${pr.headRefName}\` only (never \`main\`, never \`rc\`, never \`--force\`), then run this watcher again:
+  if (lane === 'promotion:testing→rc') {
+    // A snapshot is frozen: nobody resolves a conflict on it. `rc` gained
+    // something `testing` lacks, and that comes back through the back-flow.
+    return `${branchNote(pr, here)}#${pr.number} conflicts with \`rc\` (mergeable=${result.mergeable}, mergeStateStatus=${result.mergeState}). Do not claim done.
+${head}
+\`rc\` has something \`testing\` lacks (a hotfix or a roll). The back-flow PR (\`sync: rc → testing\`, head backflow/rc-<sha12>) must merge first — promote-testing opens it — then promote a fresh snapshot. Never push this snapshot, \`rc\` or \`testing\`, never \`--force\`.
 
-  git fetch origin rc && git merge origin/rc
+A resolution you cannot make honestly is not self-fixable. Report this state instead of pushing a guess.`
+  }
+  const base = pr.baseRefName
+  return `${branchNote(pr, here)}#${pr.number} conflicts with \`${base}\` (mergeable=${result.mergeable}, mergeStateStatus=${result.mergeState}). Do not claim done.
+${head}
+Merge \`${base}\` in, resolve, commit and push to \`${pr.headRefName}\` only (never \`main\`, \`rc\` or \`testing\`, never \`--force\`) — CI is the compile and the test — then run this watcher again:
+
+  git fetch origin ${base} && git merge origin/${base}
 
 A resolution you cannot make honestly — product behavior, or a generated file you do not know how to regenerate — is not self-fixable. Report this state instead of pushing a guess.`
 }
@@ -831,6 +1024,7 @@ async function main() {
   // One read of the CI workflow's name per PR head (a push can rename it). A
   // fallback is not kept: a read that failed once is tried again next poll.
   const ciByHead = new Map()
+  const offloadWorkflow = offloadWorkflowName()
   const deadlineMs = deadlineSec * 1000
   let interval = intervalStart
   let sawRead = false
@@ -856,7 +1050,7 @@ async function main() {
     const pr = read.pr
     const open = pr.state !== 'MERGED' && pr.state !== 'CLOSED'
     const target = targetRepoOf(pr, repo)
-    const ctx = {}
+    const ctx = { offloadWorkflow }
     let ci = null
     if (open) {
       ctx.head = headCheck(pr, readHeadFacts(pr, target))
@@ -867,20 +1061,23 @@ async function main() {
       }
     }
     const result = classify(pr, ctx)
+    // Red that the base branch's own push CI already has is not this branch's to fix.
+    if (result.kind === 'red') result.inherited = inheritedRed(pr, result, ci?.name || 'CI', repoArgOf(target))
     const payload = payloadOf(pr, result, ci)
 
     if (result.kind === 'green') {
       const skipped = result.passing.filter((c) => c.conclusion === 'SKIPPED').length
       const draft = pr.isDraft ? ' draft' : ''
-      const behind = result.mergeState === 'BEHIND' ? ' behind rc (strict is off; not a conflict).' : ''
+      const behind = result.mergeState === 'BEHIND' ? ` behind ${pr.baseRefName} (strict is off; not a conflict).` : ''
       const merged = result.merged ? ' already merged.' : ''
       const superseded = result.superseded ? `, ${result.superseded} superseded run(s) ignored` : ''
+      const offload = result.offload ? `, ${result.offload} CI offload check(s) of the same sha ignored` : ''
       const ran = result.merged ? '' : `, ${ci?.name || 'CI'} run settled${ci?.note ? ` (${ci.note})` : ''}`
       const note = result.note ? ` (${result.note})` : ''
       emit(
         0,
         'pr-watch: green',
-        `#${pr.number}${draft} ${pr.url} — ${result.passing.length} checks passed (${skipped} skipped${superseded})${ran}, mergeable=${result.mergeable} at ${short(pr.headRefOid)}${note}.${behind}${merged}`,
+        `#${pr.number}${draft} ${pr.url} — ${result.passing.length} checks passed (${skipped} skipped${superseded}${offload})${ran}, mergeable=${result.mergeable} at ${short(pr.headRefOid)}${note}.${behind}${merged}`,
         payload,
       )
     }
@@ -899,7 +1096,7 @@ async function main() {
       emit(
         2,
         'pr-watch: base',
-        `${branchNote(pr)}#${pr.number} targets \`${pr.baseRefName}\`, not \`rc\`. Retarget before claiming done.\n${pr.url}`,
+        `${branchNote(pr)}#${pr.number} targets \`${pr.baseRefName}\`, which is not a branch this repository merges into: \`testing\` (features and back-flows), \`rc\` (snapshots of testing under promote/, and the hotfix/, release/ and sync/ lanes), \`main\` (the promotion of rc). Retarget before claiming done.\n${pr.url}`,
         payload,
       )
     }
