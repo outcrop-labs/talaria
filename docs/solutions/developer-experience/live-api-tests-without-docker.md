@@ -17,7 +17,7 @@ tags: [live-tests, postgres, redis, embedded-postgres, migrations, devbox, docke
 
 ## Context
 
-The live API suite (`api/tests/it/`, every module marked `#[ignore]`) and the migration replay (`bun run migrations:check` in `ui/`) both need a real Postgres and Redis. CI provides them as `postgres:16-alpine` and `redis:7-alpine` containers in `.github/workflows/api-integration.yml`. Locally, `bun talaria worktree` starts the same pair through Docker.
+The live API suite (`api/tests/it/`, every module marked `#[ignore]`) and the migration replay (`bun run migrations:check` in `ui/`) both need a real Postgres and Redis. CI provides them as `postgres:16-alpine` and `redis:7-alpine` containers in the live-DB steps of ci.yml's api job (`.github/workflows/ci.yml`). Locally, `bun talaria worktree` starts the same pair through Docker.
 
 On a devbox where `docker.sock` is permission-denied and nothing is installed system-wide, neither path works. The tests then ship unexecuted, and CI becomes the first place they run. Both Postgres and Redis can instead run as plain user processes in `/tmp`, with no root and no Docker.
 
@@ -74,7 +74,7 @@ cargo test -q -p talaria-api --test it -- --ignored profile_live:: conversation_
 
 ## Why This Matters
 
-Without this, live-database tests written on a no-Docker devbox are committed unexecuted, so the first real run is CI's `api-integration` job after the push. Running them locally caught nothing new this time (17/17 passed), but it turned "written, not executed" into evidence before the PR opened.
+Without this, live-database tests written on a no-Docker devbox are committed unexecuted, so the first real run is CI's api job (its live-DB steps) after the push. Running them locally caught nothing new this time (17/17 passed), but it turned "written, not executed" into evidence before the PR opened.
 
 ## When to Apply
 
@@ -92,4 +92,4 @@ The run that produced this note (branch `t3code/45083f68`, the Comms UI overhaul
 ## Related
 
 - `docs/WORKTREES.md` and `docs/DEVBOX.md`: the Docker-backed paths this replaces when Docker is unavailable, and why the root key must stay constant.
-- `.github/workflows/api-integration.yml`: what CI runs, and which live modules stay local-only.
+- `.github/workflows/ci.yml`, the api job's live-DB steps: what CI runs, and which live modules stay local-only.

@@ -848,8 +848,8 @@ mod tests {
 
 /// LIVE: the real tables and the real priced view, rows booked through the
 /// gateway's own ledger writer (`record_relay_usage`) with model ids real
-/// providers return. `#[ignore]`d, so the unit job skips them; the
-/// api-integration workflow runs every crate's ignored lib tests against its
+/// providers return. `#[ignore]`d, so the plain test run skips them; ci.yml's
+/// api job runs the ignored lib tests in its live-DB steps, against its
 /// migrated scratch database (`cargo test --workspace --lib -- --ignored`).
 ///
 ///   DATABASE_URL=postgres://… cargo test -p talaria-price-oracle --lib -- \

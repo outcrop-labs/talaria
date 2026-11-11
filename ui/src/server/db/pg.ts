@@ -3292,8 +3292,8 @@ alter table tasks drop column if exists conversation_id`,
   // is append-only and the ledger is keyed by INDEX, so a statement wedged
   // mid-array renumbers every statement after it and a deployed instance
   // refuses to boot with `migration N changed after it was applied`. A fresh
-  // database cannot see that (no ledger); the upgrade replay in
-  // .github/workflows/migrations.yml is what does.
+  // database cannot see that (no ledger); the upgrade replay in ci.yml's
+  // `migrations (replay + upgrade)` job is what does.
   `alter table workbench_jobs add column if not exists queued_at timestamptz`,
   `alter table workbench_jobs add column if not exists queued_reason text`,
   // Merge-to-testing is gone: the agent verb, the ticket button, the per-repo
