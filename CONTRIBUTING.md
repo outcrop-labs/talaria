@@ -22,13 +22,23 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
 
 ## Before you send a PR
 
-1. **Verify, scoped.** `bun run gate` from the repo root. It runs `check`, then compiles and tests only the surfaces and packages this diff touches. That is the local gate. Do not run a workspace cargo (`bun run api:check`, `bun run desktop:check`, `cargo test` / `clippy` without `-p`) to be safe — those lock `api/target` and pin the machine for everyone else in the checkout. CI runs the full surface job; a red CI log names the crate, and `cargo test -p <that crate>` reproduces it.
+1. **Verify on CI.** `bun run check` from the repo root — seconds, no install. Then CI is the
+   compile and the test: once the change is code-complete, open the pull request (a draft is
+   fine) and its own checks are the proof; before one exists, `bun run gate:remote` pushes
+   HEAD to `ci/<branch>` and reports the first red job with its log. Run either in the
+   background. Locally, only cheap targeted runs — one `bunx vitest run <file>`, one
+   `bun test <file>`, `cargo fmt`. Do not run a workspace cargo (`bun run api:check`,
+   `bun run desktop:check`, `cargo test` / `clippy` without `-p`) to be safe — those lock
+   `api/target` and pin the machine for everyone else in the checkout. A red CI log names the
+   crate and the test; `cargo test -p <crate> <test>` reproduces that one failure.
 2. **Exercise the path you changed** in the running app (`bun talaria dev` →
    <http://localhost:5273>) — typecheck alone doesn't prove a surface works.
 3. **Add a changelog entry file** — `changelog/YYYY-MM-DD-<slug>.md`, the bullet verbatim
    (bold lead, what changed, what you verified). One file per change; the release roll
    folds them into [`CHANGELOG.md`](./CHANGELOG.md), and the release notes are built from
-   them. Two optional extras:
+   them. The Verified line names the gate — "CI: this PR's checks", or `gate:remote` — and
+   what you exercised, never a run URL: a commit that only adds a link re-runs the whole
+   battery. Two optional extras:
    - an indented `Upgrade:` paragraph, for a step an operator takes, such as rolling agents
      or setting a variable. The notes list it under "Before you upgrade".
    - a `<!-- bump: minor -->` (or `major`) line, when the change is more than a patch.
@@ -36,11 +46,13 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
    commit, the changelog entry riding with the change it describes. `git log` carries the
    voice; the em-dash clause says why, not what.
 5. **Open the pull request against `rc`** with a body that mirrors the changelog entry: what
-   changed, and what you verified. If a whole-tree gate failed on something that predates your
-   change (several sessions share this tree), say so rather than absorbing it silently.
+   changed, and what you verified. Run links — this PR's checks, a `gate:remote` result — go
+   in the body (`gh pr edit <n> --body-file …`), which starts no compile. If a whole-tree gate
+   failed on something that predates your change (several sessions share this tree), say so
+   rather than absorbing it silently.
 6. **Watch the pull request until it is actually green.** Do not call the work done while its
    checks are failing, still pending, or the PR conflicts with `rc`.
-   `node scripts/hooks/pr-watch.mjs` is that gate; the procedure is
+   `node scripts/hooks/pr-watch.mjs`, run in the background, is that gate; the procedure is
    [`.claude/skills/ship-a-change/SKILL.md`](./.claude/skills/ship-a-change/SKILL.md).
 7. **Remove the local workspace this task created** before you call the work done —
    worktree, devbox, scratch checkout, throwaway download. Shared caches stay. Do not

@@ -35,8 +35,9 @@ graph LR
    deploy all happen on the pull request and on `rc`; there is nothing to gain
    by aiming at the trunk, and a red check says so in one line.
 2. **The pull request's checks run** — `ci.yml` (invariants, ui, mcp, cli, api,
-   desktop), `migrations.yml` when the change touches the migration array, and
-   the same gates locally through `bun run verify`.
+   desktop), and `migrations.yml` when the change touches the migration array.
+   They are the compile and the test; locally an author runs `bun run check`,
+   and `bun run gate:remote` runs the same `ci.yml` before a pull request exists.
 3. **Merge it into `rc`.** Merge commit: a squash or rebase merge is a single
    new commit that is on neither `main` nor `rc`'s history, and the push guard
    refuses it (see "What the guard can see").
@@ -86,8 +87,8 @@ cannot open until the commit has been deployed.
 | Gate | Runs | Proves |
 | :--- | :--- | :--- |
 | `bun run check` | locally, every time | invariants (including this file's own anchors) + every doc link resolves + generated references are not drifted |
-| `bun run verify` | locally, before every push | `check` + typecheck + the ui test suite |
-| `ci.yml` | pull requests, pushes to `rc`/`main`, and every publish | the tripwire: each surface's tests, typecheck, and the prod-bundle SPA smoke |
+| `bun run gate:remote` | before a pull request exists, in the background | `ci.yml` on a `ci/<branch>` push (`CI offload`): light, or every platform with `--full` — the same jobs a pull request gets |
+| `ci.yml` | pull requests, pushes to `rc`/`main`, every publish, and `ci/**` offloads | the tripwire: each surface's tests, typecheck, and the prod-bundle SPA smoke |
 | `migrations.yml` | migration-touching changes | the array replays from zero *and* upgrades a baseline, with the schema snapshot undrifted |
 | `rc-deploy.yml` | every push to `rc` | the commit's own image boots as a fresh instance and answers — the staging deploy |
 | `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc` (CI green, deploy green) and carries no unrolled `changelog/` entries |

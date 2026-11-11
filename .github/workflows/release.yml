@@ -222,8 +222,19 @@ jobs:
           echo "publishing: channel=$channel ref=$ref version=$version tags=[${tags[*]}] release=$release profile=$profile"
 
   # The same tripwire a PR gets, against the exact ref about to be published.
+  # No `mode`: a call with a ref and no mode is a release, so every surface
+  # runs, in full (scripts/surfaces.mjs).
   ci:
     needs: [resolve]
+    # The nesting rule api-package's note below describes: ci.yml's `what
+    # changed` job asks for `actions: read` (its last-green-run lookup), and a
+    # called job can request no more than the calling job grants. This file
+    # grants only `contents: read` at the top, so the grant is here, on the
+    # call — without it every publish dies as a startup failure before any job
+    # starts (check-invariants.mjs, `ci-call-grants`).
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
