@@ -27,7 +27,11 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
    <http://localhost:5273>) — typecheck alone doesn't prove a surface works.
 3. **Add a changelog entry file** — `changelog/YYYY-MM-DD-<slug>.md`, the bullet verbatim
    (bold lead, what changed, what you verified). One file per change; the release roll
-   folds them into [`CHANGELOG.md`](./CHANGELOG.md).
+   folds them into [`CHANGELOG.md`](./CHANGELOG.md), and the release notes are built from
+   them. Two optional extras:
+   - an indented `Upgrade:` paragraph, for a step an operator takes, such as rolling agents
+     or setting a variable. The notes list it under "Before you upgrade".
+   - a `<!-- bump: minor -->` (or `major`) line, when the change is more than a patch.
 4. **Commit in the repo's style:** `area: lowercase sentence — explanation`, one change per
    commit, the changelog entry riding with the change it describes. `git log` carries the
    voice; the em-dash clause says why, not what.

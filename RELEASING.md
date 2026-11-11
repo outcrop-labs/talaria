@@ -28,7 +28,9 @@ Two long-lived branches, both already deployed before a version is cut:
 There is no third branch to advance and no fast-forward to remember: `rc` is
 where the work is, `main` is where it lands once the staging deploy says it
 works, and `promote.yml` does that landing by itself. What remains a human's
-call is the one thing that should be: whether a version exists.
+call is the one thing that should be: whether a version exists. A person
+decides it by merging the changelog roll's pull request, and the tag follows
+the promotion's merge (see "Promoting to stable").
 
 ## Cutting an RC
 
@@ -117,28 +119,73 @@ job in that workflow once store credentials exist.
 
 ## Promoting to stable
 
-An RC becoming stable is two steps, in this order: the promotion, then the tag.
+A stable release is two merges. CI does the rest: the version, the roll, the
+promotion, the tag, the images and the notes.
+
+1. **The roll.** When rc's tip is verified (CI and `rc-deploy` green) and
+   `changelog/` holds entries, `promote.yml` opens a pull request against rc
+   from `release/roll`. It folds the entries into a `## X.Y.Z (date)` section
+   with `scripts/changelog-roll.mjs`. **Merging it decides the release.**
+2. **The promotion.** rc verifies again with `changelog/` empty, and
+   `promote.yml` opens `promote: rc → main — vX.Y.Z`. Merge it as a merge
+   commit.
+3. **The tag, the images and the notes.** On that merge, `tag-release.yml`
+   sees main's CHANGELOG.md top section with no tag, tags main `vX.Y.Z`, and
+   dispatches `release.yml` at the tag. A tag pushed with the workflow token
+   starts no workflow, and a dispatch is the one event it can start.
+   `release.yml` runs CI against the tag, publishes `X.Y.Z` and `latest`, and
+   opens the GitHub Release with notes from `scripts/release-notes.mjs`.
+
+**The version** comes from `scripts/release-version.mjs`:
+
+- By default it's the next patch after the newest `vX.Y.Z` tag.
+- An entry file raises it with a `<!-- bump: minor -->` (or `major`) line. The
+  largest ask wins, and the roll strips the line.
+- A different version: Actions → promote → Run workflow from main, with
+  `version` set. It must be newer than the newest tag.
+
+**An entry that lands after the roll** stays in the same release:
+
+- The roll's section is "pending", newer than every tag. The next verified rc
+  gets a new roll pull request that extends that section, re-headed with
+  today's date.
+- An open promotion is held until it merges: auto-merge goes off, and its body
+  says what it's waiting for.
+
+**The notes** are deterministic. Reviewers saw everything they say in the
+pull requests:
+
+- The images, the newest `desktop-v` release, and the pull requests behind
+  the section's entries.
+- **Before you upgrade:**
+  - the migration count, from `pg.ts`'s `MIGRATIONS` at the previous tag and
+    this one;
+  - every entry's `Upgrade:` paragraph. An entry that needs an operator step,
+    such as rolling agents or setting a variable, says it there.
+- **What changed:** each entry's bold lead, then the full section, Verified
+  paragraphs included.
+
+**What needs `PROMOTION_TOKEN`:** the roll and promotion pull requests. With
+no token, `promote.yml` prints the exact commands instead, and you open them
+yourself: a pull request the workflow token opens would start no checks. The
+tag and the release need no token.
+
+**By hand**, when CI can't (no token, or a release to cut out of turn):
 
 ```bash
-# 1. main catches up: promote.yml verifies rc's tip once its staging deploy is
-#    green and offers the rc → main pull request (it opens it for you when a
-#    PROMOTION_TOKEN is configured). Merge it as a merge commit — the one merge
-#    that carries a whole verified branch.
-# 2. tag what main now is:
+# 1. the roll, as a pull request against rc (merge commit), like any change
+git switch -c release/roll-0.2.0 origin/rc
+bun scripts/changelog-roll.mjs 0.2.0      # --extend to add to a pending section
+# 2. once rc verifies, open the promotion and merge it as a merge commit:
+#    tag-release.yml tags it. Tag by hand only if that run failed:
 git switch main && git pull
-git tag v0.2.0 && git push origin v0.2.0
+git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
 ```
 
-A stable's notes come from the same roll. If entries landed on rc after the
-last RC's roll, roll them the same way — a pull request against rc — before
-step 1, under the stable's own version: `bun scripts/changelog-roll.mjs 0.2.0`
-writes a `## 0.2.0 (date)` section above the `0.2.0-rc.N` ones, which hold
-everything before it. If `changelog/` is empty, the roll refuses ("no
-changelog/*.md entries to roll"). That is the usual case right after an RC,
-and it means nothing has landed since the RC's roll: the RC sections already
-describe everything the stable carries, so there is nothing to roll. Skip it
-and go to step 1. A roll can never go to main directly: main takes rc's
-content and nothing else (flow-guard).
+A stable made after an RC needs no roll when `changelog/` is empty: the RC
+sections already describe everything it carries. But then no section is
+pending for `tag-release.yml`, so tag it by hand as above. A roll can never go
+to main directly: main takes rc's content and nothing else (flow-guard).
 
 Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
 `latest`, the image tag, moves on nothing else — only a `vX.Y.Z` tag with no
@@ -333,6 +380,7 @@ itself, and it pushes to the package release.yml already made public.
 - No signed attestations, and no signed or notarized desktop installers (see
   "The desktop installers" above).
 - No nightly-tag pruning (see above: negligible growth).
-- No generated changelog. Every pull request writes its own entry under
-  `changelog/`, and the roll folds them into CHANGELOG.md through a pull
-  request before a tag (see "Cutting an RC").
+- No generated changelog, and no written-at-release notes. Every pull request
+  writes its own entry under `changelog/`. The roll folds them into
+  CHANGELOG.md through a pull request before a tag, and the release notes are
+  assembled from that section (see "Promoting to stable").

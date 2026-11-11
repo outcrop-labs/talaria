@@ -61,6 +61,20 @@ by deleting the tag.
 
 ## Promote to stable
 
+**CI runs the chain** (RELEASING.md, "Promoting to stable"):
+
+1. On a verified rc with `changelog/` entries, `promote.yml` opens the roll's pull request
+   from `release/roll`. `scripts/release-version.mjs` picks the version: the next patch, an
+   entry's `<!-- bump: minor -->`, or a `version` dispatch.
+2. Once that merges and rc verifies, it opens `promote: rc → main — vX.Y.Z`.
+3. Its merge makes `tag-release.yml` tag main and dispatch `release.yml` at the tag. That
+   publishes the images and a Release whose notes come from `scripts/release-notes.mjs`.
+
+The roll and promotion pull requests need `PROMOTION_TOKEN`; without it the run summary
+prints the commands. The by-hand steps below are the fallback, and the only path for a
+stable whose `changelog/` was empty (nothing pending, so nothing for `tag-release.yml` to
+tag).
+
 Two steps, in this order: the promotion, then the tag.
 
 ```bash

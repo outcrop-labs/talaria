@@ -104,7 +104,10 @@ remember, so they are worth knowing exactly:
 2. **It writes the evidence where you will read it**: the run's summary carries the tip, the CI
    and deploy run links, and the commits since `main`'s tip. Then the token decides the shape:
    - **`PROMOTION_TOKEN` set** — a fine-grained PAT or GitHub App installation token with
-     `contents: read` and `pull-requests: write`. The workflow opens (or refreshes) the
+     `contents: write` (it pushes the roll's `release/roll` branch) and `pull-requests: write`.
+     While `changelog/` holds entries, the workflow opens (or refreshes) the changelog roll's
+     pull request against `rc` instead, and the promotion waits for it (RELEASING.md, "Promoting
+     to stable"). Then it opens (or refreshes) the
      `rc → main` pull request and arms auto-merge, but only when `main`'s required checks
      actually name `promotion gate (rc verified)`: auto-merge waits for required checks and
      nothing else, so anything weaker would merge `rc` without the gate.
@@ -263,7 +266,8 @@ Things about that list that are easy to get wrong:
   "verified and ready" and prints the command for a person to open it (which
   works: a person's pull request runs every check). To have the workflow manage
   it, add a repository secret `PROMOTION_TOKEN` — a fine-grained PAT or GitHub
-  App installation token with `contents: read` and `pull-requests: write` — and
+  App installation token with `contents: write` (for the roll's `release/roll`
+  branch) and `pull-requests: write` — and
   turn on **Allow auto-merge** (Settings → General). Auto-merge is armed only
   when main's required checks actually include `promotion gate (rc verified)`;
   otherwise the workflow warns and leaves the merge to a human, because

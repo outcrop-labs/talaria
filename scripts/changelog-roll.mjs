@@ -5,6 +5,9 @@
 //   bun scripts/changelog-roll.mjs --check        (wired into `bun run check`)
 //   bun scripts/changelog-roll.mjs --migrate      (one-time cutover)
 //   bun scripts/changelog-roll.mjs <heading>      (release: roll entries in)
+//   bun scripts/changelog-roll.mjs <heading> --extend
+//       (fold entries into the top section, which is rolled but not yet
+//       tagged, and re-head it as <heading> — release-version.mjs says when)
 //
 // WHY. The single `## [Unreleased]` section was the repo's worst merge-conflict
 // surface — most-touched file, and a PR's entry landed at the same anchor as
@@ -18,7 +21,11 @@
 // release (lexical sort = chronological = merge order; no central counter to
 // contend on), the slug disambiguates same-day entries. The body is the
 // verbatim bullet: `- **Bold lead.**` + indented prose + a `Verified:`
-// paragraph, exactly what used to be hand-appended.
+// paragraph, exactly what used to be hand-appended. Two optional extras, both
+// read by the release chain: an `Upgrade:` paragraph (a step an operator takes
+// before or after upgrading — release-notes.mjs lists them under "Before you
+// upgrade"), and a `<!-- bump: minor -->` (or `major`) line, which raises the
+// next version above the default patch and is stripped when rolled.
 //
 // THE CHECK. Every entry file is well-formed (name shape, bold lead), and
 // CHANGELOG.md's `## [Unreleased]` carries no bullets — after the cutover a
@@ -32,6 +39,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { BUMP_RE, bumpOf } from './release-version.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const CHANGELOG = path.join(ROOT, 'CHANGELOG.md')
@@ -100,6 +108,11 @@ if (process.argv.includes('--check')) {
     }
     const body = fs.readFileSync(path.join(ENTRIES_DIR, f), 'utf8')
     if (!body.startsWith('- **')) failures.push(`changelog/${f}: body must start with the bold-lead bullet ("- **…")`)
+    try {
+      bumpOf(body)
+    } catch (e) {
+      failures.push(`changelog/${f}: ${e.message}`)
+    }
   }
   const un = unreleasedLines(fs.readFileSync(CHANGELOG, 'utf8'))
   if (un === null) failures.push('CHANGELOG.md has no ## [Unreleased] heading — the roll anchor is gone')
@@ -167,17 +180,35 @@ if (!headingArg || headingArg.startsWith('-')) {
     console.error('refusing to roll: an entry file fails the name shape (run --check for the list)')
     process.exit(1)
   }
-  const section = [`## ${headingArg} (${today()})`, '']
+  const extend = process.argv.includes('--extend')
+  const body = []
   for (const f of files) {
-    section.push(fs.readFileSync(path.join(ENTRIES_DIR, f), 'utf8').replace(/\n$/, ''))
-    section.push('')
+    const entry = fs.readFileSync(path.join(ENTRIES_DIR, f), 'utf8').replace(/\n$/, '')
+    body.push(entry.split('\n').filter((l) => !BUMP_RE.test(l)).join('\n').replace(/\n+$/, ''))
+    body.push('')
   }
+  const heading = `## ${headingArg} (${today()})`
   const text = fs.readFileSync(CHANGELOG, 'utf8')
   const lines = text.split('\n')
   const start = lines.findIndex((l) => l.startsWith('## [Unreleased]'))
   if (start === -1) throw new Error('no ## [Unreleased] heading')
-  const rebuilt = [...lines.slice(0, start + 1), '', ...section, ...lines.slice(start + 1).filter((l, i) => i > 0 || l.trim() !== '')]
+  let rebuilt
+  if (extend) {
+    // The top section is a release still waiting for its tag: its entries
+    // stay, the new ones follow them, and the heading takes the new version
+    // and today's date. Sections below it are untouched.
+    const top = lines.findIndex((l, i) => i > start && l.startsWith('## '))
+    if (top === -1) throw new Error('--extend: there is no section below ## [Unreleased] to extend')
+    let end = lines.findIndex((l, i) => i > top && l.startsWith('## '))
+    if (end === -1) end = lines.length
+    const kept = lines.slice(top + 1, end)
+    while (kept.length && kept.at(-1).trim() === '') kept.pop()
+    rebuilt = [...lines.slice(0, top), heading, ...kept, '', ...body, ...lines.slice(end)]
+  } else {
+    const section = [heading, '', ...body]
+    rebuilt = [...lines.slice(0, start + 1), '', ...section, ...lines.slice(start + 1).filter((l, i) => i > 0 || l.trim() !== '')]
+  }
   fs.writeFileSync(CHANGELOG, rebuilt.join('\n'))
   for (const f of files) fs.unlinkSync(path.join(ENTRIES_DIR, f))
-  console.log(`rolled ${files.length} entries into "## ${headingArg} (${today()})"; changelog/ is empty until the next change`)
+  console.log(`rolled ${files.length} entries into "${heading}"${extend ? ' (extended the pending section)' : ''}; changelog/ is empty until the next change`)
 }
