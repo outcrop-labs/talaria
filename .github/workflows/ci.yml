@@ -1,48 +1,86 @@
-# Talaria CI — the invariant tripwire, the unit tests, and the typecheck.
+# Talaria CI — the invariant tripwire, the unit tests, the typecheck, and the
+# builds a release stands on.
 #
 # WHAT THIS DOES
-#   On every pull request and every push to main, rc or testing, on every
-#   push to ci/<branch> (through ci-offload.yml), and before every publish
-#   (through release.yml):
-#     bun scripts/check-invariants.mjs          (no install, seconds)
-#     cd ui && bun install && bun run test      (vitest)
-#     cd ui && bun run typecheck                (svelte-check)
+#   On every pull request, every push to testing, rc or main, every push to
+#   ci/<branch> (through ci-offload.yml), testing's daily full battery
+#   (promote-testing.yml), and before every publish (release.yml):
+#     bun run check                             (invariants, doc links, generated
+#                                               references; no install)
+#     cd ui && test + typecheck + build         (vitest, svelte-check, the prod
+#                                               bundles and their smoke)
 #     cd mcp && typecheck + build
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
 #     cd api && fmt + clippy + cargo test       (the Rust port, and its
 #                                               live-database suite)
 #     the migration array: replay + upgrade     (scratch postgres)
+#     docker build of the app image             (the root Dockerfile, no push)
 #     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
 #     cd desktop/src-tauri && clippy + cargo test on macOS and Windows  (their own code)
 #     the desktop connect smoke on Linux, macOS and Windows  (does it open an instance)
+#     cd mobile && the Android tests + assemble, and the iOS compile + link
 #     the MCP end-to-end suite (Playwright against a booted app + api + stubs)
-#   Each heavy job runs only when its surface moved; the `what changed` job
-#   decides, by running scripts/surfaces.mjs.
+#   Every job but the invariants runs only when its surface moved; the `what
+#   changed` job decides, by running scripts/surfaces.mjs.
 #
-# MODES. scripts/surfaces.mjs picks one per run, with the diff range, and its
-#   header is the full table. What the mode changes here is the platform legs:
-#     light        a pull request into anything but rc or main, a push to
-#                  ci/<branch> (the offload lane), any other push. Linux jobs
-#                  only: macOS, Windows, iOS and e2e are skipped.
-#     integration  a push to testing. Linux jobs only, on everything since
-#                  testing's last green run.
-#     full         a pull request into rc or main, a push to rc or main,
-#                  release.yml's call, a push to ci/full/<branch>, and the
-#                  offload of a hotfix/, release/, sync/, promote/ or
-#                  backflow/ branch. Every job its surface asks for, the
-#                  platform legs included.
-#   A mode this file does not know runs the platform legs: the jobs test
-#   `!= light && != integration`, never `== full`. rc and main check
-#   everything since their last GREEN push run, so a push whose run was
-#   cancelled or went red is covered by the next one. The branch model itself
-#   is docs/BRANCHES.md.
+# MODES. scripts/surfaces.mjs picks one per run, with the diff range; its
+#   header is the full table, and docs/BRANCHES.md → CI modes is the policy.
+#     light        a pull request into testing (or into anything but rc or
+#                  main), a push to ci/<branch> (the offload lane), any other
+#                  push. The surfaces the diff moved, Linux only: macOS,
+#                  Windows, iOS and e2e are skipped.
+#     integration  a push to testing. The Linux surfaces since testing's last
+#                  green push run; the api workspace-wide.
+#     full         a pull request into rc, one into main that promotion mode
+#                  does not take, a push to rc or main, release.yml's call,
+#                  testing's daily battery, a push to ci/full/<branch>, and the
+#                  offload of a hotfix/, release/, sync/, promote/ or backflow/
+#                  branch. Every job its surface asks for, the platform legs
+#                  included.
+#     promotion    the rc → main pull request, when its head is this
+#                  repository's rc and the merge ref's tree is rc's tip tree.
+#                  Every surface is off, so `what changed` and the invariants
+#                  are all that run: the tree is the one rc's push CI checked
+#                  and rc-deploy deployed, and `promotion gate (rc verified)`,
+#                  required on main, reads exactly those runs. A fork's rc, or
+#                  a merge tree that differs, is full, and the run's summary
+#                  says why.
+#   The platform legs test `!= light && != integration`, never `== full`, so a
+#   mode this file does not know runs them wherever their surface is on. A
+#   pull request is planned by its BASE's copy of the planner: a new mode
+#   reaches a branch's pull requests once the planner is on that branch. The
+#   long-lived branches check everything since their own last GREEN push run,
+#   so a push whose run was cancelled or went red is covered by the next one.
 #
-# JOB NAMES. job name: strings are required-check contexts — never rename one.
-#   rc and main's protection matches them by name (docs/BRANCHES.md → The
-#   required settings); a renamed job leaves the old context pending forever
-#   and the new one unrequired. Called from another workflow, the same jobs
-#   report as `<caller job> / <name>` (`offload / …`, `ci / …`), which is why
-#   an offload run can never satisfy, or shadow, a required context.
+# REQUIRED CONTEXTS. Job names are contexts — never rename one. The rulesets
+#   (docs/BRANCHES.md → The required settings) match a job's `name:` string,
+#   so a renamed job leaves the old context pending for ever and the new one
+#   unrequired. Each row is a context and the rulesets that require it
+#   (testing-checks, rc-checks, main-checks); scripts/surfaces.test.mjs holds
+#   the table to those rulesets and to the job names here and in flow.yml:
+#
+#     what changed                                      testing rc main
+#     invariants (no deps)                              testing rc main
+#     test + typecheck (ui)                             testing rc
+#     typecheck + build (mcp)                           testing rc
+#     typecheck + test (cli)                            testing rc
+#     fmt + clippy + test (api)                         testing rc
+#     migrations (replay + upgrade)                     testing rc
+#     app image builds (docker)                         testing rc
+#     fmt + clippy + test + typecheck (desktop)         testing rc
+#     test + assemble (mobile)                          testing rc
+#     clippy + test + connect smoke (desktop macos)     rc
+#     clippy + test + connect smoke (desktop windows)   rc
+#     compile + link (mobile ios)                       rc
+#     mcp end-to-end (playwright)                       rc
+#     pr target (flow)                                  testing rc main
+#     promotion gate (rc verified)                      main
+#
+#   The last two are flow.yml's. A job skipped by its job-level `if` reports
+#   success, so a surface that did not move satisfies its context (the
+#   `paths:` note below). Called from another workflow, the same jobs report as
+#   `<caller job> / <name>` (`offload / …`, `ci / …`), which is why an offload
+#   or a release run can never satisfy, or shadow, a required context.
 #
 # WHY THIS FILE IS CALLABLE (workflow_call). `release.yml` runs these exact
 #   jobs before every publish, passing the ref it is about to build (a
@@ -51,13 +89,14 @@
 #   way "what gates a publish" and "what gates a PR" stay the same list; a
 #   copy of these jobs in release.yml would drift the first time someone
 #   edited one file and not the other, and a publish gate that is weaker
-#   than the PR gate is a decision nobody made. ci-offload.yml calls it the
-#   same way for ci/** pushes, with a `mode`.
-#   Every local caller of this file must grant actions: read (the changes job
-#   needs it; a nested job cannot exceed its caller). A caller that grants
-#   less is a startup failure: the run dies before any job, as the Sep 2–16
-#   nightlies did unnoticed. check-invariants.mjs (`ci-call-grants`) holds
-#   every caller to it.
+#   than the PR gate is a decision nobody made. ci-offload.yml and
+#   promote-testing.yml's daily battery call it the same way, with a `mode`.
+#
+# EVERY CALLER GRANTS actions: read. The changes job asks for it (the
+#   planner's last-green-run lookup), and a nested job cannot exceed its
+#   caller. A caller that grants less is a startup failure: the run dies
+#   before any job, as the Sep 2–16 nightlies did unnoticed.
+#   check-invariants.mjs (`ci-call-grants`) holds every caller to it.
 #
 # THE CHECKOUT REF is `${{ inputs.ref }}` in every job, and nothing else. Empty
 #   (a standalone run) means actions/checkout takes the event's own sha.
@@ -96,11 +135,12 @@
 #   `src/**/*.test.ts` rather than being handed a list, so a new test file gates
 #   on the next push without anyone remembering to register it.
 #
-# NO ACTIONS/CACHE, on purpose. Bun's cold install from bun.lock is seconds;
-#   a cache step would add config surface to save less time than the tripwire
-#   philosophy is willing to spend. The api job's rust-cache is the one
-#   exception and carries its own note there — the tradeoff is inverted for
-#   cargo (a cold build is minutes, the cache is one line).
+# NO ACTIONS/CACHE, on purpose. Bun's cold install from bun.lock is cheap, and
+#   a cache step would add config surface to save less than the tripwire
+#   philosophy is willing to spend. The rust-cache steps (api, desktop, e2e)
+#   are the exception and carry their own notes — the tradeoff is inverted for
+#   cargo. The image job keeps no layer cache either: what it proves is that the
+#   context builds from nothing, the way rc-deploy and release.yml build it.
 #
 # DELIBERATELY LEFT OUT (do not treat these as oversights)
 #   - THE MODEL FITNESS SUITE (ui/src/server/fitness/*). It costs money and
@@ -113,12 +153,14 @@
 #   - Lint / format. A separate decision with its own rollout cost: a linter
 #     added against an unlinted codebase produces hundreds of failures and then
 #     gets disabled. Not this file's problem.
-#   - Build (`vite build`) and any deploy. `svelte-check` already covers the
-#     type surface; a full build roughly triples the runtime for a weaker signal.
+#   - Any deploy, and any push. The ui job builds the prod bundles and the
+#     image job builds the app image, and both are thrown away:
+#     testing-deploy.yml and rc-deploy.yml deploy, and release.yml and
+#     app-image.yml publish.
 #   - Typechecking `scripts/`. It is EXECUTED instead, by the invariants job.
 #   - `paths:` filters ON THE TRIGGERS. Still out, and now for a reason that
 #     survives contact: a workflow-level filter is as coarse as the whole file,
-#     and one of these jobs — invariants, seconds, no install — has to see
+#     and one of these jobs — invariants, no install — has to see
 #     EVERY push, including the docs-only ones it is cheapest on (that is where
 #     a broken link lives). The old objection stands too: a filtered-out checks
 #     run that a branch protection rule requires reports "pending" forever and
@@ -127,9 +169,9 @@
 #     skipped by a job-level `if` counts as a SUCCESSFUL required check, so a
 #     skipped surface cannot wedge a merge either (GitHub's documented behavior
 #     for skipped jobs; it is the workflow-level filter that reports nothing at
-#     all). These jobs are required checks on rc and main — docs/BRANCHES.md →
-#     The required settings — which is exactly why there is no `paths:` filter
-#     on this file's triggers.
+#     all). These jobs are required checks on testing, rc and main (REQUIRED
+#     CONTEXTS above) — which is exactly why there is no `paths:` filter on
+#     this file's triggers.
 #
 # THE INVARIANTS JOB, and why a typechecker cannot replace it. `tsc` cannot see
 #   the failure this repo actually keeps having. Seven consecutive review rounds
@@ -140,7 +182,7 @@
 #   until the original changes. `scripts/check-invariants.mjs` fails on the
 #   specific patterns that history says are wrong and prints what to write
 #   instead. It is plain script with ZERO dependencies, so this job needs no
-#   install step and finishes in seconds — which is also why it is not eslint.
+#   install step — which is also why it is not eslint.
 #   The rules live in that file, commented; amend them there, not here.
 #
 #   VERIFIED, not assumed: each rule was re-introduced as a deliberate violation
@@ -233,25 +275,26 @@ jobs:
   #
   # WHY NOT `paths:` ON THE TRIGGERS (which the header still rules out). This is
   # ONE workflow with several unrelated jobs, so a workflow-level filter can
-  # only be as coarse as the whole file — and the invariants job, which is
-  # seconds and needs no install, is meant to run on every push, because doc
+  # only be as coarse as the whole file — and the invariants job, which needs
+  # no install, is meant to run on every push, because doc
   # links and the rule patterns are exactly what a "docs-only" change touches.
   # Deciding per job inside the run keeps that grain and leaves the cheap check
   # unconditional.
   #
   # A job whose surface did not move is SKIPPED, and that is honest rather than
-  # quiet: these jobs ARE required checks on rc and main, and a job skipped by a
-  # job-level `if` is reported as a success (GitHub's documented behavior), so a
-  # skipped surface satisfies its check instead of wedging the merge the way a
-  # workflow-level `paths:` filter would. The header's MODES and
-  # docs/BRANCHES.md carry the rest.
+  # quiet: these jobs ARE required checks (the header's REQUIRED CONTEXTS), and
+  # a job skipped by a job-level `if` is reported as a success (GitHub's
+  # documented behavior), so a skipped surface satisfies its check instead of
+  # wedging the merge the way a workflow-level `paths:` filter would. That is
+  # also all promotion mode is: every surface false, every surface job skipped.
+  # The header's MODES and docs/BRANCHES.md carry the rest.
   changes:
     name: what changed
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # actions: read is the planner's lookup of the branch's last green run
     # (rc, main, testing). Every workflow that calls this file must grant it
-    # too — see the header's WHY THIS FILE IS CALLABLE.
+    # too — see the header's EVERY CALLER GRANTS actions: read.
     permissions:
       contents: read
       actions: read
@@ -267,6 +310,7 @@ jobs:
       mobile: ${{ steps.plan.outputs.mobile }}
       e2e: ${{ steps.plan.outputs.e2e }}
       db: ${{ steps.plan.outputs.db }}
+      image: ${{ steps.plan.outputs.image }}
       # The api job's plan (scripts/surfaces.mjs, API_KEYS) and the array the
       # migrations job upgrades from.
       api_scope: ${{ steps.plan.outputs.api_scope }}
@@ -320,7 +364,9 @@ jobs:
           REF: ${{ github.ref }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
-          # Same repository or a fork: only a same-repo PR uploads the api binary.
+          # Same repository or a fork: only a same-repo PR uploads the api
+          # binary, and only this repository's rc (HEAD_REPO == REPO) can be a
+          # promotion.
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           CALLED_REF: ${{ inputs.ref }}
           CALLED_MODE: ${{ inputs.mode }}
@@ -333,7 +379,8 @@ jobs:
 
       # FAIL CLOSED: an older planner copy (main's ci.yml, or a PR base's)
       # that lacks a newer key runs more, never less. A missing mode is full;
-      # a missing or garbled surface is true. A missing api plan is the
+      # a missing or garbled surface is true (a planner older than the image
+      # job emits no `image`, so it builds). A missing api plan is the
       # workspace with every live module; a missing binary flag builds the
       # binary where a planner would (a same-repo pull request, a push to
       # testing, an offload); a missing baseline is the pull request's base,
@@ -363,7 +410,7 @@ jobs:
             echo "range=$(get range)"
             echo "reason=$(get reason)"
           } >> "$GITHUB_OUTPUT"
-          for key in ui mcp cli api desktop mobile e2e db; do
+          for key in ui mcp cli api desktop mobile e2e db image; do
             value=$(get "$key")
             case "$value" in
               true|false) ;;
@@ -1069,6 +1116,55 @@ jobs:
           out=$(bun run migrations:check)
           echo "$out"
           grep -q 'applied: 0' <<<"$out"
+
+  # THE APP IMAGE, BUILT. The root Dockerfile over the context .dockerignore
+  # leaves, exactly as rc-deploy.yml, testing-deploy.yml and release.yml build
+  # it — and no pull request built it before this job. All four rc-deploy
+  # failures from Sep 29 to Nov 10 (runs 40563851333, 40575819538, 40582570895,
+  # 40766476117), and the Oct 28 nightly (40665787128), were one break: the ui
+  # build inside the image could not resolve cli/src/cmd/app/skeleton, which
+  # .dockerignore left out of the context. Every one surfaced after the merge,
+  # 42 to 59 minutes into its run, behind the api package's release compile.
+  # check-invariants.mjs (`image-build-input-ignored`) now reads the imports for
+  # that one shape; this job is the build itself, for every shape.
+  #
+  # WHAT IT PROVES, AND WHAT IT DOES NOT. The api is not compiled here or in any
+  # app image: main's published api package (ghcr.io/…/talaria-api:main,
+  # public) is only a file the runtime stage copies. So this proves the UI,
+  # mcp, omp-auth, CLI-skeleton and runtime-copy halves of the context — the
+  # half that broke — and nothing about this commit's api, which the api job
+  # and rc-deploy's own package build cover. No login and no push: the image is
+  # thrown away (the header's DELIBERATELY LEFT OUT), and the job needs nothing
+  # but a read of the tree.
+  #
+  # Its surface (scripts/surfaces.mjs, `image`) is what the build reads, so it
+  # runs in every mode but promotion, whose surfaces are all off.
+  image:
+    name: app image builds (docker)
+    needs: [changes]
+    if: needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # amd64, as every published app image is. VERSION names the commit in
+      # the image's label and TALARIA_VERSION; REVISION and CREATED keep the
+      # Dockerfile's "unknown" defaults, which is true of an image nobody
+      # ships.
+      - name: Build the app image (no push)
+        run: |
+          set -eu
+          docker build --platform linux/amd64 \
+            --build-arg TALARIA_API_IMAGE=ghcr.io/outcrop-labs/talaria-api:main \
+            --build-arg "VERSION=ci-$(git rev-parse --short=12 HEAD)" \
+            -t talaria-ci:check .
 
   # The desktop shell (docs/DESKTOP.md) — the same tripwire treatment for
   # desktop/ that the jobs above give ui/, mcp/, cli/ and api/: fmt + clippy +

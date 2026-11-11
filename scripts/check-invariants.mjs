@@ -3046,8 +3046,10 @@ const UNSET_SEAM_CENSUS = [
 // ── The image builds the ui from a context .dockerignore trims ──────────────
 // The Dockerfile's build stage runs `bun run build` in ui/ over `COPY . .` —
 // the repo minus .dockerignore. A ui build input outside ui/ that the ignore
-// file leaves out compiles everywhere else (dev, the gate, every PR job: none
-// of them builds the image) and fails only in rc-deploy, after the merge.
+// file leaves out compiles everywhere else (dev, the gate, every job that
+// builds the ui from the whole tree) and fails only in an image build. Until
+// ci.yml's `app image builds (docker)` that was rc-deploy, after the merge; the
+// job now catches it on the pull request, and this rule before the push.
 // That shipped once: #604's SDK kit read cli/src/cmd/app/skeleton.ts and
 // docs/sdk/talaria.schema.json, both ignored, and every rc deploy failed from
 // that merge until the ignore file named them.

@@ -14,6 +14,7 @@ import {
   API_EXTERNAL_INPUTS,
   API_KEYS,
   JOB_FILES,
+  MODES,
   OUTPUT_KEYS,
   SURFACES,
   SURFACE_NAMES,
@@ -25,6 +26,7 @@ import {
   classify,
   globMatch,
   installLines,
+  isPromotion,
   itModulesFor,
   lastGreen,
   lockDelta,
@@ -137,8 +139,8 @@ await check('the job-definition files are in every list', () => {
   }
 })
 await check('another workflow moves nothing', () => eq(ciSurfaces(['.github/workflows/release.yml']), every(false)))
-await check('a ui file moves ui and e2e', () => eq(ciSurfaces(['ui/src/routes/+page.svelte']), only('ui', 'e2e')))
-await check('the dither engine moves the desktop too', () => eq(ciSurfaces(['ui/src/lib/dither-engine.ts']), only('ui', 'desktop', 'e2e')))
+await check('a ui file moves ui, e2e and the image', () => eq(ciSurfaces(['ui/src/routes/+page.svelte']), only('ui', 'e2e', 'image')))
+await check('the dither engine moves the desktop too', () => eq(ciSurfaces(['ui/src/lib/dither-engine.ts']), only('ui', 'desktop', 'e2e', 'image')))
 await check('a crate source moves api, cli (box.test reads every .rs) and e2e', () =>
   eq(ciSurfaces(['api/crates/talaria-db/src/lib.rs']), only('cli', 'api', 'e2e')))
 await check('a ui-read crate file moves ui as well', () =>
@@ -148,30 +150,56 @@ await check('api/tests moves api and cli, not e2e (not in the binary)', () =>
 await check('the shared fixtures move ui, cli and api', () =>
   eq(ciSurfaces(['api/tests/it/fixtures/app-grants.json']), only('ui', 'cli', 'api')))
 await check('the lockfile moves api and e2e', () => eq(ciSurfaces(['api/Cargo.lock']), only('api', 'e2e')))
-await check('the migration array moves ui, api (its live suite), db and e2e', () =>
-  eq(ciSurfaces(['ui/src/server/db/pg.ts']), only('ui', 'api', 'db', 'e2e')))
+await check('the migration array moves ui, api (its live suite), db, e2e and the image', () =>
+  eq(ciSurfaces(['ui/src/server/db/pg.ts']), only('ui', 'api', 'db', 'e2e', 'image')))
 await check('the migration scripts move db; only the replay the api job runs moves api too', () => {
-  eq(ciSurfaces(['ui/scripts/check-migrations.ts']), only('ui', 'api', 'db', 'e2e'))
-  eq(ciSurfaces(['ui/scripts/migrate-file.ts']), only('ui', 'db', 'e2e'))
-  eq(ciSurfaces(['ui/scripts/check-git-hosts-mirror.sql']), only('ui', 'db', 'e2e'))
-  eq(ciSurfaces(['ui/package.json']), only('ui', 'db', 'e2e'))
+  eq(ciSurfaces(['ui/scripts/check-migrations.ts']), only('ui', 'api', 'db', 'e2e', 'image'))
+  eq(ciSurfaces(['ui/scripts/migrate-file.ts']), only('ui', 'db', 'e2e', 'image'))
+  eq(ciSurfaces(['ui/scripts/check-git-hosts-mirror.sql']), only('ui', 'db', 'e2e', 'image'))
+  eq(ciSurfaces(['ui/package.json']), only('ui', 'db', 'e2e', 'image'))
 })
-await check('mcp/src/index.ts moves mcp and api (the fitness catalog sync test)', () =>
-  eq(ciSurfaces(['mcp/src/index.ts']), only('mcp', 'api')))
-await check('the chassis template moves ui, api and e2e', () =>
-  eq(ciSurfaces(['scripts/chassis.template.yml']), only('ui', 'api', 'e2e')))
-await check('a shipped skill moves api', () => eq(ciSurfaces(['scripts/skills/talaria-apps/SKILL.md']), only('api')))
+await check('mcp/src/index.ts moves mcp, api (the fitness catalog sync test) and the image', () =>
+  eq(ciSurfaces(['mcp/src/index.ts']), only('mcp', 'api', 'image')))
+await check('the chassis template moves ui, api, e2e and the image', () =>
+  eq(ciSurfaces(['scripts/chassis.template.yml']), only('ui', 'api', 'e2e', 'image')))
+await check('a shipped skill moves api and the image', () => eq(ciSurfaces(['scripts/skills/talaria-apps/SKILL.md']), only('api', 'image')))
 await check('the cli reads CONTAINER.md, the devbox compose and .gitignore', () => {
-  for (const f of ['docs/CONTAINER.md', 'docker/devbox.compose.yml', '.gitignore']) eq(ciSurfaces([f]), only('cli'), f)
+  for (const f of ['docs/CONTAINER.md', '.gitignore']) eq(ciSurfaces([f]), only('cli'), f)
+  eq(ciSurfaces(['docker/devbox.compose.yml']), only('cli', 'image'), 'docker/ is the image surface too')
 })
 await check('the SDK docs and the scaffolder move ui', () => {
   eq(ciSurfaces(['docs/sdk/client.md']), only('ui'))
-  eq(ciSurfaces(['cli/src/cmd/app/skeleton.ts']), only('ui', 'cli'))
+  eq(ciSurfaces(['cli/src/cmd/app/skeleton.ts']), only('ui', 'cli', 'image'))
 })
 await check('desktop, mobile and the e2e stubs move their own', () => {
   eq(ciSurfaces(['desktop/src-tauri/src/main.rs']), only('desktop'))
   eq(ciSurfaces(['mobile/shared/build.gradle.kts']), only('mobile'))
   eq(ciSurfaces(['scripts/e2e/mcp-stubs.mjs']), only('e2e'))
+})
+await check('the build context moves the image, and only the image', () => {
+  for (const f of ['.dockerignore', 'Dockerfile', 'docker/entrypoint.sh', 'docker/await-deps.mjs', 'omp-auth/src/server.ts']) {
+    eq(ciSurfaces([f]), only('image'), f)
+  }
+})
+await check('what the image builds or copies moves it: ui, cli, mcp, apps, the schema, the skills', () => {
+  for (const f of ['ui/src/routes/+page.svelte', 'cli/src/ports.ts', 'cli/src/cmd/app/skeleton.ts', 'mcp/src/a.ts', 'apps/x/y.ts',
+    'docs/sdk/talaria.schema.json', 'scripts/skills/talaria-apps/SKILL.md', 'scripts/chassis.template.yml']) {
+    ok(ciSurfaces([f]).image, `${f} moves the image`)
+  }
+})
+await check('what the image never reads leaves it alone: the api, the package Dockerfile, desktop, mobile, docs', () => {
+  for (const f of ['api/crates/talaria-db/src/lib.rs', 'api/package.Dockerfile', 'api/Cargo.lock', 'desktop/src/App.svelte',
+    'mobile/shared/build.gradle.kts', 'docs/sdk/client.md', 'docs/CONTAINER.md', 'README.md', '.github/workflows/release.yml']) {
+    ok(!ciSurfaces([f]).image, `${f} does not move the image`)
+  }
+})
+await check('every file the ui build reads from outside ui/ moves the image (check-invariants.mjs, image-build-input-ignored)', () => {
+  // The re-admitted lines of .dockerignore are the ui build's inputs from
+  // outside ui/; the image has to rebuild when one changes.
+  const ignore = readFileSync(join(ROOT, '.dockerignore'), 'utf8')
+  const kept = ignore.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('!') && !l.includes('*')).map((l) => l.slice(1))
+  ok(kept.length >= 2, `the re-admitted files: ${JSON.stringify(kept)}`)
+  for (const f of kept) ok(ciSurfaces([f]).image, `${f} is re-admitted to the context but does not move the image`)
 })
 
 // ── UI_SURFACE is derived from SURFACES.ui ──────────────────────────────────
@@ -345,7 +373,7 @@ const prMerge = (files) => fakeGit({
 await check('a PR into testing is light, on the merge ref\'s first parent', async () => {
   const p = await planCi({ event: 'pull_request', baseRef: 'testing', baseSha: 'old' }, prMerge(['ui/src/a.ts']), fetchThrows)
   eq([p.mode, p.range, p.base, p.all], ['light', 'HEAD^1..HEAD', 'basetip', false])
-  eq(p.surfaces, only('ui', 'e2e'))
+  eq(p.surfaces, only('ui', 'e2e', 'image'))
 })
 await check('a PR into rc or main is full; into a stacked branch light', async () => {
   for (const [into, mode] of [['rc', 'full'], ['main', 'full'], ['ckpt/x', 'light'], ['hotfix/a', 'light']]) {
@@ -356,7 +384,7 @@ await check('a PR with no merge parent diffs its own changes since the base sha'
   const git = fakeGit({ [DIFF('b45e...HEAD')]: 'mcp/src/a.ts' })
   const p = await planCi({ event: 'pull_request', baseRef: 'testing', baseSha: 'b45e' }, git, fetchThrows)
   eq([p.mode, p.range, p.base], ['light', 'b45e...HEAD', 'b45e'])
-  eq(p.surfaces, only('mcp'))
+  eq(p.surfaces, only('mcp', 'image'))
 })
 await check('a push to rc diffs from rc\'s last green run', async () => {
   const f = runsFetch(['g1'])
@@ -398,7 +426,7 @@ await check('any other push is light, against the nearer base', async () => {
   })
   const p = await planCi({ event: 'push', ref: 'refs/heads/wt/x' }, git, fetchThrows)
   eq([p.mode, p.range], ['light', 'mbr..HEAD'])
-  eq(p.surfaces, only('cli'))
+  eq(p.surfaces, only('cli', 'image'))
 })
 const lightBase = (files) => fakeGit({
   [resolves('origin/testing')]: 't', 'merge-base HEAD origin/testing': 'mbt', 'rev-list --count mbt..HEAD': '900',
@@ -408,7 +436,7 @@ const lightBase = (files) => fakeGit({
 await check('called light diffs against the nearer of testing and rc', async () => {
   const p = await planCi({ event: 'push', ref: 'refs/heads/ci/wt/x', calledRef: 'abc', calledMode: 'light' }, lightBase(['mcp/a.ts']), fetchThrows)
   eq([p.mode, p.range, p.base, p.all], ['light', 'mbr..HEAD', 'mbr', false])
-  eq(p.surfaces, only('mcp'))
+  eq(p.surfaces, only('mcp', 'image'))
 })
 await check('called full or integration runs every surface', async () => {
   for (const mode of ['full', 'integration']) {
@@ -454,6 +482,81 @@ await check('a git that throws runs every surface, and keeps the mode', async ()
 await check('an event with no rule is full, every surface', async () => {
   const p = await planCi({ event: 'merge_group', ref: 'refs/heads/gh-readonly-queue/x' }, fakeGit({}), fetchThrows)
   eq([p.mode, p.all], ['full', true])
+})
+
+// ── Promotion mode: the rc → main pull request ──────────────────────────────
+const PROMO = { event: 'pull_request', baseRef: 'main', headRef: 'rc', repo: 'o/r', headRepo: 'o/r', baseSha: 'm0', root: ROOT }
+/** The merge ref of rc into main: HEAD's tree, and rc's tip tree. */
+const promoGit = (mergeTree, rcTree, files = ['ui/src/a.ts', 'api/crates/talaria-db/src/lib.rs', 'desktop/src/App.svelte']) => fakeGit({
+  'rev-parse --verify --quiet HEAD^2': 'rctip',
+  'rev-parse HEAD^1': 'maintip',
+  'rev-parse HEAD^{tree}': mergeTree,
+  'rev-parse HEAD^2^{tree}': rcTree,
+  [DIFF('HEAD^1..HEAD')]: files.join('\n'),
+})
+await check("promotion: this repository's rc into main, merge tree == rc's tree, runs no surface", async () => {
+  const git = promoGit('t1', 't1')
+  const p = await planCi(PROMO, git, fetchThrows)
+  eq([p.mode, p.all, p.range, p.base], ['promotion', false, 'HEAD^1..HEAD', 'maintip'])
+  eq(p.surfaces, every(false), 'every surface off, whatever the diff touched')
+  eq(p.reason, "the merge tree is rc's tip; its evidence is rc's push CI and rc-deploy, which the promotion gate requires")
+  eq([p.api.scope, p.api.packages, p.api.itModules, p.api.live, p.api.bin], ['packages', [], [], false, false], 'no api test, no binary')
+  eq(p.files.length, 3, 'the files are listed for the log')
+  eq(p.migrationBaseline, 'origin/main')
+  ok(git.calls.includes('rev-parse HEAD^{tree}') && git.calls.includes('rev-parse HEAD^2^{tree}'), `compared the trees: ${git.calls.join(', ')}`)
+})
+await check('promotion: a diff that will not resolve still promotes; the trees decided', async () => {
+  const git = fakeGit({
+    'rev-parse --verify --quiet HEAD^2': 'rctip', 'rev-parse HEAD^1': 'maintip',
+    'rev-parse HEAD^{tree}': 't1', 'rev-parse HEAD^2^{tree}': 't1',
+  })
+  const p = await planCi(PROMO, git, fetchThrows)
+  eq([p.mode, p.files, p.surfaces], ['promotion', [], every(false)])
+})
+await check("promotion: unequal trees are full, every surface the diff moved, and the reason says so", async () => {
+  const p = await planCi(PROMO, promoGit('t1', 't2', ['ui/src/a.ts']), fetchThrows)
+  eq([p.mode, p.all], ['full', false])
+  eq(p.surfaces, only('ui', 'e2e', 'image'))
+  ok(/not promotion mode/.test(p.reason) && /is not rc's tip tree/.test(p.reason), p.reason)
+})
+await check("promotion: a fork's rc is full", async () => {
+  const p = await planCi({ ...PROMO, headRepo: 'fork/r' }, promoGit('t1', 't1', ['ui/src/a.ts']), fetchThrows)
+  eq([p.mode, p.surfaces], ['full', only('ui', 'e2e', 'image')])
+  ok(/fork\/r's rc/.test(p.reason), p.reason)
+})
+await check('promotion: an unknown head repository is full', async () => {
+  for (const ctx of [{ ...PROMO, headRepo: '' }, { ...PROMO, repo: '' }]) {
+    const p = await planCi(ctx, promoGit('t1', 't1', ['ui/src/a.ts']), fetchThrows)
+    eq(p.mode, 'full', JSON.stringify(ctx))
+    ok(/head repository is unknown/.test(p.reason), p.reason)
+  }
+})
+await check('promotion: no merge ref, or trees git cannot read, is full', async () => {
+  const noMerge = fakeGit({ [DIFF('m0...HEAD')]: 'ui/src/a.ts' })
+  const p = await planCi(PROMO, noMerge, fetchThrows)
+  eq([p.mode, p.range], ['full', 'm0...HEAD'])
+  ok(/not the merge ref/.test(p.reason), p.reason)
+  const unreadable = fakeGit({
+    'rev-parse --verify --quiet HEAD^2': 'rctip', 'rev-parse HEAD^1': 'maintip',
+    'rev-parse HEAD^{tree}': 't1', 'rev-parse HEAD^2^{tree}': new Error('fatal: bad revision'),
+    [DIFF('HEAD^1..HEAD')]: 'ui/src/a.ts',
+  })
+  const q = await planCi(PROMO, unreadable, fetchThrows)
+  eq(q.mode, 'full')
+  ok(/could not read the trees/.test(q.reason), q.reason)
+})
+await check('promotion is only rc into main: another head into main, rc into testing, a push of rc are not', async () => {
+  const other = await planCi({ ...PROMO, headRef: 'sync/x' }, promoGit('t1', 't1', ['ui/src/a.ts']), fetchThrows)
+  eq(other.mode, 'full', 'another head into main')
+  ok(!/promotion/.test(other.reason), `no promotion talk for another head: ${other.reason}`)
+  const intoTesting = await planCi({ ...PROMO, baseRef: 'testing' }, promoGit('t1', 't1', ['ui/src/a.ts']), fetchThrows)
+  eq(intoTesting.mode, 'light', 'rc into testing')
+  ok(!isPromotion({ ...PROMO, event: 'push' }, fakeGit({}), true).ok, 'a push')
+})
+await check('a call can never ask for promotion mode', async () => {
+  ok(!MODES.includes('promotion'), 'promotion is not a callable mode')
+  const p = await planCi({ event: 'push', ref: 'refs/heads/ci/x', calledRef: 'abc', calledMode: 'promotion' }, fakeGit({}), fetchThrows)
+  eq([p.mode, p.all, p.surfaces], ['full', true, every(true)])
 })
 
 // ── The api job's scope ─────────────────────────────────────────────────────
@@ -657,6 +760,17 @@ await check('the CLI never emits an empty mode or a newline in a value', async (
   for (const l of output) ok(!l.includes('\n'), `one line: ${l}`)
   eq(output.filter((l) => new RegExp(`^(${SURFACE_NAMES.join('|')})=true$`).test(l)).length, SURFACE_NAMES.length, 'all on')
 })
+await check('the CLI reads HEAD_REF, HEAD_REPO and REPO: a promotion emits mode=promotion, image=false and every surface off', async () => {
+  const env = { EVENT: 'pull_request', BASE_REF: 'main', HEAD_REF: 'rc', HEAD_REPO: 'o/r', REPO: 'o/r', BASE_SHA: 'm0' }
+  const { output, summary } = await ciOutputs(env, promoGit('t1', 't1'), fetchThrows)
+  const kv = Object.fromEntries(output.map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
+  eq(output.map((l) => l.split('=')[0]), OUTPUT_KEYS, 'keys, in order')
+  eq([kv.mode, kv.image, kv.api_bin, kv.api_it], ['promotion', 'false', 'false', 'false'])
+  for (const n of SURFACE_NAMES) eq(kv[n], 'false', n)
+  ok(summary.includes('| mode | `promotion` |') && summary.includes("the merge tree is rc's tip"), summary)
+  const fork = await ciOutputs({ ...env, HEAD_REPO: 'fork/r' }, promoGit('t1', 't1'), fetchThrows)
+  ok(fork.output.includes('mode=full') && fork.output.includes('image=true'), `a fork's rc: ${fork.output.join(' ')}`)
+})
 
 // ── Drift guards: the workflows run this file and read every key ────────────
 const ciYml = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8')
@@ -681,6 +795,36 @@ await check("ci.yml's changes job exposes and normalizes the api plan and the mi
     ok(ciYml.includes(`needs.changes.outputs.${key}`), `no job reads ${key}`)
   }
   ok(ciYml.includes('HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}'), 'the plan step does not pass HEAD_REPO')
+})
+await check("ci.yml's image job builds the app image when its surface moved, and pushes nothing", () => {
+  const job = /\n {2}image:\n([\s\S]*?)(?=\n {2}[a-z][a-z0-9_-]*:\n|$)/.exec(ciYml)
+  ok(job, 'ci.yml has no `image` job')
+  const body = job[1]
+  ok(/^ {4}name: app image builds \(docker\)$/m.test(body), 'the image job is not named `app image builds (docker)`')
+  ok(/^ {4}if: needs\.changes\.outputs\.image == 'true'$/m.test(body), 'the image job does not run on the image surface')
+  ok(/docker build\b/.test(body) && !/docker (push|login)\b/.test(body), 'the image job must build and never log in or push')
+  ok(/persist-credentials: false/.test(body), 'the image job keeps no credential in the checkout')
+})
+await check("ci.yml's header lists the contexts docs/BRANCHES.md's rulesets require, and each is a job", () => {
+  // The header's REQUIRED CONTEXTS table: `<context>  <rulesets…>` rows.
+  const block = /^# REQUIRED CONTEXTS\.[\s\S]*?\n#\s*\n([\s\S]*?)\n#\s*\n/m.exec(ciYml)
+  ok(block, 'the header has no REQUIRED CONTEXTS table')
+  const header = new Map(['testing', 'rc', 'main'].map((b) => [b, new Set()]))
+  for (const raw of block[1].split('\n')) {
+    const row = /^#\s{3,}(.+?)\s{2,}((?:testing|rc|main)(?: (?:testing|rc|main))*)\s*$/.exec(raw)
+    ok(row, `not a table row: ${raw}`)
+    for (const b of row[2].split(' ')) header.get(b).add(row[1])
+  }
+  const flowYml = readFileSync(join(ROOT, '.github/workflows/flow.yml'), 'utf8')
+  const names = new Set([...ciYml.matchAll(/^ {4}name: (.+)$/gm), ...flowYml.matchAll(/^ {4}name: (.+)$/gm)].map((m) => m[1].trim()))
+  const doc = readFileSync(join(ROOT, 'docs/BRANCHES.md'), 'utf8')
+  for (const [branch, set] of header) {
+    for (const ctx of set) ok(names.has(ctx), `${ctx} is in the header but is no job name in ci.yml or flow.yml`)
+    const m = new RegExp(`^\\{"name":"${branch}-checks".*$`, 'm').exec(doc)
+    ok(m, `docs/BRANCHES.md has no ${branch}-checks ruleset`)
+    const required = JSON.parse(m[0]).rules[0].parameters.required_status_checks.map((c) => c.context).sort()
+    eq([...set].sort(), required, `${branch}-checks`)
+  }
 })
 await check('ci-offload.yml calls ci.yml with a mode, under a name that is not CI', () => {
   const off = readFileSync(join(ROOT, '.github/workflows/ci-offload.yml'), 'utf8')
