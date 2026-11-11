@@ -12,6 +12,7 @@ import { deflateRawSync } from 'node:zlib'
 import {
   API_BINARY_INPUTS,
   BIN_DIR,
+  CI_BINARY_HOST,
   GLIBC_MESSAGE,
   apiFromCi,
   artifactName,
@@ -21,6 +22,7 @@ import {
   downloadArtifact,
   extractSingle,
   findArtifact,
+  hostMessage,
   parseRepo,
   pickArtifact,
   smokeVerdict,
@@ -357,7 +359,7 @@ describe('apiFromCi', () => {
     ctx.plant(['git', DIFF('HEAD')], differs())
     const { fetchImpl, asked } = github({ [SHA]: payload })
     try {
-      const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE }))
+      const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE, host: CI_BINARY_HOST }))
       expect(out).toBe(
         "die: uncommitted api changes: CI's binary would not contain them — commit and push (bun run gate:remote --full, or the PR), or drop --api-from-ci",
       )
@@ -374,7 +376,7 @@ describe('apiFromCi', () => {
     const smoked: string[] = []
     const smoke = (bin: string) => (smoked.push(bin), OK_SMOKE())
     try {
-      const bin = await apiFromCi(ctx, { fetchImpl, smoke })
+      const bin = await apiFromCi(ctx, { fetchImpl, smoke, host: CI_BINARY_HOST })
       expect(bin).toBe(join(root, BIN_DIR, SHA.slice(0, 12), 'talaria-api'))
       expect(Buffer.from(readFileSync(bin)).equals(Buffer.from(BINARY))).toBe(true)
       expect(statSync(bin).mode & 0o777).toBe(0o755)
@@ -382,7 +384,7 @@ describe('apiFromCi', () => {
       expect(asked.length).toBe(3) // find, the redirect, the blob
       expect(ctx.logLines.at(-1)).toEqual({ kind: 'say', msg: `rust api → CI's binary for HEAD ${SHA.slice(0, 12)}` })
 
-      const again = await apiFromCi(ctx, { fetchImpl, smoke })
+      const again = await apiFromCi(ctx, { fetchImpl, smoke, host: CI_BINARY_HOST })
       expect(again).toBe(bin)
       expect(asked.length).toBe(3)
     } finally {
@@ -397,7 +399,7 @@ describe('apiFromCi', () => {
     mkdirSync(join(root, BIN_DIR, 'f'.repeat(12)), { recursive: true })
     writeFileSync(join(root, BIN_DIR, 'f'.repeat(12), 'talaria-api'), 'an older build')
     try {
-      const bin = await apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE })
+      const bin = await apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE, host: CI_BINARY_HOST })
       expect(bin).toBe(binPath(root, OLDER))
       expect(asked.filter((u) => u.includes('?name=')).map((u) => new URL(u).searchParams.get('name'))).toEqual([
         artifactName(SHA),
@@ -417,7 +419,7 @@ describe('apiFromCi', () => {
     ctx.plant(['git', DIFF(MB, 'HEAD')], differs())
     const { fetchImpl } = github({ [MB]: payload }) // the base has one, but its api is not HEAD's
     try {
-      const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE }))
+      const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE, host: CI_BINARY_HOST }))
       expect(out).toBe(
         `die: no CI binary for ${SHA.slice(0, 12)}: push it with \`bun run gate:remote --full\` (a light run builds the binary only when talaria-api is in scope) or open the PR, then retry\n` +
           `  (tried HEAD only; ${MB.slice(0, 12)} and older have another api; CI keeps a binary three days)`,
@@ -432,10 +434,26 @@ describe('apiFromCi', () => {
     const { fetchImpl } = github({ [SHA]: payload })
     const smoke = (): SmokeRun => ({ status: 1, stdout: '', stderr: "x: version `GLIBC_2.39' not found (required by x)" })
     try {
-      const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke }))
+      const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke, host: CI_BINARY_HOST }))
       expect(out.startsWith(`die: ${GLIBC_MESSAGE}\n`)).toBe(true)
     } finally {
       done()
+    }
+  })
+
+  test('a machine that is not linux-x64 is told so before git or GitHub is asked anything', async () => {
+    for (const host of [{ platform: 'darwin', arch: 'arm64' }, { platform: 'linux', arch: 'arm64' }, { platform: 'win32', arch: 'x64' }]) {
+      const { ctx, done } = checkout()
+      const { fetchImpl, asked } = github({ [SHA]: payload })
+      try {
+        const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE, host }))
+        expect(out).toBe(`die: ${hostMessage(host)}`)
+        expect(out).toContain(`this is ${host.platform}-${host.arch}`)
+        expect(asked).toEqual([])
+        expect(ctx.calls).toEqual([])
+      } finally {
+        done()
+      }
     }
   })
 
@@ -444,7 +462,7 @@ describe('apiFromCi', () => {
     ctx.plant(['gh', ['auth', 'token', '--hostname', 'github.com']], new Error('not logged in'))
     const { fetchImpl, asked } = github({ [SHA]: payload })
     try {
-      const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE }))
+      const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE, host: CI_BINARY_HOST }))
       expect(out).toContain('die: --api-from-ci: no GitHub token: set GH_TOKEN')
       expect(asked).toEqual([])
       expect(existsSync(join(ctx.root, BIN_DIR))).toBe(false)

@@ -22,6 +22,11 @@
 // binary, the code before the change, is never taken.
 // Uncommitted api changes are refused: no CI binary contains them.
 //
+// A pull request's binary is built from the pull request's merge ref
+// (actions/checkout's default for that event), so it carries the base's api
+// as of that run as well as the branch's: what the merge would serve, and
+// still named for the head commit, the sha `workflow_run.head_sha` gives.
+//
 // TRUST. The file is executed on this machine, so an artifact counts only
 // when a run of THIS repository made it for exactly the commit asked for. A
 // fork's pull request runs ci.yml from the fork's branch, in this repository,
@@ -77,6 +82,14 @@ export const WALK_LIMIT = 30
 
 export const TOKEN_HELP =
   'set GH_TOKEN — fine-grained, outcrop-labs/talaria: Actions read, Contents read, Metadata read — or `gh auth login`; in a devbox pass it with `talaria box new <name> --env GH_TOKEN=…`'
+
+/** CI builds the binary on ubuntu-latest, x86_64: nothing else can run it. */
+export const CI_BINARY_HOST = { platform: 'linux', arch: 'x64' } as const
+export type Host = { platform: string; arch: string }
+
+export function hostMessage(host: Host): string {
+  return `CI's binary is linux-x64 and this is ${host.platform}-${host.arch} — use \`cargo run\` (plain \`talaria dev\`) here`
+}
 
 export const GLIBC_MESSAGE =
   "CI's binary needs a newer glibc than this environment (a bookworm devbox) — use `cargo run` here or exercise on the host"
@@ -354,6 +367,8 @@ export function smokeVerdict(r: SmokeRun): { ok: true } | { ok: false; why: stri
 export type ApiFromCiOpts = {
   fetchImpl?: FetchLike
   smoke?: (bin: string) => SmokeRun
+  /** The machine the binary would run on (default: this process's). */
+  host?: Host
 }
 
 async function git(ctx: Ctx, args: string[]): Promise<string> {
@@ -392,6 +407,11 @@ export async function apiFromCi(ctx: Ctx, opts: ApiFromCiOpts = {}): Promise<str
   const fetchImpl = opts.fetchImpl ?? fetch
   const smoke = opts.smoke ?? smokeRun
   const die = (msg: string): never => ctx.log.die(msg)
+
+  // Before any git or network: a 50 MiB download that cannot run here helps
+  // nobody (a macOS or arm64 checkout).
+  const host = opts.host ?? { platform: process.platform, arch: process.arch }
+  if (host.platform !== CI_BINARY_HOST.platform || host.arch !== CI_BINARY_HOST.arch) die(hostMessage(host))
 
   let dirty: boolean
   try {

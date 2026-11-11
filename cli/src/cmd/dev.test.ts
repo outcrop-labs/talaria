@@ -944,7 +944,9 @@ describe('talaria dev — a prebuilt api binary', () => {
     ctx.plant(['git', ['diff', '--quiet', 'HEAD', '--', ...API_BINARY_INPUTS]], Object.assign(new Error('exit 1'), { code: 1 }))
     try {
       const msg = await dies(runDev(ctx, { apiFromCi: true }))
-      expect(msg).toContain("uncommitted api changes: CI's binary would not contain them")
+      // CI's binary is linux-x64: anywhere else the host guard is the stop.
+      const linuxX64 = process.platform === 'linux' && process.arch === 'x64'
+      expect(msg).toContain(linuxX64 ? "uncommitted api changes: CI's binary would not contain them" : "CI's binary is linux-x64")
       expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
       expect(ctx.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'dev')).toBe(false)
     } finally {
