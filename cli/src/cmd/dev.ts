@@ -765,7 +765,7 @@ export const devCommand: Leaf = {
       name: 'api-from-ci',
       kind: 'bool',
       desc:
-        "run the talaria-api binary CI built instead of `cargo run`: HEAD's, or its base's when the branch has not changed the api. " +
+        "run the talaria-api binary CI built instead of `cargo run`: HEAD's, or the newest earlier commit's whose api is still HEAD's. " +
         "Needs a GitHub token (gate:remote's: GH_TOKEN, GITHUB_TOKEN or gh's login); refused with uncommitted api changes",
     },
     { name: 'api-bin', kind: 'value', desc: 'run this prebuilt talaria-api binary instead of `cargo run`' },

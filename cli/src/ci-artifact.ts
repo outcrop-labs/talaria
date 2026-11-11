@@ -11,14 +11,15 @@
 // a build.
 //
 // WHICH BINARY. One built from exactly this tree's api inputs (api/ and the
-// files outside it the binary compiles in — API_BINARY_INPUTS). In order:
-//   1. HEAD's own.
-//   2. When the api inputs match the merge-base with the nearer of
-//      origin/testing and origin/rc: that commit's, then its first parents'
-//      for as long as their api inputs still match (at most WALK_LIMIT).
-//      A testing push builds the binary only when it moved the api, so the
-//      merge-base itself rarely has one; the last testing commit that did
-//      usually does, and it is the same binary.
+// files outside it the binary compiles in — API_BINARY_INPUTS): HEAD's own,
+// then its first parents' for as long as their api inputs are still HEAD's
+// (at most WALK_LIMIT commits). That walk is the branch's own commits (an
+// offload run before a docs-only commit), then the merge-base with the
+// branch it was cut from, then that branch's history: a testing push builds
+// the binary only when it moved the api, so the merge-base itself rarely has
+// one, while the last testing commit that did usually does — the same build.
+// A branch that changed the api stops at its last api commit, and the base's
+// binary, the code before the change, is never taken.
 // Uncommitted api changes are refused: no CI binary contains them.
 //
 // TRUST. The file is executed on this machine, so an artifact counts only
@@ -70,11 +71,8 @@ export const artifactName = (sha: string): string => `${ARTIFACT_PREFIX}${sha}`
 export const BIN_DIR = 'api/.ci-bin'
 export const binPath = (root: string, sha: string): string => join(root, BIN_DIR, sha.slice(0, 12), 'talaria-api')
 
-/** The branches a working branch is cut from (surfaces.mjs, pickBase). */
-export const BASE_REFS: readonly string[] = ['origin/testing', 'origin/rc']
-
-/** How many first-parent commits back from the merge-base are tried. */
-export const WALK_LIMIT = 20
+/** How many first-parent commits, HEAD included, are tried. */
+export const WALK_LIMIT = 30
 
 export const TOKEN_HELP =
   'set GH_TOKEN — fine-grained, outcrop-labs/talaria: Actions read, Contents read, Metadata read — or `gh auth login`; in a devbox pass it with `talaria box new <name> --env GH_TOKEN=…`'
@@ -303,13 +301,15 @@ export function extractSingle(zip: Uint8Array): { name: string; data: Uint8Array
 
 /**
  * The commits whose binary this tree can run, in the order they are tried:
- * HEAD, then the base walk (the merge-base, then its first parents) for as
- * long as each one's api inputs match HEAD's. A branch that moved the api
- * stops at HEAD: its base's binary would be the code before the change.
+ * HEAD, then its first parents (`walk`, newest first, HEAD's own row
+ * optional) for as long as each one's api inputs match HEAD's. The first
+ * commit with another api ends it: a branch that moved the api never runs
+ * its base's binary, which is the code before the change.
  */
-export function binaryCandidates(head: string, base: readonly { sha: string; sameApi: boolean }[]): string[] {
+export function binaryCandidates(head: string, walk: readonly { sha: string; sameApi: boolean }[]): string[] {
   const out = [head]
-  for (const c of base) {
+  for (const c of walk) {
+    if (c.sha === head) continue
     if (!c.sameApi) break
     if (!out.includes(c.sha)) out.push(c.sha)
   }
@@ -372,23 +372,6 @@ async function apiDiffers(ctx: Ctx, from: string, to?: string): Promise<boolean>
   }
 }
 
-/** The merge-base with the nearer of BASE_REFS (fewest commits to HEAD), or
- *  null when neither resolves. */
-async function nearerBase(ctx: Ctx): Promise<{ ref: string; sha: string } | null> {
-  let best: { ref: string; sha: string; ahead: number } | null = null
-  for (const ref of BASE_REFS) {
-    try {
-      const sha = await git(ctx, ['merge-base', 'HEAD', ref])
-      const ahead = Number.parseInt(await git(ctx, ['rev-list', '--count', `${sha}..HEAD`]), 10)
-      if (!sha || !Number.isFinite(ahead)) continue
-      if (best === null || ahead < best.ahead) best = { ref, sha, ahead }
-    } catch {
-      // that ref is not here (no fetch yet): the other one decides
-    }
-  }
-  return best
-}
-
 function isExecutable(p: string): boolean {
   try {
     const st = statSync(p)
@@ -422,21 +405,22 @@ export async function apiFromCi(ctx: Ctx, opts: ApiFromCiOpts = {}): Promise<str
   }
 
   const head = await git(ctx, ['rev-parse', 'HEAD']).catch((e) => die(`--api-from-ci: git rev-parse HEAD failed (${errText(e)})`))
-  const base = await nearerBase(ctx)
+  const shas = (await git(ctx, ['rev-list', '--first-parent', `--max-count=${WALK_LIMIT}`, 'HEAD']).catch(() => ''))
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
   const walked: { sha: string; sameApi: boolean }[] = []
-  if (base) {
-    const shas = (await git(ctx, ['rev-list', '--first-parent', `--max-count=${WALK_LIMIT}`, base.sha]).catch(() => ''))
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    for (const sha of shas.length ? shas : [base.sha]) {
-      const sameApi = sha === head || !(await apiDiffers(ctx, sha, 'HEAD').catch(() => true))
-      walked.push({ sha, sameApi })
-      if (!sameApi) break
-    }
+  for (const sha of shas) {
+    const sameApi = sha === head || !(await apiDiffers(ctx, sha, 'HEAD').catch(() => true))
+    walked.push({ sha, sameApi })
+    if (!sameApi) break
   }
   const candidates = binaryCandidates(head, walked)
-  const whose = (sha: string) => (sha === head ? `HEAD ${sha.slice(0, 12)}` : `${base?.ref ?? 'base'} ${sha.slice(0, 12)}, the same api as HEAD`)
+  const whose = (sha: string) => {
+    if (sha === head) return `HEAD ${sha.slice(0, 12)}`
+    const back = shas.indexOf(sha)
+    return `${sha.slice(0, 12)} (HEAD~${back}, the same api as HEAD)`
+  }
 
   const ready = (bin: string, sha: string): string => {
     const verdict = smokeVerdict(smoke(bin))
@@ -498,12 +482,10 @@ export async function apiFromCi(ctx: Ctx, opts: ApiFromCiOpts = {}): Promise<str
     return ready(bin, sha)
   }
 
+  const changedAt = walked.find((w) => !w.sameApi)
   const tried =
-    candidates.length > 1
-      ? `HEAD and ${candidates.length - 1} commit(s) of ${base?.ref} with the same api`
-      : base && walked[0] && !walked[0].sameApi
-        ? `HEAD only — this branch changed the api since ${base.ref}`
-        : 'HEAD only'
+    (candidates.length > 1 ? `HEAD and the ${candidates.length - 1} commit(s) before it with the same api` : 'HEAD only') +
+    (changedAt ? `; ${changedAt.sha.slice(0, 12)} and older have another api` : '')
   return die(
     `no CI binary for ${head.slice(0, 12)}: push it with \`bun run gate:remote --full\` (a light run builds the binary only when talaria-api is in scope) or open the PR, then retry\n` +
       `  (tried ${tried}; CI keeps a binary three days)`,

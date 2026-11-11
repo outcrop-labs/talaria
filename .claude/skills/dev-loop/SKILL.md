@@ -20,8 +20,9 @@ bun run api                    # the Rust api alone (:5274), when that's the sur
 
 **`--api-from-ci` is the default way to exercise a change** once CI has built the
 branch. It runs the `talaria-api` binary CI uploaded in place of `cargo run`, so
-nothing compiles here. It uses HEAD's own binary. When the branch has not changed the
-api, it uses the binary of the last commit on its base with the same api. A branch
+nothing compiles here. It uses HEAD's own binary, or else that of the newest earlier
+commit whose api is still HEAD's: an earlier offload run on the branch, or the base's
+last binary when the branch has not changed the api. A branch
 that changed the api gets its binary from its own CI run: the pull request's, or
 `bun run gate:remote` (`--full` when the change is in a crate other than talaria-api,
 since a light run builds the binary only when talaria-api is in scope). Uncommitted

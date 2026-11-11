@@ -247,17 +247,18 @@ describe('tokens and the repository', () => {
 
 // ── which commit ────────────────────────────────────────────────────────────
 
-describe('binaryCandidates — the merge-base fallback', () => {
-  test('a branch that changed the api runs only its own binary', () => {
-    expect(binaryCandidates(SHA, [{ sha: MB, sameApi: false }])).toEqual([SHA])
+describe('binaryCandidates — which commits share HEAD\'s binary', () => {
+  test('a branch whose last commit changed the api runs only its own binary', () => {
+    expect(binaryCandidates(SHA, [{ sha: SHA, sameApi: true }, { sha: MB, sameApi: false }])).toEqual([SHA])
   })
 
-  test('a branch that did not: HEAD, then the merge-base (a testing push binary)', () => {
-    expect(binaryCandidates(SHA, [{ sha: MB, sameApi: true }])).toEqual([SHA, MB])
+  test('a branch that did not change the api: HEAD, then the merge-base (a testing push binary)', () => {
+    expect(binaryCandidates(SHA, [{ sha: SHA, sameApi: true }, { sha: MB, sameApi: true }])).toEqual([SHA, MB])
   })
 
-  test('then the base branch back to its last api change, and no further', () => {
+  test('then further back, to the last api change and no further', () => {
     const walk = [
+      { sha: SHA, sameApi: true },
       { sha: MB, sameApi: true },
       { sha: OLDER, sameApi: true },
       { sha: 'd'.repeat(40), sameApi: false },
@@ -266,8 +267,9 @@ describe('binaryCandidates — the merge-base fallback', () => {
     expect(binaryCandidates(SHA, walk)).toEqual([SHA, MB, OLDER])
   })
 
-  test('HEAD at the merge-base is tried once', () => {
+  test('HEAD is first and tried once, whether or not the walk lists it', () => {
     expect(binaryCandidates(MB, [{ sha: MB, sameApi: true }])).toEqual([MB])
+    expect(binaryCandidates(SHA, [])).toEqual([SHA])
   })
 
   test("the inputs are api/ and the planner's external api inputs, kept equal to scripts/surfaces.mjs", async () => {
@@ -305,18 +307,14 @@ const DIFF = (from: string, to?: string) => ['diff', '--quiet', from, ...(to ? [
 const differs = () => Object.assign(new Error('exit 1'), { code: 1 })
 const OK_SMOKE = (): SmokeRun => ({ status: 2, stdout: '{"Error":"bad probe ask: EOF"}', stderr: '' })
 
-/** A checkout on disk (for api/.ci-bin), git planted: HEAD = SHA, the nearer
- *  base origin/testing at MB with OLDER behind it. */
+/** A checkout on disk (for api/.ci-bin), git planted: HEAD = SHA, whose
+ *  first parents are MB (where the branch left testing) and then OLDER. */
 function checkout(env: Record<string, string> = { GH_TOKEN: 'tok' }): { ctx: FakeCtx; root: string; done: () => void } {
   const root = mkdtempSync(join(tmpdir(), 'talaria-ci-artifact-'))
   const ctx = fakeCtx({ env })
   ctx.root = root
   ctx.plant(['git', ['rev-parse', 'HEAD']], `${SHA}\n`)
-  ctx.plant(['git', ['merge-base', 'HEAD', 'origin/testing']], `${MB}\n`)
-  ctx.plant(['git', ['rev-list', '--count', `${MB}..HEAD`]], '2\n')
-  ctx.plant(['git', ['merge-base', 'HEAD', 'origin/rc']], `${OLDER}\n`)
-  ctx.plant(['git', ['rev-list', '--count', `${OLDER}..HEAD`]], '9\n')
-  ctx.plant(['git', ['rev-list', '--first-parent', '--max-count=20', MB]], `${MB}\n${OLDER}\n`)
+  ctx.plant(['git', ['rev-list', '--first-parent', '--max-count=30', 'HEAD']], `${SHA}\n${MB}\n${OLDER}\n`)
   ctx.plant(['git', ['remote', 'get-url', 'origin']], 'git@github.com:outcrop-labs/talaria.git\n')
   return { ctx, root, done: () => rmSync(root, { recursive: true, force: true }) }
 }
@@ -392,7 +390,7 @@ describe('apiFromCi', () => {
     }
   })
 
-  test("no binary for HEAD, and no api change since origin/testing: the base's last binary, walking back while the api matches", async () => {
+  test("no binary for HEAD, and no api change since the branch left its base: the base's last binary, walking back while the api matches", async () => {
     const { ctx, root, done } = checkout()
     // MB and OLDER both have HEAD's api; only OLDER's push built a binary.
     const { fetchImpl, asked } = github({ [OLDER]: payload })
@@ -408,7 +406,7 @@ describe('apiFromCi', () => {
       ])
       // one binary per checkout: the older build is gone
       expect(readdirSync(join(root, BIN_DIR))).toEqual([OLDER.slice(0, 12)])
-      expect(ctx.logLines.at(-1)?.msg).toBe(`rust api → CI's binary for origin/testing ${OLDER.slice(0, 12)}, the same api as HEAD`)
+      expect(ctx.logLines.at(-1)?.msg).toBe(`rust api → CI's binary for ${OLDER.slice(0, 12)} (HEAD~2, the same api as HEAD)`)
     } finally {
       done()
     }
@@ -422,7 +420,7 @@ describe('apiFromCi', () => {
       const out = await attempt(apiFromCi(ctx, { fetchImpl, smoke: OK_SMOKE }))
       expect(out).toBe(
         `die: no CI binary for ${SHA.slice(0, 12)}: push it with \`bun run gate:remote --full\` (a light run builds the binary only when talaria-api is in scope) or open the PR, then retry\n` +
-          '  (tried HEAD only — this branch changed the api since origin/testing; CI keeps a binary three days)',
+          `  (tried HEAD only; ${MB.slice(0, 12)} and older have another api; CI keeps a binary three days)`,
       )
     } finally {
       done()

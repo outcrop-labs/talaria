@@ -277,7 +277,7 @@ talaria dev [--api-from-ci | --api-bin <path>]
 
 | Flag | Kind | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--api-from-ci` | bool | — | run the talaria-api binary CI built instead of `cargo run`: HEAD's, or its base's when the branch has not changed the api. Needs a GitHub token (gate:remote's: GH_TOKEN, GITHUB_TOKEN or gh's login); refused with uncommitted api changes |
+| `--api-from-ci` | bool | — | run the talaria-api binary CI built instead of `cargo run`: HEAD's, or the newest earlier commit's whose api is still HEAD's. Needs a GitHub token (gate:remote's: GH_TOKEN, GITHUB_TOKEN or gh's login); refused with uncommitted api changes |
 | `--api-bin` | value | — | run this prebuilt talaria-api binary instead of `cargo run` |
 
 ### `talaria worktree`
