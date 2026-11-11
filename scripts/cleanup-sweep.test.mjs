@@ -17,6 +17,7 @@ import {
   formatReport,
   mcpPkgOwner,
   mergedAtHead,
+  mergedPrefilter,
   orphanAppDbs,
   orphanMcpPackages,
   ownerKey,
@@ -852,6 +853,19 @@ check('an open or closed PR at the head, no PR, or no answer is not merged', () 
   eq(mergedAtHead([], head), false)
   eq(mergedAtHead(null, head), false)
   eq(mergedAtHead(R6_UI, ''), false)
+})
+
+check('the merged prefilter: 0 ahead of rc or of testing may be merged; an unresolved base is no answer', () => {
+  // merged into testing: 0 ahead of it, still ahead of rc until the promotion
+  eq(mergedPrefilter(3, 0), true)
+  eq(mergedPrefilter(null, 0), true)
+  // merged into rc (before the cutover), and a clone with no testing ref
+  eq(mergedPrefilter(0, 5), true)
+  eq(mergedPrefilter(0, null), true)
+  // ahead of both: unfinished, never asked of gh
+  eq(mergedPrefilter(3, 5), false)
+  // neither base resolves: nothing to say, so not merged
+  eq(mergedPrefilter(null, null), false)
 })
 
 check('build caches are reported at any disk reading', () => {
