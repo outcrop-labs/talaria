@@ -1,0 +1,62 @@
+{
+  "since": "2026-10-12",
+  "reviews": [
+    {
+      "pr": 800,
+      "run": 1,
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "reviewed",
+      "reason": null,
+      "findings": [
+        {
+          "id": "jr-00000001",
+          "tier": "A",
+          "severity": "blocker",
+          "category": "security",
+          "confidence": "high",
+          "file": "x",
+          "line": 1,
+          "endLine": 1,
+          "title": "t",
+          "failure": "f",
+          "gate": false,
+          "wouldGate": true,
+          "verified": "confirmed"
+        }
+      ]
+    },
+    {
+      "pr": 801,
+      "run": 2,
+      "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "status": "reviewed",
+      "reason": null,
+      "findings": [
+        {
+          "id": "jr-00000002",
+          "tier": "A",
+          "severity": "blocker",
+          "category": "concurrency",
+          "confidence": "high",
+          "file": "x",
+          "line": 1,
+          "endLine": 1,
+          "title": "t",
+          "failure": "f",
+          "gate": false,
+          "wouldGate": true,
+          "verified": "confirmed"
+        }
+      ]
+    },
+    {
+      "pr": 802,
+      "run": 3,
+      "head": "cccccccccccccccccccccccccccccccccccccccc",
+      "status": "not-reviewed",
+      "reason": "timeout",
+      "findings": []
+    }
+  ],
+  "escapes": []
+}

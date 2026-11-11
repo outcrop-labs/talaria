@@ -33,7 +33,7 @@
 // reintroducing the conflict surface. The `Verified:` paragraph is NOT part
 // of the hard check: the convention postdates most of the entries the
 // cutover migrated, and frozen history is not rewritten to satisfy a gate —
-// judge-pr.mjs enforces Verified: on NEW entries, where it is meaningful.
+// judge-pr raises a `should` when a NEW entry never says how it was verified.
 //
 // Stdlib-only, like everything under scripts/.
 

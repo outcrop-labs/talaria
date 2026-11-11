@@ -1,0 +1,98 @@
+# judge calibrate — measure the model reviewer against pull requests whose
+# defects (and whose cleanliness) are known, and watch that it is alive.
+#
+# WHAT. `calibrate` runs scripts/judge-review.mjs over the set in
+#   scripts/judge-review.calibration.json — PRs that shipped a defect a later
+#   PR fixed, held-out ones whose defects the rubric never names, and clean
+#   ones of every size — and writes a scorecard against the bars in
+#   docs/AGENT-TOOLING.md → Calibrating the reviewer. `canary` (weekly, from
+#   main) reviews a seeded defect and a clean fixture, two samples each, and
+#   reads the last 7 days of `judge (review)` verdicts: a judge that has
+#   quietly died goes red here.
+#
+# WHO MAY GO RED. Both jobs, on purpose. Neither runs on a pull request, so
+#   neither ever touches pr-watch or a merge.
+#
+# HOW TO RUN IT.
+#   before main has this file:  git push origin <branch>:judge-calibrate/<name>
+#   after:                      gh workflow run judge-calibrate.yml --ref <branch> -f only=<prs|dev|heldout|clean|canary> -f samples=<1-3>
+#   The scorecard is in the job summary and the `judge-calibration` artifact
+#   (every review.json, and the first recorded stream per PR, reasoning stripped).
+#
+# TRUST BOUNDARY. A `judge-calibrate/**` push runs that branch's own reviewer
+#   with the calibration key, and a dispatch runs the chosen ref's file —
+#   measuring that copy is the point. Anyone with push access can already run
+#   any workflow with any repository secret, so the mitigation is a dedicated,
+#   spend-capped key per purpose with a model allowlist:
+#   JUDGE_CALIBRATION_OPENROUTER_API_KEY here, JUDGE_OPENROUTER_API_KEY for
+#   the canary and the reviews.
+
+name: judge calibrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: 'PR numbers, dev, heldout, clean, or canary; empty = all'
+        default: ''
+      samples:
+        description: '1-3; empty = per-kind default'
+        default: ''
+  push:
+    branches: ['judge-calibrate/**']      # works before main has this file
+  schedule:
+    - cron: '41 6 * * 1'                   # canary + health, weekly, from main
+
+concurrency:
+  group: judge-calibrate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  calibrate:
+    name: judge calibrate
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.only != 'canary')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Calibrate (this ref's own reviewer — measuring it is the point)
+        timeout-minutes: 55
+        env:
+          JUDGE_CALIBRATION_OPENROUTER_API_KEY: ${{ secrets.JUDGE_CALIBRATION_OPENROUTER_API_KEY }}
+          JUDGE_REVIEW_MODEL: ${{ vars.JUDGE_REVIEW_MODEL }}
+          ONLY: ${{ inputs.only }}
+          SAMPLES: ${{ inputs.samples }}
+        run: node scripts/judge-review.mjs calibrate --only "$ONLY" ${SAMPLES:+--samples "$SAMPLES"} --concurrency 6 --out "$RUNNER_TEMP/cal" --record "$RUNNER_TEMP/cal/recorded" --github
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: judge-calibration
+          path: ${{ runner.temp }}/cal/
+          retention-days: 30
+
+  canary:
+    name: judge canary
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.only == 'canary')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Canary and health
+        timeout-minutes: 12
+        env:
+          JUDGE_OPENROUTER_API_KEY: ${{ secrets.JUDGE_OPENROUTER_API_KEY }}
+          JUDGE_REVIEW_MODEL: ${{ vars.JUDGE_REVIEW_MODEL }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/judge-review.mjs canary --health --github

@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "_doc": "Person-written grades for the reviewer's findings: calibration keys are <pr>:<id>:<category>, live keys <pr>:<head12>:<id>. Each value is {real: bool, by, at, note}. Data, written by a person (an agent may draft with evidence); docs/AGENT-TOOLING.md → Calibrating the reviewer.",
+  "calibration": {},
+  "live": {}
+}

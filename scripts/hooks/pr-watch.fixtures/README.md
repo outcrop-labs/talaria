@@ -23,3 +23,7 @@ taken while they were open and are used as recorded.
 
 To record another: run the two commands above for the pull request and its `headRefOid`, save
 them here, and name the case in the test after what the recording shows.
+
+The `review-*` and `offload-review-check.json` fixtures are SYNTHESISED in GitHub's shapes
+(check-run annotations, issue comments with `--slurp` pages, rollup check runs) for the
+`judge (review)` reading; they are replaced by recordings after the first calibration run.

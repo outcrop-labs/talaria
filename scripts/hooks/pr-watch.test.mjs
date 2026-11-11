@@ -36,7 +36,13 @@ import {
   resolveCiWorkflow,
   targetRepoOf,
   workflowNameOf,
+  reviewCheckOf,
+  reviewOutcome,
+  finalKind,
+  reviewLines,
+  reviewHoldText,
 } from './pr-watch.mjs'
+import { readReview } from '../judge-review-wire.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const fixture = (name) => JSON.parse(readFileSync(join(HERE, 'pr-watch.fixtures', name), 'utf8'))
@@ -1035,8 +1041,9 @@ check('a rollup entry of the CI offload workflow is ignored, by name, with no ru
   const pr = asOpen(PR599)
   pr.statusCheckRollup.push(offloadCheck('offload / mcp end-to-end (playwright)', { status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: '' }))
   eq(classify(pr, { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'CI', offloadWorkflow: 'CI offload' }).kind, 'green')
-  // with no ci-offload.yml (no name) and no offload run, it is just a check like any other
-  eq(classify(pr, { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'CI' }).kind, 'red')
+  // with no ci-offload.yml (no name) and no offload run, the `offload / ` name still drops it:
+  // ci-offload.yml's convention, so an offload's check never counts as the PR's own
+  eq(classify(pr, { head: HEAD_OK, runs: RUNS599, ciWorkflow: 'CI' }).kind, 'green')
   // a check of the PR's own CI is never dropped by an offload name
   const own = normalize(PR599.statusCheckRollup.find((c) => c.workflowName === 'CI'))
   eq(dropOffload([own], { workflow: 'CI offload', runIds: [String(OFFLOAD_RUN)] }).length, 1)
@@ -1132,6 +1139,94 @@ check('branchNote: the snapshot is read-only; a feature on its own branch says n
   ok(/frozen snapshot of `testing`/.test(branchNote({ ...lanePr('rc', 'promote/testing-abc'), number: 9 }, 'promote/testing-abc')), 'snapshot note')
   eq(branchNote({ ...lanePr('testing', 'wt/x'), number: 9 }, 'wt/x'), '')
   ok(/This checkout is on `wt\/y`/.test(branchNote({ ...lanePr('testing', 'wt/x'), number: 9 }, 'wt/y')), 'another branch')
+})
+
+
+// ── the review: judge (review)'s annotations and the answers ───────────────
+
+const REVIEW_CHECK_ROW = normalize({ name: 'judge (review)', workflowName: 'judge review', status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: 'https://github.com/outcrop-labs/talaria/actions/runs/700/job/701' })
+const RPR = { number: 9, url: 'https://github.com/outcrop-labs/talaria/pull/9', headRefOid: 'abcdef0123456789', baseRefName: 'testing' }
+const outcome = (annotations, o = {}) => reviewOutcome({ check: REVIEW_CHECK_ROW, annotations: fixture(annotations), comments: [], prAuthor: 'agent-author', prBase: 'testing', ...o })
+
+check('review: the annotations parse back into the verdict and the findings', () => {
+  const r = readReview(fixture('review-annotations-holding.json'))
+  eq([r.verdict.status, r.verdict.gate, r.findings.map((f) => [f.id, f.mark])], ['reviewed', 'blockers', [['jr-1a2b3c4d', 'gate'], ['jr-5e6f7a8b', null]]])
+})
+
+check('review: a gate finding nobody answered holds — token review, after green', () => {
+  const o = outcome('review-annotations-holding.json')
+  eq([o.status, o.holding], ['reviewed', ['jr-1a2b3c4d']])
+  eq(finalKind({ kind: 'green' }, o), 'review')
+  const text = reviewHoldText(RPR, o)
+  ok(/holds 1 confirmed blocker\(s\) nobody has answered/.test(text) && text.includes("gh pr comment 9 --body 'judge-review answer jr-1a2b3c4d:"), text)
+})
+
+check('review: red, conflict and pending outrank a hold', () => {
+  const o = outcome('review-annotations-holding.json')
+  for (const kind of ['red', 'conflict', 'pending']) eq(finalKind({ kind }, o), kind)
+})
+
+check("review: an answer from the author clears; a non-collaborator's or a short one does not", () => {
+  const o = outcome('review-annotations-holding.json', { comments: fixture('review-comments-answered.json') })
+  eq([o.holding, o.answered], [[], ['jr-1a2b3c4d']])
+  eq(finalKind({ kind: 'green' }, o), 'green')
+  const other = outcome('review-annotations-holding.json', { comments: fixture('review-comments-answered.json'), prAuthor: 'someone-else' })
+  eq(other.holding, ['jr-1a2b3c4d'])
+})
+
+check('review: report mode is green, lists the findings, and never prints failure or fix text', () => {
+  const o = outcome('review-annotations-report.json')
+  eq([o.holding, finalKind({ kind: 'green' }, o)], [[], 'green'])
+  const { clause, lines } = reviewLines(o)
+  eq(clause, ' judge (review): reviewed, 2 to read, $0.0123.')
+  ok(lines[0].startsWith('  jr-1a2b3c4d blocker security api/crates/demo/src/lib.rs:5 — User input is formatted into SQL'), lines[0])
+  ok(!lines.join('\n').includes('reaches query_one') && !lines.join('\n').includes('the PR comment has the fix'), 'failure text reached the terminal')
+  eq(lines.at(-1), '  (+1 more in the PR comment, not confirmed — no action needed)')
+})
+
+check('review: a would-gate title never holds, even under blockers', () => {
+  const ann = fixture('review-annotations-report.json').flat().map((a) => (a.title === 'judge-review verdict' ? { ...a, message: a.message.replace('gate=report', 'gate=blockers') } : a))
+  eq(reviewOutcome({ check: REVIEW_CHECK_ROW, annotations: ann, comments: [], prBase: 'testing' }).holding, [])
+})
+
+check('review: not reviewed is a note; an unreadable review says so; neither holds', () => {
+  const o = outcome('review-annotations-not-reviewed.json')
+  eq([o.status, o.reason, o.holding], ['not-reviewed', 'no-key', []])
+  eq(reviewLines(o).clause, ' judge (review): not-reviewed (no-key).')
+  const u = reviewOutcome({ check: REVIEW_CHECK_ROW, error: 'findings not read: HTTP 502' })
+  eq([u.status, finalKind({ kind: 'green' }, u)], ['unread', 'green'])
+  ok(reviewLines(u).clause.includes('findings not read'), reviewLines(u).clause)
+  eq(reviewOutcome({ check: null }).status, 'absent')
+})
+
+check('review: an ANSI escape in a title is stripped', () => {
+  const { lines } = reviewLines(outcome('review-annotations-report.json'))
+  ok(!lines.join('').includes('\u001b') && lines[1].includes('delete_doc no longer checks the caller'), lines[1])
+})
+
+check('review: a review made against another base is stale, never holds, and names the rerun', () => {
+  const o = outcome('review-annotations-stale.json')
+  eq([o.status, o.holding, o.rerun], ['stale', [], 'gh run rerun 700'])
+  ok(reviewLines(o).lines.at(-1) === '  judge (review) reviewed against rc; re-run it: gh run rerun 700', reviewLines(o).lines.at(-1))
+})
+
+check('review: a SKIPPED latest check does not hide an earlier review; an offload review is never the PR\'s', () => {
+  const rows = fixture('review-checks-skipped-latest.json').map(normalize)
+  eq(reviewCheckOf(rows).jobId, 100)
+  const offload = normalize(fixture('offload-review-check.json'))
+  eq(dropOffload([offload, ...rows]).length, 2)
+  eq(reviewCheckOf(dropOffload([offload])), null)
+})
+
+check('review: JUDGE_REVIEW_GATE=off (env or variable) releases a hold', () => {
+  const o = outcome('review-annotations-holding.json', { gateOverride: 'off' })
+  eq([o.gate, o.holding, finalKind({ kind: 'green' }, o)], ['off', [], 'green'])
+})
+
+check('review: the --json payload carries the review', () => {
+  const src = readFileSync(join(HERE, 'pr-watch.mjs'), 'utf8')
+  ok(/function payloadOf\(pr, result, ci, review = null\)[\s\S]*?review: review/.test(src), 'payloadOf has no review')
+  ok(src.includes("emit(2, 'pr-watch: review'"), 'no review token')
 })
 
 check('importing the watcher does not poll; a direct run still answers --help', () => {

@@ -53,13 +53,16 @@ Five entry points:
   that repository) or `CI` stand in, and the verdict says so. Every `gh` read names the PR's
   host (`--hostname` on `gh api`, `HOST/OWNER/REPO` on `--repo`), so a GitHub Enterprise PR,
   or a `GH_HOST` set for another host, does not send it elsewhere;
-  exit 2 names `red`, `conflict`, `pending`, `timeout`, `closed`, or `base` (a base in no
-  lane) on stderr
+  exit 2 names `red`, `conflict`, `pending`, `timeout`, `closed`, `base` (a base in no
+  lane), or `review` (only under `JUDGE_REVIEW_GATE=blockers`: a doubly confirmed
+  `judge (review)` blocker nobody answered) on stderr
   (`pending` comes at once, not at the wall clock, when only a push or a reconcile can
   change the head). It does not edit or push. Not wired as a Stop hook — [`ship-a-change`](../../.claude/skills/ship-a-change/SKILL.md)
   runs it, because whether a harness should spawn it on its own is an open call. Exit 0
-  prints one proof line to stdout (the state an agent may cite); every other rule of this
-  contract holds, including "could not run is not a pass".
+  prints one proof line to stdout (the state an agent may cite) — it may be followed by the
+  `judge (review)` findings to read (id, place, title) and, for a review made against another
+  base, a `gh run rerun <id>` line; every other rule of this contract holds, including
+  "could not run is not a pass".
 - [`remote-gate.mjs`](./remote-gate.mjs) — `bun run gate:remote`: CI before a pull request
   exists. It refuses a tree with tracked changes, `main`/`rc`/`testing`, and a branch that
   already has an open PR (that PR's CI is the proof; `pr-watch.mjs` reads it). Then it runs
@@ -68,7 +71,10 @@ Five entry points:
   `promote/` or `backflow/` branch: `ci/full/<branch>`), and watches the new `CI offload` run
   ([`../../.github/workflows/ci-offload.yml`](../../.github/workflows/ci-offload.yml)). It is
   red the moment any job fails, with that job's log tail, while the rest still run. Exit 0
-  prints one proof line naming the run, and deletes the ref. Exit 2's verdict opens with
+  waits (≤ 12 min) for the same push's `offload / judge (review)`, prints its findings as
+  `remote-gate: review — …` progress lines, then deletes the ref and prints one proof line
+  naming the run and ending `· review: …`; `--json` gains `review`. The review never changes
+  the exit, and `--no-review` skips the wait. Exit 2's verdict opens with
   the token line: `remote-gate: dirty`, `base`, `has-pr`, `check`, `fmt`, `no-run`, `red`,
   `cancelled`, `timeout` or `pending` (`--detach`). Anything on stderr before it is
   progress (always `remote-gate: <word> — …`), `bun run check`'s output, or `bun run`'s own
@@ -79,6 +85,12 @@ Five entry points:
   Procedure-invoked, not a hook: it runs for minutes, so run it in the harness's background
   mode and act on the exit. Nothing it leaves lasts: ci-offload's daily prune deletes `ci/**`
   refs older than 24 hours, and the cleanup sweep deletes a merged worktree's.
+- [`../judge-review.mjs`](../judge-review.mjs) — the model review (`judge (review)`, `bun run
+  judge`). Not a stop hook and not a gate: `review --github` (CI) always exits 0, a
+  `not reviewed: <reason>` notice included; locally exit 0 is nothing to read, 2 is at least
+  one confirmed finding to read, 1 could not run (no key: `--dry-run` needs none).
+  `calibrate` and `canary` are 0 (bar met) / 2 (bar missed) / 1 (could not run) everywhere —
+  they run on their own workflow, never on a pull request.
 - [`testing-watch.mjs`](./testing-watch.mjs) — after a pull request merges into `testing`:
   is it live on the [testing instance](../../docs/TESTING-INSTANCE.md) yet? It polls the
   instance's `/api/healthz` until the version it reports (`testing-<sha12>`) is a commit that

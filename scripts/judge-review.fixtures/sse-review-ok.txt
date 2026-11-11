@@ -1,0 +1,23 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"Reading the diff first. "},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"","reasoning_details":[{"type":"reasoning.text","text":"the quoted line formats input into SQL"}]},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"{\"summary\":\"Formats the user name into the lookup query and drops the delete permission check.\",\"findings\":[{\"severity\":\"blocker\",\"category\":\"security\",\"rule_id\":\"none\",\"file\":\"api/crates/demo/src/lib.rs\",\"line\":5,\"quote\":\"    let sql = format!(\\\"select * from users where name = '{}'\\\", name);\",\"title\":\"User input is formatted in"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"to SQL\",\"failure\":\"A name of x' or '1'='1 reaches query_one as SQL text, so find_user returns every user's row to the caller.\",\"fix\":\"Keep the bound parameter: query_one(\\\"... where name = $1\\\", &[&name]).\",\"rule\":\"none\",\"confidence\":\"high\"},{\"severity\":\"major\",\"category\":\"security\",\"rule_id\":\"none\",\"file\":\"api/crates/demo/src/li"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"b.rs\",\"line\":10,\"quote\":\"pub fn delete_doc(db: &Db, _caller: &User, id: &str) -> Result<(), Error> {\",\"title\":\"delete_doc no longer checks the caller\",\"failure\":\"Any caller that reaches delete_doc deletes any document by id; the can_delete check the base had is gone.\",\"fix\":\"Restore `if !caller.can_delete(id) { return Err(Error::"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"Forbidden) }`.\",\"rule\":\"none\",\"confidence\":\"high\"},{\"severity\":\"minor\",\"category\":\"test-gap\",\"rule_id\":\"none\",\"file\":\"api/crates/demo/src/lib.rs\",\"line\":22,\"quote\":\"        assert_eq!(super::only_tested(), 1);\",\"title\":\"No test sends a quote in the name\",\"failure\":\"A name containing a single quote is never exercised by a test, so"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":" the injection is not caught.\",\"fix\":\"Add a test with name = \\\"x' or '1'='1\\\".\",\"rule\":\"none\",\"confidence\":\"medium\"}],\"verification_gap\":\"The entry says the lookup was exercised but names no input with a quote in it.\",\"could_not_judge\":[\"Whether any caller of find_user validates the name first: no caller is in this change.\"]}"},"finish_reason":null}]}
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[],"usage":{"prompt_tokens":9000,"completion_tokens":900,"total_tokens":9900,"cost":0.0042,"completion_tokens_details":{"reasoning_tokens":600},"prompt_tokens_details":{"cached_tokens":0}}}
+
+data: [DONE]

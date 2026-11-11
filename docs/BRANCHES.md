@@ -209,7 +209,8 @@ unchecked, and a burst of merges is covered by the run that finishes.
 | `rc-deploy.yml` | every push to `rc` | the commit's own image boots as a fresh instance and answers — the staging deploy |
 | `pr-target` (flow.yml) | pull requests into `main`, `rc`, `testing` | `main` takes only this repository's `rc`; `rc` takes only the lanes, checked from the commits; no title or body that would skip the merge's own push checks; no retarget into `rc` or `main` until a push re-runs the checks |
 | `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc` (CI green, deploy green, in runs made on `rc`) and carries no unrolled `changelog/` entries |
-| `judge.yml` | every pull request | the standards half: the flow (a feature aimed at `rc` or `main` is a `must`), the changelog claim against the surfaces touched, tests, generated trees, commit subjects — plus one sticky comment. Not a required check yet, on purpose |
+| `judge.yml` | every pull request | the exact rules (branch flow, changelog entry for user-visible paths, do-not-touch trees, PR-body asks), from the trusted branch's copy; one sticky comment from a job with no checkout; red on a deterministic `must` only |
+| `judge-review.yml` | same-repository non-draft pull requests; `ci/**` pushes as `offload / judge (review)` | a model's review (OpenRouter; model pinned in `scripts/judge-review.mjs`) run from the trusted branch: at most 3 confirmed line annotations, one sticky comment only when one is confirmed, cost in the summary. Never fails, never approves, never required |
 | `branch-push` (flow.yml) | pushes to `main`, `rc`, `testing` | content provenance: what a push introduces came from where it is allowed to come from |
 | `pre-push` (git hook) | a push from a wired clone | the same provenance rule, before the network |
 | `mobile-package.yml` | pull requests touching `mobile/`, pushes to rc/main, and on demand | a debug-signed Android APK attached to the run — an `adb install` artifact, not distributable |
@@ -376,10 +377,12 @@ Things about those lists that are easy to get wrong:
   promotion should merge itself; auto-merge is armed only when main's required
   checks name `promotion gate (rc verified)` — today they name nothing, so a
   person merges every promotion.
-- **The judge is deliberately NOT on any list.** `judge.yml` fails on a `must`,
-  and it stays advisory because a judge with a false positive that blocks a
-  merge teaches everyone to route around it. `pr target (flow)` already flags
-  the wrong door; add `judge (standards)` once its findings have earned it.
+- **Neither judge is on any list.** `judge (standards)` fails only on a
+  deterministic `must`. `judge (review)` never fails; with
+  `JUDGE_REVIEW_GATE=blockers`, pr-watch holds an agent's done on an
+  unanswered, doubly confirmed blocker — never a person's merge. The
+  testing-review approval stays a person's: the judges post comments, never
+  reviews, and Actions may not approve pull requests.
 - **A new context joins a ruleset only once its branch reports it.** A required
   context that the branch's own `ci.yml` never reports holds every pull request
   into it pending for ever. So `app image builds (docker)`, in the

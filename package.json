@@ -26,6 +26,7 @@
     "check": "bun scripts/check-invariants.mjs && bun scripts/check-docs.mjs && bun scripts/gen-docs.mjs --check && bun scripts/check-mcp-routes.mjs && bun scripts/changelog-roll.mjs --check && bun scripts/run-self-tests.mjs && bun scripts/gate.mjs --self-test",
     "gate": "bun scripts/gate.mjs",
     "gate:remote": "node scripts/hooks/remote-gate.mjs",
+    "judge": "node scripts/judge-review.mjs",
     "verify": "bun run check && bun run typecheck && bun run test"
   }
 }

@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "status": "reviewed",
+  "reason": null,
+  "usage": {
+    "cost": 0.02,
+    "ms": 120000,
+    "calls": [
+      {
+        "purpose": "review",
+        "attempt": 1,
+        "cost": 0.02
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "jr-7101a001",
+      "tier": "A",
+      "severity": "blocker",
+      "category": "correctness",
+      "confidence": "high",
+      "file": "ui/src/lib/knowledge-tree-state.svelte.ts",
+      "line": 70,
+      "endLine": 71,
+      "title": "hydrate writes $state while a $derived reads it",
+      "failure": "rendering the tree calls hydrate, which mutates state during render",
+      "gate": false,
+      "wouldGate": true,
+      "verified": "confirmed"
+    }
+  ]
+}

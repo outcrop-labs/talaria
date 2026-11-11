@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "status": "reviewed",
+  "reason": null,
+  "usage": {
+    "cost": 0.02,
+    "ms": 120000,
+    "calls": [
+      {
+        "purpose": "review",
+        "attempt": 1,
+        "cost": 0.02
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "jr-6841a001",
+      "tier": "A",
+      "severity": "major",
+      "category": "correctness",
+      "confidence": "high",
+      "file": "scripts/seed-target.mjs",
+      "line": 10,
+      "endLine": 10,
+      "title": "a path is joined without a check",
+      "failure": "a crafted name escapes the target directory",
+      "gate": false,
+      "wouldGate": false,
+      "verified": "confirmed"
+    }
+  ]
+}

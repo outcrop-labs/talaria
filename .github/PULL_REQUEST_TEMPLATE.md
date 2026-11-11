@@ -35,18 +35,11 @@ yours to fix here, but it is yours to name: reproduce it on a clean checkout of 
 under **Gate**, and say so. An absorbed failure hides a broken tree from every PR after this
 one ([`AGENTS.md`](../AGENTS.md) — "Parallel sessions share working trees").
 
-The **judge** comments on this pull request with what it can decide from the diff — where the
-base branch points, whether the changelog claim covers the surfaces you touched, tests,
-generated trees, commit subjects. Run it yourself before you push:
-
-```bash
-node scripts/judge-pr.mjs --base origin/testing --target testing
-```
-
-A finding it grades `must` is something this repository says about itself; fix it or argue it
-here. `should` and `ask` are for you and the reviewer to settle — never a reason to hold the
-change. What it cannot see (whether the change works) is
-[`.claude/skills/judge-pr/SKILL.md`](../.claude/skills/judge-pr/SKILL.md), which is a reading.
+Two judges comment. `judge (standards)` holds the exact rules; a `must` is red. `judge (review)`
+is a model's reading; it is never red. Before you push, run `bun run judge` (needs
+`JUDGE_OPENROUTER_API_KEY`), or `bun run gate:remote` to have your branch reviewed on GitHub. If
+you change the reviewer, paste the scorecard from a `judge-calibrate/<name>` push. How to read
+both: [`.claude/skills/judge-pr/SKILL.md`](../.claude/skills/judge-pr/SKILL.md).
 
 ## Branch flow
 

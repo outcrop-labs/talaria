@@ -2574,6 +2574,7 @@ const UNSET_SEAM_CENSUS = [
     ['scripts/hooks/pr-watch.mjs', "'pr-watch: red'", 'a failing check blocks; it is not a pass'],
     ['scripts/hooks/pr-watch.mjs', "'pr-watch: conflict'", 'a merge conflict blocks; it is not a pass'],
     ['scripts/hooks/pr-watch.mjs', 'MERGEABLE', 'a pass requires GitHub to have computed mergeable, not an empty rollup'],
+    ['scripts/hooks/pr-watch.mjs', "'pr-watch: review'", 'a confirmed, unanswered review blocker holds done when the gate is on'],
     ['AGENTS.md', 'scripts/hooks/pr-watch.mjs', 'the no-done rule points at the gate'],
     ['.claude/skills/ship-a-change/SKILL.md', 'scripts/hooks/pr-watch.mjs', 'the procedure runs the gate'],
   ]
@@ -2595,6 +2596,54 @@ const UNSET_SEAM_CENSUS = [
         'on red and on conflict; exit 0 only when checks are green and mergeable). The procedure',
         'is .claude/skills/ship-a-change/SKILL.md. If one of them moved, update this check in the',
         'same commit — an anchor that points at nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
+// THE MODEL REVIEW IS WIRED END TO END, FROM THE TRUSTED TREE.
+//
+// `judge (review)` runs scripts/judge-review.mjs from the trusted branch's
+// tree (never the pull request's), with a dedicated key in one step; its
+// annotations are the wire scripts/judge-review-wire.mjs defines; pr-watch
+// reads them, and under JUDGE_REVIEW_GATE=blockers holds an agent's done until
+// a finding is fixed or answered (`judge-review answer <id>: …`). The self-test
+// runner strips every model key. Lose any link and the chain still looks
+// wired while doing nothing — or runs head code with the key.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['.github/workflows/judge-review.yml', 'persist-credentials: false', 'the trusted checkout holds no token'],
+    ['.github/workflows/judge-review.yml', 'judge (review)', "the check pr-watch reads, by name"],
+    ['.github/workflows/judge-review.yml', 'testing|rc|main)', 'only a protected branch is the trusted tree'],
+    ['.github/workflows/judge-review.yml', 'secrets.JUDGE_OPENROUTER_API_KEY', "the reviewer's own key, never the app's OPENROUTER_API_KEY"],
+    ['scripts/judge-review.mjs', 'DEFAULT_MODEL', 'the one pin of the model'],
+    ['scripts/judge-review.mjs', 'stop-commands', 'model and PR text cannot forge a workflow command'],
+    ['scripts/run-self-tests.mjs', 'JUDGE_OPENROUTER_API_KEY', 'no self-test ever sees a model key'],
+    ['.claude/skills/judge-pr/SKILL.md', 'judge-review answer', 'the skill teaches the answer syntax the gate reads'],
+    ['.claude/skills/ship-a-change/SKILL.md', 'pr-watch: review', 'the procedure names the review hold'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) {
+      found.push({ path: file, line: 0, text: 'missing' })
+    } else if (!text.includes(needle)) {
+      found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+    }
+  }
+  if (found.length) {
+    failures.push({
+      id: 'judge-review-anchors',
+      what: 'the model review chain has a missing link',
+      fix: [
+        'The chain is: judge-review.yml checks out the trusted tree (testing, rc or main) and runs',
+        "that tree's scripts/judge-review.mjs with JUDGE_OPENROUTER_API_KEY in the Review step only →",
+        'the reviewer prints its verdict and Tier A findings as annotations (judge-review-wire.mjs) →',
+        'pr-watch reads them and, under JUDGE_REVIEW_GATE=blockers, holds with `pr-watch: review` →',
+        'the agent fixes it or answers `judge-review answer <id>: <why>` (the judge-pr and ship-a-change',
+        'skills teach both). If one link moved, move this check in the same commit.',
       ],
       found,
     })
