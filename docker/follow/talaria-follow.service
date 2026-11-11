@@ -1,0 +1,26 @@
+# talaria-follow — one pass of the testing instance's follower
+# (/usr/local/bin/talaria-follow, a copy of docker/follow/talaria-follow.sh).
+# talaria-follow.timer starts it; docs/TESTING-INSTANCE.md is the runbook.
+#
+# Install (as root):
+#   install -m 0755 /home/talaria/talaria/docker/follow/talaria-follow.sh /usr/local/bin/talaria-follow
+#   cp /home/talaria/talaria/docker/follow/talaria-follow.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now talaria-follow.timer
+# Edit User= and the paths below if the instance runs as another user.
+
+[Unit]
+Description=Talaria testing instance: follow the :testing image
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=talaria
+WorkingDirectory=/home/talaria/talaria
+# Registry mode, the same three files `bun talaria service install` captures:
+# the follower's `deploy up` pulls the image, never builds the checkout.
+Environment=COMPOSE_FILE=docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml
+ExecStart=/usr/local/bin/talaria-follow
+# A cold pull of the app image plus a migration pass on boot.
+TimeoutStartSec=20min
+Nice=10

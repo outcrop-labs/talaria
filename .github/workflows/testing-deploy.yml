@@ -1,0 +1,292 @@
+# The testing lane's continuous deploy — every push to `testing` becomes an
+# image the testing instance runs.
+#
+# WHAT IT DOES, per push to testing:
+#   1. api-package     the dev-profile api package for this commit
+#                      (api-package.yml, CALLED): `talaria-api:sha-<sha12>-dev`,
+#                      cached under its own `buildcache-dev` ref.
+#   2. build-smoke     this commit's app image with that package pinned in,
+#                      booted fresh and asserted by scripts/deploy-smoke.mjs
+#                      (the same assertions rc-deploy.yml makes), then saved
+#                      as a one-day workflow artifact. It can only READ packages.
+#   3. publish         pushes the image as `testing-<sha12>` (immutable) and,
+#                      only while this commit is still testing's tip, moves
+#                      `:testing` to it. It checks out nothing and runs no
+#                      repository script.
+#   4. verify          once TESTING_URL is set (a repository variable): waits
+#                      until the testing instance reports this commit, or a
+#                      later one, from /api/healthz.
+#   The instance PULLS: docker/follow/talaria-follow.sh on the VM reads the
+#   revision label of `:testing` and applies it. GitHub never reaches the VM,
+#   and nothing here holds a credential for it. docs/TESTING-INSTANCE.md is
+#   the whole chain, the VM side included.
+#
+# NEVER NAMED rc-deploy. flow.yml's promotion gate and promote.yml find rc's
+#   evidence by workflow NAME; a second workflow called `rc-deploy` would become
+#   that evidence (check-invariants.mjs, `branch-flow-anchors`). This run proves
+#   a testing commit booted, which is not what rc's evidence means.
+#
+# NO paths FILTER, AND NOT GATED ON CI. Every push moves the lane, and the
+#   instance should run what testing IS — including a commit whose CI is red,
+#   which is exactly when someone needs to look at it. Nothing here is a
+#   required check, so a red deploy blocks no merge; testing-watch.mjs and the
+#   run itself are where it shows.
+#
+# NO JOB THAT CAN WRITE PACKAGES RUNS REPOSITORY CODE. testing takes merges
+#   with one approval, or none by an admin, and GHCR's package write is not
+#   scoped by tag: a script run under `packages: write` could re-point
+#   `:main` (the in-app updater's feed), `:latest` or `:nightly`. So the build
+#   and the smoke (repository code: the Dockerfile's RUN steps, deploy-smoke.mjs)
+#   run in `build-smoke` under `packages: read` with an unpersisted checkout,
+#   and `publish` — the one job that writes — runs docker and gh only, on the
+#   image the artifact carries. api-package.yml's build runs `docker buildx`
+#   under the write token, but no repository script; that is the line
+#   check-invariants.mjs (`lane-write-jobs`) holds for every workflow a
+#   testing, ci/** or pull_request event starts.
+#
+# NEVER CANCELLED MID-RUN. A build cancelled halfway discards its registry
+#   cache export, and a merge burst would then cancel every build before
+#   `buildcache-dev` ever warmed, so `:testing` would not move until the lane
+#   went quiet. Each job queues instead: the run in flight finishes, and GitHub
+#   replaces the one pending run with the newest. publish's tip check is what
+#   keeps an older run from moving `:testing` backwards. rc-deploy.yml holds
+#   the same rule for the same reason.
+#
+# WHY EVERY JOB IS GATED ON ITS DISPATCH REF. A workflow_dispatch run executes
+#   this file AT THE DISPATCHED REF with its grants (`packages: write`), so a
+#   dispatch from a feature branch would publish that branch's copy under the
+#   org's tags. Dispatches come from testing (re-running a deploy that failed
+#   for a reason that was not the commit), or from nothing.
+name: testing-deploy
+
+on:
+  push:
+    branches: [testing]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  # A called workflow's jobs may request no more than the calling job grants,
+  # so `packages: write` sits on the call (rc-deploy.yml's pattern).
+  api-package:
+    name: api package (dev profile)
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/testing'
+    concurrency:
+      group: testing-deploy-api
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/api-package.yml
+    with:
+      ref: ${{ github.sha }}
+      tags: '' # the dev sha tag is api-package's own; no channel tag moves here
+      # The lane's whole value is landing fast, and the instance is not a
+      # performance proxy (docs/TESTING-INSTANCE.md): dev builds in minutes.
+      profile: dev
+
+  build-smoke:
+    name: build + smoke the testing image
+    needs: [api-package]
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/testing'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: testing-deploy-build
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      # Pulling the api package this run just pushed. READ: everything this
+      # job runs is the testing tree's own code.
+      packages: read
+    outputs:
+      tag: ${{ steps.b.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR (read)
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+
+      # VERSION is what /api/healthz reports: `testing-<sha12>` is what the
+      # smoke asserts, what the follow script compares, and what
+      # testing-watch.mjs resolves back to a commit.
+      - name: Build this commit's app image
+        id: b
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          PIN: ${{ needs.api-package.outputs.image }}
+        run: |
+          set -eu
+          tag="testing-$(git rev-parse HEAD | cut -c1-12)"
+          docker build --platform linux/amd64 \
+            --build-arg "TALARIA_API_IMAGE=$PIN" \
+            --build-arg "VERSION=$tag" \
+            --build-arg "REVISION=$(git rev-parse HEAD)" \
+            --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "$IMAGE:$tag" .
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "built $IMAGE:$tag (api pin: $PIN)"
+
+      - name: Deploy smoke
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG: ${{ steps.b.outputs.tag }}
+        run: node scripts/deploy-smoke.mjs --image "$IMAGE:$TAG" --expect-version "$TAG"
+
+      # The image crosses to the publish job as an artifact, never as a push
+      # from here: this job holds no write token.
+      - name: Save the image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG: ${{ steps.b.outputs.tag }}
+        run: |
+          set -eu
+          docker save "$IMAGE:$TAG" | gzip -1 > "$RUNNER_TEMP/image.tar.gz"
+          ls -l "$RUNNER_TEMP/image.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: testing-image-${{ github.sha }}
+          path: ${{ runner.temp }}/image.tar.gz
+          retention-days: 1
+          # Already gzip'd; a second pass costs time and saves nothing.
+          compression-level: 0
+
+  publish:
+    name: move the testing tag
+    needs: [build-smoke]
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/testing'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: testing-deploy-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write # the GHCR push — which is why nothing below is the repository's code
+    outputs:
+      moved: ${{ steps.move.outputs.moved }}
+    steps:
+      # NO checkout and no repository script (the header says why): the
+      # artifact, docker, and gh.
+      - uses: actions/download-artifact@v4
+        with:
+          name: testing-image-${{ github.sha }}
+          path: ${{ runner.temp }}/image
+
+      - name: Load the image
+        run: docker load < "$RUNNER_TEMP/image/image.tar.gz"
+
+      - name: Log in to GHCR
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${ACTOR}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+
+      # Immutable first, then the moving tag — and the moving tag only while
+      # this commit is still testing's tip. Runs finish out of order (a later
+      # push's api build can be a cache hit), so without the check an older
+      # run could move `:testing` backwards over a newer one; the newer run
+      # moves it instead. The re-point copies the manifest, so `:testing` and
+      # `testing-<sha12>` share one digest.
+      - name: Push testing-<sha12>, then move :testing if this is still the tip
+        id: move
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG: ${{ needs.build-smoke.outputs.tag }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          case "$TAG" in
+            testing-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "::error::refusing to publish an unexpected tag '$TAG'"; exit 1 ;;
+          esac
+          docker push "$IMAGE:$TAG"
+          tip=$(gh api "repos/$REPO/git/ref/heads/testing" --jq .object.sha)
+          if [ "$tip" != "$SHA" ]; then
+            echo "::notice::testing moved on (tip ${tip:0:12}); :$TAG stays published, and the newer run moves :testing"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          docker buildx imagetools create --tag "$IMAGE:testing" "$IMAGE:$TAG"
+          echo "moved=true" >> "$GITHUB_OUTPUT"
+          echo "$IMAGE:testing → $TAG ($(docker buildx imagetools inspect "$IMAGE:testing" --format '{{json .Manifest.Digest}}' | tr -d '"'))"
+
+  # The instance's half: it pulls on its own clock (the follow script's timer
+  # and minimum gap), so this waits for /api/healthz to name the commit. Off
+  # until the testing VM exists and TESTING_URL names it.
+  verify:
+    name: testing instance runs this commit
+    needs: [build-smoke, publish]
+    if: >-
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/testing')
+      && needs.publish.outputs.moved == 'true' && vars.TESTING_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: testing
+      url: ${{ vars.TESTING_URL }}
+    steps:
+      - name: Wait for the instance to report this commit
+        env:
+          URL: ${{ vars.TESTING_URL }}
+          TAG: ${{ needs.build-smoke.outputs.tag }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          # Only when Cloudflare Access fronts the host (docs/TESTING-INSTANCE.md).
+          CF_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -u
+          hdr=()
+          if [ -n "$CF_ID" ] && [ -n "$CF_SECRET" ]; then
+            hdr=(-H "CF-Access-Client-Id: $CF_ID" -H "CF-Access-Client-Secret: $CF_SECRET")
+          fi
+          health="${URL%/}/api/healthz"
+          body=''
+          deadline=$(( $(date +%s) + 20 * 60 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if body=$(curl -fsS --max-time 10 "${hdr[@]}" "$health" 2>&1); then
+              version=$(printf '%s' "$body" | jq -r '.version // ""' 2>/dev/null || true)
+              status=$(printf '%s' "$body" | jq -r '.status // ""' 2>/dev/null || true)
+              if [ "$status" = ok ] && [ "$version" = "$TAG" ]; then
+                echo "live: $URL runs $TAG"
+                exit 0
+              fi
+              # A later testing commit that contains this one is this commit, live.
+              case "$version" in
+                testing-[0-9a-f]*)
+                  if [ "$status" = ok ] && [ "$version" != "$TAG" ]; then
+                    running=$(gh api "repos/$REPO/commits/${version#testing-}" --jq .sha 2>/dev/null || true)
+                    if [ -n "$running" ]; then
+                      rel=$(gh api "repos/$REPO/compare/$SHA...$running" --jq .status 2>/dev/null || true)
+                      if [ "$rel" = ahead ]; then
+                        echo "live: $URL runs $version, which contains ${SHA:0:12}"
+                        exit 0
+                      fi
+                    fi
+                  fi ;;
+              esac
+              echo "waiting: $URL reports version=${version:-?} status=${status:-?}"
+            else
+              echo "waiting: $health did not answer ($body)"
+            fi
+            tip=$(gh api "repos/$REPO/git/ref/heads/testing" --jq .object.sha 2>/dev/null || true)
+            if [ -n "$tip" ] && [ "$tip" != "$SHA" ]; then
+              echo "::notice::superseded: testing moved on to ${tip:0:12}, whose run verifies the instance"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::$URL never reported $TAG within 20 minutes. Last answer: ${body:-none}. On the VM: \`journalctl -u talaria-follow -n 100\`; a hold file (~/.local/state/talaria-follow/hold) pauses the follower."
+          exit 1

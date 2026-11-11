@@ -148,6 +148,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | [`docs/CONTAINER.md`](./docs/CONTAINER.md) | The container deploy: production image, instance compose, env-only config, fleet networking, systemd boot, Dokploy |
 | [`RELEASING.md`](./RELEASING.md) | Release channels: nightly/RC/stable on GHCR, the branch model |
 | [`docs/BRANCHES.md`](./docs/BRANCHES.md) | How a change reaches `main`: pull requests to `rc`, the staging deploy, the promotion — and what refuses everything else |
+| [`docs/TESTING-INSTANCE.md`](./docs/TESTING-INSTANCE.md) | The instance that tracks `testing`: its deploy chain (testing-deploy, the follow script, `testing-watch`), provisioning, bootstrap, agent access, data rules and the reset runbook |
 | [`RELEASES/pre-alpha.md`](./RELEASES/pre-alpha.md) | The pre-alpha release notes |
 | [`docs/BACKUPS.md`](./docs/BACKUPS.md) | What a snapshot contains, how to take one, and how to restore |
 | [`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md) | How secrets are protected, and the one rule that keeps them recoverable |
