@@ -175,6 +175,19 @@ jobs:
           set -eu
           git fetch --no-tags origin main rc
 
+          # The roll's and the promotion's bodies quote rc's commit subjects and
+          # changelog leads, and a merge commit carries its pull request's body —
+          # so a subject that names the bracketed skip markers would skip the
+          # merge's own push runs (rc's CI and rc-deploy, or main's CI and
+          # tag-release), and flow.yml's pr-target refuses such a body. Every
+          # body this job writes is passed through here first, which turns the
+          # brackets into parentheses: the text still reads, and no longer
+          # skips. (No line of either body can open with a `skip-checks:`
+          # trailer — each quoted line starts with a sha or a `- `.)
+          defang() {
+            sed -i -E 's/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]/(\1)/Ig' "$1"
+          }
+
           # Nothing to promote: rc's tip is already reachable from main, which is
           # the state right after every promotion (the merge commit carries it).
           # This is also why a pull request is only ever opened for content that
@@ -321,6 +334,7 @@ jobs:
 
           Merge it as a **merge commit**. If rc moves first, this pull request is rolled again from the new tip.
           EOF
+            defang "$RUNNER_TEMP/roll.md"
 
             # A promotion already open carries entries outside any section, and
             # flow.yml's gate now fails it. Hold it before anything else here
@@ -433,6 +447,7 @@ jobs:
           The model, and the settings that hold it:
           [\`docs/BRANCHES.md\`](https://github.com/$REPO/blob/main/docs/BRANCHES.md).
           EOF
+          defang "$RUNNER_TEMP/body.md"
 
           # What happens next, written where the person who has to act reads it.
           if [ -n "$BOT_TOKEN" ]; then

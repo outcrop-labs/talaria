@@ -2378,6 +2378,8 @@ const UNSET_SEAM_CENSUS = [
     ['.github/workflows/flow.yml', 'flow-guard.mjs', 'the policy script, wired server-side'],
     ['.github/workflows/flow.yml', '.head_branch == "rc"', "the promotion gate's evidence is rc's own runs, not any run of the sha"],
     ['.github/workflows/promote.yml', '.head_branch == "rc"', "the promotion's evidence is the gate's: rc's own runs"],
+    ['.github/workflows/promote.yml', 'defang "$RUNNER_TEMP/roll.md"', "the roll's body quotes changelog leads, and pr-target refuses a skip marker in it"],
+    ['.github/workflows/promote.yml', 'defang "$RUNNER_TEMP/body.md"', "the promotion's body quotes rc's commit subjects, and pr-target refuses a skip marker in it"],
     ['scripts/hooks/pre-push', 'flow-guard.mjs', 'the same policy, wired before the push leaves the machine'],
     ['scripts/flow-guard.mjs', "'main'", 'the trunk the policy polices'],
     ['scripts/flow-guard.mjs', "'rc'", 'the release candidate the policy polices'],
