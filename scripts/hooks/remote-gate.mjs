@@ -78,10 +78,13 @@
 //       [--json] [--timeout <min>] [--keep-ref] [--no-check]
 //
 //   --full       push to ci/full/<branch>: every surface and platform.
-//   --detach     push, find the run, print its id, exit 2 `pending`.
+//   --detach     push, find the run, print its id, exit 2 `pending` (with
+//                --rerun: start the re-run, and exit the same way).
 //   --watch <id> skip everything before the wait and watch that run.
 //   --rerun      re-run the failed jobs of this commit's latest finished
 //                offload run (or of `--watch <id>`'s), and watch the attempt.
+//                Refused once the ref holds another commit: a re-run joins
+//                the ref's concurrency group and would cancel that one's run.
 //   --json       stdout is {token, run_url, head_sha, ref, mode, attempt,
 //                ran, skipped, failing, pending} for exit 0 and exit 2.
 //   --timeout    minutes to wait for the run (default 60).
@@ -875,9 +878,21 @@ async function main(opts) {
       const result = await watch(gh, target.id, { deadline: end })
       return report(gh, result, { ref, sha: target.head_sha, branch: branchOfRef(ref), opts })
     }
+    // A re-run joins the ref's concurrency group (ci-offload.yml): re-running
+    // an older commit's run would cancel the run of the commit the ref holds now.
+    const now = remoteSha(ref)
+    if (now === null) couldNotRun(`git ls-remote origin refs/heads/${ref} did not answer`)
+    if (now && now !== target.head_sha) {
+      couldNotRun(`${ref} has moved on to ${now.slice(0, 12)}: re-running ${target.html_url} (${String(target.head_sha).slice(0, 12)}) would cancel that commit's run — run gate:remote on the commit you want checked`)
+    }
     await api(gh, 'POST', `${repoPath(gh)}/actions/runs/${target.id}/rerun-failed-jobs`).catch((e) => couldNotRun(`re-run refused: ${e.message}`))
     const attempt = (Number(target.run_attempt) || 1) + 1
     progress('rerun', `re-running the failed jobs of ${target.html_url} as attempt ${attempt}`)
+    // --detach: the re-run is started; its id is the resume, as after a push.
+    if (opts.detach) {
+      setPayload({ ...target, run_attempt: attempt }, ref, target.head_sha)
+      block('pending', [target.html_url, `run ${target.id} attempt ${attempt} on ${ref} @ ${String(target.head_sha).slice(0, 12)}`, `resume: bun run gate:remote --watch ${target.id}`])
+    }
     const result = await watch(gh, target.id, { deadline: end, minAttempt: attempt })
     return report(gh, result, { ref, sha: target.head_sha, branch: branchOfRef(ref), opts })
   }

@@ -71,8 +71,8 @@ Four entry points:
   `cancelled`, `timeout` or `pending` (`--detach`). Anything on stderr before it is
   progress (always `remote-gate: <word> — …`), `bun run check`'s output, or `bun run`'s own
   `$ node …` echo. A red, cancelled or timed-out ref is kept, for
-  `--rerun` (re-run the failed jobs and watch the new attempt) and `--watch <run-id>`
-  (resume). It talks to GitHub over REST with a token — `GH_TOKEN`, `GITHUB_TOKEN`, or `gh
+  `--rerun` (re-run the failed jobs and watch the new attempt; refused once the ref holds
+  another commit, whose run a re-run would cancel) and `--watch <run-id>` (resume). It talks to GitHub over REST with a token — `GH_TOKEN`, `GITHUB_TOKEN`, or `gh
   auth token` — so a devbox needs no gh (`talaria box new <name> --env GH_TOKEN=…`).
   Procedure-invoked, not a hook: it runs for minutes, so run it in the harness's background
   mode and act on the exit. Nothing it leaves lasts: ci-offload's daily prune deletes `ci/**`
