@@ -14,7 +14,10 @@
 # events a GITHUB_TOKEN created, so that trigger sat silent through
 # desktop-v0.7.0 .. v0.10.0 and the store pin went four versions stale. The
 # release trigger stays for a release published by hand (a human token does
-# fire it), and workflow_dispatch is the manual door for a tag that missed.
+# fire it). It runs at the release's tag, outside the environment (WHY TWO
+# JOBS), so for a desktop-v release it ends red, naming the dispatch from main
+# that submits it. workflow_dispatch from main is the manual door for any tag
+# that missed.
 #
 # Needs OMAPAK_SUBMIT_TOKEN, a secret of the `desktop-release` environment: a
 # fine-grained PAT or GitHub App token with contents:write and
@@ -24,11 +27,14 @@
 # quiet success.
 #
 # WHY TWO JOBS. The token lives in that environment, whose policy admits main
-# and desktop-v* tags only, the same refs desktop-package.yml signs and
-# publishes from. Only `submit` names it, and only after `gate` has decided
-# there is something to submit. So a hand-published server v* release, whose
-# ref the environment refuses, still ends as a quiet skip and not a red run.
-# A dispatch from any other branch is refused by `gate` with the reason.
+# only, the one ref desktop-package.yml signs and publishes from. Only
+# `submit` names it, and only after `gate` has decided there is something to
+# submit. So a hand-published server v* release, whose ref the environment
+# refuses, still ends as a quiet skip and not a red run. Any other ref with a
+# desktop-v tag to submit is refused by `gate` with the way through: a
+# hand-published desktop-v release runs at its tag, which the environment
+# does not admit (a tag is not reviewed code; desktop-package.yml's header
+# says why), so it is submitted by a dispatch from main.
 name: omapak-submit
 
 on:
@@ -91,15 +97,15 @@ jobs:
             echo "go=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
-          # The token is in desktop-release, which admits main and desktop-v*
-          # tags only. A release event runs at the release's tag, and
-          # desktop-package.yml calls this from main or a desktop-v tag. So
-          # this refuses only a dispatch from some other branch, with the
-          # reason, before GitHub refuses the environment without one.
+          # The token is in desktop-release, which admits main only.
+          # desktop-package.yml calls this from main. A hand-published
+          # release's event runs at its tag, and a dispatch can run from any
+          # branch; both are refused here with the way through, before GitHub
+          # refuses the environment without one.
           case "$REF" in
-            refs/heads/main|refs/tags/desktop-v*) ;;
+            refs/heads/main) ;;
             *)
-              echo "::error::$REF cannot submit: OMAPAK_SUBMIT_TOKEN is in the desktop-release environment, which admits main and desktop-v* tags only. Dispatch this workflow from main with tag=$tag."
+              echo "::error::$REF cannot submit: OMAPAK_SUBMIT_TOKEN is in the desktop-release environment, which admits main only. Dispatch this workflow from main with tag=$tag: gh workflow run omapak-submit.yml --ref main -f tag=$tag"
               exit 1
               ;;
           esac

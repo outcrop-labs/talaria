@@ -308,11 +308,13 @@ update until Desktop passed 0.13. A `desktop-v*` release carries linux
 over all of them, and the `latest.json` and `.sig` files the updater reads,
 which need `TAURI_SIGNING_PRIVATE_KEY` (the matching pubkey is in
 `desktop/src-tauri/tauri.conf.json`). That key is a secret of the
-`desktop-release` environment, which admits only `main` and `desktop-v*` tags.
-So only those refs sign or publish: a `desktop-package` dispatch from any other
-branch builds every installer unsigned and attaches nothing. That is how to
-exercise an edit to the workflow, which no longer mints a release when it reaches
-main (only `desktop/` and the dither file do).
+`desktop-release` environment, which admits only `main`: not `desktop-v*` tags,
+because anyone with write access can point a new tag at unreviewed code. So only
+`main` signs or publishes. Once the repository-level copy of the key is deleted,
+a `desktop-package` dispatch from any other ref builds every installer unsigned
+and attaches nothing. That is how to exercise an edit to the workflow, which no
+longer mints a release when it reaches main (only `desktop/` and the dither file
+do).
 
 A trunk build that touches `desktop/` IS a desktop release — the auto-minor channel: once
 every platform job is green, `desktop-package.yml` mints `desktop-vX.Y.0`
@@ -326,12 +328,12 @@ but a desktop release. Installed apps read it when someone checks for updates;
 they do not update unasked. The `desktop-v*`
 namespace keeps a desktop auto-minor from ever firing `release.yml` (its tag
 trigger is `v[0-9]*`). Auto never crosses a major: **majors (and any
-hand-picked number) are manual** — dispatch `desktop-package` with
+hand-picked number) are manual** — dispatch `desktop-package` from `main` with
 `version=1.0.0` and `publish=true`. A stable `vX.Y.Z` cut raises the baseline
 the same way; before cutting one, check it exceeds the highest `desktop-v*`
 tag (the auto math resumes from whichever is higher). To re-attach installers
 to an existing `desktop-v*` release, re-run its `desktop-package` run, or
-dispatch with `version` and `release_tag` filled in — also the way to finish a
+dispatch it from `main` with `version` and `release_tag` filled in — also the way to finish a
 mint whose run was cancelled mid-attach; `--clobber` makes either idempotent.
 A plain dispatch without `publish` builds artifacts only, nothing minted.
 
@@ -346,8 +348,10 @@ release that never reaches the store is a red run, not a quiet success.
 Before any work the job asks GitHub's git server whether the token may push
 (receive-pack's ref advertisement), and a token that may not fails there with
 the reason: rejected outright, or valid without Contents write. Then
-regenerate it and re-run the job by dispatch with the tag.
-A server `v*` release does not submit: it carries no desktop build.
+regenerate it and re-run the job by a dispatch from `main` with the tag.
+A server `v*` release does not submit: it carries no desktop build. A
+`desktop-v*` release published by hand runs at its tag, which the environment
+does not admit, so its run fails with that same dispatch to make.
 
 Nothing is signed or notarized yet. That is a provisioning decision, not an
 oversight: it takes an Apple Developer certificate and a Windows signing key.

@@ -11,7 +11,7 @@
 // A copy of the logic here would pass after the workflow changed.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -157,6 +157,49 @@ try {
   check('an rc tag on a scratch branch is refused', () => refused(asTagPush('v1.2.0-rc.1', scratch), 'rc'))
   check("an rc tag on main's promotion merge, which rc does not have, is refused", () =>
     refused(asTagPush('v1.0.1-rc.1', promotion), 'rc'),
+  )
+
+  // tag-release.yml's hand-off, which is how a stable release really starts:
+  // it pushes the tag with the workflow token, whose push starts no run, and
+  // dispatches this workflow AT the tag. A stable dispatch first asks GitHub
+  // for every tag (the newest-stable check), so a `gh` on PATH answers from
+  // the served repository. GITHUB_SHA is given as the tag OBJECT, the
+  // unpeeled form: the check must hold whichever form a dispatch reports.
+  const bin = join(base, 'bin')
+  mkdirSync(bin)
+  writeFileSync(
+    join(bin, 'gh'),
+    [
+      '#!/bin/sh',
+      'case "$*" in',
+      `  "api repos/outcrop/talaria/git/matching-refs/tags/v "*) exec git -C '${repo}' tag -l 'v*' ;;`,
+      'esac',
+      'echo "fake gh: unexpected call: $*" >&2',
+      'exit 1',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  )
+  function asTagDispatch(tag, sha) {
+    git(repo, 'tag', '-f', '-a', '-m', tag, tag, sha)
+    return runStep({
+      EVENT: 'workflow_dispatch',
+      PATH: `${bin}:${process.env.PATH}`,
+      GITHUB_REF_TYPE: 'tag',
+      GITHUB_REF_NAME: tag,
+      GITHUB_REF: `refs/tags/${tag}`,
+      GITHUB_SHA: git(repo, 'rev-parse', tag),
+    })
+  }
+
+  check("a dispatch at a stable tag on main (tag-release.yml's hand-off) publishes", () =>
+    passes(asTagDispatch('v9.0.0', promotion), 'stable'),
+  )
+  check('a dispatch at the newest stable tag, cut on a scratch branch, is refused', () =>
+    refused(asTagDispatch('v9.1.0', scratch), 'main'),
+  )
+  check('a dispatch at an rc tag cut on a scratch branch is refused', () =>
+    refused(asTagDispatch('v9.1.0-rc.1', scratch), 'rc'),
   )
 
   check('a malformed tag fails on its shape, before any fetch', () => {

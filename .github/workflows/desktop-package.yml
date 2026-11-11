@@ -91,18 +91,26 @@
 # TAURI_SIGNING_PRIVATE_KEY, which every installed app checks a payload
 # against (tauri.conf.json carries the public half). It and the omapak
 # submission token are secrets of the `desktop-release` environment, whose
-# deployment policy admits main and desktop-v* tags and nothing else. The three
-# build jobs ask for that environment only on those refs (the `environment:`
-# expression; an empty name means no environment). A dispatch from any other
-# branch therefore builds, smokes and uploads its installers UNSIGNED:
-# sign-update.sh skips a payload when the key is absent. It never waits on
-# the environment, never reads the key, and is the way to exercise this file
-# (publish=false). Publishing is limited the same way. `resolve` refuses a
-# release from another ref, and `attach` and `omapak` run only on those refs,
-# so a branch nobody reviewed cannot open, fill or submit a release. The
-# repository-level copies of the secrets go once this reaches main and a build
-# there has signed through the environment (RELEASING.md). Until then, a job
-# with no environment would still read them.
+# deployment policy admits main and nothing else. The three build jobs ask for
+# that environment only on main (the `environment:` expression; an empty name
+# means no environment). A dispatch from any other ref therefore builds,
+# smokes and uploads its installers UNSIGNED: sign-update.sh skips a payload
+# when the key is absent. It never waits on the environment, never reads the
+# key, and is the way to exercise this file (publish=false). Publishing is
+# limited the same way. `resolve` refuses a release from another ref, and
+# `attach` and `omapak` run only on main, so a branch nobody reviewed cannot
+# open, fill or submit a release.
+#
+# WHY NOT desktop-v* TAGS TOO. A tag is not reviewed code. Anyone with write
+# access can point a new desktop-v tag at a commit on any branch, and a
+# dispatch at that tag would hold the key. With publish=true it would mint a
+# signed release that every installed app updates to. The mint itself runs
+# on main, and nothing here needs to run at a tag. So the environment admits
+# the branch only: reaching the key means merging to main.
+#
+# The repository-level copies of the secrets go once this reaches main and a
+# build there has signed through the environment (RELEASING.md). Until then, a
+# job with no environment would still read them.
 #
 # ONE CARGO BUILD PER RUN, THREE LINUX PACKAGERS. linux-pacman and
 # linux-flatpak consume the binary the `linux` job built rather than compiling
@@ -262,15 +270,15 @@ jobs:
             [ -n "$tag" ] || tag="desktop-v$version"
             mint=true
           fi
-          # ONLY main AND desktop-v TAGS PUBLISH (the header's environment
-          # section). From any other ref, `attach` and `omapak` never run, so a
-          # release asked for there would end as an hour of unsigned builds
-          # that are attached nowhere. Say so now, before the builds.
+          # ONLY main PUBLISHES (the header's environment section). From any
+          # other ref, `attach` and `omapak` never run, so a release asked for
+          # there would end as an hour of unsigned builds that are attached
+          # nowhere. Say so now, before the builds.
           case "$REF" in
-            refs/heads/main|refs/tags/desktop-v*) ;;
+            refs/heads/main) ;;
             *)
               if [ -n "$tag" ]; then
-                echo "::error::this run would publish to $tag from $REF, and only main and desktop-v* tags publish: they alone reach the desktop-release environment that holds the updater key. Dispatch from main, or leave publish off and release_tag empty for an unsigned build whose installers stay on the run."
+                echo "::error::this run would publish to $tag from $REF, and only main publishes: it alone reaches the desktop-release environment that holds the updater key. Dispatch from main, or leave publish off and release_tag empty for an unsigned build whose installers stay on the run."
                 exit 1
               fi ;;
           esac
@@ -284,10 +292,10 @@ jobs:
   linux:
     name: linux (deb + rpm + appimage)
     needs: [resolve]
-    # The updater key, on main and desktop-v tags only; any other ref builds
-    # unsigned with no environment (the header's environment section). The
-    # same expression is on macos and windows.
-    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/desktop-v')) && 'desktop-release' || '' }}
+    # The updater key, on main only; any other ref builds unsigned with no
+    # environment (the header's environment section). The same expression is
+    # on macos and windows.
+    environment: ${{ github.ref == 'refs/heads/main' && 'desktop-release' || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -531,7 +539,7 @@ jobs:
   macos:
     name: macos (dmg)
     needs: [resolve]
-    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/desktop-v')) && 'desktop-release' || '' }}
+    environment: ${{ github.ref == 'refs/heads/main' && 'desktop-release' || '' }}
     runs-on: macos-latest
     timeout-minutes: 60
     env:
@@ -707,7 +715,7 @@ jobs:
   windows:
     name: windows (nsis + msi)
     needs: [resolve]
-    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/desktop-v')) && 'desktop-release' || '' }}
+    environment: ${{ github.ref == 'refs/heads/main' && 'desktop-release' || '' }}
     runs-on: windows-latest
     timeout-minutes: 60
     # One shell for every step: quoting the version JSON into a native binary is
@@ -854,12 +862,12 @@ jobs:
   # It runs last so a half-built release never looks complete. The release is
   # either one this job opens itself for a minted desktop-v tag, or an existing
   # release a dispatch names in `release_tag` (a re-attach). The gate is "a
-  # release_tag exists, on main or a desktop-v tag". `resolve` already refuses
-  # a release from any other ref, and the ref test here is the second lock.
+  # release_tag exists, on main". `resolve` already refuses a release from any
+  # other ref, and the ref test here is the second lock.
   attach:
     name: attach installers to the release
     needs: [resolve, linux, linux-pacman, linux-flatpak, macos, windows]
-    if: needs.resolve.outputs.release_tag != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/desktop-v'))
+    if: needs.resolve.outputs.release_tag != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1001,7 +1009,7 @@ jobs:
   omapak:
     name: submit to omapak
     needs: [resolve, attach]
-    if: needs.resolve.outputs.release_tag != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/desktop-v'))
+    if: needs.resolve.outputs.release_tag != '' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
     uses: ./.github/workflows/omapak-submit.yml
