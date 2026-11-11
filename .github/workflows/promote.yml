@@ -67,9 +67,12 @@
 #   is not enough: a main whose required contexts do not name the gate would
 #   merge rc the moment this job asks. This file reads the contexts, requires
 #   `promotion gate (rc verified)` among them, and otherwise hands the pull
-#   request to a human with a warning naming the recipe. (Reading the rule needs
-#   admin rights the default token may not have; a failed read takes the same
-#   safe path as a missing context.)
+#   request to a human with a warning naming the recipe. It reads both layers
+#   that can require a check on main — the rulesets (readable with the token's
+#   metadata read) and the classic protection rule (which needs admin rights
+#   the token may not have) — and either one naming the gate is enough. A read
+#   that fails is an empty list, which takes the same safe path as a missing
+#   context.
 #
 # WHY A MERGE COMMIT. Squash and rebase rewrite the commits, and main's history
 #   has to keep the commits the staging deploy verified — that is the provenance
@@ -83,6 +86,15 @@
 #   dispatching a modified copy from a feature branch would hand its author
 #   `pull-requests: write`. The job's `if` refuses any dispatch that is not from
 #   main. (The trigger stays: re-running a wedged promotion is its purpose.)
+#
+# WHY A COMPLETED RUN WAKES IT ONLY FROM A PUSH OR A DISPATCH IN THIS
+#   REPOSITORY. A workflow_run job runs main's copy of this file with its
+#   secrets, whatever woke it, and `branches: [rc]` matches a run's head
+#   BRANCH NAME only — a fork's pull request from a branch it named `rc` has
+#   that name too. So the job's `if` also requires the run's event to be a
+#   push or a dispatch (both need write access here, and a re-run keeps its
+#   event) and its head repository to be this one. The evidence it then reads
+#   is rc's own runs, by the same filter as flow.yml's gate.
 #
 # WHY THE BODY IS REFRESHED EVERY TIME. rc moves while a promotion pull request
 #   waits, and the pull request picks the new commits up by itself (its head is
@@ -104,9 +116,11 @@ on:
   workflow_run:
     workflows: [CI, rc-deploy]
     types: [completed]
-    # rc's own runs only: its pushes, and the promotion pull request's (head
-    # rc). Any other pull request's CI, the roll's own included, is not news
-    # about rc, and a run woken by it would re-roll over a dispatched version.
+    # rc's own runs only. Any pull request's CI — the roll's, the promotion's,
+    # a fork's from a branch it named rc — is not news about rc, and a run woken
+    # by it would re-roll over a dispatched version; the branch filter matches
+    # a head branch NAME, so the job's `if` also requires a push or a dispatch
+    # from this repository.
     branches: [rc]
   # Manual re-promotion: a wedged promotion, a secret just added, or a roll at
   # a version other than the computed one. Dispatch it from main (the job's
@@ -131,7 +145,10 @@ jobs:
   promote:
     name: verify, then open or hand off the promotion
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+        && github.event.workflow_run.head_repository.full_name == github.repository)
       || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -157,6 +174,19 @@ jobs:
         run: |
           set -eu
           git fetch --no-tags origin main rc
+
+          # The roll's and the promotion's bodies quote rc's commit subjects and
+          # changelog leads, and a merge commit carries its pull request's body —
+          # so a subject that names the bracketed skip markers would skip the
+          # merge's own push runs (rc's CI and rc-deploy, or main's CI and
+          # tag-release), and flow.yml's pr-target refuses such a body. Every
+          # body this job writes is passed through here first, which turns the
+          # brackets into parentheses: the text still reads, and no longer
+          # skips. (No line of either body can open with a `skip-checks:`
+          # trailer — each quoted line starts with a sha or a `- `.)
+          defang() {
+            sed -i -E 's/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]/(\1)/Ig' "$1"
+          }
 
           # Nothing to promote: rc's tip is already reachable from main, which is
           # the state right after every promotion (the merge commit carries it).
@@ -197,13 +227,15 @@ jobs:
           # The evidence, read from the Actions API rather than inferred from
           # this run's inputs — the promotion gate's query, verbatim. The latest
           # SUCCESSFUL run per workflow, so a re-run after a flake is what the
-          # body points at. No `event=` filter: the commit is the identity, and a
-          # dispatched or re-run deploy verifies the same tree (flow.yml's gate
-          # makes the same call).
+          # body points at. Only runs made ON rc count (flow.yml's gate says
+          # why): the workflow name, a head branch of rc, and any event but
+          # pull_request — a push, a re-run or a dispatch of the same tree. A
+          # pull request's run, a push to testing, an offload or a release call
+          # of the same sha is not rc's evidence.
           runs=$(gh api "repos/$REPO/actions/runs?head_sha=$sha&per_page=100")
           url_for() {
             printf '%s' "$runs" | jq -r --arg name "$1" \
-              '[.workflow_runs[] | select(.name == $name and .conclusion == "success")]
+              '[.workflow_runs[] | select(.name == $name and .event != "pull_request" and .head_branch == "rc" and .conclusion == "success")]
                | sort_by(.run_started_at) | last | .html_url // "not found"'
           }
           ci=$(url_for CI)
@@ -302,6 +334,7 @@ jobs:
 
           Merge it as a **merge commit**. If rc moves first, this pull request is rolled again from the new tip.
           EOF
+            defang "$RUNNER_TEMP/roll.md"
 
             # A promotion already open carries entries outside any section, and
             # flow.yml's gate now fails it. Hold it before anything else here
@@ -414,6 +447,7 @@ jobs:
           The model, and the settings that hold it:
           [\`docs/BRANCHES.md\`](https://github.com/$REPO/blob/main/docs/BRANCHES.md).
           EOF
+          defang "$RUNNER_TEMP/body.md"
 
           # What happens next, written where the person who has to act reads it.
           if [ -n "$BOT_TOKEN" ]; then
@@ -471,14 +505,20 @@ jobs:
           # Arm auto-merge only where it would actually wait for the gate. The
           # required CONTEXTS are what matters — not the existence of a
           # protection rule, which a rule with no required checks also satisfies
-          # while gating nothing. A read this token cannot make (the endpoint
-          # wants admin) takes the same path as a missing context: warn, and
-          # leave the merge to a human.
-          contexts=$(gh api "repos/$REPO/branches/main/protection" \
+          # while gating nothing. Both layers apply to main at once, so both are
+          # read and either naming the gate is enough: the rulesets first (the
+          # rules in force on the branch, readable with metadata read), then the
+          # classic rule (the endpoint wants admin). A read this token cannot
+          # make is an empty list — the same path as a missing context: warn,
+          # and leave the merge to a human.
+          ruleset_contexts=$(gh api "repos/$REPO/rules/branches/main" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | join("|")' 2>/dev/null || echo '')
+          classic_contexts=$(gh api "repos/$REPO/branches/main/protection" \
             --jq '[.required_status_checks.contexts[]?] | join("|")' 2>/dev/null || echo '')
+          contexts=$(printf '%s|%s' "$ruleset_contexts" "$classic_contexts" | tr '|' '\n' | grep -v '^$' || true)
           if [ -z "$contexts" ]; then
-            echo "::warning::main's required checks could not be read (no protection rule, or this token cannot see it) — not arming auto-merge. #$num is a human's to merge; recipe: docs/BRANCHES.md"
-          elif ! printf '%s' "$contexts" | tr '|' '\n' | grep -qxF 'promotion gate (rc verified)'; then
+            echo "::warning::main's required checks could not be read (no ruleset or protection rule requires any, or this token cannot see them) — not arming auto-merge. #$num is a human's to merge; recipe: docs/BRANCHES.md"
+          elif ! printf '%s\n' "$contexts" | grep -qxF 'promotion gate (rc verified)'; then
             echo "::warning::main's required checks do not include 'promotion gate (rc verified)', so auto-merge would merge without the gate. Not arming it; #$num is a human's to merge. Recipe: docs/BRANCHES.md"
           elif gh pr merge "$num" --repo "$REPO" --auto --merge; then
             echo "auto-merge armed on #$num — a merge commit, once the required checks are green"

@@ -1,0 +1,521 @@
+# The testing lane's housekeeping — promotion snapshots into rc, the back-flow
+# from rc, the "testing is red" issue, and the daily full battery.
+#
+# WHAT IT DOES. One job, `lanes`, reconciles the lane on every run, whatever
+#   woke it; each part reads the current state, so a run that GitHub dropped
+#   from the queue is made up by the next one:
+#     health     the `testing-red` issue: open while testing's latest push CI
+#                run or its latest daily full battery is red, rewritten each
+#                run, closed when both are green.
+#     back-flow  rc moves on its own only by hotfixes, rolls and syncs of main,
+#                and testing has to carry those too: while rc has commits
+#                testing lacks, a `sync: rc → testing` pull request from
+#                `backflow/rc-<sha12>` (a branch cut at rc's tip, so a conflict
+#                is resolved there and never on rc).
+#     refresh    an open promotion's `rc @ <sha12>` line, rewritten when rc has
+#                moved. The edit fires `edited`, so `pr target (flow)` re-checks
+#                the promotion against the rc it would now merge into.
+#     readiness  on the weekday schedule and on dispatch: what testing has over
+#                rc, its CI and testing-deploy runs, the changelog leads, the
+#                testing instance. To the run summary.
+#     open       on dispatch with `open`: a FROZEN snapshot — a
+#                `promote/testing-<sha12>` branch cut at testing's tip and a
+#                pull request from it into rc. A moving head would restart the
+#                full battery and dismiss the approval on every merge into
+#                testing; a frozen one runs the battery once. An older open
+#                snapshot is closed as superseded.
+#   And on the schedule, `full-battery` runs ci.yml on testing's tip in full
+#   mode — macOS, Windows, iOS and e2e, which no testing push runs. It
+#   publishes nothing, is never evidence (this run is named promote-testing,
+#   and flow.yml and promote.yml look for `CI` and `rc-deploy`), and saves no
+#   cache (a schedule event).
+#
+# CADENCE. Promotion is on demand: dispatch this workflow from main with
+#   `open` when a candidate is wanted (docs/TESTING-INSTANCE.md). Everything else is
+#   automatic. workflow_run, schedule and dispatch all run MAIN's copy of this
+#   file, so a change here takes effect when it is promoted.
+#
+# THE TOKENS. Refs — the snapshot and back-flow branches, and deleting a
+#   superseded snapshot — are made with this job's own GITHUB_TOKEN
+#   (`contents: write`); the issue too (`issues: write`). Pull requests are
+#   opened and edited with PROMOTION_TOKEN, the same repository secret
+#   promote.yml uses (docs/BRANCHES.md says what it is): an event made with
+#   GITHUB_TOKEN starts no workflow, so a pull request opened with it would
+#   never have its checks run, and a body edit would never re-run
+#   `pr target (flow)`. Closing a superseded snapshot needs no workflow to
+#   fire, so that takes the job's own token. Without the secret this prints
+#   the exact commands instead, and creates no branch.
+#
+# NEVER A REPOSITORY SCRIPT. `lanes` holds write grants and runs main's copy
+#   with the repository's secrets, so it checks out nothing: it fetches the
+#   three branches' history (no blobs) into an empty directory and uses git,
+#   gh, jq, awk and perl only.
+#
+# A COMPLETED RUN WAKES IT ONLY FROM A PUSH IN THIS REPOSITORY. `branches:`
+#   matches a run's head branch NAME, which a fork's pull request can share,
+#   so the job's `if` also requires a push from this repository (promote.yml's
+#   rule). Schedule and dispatch take effect from main only.
+#
+# DORMANT UNTIL testing IS THE LANE. Until testing is brought up to rc (the
+#   cutover's fast-forward), its tip predates this file; every part would
+#   act on a stale branch — a back-flow of the whole of rc, an issue about runs
+#   from another era. So each job first asks whether testing's tree carries
+#   this file, and does nothing when it does not.
+name: promote-testing
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [testing, rc]
+  schedule:
+    # Weekdays, before the working day; off the hour.
+    - cron: '40 6 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      open:
+        type: boolean
+        default: false
+        description: 'open a testing → rc promotion from a fresh snapshot. A run shown as cancelled was replaced in the queue by a newer one: run it again'
+
+permissions:
+  contents: read
+
+jobs:
+  # testing's tip, read once, so the battery checks one commit and the issue
+  # can name it. Empty while testing predates this file (the header's DORMANT).
+  pin:
+    name: pin testing's tip
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.tip.outputs.sha }}
+    steps:
+      - name: Resolve testing's tip
+        id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if ! gh api "repos/$REPO/contents/.github/workflows/promote-testing.yml?ref=testing" --silent 2>/dev/null; then
+            echo "::notice::testing predates promote-testing.yml — it is not the lane yet (it is brought up to rc at the cutover). No battery today."
+            exit 0
+          fi
+          sha=$(gh api "repos/$REPO/git/ref/heads/testing" --jq .object.sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "testing @ $sha"
+
+  # The platform legs a testing push never runs, once a day, on one commit.
+  # A called job requests no more than the calling job grants, and ci.yml's
+  # `what changed` asks for actions: read (check-invariants.mjs, ci-call-grants).
+  full-battery:
+    name: testing, full battery (daily)
+    needs: [pin]
+    if: github.event_name == 'schedule' && needs.pin.outputs.sha != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.pin.outputs.sha }}
+      mode: full
+
+  lanes:
+    name: promotion snapshots, back-flow, testing health
+    # After the battery on the schedule, so the issue and the readiness summary
+    # carry today's verdict; on every other event both are skipped, and
+    # `!cancelled()` lets this run past a skipped or red need.
+    needs: [pin, full-battery]
+    if: >-
+      (github.event_name != 'workflow_run'
+        || (github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_repository.full_name == github.repository))
+      && (github.event_name == 'workflow_run' || github.ref == 'refs/heads/main')
+      && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job-level, not workflow-level: a workflow-level group would hold every
+    # CI completion — and a dispatch — behind the hour-long battery, and drop
+    # all but the newest of them. Two of these never race to open a pull request.
+    concurrency:
+      group: promote-testing-lanes
+      cancel-in-progress: false
+    permissions:
+      contents: write # the promote/* and backflow/* refs, and deleting a superseded snapshot
+      pull-requests: write # closing a superseded snapshot (opening and editing take PROMOTION_TOKEN)
+      issues: write # the testing-red issue
+      actions: read # the run lookups
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BOT_TOKEN: ${{ secrets.PROMOTION_TOKEN }}
+      REPO: ${{ github.repository }}
+      EVENT: ${{ github.event_name }}
+      TESTING_URL: ${{ vars.TESTING_URL }}
+      BATTERY_RESULT: ${{ needs.full-battery.result }}
+      BATTERY_SHA: ${{ needs.pin.outputs.sha }}
+    steps:
+      # History only: commits and trees of main, rc and testing, no blobs and
+      # no working tree — nothing of the repository's runs here. A changelog
+      # entry's text is fetched on demand, as data.
+      - name: Fetch the three branches' history (no checkout)
+        id: fetch
+        run: |
+          set -eu
+          git init -q .
+          git remote add origin "https://github.com/$REPO"
+          git config "http.https://github.com/.extraheader" \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git fetch -q --no-tags --filter=blob:none origin \
+            '+refs/heads/main:refs/remotes/origin/main' \
+            '+refs/heads/rc:refs/remotes/origin/rc' \
+            '+refs/heads/testing:refs/remotes/origin/testing'
+          if ! git ls-tree origin/testing .github/workflows/promote-testing.yml | grep -q .; then
+            echo "::notice::testing ($(git rev-parse --short=12 origin/testing)) predates promote-testing.yml — it is not the lane yet (it is brought up to rc at the cutover). Nothing to do."
+            echo "live=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "live=true" >> "$GITHUB_OUTPUT"
+          echo "testing @ $(git rev-parse --short=12 origin/testing) · rc @ $(git rev-parse --short=12 origin/rc) · main @ $(git rev-parse --short=12 origin/main)"
+
+      # ── health ─────────────────────────────────────────────────────────────
+      # Two verdicts, each the LATEST of its kind, so a lost event costs
+      # nothing: testing's newest completed push run of CI (a cancelled run is
+      # no verdict — the queue replaced it), and the newest daily battery (this
+      # run's own on the schedule). The issue is open while either is red.
+      - name: Testing health — the testing-red issue
+        id: health
+        if: steps.fetch.outputs.live == 'true'
+        run: |
+          set -eu
+          failing() {
+            gh api "repos/$REPO/actions/runs/$1/jobs?per_page=100" \
+              --jq "[.jobs[] | select($2) | select(.conclusion == \"failure\" or .conclusion == \"timed_out\") | .name | sub(\"^(testing, full battery \\\\(daily\\\\)|full-battery) / \"; \"\")] | join(\", \")"
+          }
+
+          ci_state=unknown ci_sha='' ci_url='' ci_jobs=''
+          row=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=testing&event=push&status=completed&per_page=30" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")] | first // empty | [.id, .conclusion, .head_sha, .html_url] | @tsv')
+          if [ -n "$row" ]; then
+            IFS=$'\t' read -r ci_id ci_conc ci_sha ci_url <<< "$row"
+            if [ "$ci_conc" = success ]; then ci_state=green; else ci_state=red; ci_jobs=$(failing "$ci_id" 'true'); fi
+          fi
+
+          # The battery's jobs are ci.yml's, nested under the calling job:
+          # `<caller> / <job>`, by the caller's name or its id.
+          battery='(.name | startswith("testing, full battery (daily) / ") or startswith("full-battery / "))'
+          bat_state=unknown bat_sha='' bat_url='' bat_jobs=''
+          if [ "$EVENT" = schedule ]; then
+            bat_url="https://github.com/$REPO/actions/runs/$GITHUB_RUN_ID"
+            bat_sha="$BATTERY_SHA"
+            case "$BATTERY_RESULT" in
+              success) bat_state=green ;;
+              failure) bat_state=red; bat_jobs=$(failing "$GITHUB_RUN_ID" "$battery") ;;
+            esac
+          fi
+          if [ "$bat_state" = unknown ] && [ "$EVENT" != schedule ]; then
+            row=$(gh api "repos/$REPO/actions/workflows/promote-testing.yml/runs?event=schedule&status=completed&per_page=10" \
+              --jq '.workflow_runs | first // empty | [.id, .html_url] | @tsv')
+            if [ -n "$row" ]; then
+              IFS=$'\t' read -r bat_id bat_url <<< "$row"
+              verdict=$(gh api "repos/$REPO/actions/runs/$bat_id/jobs?per_page=100" \
+                --jq "[.jobs[] | select($battery) | .conclusion] | if length == 0 then \"unknown\" elif any(. == \"failure\" or . == \"timed_out\") then \"red\" elif all(. == \"success\" or . == \"skipped\") then \"green\" else \"unknown\" end")
+              bat_state=$verdict
+              [ "$bat_state" != red ] || bat_jobs=$(failing "$bat_id" "$battery")
+            fi
+          fi
+
+          {
+            echo "ci_state=$ci_state"; echo "ci_url=$ci_url"
+            echo "bat_state=$bat_state"; echo "bat_url=$bat_url"; echo "bat_sha=$bat_sha"
+          } >> "$GITHUB_OUTPUT"
+          echo "integration CI: $ci_state ${ci_sha:0:12} $ci_url"
+          echo "full battery:   $bat_state ${bat_sha:0:12} $bat_url"
+
+          label=testing-red
+          issue=$(gh issue list --repo "$REPO" --label "$label" --state open --json number --jq '.[0].number // ""')
+          if [ "$ci_state" != red ] && [ "$bat_state" != red ]; then
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --repo "$REPO" --body "testing is green again — integration CI: ${ci_state} ${ci_url:-}; daily full battery: ${bat_state} ${bat_url:-}. Closing."
+              gh issue close "$issue" --repo "$REPO"
+            fi
+            exit 0
+          fi
+
+          # The red part, as a key: a new red commit or a new red check is
+          # news (a comment notifies); the same red seen again is not.
+          ci_key='' bat_key=''
+          if [ "$ci_state" = red ]; then ci_key=${ci_sha:0:12}; fi
+          if [ "$bat_state" = red ]; then bat_key=${bat_url##*/}; fi
+          key="ci:$ci_key battery:$bat_key"
+          row_of() { # check, state, sha, url, jobs
+            local commit='' run=''
+            if [ -n "$3" ]; then commit="\`${3:0:12}\`"; fi
+            if [ -n "$4" ]; then run="[run]($4)"; fi
+            printf '| %s | **%s** | %s | %s | %s |\n' "$1" "$2" "$commit" "$run" "${5:-—}"
+          }
+          body=$(
+            echo "<!-- testing-red: kept by .github/workflows/promote-testing.yml, which rewrites this body on every run; edits are overwritten -->"
+            echo "<!-- red: $key -->"
+            echo "**testing is red.** A feature merged into testing at green can inherit this — a red job named below is not that pull request's to fix; fix it here, on testing, by its own pull request."
+            echo
+            echo "| check | state | commit | run | failing jobs |"
+            echo "|---|---|---|---|---|"
+            row_of 'integration CI (every push)' "$ci_state" "$ci_sha" "$ci_url" "$ci_jobs"
+            row_of 'full battery (daily: macOS, Windows, iOS, e2e)' "$bat_state" "$bat_sha" "$bat_url" "$bat_jobs"
+            echo
+            echo "This issue closes itself once both are green."
+          )
+          if [ -z "$issue" ]; then
+            gh label create "$label" --repo "$REPO" --color B60205 \
+              --description "testing's CI or its daily full battery is red (promote-testing.yml)" --force >/dev/null
+            gh issue create --repo "$REPO" --title 'testing is red' --label "$label" --body "$body"
+            exit 0
+          fi
+          old=$(gh issue view "$issue" --repo "$REPO" --json body --jq .body | tr -d '\r' | sed -n 's/^<!-- red: \(.*\) -->$/\1/p')
+          gh issue edit "$issue" --repo "$REPO" --body "$body" >/dev/null
+          if [ "$old" != "$key" ]; then
+            msg=''
+            [ "$ci_state" != red ] || msg="integration CI red at \`${ci_sha:0:12}\` ($ci_url): ${ci_jobs:-see the run}."
+            [ "$bat_state" != red ] || msg="${msg:+$msg }daily full battery red: ${bat_jobs:-see the run} ($bat_url)."
+            gh issue comment "$issue" --repo "$REPO" --body "$msg"
+          fi
+
+      # ── back-flow ──────────────────────────────────────────────────────────
+      # Merge commits are not counted: a promotion's merge into rc carries
+      # nothing testing lacks.
+      - name: Back-flow — rc into testing
+        id: backflow
+        if: steps.fetch.outputs.live == 'true'
+        run: |
+          set -eu
+          back=$(git rev-list --count --no-merges origin/testing..origin/rc)
+          echo "back=$back" >> "$GITHUB_OUTPUT"
+          if [ "$back" -eq 0 ]; then
+            echo "back-flow: testing carries every rc commit"
+            exit 0
+          fi
+          rc=$(git rev-parse origin/rc)
+          rc12=${rc:0:12}
+          # Same-repository heads only: a fork's pull request from a branch it
+          # named backflow/… is not the back-flow, and must not stand in for it.
+          open=$(gh pr list --repo "$REPO" --base testing --state open --json number,headRefName,isCrossRepository \
+            --jq '[.[] | select((.isCrossRepository | not) and (.headRefName | startswith("backflow/")))] | .[0].number // ""')
+          if [ -n "$open" ]; then
+            echo "::notice::rc has $back commit(s) testing lacks; back-flow #$open is open — merging it brings them, and anything newer on rc gets its own after."
+            exit 0
+          fi
+          branch="backflow/rc-$rc12"
+          body=$(cat <<EOF
+          rc has $back commit(s) testing does not — a hotfix, a roll or a sync of main. This brings them into testing, so testing stays a superset of rc: a promotion snapshot is refused while rc is ahead of testing, because the snapshot's merge must give rc exactly the tree testing ran.
+
+          Merge it with a merge commit, like any pull request into testing.
+
+          **If it conflicts**, resolve it on this branch — never on rc:
+
+              git fetch origin
+              git switch $branch
+              git merge origin/testing
+              # resolve, then commit
+              git push origin $branch
+
+          Opened by .github/workflows/promote-testing.yml at rc @ \`$rc12\`.
+          EOF
+          )
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::notice::rc has $back commit(s) testing lacks. No PROMOTION_TOKEN is set, so the back-flow is yours to open — the commands are in the run summary."
+            {
+              fence="\`\`\`"
+              echo "### Back-flow: rc → testing"
+              echo
+              echo "**No pull request was opened for you** (no \`PROMOTION_TOKEN\`). From any clone:"
+              echo
+              echo "$fence"
+              echo "git fetch origin"
+              echo "git push origin $rc:refs/heads/$branch"
+              echo "gh pr create --repo $REPO --base testing --head $branch --title 'sync: rc → testing'"
+              echo "$fence"
+              echo
+              printf '%s\n' "$body"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The branch with the workflow token; a re-run finds it already there.
+          if ! gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
+            gh api -X POST "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$rc" --silent
+          fi
+          GH_TOKEN="$BOT_TOKEN" gh pr create --repo "$REPO" --base testing --head "$branch" \
+            --title 'sync: rc → testing' --body "$body"
+
+      # ── refresh ────────────────────────────────────────────────────────────
+      # Only when the line is stale, so a run with nothing new edits nothing.
+      - name: Refresh the open promotion's rc line
+        if: steps.fetch.outputs.live == 'true'
+        run: |
+          set -eu
+          rc12=$(git rev-parse --short=12 origin/rc)
+          want="rc @ \`$rc12\`"
+          # Same-repository heads only (a fork's branch can be named promote/…).
+          gh pr list --repo "$REPO" --base rc --state open --json number,headRefName,isCrossRepository \
+            --jq '.[] | select((.isCrossRepository | not) and (.headRefName | startswith("promote/"))) | .number' \
+          | while IFS= read -r n; do
+              body=$(gh pr view "$n" --repo "$REPO" --json body --jq .body | tr -d '\r')
+              line=$(printf '%s\n' "$body" | grep -m1 '^rc @ ' || true)
+              if [ "$line" = "$want" ]; then
+                echo "promotion #$n already names $want"
+                continue
+              fi
+              if [ -n "$line" ]; then
+                new=$(printf '%s\n' "$body" | sed "s/^rc @ .*/$want/")
+              else
+                new=$(printf '%s\n\n%s\n' "$body" "$want")
+              fi
+              if [ -z "$BOT_TOKEN" ]; then
+                echo "::notice::rc moved to $rc12 under promotion #$n. No PROMOTION_TOKEN is set: edit its body (its \`rc @\` line) so pr target (flow) re-checks it against rc."
+                continue
+              fi
+              GH_TOKEN="$BOT_TOKEN" gh pr edit "$n" --repo "$REPO" --body "$new" >/dev/null
+              echo "promotion #$n: rc line → $want (the edit re-runs pr target (flow))"
+            done
+
+      # ── readiness, and the snapshot ────────────────────────────────────────
+      # The changelog leads testing adds over rc, by promote.yml's own reading:
+      # each entry file's bold lead sentence. Since the merge-base (three dots),
+      # so entries rc already rolled and testing still holds until its
+      # back-flow merges are not listed as new.
+      - name: Readiness — what a promotion would carry
+        id: ready
+        if: steps.fetch.outputs.live == 'true' && github.event_name != 'workflow_run'
+        env:
+          BAT_STATE: ${{ steps.health.outputs.bat_state }}
+          BAT_URL: ${{ steps.health.outputs.bat_url }}
+        run: |
+          set -eu
+          tsha=$(git rev-parse origin/testing)
+          t12=${tsha:0:12}
+          ahead=$(git rev-list --count --no-merges origin/rc..origin/testing)
+          back=$(git rev-list --count --no-merges origin/testing..origin/rc)
+          leads=$(
+            git diff --name-only --diff-filter=A origin/rc...origin/testing -- 'changelog/*.md' \
+              | sort \
+              | while IFS= read -r f; do
+                  para=$(git show "origin/testing:$f" | awk 'NF==0{exit} {printf "%s ", $0}' | sed -E 's/^- //; s/  +/ /g')
+                  lead=$(printf '%s' "$para" | perl -ne 'if (/\*\*(.+?)\*\*\s*(.*)/) { my ($b, $r) = ($1, $2); if ($b =~ /:$/) { $r =~ s/([.!?])(\s|$).*/$1/; print "$b $r" } else { print $b } }')
+                  [ -n "$lead" ] || lead=$(basename "$f" .md)
+                  printf -- '- %s\n' "$lead"
+                done
+          )
+          [ -n "$leads" ] || leads='- (no changelog entries between rc and testing)'
+          printf '%s\n' "$leads" > "$RUNNER_TEMP/leads.md"
+
+          runs=$(gh api "repos/$REPO/actions/runs?head_sha=$tsha&per_page=100")
+          run_of() {
+            printf '%s' "$runs" | jq -r --arg name "$1" \
+              '[.workflow_runs[] | select(.name == $name and .event != "pull_request" and .head_branch == "testing")]
+               | sort_by(.run_started_at) | last
+               | if . == null then "no run" else "\(.conclusion // .status) \(.html_url)" end'
+          }
+          ci=$(run_of CI)
+          deploy=$(run_of testing-deploy)
+          {
+            echo "ci=$ci"; echo "deploy=$deploy"; echo "ahead=$ahead"; echo "back=$back"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### testing → rc readiness"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| testing | \`$t12\` — $ahead commit(s) rc lacks |"
+            echo "| rc ahead of testing | $back commit(s)$([ "$back" -eq 0 ] || echo ' — merge the back-flow before a snapshot') |"
+            echo "| CI (testing push) | $ci |"
+            echo "| testing-deploy | $deploy |"
+            echo "| daily full battery | ${BAT_STATE:-unknown} ${BAT_URL} |"
+            echo "| testing instance | ${TESTING_URL:-not set (TESTING_URL)} |"
+            echo
+            echo "**What a promotion would carry** (changelog leads):"
+            echo
+            printf '%s\n' "$leads"
+            echo
+            echo "To open it: \`gh workflow run promote-testing.yml --ref main -f open=true\`."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Open a promotion from a fresh snapshot
+        if: steps.fetch.outputs.live == 'true' && github.event_name == 'workflow_dispatch' && inputs.open
+        env:
+          CI_RUN: ${{ steps.ready.outputs.ci }}
+          DEPLOY_RUN: ${{ steps.ready.outputs.deploy }}
+          AHEAD: ${{ steps.ready.outputs.ahead }}
+          BACK: ${{ steps.ready.outputs.back }}
+        run: |
+          set -eu
+          if [ "$BACK" -gt 0 ]; then
+            echo "::error::rc has $BACK commit(s) testing lacks. Merge the back-flow (sync: rc → testing) first: a snapshot must give rc exactly the tree testing ran."
+            exit 1
+          fi
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "::notice::testing has nothing rc lacks — nothing to promote."
+            exit 0
+          fi
+          tsha=$(git rev-parse origin/testing)
+          t12=${tsha:0:12}
+          rc12=$(git rev-parse --short=12 origin/rc)
+          branch="promote/testing-$t12"
+          already=$(gh pr list --repo "$REPO" --base rc --state open --json number,headRefName,headRefOid,isCrossRepository \
+            --jq "[.[] | select((.isCrossRepository | not) and (.headRefName | startswith(\"promote/\")) and .headRefOid == \"$tsha\")] | .[0].number // \"\"")
+          if [ -n "$already" ]; then
+            echo "::notice::#$already already promotes testing @ $t12."
+            exit 0
+          fi
+          title="promote: testing → rc — $AHEAD changes"
+          body=$(
+            echo "A frozen snapshot of \`testing\` at \`$t12\`, for rc. Its head never moves: a newer snapshot is a new pull request (dispatch promote-testing with \`open\`), and this one is then closed as superseded."
+            echo
+            echo "rc @ \`$rc12\`"
+            echo
+            echo "**What goes in** — $AHEAD commit(s); the changelog leads:"
+            echo
+            cat "$RUNNER_TEMP/leads.md"
+            echo
+            echo "- **Merge commit only**: rc keeps the commits testing ran."
+            echo "- The full battery (macOS, Windows, iOS, e2e) runs once, on this frozen head."
+            echo "- rc-deploy.yml deploys the merge; promote.yml then offers rc → main."
+            echo "- When rc moves, promote-testing.yml rewrites the \`rc @\` line above, and that edit re-runs \`pr target (flow)\` against the new rc."
+            echo
+            echo "Evidence on testing @ \`$t12\`: CI — $CI_RUN · testing-deploy — $DEPLOY_RUN"
+          )
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::notice::No PROMOTION_TOKEN is set, so the snapshot is yours to open — the commands are in the run summary."
+            {
+              fence="\`\`\`"
+              echo "### Open the promotion"
+              echo
+              echo "**No pull request was opened for you** (no \`PROMOTION_TOKEN\`). From any clone:"
+              echo
+              echo "$fence"
+              echo "git fetch origin"
+              echo "git push origin $tsha:refs/heads/$branch"
+              echo "gh pr create --repo $REPO --base rc --head $branch --title '$title'"
+              echo "$fence"
+              echo
+              printf '%s\n' "$body"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! gh api "repos/$REPO/git/ref/heads/$branch" --silent 2>/dev/null; then
+            gh api -X POST "repos/$REPO/git/refs" -f "ref=refs/heads/$branch" -f "sha=$tsha" --silent
+          fi
+          url=$(GH_TOKEN="$BOT_TOKEN" gh pr create --repo "$REPO" --base rc --head "$branch" --title "$title" --body "$body")
+          num=${url##*/}
+          echo "opened #$num: $url"
+          # Older snapshots: superseded, closed, and their branches removed —
+          # this repository's own promote/* heads, never a fork's.
+          gh pr list --repo "$REPO" --base rc --state open --json number,headRefName,isCrossRepository \
+            --jq '.[] | select((.isCrossRepository | not) and (.headRefName | startswith("promote/"))) | [.number, .headRefName] | @tsv' \
+          | while IFS=$'\t' read -r n head; do
+              [ "$n" != "$num" ] || continue
+              gh pr close "$n" --repo "$REPO" --comment "superseded by #$num"
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$head" --silent || echo "::warning::could not delete $head"
+              echo "closed #$n ($head): superseded by #$num"
+            done
+          echo "::notice::opened #$num — promote: testing → rc at $t12"
