@@ -1186,7 +1186,10 @@ export function planApi({ mode, all, files, root = process.cwd(), baseText, head
   if (everyModule || pkgs.has(layout.root)) {
     itModules = ['*']
   } else {
-    itModules = [...new Set([...itModulesFor([...pkgs], root), ...itStems])].sort()
+    // `*` already holds every stem: a list beside it (`* task_move_live`)
+    // is no plan ci.yml's normalize step accepts, so it would widen the run.
+    const reached = itModulesFor([...pkgs], root)
+    itModules = reached.includes('*') ? ['*'] : [...new Set([...reached, ...itStems])].sort()
   }
   // The live modules are one test binary in the root package, so a Rust
   // change that runs any of them tests that package too. A schema change

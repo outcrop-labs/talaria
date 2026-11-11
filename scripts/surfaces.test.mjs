@@ -568,6 +568,13 @@ await check('light: the lockfile maps to the members it changed', () => {
   ok(p.packages.includes('talaria-work-pulse') && p.itModules[0] === '*', JSON.stringify(p))
   eq(light(['api/Cargo.lock']).scope, 'workspace', 'a lockfile with no base to compare widens')
 })
+await check("light: every module is `*` alone, never `*` beside a module's own stem", () => {
+  // talaria-db is reached through the shared support module (every module);
+  // the live module's own file must not add its stem beside the `*`, which
+  // ci.yml's normalize step would refuse and widen to the workspace.
+  const p = light(['api/crates/talaria-db/src/lib.rs', 'api/tests/it/runs_store.rs'])
+  eq([p.scope, p.itModules], ['packages', ['*']])
+})
 await check('light: a file another package reads by its path tests that reader too', () => {
   const sandbox = light(['api/crates/talaria-fitness-toolbox/src/sandbox.rs'])
   ok(sandbox.packages.includes('talaria-fitness-toolbox') && sandbox.packages.includes('talaria-harness-defs'),
