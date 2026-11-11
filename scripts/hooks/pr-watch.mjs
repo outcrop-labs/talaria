@@ -112,7 +112,8 @@
 // land on the same sha, so the rollup and `gh run list --commit` both carry
 // them: an offload run still in progress would hold the PR pending, and a
 // cancelled one would turn it red for good. Rows whose head branch is `ci/…`
-// are dropped, and so are rollup checks of the offload workflow (named by
+// are dropped — never a `pull_request` row, which is the PR's own even when
+// its head is named `ci/…` — and so are rollup checks of the offload workflow (named by
 // ci-offload.yml's `name:` in this script's own repository; none when the file
 // is absent) or of a dropped run.
 //
@@ -344,8 +345,12 @@ export function withEvents(checks, runs) {
 }
 
 /** A `gh run list` row for an offload push (`ci/…`, OFFLOAD_PREFIX): never
- *  this PR's evidence, whatever sha it ran on. */
+ *  this PR's evidence, whatever sha it ran on. A `pull_request` run is always
+ *  the PR's own, even when its head branch is named `ci/…` (heads like
+ *  `ci/branch-flow` predate the offload): dropping those left such a PR with
+ *  no checks and no CI run, pending until the wall clock. */
 export function isOffloadRun(r) {
+  if (String(r?.event || '').startsWith('pull_request')) return false
   return String(r?.headBranch || '').startsWith(OFFLOAD_PREFIX)
 }
 
@@ -921,7 +926,14 @@ function readBaseRed(pr, ciName, repoFlag) {
     if (view.status !== 0) return null
     const jobs = JSON.parse(view.stdout)?.jobs
     if (!Array.isArray(jobs)) return null
-    const failing = jobs.filter((j) => FAIL.has(String(j?.conclusion || '').toUpperCase())).map((j) => j.name)
+    // A cancelled base job did not fail — it was superseded or stopped — so it
+    // says nothing about whether the PR's own failure of that job is the base's.
+    const failing = jobs
+      .filter((j) => {
+        const c = String(j?.conclusion || '').toUpperCase()
+        return FAIL.has(c) && c !== 'CANCELLED'
+      })
+      .map((j) => j.name)
     return { base, sha: String(sha), url: row.url || '', failing }
   } catch {
     return null

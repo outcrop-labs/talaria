@@ -5,8 +5,8 @@
   - `judge.yml` runs the judge under `set -euo pipefail`. Before, `| tee` masked exit 2, so a `must` never failed the job: promotion #722 reported 2 musts and passed. Both of those were false positives, and the lanes above skip them now. A fork's head is passed qualified, so it never matches a lane.
   - The cleanup sweep counts a worktree as possibly merged when it is 0 commits ahead of `origin/testing` as well as `origin/rc`. The pull request still decides.
 
-  Verified: `bun run check` in the worktree, including `scripts/hooks/pr-watch.test.mjs` (69 checks), `scripts/judge-pr.test.mjs` (30) and `scripts/cleanup-sweep.test.mjs` (77).
-  - The pr-watch tests cover every lane, an in-progress and a cancelled offload run, and end-to-end runs against a fake `gh`: an inherited red, a red that is partly the branch's own, and a base whose run cannot be read.
+  Verified: `bun run check` in the worktree, including `scripts/hooks/pr-watch.test.mjs` (70 checks), `scripts/judge-pr.test.mjs` (30) and `scripts/cleanup-sweep.test.mjs` (77).
+  - The pr-watch tests cover every lane, an in-progress and a cancelled offload run, a pull request whose own head is named `ci/…` (its `pull_request` runs are kept), and end-to-end runs against a fake `gh`: an inherited red, a red that is partly the branch's own, a base whose jobs were only cancelled, and a base whose run cannot be read.
   - The judge tests run on a scratch repository: each lane skip, the roll, both new musts with their controls, and the claim forms.
   - The `MIGRATIONS` span finder matches the closing `]` in ten versions of `pg.ts` from across its history.
   - On real history: promotion #722's range, judged with `--source rc`, gives the lane line and no findings. Judged with any other source, it reproduces the two musts #722 reported (`targets-main`, `changelog-not-a-file`). Read-only against GitHub, `pr-watch --once` reads #723 as a green `feature` and #722 as `promotion:rc→main`.

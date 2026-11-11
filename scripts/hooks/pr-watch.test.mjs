@@ -764,6 +764,12 @@ check('end to end: a red the base branch already has is named inherited; anythin
     ok(!/inherited from/.test(own.stderr) && /Diagnose from the log, fix, commit and push to `wt\/x` only/.test(own.stderr), own.stderr)
     eq(JSON.parse(own.stdout).inherited, null)
 
+    // The same jobs only cancelled on the base (superseded, stopped): not the base's red.
+    writeFileSync(join(bin, 'base-jobs.json'), JSON.stringify({ jobs: failing.map((n) => job(n, 'cancelled')) }))
+    const cancelled = watch()
+    eq([cancelled.status, cancelled.stderr.split('\n')[0]], [2, 'pr-watch: red'])
+    ok(!/inherited from/.test(cancelled.stderr) && /Diagnose from the log/.test(cancelled.stderr), cancelled.stderr)
+
     // The base's run could not be read: the ordinary red, never a guess.
     rmSync(join(bin, 'base-runs.json'))
     const unread = watch()
@@ -984,6 +990,22 @@ check('isOffloadRun: a run whose head branch is ci/…, nothing else', () => {
   eq(OFFLOAD_PREFIX, 'ci/')
   eq([isOffloadRun(offloadRow()), isOffloadRun({ headBranch: 'ci/wt/x' })], [true, true])
   eq([isOffloadRun({ headBranch: 'wt/ci/x' }), isOffloadRun({ headBranch: 'rc' }), isOffloadRun({}), isOffloadRun(null)], [false, false, false, false])
+  // a pull_request run is the PR's own, whatever its head is called
+  eq([isOffloadRun({ headBranch: 'ci/branch-flow', event: 'pull_request' }), isOffloadRun({ headBranch: 'ci/branch-flow', event: 'push' })], [false, true])
+})
+
+check('a PR whose own head is named ci/… keeps its pull_request runs and checks', () => {
+  // ci/branch-flow, ci/gate-waits-for-evidence and ci/desktop-autoversion were
+  // real PR heads. Their pull_request runs carry that head branch; dropping
+  // them left the PR with no checks and no CI run — pending to the wall clock.
+  const pr = asOpen(PR599, { headRefName: 'ci/branch-flow' })
+  const runs = RUNS599.map((r) => ({ ...r, headBranch: 'ci/branch-flow' }))
+  const r = classify(pr, { head: HEAD_OK, runs, ciWorkflow: 'CI' })
+  eq([r.kind, r.offload, r.checks], ['green', 0, 13])
+  // an offload push of that same branch is still dropped
+  pr.statusCheckRollup.push(offloadCheck('offload / what changed'))
+  const withOffload = classify(pr, { head: HEAD_OK, runs: [...runs, offloadRow({ headBranch: 'ci/ci/branch-flow' })], ciWorkflow: 'CI' })
+  eq([withOffload.kind, withOffload.offload, withOffload.checks], ['green', 1, 13])
 })
 
 check('an in-progress CI offload run on the head sha does not hold a green PR', () => {
