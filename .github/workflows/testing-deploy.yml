@@ -158,6 +158,8 @@ jobs:
           retention-days: 1
           # Already gzip'd; a second pass costs time and saves nothing.
           compression-level: 0
+          # A re-run of this job uploads the same name into the same run.
+          overwrite: true
 
   publish:
     name: move the testing tag
@@ -194,8 +196,10 @@ jobs:
       # this commit is still testing's tip. Runs finish out of order (a later
       # push's api build can be a cache hit), so without the check an older
       # run could move `:testing` backwards over a newer one; the newer run
-      # moves it instead. The re-point copies the manifest, so `:testing` and
-      # `testing-<sha12>` share one digest.
+      # moves it instead. The re-point is registry-side; imagetools may wrap
+      # the pushed manifest in an index, so `:testing`'s digest can differ
+      # from testing-<sha12>'s, but the image under it — and its revision
+      # label, which the follower reads — is the same.
       - name: Push testing-<sha12>, then move :testing if this is still the tip
         id: move
         env:
@@ -206,10 +210,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          case "$TAG" in
-            testing-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) echo "::error::refusing to publish an unexpected tag '$TAG'"; exit 1 ;;
-          esac
+          # The tag is build-smoke's output, and build-smoke ran the tree: it
+          # must name THIS run's commit, so it cannot re-point another
+          # commit's immutable testing-<sha12>.
+          if [ "$TAG" != "testing-${SHA:0:12}" ]; then
+            echo "::error::refusing to publish '$TAG': this run's commit is testing-${SHA:0:12}"
+            exit 1
+          fi
           docker push "$IMAGE:$TAG"
           tip=$(gh api "repos/$REPO/git/ref/heads/testing" --jq .object.sha)
           if [ "$tip" != "$SHA" ]; then

@@ -298,8 +298,10 @@ jobs:
           fi
           rc=$(git rev-parse origin/rc)
           rc12=${rc:0:12}
-          open=$(gh pr list --repo "$REPO" --base testing --state open --json number,headRefName \
-            --jq '[.[] | select(.headRefName | startswith("backflow/"))] | .[0].number // ""')
+          # Same-repository heads only: a fork's pull request from a branch it
+          # named backflow/… is not the back-flow, and must not stand in for it.
+          open=$(gh pr list --repo "$REPO" --base testing --state open --json number,headRefName,isCrossRepository \
+            --jq '[.[] | select((.isCrossRepository | not) and (.headRefName | startswith("backflow/")))] | .[0].number // ""')
           if [ -n "$open" ]; then
             echo "::notice::rc has $back commit(s) testing lacks; back-flow #$open is open — merging it brings them, and anything newer on rc gets its own after."
             exit 0
@@ -354,8 +356,9 @@ jobs:
           set -eu
           rc12=$(git rev-parse --short=12 origin/rc)
           want="rc @ \`$rc12\`"
-          gh pr list --repo "$REPO" --base rc --state open --json number,headRefName \
-            --jq '.[] | select(.headRefName | startswith("promote/")) | .number' \
+          # Same-repository heads only (a fork's branch can be named promote/…).
+          gh pr list --repo "$REPO" --base rc --state open --json number,headRefName,isCrossRepository \
+            --jq '.[] | select((.isCrossRepository | not) and (.headRefName | startswith("promote/"))) | .number' \
           | while IFS= read -r n; do
               body=$(gh pr view "$n" --repo "$REPO" --json body --jq .body | tr -d '\r')
               line=$(printf '%s\n' "$body" | grep -m1 '^rc @ ' || true)
@@ -458,8 +461,8 @@ jobs:
           t12=${tsha:0:12}
           rc12=$(git rev-parse --short=12 origin/rc)
           branch="promote/testing-$t12"
-          already=$(gh pr list --repo "$REPO" --base rc --state open --json number,headRefName,headRefOid \
-            --jq "[.[] | select((.headRefName | startswith(\"promote/\")) and .headRefOid == \"$tsha\")] | .[0].number // \"\"")
+          already=$(gh pr list --repo "$REPO" --base rc --state open --json number,headRefName,headRefOid,isCrossRepository \
+            --jq "[.[] | select((.isCrossRepository | not) and (.headRefName | startswith(\"promote/\")) and .headRefOid == \"$tsha\")] | .[0].number // \"\"")
           if [ -n "$already" ]; then
             echo "::notice::#$already already promotes testing @ $t12."
             exit 0
@@ -505,9 +508,10 @@ jobs:
           url=$(GH_TOKEN="$BOT_TOKEN" gh pr create --repo "$REPO" --base rc --head "$branch" --title "$title" --body "$body")
           num=${url##*/}
           echo "opened #$num: $url"
-          # Older snapshots: superseded, closed, and their branches removed.
-          gh pr list --repo "$REPO" --base rc --state open --json number,headRefName \
-            --jq '.[] | select(.headRefName | startswith("promote/")) | [.number, .headRefName] | @tsv' \
+          # Older snapshots: superseded, closed, and their branches removed —
+          # this repository's own promote/* heads, never a fork's.
+          gh pr list --repo "$REPO" --base rc --state open --json number,headRefName,isCrossRepository \
+            --jq '.[] | select((.isCrossRepository | not) and (.headRefName | startswith("promote/"))) | [.number, .headRefName] | @tsv' \
           | while IFS=$'\t' read -r n head; do
               [ "$n" != "$num" ] || continue
               gh pr close "$n" --repo "$REPO" --comment "superseded by #$num"

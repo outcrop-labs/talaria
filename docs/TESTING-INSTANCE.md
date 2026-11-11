@@ -297,6 +297,11 @@ Start with `journalctl -u talaria-follow -n 100`.
 - **`refusing: the checkout … has local edits`** — someone edited a tracked file in `~/talaria`.
   The follower never overwrites them: `git -C ~/talaria status`, keep or discard them, and the
   next pass applies.
+- **`refusing: … docker/.env is missing`** — the file holds this instance's generated secrets,
+  so the follower will not let `deploy up` mint new ones that no longer open the volumes.
+  Restore it from the password manager (bootstrap step 11). Without the backup the volumes
+  cannot be opened: write a docker/.env holding only `TALARIA_CHANNEL=testing` and run the
+  reset runbook.
 - **A pull failure** (`docker pull` or `deploy up` failing on the registry) — the next pass
   retries. Check outbound 443 to ghcr.io and pkg-containers.githubusercontent.com, and that the
   `testing-<sha12>` tag exists (`docker buildx imagetools inspect ghcr.io/outcrop-labs/talaria:testing`).

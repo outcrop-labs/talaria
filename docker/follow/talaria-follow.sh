@@ -37,8 +37,8 @@
 #
 # EXIT. 0: applied, nothing to do, waiting out the gap, or held. Non-zero:
 #   something to look at (`journalctl -u talaria-follow`) — a revision that is
-#   not on origin/testing, local edits in the checkout, a pull or an `up` that
-#   failed. A failed apply is retried on the next run.
+#   not on origin/testing, local edits in the checkout, a missing docker/.env,
+#   a pull or an `up` that failed. A failed apply is retried on the next run.
 set -euo pipefail
 
 REPO_DIR=${TALARIA_HOME:-$HOME/talaria}
@@ -70,10 +70,19 @@ if ! [[ "$rev" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 tag=testing-${rev:0:12}
 
+# docker/.env holds this instance's generated secrets (POSTGRES_PASSWORD, the
+# S3 pair) beside the channel. Without it, `deploy up` would mint new ones
+# that no longer open the existing volumes, so a missing file is refused, not
+# recreated.
+if [ ! -f docker/.env ]; then
+  echo "refusing: $REPO_DIR/docker/.env is missing — restore it from the backup (docs/TESTING-INSTANCE.md, Troubleshooting)" >&2
+  exit 1
+fi
+
 # Up to date when both halves already name this build: the last apply that
 # finished, and the channel docker/.env pins (a reset sets it back to
 # `testing`, which re-pins on the next run).
-cur=$(sed -n 's/^TALARIA_CHANNEL=//p' docker/.env 2> /dev/null | tail -n 1)
+cur=$(sed -n 's/^TALARIA_CHANNEL=//p' docker/.env | tail -n 1)
 applied=$(cat "$STATE/applied" 2> /dev/null || true)
 if [ "$cur" = "$tag" ] && [ "$applied" = "$tag" ]; then
   exit 0
