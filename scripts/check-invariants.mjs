@@ -3232,6 +3232,95 @@ const UNSET_SEAM_CENSUS = [
   }
 }
 
+// ── Every caller of ci.yml grants what ci.yml's jobs ask for ────────────────
+// ci.yml's `what changed` job asks for `actions: read` (scripts/surfaces.mjs
+// looks up the branch's last green run). A called workflow's job can request no
+// more than the CALLING job grants, and a caller that grants less is not a red
+// job — it is a startup failure, a run that dies before any job and that
+// nobody is notified about. So every job that `uses:` ci.yml must say
+// `actions: read` in its own `permissions:`, and ci.yml's `changes` job must
+// still ask for it (or this check guards a grant nothing needs).
+{
+  const dir = join(ROOT, '.github', 'workflows')
+  const found = []
+  // The jobs of one workflow: [{id, line, body: [{n, text}]}], read by
+  // indentation — two spaces for a job id, four for its keys.
+  const jobsOf = (text) => {
+    const lines = text.split('\n')
+    const jobs = []
+    let inJobs = false
+    let job = null
+    lines.forEach((raw, i) => {
+      const line = raw.replace(/\s+#.*$/, '').replace(/^#.*$/, '')
+      if (/^\S/.test(line)) {
+        inJobs = /^jobs:\s*$/.test(line)
+        job = null
+        return
+      }
+      if (!inJobs) return
+      const head = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line)
+      if (head) {
+        job = { id: head[1], line: i + 1, body: [] }
+        jobs.push(job)
+      } else if (job) {
+        job.body.push({ n: i + 1, text: line })
+      }
+    })
+    return jobs
+  }
+  // Does the job's own `permissions:` grant actions read (or write, or all)?
+  const grantsActions = (job) => {
+    const at = job.body.findIndex((l) => /^ {4}permissions:/.test(l.text))
+    if (at === -1) return false
+    const value = job.body[at].text.replace(/^ {4}permissions:\s*/, '').trim()
+    if (value) return /^(read-all|write-all)$/.test(value) || /\bactions:\s*(read|write)\b/.test(value)
+    for (const l of job.body.slice(at + 1)) {
+      if (l.text.trim() === '') continue
+      if (!/^ {5,}/.test(l.text)) break
+      if (/^\s+actions:\s*(read|write)\s*$/.test(l.text)) return true
+    }
+    return false
+  }
+  const callers = []
+  for (const file of readdirSync(dir).sort()) {
+    if (!file.endsWith('.yml') && !file.endsWith('.yaml')) continue
+    const rel = `.github/workflows/${file}`
+    const jobs = jobsOf(readFileSync(join(dir, file), 'utf8'))
+    for (const job of jobs) {
+      const calls = job.body.some((l) => /^ {4}uses:\s*['"]?\.\/\.github\/workflows\/ci\.yml['"]?\s*$/.test(l.text))
+      if (!calls) continue
+      callers.push(`${file}:${job.id}`)
+      if (!grantsActions(job)) {
+        found.push({ path: rel, line: job.line, text: `job \`${job.id}\` calls ci.yml without granting \`actions: read\`` })
+      }
+    }
+    if (file === 'ci.yml') {
+      const changes = jobs.find((j) => j.id === 'changes')
+      if (!changes) {
+        found.push({ path: rel, line: 0, text: 'no `changes` job — move this check with whatever plans the run now' })
+      } else if (!grantsActions(changes)) {
+        found.push({ path: rel, line: changes.line, text: '`changes` no longer asks for `actions: read` — the last-green-run lookup needs it' })
+      }
+    }
+  }
+  if (found.length) {
+    failures.push({
+      id: 'ci-call-grants',
+      what: 'a workflow calls ci.yml without granting what its jobs request',
+      fix: [
+        'a nested job requesting more than its caller grants is a startup failure: the run dies',
+        'before any job, as the Sep 2–16 nightlies did unnoticed. Give the calling job its own',
+        '`permissions:` with `contents: read` and `actions: read` (release.yml\'s `ci` job and',
+        'ci-offload.yml\'s `offload` job are the pattern). If ci.yml stops needing it, remove the',
+        'grant from the `changes` job and this check in the same commit.',
+      ],
+      found,
+    })
+  } else {
+    notes.push(`ci.yml callers grant actions: read: ${callers.join(', ') || 'none'}`)
+  }
+}
+
 // ── GitHub's Latest release is the desktop updater feed ─────────────────────
 // The shell's updater reads /releases/latest/download/latest.json, and GitHub
 // marks a new non-prerelease release Latest unless told not to. A stable

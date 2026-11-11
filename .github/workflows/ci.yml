@@ -1,7 +1,9 @@
 # Talaria CI — the invariant tripwire, the unit tests, and the typecheck.
 #
 # WHAT THIS DOES
-#   On every pull request and every push to main or rc:
+#   On every pull request and every push to main or rc, on every push to
+#   ci/<branch> (through ci-offload.yml), and before every publish (through
+#   release.yml):
 #     bun scripts/check-invariants.mjs          (no install, seconds)
 #     cd ui && bun install && bun run test      (vitest)
 #     cd ui && bun run typecheck                (svelte-check)
@@ -12,15 +14,33 @@
 #     cd desktop/src-tauri && clippy + cargo test on macOS and Windows  (their own code)
 #     the desktop connect smoke on Linux, macOS and Windows  (does it open an instance)
 #     the MCP end-to-end suite (Playwright against a booted app + api + stubs)
-#   That is the whole thing. It takes a couple of minutes (the e2e job, when
-#   its surface moved, is the long pole — see its own note).
+#   Each heavy job runs only when its surface moved; the `what changed` job
+#   decides, by running scripts/surfaces.mjs.
 #
-# WHY rc IS IN THE PUSH LIST. It is the branch the release workflow builds FROM
-#   (nightly = rc's tip, RCs = tags cut on rc) and the branch every pull request
-#   targets, so a broken tip has to fail HERE — on the push that created it, in
-#   front of the person who made it — rather than at 03:17 in a nightly publish
-#   with nobody watching. `main` is in the list for the one push it ever gets:
-#   the promotion merge. Why the branches work this way: docs/BRANCHES.md.
+# MODES. scripts/surfaces.mjs picks one per run, with the diff range, and its
+#   header is the full table. What the mode changes here is the platform legs:
+#     light        a pull request into anything but rc or main, a push to
+#                  ci/<branch> (the offload lane), any other push. Linux jobs
+#                  only: macOS, Windows, iOS and e2e are skipped.
+#     integration  a push to testing. Linux jobs only, on everything since
+#                  testing's last green run.
+#     full         a pull request into rc or main, a push to rc or main,
+#                  release.yml's call, a push to ci/full/<branch>, and the
+#                  offload of a hotfix/, release/, sync/, promote/ or
+#                  backflow/ branch. Every job its surface asks for, the
+#                  platform legs included.
+#   A mode this file does not know runs the platform legs: the jobs test
+#   `!= light && != integration`, never `== full`. rc and main check
+#   everything since their last GREEN push run, so a push whose run was
+#   cancelled or went red is covered by the next one. The branch model itself
+#   is docs/BRANCHES.md.
+#
+# JOB NAMES. job name: strings are required-check contexts — never rename one.
+#   rc and main's protection matches them by name (docs/BRANCHES.md → The
+#   required settings); a renamed job leaves the old context pending forever
+#   and the new one unrequired. Called from another workflow, the same jobs
+#   report as `<caller job> / <name>` (`offload / …`, `ci / …`), which is why
+#   an offload run can never satisfy, or shadow, a required context.
 #
 # WHY THIS FILE IS CALLABLE (workflow_call). `release.yml` runs these exact
 #   jobs before every publish, passing the ref it is about to build (a
@@ -29,9 +49,20 @@
 #   way "what gates a publish" and "what gates a PR" stay the same list; a
 #   copy of these jobs in release.yml would drift the first time someone
 #   edited one file and not the other, and a publish gate that is weaker
-#   than the PR gate is a decision nobody made. Standalone behavior is
-#   unchanged: `inputs` is empty outside workflow_call, so the checkout steps
-#   resolve to the triggering ref exactly as before.
+#   than the PR gate is a decision nobody made. ci-offload.yml calls it the
+#   same way for ci/** pushes, with a `mode`.
+#   Every local caller of this file must grant actions: read (the changes job
+#   needs it; a nested job cannot exceed its caller). A caller that grants
+#   less is a startup failure: the run dies before any job, as the Sep 2–16
+#   nightlies did unnoticed. check-invariants.mjs (`ci-call-grants`) holds
+#   every caller to it.
+#
+# THE CHECKOUT REF is `${{ inputs.ref }}` in every job, and nothing else. Empty
+#   (a standalone run) means actions/checkout takes the event's own sha.
+#   `github.ref` would be re-resolved BY NAME at checkout time, and for a pull
+#   request that is refs/pull/N/merge, which GitHub may have rebuilt since the
+#   event: run 42772152940 checked out a different merge commit than its event
+#   described, lost its diff and ran everything on a changelog-only PR.
 #
 # WHY IT IS THIS SHORT. It is a TRIPWIRE, not a pipeline. Every PR-numbered
 #   commit in this repo's history merged with nothing automated having run on
@@ -152,25 +183,36 @@ on:
   pull_request:
   push:
     # rc: the branch nightly and the RC channel are built from, and the one
-    # every pull request targets. main: the promotion merge, and nothing else.
-    # See the header's "WHY rc IS IN THE PUSH LIST", and docs/BRANCHES.md.
+    # every pull request targets — a broken tip has to fail HERE, on the push
+    # that created it, rather than at 03:17 in a nightly publish with nobody
+    # watching. main: the promotion merge, and nothing else. ci/** pushes are
+    # NOT here: ci-offload.yml calls this file for them, so their checks
+    # carry its prefix. docs/BRANCHES.md is the model.
     branches: [main, rc]
-  # The release workflow calls this file (see its own header) so a publish is
-  # gated by exactly what gates a PR. The ref MUST be explicit when called:
-  # a schedule event's github.ref is the default branch, not the branch
-  # being built.
+  # release.yml and ci-offload.yml call this file (see their headers), so a
+  # publish and an offload are gated by exactly what gates a PR. The ref MUST
+  # be explicit when called: a schedule event's github.ref is the default
+  # branch, not the branch being built.
   workflow_call:
     inputs:
       ref:
-        description: 'ref to check out (defaults to the triggering ref)'
+        description: 'ref to check out (empty means the sha of the triggering event)'
         type: string
         required: false
+      mode:
+        description: 'light | full | integration; empty with a ref means release.yml: every surface, full'
+        type: string
+        required: false
+        default: ''
 
-# A new push to the same PR/branch cancels the in-flight run. Keeps the queue
-# short and stops people waiting on results for a commit they already replaced.
+# Long-lived refs QUEUE: one run in progress, the newest push pending behind
+# it, so the tip always gets a completed run (and the next push's range starts
+# from the last green one, which a cancelled run would never be). PR and
+# offload refs cancel a superseded run: nobody waits on results for a commit
+# they already replaced.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !contains(fromJSON('["refs/heads/testing","refs/heads/rc","refs/heads/main"]'), github.ref) }}
 
 permissions:
   contents: read
@@ -180,166 +222,130 @@ jobs:
   # job consults it: a UI change does not re-run the Rust api's fmt+clippy+test,
   # a desktop change does not re-run the UI suite, and a docs-only push runs the
   # invariants job and nothing else. The surfaces are the paths whose change can
-  # break that job, and nothing wider.
+  # break that job, and nothing wider. The lists, the mode and the diff range
+  # all come from scripts/surfaces.mjs (the local gate imports the same lists);
+  # the rationale for every glob is written above SURFACES there.
   #
   # WHY NOT `paths:` ON THE TRIGGERS (which the header still rules out). This is
-  # ONE workflow with six unrelated jobs, so a workflow-level filter can only be
-  # as coarse as the whole file — and the invariants job, which is seconds and
-  # needs no install, is meant to run on every push, because doc links and the
-  # rule patterns are exactly what a "docs-only" change touches. Deciding per job
-  # inside the run keeps that grain and leaves the cheap check unconditional.
+  # ONE workflow with several unrelated jobs, so a workflow-level filter can
+  # only be as coarse as the whole file — and the invariants job, which is
+  # seconds and needs no install, is meant to run on every push, because doc
+  # links and the rule patterns are exactly what a "docs-only" change touches.
+  # Deciding per job inside the run keeps that grain and leaves the cheap check
+  # unconditional.
   #
   # A job whose surface did not move is SKIPPED, and that is honest rather than
   # quiet: these jobs ARE required checks on rc and main, and a job skipped by a
   # job-level `if` is reported as a success (GitHub's documented behavior), so a
   # skipped surface satisfies its check instead of wedging the merge the way a
-  # workflow-level `paths:` filter would. The header's "WHY rc IS IN THE PUSH
-  # LIST" and docs/BRANCHES.md carry the rest.
+  # workflow-level `paths:` filter would. The header's MODES and
+  # docs/BRANCHES.md carry the rest.
   changes:
     name: what changed
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # actions: read is the planner's lookup of the branch's last green run
+    # (rc, main, testing). Every workflow that calls this file must grant it
+    # too — see the header's WHY THIS FILE IS CALLABLE.
+    permissions:
+      contents: read
+      actions: read
     outputs:
-      ui: ${{ steps.d.outputs.ui }}
-      mcp: ${{ steps.d.outputs.mcp }}
-      cli: ${{ steps.d.outputs.cli }}
-      api: ${{ steps.d.outputs.api }}
-      desktop: ${{ steps.d.outputs.desktop }}
-      mobile: ${{ steps.d.outputs.mobile }}
-      e2e: ${{ steps.d.outputs.e2e }}
+      mode: ${{ steps.plan.outputs.mode }}
+      base: ${{ steps.plan.outputs.base }}
+      range: ${{ steps.plan.outputs.range }}
+      ui: ${{ steps.plan.outputs.ui }}
+      mcp: ${{ steps.plan.outputs.mcp }}
+      cli: ${{ steps.plan.outputs.cli }}
+      api: ${{ steps.plan.outputs.api }}
+      desktop: ${{ steps.plan.outputs.desktop }}
+      mobile: ${{ steps.plan.outputs.mobile }}
+      e2e: ${{ steps.plan.outputs.e2e }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
-          # The diff below needs the base commit; a shallow clone does not have it.
+          ref: ${{ inputs.ref }}
+          # The diff needs the base commit; a shallow clone does not have it.
           fetch-depth: 0
 
-      - name: Which surfaces moved
-        id: d
-        env:
-          EVENT: ${{ github.event_name }}
-          # release.yml calls this file with a ref. A publish is a FULL gate —
-          # never a partial one — so the call short-circuits every surface on.
-          CALLED_REF: ${{ inputs.ref }}
-          BEFORE: ${{ github.event.before }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.sha }}
+      # The bases the planner diffs against (origin/main for a push to rc,
+      # origin/rc for testing, the nearer of testing and rc for a light run).
+      # main and rc must exist; testing may not.
+      - name: Fetch the long-lived branches
         run: |
           set -eu
+          git fetch --no-tags --quiet origin '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/rc:refs/remotes/origin/rc'
+          git fetch --no-tags --quiet origin '+refs/heads/testing:refs/remotes/origin/testing' || echo 'no testing branch'
 
-          # The safe side of every unknown is "run everything": a missing base, a
-          # rewritten history, a diff that will not resolve. A skipped check is
-          # cheap; a check nobody ran is the thing this repo keeps paying for.
-          all=0
-          range=""
-          if [ -n "$CALLED_REF" ]; then
-            all=1
-            echo "called by release.yml — every surface runs"
-          elif [ "$EVENT" = push ]; then
-            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-              all=1
-              echo "no usable before-sha (first push of a branch, or a rewrite) — every surface runs"
-            else
-              range="$BEFORE..$HEAD"
-            fi
+      # A pull request is planned by the BASE's copy of the planner, so a PR
+      # cannot narrow its own CI by editing scripts/surfaces.mjs — and an edit
+      # to the planner is in every surface anyway, so the PR that carries one
+      # runs everything. Every other event (a push, a call) runs the copy in
+      # its own checkout: that commit is already on a branch someone merged.
+      - name: Materialize the planner
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          if [ "$EVENT" = pull_request ] && git cat-file -e "$BASE_SHA:scripts/surfaces.mjs" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/surfaces.mjs" > "$RUNNER_TEMP/surfaces.mjs"
+            echo "planner: the base's copy ($BASE_SHA)"
           else
-            # Three dots: the PR's OWN changes, not everything the base branch
-            # gained while the PR sat open.
-            range="$BASE...$HEAD"
+            cp scripts/surfaces.mjs "$RUNNER_TEMP/surfaces.mjs"
+            echo "planner: this checkout's copy"
           fi
 
-          changed=""
-          if [ "$all" = 0 ]; then
-            if ! changed=$(git diff --name-only "$range" 2>/dev/null); then
-              all=1
-              echo "cannot diff $range — every surface runs"
-            fi
+      # The plan goes to a scratch file first, and the next step copies it
+      # into the job's outputs.
+      - name: Plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          CALLED_REF: ${{ inputs.ref }}
+          CALLED_MODE: ${{ inputs.mode }}
+          BEFORE: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DELETED: ${{ github.event.deleted }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: GITHUB_OUTPUT="$RUNNER_TEMP/plan.out" node "$RUNNER_TEMP/surfaces.mjs" ci
+
+      # FAIL CLOSED: an older planner copy (main's ci.yml, or a PR base's)
+      # that lacks a newer key runs more, never less. A missing mode is full;
+      # a missing or garbled surface is true.
+      - name: Normalize the plan (fail closed)
+        id: plan
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/plan.out"
+          touch "$out"
+          get() { sed -n "s/^$1=//p" "$out" | tail -n 1; }
+          mode=$(get mode)
+          if [ -z "$mode" ]; then
+            echo "::warning::the planner emitted no mode, so this run is full"
+            mode=full
           fi
-          echo "changed files:"; echo "$changed" | head -50
-
-          matches() {
-            while IFS= read -r file; do
-              [ -n "$file" ] || continue
-              for glob in "$@"; do
-                case "$file" in $glob) return 0 ;; esac
-              done
-            done <<<"$changed"
-            return 1
-          }
-
-          surface() {
-            name=$1; shift
-            if [ "$all" = 1 ] || matches "$@"; then on=true; else on=false; fi
-            printf '%s=%s\n' "$name" "$on" >> "$GITHUB_OUTPUT"
-            echo "  $name: $on"
-          }
-
-          # The workflow file and the composite action every job installs
-          # through are in EVERY list on purpose: an edit to either changes
-          # what these jobs are, so the run that carries it should exercise
-          # all of them.
-          #
-          # docs/sdk/ and the app scaffolder are in the ui list because the ui
-          # suite compiles the SDK docs' examples and every file `talaria app new`
-          # writes against the SDK (ui/src/sdk/client-docs.test.ts and
-          # server.test.ts). Without them, a docs-only or scaffold-only edit
-          # that stops compiling skips this job, and a skip reports success.
-          #
-          # The same rule holds for every file a job reads from OUTSIDE its own
-          # directory: each one below is a file the job's tests read, import or
-          # compile in, so an edit to it alone can turn the job red.
-          #   ui    the fixtures it shares with the api (app grants, the app
-          #         manifest, secretbox vectors and their generator), the Rust
-          #         sources it holds its tables to (the harness registry, the
-          #         gateway guard, the platform agents), the chassis template and
-          #         the workbench image files (chassis.test.ts), and
-          #         check-invariants.mjs (server-import-invariant.test.ts runs it).
-          #   cli   every api .rs file (box.test.ts reads them for the env keys
-          #         a box's api must be handed), the grants fixture,
-          #         docs/CONTAINER.md's up command, the devbox compose, and the
-          #         repo's .gitignore (ignore.test.ts asks git about it).
-          #   api   the chassis template, the Hermes toolset and skill-authority
-          #         files (include_str!), the shipped skills tree, and
-          #         mcp/src/index.ts (the fitness catalog's sync test).
-          #   desktop  ui/src/lib/dither-engine.ts, which the launcher imports
-          #         as `@dither` (desktop/vite.config.ts, tsconfig.json).
-          surface ui      'ui/*' 'apps/*' 'docs/sdk/*' 'cli/src/cmd/app/*' \
-                          'api/tests/it/fixtures/*' 'api/crates/talaria-harness-defs/src/registry.rs' \
-                          'api/crates/talaria-gateway/src/guard.rs' 'api/crates/talaria-platform-agents/src/lib.rs' \
-                          'scripts/chassis.template.yml' 'scripts/workbench.Dockerfile' 'scripts/build-workbench-image.sh' \
-                          'scripts/check-invariants.mjs' 'scripts/gen-secretbox-vectors.mjs' \
-                          '.github/workflows/ci.yml' '.github/actions/**'
-          surface mcp     'mcp/*' '.github/workflows/ci.yml' '.github/actions/**'
-          surface cli     'cli/*' 'api/*.rs' 'api/tests/it/fixtures/*' 'docs/CONTAINER.md' 'docker/devbox.compose.yml' \
-                          '.gitignore' '.github/workflows/ci.yml' '.github/actions/**'
-          surface api     'api/*' 'scripts/chassis.template.yml' 'scripts/hermes-toolsets.json' \
-                          'scripts/hermes-skill-authority.json' 'scripts/skills/*' 'mcp/src/index.ts' \
-                          '.github/workflows/ci.yml' '.github/actions/**'
-          surface desktop 'desktop/*' 'ui/src/lib/dither-engine.ts' '.github/workflows/ci.yml' '.github/actions/**'
-          surface mobile  'mobile/*' '.github/workflows/ci.yml' '.github/actions/**'
-          # The end-to-end suite (ui/e2e/*.spec.ts: the MCP story and the
-          # notification specs) boots the api binary this job builds with
-          # `cargo build --bin talaria-api`, the built ui and the stubs. So its
-          # surface is everything that goes into that binary, not a list of the
-          # crates a spec seems to be about: the root package depends on every
-          # workspace crate, 218 of them directly and the rest through those
-          # (243 of 243 on 2026-11-02, read from the manifests), so a change to
-          # any crate, a shared one such as talaria-db, -state, -auth, -config,
-          # -error, -params or -permissions included, can change what the specs
-          # meet. A hand list of the "relevant" crates missed exactly those, and
-          # a required check this filter skips still reports success (job-level
-          # `if`). `api/crates/*` also covers a crate added later with no edit
-          # here. With it: the binary itself (api/src), the workspace manifest
-          # and lockfile (a dependency's features, such as the TLS roots the
-          # stubs' throwaway CA relies on, can change with no lockfile line), the
-          # build's own config and toolchain pin, and the chassis template this
-          # job copies in for the hire. Not api/tests or the package
-          # Dockerfile: neither goes into the binary. The cost is this job on
-          # every Rust pull request; it runs beside the api job, which takes
-          # longer, so the wait for a green run does not grow.
-          surface e2e     'ui/*' 'scripts/e2e/*' 'api/crates/*' 'api/src/*' 'api/Cargo.toml' 'api/Cargo.lock' \
-                          'api/.cargo/*' 'api/rust-toolchain.toml' 'scripts/chassis.template.yml' \
-                          '.github/workflows/ci.yml' '.github/actions/**'
+          {
+            echo "mode=$mode"
+            echo "base=$(get base)"
+            echo "range=$(get range)"
+            echo "reason=$(get reason)"
+          } >> "$GITHUB_OUTPUT"
+          for key in ui mcp cli api desktop mobile e2e; do
+            value=$(get "$key")
+            case "$value" in
+              true|false) ;;
+              *)
+                echo "::warning::the planner emitted no usable $key, so it runs"
+                value=true ;;
+            esac
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+            echo "  $key: $value"
+          done
+          echo "plan: mode=$mode range=$(get range)"
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug
@@ -352,9 +358,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Empty when run standalone (PR/push); the called ref (rc, a tag)
-          # when release.yml drives this file.
-          ref: ${{ inputs.ref || github.ref }}
+          # Empty when run standalone: the event's own sha (the header's THE
+          # CHECKOUT REF). The called ref (rc, a tag, an offload sha) when
+          # release.yml or ci-offload.yml drives this file.
+          ref: ${{ inputs.ref }}
 
       - uses: ./.github/actions/setup-runtime
         with:
@@ -386,7 +393,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       # Bun installs and drives, Node executes the toolchain shebangs (see
       # "WHY BUN *AND* NODE" in the header); no Rust in this job. The install's
@@ -434,7 +441,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       - uses: ./.github/actions/setup-runtime
         with:
@@ -473,7 +480,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       - uses: ./.github/actions/setup-runtime
         with:
@@ -518,7 +525,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       # Rust only: the pinned toolchain (not stable), for the reason the
       # header's NOTES give — the crate pins it in rust-toolchain.toml and
@@ -535,9 +542,17 @@ jobs:
       # cache" note): cargo's cold build of the dependency tree is minutes on
       # every push, and rust-cache costs one line. It keys on Cargo.lock, so
       # a dependency change recompiles exactly what changed and nothing else.
+      #
+      # ONLY A PUSH TO A LONG-LIVED BRANCH WRITES IT. Pull request, offload
+      # (ci/**), schedule and workflow_call runs restore and never write: the
+      # repository's caches are 11.2 GB against GitHub's 10 GB cap, so every
+      # PR-scoped save evicts a long-lived branch's cache that every PR
+      # restores from. A schedule or call run's github.ref is main, so the
+      # event check is what keeps those runs from writing main's scope.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: api
+          save-if: ${{ github.event_name == 'push' && contains(fromJSON('["refs/heads/main","refs/heads/rc","refs/heads/testing"]'), github.ref) }}
 
       # mold: api/.cargo/config.toml passes -fuse-ld=mold on gnu linux, so
       # `ld.mold` is a hard dependency of the link. The action bounds the apt
@@ -605,7 +620,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       # Rust (+ rustfmt/clippy) and Bun + Node, then the frozen desktop install —
       # desktop/src-tauri/rust-toolchain.toml pins the same toolchain and
@@ -617,6 +632,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+          # A push to main writes it; every other run restores (the api
+          # job's cache note says why).
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       # Needed even for `cargo check`/clippy — the sys crates probe the
       # webkit2gtk/gtk packages at build-script time. ubuntu-latest (24.04)
@@ -670,20 +688,25 @@ jobs:
   # dock badge, the menu-bar item, `RunEvent::Reopen` — is behind
   # `cfg(target_os = "macos")`, so the Linux job above never compiles a line
   # of it, and desktop-package.yml only builds on main and by dispatch. This
-  # job is what puts it through clippy and the tests on every desktop pull
-  # request, and the connect smoke through WKWebView (the runner has a GUI
+  # job is what puts it through clippy and the tests on every full-mode
+  # desktop run, and the connect smoke through WKWebView (the runner has a GUI
   # session). No bundle and no apt step: macOS has the webview already.
+  #
+  # FULL MODE ONLY, like the Windows, iOS and e2e jobs: a pull request into rc
+  # or main, a push to rc or main, a release, or ci/full/<branch>. A light or
+  # integration run skips the platform legs (the header's MODES); the rc
+  # pull request is where they gate.
   desktop-macos:
     name: clippy + test + connect smoke (desktop macos)
     needs: [changes]
-    if: needs.changes.outputs.desktop == 'true'
+    if: needs.changes.outputs.desktop == 'true' && needs.changes.outputs.mode != 'light' && needs.changes.outputs.mode != 'integration'
     runs-on: macos-latest
     timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       - uses: ./.github/actions/setup-runtime
         with:
@@ -692,6 +715,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+          # A push to main writes it; every other run restores (the api
+          # job's cache note says why).
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Clippy
         working-directory: desktop/src-tauri
@@ -721,17 +747,19 @@ jobs:
   # write, the beacon tests over local sockets). No apt step: the WebView2
   # bindings ship inside webview2-com-sys. The connect smoke here is the one
   # that caught the freeze: it failed on rc's code and passes with the fix.
+  #
+  # Full mode only, like desktop-macos (see its note).
   desktop-windows:
     name: clippy + test + connect smoke (desktop windows)
     needs: [changes]
-    if: needs.changes.outputs.desktop == 'true'
+    if: needs.changes.outputs.desktop == 'true' && needs.changes.outputs.mode != 'light' && needs.changes.outputs.mode != 'integration'
     runs-on: windows-latest
     timeout-minutes: 50
 
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       - uses: ./.github/actions/setup-runtime
         with:
@@ -740,6 +768,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+          # A push to main writes it; every other run restores (the api
+          # job's cache note says why).
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Clippy
         working-directory: desktop/src-tauri
@@ -776,7 +807,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       # JDK 21: AGP and Gradle both fully support it, and newer JDKs lead AGP
       # by months. mobile/tools/devbox-install.sh installs the same major.
@@ -830,17 +861,19 @@ jobs:
   # stops being multiplatform and nobody finds out until somebody wants an iOS
   # build. LINKING is checked for the same reason — a klib can compile and still
   # fail to link, and linking is what an `iosApp/` project will depend on.
+  #
+  # Full mode only, like desktop-macos (see its note).
   mobile-ios:
     name: compile + link (mobile ios)
     needs: [changes]
-    if: needs.changes.outputs.mobile == 'true'
+    if: needs.changes.outputs.mobile == 'true' && needs.changes.outputs.mode != 'light' && needs.changes.outputs.mode != 'integration'
     runs-on: macos-latest
     timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-java@v4
         with:
@@ -893,10 +926,12 @@ jobs:
   # SSL_CERT_FILE for its TLS roots, TALARIA_MCP_REGISTRY_URL for the
   # catalog) and they go into $GITHUB_ENV before the app (and the api it
   # spawns) starts. None of them is a test hook — each is an operator setting.
+  #
+  # Full mode only, like desktop-macos (see its note).
   e2e:
     name: mcp end-to-end (playwright)
     needs: [changes]
-    if: needs.changes.outputs.e2e == 'true'
+    if: needs.changes.outputs.e2e == 'true' && needs.changes.outputs.mode != 'light' && needs.changes.outputs.mode != 'integration'
     runs-on: ubuntu-latest
     # A cold api build is most of it; the cache below makes reruns minutes.
     timeout-minutes: 45
@@ -925,7 +960,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
 
       # Logs sit BESIDE the Playwright output, never in it: Playwright empties
       # its outputDir when the run starts, which would take the app and stub
