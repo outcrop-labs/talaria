@@ -126,9 +126,10 @@ and merges it, and the back-flow into testing is opened automatically.
 
 Do not tear the local workspace down while the watcher is still red — you may need it
 to fix, and you may need it again if the change breaks on testing. Once it is green,
-merged and live (section 7), remove what this task created before you claim done. The convention and the command are the [cleanup](../cleanup/SKILL.md) skill. The
-stop gate blocks if disk pressure or stale artifacts are over the line; that is the
-backstop, not the step.
+merged and live (section 7), remove what this task created before you claim done. The
+convention and the command are the [cleanup](../cleanup/SKILL.md) skill. The stop gate
+blocks if disk pressure or stale artifacts are over the line; that is the backstop, not
+the step.
 
 The stop gate and the pre-push hook saw the local tree. CI runs the full tree, and
 `testing` can move under the branch while the PR waits (a sibling merge is the usual way
