@@ -496,7 +496,7 @@ export function capHunks(diffText, cap) {
  *  workflow, 1 tests, 0 docs. */
 export function riskOf(path) {
   if (/\.(md|txt)$/i.test(path) || /^docs\//.test(path)) return 0
-  if (isTestPath(path)) return 1
+  if (isTestPath(path) || /(^|[./])fixtures?\//.test(path)) return 1
   if (/^api\/crates\/.*\/src\/.*\.rs$/.test(path) || /^(ui|cli|mcp|desktop)\//.test(path)) return 3
   if (/\/migrations\/|^\.github\/workflows\/|^scripts\/[^/]+\.mjs$|(^|\/)Dockerfile/.test(path)) return 2
   return 2
@@ -1924,7 +1924,7 @@ export function renderSummary(r) {
     ['reference', (c.reference ?? []).join(', ') || '—'],
     ['files', `${c.filesShown ?? 0} shown of ${c.files ?? 0}${c.partial ? ' (partial)' : ''}`],
     ['diff context', `-U${c.diffContext ?? 25}`],
-    ['trims', (c.trims ?? []).join(', ') || '—'],
+    ['trims', compactTrims(c.trims) || '—'],
     ['input estimate', `${c.inputTokensEst ?? 0} tokens`],
     ['sections (bytes)', Object.entries(c.sections ?? {}).map(([k, v]) => `${k} ${v}`).join(', ')],
     ['context hash', `\`${short(r.contextHash)}\``],
@@ -2330,6 +2330,16 @@ export function writeOutputs(r, dir, { repo } = {}) {
   return { comment, summary }
 }
 
+/** The trims, grouped for a reader: `full ×12` rather than twelve lines. */
+export function compactTrims(trims) {
+  const groups = new Map()
+  for (const t of trims ?? []) {
+    const kind = /^(reference|full|hunks) /.test(t) ? t.split(' ')[0] : t
+    groups.set(kind, (groups.get(kind) ?? 0) + 1)
+  }
+  return [...groups].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)).join(', ')
+}
+
 /** The plan a dry run prints. */
 export function renderPlan(r) {
   const c = r.context ?? {}
@@ -2343,7 +2353,7 @@ export function renderPlan(r) {
     `- files: ${c.filesShown ?? 0} shown of ${c.files ?? 0}${c.partial ? ` (partial: ${(c.filesNotShown ?? []).length} not shown)` : ''}; diff at -U${c.diffContext ?? 25}`,
     `- rules: ${(c.rules ?? []).join(', ') || '—'}`,
     `- reference: ${(c.reference ?? []).join(', ') || '—'}`,
-    `- trims: ${(c.trims ?? []).join(', ') || 'none'}`,
+    `- trims: ${compactTrims(c.trims) || 'none'}`,
     `- input estimate: ~${est} tokens of ${BUDGET_TOKENS}`,
     `- estimated cost: $${lo.toFixed(4)}–$${hi.toFixed(4)} for the review call, plus a verify call when a finding survives`,
     '',

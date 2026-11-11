@@ -579,6 +579,8 @@ check('context: trims run in the fixed order and never touch the fixed sections;
   const s = J.renderSections(tight)
   ok(s.body.includes('what changed') && s.files.includes(LIB), 'a fixed section was trimmed')
   ok(ctxOf({ budgetTokens: fixed * 2 }).tooLarge === true, 'fixed sections over 40% must be too-large')
+  eq(J.compactTrims(['reference docs/A.md', 'reference docs/B.md', 'importers', 'full a', 'full b', 'full c', 'diff at -U10']), 'reference ×2, importers, full ×3, diff at -U10')
+  eq([J.riskOf('scripts/judge-review.fixtures/x.json'), J.riskOf('api/crates/a/src/lib.rs'), J.riskOf('docs/x.md'), J.riskOf('ui/src/a.test.ts')], [1, 3, 0, 1])
 })
 
 check('context: a removed call with no use left is a fact; an added pub fn with only test callers has 0 non-test uses', () => {
