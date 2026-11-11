@@ -539,8 +539,9 @@ rules and the persona resolver are real, so an assertion about the runner stays 
 runner. Include at least one reply in the shape a 14B model actually emits (a preamble, then the
 object), so the extractor and the repair turn are exercised rather than assumed.
 
-**5. Check the gates.** `bun run api:check` (fmt + clippy `-D warnings` + the crate's tests). The
-registry's unit tests fail the build if the harness names a guard rule that does not exist, leaves
+**5. Check the gates.** The pull request's CI, or `bun run gate:remote` before one exists — the api
+job runs fmt + clippy `-D warnings` + the crate's tests; never `api:check` on this machine. To reproduce
+one failure it reported: `cargo test -p talaria-harness <test>`. The registry's unit tests fail the build if the harness names a guard rule that does not exist, leaves
 the guard block off, declares a floor it never enforces, refuses on a capability it does not
 require, spells the Utility fallback as its own `role`, widens without a note, or ships no eval
 fixtures.

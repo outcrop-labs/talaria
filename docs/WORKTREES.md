@@ -151,10 +151,13 @@ data so you still have realistic agents/boards/tickets to work against.
    It also **installs**
    `cli/` and `mcp/` with `bun install --frozen-lockfile` from the branch's own
    lockfiles. Those two used to be missing in every fresh worktree, so its first
-   `bun run gate` failed on a missing `tsc` before it read a line of the change;
-   they are small, bun hardlinks from its cache, and a link would tie the branch
-   to main's lockfile. (`bun run gate` installs any missing `node_modules` of a
-   package it typechecks itself, too — never through a symlink.)
+   targeted run (one `bun test <file>` in `cli/`) failed on a missing package
+   before it read a line of the change; they are small, bun hardlinks from its
+   cache, and a link would tie the branch to main's lockfile. The compile itself
+   is CI's — the pull request's checks, or `bun run gate:remote` before one
+   exists. (`bun run gate`, for reproducing one failure CI reported, installs any
+   missing `node_modules` of a package it typechecks itself — never through a
+   symlink.)
 
 7. **Seeds the Rust build cache** (`api/target`, and `desktop/src-tauri/target` with
    `--desktop`) from an idle checkout's, by reflink — see

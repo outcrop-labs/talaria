@@ -630,8 +630,8 @@ cost of a web process per hovered row; it is not done.
 
 ## Development: the box builds, the host runs
 
-A devbox has no display, so the split is: **code and gates in the box, GUI on the host** (the
-box's clone is host-visible at `~/Development/devboxes/<name>/talaria`).
+A devbox has no display, so the split is: **code in the box, gates on CI, GUI on the host**
+(the box's clone is host-visible at `~/Development/devboxes/<name>/talaria`).
 
 ```sh
 # host, once: the webkit runtime (Arch; gtk3 rides along)
@@ -641,11 +641,10 @@ sudo pacman -S webkit2gtk-4.1 librsvg
 bun talaria box build
 bun talaria box new desktop
 
-# in the box — the gates (CARGO_TARGET_DIR keeps cargo artifacts OFF the
-# host-shared tree; the host's build uses desktop/src-tauri/target, and two
-# cargo builds into one target dir fight)
+# in the box — the gates run on GitHub, not here: commit, then, in the background
 bun talaria box enter desktop
-CARGO_TARGET_DIR=$HOME/target-desktop bun run desktop:check
+bun run gate:remote          # light: the Linux desktop job
+bun run gate:remote --full   # adds desktop-macos and desktop-windows
 
 # in the box — a live instance to point the shell at (seeded at box creation)
 bun talaria dev          # → http://127.0.0.1:5302
@@ -676,8 +675,11 @@ the binary directly as above.
 ## Gates
 
 `bun run desktop:check` (root) = `cargo fmt --check` + `cargo clippy -D warnings` +
-`cargo test` + `svelte-check`, the same list CI's `desktop` job runs. `bun run verify` is
-unchanged — the desktop surface gates per-surface, exactly like `api:check`.
+`cargo test` + `svelte-check`, the same list CI's `desktop` job runs. Like `api:check`, it
+is CI's job, never local, and `bun run verify` does not include it. The proof is the pull
+request's CI, or `bun run gate:remote` before one exists. A light run (`gate:remote`) has
+only the Linux `desktop` job; `bun run gate:remote --full` adds `desktop-macos` and
+`desktop-windows`, which a change to macOS or Windows `cfg` code needs before a PR.
 
 CI runs clippy and the tests on all three platforms for every desktop pull request:
 `desktop` (Linux), `desktop-macos` and `desktop-windows`, because each OS's `cfg` code is
