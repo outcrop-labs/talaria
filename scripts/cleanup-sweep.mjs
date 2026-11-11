@@ -13,6 +13,9 @@
 //   - the docker stack of such a worktree — containers, volumes, network.
 //     This one runs in --gate too: it frees RAM and CPU the moment the work
 //     is finished, removes nothing from disk, and `talaria dev` undoes it
+//   - with a MERGED worktree's stack or checkout, its offload refs on origin
+//     (`ci/wt/<name>`, `ci/full/wt/<name>`: `bun run gate:remote` keeps one
+//     after a red). Never fatal; ci-offload.yml's daily prune is the backstop
 //   - a side worktree's build dir untouched for POLICY.staleTargetMs
 //   - a devbox the same way (../devboxes/<name>, not the shared tools layer)
 //   - /tmp/talaria-* (or $TMPDIR) older than POLICY.tmpStaleMs
@@ -1821,6 +1824,55 @@ function downWorktreeStack(name, roots) {
   dockerByLabel(project)
 }
 
+/**
+ * The offload refs `bun run gate:remote` left on origin for a branch: of the
+ * `git ls-remote origin 'refs/heads/ci/*<branch>'` lines, exactly
+ * `refs/heads/ci/<branch>` and `refs/heads/ci/full/<branch>`. The pattern is a
+ * glob matched against the tail of a ref, `*` crossing `/`, so it also lists
+ * `ci/xwt/<name>` and `ci/full/a/wt/<name>`: other branches' refs, never this
+ * one's. Pure.
+ * @param {string} branch  `wt/<name>`
+ * @param {string[]|string} lsRemoteLines
+ */
+export function offloadRefsFor(branch, lsRemoteLines) {
+  const lines = Array.isArray(lsRemoteLines) ? lsRemoteLines : String(lsRemoteLines ?? '').split('\n')
+  const listed = new Set(lines.map((line) => String(line).trim().split(/\s+/)[1]).filter(Boolean))
+  return [`refs/heads/ci/${branch}`, `refs/heads/ci/full/${branch}`].filter((ref) => listed.has(ref))
+}
+
+function firstLineOf(e) {
+  const text = String(e?.stderr || e?.message || e || '')
+  return text.split('\n').find((l) => l.trim())?.trim() || 'no output'
+}
+
+/**
+ * Delete a merged worktree's offload refs from origin — the `ci/wt/<name>`
+ * and `ci/full/wt/<name>` that `bun run gate:remote` pushes and keeps after a
+ * red. Returns notes for the report. Never fatal: the worktree's own teardown
+ * already happened, and ci-offload.yml's daily prune deletes any `ci/**` ref
+ * whose tip is over a day old. The pre-push hook passes a `ci/` deletion.
+ */
+function deleteOffloadRefs(name, roots) {
+  const branch = `wt/${name}`
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
+  let listing
+  try {
+    listing = execFileSync('git', ['-C', roots.primary, 'ls-remote', 'origin', `refs/heads/ci/*${branch}`], { ...opts, timeout: 20_000 })
+  } catch (e) {
+    return [`could not list the offload refs of ${branch} (the daily prune removes them): ${firstLineOf(e)}`]
+  }
+  const refs = offloadRefsFor(branch, listing)
+  if (!refs.length) return []
+  const names = refs.map((ref) => ref.slice('refs/heads/'.length)).join(', ')
+  try {
+    execFileSync('git', ['-C', roots.primary, 'push', '--quiet', 'origin', ...refs.map((ref) => `:${ref}`)], { ...opts, timeout: 60_000 })
+  } catch (e) {
+    return [`could not delete ${names} (the daily prune removes them): ${firstLineOf(e)}`]
+  }
+  logRemoval(`removed offload refs ${names}`)
+  return [`deleted the offload refs of merged ${branch}: ${names}`]
+}
+
 /** A `.talaria-keep` in the checkout a stack, worktree or box row names. */
 function keptNow(artifact) {
   const dir = artifact.checkout || artifact.path
@@ -1968,7 +2020,9 @@ export function removeArtifact(artifact, roots) {
   }
   if (artifact.kind === 'stack') {
     downWorktreeStack(artifact.id, roots)
-    return
+    // A merged worktree's stack is the first thing the gate takes; its
+    // offload refs go with it. A stale one's are the daily prune's.
+    return artifact.merged ? deleteOffloadRefs(artifact.id, roots) : []
   }
   if (artifact.kind === 'target') {
     dropTarget(artifact.path)
@@ -1989,7 +2043,7 @@ export function removeArtifact(artifact, roots) {
     if (existsSync(artifact.path)) rmSync(artifact.path, { recursive: true, force: true })
     tryExec('git', ['-C', roots.primary, 'worktree', 'prune'])
     tryExec('git', ['-C', roots.primary, 'branch', '-D', `wt/${artifact.id}`])
-    return
+    return artifact.merged ? deleteOffloadRefs(artifact.id, roots) : []
   }
   if (artifact.kind === 'devbox') {
     const project = `devbox-${artifact.id}`
@@ -2154,11 +2208,15 @@ function main() {
   const removing = selectRemoval(classified, mode)
   const removed = []
   const failed = []
+  // What a removal did beyond the row itself (a merged worktree's offload
+  // refs), for the report.
+  const sideNotes = []
   for (const a of removing) {
     try {
-      removeArtifact(a, inventoried.roots)
+      const extra = removeArtifact(a, inventoried.roots)
       removed.push(a)
       logRemoval(`removed ${a.kind} ${a.id} ${a.path || ''}`.trim())
+      if (Array.isArray(extra)) sideNotes.push(...extra)
     } catch (e) {
       failed.push(`${a.kind} ${a.id}: ${e instanceof Error ? e.message : e}`)
     }
@@ -2192,7 +2250,7 @@ function main() {
     pressureNotes.push(...r.notes)
   }
   const v = verdict(classified, pressure)
-  const notes = [...inventoried.notes, ...pressureNotes, ...failed.map((f) => `could not remove ${f}`)]
+  const notes = [...inventoried.notes, ...pressureNotes, ...sideNotes, ...failed.map((f) => `could not remove ${f}`)]
   const report = formatReport({ pressure, remaining: classified, removed, notes })
 
   if (json) {

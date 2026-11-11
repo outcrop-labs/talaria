@@ -18,6 +18,7 @@ import {
   mcpPkgOwner,
   mergedAtHead,
   mergedPrefilter,
+  offloadRefsFor,
   orphanAppDbs,
   orphanMcpPackages,
   ownerKey,
@@ -798,6 +799,68 @@ check('removeArtifact leaves a stack, worktree or box a .talaria-keep was touche
     removeArtifact(devbox, roots)
     if (!calls().some((c) => c.startsWith('docker compose -p devbox-zz-done ') && c.endsWith(' down -v --remove-orphans'))) throw new Error(calls().join('\n'))
     eq(existsSync(box), false)
+  })
+})
+
+// ── A merged worktree's offload refs (bun run gate:remote) ─────────────────
+// `git ls-remote origin 'refs/heads/ci/*wt/<name>'` is a tail glob whose `*`
+// crosses `/`, so it lists other branches' refs too. Only the exact pair goes.
+
+check('offloadRefsFor: exactly ci/<branch> and ci/full/<branch>, never a look-alike', () => {
+  const listing = [
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/ci/wt/x',
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/heads/ci/full/wt/x',
+    'cccccccccccccccccccccccccccccccccccccccc\trefs/heads/ci/xwt/x',
+    'dddddddddddddddddddddddddddddddddddddddd\trefs/heads/ci/full/a/wt/x',
+    'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\trefs/heads/ci/wt/x-2',
+    '',
+  ]
+  eq(offloadRefsFor('wt/x', listing).join(), 'refs/heads/ci/wt/x,refs/heads/ci/full/wt/x')
+  eq(offloadRefsFor('wt/x', listing.join('\n')).join(), 'refs/heads/ci/wt/x,refs/heads/ci/full/wt/x')
+  eq(offloadRefsFor('wt/x', [listing[1]]).join(), 'refs/heads/ci/full/wt/x')
+  eq(offloadRefsFor('wt/x', [listing[2], listing[3], listing[4]]).length, 0)
+  eq(offloadRefsFor('wt/x', '').length, 0)
+  eq(offloadRefsFor('wt/x', undefined).length, 0)
+})
+
+check('a merged stack or worktree takes its offload refs; a stale one, and a failed listing, do not stop it', () => {
+  if (!POSIX) return
+  withStandIns(({ roots, calls }) => {
+    const dir = dirname(roots.primary)
+    const log = join(dir, 'calls.log')
+    // git answers ls-remote with the pair and a look-alike.
+    const answering = [
+      '#!/bin/sh',
+      `echo "git $*" >> '${log}'`,
+      'if [ "$3" = "ls-remote" ]; then',
+      "  printf 'aaaa\\trefs/heads/ci/wt/zz-merged\\n'",
+      "  printf 'bbbb\\trefs/heads/ci/full/wt/zz-merged\\n'",
+      "  printf 'cccc\\trefs/heads/ci/xwt/zz-merged\\n'",
+      'fi',
+      '',
+    ].join('\n')
+    writeFileSync(join(dir, 'bin', 'git'), answering)
+    const checkout = join(roots.siblingParent, 'talaria-zz-merged')
+    mkdirSync(checkout)
+    const stack = { ...stale({ kind: 'stack', id: 'zz-merged', path: '', running: true, merged: true }), checkout }
+    const notes = removeArtifact(stack, roots)
+    const pushed = `git -C ${roots.primary} push --quiet origin :refs/heads/ci/wt/zz-merged :refs/heads/ci/full/wt/zz-merged`
+    if (!calls().includes(`git -C ${roots.primary} ls-remote origin refs/heads/ci/*wt/zz-merged`)) throw new Error(calls().join('\n'))
+    if (!calls().includes(pushed)) throw new Error(calls().join('\n'))
+    eq(notes.join(), 'deleted the offload refs of merged wt/zz-merged: ci/wt/zz-merged, ci/full/wt/zz-merged')
+    // The checkout's own teardown (--apply) asks again: the refs may be back.
+    writeFileSync(log, '')
+    removeArtifact(stale({ kind: 'worktree', id: 'zz-merged', path: checkout, merged: true }), roots)
+    if (!calls().includes(pushed)) throw new Error(calls().join('\n'))
+    // A stale, unmerged stack is the daily prune's: no network call at all.
+    writeFileSync(log, '')
+    eq(removeArtifact({ ...stale({ kind: 'stack', id: 'zz-stale', path: '', running: true, merged: false }), checkout }, roots).length, 0)
+    if (calls().some((c) => c.includes('ls-remote') || c.includes(' push '))) throw new Error(calls().join('\n'))
+    // origin unreachable: a note, never a throw — the stack is already down.
+    writeFileSync(join(dir, 'bin', 'git'), ['#!/bin/sh', `echo "git $*" >> '${log}'`, 'echo "fatal: unable to access origin" >&2', 'exit 128', ''].join('\n'))
+    const down = removeArtifact({ ...stale({ kind: 'stack', id: 'zz-merged', path: '', running: true, merged: true }), checkout }, roots)
+    eq(down.length, 1)
+    if (!/could not list the offload refs of wt\/zz-merged \(the daily prune removes them\): fatal: unable to access origin/.test(down[0])) throw new Error(down[0])
   })
 })
 

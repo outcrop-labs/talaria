@@ -79,6 +79,11 @@ ui/.sdk-doc-examples-*/
 .omc/
 ui/.omc/
 
+# The cleanup sweep's hold (scripts/cleanup-sweep.mjs): a `.talaria-keep` in a
+# checkout's root keeps the sweep off it. A local marker, never content — and
+# untracked, it made every held worktree read as dirty.
+.talaria-keep
+
 # Claude Code local state — the tracked parts are the skills and the hooks
 # block in .claude/settings.json; everything personal stays out of history
 .claude/settings.local.json
