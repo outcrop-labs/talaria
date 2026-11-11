@@ -219,8 +219,10 @@ composition root that wires the cross-crate seams.
 Names follow the module they replaced: `src/tasks.rs` → `talaria-tasks`,
 `src/google/drive.rs` → `talaria-google-drive`. When you extract the next
 one, keep the moves mechanical — rewrites to crate paths, the OnceLock only
-where a cycle forces it — and run the full gate (`clippy -D warnings`,
-`cargo test --workspace`, `bun run check`) before committing.
+where a cycle forces it — run `bun run check` before committing, and let CI run
+the full gate (fmt, `clippy -D warnings`, the workspace's tests): the pull
+request's checks, or `bun run gate:remote` before one exists. Never a
+workspace `cargo test` on this machine.
 
 `Cargo.lock` is committed, as `bun.lock` is. The shared target dir stays
 `api/target` so `.dockerignore` and the package Dockerfile's context keep

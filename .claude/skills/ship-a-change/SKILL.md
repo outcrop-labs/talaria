@@ -100,9 +100,10 @@ bullet. The changelog is the record reviewers and release-notes readers actually
 
 CI comes in two weights, planned by `scripts/surfaces.mjs`. **Light** — Linux jobs for the
 surfaces the branch moved — runs on a `ci/<branch>` offload and a pull request into anything
-but `rc` or `main`. **Full** — every surface, plus macOS, Windows, iOS and e2e — runs on a
-pull request into `rc` or `main`, a push to either, and `ci/full/<branch>`
-(`gate:remote --full`). The push to `rc` that the merge makes runs `rc-deploy.yml` — which
+but `rc` or `main`. **Full** — the surfaces the change moved, each with its macOS, Windows,
+iOS and e2e legs — runs on a pull request into `rc` or `main` and a push to either;
+`ci/full/<branch>` (`gate:remote --full`) runs every surface that way. The push to `rc`
+that the merge makes runs `rc-deploy.yml` — which
 builds this commit's image, boots it and checks it. That
 deploy, not this pull request, is what lets the promotion be offered (`rc → main`); a
 maintainer merges it, and the evidence is on it when it appears — nobody has to assemble it

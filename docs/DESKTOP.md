@@ -639,7 +639,7 @@ sudo pacman -S webkit2gtk-4.1 librsvg
 
 # host: image (carries the tauri build deps) and the box
 bun talaria box build
-bun talaria box new desktop
+bun talaria box new desktop --env GH_TOKEN=…   # gate:remote's token: a box has no gh login
 
 # in the box — the gates run on GitHub, not here: commit, then, in the background
 bun talaria box enter desktop
