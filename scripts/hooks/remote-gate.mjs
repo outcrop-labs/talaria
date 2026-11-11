@@ -696,7 +696,8 @@ async function watch(gh, id, { deadline, minAttempt = 1, settle = false }) {
       const total = done + v.pending.length
       progress('waiting', `${runRow.html_url} — ${done}/${total} job(s) done${v.pending.length ? `; running: ${v.pending.join(', ')}` : ''} — next poll in ${delay}s, ${Math.ceil(left / 60)}m left`)
     } else {
-      if (left <= 0) return { run: runRow, verdict: { kind: 'timeout', ran: [], skipped: [], failing: [], pending: [] } }
+      // The last read failed: the id is still the resume.
+      if (left <= 0) return { run: runRow ?? { id }, verdict: { kind: 'timeout', ran: [], skipped: [], failing: [], pending: [] } }
       delay = nextDelay(delay, left)
       if (runRow) progress('waiting', `${runRow.html_url} — attempt ${minAttempt} has not started yet — next poll in ${delay}s`)
     }
@@ -889,7 +890,17 @@ async function main(opts) {
     const attempt = (Number(target.run_attempt) || 1) + 1
     progress('rerun', `re-running the failed jobs of ${target.html_url} as attempt ${attempt}`)
     // --detach: the re-run is started; its id is the resume, as after a push.
+    // It leaves only once GitHub shows the new attempt: until then the run
+    // still reads as the finished one, and a `--watch` that came straight
+    // after read that attempt's red back as the re-run's.
     if (opts.detach) {
+      const until = Date.now() + 120_000
+      for (;;) {
+        const row = await read(gh, `${repoPath(gh)}/actions/runs/${target.id}`, { tries: 3 }).catch((e) => couldNotRun(e.message))
+        if (Number(row?.run_attempt) >= attempt) break
+        if (Date.now() >= until) couldNotRun(`GitHub accepted the re-run of ${target.html_url} but shows no attempt ${attempt} after 120s — give it a minute, then: bun run gate:remote --watch ${target.id}`)
+        await sleep(3_000)
+      }
       setPayload({ ...target, run_attempt: attempt }, ref, target.head_sha)
       block('pending', [target.html_url, `run ${target.id} attempt ${attempt} on ${ref} @ ${String(target.head_sha).slice(0, 12)}`, `resume: bun run gate:remote --watch ${target.id}`])
     }
