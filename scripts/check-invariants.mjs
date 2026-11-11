@@ -2338,18 +2338,20 @@ const UNSET_SEAM_CENSUS = [
 
 // THE BRANCH MODEL IS MACHINERY, AND MACHINERY GETS AN ANCHOR.
 //
-// docs/BRANCHES.md says pull requests target `rc` and `main` takes the verified
-// promotion. On its own that sentence is worth nothing: what makes it true is
-// .github/workflows/flow.yml (the server-side tripwire), scripts/flow-guard.mjs
-// (the rules), scripts/hooks/pre-push (the local wiring) and — outside this
-// tree — the branch protection the doc tells a maintainer to apply.
+// docs/BRANCHES.md describes three long-lived branches — testing (the
+// integration lane), rc (the release candidate) and main (the trunk, which
+// takes only rc's verified promotion). On its own that page is worth nothing:
+// what makes it true is .github/workflows/flow.yml (the server-side tripwire),
+// scripts/flow-guard.mjs (the rules), scripts/hooks/pre-push (the local
+// wiring), promote.yml (the promotion) and — outside this tree — the branch
+// protection the doc tells a maintainer to apply.
 //
 // The failure this check exists for is the one this file has already paid for
 // twice: a rule whose subject is renamed or deleted goes on passing while
-// guarding nothing. Delete the guard, or quietly put `testing` back into a
-// trigger, and every other check here stays green while the model becomes prose
-// somebody wrote once. So each piece must exist, must still be wired to the
-// others, and the retired branch must not return as a trigger anywhere.
+// guarding nothing. Delete the guard, or let a second workflow take the name
+// the promotion's evidence is found by, and every other check here stays green
+// while the model becomes prose somebody wrote once. So each piece must exist,
+// must still be wired to the others, and the evidence must keep one identity.
 {
   const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
   const found = []
@@ -2374,9 +2376,12 @@ const UNSET_SEAM_CENSUS = [
     ['.github/workflows/flow.yml', 'pr-base', 'the guard that refuses a pull request to main from anywhere but rc'],
     ['.github/workflows/flow.yml', 'promotion-gate', 'the guard that requires a green rc-deploy run for the promoted commit'],
     ['.github/workflows/flow.yml', 'flow-guard.mjs', 'the policy script, wired server-side'],
+    ['.github/workflows/flow.yml', '.head_branch == "rc"', "the promotion gate's evidence is rc's own runs, not any run of the sha"],
+    ['.github/workflows/promote.yml', '.head_branch == "rc"', "the promotion's evidence is the gate's: rc's own runs"],
     ['scripts/hooks/pre-push', 'flow-guard.mjs', 'the same policy, wired before the push leaves the machine'],
     ['scripts/flow-guard.mjs', "'main'", 'the trunk the policy polices'],
-    ['scripts/flow-guard.mjs', "'rc'", 'the integration branch the policy polices'],
+    ['scripts/flow-guard.mjs', "'rc'", 'the release candidate the policy polices'],
+    ['scripts/flow-guard.mjs', "'testing'", 'the integration lane the policy polices'],
   ]
   for (const [file, needle, why] of wired) {
     const text = read(file)
@@ -2387,30 +2392,39 @@ const UNSET_SEAM_CENSUS = [
     }
   }
 
-  // The retired branch stays retired. `testing` is not a channel source any
-  // more (nightly builds `rc`), so a branch trigger naming it is a second feed
-  // nothing keeps current — the exact rot RELEASING.md records from its last
-  // life. flow.yml may still NAME it, in the transitional refusal; a trigger
-  // may not list it.
+  // The evidence keeps one identity. flow.yml's promotion gate and promote.yml
+  // find rc's evidence by workflow NAME (`CI`, `rc-deploy`) among the runs of
+  // one commit, so a second workflow carrying either name would become that
+  // evidence: green on a sha it never checked the way the gate means. Each
+  // name belongs to one file, and each of those files keeps its name.
+  const EVIDENCE = { CI: 'ci.yml', 'rc-deploy': 'rc-deploy.yml' }
   const workflows = join(ROOT, '.github', 'workflows')
-  for (const file of readdirSync(workflows)) {
-    if (!file.endsWith('.yml')) continue
-    // flow.yml is the one file allowed to name `testing` in a trigger, for the
-    // reason the guard exists: the push that has to be REFUSED is a push to
-    // `testing`, so the guard has to run when one happens. That is a schedule
-    // for a refusal, not a feed — nothing builds from the branch, and no other
-    // workflow may trigger on it.
-    if (file === 'flow.yml') continue
-    const text = readFileSync(join(workflows, file), 'utf8')
-    for (const m of text.matchAll(/branches: \[([^\]]*)\]/g)) {
-      const branches = m[1].split(',').map((b) => b.trim())
-      if (branches.includes('testing')) {
-        found.push({
-          path: `.github/workflows/${file}`,
-          line: 0,
-          text: `\`testing\` is retired but still in a trigger: branches: [${branches.join(', ')}]`,
-        })
-      }
+  const nameOf = (text) => {
+    const m = /^name:\s*(.+?)\s*$/m.exec(text)
+    return m ? m[1].replace(/^(['"])(.*)\1$/, '$2') : null
+  }
+  const named = new Map()
+  for (const file of readdirSync(workflows).sort()) {
+    if (!file.endsWith('.yml') && !file.endsWith('.yaml')) continue
+    const name = nameOf(readFileSync(join(workflows, file), 'utf8'))
+    named.set(file, name)
+    if (name !== null && Object.hasOwn(EVIDENCE, name) && EVIDENCE[name] !== file) {
+      found.push({
+        path: `.github/workflows/${file}`,
+        line: 0,
+        text: `named \`${name}\`: flow.yml's promotion gate and promote.yml find rc's evidence by workflow name; a second workflow named \`${name}\` would become that evidence`,
+      })
+    }
+  }
+  for (const [name, file] of Object.entries(EVIDENCE)) {
+    if (!named.has(file)) {
+      found.push({ path: `.github/workflows/${file}`, line: 0, text: `missing — the promotion's \`${name}\` evidence comes from it` })
+    } else if (named.get(file) !== name) {
+      found.push({
+        path: `.github/workflows/${file}`,
+        line: 0,
+        text: `is named \`${named.get(file)}\`, not \`${name}\` — flow.yml's promotion gate and promote.yml look its runs up by that name`,
+      })
     }
   }
 
@@ -2428,11 +2442,17 @@ const UNSET_SEAM_CENSUS = [
         'refactor. Make it in docs/BRANCHES.md and here, together, so the next session reads the',
         'same story from both.',
         '',
-        'If `testing` reappeared in a trigger: the nightly channel builds `rc` now. Remove it from',
-        'the trigger (and delete the branch) rather than reviving a feed nothing keeps current.',
+        'If a workflow name is the finding: `CI` belongs to ci.yml and `rc-deploy` to',
+        'rc-deploy.yml, and nothing else may carry either. The promotion gate and promote.yml',
+        'count a green run of that NAME, on rc, as the evidence that rc\'s tip was checked and',
+        'deployed; give the other workflow its own name. Renaming one of the two is a change to',
+        'the evidence itself — flow.yml, promote.yml (its workflow_run list too) and this check',
+        'move together.',
       ],
       found,
     })
+  } else {
+    notes.push(`branch flow anchored; evidence names unique: ${Object.entries(EVIDENCE).map(([n, f]) => `${n} ← ${f}`).join(', ')}`)
   }
 }
 

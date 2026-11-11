@@ -1,9 +1,9 @@
 # Talaria CI — the invariant tripwire, the unit tests, and the typecheck.
 #
 # WHAT THIS DOES
-#   On every pull request and every push to main or rc, on every push to
-#   ci/<branch> (through ci-offload.yml), and before every publish (through
-#   release.yml):
+#   On every pull request and every push to main, rc or testing, on every
+#   push to ci/<branch> (through ci-offload.yml), and before every publish
+#   (through release.yml):
 #     bun scripts/check-invariants.mjs          (no install, seconds)
 #     cd ui && bun install && bun run test      (vitest)
 #     cd ui && bun run typecheck                (svelte-check)
@@ -182,13 +182,16 @@ name: CI
 on:
   pull_request:
   push:
-    # rc: the branch nightly and the RC channel are built from, and the one
-    # every pull request targets — a broken tip has to fail HERE, on the push
-    # that created it, rather than at 03:17 in a nightly publish with nobody
-    # watching. main: the promotion merge, and nothing else. ci/** pushes are
-    # NOT here: ci-offload.yml calls this file for them, so their checks
-    # carry its prefix. docs/BRANCHES.md is the model.
-    branches: [main, rc]
+    # The long-lived branches. Each checks everything since its own last green
+    # push run (scripts/surfaces.mjs), so a cancelled or red run is covered by
+    # the next one. testing, the integration lane, runs integration mode; rc
+    # and main run full. rc is what nightly and the RC channel are built from —
+    # a broken tip has to fail HERE, on the push that created it, rather than
+    # at 03:17 in a nightly publish with nobody watching. main takes the
+    # promotion merge, and nothing else. ci/** pushes are NOT here:
+    # ci-offload.yml calls this file for them, so their checks carry its
+    # prefix. docs/BRANCHES.md is the model.
+    branches: [main, rc, testing]
   # release.yml and ci-offload.yml call this file (see their headers), so a
   # publish and an offload are gated by exactly what gates a PR. The ref MUST
   # be explicit when called: a schedule event's github.ref is the default

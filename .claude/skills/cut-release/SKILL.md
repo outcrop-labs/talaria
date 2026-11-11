@@ -18,7 +18,7 @@ The branch model behind that: [`docs/BRANCHES.md`](../../../docs/BRANCHES.md).
 |---|---|---|---|
 | `rc` | integration + staging; every PR targets it | merging pull requests | `vX.Y.Z-rc.N` |
 | `main` | the release trunk | the promotion merge of `rc`, once its deploy is green | `vX.Y.Z` |
-| `testing` | retired — nightly builds `rc`'s tip now | nothing; delete it | — |
+| `testing` | the integration lane, coming back — nightly still builds `rc`'s tip | merging pull requests; never deleted | — |
 
 ## Cut an RC
 
