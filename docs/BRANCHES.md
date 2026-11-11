@@ -6,13 +6,15 @@ enforcement is real code — `.github/workflows/flow.yml`,
 machinery rather than manners; when the two disagree, the machinery is what
 happened and this page is a bug.
 
-Two long-lived branches, and one retired:
+Three long-lived branches. `testing` is coming back as the integration lane: the
+guards already police it, and pull requests move to it in a later change — until
+then every pull request still targets `rc`.
 
 | Branch | What it is | How it moves |
 | :--- | :--- | :--- |
 | `rc` | The integration branch, and the staging environment. Every pull request targets it. | Merging pull requests (merge commits). |
 | `main` | The release trunk. Stable tags are cut here. | One way only: the promotion merge of `rc` into `main`, after `rc` is deployed and verified. |
-| `testing` | Retired. The nightly channel is built from `rc` now. | Nothing — delete it (below). |
+| `testing` | The integration lane, coming back: features and back-flows will merge here and be exercised together. Nothing targets it yet. | Merging pull requests (merge commits), or a fast-forward to content `rc` or `main` already carries. Never rewritten or deleted. |
 
 Everything else — `wt/*`, `agent/*`, `ci/*`, a fork's branch — is a working
 branch, and this policy has no opinion about it.
@@ -88,10 +90,11 @@ cannot open until the commit has been deployed.
 | :--- | :--- | :--- |
 | `bun run check` | locally, every time | invariants (including this file's own anchors) + every doc link resolves + generated references are not drifted |
 | `bun run gate:remote` | before a pull request exists, in the background | `ci.yml` on a `ci/<branch>` push (`CI offload`): light, or every platform with `--full` — the same jobs a pull request gets |
-| `ci.yml` | pull requests, pushes to `rc`/`main`, every publish, and `ci/**` offloads | the tripwire: each surface's tests, typecheck, and the prod-bundle SPA smoke |
+| `ci.yml` | pull requests, pushes to `testing`/`rc`/`main`, every publish, and `ci/**` offloads | the tripwire: each surface's tests, typecheck, and the prod-bundle SPA smoke |
 | `migrations.yml` | migration-touching changes | the array replays from zero *and* upgrades a baseline, with the schema snapshot undrifted |
 | `rc-deploy.yml` | every push to `rc` | the commit's own image boots as a fresh instance and answers — the staging deploy |
-| `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc` (CI green, deploy green) and carries no unrolled `changelog/` entries |
+| `pr-target` (flow.yml) | pull requests into `main`, `rc`, `testing` | `main` takes only this repository's `rc`; no title or body that would skip the merge's own push checks (`[skip ci]` and kin); no retarget into `rc` or `main` until a push re-runs the checks against it |
+| `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc` (CI green, deploy green, in runs made on `rc`) and carries no unrolled `changelog/` entries |
 | `mobile-package.yml` | pull requests touching `mobile/`, pushes to rc/main, and on demand | a debug-signed Android APK attached to the run, for testing on a real device against a real instance. Debug-signed is not distributable — the debug keystore ships with every Android SDK — so it is an `adb install` artifact and nothing else |
 | `judge.yml` | every pull request | the standards half: the flow, the changelog claim against the surfaces touched, tests, generated trees, commit subjects — plus one sticky comment. Not a required check yet, on purpose |
 | `branch-push` (flow.yml) | pushes to `main`, `rc`, `testing` | content provenance: what a push introduces came from where it is allowed to come from |
@@ -176,7 +179,7 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/main/protection" \
       "test + assemble (mobile)",
       "compile + link (mobile ios)",
       "mcp end-to-end (playwright)",
-      "pr target (main takes rc only)",
+      "pr target (flow)",
       "promotion gate (rc verified)"
     ]
   },
@@ -191,9 +194,9 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/main/protection" \
 JSON
 
 # rc — the integration branch. The same ci.yml jobs (there is no promotion
-# gate above it, and flow.yml's checks are for the pull request to MAIN: its
-# guard for rc runs on the PUSH, not on a pull request, and a required check
-# that never reports on a pull request wedges the merge). `strict: false`: a
+# gate above it. flow.yml's `pr target (flow)` reports on rc's pull requests
+# too, but rc does not require it until pull requests move to testing; the
+# guard for rc's own content runs on the PUSH). `strict: false`: a
 # pull request's checks run against GitHub's merge commit either way, so
 # requiring an up-to-date base would only add rebase churn.
 gh api -X PUT "repos/outcrop-labs/talaria/branches/rc/protection" \
@@ -308,11 +311,23 @@ and no client-side check can ask. What it reads is where the commits came from:
   file is indistinguishable from a pull request merge by this test — which is
   exactly why "require a pull request" is part of `rc`'s protection: the guard
   catches the shapes a bypass leaves, and branch protection prevents the bypass.
-- **Neither** may be rewritten or deleted by a push: a force-push would erase
+- **`testing`**: the tip must be a merge commit, or every introduced commit must
+  already be reachable from `rc` or `main` — a fast-forward to content those
+  branches already verified, which is how the lane is brought up to `rc`'s tip.
+- **None** may be rewritten or deleted by a push: a force-push would erase
   commits a promotion or an RC deploy record refers to.
-- **`testing`**: a push to it is refused with the reason, and a pull request
-  targeting it likewise. Deleting it is the one thing a push may do — the
-  documented `git push origin :testing` — because that IS the retirement.
+
+Pull requests are judged too (`pr-target`). Into any of the three, a title or body
+carrying `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]` or a
+`skip-checks: true` trailer is refused: the merge commit carries both, so the branch
+would move with no push checks run on it. Into `rc` or `main`, a pull request retargeted
+from another base is refused until a push re-runs its checks, because CI does not re-run
+on a base change and the checks it has were run in the old base's mode. Into `main`,
+the head must be this repository's `rc`.
+
+The same text in an ordinary commit message skips that commit's own push runs — the
+`ci/<branch>` offload included — and GitHub matches it anywhere in the message, so a
+commit *about* these markers has to describe them rather than quote them.
 
 It deliberately cannot tell a reviewed pull request merge from a local
 `git merge` into `rc` — that is branch protection's job, and it is the reason the
@@ -323,7 +338,7 @@ unresolvable base — including the tip a force-push discarded — a missing
 
 ## Bringing the model up on an existing repository
 
-One-time, and the order matters — the last two steps need the first two:
+One-time, and the order matters — the last step needs the first two:
 
 1. **Land this machinery on `rc`, then on `main` once by hand.** `flow.yml`,
    `rc-deploy.yml` and `promote.yml` have to exist on the default branch before
@@ -341,16 +356,7 @@ One-time, and the order matters — the last two steps need the first two:
    first and last bullets under the recipe. Without the secret, every promotion
    is a pull request you open from the summary's compare link and merge once its
    checks are green, which is the same gate one click less convenient.
-3. **Delete `testing`**, once you are sure nothing reads it:
-
-   ```bash
-   git push origin :testing
-   ```
-
-   The nightly channel stops depending on it the moment `release.yml` in step 1
-   lands: it builds `rc`'s tip.
-
-4. **Cut an RC when you want one**, and let the promotion follow it:
+3. **Cut an RC when you want one**, and let the promotion follow it:
 
    ```bash
    git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1   # on rc
