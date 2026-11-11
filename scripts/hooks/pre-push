@@ -26,9 +26,10 @@
 // allows a push it could not check — but it also never fakes a refusal, which
 // is why an unrunnable check exits 1 and says so.
 //
-// IT DOES NOT FETCH. flow-guard reads origin/main and origin/rc as this clone
-// has them (a push to testing reads both); a clone that has never fetched one
-// of them is told so, and the push is refused with the command to run, rather
+// IT DOES NOT FETCH. flow-guard reads origin/main, origin/rc and
+// origin/testing as this clone has them (a push to testing reads rc and main;
+// a merge pushed to rc reads testing); a clone that has never fetched one of
+// them is told so, and the push is refused with the command to run, rather
 // than passing on ignorance.
 //
 // WHAT IT IS NOT, said plainly. This hook runs the policy from the WORKING

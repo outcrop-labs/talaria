@@ -14,23 +14,34 @@ version of any published image is the tag that built it. No release writes
 its version into a file — there is no version-bump commit, and nothing to
 merge afterwards. The one file a release changes is `CHANGELOG.md`: the
 roll (`scripts/changelog-roll.mjs`) folds the `changelog/` entries into a
-section for the version, and that commit reaches rc the way every change
+section for the version, and that commit reaches rc the way everything on rc
 does — through a pull request — before the tag (see "Cutting an RC").
 
-Two long-lived branches, both already deployed before a version is cut:
+Three long-lived branches, one chain — everything on `main` is on `rc`, and
+everything on `rc` is on `testing`. A version is cut only from the two that
+are deployed and verified first:
 [`docs/BRANCHES.md`](./docs/BRANCHES.md) is the model in full.
 
 | Branch | Role | How it moves | What a tag on it means |
 |---|---|---|---|
-| `rc` | the integration branch, and the staging environment: every pull request targets it, and `rc-deploy.yml` deploys its tip | merging pull requests (merge commits) | `vX.Y.Z-rc.N` — a release candidate of what `rc` currently is |
+| `testing` | the integration lane: every feature pull request targets it, and `testing-deploy.yml` deploys every push to the testing instance | merging pull requests (the author, at green) and the back-flow from `rc` | nothing — a tag on testing is refused; its images are `testing` and `testing-<sha12>` |
+| `rc` | the release candidate, and the staging environment: `rc-deploy.yml` deploys its tip | a frozen snapshot of `testing` (`promote/testing-<sha12>`), or a `hotfix/`, `release/` or `sync/` branch cut from `rc` — merge commits a person makes | `vX.Y.Z-rc.N` — a release candidate of what `rc` currently is |
 | `main` | the release trunk — what customers run | only the promotion merge of `rc` into it, after `rc` is deployed and verified | `vX.Y.Z` — a stable release of what `main` currently is |
 
-There is no third branch to advance and no fast-forward to remember: `rc` is
-where the work is, `main` is where it lands once the staging deploy says it
-works, and `promote.yml` does that landing by itself. What remains a human's
-call is the one thing that should be: whether a version exists. A person
-decides it by merging the changelog roll's pull request, and the tag follows
-the promotion's merge (see "Promoting to stable").
+**The lanes into rc.** Features land on `testing` and are exercised there;
+`rc` takes them as a batch, by snapshot — `gh workflow run promote-testing.yml
+--ref main -f open=true` cuts `promote/testing-<sha12>` at testing's tip and
+opens its pull request into `rc` (full CI on every platform, a code-owner
+review). The snapshot never moves, so the battery runs once per candidate and
+the commit merged is the commit checked. Besides it, `rc` takes only what is
+cut from `rc` itself: a `hotfix/` (no migrations), the changelog roll
+(`release/`), a sync of main (`sync/`). Whatever `rc` gains that way flows
+back to `testing` automatically ("Promoting to stable", below).
+
+What remains a human's call is the one thing that should be: whether a
+version exists. A person decides it by merging the changelog roll's pull
+request, and the tag follows the promotion's merge (see "Promoting to
+stable").
 
 ## Cutting an RC
 
@@ -58,13 +69,14 @@ section, and their full-changelog link points at the tag
 exists. It is a pull
 request because rc moves only by merges — `scripts/flow-guard.mjs` refuses a
 hand-made commit pushed to rc, in the pre-push hook and in `flow.yml` alike.
-Hold other merges to rc until the tag is cut: a pull request that lands in
-between ships in the tag with its entry still under `changelog/`, outside the
-section.
+Merge no snapshot between the roll and the tag: it would ship in the tag with
+its entries still under `changelog/`, outside the section. rc moves only on
+snapshots, hotfixes, rolls and syncs, so that window is quiet by itself.
 
-Nothing else needs advancing first: `rc` is where the work already is, and its
-tip has been deployed and smoke-tested by `rc-deploy.yml` on the way in — which
-is the guarantee an RC is supposed to carry. Tag the tip whose deploy you
+Nothing else needs advancing first: `rc` already holds the snapshot of
+`testing` this candidate is, and its tip has been deployed and smoke-tested by
+`rc-deploy.yml` on the way in — which is the guarantee an RC is supposed to
+carry. Tag the tip whose deploy you
 watched (`git log --oneline -1` against the run list under Actions →
 rc-deploy).
 
@@ -123,9 +135,12 @@ job in that workflow once store credentials exist.
 
 ## Promoting to stable
 
-A stable release is two merges. CI does the rest: the version, the roll, the
-promotion, the tag, the images and the notes.
+A stable release is two merges, after the snapshot of testing it releases
+has landed on rc. CI does the rest: the version, the roll, the promotion, the
+tag, the images and the notes.
 
+0. **The snapshot.** A `promote/testing-<sha12>` pull request into rc (above,
+   "The lanes into rc"), merged by a person; rc's CI and `rc-deploy` verify it.
 1. **The roll.** When rc's tip is verified (CI and `rc-deploy` green) and
    `changelog/` holds entries, `promote.yml` opens a pull request against rc
    from `release/roll`. It folds the entries into a `## X.Y.Z (date)` section
@@ -139,6 +154,12 @@ promotion, the tag, the images and the notes.
    starts no workflow, and a dispatch is the one event it can start.
    `release.yml` runs CI against the tag, publishes `X.Y.Z` and `latest`, and
    opens the GitHub Release with notes from `scripts/release-notes.mjs`.
+4. **The back-flow.** The roll moved rc, so rc now has commits testing lacks.
+   On rc's next CI completion `promote-testing.yml` cuts `backflow/rc-<sha12>`
+   at rc's tip and opens `sync: rc → testing`; merge it like any pull request
+   into testing. Until it merges, the next snapshot is refused (rc would hold
+   the roll and testing would not) — and a promoted entry edited on testing
+   is a judge `must`, because the roll already owns it.
 
 **The version** comes from `scripts/release-version.mjs`:
 
@@ -185,7 +206,7 @@ tag and the release need no token.
 **By hand**, when CI can't (no token, or a release to cut out of turn):
 
 ```bash
-# 1. the roll, as a pull request against rc (merge commit), like any change
+# 1. the roll, as a release/ pull request against rc (merge commit), like everything on rc
 git switch -c release/roll-0.2.0 origin/rc
 bun scripts/changelog-roll.mjs 0.2.0      # --extend to add to a pending section
 # 2. once rc verifies, open the promotion and merge it as a merge commit:
@@ -244,15 +265,23 @@ was refused for asking `packages: write` under a `contents: read` caller. Those
 grants now sit on the calls in `release.yml` — if a new nested call is added and
 the tag or nightly dies as a startup failure, that is the first thing to look at.
 
-The `testing` branch used to be this section's problem: it had to be
-fast-forwarded by hand, nothing enforced that, and a stale channel published
-stale code with today's date on it. `rc` cannot go stale the same way — it is
-where every pull request lands, and `main` is kept current by the promotion —
-which is the other half of why the nightly feed moved onto it.
+### `testing` (the integration lane, since 2026-11)
 
-`testing` is not deleted: it is coming back as the integration lane
-([`docs/BRANCHES.md`](./docs/BRANCHES.md)), and nightly still builds `rc`.
-`scripts/flow-guard.mjs` refuses its deletion and judges every push to it.
+`testing` once fed this section: it had to be fast-forwarded by hand, nothing
+enforced that, and a stale channel published stale code with today's date on
+it — which is why the nightly feed moved onto `rc` and `testing` sat idle.
+Since November 2026 it is the integration lane instead: every feature pull
+request lands there, so it cannot go stale for want of someone remembering it,
+and `rc` takes it by snapshot ([`docs/BRANCHES.md`](./docs/BRANCHES.md)).
+
+It is still not a release channel. The nightly keeps building `rc` — the
+registry's default channel is `nightly`, and integration code never reaches a
+default install. `testing` has its own feed instead: every push runs
+`testing-deploy.yml`, which publishes `ghcr.io/outcrop-labs/talaria:testing`
+(moving) and `testing-<sha12>` (immutable) for the testing instance to follow
+([`docs/TESTING-INSTANCE.md`](./docs/TESTING-INSTANCE.md)). No `v*` tag is
+ever cut on it — `release.yml` refuses one. `scripts/flow-guard.mjs` refuses
+its deletion or rewrite and judges every push to it.
 
 ## The tags on `ghcr.io/outcrop-labs/talaria`
 
@@ -266,12 +295,15 @@ which is the other half of why the nightly feed moved onto it.
 | `X.Y.Z-rc.N` | its tag | yes |
 | `latest` | every stable tag | no — a pointer |
 | `X.Y.Z` | its tag | yes |
+| `testing` | every push to `testing` (`testing-deploy.yml`) — the testing instance follows it | no — a pointer |
+| `testing-<sha12>` | every push to `testing` | yes |
 
 Pin anything you care about to the right-hand column.
 
 The api package — `ghcr.io/outcrop-labs/talaria-api` — carries these same
-tags, plus an immutable `sha-<sha12>` per commit (`sha-<sha12>-dev` when the
-build used the dev profile: nightly, rc, and the testing lane's deploy); that
+tags, plus an immutable `sha-<sha12>` per commit (`talaria-api:sha-<sha12>-dev`
+when the build used the dev profile: nightly, rc, and the testing lane's
+deploy — never the `testing` tags, which the api package does not carry); that
 sha tag is what a release's app-image build is actually pinned to.
 
 **What the api bits are compiled with.** `main` (the feed the in-app updater
@@ -392,9 +424,10 @@ itself, and it pushes to the package release.yml already made public.
   main that already had it; a brand-new checkout of the process should mind the
   ordering. The same rule runs the other way for the branch model's own
   automation — `workflow_run` and `schedule` triggers only fire for workflow
-  files present on the default branch, which is why
-  [`docs/BRANCHES.md`](./docs/BRANCHES.md) → Bringing the model up puts the
-  first promotion before the branch protection.
+  files present on the default branch, which is why the testing lane's
+  machinery (promote-testing.yml, testing-deploy's dispatch) reached main in a
+  promotion before the cutover made `testing` the lane
+  ([`docs/BRANCHES.md`](./docs/BRANCHES.md) → The cutover).
 
 ## Deliberately not
 

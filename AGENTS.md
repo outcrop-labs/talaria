@@ -13,8 +13,8 @@ context at launch — keep it under ~200 lines), **procedures live in the skills
 ## Orientation
 
 - [`DEVELOPERS.md`](./DEVELOPERS.md) — the repo map and the index of every doc. Start here.
-- [`docs/BRANCHES.md`](./docs/BRANCHES.md) — the branch model: pull requests target `rc`, `main`
-  takes the verified promotion, and what each gate proves.
+- [`docs/BRANCHES.md`](./docs/BRANCHES.md) — the branch model: pull requests target `testing`;
+  rc takes snapshots of testing; main takes rc — and what each gate proves.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — PR norms: verify, exercise, changelog.
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — how the platform works.
 - [`HANDOFF.md`](./HANDOFF.md) — where to start when picking up ongoing work.
@@ -53,12 +53,15 @@ toolkit `57xx`, omp auth `58xx`, agent gateways from `20000 + slot·100`).
 Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the contract:
 
 - Everything through the Talaria gateway — never wire an agent at a raw provider endpoint.
-- **Pull requests target `rc`; nothing targets `main`.** `rc` is the integration branch and the
-  staging environment — review, CI and a real deploy (`rc-deploy.yml`) happen there — and
-  `main` moves only by the promotion of `rc`, offered by `promote.yml` once that deploy is
-  green and merged by a person as a merge commit. A direct or squashed push to either is
-  refused by [`scripts/flow-guard.mjs`](./scripts/flow-guard.mjs), locally and in CI; the model
-  is [`docs/BRANCHES.md`](./docs/BRANCHES.md).
+- **Pull requests target `testing`.** testing is the integration lane: light CI, and every
+  push deploys to the testing instance. Merge your own PR into testing once
+  `scripts/hooks/pr-watch.mjs` is green (`gh pr merge <n> --merge --admin` — it bypasses the
+  review, never the checks), then `node scripts/hooks/testing-watch.mjs <n>` tells you when it
+  is live. `rc` takes a frozen snapshot of testing (`promote/testing-<sha>`; full CI +
+  `rc-deploy.yml`) plus `hotfix/`, `release/`, `sync/` cut from rc; `main` moves only by the
+  promotion of rc. People merge into rc and main. A direct or squashed push to any of the
+  three is refused by [`scripts/flow-guard.mjs`](./scripts/flow-guard.mjs), locally and in CI;
+  the model is [`docs/BRANCHES.md`](./docs/BRANCHES.md).
 - Secrets live envelope-encrypted in Postgres, never in config files
   ([`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md)).
 - Never force a `done` transition — agents create and triage; a human signs off.
@@ -69,7 +72,7 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
   `bun run check` — change the source, run `bun run docs:api`.
 - Compile and test on GitHub, not on this machine. Locally: `bun run check` (seconds) and cheap targeted runs — one `bunx vitest run <file>`, one `bun test <file>`, `cargo fmt`. The proof is CI: the pull request's own checks (watched by `scripts/hooks/pr-watch.mjs`), or `bun run gate:remote` before a PR exists — both in the background. A heavy build — `cargo build`/`test`/`clippy`, gradle, a whole-project svelte-check, a docker build — runs locally only to reproduce one failure CI reported, one `-p` crate or one test; `bun run gate` ([`scripts/gate.mjs`](./scripts/gate.mjs)) scopes it to the diff. Do not run a workspace cargo (`api:check`, `desktop:check`, `cargo test` / `clippy` without `-p`) — it locks `api/target` and pins the machine.
 - Do not report dev work done while its open pull request has failing checks, pending
-  checks, or merge conflicts against `rc`. Local gates cannot see that. The watcher is
+  checks, or merge conflicts against its base. Local gates cannot see that. The watcher is
   [`scripts/hooks/pr-watch.mjs`](./scripts/hooks/pr-watch.mjs); the procedure is
   [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md).
 - Do not report a task done until its local workspace is gone. Remove the worktree,
@@ -100,7 +103,7 @@ Several agent sessions routinely work this repo at once. Consequences:
 
 - `git status` before you stage anything — uncommitted files may belong to another session.
 - Stage by explicit path. Never `git add -A`, never `git clean`, never an unscoped reset.
-- Push your own branch. `main` and `rc` are not push targets — `talaria setup` wires the guard
+- Push your own branch. `main`, `rc` and `testing` are not push targets — `talaria setup` wires the guard
   in as a git pre-push hook, and CI refuses the push regardless.
 - The stop gate (below) checks the whole tree — a failure may predate your change. If it
   does, verify that and say so in the PR.
@@ -115,7 +118,7 @@ situation matches.
 |---|---|
 | [`dev-loop`](./.claude/skills/dev-loop/SKILL.md) | starting or restarting the stack, choosing worktree vs devbox, seeding data, or deciding which command verifies which surface |
 | [`repo-traps`](./.claude/skills/repo-traps/SKILL.md) | a change that should work fails oddly — a 500, a zombie port, docker DNS, or an API test that needs auth |
-| [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, changelog, the PR against `rc`, and the post-PR watcher — do not claim done on red, pending, or a conflict |
+| [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, changelog, the PR against `testing`, the merge, testing-watch — do not claim done on red, pending, or a conflict |
 | [`judge-pr`](./.claude/skills/judge-pr/SKILL.md) | a pull request is being reviewed: the diff-level checks (`scripts/judge-pr.mjs`) and the reading no script can do |
 | [`cut-release`](./.claude/skills/cut-release/SKILL.md) | cutting an RC or stable release, or diagnosing why a channel or image tag didn't move |
 | [`cleanup`](./.claude/skills/cleanup/SKILL.md) | before claiming a task done — remove the local workspace it created; also when the stop gate blocks on disk pressure or stale artifacts |
@@ -161,7 +164,7 @@ runs [`scripts/flow-guard.mjs`](./scripts/flow-guard.mjs) against the refs a pus
 send — exit 2, and the push stops with the reason and the way to do it instead.
 
 The stop gate and the pre-push hook see the local tree. After the pull request opens, CI
-and `rc` can still diverge. The watcher above speaks this same contract; it does not edit
+and its base can still diverge. The watcher above speaks this same contract; it does not edit
 or push.
 
 ## Do not touch
