@@ -167,6 +167,12 @@ pull requests:
 - **What changed:** each entry's bold lead, then the full section, Verified
   paragraphs included.
 
+**The first release after the chain landed** is rolled by hand, the way
+0.13.2 was. Until that promotion, main's `promote.yml` is the old one and
+never opens a roll, while rc's new promotion gate already refuses a head with
+`changelog/` entries. So roll by hand (below) and promote; `tag-release.yml`
+arrives on main with that same merge and tags it.
+
 **What needs `PROMOTION_TOKEN`:** the roll and promotion pull requests. With
 no token, `promote.yml` prints the exact commands instead, and you open them
 yourself: a pull request the workflow token opens would start no checks. The

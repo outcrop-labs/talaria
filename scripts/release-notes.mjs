@@ -51,14 +51,18 @@ export function sectionOf(changelog, version) {
  *  keeps its heading as a `###` line, so the full text says which was which. */
 export function sectionsFor(changelog, version) {
   const own = sectionOf(changelog, version)
-  if (!own || !parse(version)) return own
+  if (!parse(version)) return own
   const rcs = changelog
     .split('\n')
     .map((l) => new RegExp(`^## (${version.replace(/\./g, '\\.')}-rc\\.\\d+) \\(`).exec(l)?.[1])
     .filter(Boolean)
   if (!rcs.length) return own
+  // A stable cut straight from its last RC (nothing landed after it, so no
+  // section of its own) ships exactly its RC sections.
+  const versions = own ? [version, ...rcs] : rcs
+  if (versions.length === 1) return sectionOf(changelog, versions[0])
   const heading = (v) => changelog.split('\n').find((l) => l.startsWith(`## ${v} (`)).slice(3)
-  return [version, ...rcs].flatMap((v, i) => [...(i ? [''] : []), `### ${heading(v)}`, '', ...sectionOf(changelog, v)])
+  return versions.flatMap((v, i) => [...(i ? [''] : []), `### ${heading(v)}`, '', ...sectionOf(changelog, v)])
 }
 
 /** A section's entries: each starts at a `- **` line and runs to the next

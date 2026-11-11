@@ -114,7 +114,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'roll the pending changelog entries as this X.Y.Z instead of the computed version (leave empty for the default)'
+        description: 'roll the pending changelog entries as this X.Y.Z instead of the computed version (leave empty for the default). A run shown as cancelled was replaced in the queue by a newer one: run it again'
         type: string
         default: ''
 
@@ -230,29 +230,46 @@ jobs:
 
           # ── The roll, while changelog/ has entries ──────────────────────────
           if [ "$entries" -gt 0 ]; then
-            # The open roll, if any: what it rolled (a Release-Version trailer
-            # on its commit) and from which rc tip. A version a dispatch set
-            # stays set on every later run, until that roll merges or is closed.
+            # The open roll, if any: what it rolled (the newest Release-Version
+            # trailer on its first-parent line, so a merge someone put on top
+            # doesn't hide it) and whether its tip is the bot's own roll of
+            # this rc tip. A version a dispatch set stays set on later runs,
+            # until that roll merges or is closed, or the computed version
+            # passes it.
             rnum=$(gh pr list --repo "$REPO" --base rc --head release/roll --state open --json number --jq '.[0].number // ""')
-            open_version='' open_level='' open_parent=''
+            open_version='' open_level='' open_tip=''
             if [ -n "$rnum" ] && git fetch -q --no-tags origin release/roll 2>/dev/null; then
-              read -r open_version open_level <<<"$(git log -1 --format='%(trailers:key=Release-Version,valueonly)' FETCH_HEAD | tr -d '()')" || true
-              open_parent=$(git rev-parse 'FETCH_HEAD^1')
+              trail=$(git log --first-parent --format='%H%x09%(trailers:key=Release-Version,valueonly,separator=%x20)' "$sha..FETCH_HEAD" | awk -F'\t' '$2 != "" { print; exit }')
+              if [ -n "$trail" ]; then
+                read -r open_commit open_version open_level <<<"$(printf '%s' "$trail" | tr -d '()' | tr '\t' ' ')"
+                if [ "$(git rev-parse FETCH_HEAD)" = "$open_commit" ] && [ "$(git rev-parse 'FETCH_HEAD^1')" = "$sha" ]; then
+                  open_tip=same
+                fi
+              fi
             fi
-            override=()
+            # Assignments, so a refused --version fails the run here.
+            default=$(cd "$RUNNER_TEMP/rc" && node scripts/release-version.mjs next)
+            next="$default"
             if [ -n "$VERSION_INPUT" ]; then
-              override=(--version "$VERSION_INPUT")
+              next=$(cd "$RUNNER_TEMP/rc" && node scripts/release-version.mjs next --version "$VERSION_INPUT")
             elif [ "$open_level" = set ]; then
-              override=(--version "$open_version")
+              read -r dversion _ <<<"$default"
+              if [ "$(printf '%s\n%s\n' "$dversion" "$open_version" | sort -V | tail -1)" = "$open_version" ]; then
+                next=$(cd "$RUNNER_TEMP/rc" && node scripts/release-version.mjs next --version "$open_version")
+              else
+                echo "::warning::the roll's dispatched v$open_version is now below the computed v$dversion (an entry asks for more, or a tag passed it), so the roll moves to v$dversion."
+              fi
             fi
-            # An assignment, so a refused --version fails the run here.
-            next=$(cd "$RUNNER_TEMP/rc" && node scripts/release-version.mjs next "${override[@]}")
             read -r version mode level <<<"$next"
             last=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
             extend=''
             if [ "$mode" = extend ]; then
               extend=' --extend'
               why="added to the \`## $pending\` section, rolled but not yet tagged"
+              if [ "$version" != "$pending" ]; then
+                [ "$level" = set ] && by='set by a dispatch' || by="an entry asks for a $level"
+                why="$why, and re-headed as v$version ($by)"
+              fi
             elif [ "$level" = set ]; then
               why="set by a dispatch"
             elif [ "$level" = patch ]; then
@@ -311,7 +328,7 @@ jobs:
             # The same roll of the same tip is already up: leave it, so its
             # checks don't re-run and its approval stands. The heading's date
             # is not part of "the same".
-            if [ "$open_parent" = "$sha" ] && [ "$open_version" = "$version" ]; then
+            if [ "$open_tip" = same ] && [ "$open_version" = "$version" ]; then
               echo "release/roll already holds v$version rolled from $short"
             else
               (

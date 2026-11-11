@@ -151,8 +151,11 @@ jobs:
           # tag (the ref picker makes that one click) can't move `latest` back.
           if [ "$EVENT" = workflow_dispatch ] && [ "$GITHUB_REF_TYPE" = tag ]; then
             if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              newest=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | sub("^refs/tags/"; "")' \
-                | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+              if ! refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | sub("^refs/tags/"; "")'); then
+                echo "::error::could not list the repository's tags to check that $GITHUB_REF_NAME is the newest stable one, so not publishing. Re-run once the API answers."
+                exit 1
+              fi
+              newest=$(printf '%s\n' "$refs" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
               if [ "$GITHUB_REF_NAME" != "$newest" ]; then
                 echo "::error::$GITHUB_REF_NAME is not the newest stable tag ($newest), and publishing it would move latest backwards. Re-publish an old stable by pushing its tag again only if that is what you mean."
                 exit 1

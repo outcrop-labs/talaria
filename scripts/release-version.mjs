@@ -125,6 +125,12 @@ export function next({ tags, changelog, entries, override }) {
   if (override) {
     if (!parse(override)) throw new Error(`--version ${override} is not X.Y.Z`)
     if (last && cmp(override, last) <= 0) throw new Error(`--version ${override} is not newer than v${last}`)
+    // A release already rolled, or an RC already tagged, is a floor no
+    // override goes under: it would re-head that section to a lower version.
+    // (Below an entry's bump is allowed: overriding it is the dispatch's job.)
+    const rc = rcFloor(tags)
+    if (held && cmp(override, held) < 0) throw new Error(`--version ${override} is below the pending ## ${held}, which it would re-head downwards`)
+    if (rc && cmp(override, rc) < 0) throw new Error(`--version ${override} is below ${rc}, the version an RC is already tagged for`)
     return { version: override, mode, level: 'set' }
   }
   const level = entries.map(bumpOf).reduce((a, b) => (LEVELS.indexOf(b) > LEVELS.indexOf(a) ? b : a), 'patch')

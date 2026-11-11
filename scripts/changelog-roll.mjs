@@ -40,7 +40,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { BUMP_RE, bumpOf, pending } from './release-version.mjs'
+import { BUMP_RE, bumpOf, parse, pending } from './release-version.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const CHANGELOG = path.join(ROOT, 'CHANGELOG.md')
@@ -190,7 +190,8 @@ if (!headingArg || headingArg.startsWith('-')) {
   try {
     tags = execFileSync('git', ['tag', '--list', 'v*'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean)
   } catch {}
-  if (tags) {
+  // An RC heading is cut by hand on its own line, and is exempt.
+  if (tags && parse(headingArg)) {
     const held = pending({ tags, changelog: fs.readFileSync(CHANGELOG, 'utf8') })
     if (held && !extend) {
       console.error(`refusing to roll: ## ${held} is rolled but not tagged yet. Add these entries to it with --extend (scripts/release-version.mjs next says which version)`)

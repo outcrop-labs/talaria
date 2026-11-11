@@ -72,8 +72,11 @@ jobs:
           version=$(node scripts/release-version.mjs pending)
           if [ -z "$version" ]; then
             top=$(node scripts/release-version.mjs top)
+            # ...unless a release.yml run for it is still going: it opens the
+            # Release last, after CI and the builds.
             if [ -n "$top" ] && [ "$(git rev-parse -q --verify "refs/tags/v$top^{commit}" || true)" = "$sha" ] \
-              && ! gh release view "v$top" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              && ! gh release view "v$top" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+              && [ "$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch "v$top" --json status --jq '[.[] | select(.status != "completed")] | length')" = 0 ]; then
               gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$top"
               echo "::notice::v$top names this commit but has no GitHub Release; dispatched release.yml at it again"
               exit 0

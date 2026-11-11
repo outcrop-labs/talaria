@@ -63,6 +63,9 @@ check('an override must be X.Y.Z and newer than the newest tag', () => {
   eq(next({ tags: TAGS, changelog: changelog('0.13.2'), entries: [], override: '1.0.0' }), { version: '1.0.0', mode: 'new', level: 'set' })
   throws(() => next({ tags: TAGS, changelog: changelog('0.13.2'), entries: [], override: '0.13.2' }), /not newer/)
   throws(() => next({ tags: TAGS, changelog: changelog('0.13.2'), entries: [], override: 'v1.0' }), /not X\.Y\.Z/)
+  throws(() => next({ tags: TAGS, changelog: changelog('0.14.0'), entries: [], override: '0.13.3' }), /below the pending ## 0\.14\.0/)
+  throws(() => next({ tags: [...TAGS, 'v0.14.0-rc.1'], changelog: changelog('0.13.2'), entries: [], override: '0.13.3' }), /RC is already tagged/)
+  eq(next({ tags: TAGS, changelog: changelog('0.13.2'), entries: [minor], override: '0.13.3' }).version, '0.13.3')
 })
 check('an unknown bump level is refused', () => throws(() => bumpOf('- **a.**\n<!-- bump: huge -->\n'), /huge/))
 check('an indented marker counts; a malformed one is refused; prose quoting one is not a marker', () => {
@@ -122,12 +125,14 @@ check('in a git checkout, the roll refuses a new section over a pending one, and
     writeFileSync(join(dir, 'CHANGELOG.md'), base)
     writeFileSync(join(dir, 'changelog', '2026-11-02-a.md'), '- **Late.**\n')
     git('init', '-q')
-    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'base')
-    git('tag', 'v0.13.2')
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--no-gpg-sign', '--allow-empty', '-m', 'base')
+    git('-c', 'tag.gpgSign=false', 'tag', 'v0.13.2')
     let r = roll('0.13.4')
     eq(r.status, 1)
     if (!/## 0\.13\.3 is rolled but not tagged/.test(r.stderr)) throw new Error(r.stderr)
-    git('tag', 'v0.13.3')
+    eq(roll('0.14.0-rc.1').status, 0)
+    writeFileSync(join(dir, 'changelog', '2026-11-03-b.md'), '- **Later.**\n')
+    git('-c', 'tag.gpgSign=false', 'tag', 'v0.13.3')
     r = roll('0.13.3', '--extend')
     eq(r.status, 1)
     if (!/already tagged/.test(r.stderr)) throw new Error(r.stderr)
@@ -219,6 +224,10 @@ check('a stable folds in its RC sections, each under its heading', () => {
   eq(entriesOf(s).flatMap(upgradesOf), ['roll.'])
   eq(sectionsFor(text, '0.14.0-rc.1'), ['- **Early.**', '', '  Upgrade: roll.'])
   eq(sectionsFor(text, '0.13.2'), ['- **Old.**'])
+  const rcOnly = '## [Unreleased]\n\n## 0.14.0-rc.2 (2026-11-25)\n\n- **B.**\n\n## 0.14.0-rc.1 (2026-11-20)\n\n- **A.**\n'
+  eq(entriesOf(sectionsFor(rcOnly, '0.14.0')).map(leadOf), ['B.', 'A.'])
+  eq(sectionsFor('## [Unreleased]\n\n## 0.14.0-rc.1 (x)\n\n- **A.**\n', '0.14.0'), ['- **A.**'])
+  eq(sectionsFor(rcOnly, '0.15.0'), null)
 })
 check('a section past the body limit keeps the list and drops the full text', () => {
   const section = ['- **Big.**', '', `  ${'x'.repeat(130_000)}`]
