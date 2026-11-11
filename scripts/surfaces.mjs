@@ -13,8 +13,8 @@
 // the PR's BASE sha, materialized into $RUNNER_TEMP, so a PR cannot narrow its
 // own CI by editing the planner. Nothing here may assume it sits in scripts/.
 //
-// THE ENV/OUTPUT INTERFACE CHANGES ADDITIVELY ONLY — main's ci.yml and
-// base-materialized copies run against newer trees. A key is never renamed or
+// THE CONTRACT: the env/output interface changes ADDITIVELY only — main's
+// ci.yml and base-materialized copies run against newer trees. A key is never renamed or
 // dropped. A new output key needs a default in ci.yml's "Normalize the plan"
 // step that runs MORE (a surface defaults to true), because an older copy of
 // this file will not emit it.
