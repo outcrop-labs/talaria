@@ -2677,13 +2677,22 @@ function usageError(why) {
   return 1
 }
 
+/** The stop-commands token while workflow commands are suspended, else null. */
+let STOP_TOKEN = null
+function resumeCommands() {
+  if (STOP_TOKEN) process.stdout.write(`::${STOP_TOKEN}::\n`)
+  STOP_TOKEN = null
+}
+
 /** `review` from the command line: the options, the key, the outputs, the exit. */
 async function cliReview(opts) {
   const githubMode = Boolean(opts.github)
-  const stopToken = githubMode ? randomBytes(16).toString('hex') : null
-  if (githubMode) process.stdout.write(`::stop-commands::${stopToken}\n`)
+  if (githubMode) {
+    STOP_TOKEN = randomBytes(16).toString('hex')
+    process.stdout.write(`::stop-commands::${STOP_TOKEN}\n`)
+  }
   if (opts.replay && process.env.GITHUB_ACTIONS) {
-    if (githubMode) process.stdout.write(`::${stopToken}::\n`)
+    resumeCommands()
     return usageError('--replay is test-only and refused under GitHub Actions')
   }
   const key = opts['dry-run'] ? (takeKey('__none__'), null) : takeKey(KEY_ENV)
@@ -2784,7 +2793,7 @@ async function cliReview(opts) {
     }
   }
   if (githubMode) {
-    process.stdout.write(`::${stopToken}::\n`)
+    resumeCommands()
     for (const line of annotations(r)) process.stdout.write(`${line}\n`)
   } else if (opts.json) {
     process.stdout.write(readFileSync(join(out, 'review.json'), 'utf8'))
@@ -2988,6 +2997,7 @@ export async function main(argv = process.argv.slice(2)) {
       return await cliReview(opts)
     } catch (e) {
       process.stderr.write(`judge-review: crash — ${escapeData(safeTerminal(String(e?.stack ?? e), 1200))}\n`)
+      resumeCommands()
       if (opts.github) {
         process.stdout.write(`::notice title=${escapeProperty(VERDICT_TITLE)}::${escapeData(verdictMessage({ status: 'not-reviewed', reason: 'crash' }, 'the reviewer crashed. Not a finding.'))}\n`)
         return 0

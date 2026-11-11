@@ -774,6 +774,17 @@ check('exits: --github is 0 on every not-reviewed path and prints stop-commands 
   ok(lane.status === 0 && /status=skipped .*reason=lane/.test(lane.stdout), lane.stdout)
 })
 
+check('exits: a crash under --github resumes commands, then says so, and exits 0', () => {
+  const blocker = join(scratch, 'not-a-dir')
+  writeFileSync(blocker, 'x')
+  const r = runCli([...RANGE, '--github', '--out', join(blocker, 'out')])
+  eq(r.status, 0, r.stderr)
+  const lines = r.stdout.trim().split('\n')
+  const token = /^::stop-commands::([0-9a-f]{32})$/.exec(lines[0])?.[1]
+  ok(token && lines[1] === `::${token}::`, r.stdout)
+  ok(/^::notice title=judge-review verdict::status=not-reviewed reason=crash/.test(lines[2]), lines[2])
+})
+
 check('exits: locally 1 with no key, 2 with a Tier A finding, 0 with none', () => {
   eq(runCli([...RANGE, '--out', join(scratch, 'l1')]).status, 1)
   const two = runCli([...RANGE, '--replay', replayDir(OK_REPLAY), '--out', join(scratch, 'l2')], { JUDGE_OPENROUTER_API_KEY: FAKE_KEY })
