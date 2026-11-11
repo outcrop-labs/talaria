@@ -726,8 +726,11 @@ function cliPlan(args) {
     console.log(JSON.stringify({ mode, all: full, reason, branch, base: picked, range, files, surfaces, local }, null, 2))
     return
   }
-  const on = SURFACE_NAMES.filter((name) => surfaces[name])
-  const off = SURFACE_NAMES.filter((name) => !surfaces[name])
+  // e2e is a full-mode job in ci.yml, like the macOS, Windows and iOS legs: a
+  // light run skips it even when its surface moved.
+  const runs = (name) => surfaces[name] && (full || name !== 'e2e')
+  const on = SURFACE_NAMES.filter(runs)
+  const off = SURFACE_NAMES.filter((name) => !runs(name))
   console.log(`surfaces: ${files.length} file(s) since ${picked.sha.slice(0, 12)} (merge-base with ${picked.ref}, ${picked.ahead} commit(s) ahead)`)
   console.log(`surfaces: mode ${mode} — ${reason}`)
   console.log(`surfaces: CI runs ${on.length ? on.join(', ') : 'only the invariants job'}${off.length ? `; skips ${off.join(', ')}` : ''}`)
