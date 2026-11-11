@@ -17,8 +17,8 @@ where "exercised" happens on a real deploy, with real agents, instead of in a wo
   [Provisioning](#provisioning-requirements) and [Data rules](#data-rules) exists so that a
   bad merge on `testing` can reach nothing else.
 
-The hostname is the owner's choice; `<host>` below stands for it (default
-`testing.outcroplabs.com`, no Cloudflare Access — the app login is the gate).
+The hostname is `testing.talariaworks.ai`; `<host>` below stands for it. No Cloudflare Access
+fronts it — the app login is the gate.
 
 ## The deploy chain
 
@@ -130,7 +130,7 @@ One VM for this instance only.
 - The host or IP, reachable from the owner's workstation and the dev host.
 
 **Cloudflare**
-- A remotely managed tunnel `talaria-testing`, in the account that owns outcroplabs.com (the
+- A remotely managed tunnel `talaria-testing`, in the account that owns talariaworks.ai (the
   wrong account gives error 1033). Ingress → `http://localhost:5273`, plus a catch-all 404; a
   proxied CNAME to `<id>.cfargotunnel.com`. The token is handed over out of band and recorded
   in talaria-infra `customers/cloudflare.env`.
@@ -195,7 +195,7 @@ VM's `talaria` user unless a step says otherwise.
     `~/talaria/docker/.env` into the password manager as "talaria testing". Never copy either
     to or from another instance.
 12. **Set up the Cloudflare tunnel** (the owner, or with the owner's token).
-    - Create the tunnel `talaria-testing` in the outcroplabs.com account.
+    - Create the tunnel `talaria-testing` in the talariaworks.ai account.
     - Ingress: `<host> → http://localhost:5273`, plus a catch-all `http_status:404`.
     - Add a proxied CNAME to `<id>.cfargotunnel.com`.
     - On the VM: `docker run -d --name talaria-cloudflared --restart unless-stopped --network host cloudflare/cloudflared:2026.8.2 tunnel --no-autoupdate run --token <token>`.
