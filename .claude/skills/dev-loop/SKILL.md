@@ -12,10 +12,26 @@ procedure only.
 ## Bring-up
 
 ```bash
-bun talaria setup      # first run only — secrets, config, deps; the admin account is claimed in the app
-bun talaria dev        # dev infra + the app → http://localhost:5273
-bun run api            # the Rust api alone (:5274), when that's the surface in play
+bun talaria setup              # first run only — secrets, config, deps; the admin account is claimed in the app
+bun talaria dev --api-from-ci  # dev infra + the app → http://localhost:5273, on the api binary CI built
+bun talaria dev                # the same, with the api built here by `cargo run`
+bun run api                    # the Rust api alone (:5274), when that's the surface in play
 ```
+
+**`--api-from-ci` is the default way to exercise a change** once CI has built the
+branch. It runs the `talaria-api` binary CI uploaded in place of `cargo run`, so
+nothing compiles here. It uses HEAD's own binary, or else that of the newest earlier
+commit whose api is still HEAD's: an earlier offload run on the branch, or the base's
+last binary when the branch has not changed the api. A branch
+that changed the api gets its binary from its own CI run: the pull request's, or
+`bun run gate:remote` (`--full` when the change is in a crate other than talaria-api,
+since a light run builds the binary only when talaria-api is in scope). Uncommitted
+api changes are refused, because no CI binary contains them. It reads GitHub the way
+`gate:remote` does (`GH_TOKEN`, `GITHUB_TOKEN` or gh's login). **Linux-x64 host only,
+for now.** The binary is built on ubuntu-latest and needs glibc 2.39, while the devbox
+image is bookworm with glibc 2.36; macOS and arm64 are refused before the download. In a
+box the flag stops and says so, so use plain `talaria dev` there. `--api-bin <path>` runs any binary you already have.
+Plain `talaria dev`, with `cargo run`, is for api work you are reproducing locally.
 
 Reset a wedged stack with `bun talaria reset <mode>`; snapshot and restore with
 `bun talaria backup` / `restore` (docs/BACKUPS.md).
@@ -69,12 +85,14 @@ Never two servers on one database — a stale encryption key re-seals secrets wr
 - **Worktree** (host, light): `bun talaria worktree <name>` (alias `git wt <name>`) — own
   git worktree at `../talaria-<name>`, own Postgres + Redis on deterministic ports, a
   pg_dump-seeded DB, `ui/node_modules` symlinked from main and `cli/` + `mcp/`
-  installed from the branch's lockfiles, and an `api/target` **seeded by reflink**
-  from the best idle checkout: the registry crates arrive built, and every workspace
-  crate builds from this tree's sources (`--desktop` seeds the desktop target too,
-  `--no-seed` starts empty). Do not copy another tree's `target/` by hand: a whole
-  copy passes another worktree's workspace crates off as this one's, and cargo
-  reuses them. `bun talaria seed-target` reseeds an empty one. Teardown:
+  installed from the branch's lockfiles. **No `api/target` by default**:
+  `talaria dev --api-from-ci` needs none. `--seed` reflinks one from the best idle
+  checkout, but only pass it when you will reproduce a CI failure with cargo here.
+  The registry crates then arrive built, and every workspace crate builds from this
+  tree's sources (`--seed-from <checkout>` names the source, `--desktop` seeds the
+  desktop target too). Do not copy another tree's `target/` by hand: a whole copy
+  passes another worktree's workspace crates off as this one's, and cargo reuses
+  them. `bun talaria seed-target` seeds an empty one later. Teardown:
   `docker compose -p talaria-wt-<name> down -v && git worktree remove --force ../talaria-<name> && git branch -D wt/<name>`.
   Run that from the primary checkout, not from inside the worktree. Full rules: docs/WORKTREES.md.
 - **Devbox** (container, heavy): `bun talaria box new <name>` — a full stack per task with

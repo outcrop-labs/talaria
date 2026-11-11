@@ -37,8 +37,9 @@ there is no third state. If the api is down, `/api/*` answers
 (rule 2).
 
 In dev, `talaria dev` starts the api as a sidecar by default (`cargo run` in
-`api/`, adopting an instance already on the port, signals forwarded, readiness
-polled without blocking the app; `TALARIA_API=off` opts out), and `healthz`
+`api/`, or with `--api-from-ci` the binary ci.yml's api job built, so nothing
+compiles locally; adopting an instance already on the port, signals forwarded,
+readiness polled without blocking the app; `TALARIA_API=off` opts out), and `healthz`
 reports the effective api URL and probes it. A devbox carries the whole
 toolchain (`docker/devbox.Dockerfile`, pinned like `api/rust-toolchain.toml`).
 
