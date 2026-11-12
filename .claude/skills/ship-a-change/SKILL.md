@@ -1,27 +1,53 @@
 ---
 name: ship-a-change
-description: Land a change — the pre-push gates, exercising the changed path in the running app, the CHANGELOG entry, commit conventions, the pull request against rc (never main), and the post-PR watcher. Use when a change is code-complete and ready to verify, commit, or PR, or when an open PR is red or conflicted and must be fixed before claiming done.
+description: Land a change — the gates (CI is the compile, never this machine), exercising the changed path, the CHANGELOG entry, commit conventions, the pull request against testing (never rc or main), the post-PR watcher, the merge into testing at green, and testing-watch until it is live. Use when a change is code-complete and ready to verify, commit, or PR, when an open PR is red or conflicted and must be fixed before claiming done, or when a green PR is ready to merge into testing.
 ---
 
 # Ship a change
 
-The outer loop: from code-complete to merged. The change lands on `rc` — the integration
-branch and the staging environment — and `main` receives it later, by an automated promotion
-once the staging deploy is green. You never open that second pull request. The model, and why:
-[`docs/BRANCHES.md`(../../../docs/BRANCHES.md). The rules in full are CONTRIBUTING.md's; this is
+The outer loop: from code-complete to merged, live and exercised. The change lands on
+`testing` — the integration lane, where every merge deploys the testing instance — and you
+merge it yourself once its checks are green. `rc` takes it later in a snapshot of `testing`,
+and `main` after that by promotion; you never open those pull requests. The model, and why:
+[`docs/BRANCHES.md`](../../../docs/BRANCHES.md). The rules in full are CONTRIBUTING.md's; this is
 the procedure in order.
 
 Opening the pull request is not the end of the loop. Do not report the work done while its
-checks are failing, still pending, or the PR conflicts with `rc` — that is section 6.
+checks are failing, still pending, or the PR conflicts with its base — that is section 6 —
+nor before it is merged, live on testing, and exercised there — section 7.
 
-## 1. Gates
+## 1. Gates — CI is the compile
+
+Compile and test run on GitHub's runners (free for this public repository), not on this
+machine. Locally you run only what is cheap.
 
 ```bash
-bun run gate         # local pre-push: check, then only the compiles this diff touches
+bun run check                    # local: invariants, doc links, generated drift — seconds, no install
+node scripts/hooks/pr-watch.mjs  # the PR's own CI — in the background (section 6)
+bun run gate:remote              # before a PR exists: CI on ci/<branch> — in the background
 ```
 
-- `gate` runs `check` always. It runs typecheck, tests, clippy and `cargo test` only for the surfaces and packages the diff touches, and it never runs a workspace cargo. That is the point: `api:check`, `desktop:check`, `verify`, and `cargo test` / `clippy` without `-p` lock `api/target` and pin the machine for every other agent in the checkout.
-- Do not run those "to be safe", and do not set `CARGO_BUILD_JOBS` or pass `--jobs` to lift the cap in `api/.cargo/config.toml`. CI runs the full surface job. A red CI log names the crate; reproduce with `cargo test -p <that crate>` (and clippy the same way) — one package, never the workspace.
+1. **`bun run check` locally**, plus cheap targeted runs of what you touched: one
+   `bunx vitest run <file>`, one `bun test <file>`, `cargo fmt` on the crate.
+2. **Code-complete → open the pull request** (section 5; `gh pr create --draft` is fine).
+   Its own CI is the proof. Start `node scripts/hooks/pr-watch.mjs` in the harness's
+   background mode (Claude Code: `run_in_background`) and act on its exit (section 6). Mark
+   the PR ready (`gh pr ready`) once it is green.
+3. **Not ready for a PR → `bun run gate:remote`**, also in the background. It needs a
+   committed tree, pushes HEAD to `ci/<branch>`, watches that `CI offload` run, and is red at
+   the first failing job with its log tail — iterate on that. `--full` adds macOS, Windows,
+   iOS and e2e. Exit 0 is one proof line (cite it); exit 2 opens with a token line (`red`,
+   `dirty`, `check`, `fmt`, …). A killed harness loses nothing: `--watch <run-id>` resumes,
+   and a red run keeps its ref for `--rerun`. It refuses once a PR exists (`has-pr`) — from
+   then on the PR's checks are the proof.
+4. **Only to reproduce one failure CI reported:** `cargo test -p <crate> <test>` (clippy the
+   same way), `bunx vitest run <file>`. `bun run gate` is the local scoped compile for that
+   case, never the default.
+
+- Never a workspace cargo: `api:check`, `desktop:check`, `verify`, and `cargo test` /
+  `clippy` without `-p` lock `api/target` and pin the machine for every other agent in the
+  checkout. Do not run them "to be safe", and do not set `CARGO_BUILD_JOBS` or pass `--jobs`
+  to lift the cap in `api/.cargo/config.toml`.
 - A check failure you believe is a false positive gets argued in the PR, never silenced by widening a pattern or exempting a path. The invariant scripts encode real incidents; widening one to pass is how the next incident ships.
 
 ## 2. Exercise the path you changed
@@ -33,15 +59,24 @@ drive the actual surface at <http://localhost:5273>:
   nothing — see the dev-loop skill);
 - API paths: mint a session (repo-traps skill, trap 5) and curl for real;
 - UI: the browser; screenshots are evidence.
-- Changed how the image boots, or anything the container's own entrypoint touches? Prove it
-  the way CI does: `docker build -t talaria-rc:local . && node scripts/deploy-smoke.mjs
-  --image talaria-rc:local` — a fresh instance, and the assertions a deploy makes.
+- No local api build: `bun talaria dev --api-from-ci` runs the api binary CI built for
+  this commit (or the nearest ancestor that changed the api).
+- Changed how the image boots, or anything the container's own entrypoint touches? CI
+  builds and smokes the image: `testing-deploy.yml` builds the merged commit's image, boots
+  a fresh instance and runs `scripts/deploy-smoke.mjs` against it (`rc-deploy.yml` does the
+  same on rc). Build locally only when debugging the Dockerfile itself.
+
+Before the PR this is the local stack. After the merge, the same path is exercised again on
+the testing instance — section 7.
 
 ## 3. CHANGELOG
 
 Add `changelog/YYYY-MM-DD-<slug>.md` containing the entry verbatim: **what changed**, in a
-bold lead sentence, and **what you verified** — the gate you ran and how you exercised the
-path. One file per entry — two open PRs never collide at the `[Unreleased]` anchor, and
+bold lead sentence, and **what you verified** — the gate that proved it ("CI: this PR's
+checks", or `gate:remote`) and how you exercised the path. Never a run URL: a commit that
+only adds a link re-runs the whole battery. The URL goes in the PR body
+(`gh pr edit <n> --body-file …`), which re-runs only the judge (and `flow`, on a promotion).
+One file per entry — two open PRs never collide at the `[Unreleased]` anchor, and
 `bun scripts/changelog-roll.mjs --check` (part of `bun run check`) fails a hand-appended
 bullet. The changelog is the record reviewers and release-notes readers actually have;
 "verified: typecheck" on a behavior change is a red flag you should catch yourself.
@@ -54,41 +89,57 @@ bullet. The changelog is the record reviewers and release-notes readers actually
   then `git add <files>`. Never `git add -A`, never `git clean`, never an unscoped reset —
   uncommitted files may be another session's work in progress.
 - One change per commit; the changelog entry file rides with the change it describes.
-- Push the branch you are on. `main` and `rc` are not push targets: `talaria setup` wires
-  `scripts/hooks/pre-push` in, and it refuses those pushes locally (CI refuses them too).
+- Push the branch you are on. `main`, `rc` and `testing` are not push targets: `talaria
+  setup` wires `scripts/hooks/pre-push` in, and it refuses those pushes locally (CI refuses
+  them too).
 
-## 5. PR — against `rc`
+## 5. PR — against `testing`
 
-- **Base `rc`.** Never `main`: a pull request aimed at the trunk fails `flow.yml`'s
-  `pr-target` check, and nobody reviews there — review, CI and the staging deploy all happen
-  on `rc`.
-- Body: what changed, and what was verified (mirroring the CHANGELOG entry).
+- **Base `testing`.** `gh pr create --base testing`. Never `rc` or `main`: `flow.yml`'s
+  `pr-target` refuses a feature into either (`rc` takes only snapshots of testing and the
+  hotfix/release/sync lanes), and judge-pr grades it a `must`. Start the branch from
+  `origin/testing` (`talaria worktree <name> origin/testing`) so the diff is only yours.
+- Body: what changed, and what was verified (mirroring the CHANGELOG entry), with the run
+  links — the PR's checks, a `gate:remote` proof line.
 - If the stop gate or `check` failed on a pre-existing whole-tree failure, say so in the
   PR — another session's mid-edit file, verified, not silently absorbed.
 - If a check match was a false positive, the argument lives in the PR where a reviewer
   can veto it.
 
-CI runs the full `bun run verify` suite on the pull request, and the push to `rc` that
-follows runs `rc-deploy.yml` — which builds this commit's image, boots it and checks it. That
-deploy, not this pull request, is what lets the promotion be offered (`rc → main`); a
-maintainer merges it, and the evidence is on it when it appears — nobody has to assemble it
-by hand.
+CI comes in three weights, planned by `scripts/surfaces.mjs`. **Light** — Linux jobs for the
+surfaces the branch moved — runs on a `ci/<branch>` offload and a pull request into
+`testing`. **Integration** — the Linux jobs for everything since testing's last green run —
+runs on the push to `testing` your merge makes, beside `testing-deploy.yml`. **Full** — the
+surfaces the change moved, each with its macOS, Windows, iOS and e2e legs — runs on a pull
+request into `rc` or `main` (the snapshot, a hotfix) and a push to either; the daily battery
+of testing and `ci/full/<branch>` (`gate:remote --full`) run every surface that way. A
+platform break your light run could not see turns up there, and comes back to you as a fix
+into testing.
 
-## 6. After the PR opens — watch, then fix, then claim done
+**A hotfix** is the one change that goes to `rc` directly: a fix rc needs before the next
+snapshot. Cut it from `origin/rc` (`git switch -c hotfix/<name> origin/rc`), never from
+testing — `pr-target` refuses a head carrying testing's commits — and add no migration
+(the `migrations` job and judge-pr both refuse one; the array index is a migration's
+identity, and testing's array is ahead). Open it against `rc`; full CI runs, a person reviews
+and merges it, and the back-flow into testing is opened automatically.
+
+## 6. After the PR opens — watch, then fix
 
 Do not tear the local workspace down while the watcher is still red — you may need it
-to fix. Once the proof line is green, remove what this task created before you claim
-done. The convention and the command are the [cleanup](../cleanup/SKILL.md) skill. The
-stop gate blocks if disk pressure or stale artifacts are over the line; that is the
-backstop, not the step.
+to fix, and you may need it again if the change breaks on testing. Once it is green,
+merged and live (section 7), remove what this task created before you claim done. The
+convention and the command are the [cleanup](../cleanup/SKILL.md) skill. The stop gate
+blocks if disk pressure or stale artifacts are over the line; that is the backstop, not
+the step.
 
-The stop gate and the pre-push hook saw the local tree. CI runs the full tree, and `rc`
-can move under the branch while the PR waits (a sibling merge is the usual way it
-conflicts). Start the watcher before you claim completion, and cite only a state it
-printed. Never a check or a mergeable bit you did not read back.
+The stop gate and the pre-push hook saw the local tree. CI runs the full tree, and
+`testing` can move under the branch while the PR waits (a sibling merge is the usual way
+it conflicts). Start the watcher in the background as soon as the PR is open — it can wait
+45 minutes, and a harness kills a foreground command long before that — and cite only a
+state it printed. Never a check or a mergeable bit you did not read back.
 
 ```bash
-node scripts/hooks/pr-watch.mjs
+node scripts/hooks/pr-watch.mjs   # background mode (Claude Code: run_in_background); act on the exit
 ```
 
 Same exit contract as [`scripts/hooks/README.md`](../../../scripts/hooks/README.md). The
@@ -109,9 +160,9 @@ that no longer contains the HEAD you pushed (the branch moved on GitHub without 
 
 | Exit | First line | What you do |
 |---|---|---|
-| 0 | `pr-watch: green` | Checks passed and GitHub reports the PR mergeable (no conflict with `rc`). You may claim done only after the local workspace this task created is gone (cleanup skill). Cite the proof line. A required review is not this gate — exit 0 does not mean a human approved, and you still do not merge. |
-| 2 | `pr-watch: red` | Read the log tail and the job URL. Diagnose. Fix. Re-run `bun run gate`. If the log names a crate this diff did not touch, `cargo test -p <that crate>` (clippy the same way) — never `api:check`, never a workspace cargo. Push to this same branch. Run the watcher again. On the promotion, the fix is its own branch from `origin/rc` and a pull request against `rc`. |
-| 2 | `pr-watch: conflict` | `git fetch origin rc && git merge origin/rc`. Resolve. Re-run `bun run gate`. Push to this same branch. Run the watcher again. On the promotion (`rc` → `main`) nobody pushes `rc`: bring `main` into `rc` through a pull request against `rc`, as the body says. |
+| 0 | `pr-watch: green` | Checks passed and GitHub reports the PR mergeable (no conflict with its base). Cite the proof line. Into `testing`: merge it and watch it go live (section 7). Into `rc` or `main`: a person reviews and merges — exit 0 does not mean a human approved, and you do not merge. |
+| 2 | `pr-watch: red` | Read the log tail and the job URL. Diagnose. Reproduce only that failure locally, if you must: `cargo test -p <crate> <test>` (clippy the same way), `bunx vitest run <file>` — never `api:check`, never a workspace cargo. Fix, `bun run check`, commit, push to this same branch; re-run the watcher (it is in the background). On the `rc` → `main` promotion, the fix is a `hotfix/` branch from `origin/rc` and a pull request against `rc`; on a snapshot into `rc`, a pull request into `testing`, then a fresh snapshot. |
+| 2 | `pr-watch: conflict` | `git fetch origin <base> && git merge origin/<base>` — `testing` for a feature, `rc` for a hotfix. Resolve. `bun run check`, commit, push to this same branch; re-run the watcher (it is in the background). On a promotion nobody pushes the head: a snapshot is replaced by a fresh one once the back-flow merges; for `rc` → `main`, bring `main` into `rc` through a `sync/` pull request against `rc`, as the body says. |
 | 2 | `pr-watch: timeout` | Still pending when the wall clock ran out. Not done, and not a pass. Report the PR URL. Do not claim done. |
 | 2 | `pr-watch: pending` | With `--once`, or at once when waiting cannot change the head (not pushed, or dropped from the PR). Not done. Do what the reason says (push, or reconcile with `origin/<branch>`), or re-run without `--once` to wait. |
 | 1 | `pr-watch: could not run` | Not a pass. Say so. Do not claim done. |
@@ -119,8 +170,8 @@ that no longer contains the HEAD you pushed (the branch moved on GitHub without 
 A stderr line that starts `pr-watch: pending —` is progress, not a decision. The decision
 is the exit code and a first line with no em-dash.
 
-Self-fix pushes go to the branch you are on — an `agent/*` branch, never `main`, never
-`rc`, never `--force`. `scripts/hooks/pre-push` refuses the long-lived branches anyway.
+Self-fix pushes go to the branch you are on — an `agent/*` branch, never `main`, `rc` or
+`testing`, never `--force`. `scripts/hooks/pre-push` refuses the long-lived branches anyway.
 A re-push is visible on the PR timeline and does not ping reviewers. Whether it should
 is an open human call; the default is silent, and this script does not comment.
 
@@ -134,3 +185,30 @@ Stop and report the failing job link instead of claiming done when it is not sel
 
 Whether `finish_job` should refuse a done claim whose PR is red or conflicted is a
 platform question. Not this procedure. Flag it; do not build it here.
+
+## 7. Merge and see it live
+
+A pull request into `testing` is yours to merge once the watcher is green, and the change is
+done when it runs on the testing instance and you have exercised it there.
+
+1. **pr-watch green → merge.** `gh pr merge <n> --merge --admin` — a merge commit, never a
+   squash. `--admin` bypasses the review rule (`testing-review`), never the checks
+   (`testing-checks` binds admins): a merge while a required check is pending or red is
+   refused, which is the point. Without admin rights — the Talaria App, an outside
+   contributor — the merge waits for an approving review: report the green PR as
+   "not ready to merge: waiting on review", and stop there.
+2. **Start the deploy watch in the background:**
+   `node scripts/hooks/testing-watch.mjs <n>` (Claude Code: `run_in_background`). Merge to
+   live is about 10–15 minutes, 20–30 when the api changed. Exit 0 is one proof line —
+   `testing-watch: live — <url> runs testing-<sha12>, which contains <target12>`; cite it.
+   Exit 2 names why waiting will not help: `red-deploy` (open the run — a broken image is
+   yours to fix with a new pull request into testing), `down`, `unmerged`, `timeout`.
+3. **Exercise the changed path on the testing instance** — the same surface as section 2,
+   on a real deploy with real agents. API paths use
+   [`docs/TESTING-INSTANCE.md`](../../../docs/TESTING-INSTANCE.md) "Agent access" (the
+   repo-traps trap-5 session over `ssh -i ~/.ssh/talaria-testing`, as the non-admin test
+   user). While it cannot run — no `TESTING_URL` yet, so testing-watch could not run — say so,
+   and exercise locally with `bun talaria dev --api-from-ci` on the merge commit instead.
+4. **Then claim done** — after the cleanup skill has removed this task's workspace, citing
+   the pr-watch and testing-watch proof lines and what you exercised. Something broken on
+   testing is a new pull request into testing, never a push to it.

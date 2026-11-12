@@ -1,26 +1,43 @@
 # The branch flow, ENFORCED — the server-side half of docs/BRANCHES.md.
 #
-# THE MODEL, in one paragraph. Every change reaches this repository through a
-# pull request against `rc`. rc is both the integration branch and the staging
-# environment: a push to it runs CI and rc-deploy.yml, which builds this
+# THE MODEL, in one paragraph. Three long-lived branches. `testing` is the
+# integration lane: every feature pull request and the back-flow from rc merge
+# into it, and every push deploys the testing instance. `rc` is the release
+# candidate and the staging environment: it takes a frozen snapshot of testing
+# (`promote/testing-<sha12>`) and the hotfix/, release/ and sync/ lanes cut
+# from rc, and a push to it runs CI and rc-deploy.yml, which builds this
 # commit's image, boots it, and checks that it answers — and only once that is
 # green does promote.yml open the `rc → main` pull request. `main` is the
-# release trunk: it moves one way only, by that promotion merge, after rc has
-# been verified. `testing` is retired; the nightly channel is built from rc.
+# trunk: it moves one way only, by that promotion merge, after rc has been
+# verified.
 #
 # WHAT IS CHECKED HERE, and why each is a check rather than a sentence in a doc:
 #
-#   pr-target      a pull request to main may only come from rc. Everything
-#                  else — review, CI, the staging deploy — happens on rc, so a
-#                  second door into main is a door with no gates on it.
+#   pr-target      every pull request into main, rc or testing. Into any of
+#                  them, a title or body that would skip the merge's own push
+#                  checks ([skip ci] and kin) is refused. Into rc or main, a
+#                  retarget is refused until a push re-runs the checks against
+#                  the new base. Into main, only this repository's rc: review,
+#                  CI and the staging deploy happen on rc, so a second door
+#                  into main is a door with no gates on it. Into rc, only the
+#                  lanes: a `promote/*` snapshot that is on testing and that
+#                  rc adds nothing to (`git merge-tree`), or a hotfix/,
+#                  release/ or sync/ head carrying no testing-only commit. A
+#                  feature is told to retarget at testing.
 #   promotion-gate a pull request to main requires rc's head commit to have a
-#                  green CI run AND a green rc-deploy run, read from the
-#                  Actions API. This is "verified in RC before it reaches
-#                  main", checked rather than assumed.
-#   branch-push    a push to main may carry only commits that were already on
-#                  rc; a push to rc must be a merge commit (what a PR merge
-#                  leaves) or a fast-forward of main. The rules and their
-#                  reasoning: scripts/flow-guard.mjs.
+#                  green CI run AND a green rc-deploy run, both made on rc,
+#                  read from the Actions API. This is "verified in RC before it
+#                  reaches main", checked rather than assumed. The head must
+#                  also carry no changelog/ entries: every promotion is a
+#                  release, so its changes are rolled into a section first.
+#   branch-push    pushes to all three are judged, and none may rewrite or
+#                  delete its branch. A push to main may carry only commits
+#                  that were already on rc; a push to rc must be a merge commit
+#                  (what a PR merge leaves) or a fast-forward of main, and a
+#                  merge of testing's content must carry exactly that tree; a
+#                  push to testing, a merge commit or a fast-forward to content
+#                  rc or main already carries. The rules and their reasoning:
+#                  scripts/flow-guard.mjs.
 #
 # WHY THE LOGIC IS A SCRIPT AND NOT SHELL IN THIS FILE. scripts/flow-guard.mjs
 #   is also run by the git pre-push hook, so the refusal a developer sees
@@ -34,35 +51,44 @@
 #   a push, the tip being moved — and refuses outright when that revision is not
 #   in the repository at all (a force-push past it, or a clone that never
 #   fetched it: the one case where "no guard at that revision" and "no such
-#   revision" must not be confused). The `cp` fallback exists for exactly one
-#   other case and says so when it takes it: a base that predates the guard,
-#   which is the change that introduces it, landing THROUGH this same flow.
+#   revision" must not be confused). The fallback to the change's own copy
+#   exists for exactly one other case and says so when it takes it: a base
+#   that predates the guard, which is the change that introduces it, landing
+#   THROUGH this same flow — and `testing` until it is first brought up to rc,
+#   because its old tip predates the guard too.
+#
+#   The same holds for the cutover itself. The pull request that turns rc into
+#   the lanes-only branch is judged by rc's copy from BEFORE it — which still
+#   lets a feature in — so it passes its own check; the rules it adds bind the
+#   pull requests after it.
+#
+# EVERY PULL REQUEST VALUE GOES THROUGH env. The title, body and branch names
+#   are text anyone opening a pull request writes; an expression expanded inside
+#   `run:` would be that text executed as shell.
 #
 # DELIBERATELY LEFT OUT (do not read these as oversights)
 #   - No `paths:` filters. A guard that skips is not a guard: the cheaper the
 #     file, the more it matters that it cannot be skipped. It needs no install
 #     and finishes in seconds, which is what makes that affordable.
-#   - No fetch of anything but main and rc. The provenance rules read those two
-#     refs and nothing else, so that is what the fetch asks for.
-#   - No status of its own for `testing` PRs: a pull request targeting it is
-#     refused by pr-target, and the branch itself is deleted in the repo
-#     settings (docs/BRANCHES.md → Bringing the model up).
+#   - No fetch of anything but the three long-lived branches (and, for a pull
+#     request, its own head). The provenance rules read those refs and nothing
+#     else, so that is what the fetch asks for.
 
 name: flow
 
 on:
   pull_request:
-    # Only the branch whose rules are this file's subject. A pull request
-    # against rc is the normal path and needs no guard; against any other
-    # branch it is the author's own business.
-    branches: [main]
+    # The long-lived branches, whose rules are this file's subject. A pull
+    # request against any other branch is the author's own business.
+    branches: [main, rc, testing]
     # `edited` is a recovery path the wait cannot replace. The gate now waits
     # for the tip's CI and rc-deploy runs to finish, so it no longer fails
     # ahead of its own evidence — but a gate that HAS failed (a red deploy,
     # since re-run) is never re-evaluated on its own, and promote.yml's body
     # refresh fires exactly such an edit, re-running this file on the fresh
     # evidence. A hand edit of the body does the same for a repository without
-    # the promotion token.
+    # the promotion token. And a retarget arrives as an `edited` too, with the
+    # old base in `changes.base`, which is what pr-target reads it from.
     types: [opened, synchronize, reopened, edited]
   push:
     # Long-lived branches only: every other push is a feature branch's, and
@@ -81,7 +107,7 @@ permissions:
 
 jobs:
   pr-target:
-    name: pr target (main takes rc only)
+    name: pr target (flow)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -90,7 +116,27 @@ jobs:
       - uses: actions/checkout@v5
         with:
           # The base sha has to be readable: it is where the policy comes from.
+          # Checked out AT the base, not GitHub's merge commit: nothing here
+          # runs the pull request's tree, and the rc rules read both sides of
+          # it from history.
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
+
+      # The rc rules read history: is the snapshot on testing, and what would
+      # its merge into rc write (`git merge-tree`); does a hotfix carry a commit
+      # testing has. So the three long-lived branches are fetched strictly, and
+      # the pull request's own head by its pull ref, which a fork's head has
+      # too (refs/pull/<n>/head is in this repository either way).
+      - name: Fetch the long-lived branches and this pull request's head
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          set -eu
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main' \
+            '+refs/heads/rc:refs/remotes/origin/rc' \
+            '+refs/heads/testing:refs/remotes/origin/testing' \
+            "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
 
       # The one place a pull request could satisfy this check by editing it.
       # Read the guard from the branch the pull request targets instead.
@@ -111,22 +157,53 @@ jobs:
             git show "$BASE_SHA:scripts/flow-guard.mjs" > "$RUNNER_TEMP/flow-guard.mjs"
             echo "policy: $BASE_SHA:scripts/flow-guard.mjs"
           else
-            cp scripts/flow-guard.mjs "$RUNNER_TEMP/flow-guard.mjs"
+            # The working tree is the base (the checkout above), so the pull
+            # request's copy is read from its fetched head.
+            git show "refs/remotes/pr/head:scripts/flow-guard.mjs" > "$RUNNER_TEMP/flow-guard.mjs"
             echo "policy: this pull request's copy — $BASE_SHA predates the guard (see the header)"
           fi
 
-      - name: Which branch this pull request comes from
+      # The pull request as the guard reads it (flow-guard.mjs, USAGE). An old
+      # base's copy of the guard reads only the two branch names and ignores
+      # the rest, so the call is safe across the change that adds them.
+      #
+      # The base sha handed to the rules is the base branch's tip as just
+      # fetched, not the event's: the event's `base.sha` is the base as GitHub
+      # last recorded it on the pull request, and an rc that moved since (a
+      # hotfix during a promotion) is exactly what the snapshot rule must see.
+      # It falls back to the event's sha when the fetched tip does not descend
+      # from it — a base this run cannot place is judged as the event names it.
+      - name: Where this pull request comes from, and what its merge would skip
         env:
           BASE: ${{ github.event.pull_request.base.ref }}
           HEAD: ${{ github.event.pull_request.head.ref }}
-        run: node "$RUNNER_TEMP/flow-guard.mjs" pr-base "$BASE" "$HEAD"
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # A deleted fork's head repo is null, so this is false: fail closed.
+          FLOW_HEAD_SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          FLOW_PR_TITLE: ${{ github.event.pull_request.title }}
+          FLOW_PR_BODY: ${{ github.event.pull_request.body }}
+          FLOW_ACTION: ${{ github.event.action }}
+          # Set only on an `edited` that changed the base: a retarget.
+          FLOW_BASE_FROM: ${{ github.event.changes.base.ref.from }}
+        run: |
+          set -eu
+          BASE_SHA=$EVENT_BASE_SHA
+          if tip=$(git rev-parse --verify -q "refs/remotes/origin/$BASE^{commit}") \
+            && git merge-base --is-ancestor "$EVENT_BASE_SHA" "$tip"; then
+            BASE_SHA=$tip
+          fi
+          echo "judging $HEAD @ $HEAD_SHA into $BASE @ $BASE_SHA"
+          node "$RUNNER_TEMP/flow-guard.mjs" pr-base "$BASE" "$HEAD" "$BASE_SHA" "$HEAD_SHA"
 
   # The "verified in RC" rule. Split from pr-target so a red run says WHICH
   # thing is missing: the wrong source branch, or a tip that has not been
   # deployed yet.
   promotion-gate:
     name: promotion gate (rc verified)
-    if: github.event_name == 'pull_request'
+    # The promotion only. A pull request into rc or testing is not one, and
+    # the job is skipped there (a skipped job is never a pending check).
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
     runs-on: ubuntu-latest
     # The gate WAITS for its evidence, and this timeout is the bound on the
     # wait. A synchronize event fires the moment rc is pushed — the same push
@@ -150,13 +227,17 @@ jobs:
       # deadlock the release pipeline already paid for once. Runs by head_sha has
       # no such dependency.
       #
-      # No `event=` filter either, and that is a decision: the COMMIT is the
-      # identity, not the event that produced the run. Filtering to `push` reads
-      # as stricter while it quietly breaks the documented recovery — a
-      # dispatched or re-run rc-deploy verifies the SAME tree, and a gate that
-      # refuses to see it leaves a flaky deploy as a permanent red check.
-      # Matching on the workflow `name:` below is what keeps this honest: only a
-      # run OF CI and one OF rc-deploy count.
+      # Only CI and rc-deploy runs made ON rc count: the workflow `name:`, a
+      # `head_branch` of rc, and any event but `pull_request`. Push, re-run and
+      # dispatch runs on rc verify the same tree, and a dispatched or re-run
+      # rc-deploy is the documented recovery from a flaky deploy, so the event
+      # is not pinned to `push`. What does not count, though it may be the same
+      # sha: a pull_request run (it checked GitHub's merge commit, in whatever
+      # mode its base chose), a push to testing (integration mode), a `CI
+      # offload` run (light, and another name besides), or release.yml's call
+      # (its run carries release's name). check-invariants.mjs
+      # (`branch-flow-anchors`) keeps the two names unique to their files, so
+      # no other workflow can become this evidence.
       - name: rc's head commit passed CI and deployed in staging
         env:
           GH_TOKEN: ${{ github.token }}
@@ -176,7 +257,7 @@ jobs:
           #   red      every run completed and none was green.
           state() {
             printf '%s' "$runs" | jq -r --arg name "$1" '
-              [.workflow_runs[] | select(.name == $name)] as $rs
+              [.workflow_runs[] | select(.name == $name and .event != "pull_request" and .head_branch == "rc")] as $rs
               | if any($rs[]; .conclusion == "success") then "green"
                 else ([ $rs[] | select(.status != "completed") ] | length) as $live
                 | if $live > 0 then "waiting"
@@ -184,6 +265,24 @@ jobs:
                   else "red" end
                 end'
           }
+
+          # Rolled first. Every promotion is a release (tag-release.yml tags
+          # main when CHANGELOG.md has an untagged section), and its notes are
+          # that section, so a head still carrying changelog/ entries would
+          # ship them outside it. promote.yml offers the roll; its merge moves
+          # rc, and the `synchronize` it causes runs this gate again.
+          if listing=$(gh api "repos/$REPO/contents/changelog?ref=$SHA" 2>&1); then
+            entries=$(printf '%s' "$listing" | jq '[.[] | select(.name | endswith(".md"))] | length')
+          elif printf '%s' "$listing" | grep -q 'HTTP 404'; then
+            entries=0
+          else
+            echo "::error::could not list changelog/ at $SHA: $listing"
+            exit 1
+          fi
+          if [ "$entries" -gt 0 ]; then
+            echo "::error::$SHA carries $entries changelog/ entr$([ "$entries" = 1 ] && echo y || echo ies) that no release section holds. Merge the changelog roll's pull request against rc first (promote.yml opens it; RELEASING.md, \"Promoting to stable\"). This gate runs again when rc moves."
+            exit 1
+          fi
 
           waited=0
           absent_since=
@@ -225,7 +324,7 @@ jobs:
           done
 
   branch-push:
-    name: branch push (main takes rc content only)
+    name: branch push (flow)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -238,13 +337,20 @@ jobs:
           fetch-depth: 0
 
       # Explicit, not "whatever checkout left behind": flow-guard's provenance
-      # rules are about these two refs specifically, and a checkout that
-      # happens to have them today is not a guarantee.
+      # rules are about these refs specifically, and a checkout that happens
+      # to have them today is not a guarantee. main and rc are fetched
+      # strictly — every rule reads one of them. testing is tolerated absent
+      # here so that a fork or a fresh repository without the lane still has
+      # its main pushes judged; the rules that read it (a testing push, a
+      # merge pushed to rc) block with the fetch to run when it is missing,
+      # rather than passing.
       - name: Fetch the long-lived branches
         run: |
           git fetch --no-tags origin \
             "+refs/heads/main:refs/remotes/origin/main" \
             "+refs/heads/rc:refs/remotes/origin/rc"
+          git fetch --no-tags origin "+refs/heads/testing:refs/remotes/origin/testing" \
+            || echo "origin has no testing branch"
 
       # Same rule as pr-target, other revision: the tip this push moves is the
       # copy of the policy that push is judged by.

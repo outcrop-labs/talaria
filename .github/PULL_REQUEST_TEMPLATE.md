@@ -1,15 +1,16 @@
 # Pull request
 
-**Base branch: `rc`.** Every PR targets `rc` — the integration and staging branch. `main`
-moves only through the promotion flow: a PR offering `rc` to `main`, raised by
-`promote.yml` once the staging deploy is verified and merged by a maintainer. Never open a PR
-against `main`; one that does gets retargeted, and the branch-flow guard
+**Base branch: `testing`** (`rc` only for `promote/`, `hotfix/`, `release/`, `sync/` heads).
+`testing` is the integration lane: light CI, the author merges at green, and every merge
+deploys the testing instance. `rc` takes a frozen snapshot of `testing` plus the hotfix, roll
+and sync lanes cut from `rc`; `main` moves only through the promotion of `rc`. A feature
+opened against `rc` or `main` gets retargeted, and the branch-flow guard
 ([`scripts/flow-guard.mjs`](../scripts/flow-guard.mjs), run by CI) fails until it is.
 
 ## Checklist
 
-- [ ] This PR targets `rc`.
-- [ ] `bun run gate` is green locally. It compiles only what this diff touches; CI runs the full surface job.
+- [ ] This PR targets `testing` (or `rc`, from a `promote/`, `hotfix/`, `release/` or `sync/` head).
+- [ ] `bun run check` is green locally; this PR's CI is the compile/test proof (links to runs or a `gate:remote` result go under **Verified**, never in the entry file).
 - [ ] I exercised the changed path in the running app; the steps are under **Verified**.
 - [ ] A `changelog/YYYY-MM-DD-<slug>.md` file ([CONTRIBUTING.md](../CONTRIBUTING.md), step 3) carries what changed and
       what was verified. [`CHANGELOG.md`](../CHANGELOG.md) is written only by the release roll — never by hand.
@@ -23,13 +24,14 @@ against `main`; one that does gets retargeted, and the branch-flow guard
 
 ## Verified
 
-<!-- The gate that ran, and how the changed path was exercised in the running app. -->
+<!-- The gate that ran — this PR's CI, or `bun run gate:remote` before it opened, with the run links —
+     and how the changed path was exercised in the running app. Editing this body starts no compile. -->
 
 - **Gate:**
 - **Exercised:**
 
-`bun run check` (which `gate` always runs) sees the whole tree, so a failure can predate your branch. That failure is not
-yours to fix here, but it is yours to name: reproduce it on a clean `rc` checkout, quote that
+`bun run check` (which CI and `gate:remote` both run) sees the whole tree, so a failure can predate your branch. That failure is not
+yours to fix here, but it is yours to name: reproduce it on a clean checkout of the base, quote that
 under **Gate**, and say so. An absorbed failure hides a broken tree from every PR after this
 one ([`AGENTS.md`](../AGENTS.md) — "Parallel sessions share working trees").
 
@@ -38,7 +40,7 @@ base branch points, whether the changelog claim covers the surfaces you touched,
 generated trees, commit subjects. Run it yourself before you push:
 
 ```bash
-node scripts/judge-pr.mjs --base origin/rc
+node scripts/judge-pr.mjs --base origin/testing --target testing
 ```
 
 A finding it grades `must` is something this repository says about itself; fix it or argue it

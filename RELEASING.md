@@ -14,21 +14,34 @@ version of any published image is the tag that built it. No release writes
 its version into a file — there is no version-bump commit, and nothing to
 merge afterwards. The one file a release changes is `CHANGELOG.md`: the
 roll (`scripts/changelog-roll.mjs`) folds the `changelog/` entries into a
-section for the version, and that commit reaches rc the way every change
+section for the version, and that commit reaches rc the way everything on rc
 does — through a pull request — before the tag (see "Cutting an RC").
 
-Two long-lived branches, both already deployed before a version is cut:
+Three long-lived branches, one chain — everything on `main` is on `rc`, and
+everything on `rc` is on `testing`. A version is cut only from the two that
+are deployed and verified first:
 [`docs/BRANCHES.md`](./docs/BRANCHES.md) is the model in full.
 
 | Branch | Role | How it moves | What a tag on it means |
 |---|---|---|---|
-| `rc` | the integration branch, and the staging environment: every pull request targets it, and `rc-deploy.yml` deploys its tip | merging pull requests (merge commits) | `vX.Y.Z-rc.N` — a release candidate of what `rc` currently is |
+| `testing` | the integration lane: every feature pull request targets it, and `testing-deploy.yml` deploys every push to the testing instance | merging pull requests (the author, at green) and the back-flow from `rc` | nothing — a tag on testing is refused; its images are `testing` and `testing-<sha12>` |
+| `rc` | the release candidate, and the staging environment: `rc-deploy.yml` deploys its tip | a frozen snapshot of `testing` (`promote/testing-<sha12>`), or a `hotfix/`, `release/` or `sync/` branch cut from `rc` — merge commits a person makes | `vX.Y.Z-rc.N` — a release candidate of what `rc` currently is |
 | `main` | the release trunk — what customers run | only the promotion merge of `rc` into it, after `rc` is deployed and verified | `vX.Y.Z` — a stable release of what `main` currently is |
 
-There is no third branch to advance and no fast-forward to remember: `rc` is
-where the work is, `main` is where it lands once the staging deploy says it
-works, and `promote.yml` does that landing by itself. What remains a human's
-call is the one thing that should be: whether a version exists.
+**The lanes into rc.** Features land on `testing` and are exercised there;
+`rc` takes them as a batch, by snapshot — `gh workflow run promote-testing.yml
+--ref main -f open=true` cuts `promote/testing-<sha12>` at testing's tip and
+opens its pull request into `rc` (full CI on every platform, an approving
+review). The snapshot never moves, so the battery runs once per candidate and
+the commit merged is the commit checked. Besides it, `rc` takes only what is
+cut from `rc` itself: a `hotfix/` (no migrations), the changelog roll
+(`release/`), a sync of main (`sync/`). Whatever `rc` gains that way flows
+back to `testing` automatically ("Promoting to stable", below).
+
+What remains a human's call is the one thing that should be: whether a
+version exists. A person decides it by merging the changelog roll's pull
+request, and the tag follows the promotion's merge (see "Promoting to
+stable").
 
 ## Cutting an RC
 
@@ -50,33 +63,38 @@ git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 
 The roll comes first because the tagged tree must carry the version's
 section: a checkout of the tag then says what it holds, and the promotion
-carries the same section to main. The release's notes link is not pinned to
-the tag: `release.yml` points it at `blob/main/CHANGELOG.md`, so an RC's
-section shows behind that link only once rc is promoted, and until then it is
-in rc's CHANGELOG.md. It is a pull
+carries the same section to main. The release's notes are built from that
+section, and their full-changelog link points at the tag
+(`blob/vX.Y.Z-rc.N/CHANGELOG.md`), so it resolves from the moment the tag
+exists. It is a pull
 request because rc moves only by merges — `scripts/flow-guard.mjs` refuses a
 hand-made commit pushed to rc, in the pre-push hook and in `flow.yml` alike.
-Hold other merges to rc until the tag is cut: a pull request that lands in
-between ships in the tag with its entry still under `changelog/`, outside the
-section.
+Merge no snapshot between the roll and the tag: it would ship in the tag with
+its entries still under `changelog/`, outside the section. rc moves only on
+snapshots, hotfixes, rolls and syncs, so that window is quiet by itself.
 
-Nothing else needs advancing first: `rc` is where the work already is, and its
-tip has been deployed and smoke-tested by `rc-deploy.yml` on the way in — which
-is the guarantee an RC is supposed to carry. Tag the tip whose deploy you
+Nothing else needs advancing first: `rc` already holds the snapshot of
+`testing` this candidate is, and its tip has been deployed and smoke-tested by
+`rc-deploy.yml` on the way in — which is the guarantee an RC is supposed to
+carry. Tag the tip whose deploy you
 watched (`git log --oneline -1` against the run list under Actions →
 rc-deploy).
 
 The tag push runs the release workflow: the full CI suite against the tag,
 then the image builds and lands on GHCR as `0.2.0-rc.1` and (moving) `rc`,
-and a GitHub **prerelease** opens with a stub body. No desktop installers ride
-it: Talaria Desktop ships only as `desktop-v*` releases ("The desktop
-installers", below). The changelog is the
-record — edit the release notes afterwards if you want them to say more,
-or leave the stub pointing at CHANGELOG.md.
+and a GitHub **prerelease** opens with notes from `scripts/release-notes.mjs`,
+built from the `## 0.2.0-rc.1` section (a tag with no section gets a stub). No
+desktop installers ride it: Talaria Desktop ships only as `desktop-v*`
+releases ("The desktop installers", below). A re-run of the same tag rewrites
+the notes, so change the entries, not the Release page.
 
 A malformed tag (`v1.0`, `v1.0.0-beta.1`, `v1.0.0-RC.1` — the grammar is
 `vX.Y.Z-rc.N`, lowercase, exactly) fails the workflow loudly rather than
-publishing anything. Delete a misfire by deleting the tag.
+publishing anything. So does a tag on the wrong branch. `release.yml` publishes
+a `vX.Y.Z-rc.N` only when its commit is on `rc`, and a stable `vX.Y.Z` only
+when its commit is on `main`. A tag cut on `testing` or on a feature branch is
+refused before CI starts, because a release publishes only promoted code.
+Delete a misfire by deleting the tag.
 
 One trap when you re-cut a tag that already opened a release: **GitHub converts
 that release to a draft** when its tag goes away, and the next run finds the
@@ -117,28 +135,92 @@ job in that workflow once store credentials exist.
 
 ## Promoting to stable
 
-An RC becoming stable is two steps, in this order: the promotion, then the tag.
+A stable release is two merges, after the snapshot of testing it releases
+has landed on rc. CI does the rest: the version, the roll, the promotion, the
+tag, the images and the notes.
+
+0. **The snapshot.** A `promote/testing-<sha12>` pull request into rc (above,
+   "The lanes into rc"), merged by a person; rc's CI and `rc-deploy` verify it.
+1. **The roll.** When rc's tip is verified (CI and `rc-deploy` green) and
+   `changelog/` holds entries, `promote.yml` opens a pull request against rc
+   from `release/roll`. It folds the entries into a `## X.Y.Z (date)` section
+   with `scripts/changelog-roll.mjs`. **Merging it decides the release.**
+2. **The promotion.** rc verifies again with `changelog/` empty, and
+   `promote.yml` opens `promote: rc → main — vX.Y.Z`. Merge it as a merge
+   commit.
+3. **The tag, the images and the notes.** On that merge, `tag-release.yml`
+   sees main's CHANGELOG.md top section with no tag, tags main `vX.Y.Z`, and
+   dispatches `release.yml` at the tag. A tag pushed with the workflow token
+   starts no workflow, and a dispatch is the one event it can start.
+   `release.yml` runs CI against the tag, publishes `X.Y.Z` and `latest`, and
+   opens the GitHub Release with notes from `scripts/release-notes.mjs`.
+4. **The back-flow.** The roll moved rc, so rc now has commits testing lacks.
+   On rc's next CI completion `promote-testing.yml` cuts `backflow/rc-<sha12>`
+   at rc's tip and opens `sync: rc → testing`; merge it like any pull request
+   into testing. Until it merges, the next snapshot is refused (rc would hold
+   the roll and testing would not) — and a promoted entry edited on testing
+   is a judge `must`, because the roll already owns it.
+
+**The version** comes from `scripts/release-version.mjs`:
+
+- By default it's the next patch after the newest `vX.Y.Z` tag.
+- An entry file raises it with a `<!-- bump: minor -->` (or `major`) line. The
+  largest ask wins, and the roll strips the line.
+- A different version: Actions → promote → Run workflow from main, with
+  `version` set. It must be newer than the newest tag.
+
+**An entry that lands after the roll** stays in the same release:
+
+- The roll's section is "pending", newer than every tag. The next verified rc
+  gets a new roll pull request that extends that section, re-headed with
+  today's date.
+- An open promotion is held until it merges. `flow.yml`'s promotion gate fails
+  while `changelog/` has entries, auto-merge goes off, and the body says what
+  it's waiting for. `tag-release.yml` also refuses to tag a main that carries
+  unrolled entries.
+
+**The notes** are deterministic. Reviewers saw everything they say in the
+pull requests:
+
+- The images, the newest `desktop-v` release, and the pull requests behind
+  the section's entries.
+- **Before you upgrade:**
+  - the migration count, from `pg.ts`'s `MIGRATIONS` at the previous tag and
+    this one;
+  - every entry's `Upgrade:` paragraph. An entry that needs an operator step,
+    such as rolling agents or setting a variable, says it there.
+- **What changed:** each entry's bold lead, then the full section, Verified
+  paragraphs included.
+
+**The first release after the chain landed** is rolled by hand, the way
+0.13.2 was. Until that promotion, main's `promote.yml` is the old one and
+never opens a roll, while rc's new promotion gate already refuses a head with
+`changelog/` entries. So roll by hand (below) and promote; `tag-release.yml`
+arrives on main with that same merge and tags it.
+
+**What needs `PROMOTION_TOKEN`:** the roll and promotion pull requests. With
+no token, `promote.yml` prints the exact commands instead, and you open them
+yourself: a pull request the workflow token opens would start no checks. The
+tag and the release need no token.
+
+**By hand**, when CI can't (no token, or a release to cut out of turn):
 
 ```bash
-# 1. main catches up: promote.yml verifies rc's tip once its staging deploy is
-#    green and offers the rc → main pull request (it opens it for you when a
-#    PROMOTION_TOKEN is configured). Merge it as a merge commit — the one merge
-#    that carries a whole verified branch.
-# 2. tag what main now is:
+# 1. the roll, as a release/ pull request against rc (merge commit), like everything on rc
+git switch -c release/roll-0.2.0 origin/rc
+bun scripts/changelog-roll.mjs 0.2.0      # --extend to add to a pending section
+# 2. once rc verifies, open the promotion and merge it as a merge commit:
+#    tag-release.yml tags it. Tag by hand only if that run failed before
+#    tagging (if it tagged but the dispatch failed, re-run it: it dispatches a
+#    tag at HEAD that has no Release, or `gh workflow run release.yml --ref v0.2.0`):
 git switch main && git pull
-git tag v0.2.0 && git push origin v0.2.0
+git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
 ```
 
-A stable's notes come from the same roll. If entries landed on rc after the
-last RC's roll, roll them the same way — a pull request against rc — before
-step 1, under the stable's own version: `bun scripts/changelog-roll.mjs 0.2.0`
-writes a `## 0.2.0 (date)` section above the `0.2.0-rc.N` ones, which hold
-everything before it. If `changelog/` is empty, the roll refuses ("no
-changelog/*.md entries to roll"). That is the usual case right after an RC,
-and it means nothing has landed since the RC's roll: the RC sections already
-describe everything the stable carries, so there is nothing to roll. Skip it
-and go to step 1. A roll can never go to main directly: main takes rc's
-content and nothing else (flow-guard).
+A stable made after an RC needs no roll when `changelog/` is empty: the RC
+sections already describe everything it carries. But then no section is
+pending for `tag-release.yml`, so tag it by hand as above. A roll can never go
+to main directly: main takes rc's content and nothing else (flow-guard).
 
 Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
 `latest`, the image tag, moves on nothing else — only a `vX.Y.Z` tag with no
@@ -183,15 +265,23 @@ was refused for asking `packages: write` under a `contents: read` caller. Those
 grants now sit on the calls in `release.yml` — if a new nested call is added and
 the tag or nightly dies as a startup failure, that is the first thing to look at.
 
-The retired `testing` branch used to be this section's problem: it had to be
-fast-forwarded by hand, nothing enforced that, and a stale channel published
-stale code with today's date on it. `rc` cannot go stale the same way — it is
-where every pull request lands, and `main` is kept current by the promotion —
-which is the other half of why the nightly feed moved onto it.
+### `testing` (the integration lane, since 2026-11)
 
-Delete it when convenient: `git push origin :testing`. Until then, pushes to it
-are refused by `scripts/flow-guard.mjs`, so it cannot quietly come back to life
-as a second feed.
+`testing` once fed this section: it had to be fast-forwarded by hand, nothing
+enforced that, and a stale channel published stale code with today's date on
+it — which is why the nightly feed moved onto `rc` and `testing` sat idle.
+Since November 2026 it is the integration lane instead: every feature pull
+request lands there, so it cannot go stale for want of someone remembering it,
+and `rc` takes it by snapshot ([`docs/BRANCHES.md`](./docs/BRANCHES.md)).
+
+It is still not a release channel. The nightly keeps building `rc` — the
+registry's default channel is `nightly`, and integration code never reaches a
+default install. `testing` has its own feed instead: every push runs
+`testing-deploy.yml`, which publishes `ghcr.io/outcrop-labs/talaria:testing`
+(moving) and `testing-<sha12>` (immutable) for the testing instance to follow
+([`docs/TESTING-INSTANCE.md`](./docs/TESTING-INSTANCE.md)). No `v*` tag is
+ever cut on it — `release.yml` refuses one. `scripts/flow-guard.mjs` refuses
+its deletion or rewrite and judges every push to it.
 
 ## The tags on `ghcr.io/outcrop-labs/talaria`
 
@@ -205,12 +295,16 @@ as a second feed.
 | `X.Y.Z-rc.N` | its tag | yes |
 | `latest` | every stable tag | no — a pointer |
 | `X.Y.Z` | its tag | yes |
+| `testing` | every push to `testing` (`testing-deploy.yml`) — the testing instance follows it | no — a pointer |
+| `testing-<sha12>` | every push to `testing` | yes |
 
 Pin anything you care about to the right-hand column.
 
 The api package — `ghcr.io/outcrop-labs/talaria-api` — carries these same
-tags, plus an immutable `sha-<sha12>` per commit; that sha tag is what a
-release's app-image build is actually pinned to.
+tags, plus an immutable `sha-<sha12>` per commit (`talaria-api:sha-<sha12>-dev`
+when the build used the dev profile: nightly, rc, and the testing lane's
+deploy — never the `testing` tags, which the api package does not carry); that
+sha tag is what a release's app-image build is actually pinned to.
 
 **What the api bits are compiled with.** `main` (the feed the in-app updater
 rolls from) and every stable tag carry the api built for release. The two
@@ -245,8 +339,15 @@ update until Desktop passed 0.13. A `desktop-v*` release carries linux
 `.deb`/`.rpm`/`AppImage`/`.pkg.tar.zst`/`.flatpak`, macOS a universal `.dmg`
 (and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, a `SHA256SUMS`
 over all of them, and the `latest.json` and `.sig` files the updater reads,
-which need the `TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey
-is in `desktop/src-tauri/tauri.conf.json`).
+which need `TAURI_SIGNING_PRIVATE_KEY` (the matching pubkey is in
+`desktop/src-tauri/tauri.conf.json`). That key is a secret of the
+`desktop-release` environment, which admits only `main`: not `desktop-v*` tags,
+because anyone with write access can point a new tag at unreviewed code. So only
+`main` signs or publishes. Once the repository-level copy of the key is deleted,
+a `desktop-package` dispatch from any other ref builds every installer unsigned
+and attaches nothing. That is how to exercise an edit to the workflow, which no
+longer mints a release when it reaches main (only `desktop/` and the dither file
+do).
 
 A trunk build that touches `desktop/` IS a desktop release — the auto-minor channel: once
 every platform job is green, `desktop-package.yml` mints `desktop-vX.Y.0`
@@ -260,12 +361,12 @@ but a desktop release. Installed apps read it when someone checks for updates;
 they do not update unasked. The `desktop-v*`
 namespace keeps a desktop auto-minor from ever firing `release.yml` (its tag
 trigger is `v[0-9]*`). Auto never crosses a major: **majors (and any
-hand-picked number) are manual** — dispatch `desktop-package` with
+hand-picked number) are manual** — dispatch `desktop-package` from `main` with
 `version=1.0.0` and `publish=true`. A stable `vX.Y.Z` cut raises the baseline
 the same way; before cutting one, check it exceeds the highest `desktop-v*`
 tag (the auto math resumes from whichever is higher). To re-attach installers
 to an existing `desktop-v*` release, re-run its `desktop-package` run, or
-dispatch with `version` and `release_tag` filled in — also the way to finish a
+dispatch it from `main` with `version` and `release_tag` filled in — also the way to finish a
 mint whose run was cancelled mid-attach; `--clobber` makes either idempotent.
 A plain dispatch without `publish` builds artifacts only, nothing minted.
 
@@ -273,15 +374,17 @@ A published `desktop-v*` release also opens
 a pull request on [omapak](https://github.com/outcrop-labs/omapak) that moves
 `app.talaria.desktop` to that tag and regenerates the vendored cargo and bun
 sources (`omapak-submit.yml`). The store judge still scores it; the workflow
-does not merge. That needs a repository secret `OMAPAK_SUBMIT_TOKEN` (a
-fine-grained PAT or GitHub App token with contents and pull-requests write
-on `outcrop-labs/omapak`). Without it the job fails on purpose: a rolled
+does not merge. That needs `OMAPAK_SUBMIT_TOKEN`, a secret of the same
+`desktop-release` environment (a fine-grained PAT or GitHub App token with
+contents and pull-requests write on `outcrop-labs/omapak`). Without it the job fails on purpose: a rolled
 release that never reaches the store is a red run, not a quiet success.
 Before any work the job asks GitHub's git server whether the token may push
 (receive-pack's ref advertisement), and a token that may not fails there with
 the reason: rejected outright, or valid without Contents write. Then
-regenerate it and re-run the job by dispatch with the tag.
-A server `v*` release does not submit: it carries no desktop build.
+regenerate it and re-run the job by a dispatch from `main` with the tag.
+A server `v*` release does not submit: it carries no desktop build. A
+`desktop-v*` release published by hand runs at its tag, which the environment
+does not admit, so its run fails with that same dispatch to make.
 
 Nothing is signed or notarized yet. That is a provisioning decision, not an
 oversight: it takes an Apple Developer certificate and a Windows signing key.
@@ -321,9 +424,10 @@ itself, and it pushes to the package release.yml already made public.
   main that already had it; a brand-new checkout of the process should mind the
   ordering. The same rule runs the other way for the branch model's own
   automation — `workflow_run` and `schedule` triggers only fire for workflow
-  files present on the default branch, which is why
-  [`docs/BRANCHES.md`](./docs/BRANCHES.md) → Bringing the model up puts the
-  first promotion before the branch protection.
+  files present on the default branch, which is why the testing lane's
+  machinery (promote-testing.yml, testing-deploy's dispatch) reached main in a
+  promotion before the cutover made `testing` the lane
+  ([`docs/BRANCHES.md`](./docs/BRANCHES.md) → The cutover).
 
 ## Deliberately not
 
@@ -333,6 +437,7 @@ itself, and it pushes to the package release.yml already made public.
 - No signed attestations, and no signed or notarized desktop installers (see
   "The desktop installers" above).
 - No nightly-tag pruning (see above: negligible growth).
-- No generated changelog. Every pull request writes its own entry under
-  `changelog/`, and the roll folds them into CHANGELOG.md through a pull
-  request before a tag (see "Cutting an RC").
+- No generated changelog, and no written-at-release notes. Every pull request
+  writes its own entry under `changelog/`. The roll folds them into
+  CHANGELOG.md through a pull request before a tag, and the release notes are
+  assembled from that section (see "Promoting to stable").

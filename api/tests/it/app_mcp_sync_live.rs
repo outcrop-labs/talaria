@@ -4,8 +4,8 @@
 // upsert that leaves `enabled` alone on an existing row, the `app_off` flag
 // that replaced a delete which cascaded every agent, team and user grant, and
 // the render's `app_off is null`. Only a real database can vouch for them.
-// House rule: #[ignore]d; CI's api-integration job runs it against the
-// migrated scratch database.
+// House rule: #[ignore]d; ci.yml's api job runs it in its live-DB steps,
+// against the migrated scratch database.
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-api --test it app_mcp_sync_live:: -- --ignored
 

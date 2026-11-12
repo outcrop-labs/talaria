@@ -11,7 +11,7 @@ quality gate. [`AGENTS.md`](../AGENTS.md) is the entry point for all of it.
 |---|---|---|---|
 | Invariants | [`AGENTS.md`](../AGENTS.md) | every session, at launch | keep it under ~200 lines — a new invariant earns a line, nothing more |
 | Procedures | [`.claude/skills/`](../.claude/skills)/*/SKILL.md | on demand, when the situation matches | one skill per procedure; plain markdown |
-| Gates | [`scripts/hooks/`](../scripts/hooks/README.md) | at the "about to claim done" moment — and, for the branch guard, at `git push` | one exit-code contract; wiring is per-harness |
+| Gates | [`scripts/hooks/`](../scripts/hooks/README.md) | the stop gate at the "about to claim done" moment, the branch guard at `git push`, and the CI gates (`gate:remote`, `pr-watch`) in the background when a procedure starts them | one exit-code contract; wiring is per-harness |
 
 The split is a context budget, not a filing system: what loads every session must stay
 small, so it carries only invariants; procedures live in files an agent reads when
@@ -75,34 +75,58 @@ forwards the refs a push is about to send to
 [`scripts/flow-guard.mjs`](../scripts/flow-guard.mjs), which is the same policy
 [`../.github/workflows/flow.yml`](../.github/workflows/flow.yml) runs server-side. `talaria setup`
 sets `core.hooksPath`, so it is on by default in any clone that has been set up. An agent
-therefore learns "pull requests target `rc`, and `main` takes the promotion of a verified `rc`"
-from a refused push — the message names the rule and the way to do it instead — rather than from
-a document it may not have read. The model:
+therefore learns "pull requests target `testing`; `rc` takes a snapshot of testing and the
+hotfix/release/sync lanes; `main` takes the promotion of a verified `rc`" from a refused push or
+a red `pr target (flow)` — the message names the rule and the way to do it instead — rather than
+from a document it may not have read. The model:
 [`docs/BRANCHES.md`](./BRANCHES.md).
 
-## Local compiles
+## Compiles run on CI
 
-The stop gate does not compile. The local pre-push compile is
-[`scripts/gate.mjs`](../scripts/gate.mjs) (`bun run gate`): `check` always, then
-typecheck, tests, clippy and `cargo test` only for the surfaces and packages the
-diff touches. It is not a workspace cargo. `api:check`, `desktop:check` and
-`verify` are what CI's jobs run; an agent that runs them locally locks
-`api/target` and pins the machine. The job cap that keeps a compile that *does*
-run from taking every core lives in `api/.cargo/config.toml`. CI lifts it. The
-procedure is [`ship-a-change`](../.claude/skills/ship-a-change/SKILL.md).
+The stop gate does not compile, and as a rule neither does the machine an agent runs on.
+Compile and test run on GitHub's runners — free for this public repository: the pull
+request's own checks, or, before a pull request exists, `bun run gate:remote` (below). An
+agent runs `bun run check` and cheap targeted runs locally — one vitest or `bun test` file,
+`cargo fmt`. `api:check`, `desktop:check` and `verify` are what CI's jobs run; an agent that
+runs them locally locks `api/target` and pins the machine.
+[`scripts/gate.mjs`](../scripts/gate.mjs) (`bun run gate`: `check`, then a compile of only
+the surfaces and packages the diff touches) is for reproducing one failure CI reported,
+never the default. The job cap that keeps a compile that *does* run from taking every core
+lives in `api/.cargo/config.toml`. CI lifts it. The procedure is
+[`ship-a-change`](../.claude/skills/ship-a-change/SKILL.md).
 
-## After the pull request opens
+## The CI gates — before and after the pull request opens
 
-The stop gate cannot see CI, and it cannot see `rc` move under an open pull request.
-[`scripts/hooks/pr-watch.mjs`](../scripts/hooks/pr-watch.mjs) is that gate: it polls check
-runs and mergeable state and speaks the same exit contract (0 only when checks are green
-and the PR does not conflict with `rc`, 2 with the reason on stderr, anything else not a
-pass). Green is the latest run of each check, on the commit that was pushed, with the CI
-workflow's run for it finished. It does not edit or push. The procedure — when to run it, how a red check or a
-conflict is fixed, when to stop and report — is the last step of
-[`ship-a-change`](../.claude/skills/ship-a-change/SKILL.md). It is not a Stop hook: whether
-a harness should spawn it on its own is an open call, and a gate a harness skips is still
-a rule in [`AGENTS.md`](../AGENTS.md).
+The stop gate cannot see CI, and it cannot see a base branch move under an open pull
+request. Three scripts read CI and what follows it, and all speak the same exit contract
+(0 green, 2 with the reason on stderr, anything else not a pass):
+
+- [`scripts/hooks/remote-gate.mjs`](../scripts/hooks/remote-gate.mjs) (`bun run
+  gate:remote`) — before a pull request exists. It pushes HEAD to `ci/<branch>`
+  (`--full`: `ci/full/<branch>`), watches the `CI offload` run that
+  [`ci-offload.yml`](../.github/workflows/ci-offload.yml) starts for it, and is red at the
+  first failing job, with that job's log tail. Green prints one proof line and deletes the
+  ref. It refuses a branch that already has an open pull request (`has-pr`): from then on
+  that PR's checks are the proof.
+- [`scripts/hooks/pr-watch.mjs`](../scripts/hooks/pr-watch.mjs) — after. It polls check
+  runs and mergeable state: 0 only when checks are green and the PR does not conflict with
+  its base (`testing` for a feature). Green is the latest run of each check, on the commit
+  that was pushed, with the CI workflow's run for it finished. `CI offload` runs are not the
+  PR's, so it ignores them. Green is when the author merges into testing
+  (`gh pr merge <n> --merge --admin`).
+- [`scripts/hooks/testing-watch.mjs`](../scripts/hooks/testing-watch.mjs) — after the merge.
+  It polls the [testing instance](./TESTING-INSTANCE.md)'s `/api/healthz` until the version it
+  runs contains the merge, then prints one proof line; red on a failed `testing-deploy`, an
+  instance that is down, or a timeout. It needs `TESTING_URL` (the repository variable) or
+  `TALARIA_TESTING_URL`. Live is when the change gets exercised there.
+
+None edits code; the only thing any of them pushes is remote-gate's own `ci/` ref. All wait
+minutes, so the procedure starts them in the harness's background mode (Claude Code:
+`run_in_background`) and acts on the exit. The procedure — when to run them, how a red
+check or a conflict is fixed, when to merge, when to stop and report — is
+[`ship-a-change`](../.claude/skills/ship-a-change/SKILL.md). None is a Stop hook:
+whether a harness should spawn them on its own is an open call, and a gate a harness skips
+is still a rule in [`AGENTS.md`](../AGENTS.md).
 
 ## What is deliberately not here
 

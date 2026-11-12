@@ -26,8 +26,12 @@ export type FlagSpec = {
 export type PositionalSpec = {
   name: string
   required?: boolean
-  /** Takes the rest of the argv (e.g. `box enter <name> [cmd…]`). */
+  /** Takes the rest of the argv (e.g. `box enter <name> [cmd…]`), flags
+   *  included: they are the inner command's, so none are parsed. */
   multiple?: boolean
+  /** How many positionals a command that is not `multiple` takes (default
+   *  1), with its flags still parsed (`worktree <name> [base-ref] --seed`). */
+  max?: number
   desc?: string
 }
 
@@ -225,8 +229,9 @@ async function dispatchInner(ctx: Ctx, root: Group, argv: string[]): Promise<num
     if (spec.required && args.positionals.length === 0) {
       throw new CliError(`${path.join(' ')}: <${spec.name}> is required`)
     }
-    if (!spec.multiple && args.positionals.length > 1) {
-      throw new CliError(`${path.join(' ')}: unexpected argument \`${args.positionals[1]}\``)
+    const max = spec.max ?? 1
+    if (!spec.multiple && args.positionals.length > max) {
+      throw new CliError(`${path.join(' ')}: unexpected argument \`${args.positionals[max]}\``)
     }
   } else if (args.positionals.length > 0) {
     throw new CliError(`${path.join(' ')}: unexpected argument \`${args.positionals[0]}\``)

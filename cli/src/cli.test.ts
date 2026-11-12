@@ -2,7 +2,7 @@
 // against synthetic trees — real commands test their own dispatch.
 
 import { describe, expect, test } from 'bun:test'
-import { dispatch, parseArgs, renderHelp, type Group, type Leaf } from './cli'
+import { dispatch, parseArgs, renderHelp, type Group, type Leaf, type ParsedArgs } from './cli'
 import { fakeCtx } from './testing'
 import { CliError } from './ui'
 
@@ -100,6 +100,27 @@ describe('dispatch', () => {
     const ctx = fakeCtx()
     // dev allows multiples; box new takes exactly one
     expect(await dispatch(ctx, tree(), ['box', 'new', 'a', 'b'])).toBe(1)
+  })
+
+  test('`max` takes that many positionals and still parses the flags after them; `multiple` passes them through', async () => {
+    const got: ParsedArgs[] = []
+    const record = (_ctx: unknown, a: ParsedArgs) => (got.push(a), 0)
+    const t: Group = {
+      kind: 'group',
+      name: 'talaria',
+      summary: 't',
+      children: [
+        leaf('wt', { positionals: { name: 'name', required: true, max: 2 }, flags: [{ name: 'seed', kind: 'bool', desc: 's' }], run: record }),
+        leaf('enter', { positionals: { name: 'name', required: true, multiple: true }, flags: [{ name: 'seed', kind: 'bool', desc: 's' }], run: record }),
+      ],
+    }
+    const ctx = fakeCtx()
+    expect(await dispatch(ctx, t, ['wt', 'demo', 'origin/rc', '--seed'])).toBe(0)
+    expect(got.at(-1)).toEqual({ positionals: ['demo', 'origin/rc'], flags: { seed: true } })
+    expect(await dispatch(ctx, t, ['wt', 'demo', 'origin/rc', 'x'])).toBe(1)
+    expect(ctx.logLines.at(-1)).toEqual({ kind: 'fail', msg: 'talaria wt: unexpected argument `x`' })
+    expect(await dispatch(ctx, t, ['enter', 'demo', '--seed'])).toBe(0)
+    expect(got.at(-1)).toEqual({ positionals: ['demo', '--seed'], flags: {} })
   })
 
   test('flag on a group explains itself', async () => {

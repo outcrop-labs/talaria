@@ -30,9 +30,9 @@
 -- raises an exception that names what it saw, and ON_ERROR_STOP turns that
 -- into a non-zero exit. Values are placeholders, never real tokens.
 --
--- DELETE THIS FILE, and its step in .github/workflows/migrations.yml, in the
--- release that ships the contract: dropping the two mirrors and the defaults,
--- and deleting the setting.
+-- DELETE THIS FILE, and its step in ci.yml's `migrations (replay + upgrade)`
+-- job, in the release that ships the contract: dropping the two mirrors and
+-- the defaults, and deleting the setting.
 
 \set ON_ERROR_STOP on
 \if :{?seeded}

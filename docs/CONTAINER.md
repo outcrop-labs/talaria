@@ -66,6 +66,7 @@ the image builds from the repo; bun is the only extra prerequisite):
 ```bash
 bun talaria deploy up       # the one command at the top of this page
 bun talaria deploy up --branch rc   # pin the checkout; later updates follow origin/rc only
+                                    # (--branch testing: registry mode only — TESTING-INSTANCE.md)
 bun talaria deploy update   # ff-only the pin, or git pull --ff-only; then redeploy
 bun talaria deploy down     # stop (--volumes also deletes the data — careful)
 bun talaria deploy logs     # follow every service's logs
@@ -419,13 +420,20 @@ from it can (`git worktree add -b deploy/rc ../talaria-rc origin/rc` — `rc`
 itself may already be checked out elsewhere); a branch that has diverged
 cannot, and the command stops before it builds.
 
+**Following `testing`** (`--branch testing`) is the
+[testing instance](./TESTING-INSTANCE.md)'s setup, and it is registry mode only:
+`COMPOSE_FILE` with `docker/compose.registry.yml`, `TALARIA_CHANNEL=testing`, and
+the follow script moving both together. A checkout build of `testing` would bake
+main's api into the image (the root Dockerfile's default `TALARIA_API_IMAGE`) under
+testing's UI — a pair no CI run ever checked.
+
 **There is no manual post-deploy step, ever.** Every schema change and every
 one-time data operation (a backfill, a watermark reset, a repair) ships as an
 appended statement in the `MIGRATIONS` array (`ui/src/server/db/pg.ts`) and
 applies itself on the next boot, exactly once per database, under an advisory
 lock. A fix that lived only in someone's shell history did not ship: the next
 fresh install won't have it. Two gates keep a bad migration out: CI
-(`migrations.yml`) replays the whole array against a scratch
+(ci.yml's `migrations (replay + upgrade)` job) replays the whole array against a scratch
 `postgres:16-alpine` and diffs the resulting schema against the committed
 snapshot (`ui/src/server/db/schema.snapshot.sql` — regenerate with
 `cd ui && bun run migrations:snapshot`; the diff in the PR is the schema

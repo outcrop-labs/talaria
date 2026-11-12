@@ -1,0 +1,107 @@
+# Tag a release once its promotion lands on main.
+#
+# THE CHAIN (RELEASING.md is the operator's view of it):
+#   1. promote.yml, on a verified rc with changelog/ entries, opens the roll
+#      pull request against rc. A person merges it; the version is decided
+#      there, in a reviewed CHANGELOG.md section.
+#   2. promote.yml, on the verified rc that carries the roll, opens the
+#      promotion to main. A person merges it.
+#   3. THIS FILE, on that merge: main's CHANGELOG.md now has a top section no
+#      tag names yet, so it tags main `vX.Y.Z` and dispatches release.yml at
+#      the tag, which publishes the images and the GitHub Release.
+#
+# WHY A DISPATCH AND NOT THE TAG PUSH. A tag pushed with the workflow token
+#   starts no workflow (GitHub's rule, the one promote.yml's header explains),
+#   so release.yml's `push: tags:` would never fire for it. A workflow_dispatch
+#   is the one event that token CAN start, and release.yml's resolve treats a
+#   dispatch at a tag exactly as that tag's push. No secret is needed here.
+#
+# WHY ONLY ON A MERGE. main moves only by rc's promotion merge (flow-guard.mjs
+#   refuses anything else), so HEAD having a second parent is the check that
+#   this push is a promotion and not something flow.yml is about to go red on.
+#   A section a person already tagged by hand is not pending, and nothing runs.
+#   A head that still carries changelog/ entries isn't tagged either: they'd
+#   ship outside the section the notes are built from (flow.yml's gate refuses
+#   that promotion, and this is the second lock).
+#
+# WHY A TAGGED SECTION WITH NO RELEASE IS DISPATCHED AGAIN. If the tag pushed
+#   and the dispatch then failed, the section is no longer pending, so a re-run
+#   would find nothing to do. When the top section's tag names HEAD and no
+#   GitHub Release exists for it, the run dispatches release.yml at that tag.
+#
+# WHY THE DISPATCH IS LIMITED TO main. Re-running a release whose tag step
+#   failed is the dispatch's purpose; a dispatch from any other ref would run a
+#   modified copy of this file with `contents: write`.
+
+name: tag-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# One at a time, never cancelled: a cancelled run can leave a tag pushed and
+# its release never dispatched.
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: tag the promoted release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # the tag
+      actions: write # dispatching release.yml at it
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # every tag: "pending" means newer than all of them
+
+      - name: Tag main when its CHANGELOG.md has a section no tag names
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD)
+          version=$(node scripts/release-version.mjs pending)
+          if [ -z "$version" ]; then
+            top=$(node scripts/release-version.mjs top)
+            # ...unless a release.yml run for it is still going: it opens the
+            # Release last, after CI and the builds.
+            if [ -n "$top" ] && [ "$(git rev-parse -q --verify "refs/tags/v$top^{commit}" || true)" = "$sha" ] \
+              && ! gh release view "v$top" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+              && [ "$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --branch "v$top" --json status --jq '[.[] | select(.status != "completed")] | length')" = 0 ]; then
+              gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$top"
+              echo "::notice::v$top names this commit but has no GitHub Release; dispatched release.yml at it again"
+              exit 0
+            fi
+            echo "CHANGELOG.md's top section is already tagged — this push releases nothing."
+            exit 0
+          fi
+          tag="v$version"
+          left=$(git ls-tree --name-only HEAD changelog/ | grep -c '\.md$' || true)
+          if [ "$left" -gt 0 ]; then
+            echo "::error::main at ${sha:0:12} carries ## $version and $left changelog/ entries outside it — not tagging. Roll them into ## $version against rc, promote again, and this tags the result."
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "$sha^2" >/dev/null; then
+            echo "::warning::main at ${sha:0:12} carries ## $version but is not a merge — not tagging. main moves only by rc's promotion merge; flow.yml says what went wrong."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "$tag" "$sha"
+          git push origin "refs/tags/$tag"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+          {
+            echo "## Released $tag"
+            echo
+            echo "Tagged main at \`${sha:0:12}\` and dispatched release.yml at \`$tag\`: images \`$version\` and \`latest\`, and the GitHub Release with notes from the \`## $version\` section."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::tagged $tag at ${sha:0:12}; release.yml is dispatched at it"

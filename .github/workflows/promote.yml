@@ -28,13 +28,30 @@
 #   in progress and it is a dead end.
 #
 #   So the token decides the shape. With a `PROMOTION_TOKEN` secret — a
-#   fine-grained PAT or a GitHub App installation token, `contents: read` and
+#   fine-grained PAT or a GitHub App installation token, `contents: write` and
 #   `pull-requests: write` on this repository (docs/BRANCHES.md says why and
-#   what it buys) — this file opens the pull request itself, its checks run, and
-#   auto-merge is armed where that is safe. With no such secret it stops one
+#   what it buys) — this file opens the pull requests itself, their checks run,
+#   and auto-merge is armed where that is safe. With no such secret it stops one
 #   step earlier: it verifies the tip, writes the evidence to the run summary,
 #   and prints the exact command. The pull request a PERSON opens runs every
 #   check and can be merged, which is the whole difference.
+#
+# WHY THE ROLL COMES FIRST. Every promotion is a release (tag-release.yml tags
+#   main when the promoted CHANGELOG.md has an untagged section), so a verified
+#   rc that still has changelog/ entries is offered the ROLL, not the promotion:
+#   a pull request against rc, branch `release/roll`, that folds the entries
+#   into the version scripts/release-version.mjs works out (the next patch, an
+#   entry's `<!-- bump: minor -->`, or this dispatch's `version`). Its merge
+#   moves rc, rc verifies again, and with changelog/ empty this file offers the
+#   promotion named for that version. An entry that lands after the roll gets
+#   a fresh roll that EXTENDS the untagged section, and an open promotion is
+#   held: flow.yml's gate fails while changelog/ has entries, and this file
+#   turns auto-merge off and says why in its body. The bot force-pushes
+#   `release/roll` (its own branch, rebuilt from each verified tip) only when
+#   the tip or the version it would roll differs from the open roll's, read
+#   from the roll commit's `Release-Version:` trailer, which also keeps a
+#   dispatched version until that roll merges. The contents grant is for
+#   that push.
 #
 # WHY THE MERGE IS A HUMAN'S (OR THE BOT TOKEN'S), AND NEVER GITHUB_TOKEN'S.
 #   The same rule works in the other direction: a merge performed with
@@ -50,9 +67,12 @@
 #   is not enough: a main whose required contexts do not name the gate would
 #   merge rc the moment this job asks. This file reads the contexts, requires
 #   `promotion gate (rc verified)` among them, and otherwise hands the pull
-#   request to a human with a warning naming the recipe. (Reading the rule needs
-#   admin rights the default token may not have; a failed read takes the same
-#   safe path as a missing context.)
+#   request to a human with a warning naming the recipe. It reads both layers
+#   that can require a check on main — the rulesets (readable with the token's
+#   metadata read) and the classic protection rule (which needs admin rights
+#   the token may not have) — and either one naming the gate is enough. A read
+#   that fails is an empty list, which takes the same safe path as a missing
+#   context.
 #
 # WHY A MERGE COMMIT. Squash and rebase rewrite the commits, and main's history
 #   has to keep the commits the staging deploy verified — that is the provenance
@@ -66,6 +86,15 @@
 #   dispatching a modified copy from a feature branch would hand its author
 #   `pull-requests: write`. The job's `if` refuses any dispatch that is not from
 #   main. (The trigger stays: re-running a wedged promotion is its purpose.)
+#
+# WHY A COMPLETED RUN WAKES IT ONLY FROM A PUSH OR A DISPATCH IN THIS
+#   REPOSITORY. A workflow_run job runs main's copy of this file with its
+#   secrets, whatever woke it, and `branches: [rc]` matches a run's head
+#   BRANCH NAME only — a fork's pull request from a branch it named `rc` has
+#   that name too. So the job's `if` also requires the run's event to be a
+#   push or a dispatch (both need write access here, and a re-run keeps its
+#   event) and its head repository to be this one. The evidence it then reads
+#   is rc's own runs, by the same filter as flow.yml's gate.
 #
 # WHY THE BODY IS REFRESHED EVERY TIME. rc moves while a promotion pull request
 #   waits, and the pull request picks the new commits up by itself (its head is
@@ -87,9 +116,21 @@ on:
   workflow_run:
     workflows: [CI, rc-deploy]
     types: [completed]
-  # Manual re-promotion: a wedged promotion, a secret just added. Dispatch it
-  # from main (the job's `if` says why).
-  workflow_dispatch: {}
+    # rc's own runs only. Any pull request's CI — the roll's, the promotion's,
+    # a fork's from a branch it named rc — is not news about rc, and a run woken
+    # by it would re-roll over a dispatched version; the branch filter matches
+    # a head branch NAME, so the job's `if` also requires a push or a dispatch
+    # from this repository.
+    branches: [rc]
+  # Manual re-promotion: a wedged promotion, a secret just added, or a roll at
+  # a version other than the computed one. Dispatch it from main (the job's
+  # `if` says why).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'roll the pending changelog entries as this X.Y.Z instead of the computed version (leave empty for the default). A run shown as cancelled was replaced in the queue by a newer one: run it again'
+        type: string
+        default: ''
 
 # One promotion at a time, never cancelled: two runs racing would both try to
 # create the pull request.
@@ -104,7 +145,10 @@ jobs:
   promote:
     name: verify, then open or hand off the promotion
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+        && github.event.workflow_run.head_repository.full_name == github.repository)
       || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -126,9 +170,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BOT_TOKEN: ${{ secrets.PROMOTION_TOKEN }}
           REPO: ${{ github.repository }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -eu
           git fetch --no-tags origin main rc
+
+          # The roll's and the promotion's bodies quote rc's commit subjects and
+          # changelog leads, and a merge commit carries its pull request's body —
+          # so a subject that names the bracketed skip markers would skip the
+          # merge's own push runs (rc's CI and rc-deploy, or main's CI and
+          # tag-release), and flow.yml's pr-target refuses such a body. Every
+          # body this job writes is passed through here first, which turns the
+          # brackets into parentheses: the text still reads, and no longer
+          # skips. (No line of either body can open with a `skip-checks:`
+          # trailer — each quoted line starts with a sha or a `- `.)
+          defang() {
+            sed -i -E 's/\[(skip ci|ci skip|no ci|skip actions|actions skip)\]/(\1)/Ig' "$1"
+          }
 
           # Nothing to promote: rc's tip is already reachable from main, which is
           # the state right after every promotion (the merge commit carries it).
@@ -169,13 +227,15 @@ jobs:
           # The evidence, read from the Actions API rather than inferred from
           # this run's inputs — the promotion gate's query, verbatim. The latest
           # SUCCESSFUL run per workflow, so a re-run after a flake is what the
-          # body points at. No `event=` filter: the commit is the identity, and a
-          # dispatched or re-run deploy verifies the same tree (flow.yml's gate
-          # makes the same call).
+          # body points at. Only runs made ON rc count (flow.yml's gate says
+          # why): the workflow name, a head branch of rc, and any event but
+          # pull_request — a push, a re-run or a dispatch of the same tree. A
+          # pull request's run, a push to testing, an offload or a release call
+          # of the same sha is not rc's evidence.
           runs=$(gh api "repos/$REPO/actions/runs?head_sha=$sha&per_page=100")
           url_for() {
             printf '%s' "$runs" | jq -r --arg name "$1" \
-              '[.workflow_runs[] | select(.name == $name and .conclusion == "success")]
+              '[.workflow_runs[] | select(.name == $name and .event != "pull_request" and .head_branch == "rc" and .conclusion == "success")]
                | sort_by(.run_started_at) | last | .html_url // "not found"'
           }
           ci=$(url_for CI)
@@ -194,12 +254,176 @@ jobs:
           commit_url="https://github.com/$REPO/commit/$sha"
           compare_url="https://github.com/$REPO/compare/main...rc?expand=1"
 
+          # rc's own tree beside this checkout of main: the version and the roll
+          # are rc's, worked out by rc's scripts (reviewed like every change).
+          git worktree add -q --detach "$RUNNER_TEMP/rc" "$sha"
+          entries=$(git ls-tree --name-only "$sha" changelog/ | grep -c '\.md$' || true)
+          pending=$(cd "$RUNNER_TEMP/rc" && node scripts/release-version.mjs pending)
+
+          # ── The roll, while changelog/ has entries ──────────────────────────
+          if [ "$entries" -gt 0 ]; then
+            # The open roll, if any: what it rolled (the newest Release-Version
+            # trailer on its first-parent line, so a merge someone put on top
+            # doesn't hide it) and whether its tip is the bot's own roll of
+            # this rc tip. A version a dispatch set stays set on later runs,
+            # until that roll merges or is closed, or the computed version
+            # passes it.
+            rnum=$(gh pr list --repo "$REPO" --base rc --head release/roll --state open --json number --jq '.[0].number // ""')
+            open_version='' open_level='' open_tip=''
+            if [ -n "$rnum" ] && git fetch -q --no-tags origin release/roll 2>/dev/null; then
+              trail=$(git log --first-parent --format='%H%x09%(trailers:key=Release-Version,valueonly,separator=%x20)' "$sha..FETCH_HEAD" | awk -F'\t' '$2 != "" { print; exit }')
+              if [ -n "$trail" ]; then
+                read -r open_commit open_version open_level <<<"$(printf '%s' "$trail" | tr -d '()' | tr '\t' ' ')"
+                if [ "$(git rev-parse FETCH_HEAD)" = "$open_commit" ] && [ "$(git rev-parse 'FETCH_HEAD^1')" = "$sha" ]; then
+                  open_tip=same
+                fi
+              fi
+            fi
+            # Assignments, so a refused --version fails the run here.
+            default=$(cd "$RUNNER_TEMP/rc" && node scripts/release-version.mjs next)
+            next="$default"
+            if [ -n "$VERSION_INPUT" ]; then
+              next=$(cd "$RUNNER_TEMP/rc" && node scripts/release-version.mjs next --version "$VERSION_INPUT")
+            elif [ "$open_level" = set ]; then
+              read -r dversion _ <<<"$default"
+              if [ "$(printf '%s\n%s\n' "$dversion" "$open_version" | sort -V | tail -1)" = "$open_version" ]; then
+                next=$(cd "$RUNNER_TEMP/rc" && node scripts/release-version.mjs next --version "$open_version")
+              else
+                echo "::warning::the roll's dispatched v$open_version is now below the computed v$dversion (an entry asks for more, or a tag passed it), so the roll moves to v$dversion."
+              fi
+            fi
+            read -r version mode level <<<"$next"
+            last=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+            extend=''
+            if [ "$mode" = extend ]; then
+              extend=' --extend'
+              why="added to the \`## $pending\` section, rolled but not yet tagged"
+              if [ "$version" != "$pending" ]; then
+                [ "$level" = set ] && by='set by a dispatch' || by="an entry asks for a $level"
+                why="$why, and re-headed as v$version ($by)"
+              fi
+            elif [ "$level" = set ]; then
+              why="set by a dispatch"
+            elif [ "$level" = patch ]; then
+              why="the next patch after ${last:-the first release}"
+            else
+              why="a $level release after ${last:-the first release}, because an entry asks for one"
+            fi
+            [ "$entries" = 1 ] && noun=entry || noun=entries
+            title="changelog: roll $version — the $entries $noun going into v$version"
+
+            cat > "$RUNNER_TEMP/roll.md" <<EOF
+          ## Roll the changelog for v$version
+
+          Merging this decides the release: **v$version**, $why. Once rc's deploy of
+          the merge is green, promote.yml opens the promotion to main, and merging that
+          tags \`v$version\` and publishes it (tag-release.yml, then release.yml).
+
+          ### Going in ($entries)
+
+          $whats_in
+
+          Another version: Actions → promote → Run workflow from main, with \`version\`
+          set. It sticks until this pull request merges or is closed. An entry file can
+          ask for a minor or major with a \`<!-- bump: minor -->\` line (RELEASING.md).
+
+          ## Verified
+
+          - Rolled by promote.yml with \`scripts/changelog-roll.mjs $version$extend\` on rc at [\`$short\`]($commit_url), whose CI and staging deploy are green.
+          - The diff is \`CHANGELOG.md\` and the removed entry files.
+
+          Merge it as a **merge commit**. If rc moves first, this pull request is rolled again from the new tip.
+          EOF
+            defang "$RUNNER_TEMP/roll.md"
+
+            # A promotion already open carries entries outside any section, and
+            # flow.yml's gate now fails it. Hold it before anything else here
+            # can fail: no auto-merge, and a body that says what it waits for.
+            pnum=$(gh pr list --repo "$REPO" --base main --head rc --state open --json number --jq '.[0].number // ""')
+            if [ -n "$pnum" ] && [ -n "$BOT_TOKEN" ]; then
+              GH_TOKEN="$BOT_TOKEN" gh pr merge "$pnum" --repo "$REPO" --disable-auto >/dev/null 2>&1 || true
+              printf '**Not ready to merge.** %s changelog %s reached rc after its last roll, and the promotion gate fails until they are rolled into v%s by the roll pull request against rc. Once it merges and rc verifies again, this body is refreshed with the evidence.\n' \
+                "$entries" "$noun" "$version" > "$RUNNER_TEMP/held.md"
+              GH_TOKEN="$BOT_TOKEN" gh pr edit "$pnum" --repo "$REPO" --body-file "$RUNNER_TEMP/held.md"
+            fi
+
+            if [ -z "$BOT_TOKEN" ]; then
+              {
+                cat "$RUNNER_TEMP/roll.md"
+                printf '\n**No pull request was opened for you** (no `PROMOTION_TOKEN`). Roll it yourself:\n\n'
+                printf '```\ngit switch -c release/roll-%s origin/rc\nbun scripts/changelog-roll.mjs %s%s\ngit add CHANGELOG.md changelog\ngit commit -m "changelog: roll %s"\ngit push -u origin release/roll-%s\ngh pr create --base rc --head release/roll-%s\n```\n\nThe promotion is offered once it merges.\n' \
+                  "$version" "$version" "$extend" "$version" "$version" "$version"
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice::rc ($short) has $entries changelog $noun to roll as v$version before it can be promoted. No PROMOTION_TOKEN is set, so the roll is yours: bun scripts/changelog-roll.mjs $version$extend on a branch off rc, then a pull request against rc."
+              exit 0
+            fi
+
+            # The same roll of the same tip is already up: leave it, so its
+            # checks don't re-run and its approval stands. The heading's date
+            # is not part of "the same".
+            if [ "$open_tip" = same ] && [ "$open_version" = "$version" ]; then
+              echo "release/roll already holds v$version rolled from $short"
+            else
+              (
+                cd "$RUNNER_TEMP/rc"
+                git switch -q -C release/roll
+                node scripts/changelog-roll.mjs "$version" $extend
+                git add CHANGELOG.md changelog
+                git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                  commit -q -m "$title" -m "Rolled by promote.yml on rc at $short." -m "Release-Version: $version ($level)"
+                # The bot's own push (checkout's GITHUB_TOKEN header cleared), so
+                # the pull request's checks run on it.
+                git -c http.https://github.com/.extraheader= push -q --force \
+                  "https://x-access-token:${BOT_TOKEN}@github.com/$REPO.git" HEAD:refs/heads/release/roll
+              )
+            fi
+
+            export GH_TOKEN="$BOT_TOKEN"
+            if [ -n "$rnum" ]; then
+              gh pr edit "$rnum" --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/roll.md"
+            else
+              gh pr create --repo "$REPO" --base rc --head release/roll --title "$title" --body-file "$RUNNER_TEMP/roll.md"
+              rnum=$(gh pr list --repo "$REPO" --base rc --head release/roll --state open --json number --jq '.[0].number')
+            fi
+            {
+              cat "$RUNNER_TEMP/roll.md"
+              printf '\nThe roll is pull request #%s.%s\n' "$rnum" "${pnum:+ Promotion #$pnum is held until it merges.}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "opened or refreshed roll pull request #$rnum (v$version) for $short"
+            exit 0
+          fi
+
+          # Nothing to roll. A bot roll still open was overtaken (someone rolled
+          # by hand); close it rather than leave it to conflict. A version
+          # dispatched now has nothing to apply to, so say so.
+          stale=$(gh pr list --repo "$REPO" --base rc --head release/roll --state open --json number --jq '.[0].number // ""')
+          if [ -n "$stale" ]; then
+            gh pr close "$stale" --repo "$REPO" --comment "rc at $short has no changelog/ entries left to roll, so this roll is no longer needed." || true
+          fi
+          if [ -n "$VERSION_INPUT" ]; then
+            echo "::warning::version $VERSION_INPUT was not used: rc at $short has no changelog/ entries to roll."
+          fi
+
+          # ── The promotion: what merging it releases ─────────────────────────
+          if [ -n "$pending" ]; then
+            ptitle="promote: rc → main — v$pending"
+            releasing="Merging this releases **v$pending**: tag-release.yml tags the merge, and release.yml publishes the images \`$pending\` and \`latest\` and the GitHub Release, its notes built from the \`## $pending\` section."
+            whats_in=$(cd "$RUNNER_TEMP/rc" && node scripts/release-notes.mjs "$pending" --leads) \
+              || whats_in="- (the \`## $pending\` section could not be read; see this run's log)"
+            whats_in_count=$(printf '%s\n' "$whats_in" | grep -c '^- ' || true)
+          else
+            ptitle='promote: rc → main'
+            releasing="Merging this releases nothing new: CHANGELOG.md's top section is already tagged."
+          fi
+
           cat > "$RUNNER_TEMP/body.md" <<EOF
           ## rc → main
 
           \`rc\` is verified, and this is its promotion. **Merge commit only** — squash
           and rebase rewrite the commits the staging deploy verified, and \`flow-guard\`
           refuses both on main.
+
+          $releasing
 
           - \`rc\` tip: [\`$short\`]($commit_url)
           - CI on that commit: $ci
@@ -223,6 +447,7 @@ jobs:
           The model, and the settings that hold it:
           [\`docs/BRANCHES.md\`](https://github.com/$REPO/blob/main/docs/BRANCHES.md).
           EOF
+          defang "$RUNNER_TEMP/body.md"
 
           # What happens next, written where the person who has to act reads it.
           if [ -n "$BOT_TOKEN" ]; then
@@ -238,7 +463,7 @@ jobs:
           yourself and it runs every check:
 
           \`\`\`
-          gh pr create --repo $REPO --base main --head rc --title 'promote: rc → main' \\
+          gh pr create --repo $REPO --base main --head rc --title '$ptitle' \\
             --body-file <the body below>
           \`\`\`
 
@@ -267,11 +492,11 @@ jobs:
 
           num=$(gh pr list --repo "$REPO" --base main --head rc --state open --json number --jq '.[0].number // ""')
           if [ -n "$num" ]; then
-            gh pr edit "$num" --repo "$REPO" --body-file "$RUNNER_TEMP/body.md"
+            gh pr edit "$num" --repo "$REPO" --title "$ptitle" --body-file "$RUNNER_TEMP/body.md"
             echo "refreshed promotion pull request #$num for $short"
           else
             gh pr create --repo "$REPO" --base main --head rc \
-              --title 'promote: rc → main' \
+              --title "$ptitle" \
               --body-file "$RUNNER_TEMP/body.md"
             num=$(gh pr list --repo "$REPO" --base main --head rc --state open --json number --jq '.[0].number')
             echo "opened promotion pull request #$num for $short"
@@ -280,14 +505,20 @@ jobs:
           # Arm auto-merge only where it would actually wait for the gate. The
           # required CONTEXTS are what matters — not the existence of a
           # protection rule, which a rule with no required checks also satisfies
-          # while gating nothing. A read this token cannot make (the endpoint
-          # wants admin) takes the same path as a missing context: warn, and
-          # leave the merge to a human.
-          contexts=$(gh api "repos/$REPO/branches/main/protection" \
+          # while gating nothing. Both layers apply to main at once, so both are
+          # read and either naming the gate is enough: the rulesets first (the
+          # rules in force on the branch, readable with metadata read), then the
+          # classic rule (the endpoint wants admin). A read this token cannot
+          # make is an empty list — the same path as a missing context: warn,
+          # and leave the merge to a human.
+          ruleset_contexts=$(gh api "repos/$REPO/rules/branches/main" \
+            --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | join("|")' 2>/dev/null || echo '')
+          classic_contexts=$(gh api "repos/$REPO/branches/main/protection" \
             --jq '[.required_status_checks.contexts[]?] | join("|")' 2>/dev/null || echo '')
+          contexts=$(printf '%s|%s' "$ruleset_contexts" "$classic_contexts" | tr '|' '\n' | grep -v '^$' || true)
           if [ -z "$contexts" ]; then
-            echo "::warning::main's required checks could not be read (no protection rule, or this token cannot see it) — not arming auto-merge. #$num is a human's to merge; recipe: docs/BRANCHES.md"
-          elif ! printf '%s' "$contexts" | tr '|' '\n' | grep -qxF 'promotion gate (rc verified)'; then
+            echo "::warning::main's required checks could not be read (no ruleset or protection rule requires any, or this token cannot see them) — not arming auto-merge. #$num is a human's to merge; recipe: docs/BRANCHES.md"
+          elif ! printf '%s\n' "$contexts" | grep -qxF 'promotion gate (rc verified)'; then
             echo "::warning::main's required checks do not include 'promotion gate (rc verified)', so auto-merge would merge without the gate. Not arming it; #$num is a human's to merge. Recipe: docs/BRANCHES.md"
           elif gh pr merge "$num" --repo "$REPO" --auto --merge; then
             echo "auto-merge armed on #$num — a merge commit, once the required checks are green"
