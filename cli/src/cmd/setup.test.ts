@@ -245,6 +245,11 @@ describe('runSetup on a fresh clone', () => {
     expect(await runSetup(ctx)).toBe(0)
     const env = readFileSync(join(ctx.root, 'ui/.env'), 'utf8')
     expect(env).toMatch(/^TALARIA_SECRET_KEY=[0-9a-f]{64}$/m)
+    // The optional sign-in client is templated commented out: an empty
+    // AUTH_GOOGLE_SIGNIN_CLIENT_ID must never look like a configured slot.
+    expect(env).toMatch(/^# AUTH_GOOGLE_SIGNIN_CLIENT_ID=$/m)
+    expect(env).toMatch(/^# AUTH_GOOGLE_SIGNIN_CLIENT_SECRET=$/m)
+    expect(env).not.toMatch(/^AUTH_GOOGLE_SIGNIN/m)
     expect(existsSync(join(ctx.root, 'fleet/chassis.yml'))).toBe(true)
     expect(existsSync(join(ctx.root, 'fleet/.env'))).toBe(true)
     const pulls = ctx.calls.filter((c) => c.cmd === 'docker' && c.args.includes('pull'))

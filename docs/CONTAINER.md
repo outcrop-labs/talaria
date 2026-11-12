@@ -244,7 +244,8 @@ No admin account is generated. The first boot boots empty on purpose: open the a
 **claim** the instance — the account you create at the claim screen is the admin.
 
 Everything else passes straight through to the app — the full inventory is
-[`ui/.env.example`](../ui/.env.example): Google OAuth (`AUTH_GOOGLE_*`),
+[`ui/.env.example`](../ui/.env.example): Google OAuth (`AUTH_GOOGLE_*`, including
+the optional sign-in client `AUTH_GOOGLE_SIGNIN_CLIENT_*`),
 allowed domains/emails, fetch policy, and the TLS trio below. Prefer
 `talaria deploy up` over a bare `docker compose up`: without the generated
 `docker/.env` a compose instance runs on the published dev defaults — reach

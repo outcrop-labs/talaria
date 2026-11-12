@@ -151,6 +151,24 @@ describe('reset — secrets scope', () => {
     expect(sql.endsWith('commit;')).toBe(true)
   })
 
+  test('both Google OAuth client records go: their secrets are sealed with the data key', async () => {
+    const ctx = fakeCtx({ reply: 'secrets' })
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
+    plantUp(ctx)
+    await runReset(ctx, 'secrets')
+    const batch = ctx.calls.find((c) => c.args.includes('ON_ERROR_STOP=1'))!
+    const sql = batch.args[batch.args.indexOf('-c') + 1]!
+    const settings = sql.split('\n').find((l) => l.startsWith('delete from app_settings'))!
+    for (const key of ['google_oauth_client', 'google_signin_oauth_client', 'email_config', 'storage_config', 'github_config']) {
+      expect(settings).toContain(`'${key}'`)
+    }
+    // The agentic declarations hold no secret and survive: they are facts
+    // about client ids, not credentials.
+    expect(sql).not.toContain('google_client_evidence')
+    // The count names what it counts.
+    expect(ctx.logLines.some((l) => l.msg.includes('app_settings: email/storage/github/google'))).toBe(true)
+  })
+
   test('every count prints on its own line', async () => {
     const ctx = fakeCtx({ reply: 'no' })
     ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
