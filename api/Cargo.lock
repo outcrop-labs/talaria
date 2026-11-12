@@ -5378,6 +5378,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-secretbox",
+ "tokio",
  "tracing",
  "url",
 ]

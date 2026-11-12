@@ -11,7 +11,7 @@
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage, getJson, getJsonOr } from '@/lib/fetch-json'
   import type { GoogleApiHealth } from '@/lib/google-apis'
-  import { toastError } from '@/lib/toast.svelte'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
   import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
 
@@ -44,7 +44,10 @@
   const disconnect = async () => {
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect the org Google account? General agents lose Drive/Docs access.', confirmLabel: 'Disconnect', danger: true }))) return
     try {
-      await delJson<{ ok: true }>('/api/integrations/google/org')
+      // revokeNote: as on the personal disconnect — the grant was kept at
+      // Google (an admin's own connection shares it) or Google refused.
+      const r = await delJson<{ ok: true; revoked: boolean; revokeNote: string | null }>('/api/integrations/google/org')
+      if (r.revokeNote) pushToast({ title: 'Org Google disconnected', body: r.revokeNote })
     } catch (e) {
       toastError('Disconnect failed', e)
       return
@@ -52,10 +55,10 @@
     await qc.invalidateQueries({ queryKey: ['org-google'] })
   }
 
-  // Live probe of Drive / Calendar / Gmail — consent succeeds even with the
-  // APIs disabled in Google Cloud Console, so "connected" alone proves nothing
-  // about calls actually working. On demand, never on load (three real Google
-  // requests per click).
+  // Live probe of Drive / Calendar / Gmail / Sheets / Slides — consent
+  // succeeds even with the APIs disabled in Google Cloud Console, so
+  // "connected" alone proves nothing about calls actually working. On demand,
+  // never on load (five real Google requests per click).
   let apiResults = $state<GoogleApiHealth[] | null>(null)
   let probing = $state(false)
   let probeError = $state<string | null>(null)
@@ -139,7 +142,7 @@
           <Button variant="ghost" size="sm" onclick={() => void probeApis()} disabled={probing}>
             {probing ? 'Testing…' : 'Test'}
           </Button>
-          <span class="font-sans text-[10px] text-muted">Drive · Calendar · Gmail reachability</span>
+          <span class="font-sans text-[10px] text-muted">Drive · Calendar · Gmail · Sheets · Slides reachability</span>
         </div>
         {#if probeError}<div class="text-xs text-danger">{probeError}</div>{/if}
         {#if apiResults}

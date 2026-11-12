@@ -20,3 +20,6 @@ talaria-secretbox = { workspace = true }
 tracing = { workspace = true }
 talaria-agent-auth = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

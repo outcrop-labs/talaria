@@ -12,7 +12,7 @@
   import { delJson, getJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
-  import { toastError } from '@/lib/toast.svelte'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
 
   interface GoogleStatus {
     available: boolean
@@ -47,7 +47,10 @@
   const disconnect = async () => {
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect Google? Your assistant loses mail, calendar, and Drive access until you reconnect.', confirmLabel: 'Disconnect', danger: true }))) return
     try {
-      await delJson<{ ok: true }>('/api/integrations/google')
+      // revokeNote: the grant was kept at Google (another connection shares
+      // it) or Google refused the revoke — the server's sentence says which.
+      const r = await delJson<{ ok: true; revoked: boolean; revokeNote: string | null }>('/api/integrations/google')
+      if (r.revokeNote) pushToast({ title: 'Google disconnected', body: r.revokeNote })
     } catch (e) {
       // Nothing inline to hold it: the status row still claims "connected",
       // so the toast is what says the disconnect didn't happen.

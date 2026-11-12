@@ -162,6 +162,24 @@ describe('reset — secrets scope', () => {
   })
 })
 
+describe('reset — secrets clears every Google token store', () => {
+  // A store left behind keeps a cipher no new data key opens: the agent's
+  // token read fails on unseal forever instead of reading "not connected".
+  test('per-user, org and per-agent connections are counted and deleted', async () => {
+    const ctx = fakeCtx({ reply: 'secrets' })
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
+    plantUp(ctx)
+    await runReset(ctx, 'secrets')
+    const batch = ctx.calls.find((c) => c.args.includes('ON_ERROR_STOP=1'))!
+    const sql = batch.args[batch.args.indexOf('-c') + 1]!
+    for (const table of ['google_connections', 'google_org_connection', 'agent_google_connections']) {
+      expect(sql).toContain(`delete from ${table};`)
+      expect(sql.indexOf(`delete from ${table};`)).toBeLessThan(sql.indexOf('delete from secret_keys'))
+      expect(ctx.calls.some((c) => c.args.some((a) => a.includes(`select count(*) from ${table}`)))).toBe(true)
+    }
+  })
+})
+
 describe('reset — fleet scope', () => {
   test('removes rendered artifacts, keeps fleet/chassis.yml + skills', async () => {
     const root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
