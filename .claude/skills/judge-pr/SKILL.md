@@ -18,10 +18,18 @@ Neither half replaces the gates. A judge measures; CI blocks.
 ## 1. Run the measurable half first
 
 ```bash
-node scripts/judge-pr.mjs --base origin/rc                    # what a PR against rc would get
-node scripts/judge-pr.mjs --base origin/main --target rc      # a branch forked off main
-node scripts/judge-pr.mjs --base origin/rc --pr-body body.md   # include the PR body
+node scripts/judge-pr.mjs --target testing                              # a feature: the base defaults to origin/testing
+node scripts/judge-pr.mjs --base origin/rc --target rc --source hotfix/x # a hotfix (or a release/ roll) into rc
+node scripts/judge-pr.mjs --target testing --pr-body body.md            # include the PR body
 ```
+
+The lanes decide what it checks. Feature pull requests target `testing`; anything into `rc`
+that is not a `promote/*` snapshot or a `hotfix/`, `release/` or `sync/` head is the `must`
+`feature-targets-rc`, and anything into `main` but `rc` is `targets-main`. A snapshot, a
+sync, the `rc → main` promotion and a back-flow are skipped whole (each change in them was judged in
+its own pull request); a hotfix may not add a migration; a pull request into testing may not
+rewrite a changelog entry rc already has. `--target` and `--source` are what CI passes as the
+pull request's base and head — said by hand locally, never guessed from the diff.
 
 Findings are graded `must` (the repo states it about itself — exit 2), `should` (a convention
 with a reason) and `ask` (a question for the author). A `must` is either fixed or argued in the

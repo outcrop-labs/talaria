@@ -889,7 +889,7 @@ export function branchNote(pr, here = currentBranch()) {
  *  the branch the promotion came from. Empty for every other lane. */
 export function promotionFix(lane) {
   if (lane === 'promotion:rc→main') {
-    return 'This is the promotion of `rc`, and nobody pushes `rc`. The fix lands on `rc` through its own pull request (`git fetch origin && git switch -c fix/<name> origin/rc`, then a PR against `rc`); once it merges, `rc` moves and this promotion with it.\n\n'
+    return 'This is the promotion of `rc`, and nobody pushes `rc`. The fix lands on `rc` as a hotfix — its own pull request from a branch cut from rc, with no migration in it (`git fetch origin && git switch -c hotfix/<name> origin/rc`, then a PR against `rc`); once it merges, `rc` moves and this promotion with it, and the back-flow carries the fix into `testing`.\n\n'
   }
   if (lane === 'promotion:testing→rc') {
     return 'This is a frozen snapshot of `testing` (promote/testing-<sha12>); nobody pushes it. The fix lands in `testing` through its own pull request (`git fetch origin && git switch -c fix/<name> origin/testing`). Once it merges, dispatch promote-testing again (or push a new snapshot: `git push origin origin/testing:refs/heads/promote/testing-$(git rev-parse --short=12 origin/testing)` and open a PR into rc) and close this one.\n\n'

@@ -2,15 +2,15 @@
 // flow-guard — the branch model, as an executable policy.
 //
 // THE MODEL (docs/BRANCHES.md is the prose; this file is the enforcement).
-// Three long-lived branches:
+// Three long-lived branches, one chain — testing ⊇ rc ⊇ main:
 //
-//   testing  the integration lane. Features and back-flows merge here, by
-//            pull request, and it is where they are exercised together.
+//   testing  the integration lane. Every feature pull request merges here, and
+//            the back-flow from rc; it is where they are exercised together
+//            (light CI, and every push deploys the testing instance).
 //   rc       the release candidate, and what the RC channel and the staging
-//            deploy (rc-deploy.yml) build. It takes a snapshot of testing and
-//            the hotfix/, release/ and sync/ lanes. Until pull requests move
-//            to testing, rc still takes every pull request, and this file
-//            judges no rc head.
+//            deploy (rc-deploy.yml) build. It takes a frozen snapshot of
+//            testing (`promote/testing-<sha12>`) and the hotfix/, release/ and
+//            sync/ lanes cut from rc — nothing else.
 //   main     the trunk. It takes only the promotion of rc — an rc→main merge,
 //            once rc's tip has been deployed and verified. Stable tags land
 //            on main.
@@ -28,7 +28,9 @@
 //   one nobody is running.
 //
 // THE CONTRACT (scripts/hooks/README.md — one contract, every gate here):
-//   exit 0   pass, silent.
+//   exit 0   pass, silent — but for one `flow-guard: note —` line on stdout
+//            when a rule could judge only the branch names (a local pr-base
+//            call without the two shas).
 //   exit 2   block: the reason is on stderr, and it says what to do instead.
 //   other    the guard could not run — bad usage, an unresolvable ref. NOT a
 //            pass, whichever caller asked: CI fails the job, and git refuses a
@@ -53,7 +55,9 @@
 //     rc   — the tip must be a merge commit (what a PR merge leaves behind), or
 //            every introduced commit must already be reachable from main (a
 //            fast-forward sync of the trunk — the one hand-made push rc
-//            allows).
+//            allows). A merge whose second parent is on testing (a snapshot's)
+//            must carry that parent's tree and nothing else — rc takes testing
+//            whole, the same claim main makes of rc.
 //     testing — the tip must be a merge commit (a PR merge, a back-flow's
 //            included), or every introduced commit must already be reachable
 //            from rc or main (a fast-forward to content those branches already
@@ -81,11 +85,21 @@
 //            has green CI and rc-deploy runs made on rc; this script checks
 //            the source, the workflow checks the evidence (it is the only one
 //            that can read the Actions API).
+//     into rc — the head must be a branch of this repository, and one of the
+//            lanes. Feature pull requests target testing; `testing` itself is
+//            refused (a moving head restarts the full battery on every merge
+//            into testing). A `promote/*` snapshot must be on testing, and rc
+//            must hold nothing testing lacks: `git merge-tree` of the two
+//            shas is the snapshot's own tree. A `hotfix/*`, `release/*` or
+//            `sync/*` head is cut from rc, so it carries no commit testing
+//            has. The commit checks need both shas (flow.yml passes them);
+//            a local call with the branch names alone is judged on the names,
+//            with a note saying so.
 //
 // WHAT IT DELIBERATELY CANNOT SEE, and who covers it. That a merge into rc or
 //   testing came from a reviewed PR rather than a local `git merge`: that is
-//   branch protection's job ("require a pull request before merging" — the
-//   required settings are in docs/BRANCHES.md). What is left for a client-side
+//   branch protection's job ("require a pull request before merging" — the required
+//   settings are in docs/BRANCHES.md). What is left for a client-side
 //   check is the content shapes only a bypass produces, and those are the rules
 //   above. They fail closed on an unknown: an unresolvable base, a missing
 //   origin ref, a shallow clone — each blocks with the command to run, rather
@@ -106,15 +120,16 @@
 //     FLOW_ACTION          the pull_request event's action (opened, edited, …).
 //     FLOW_BASE_FROM       on `edited`, the base it was retargeted FROM.
 //
-//   The `push` form reads the remote-tracking refs (origin/main, origin/rc),
-//   so fetch them first. flow.yml fetches explicitly; the hook uses what the
-//   clone has, and says so when that is not enough.
+//   Both forms read the remote-tracking refs (origin/main, origin/rc,
+//   origin/testing), so fetch them first. flow.yml fetches explicitly; the
+//   hook uses what the clone has, and says so when that is not enough.
 //
 // AS A MODULE. decidePrBase and decidePush are the rules, exported for
 //   scripts/flow-guard.test.mjs. They touch no process state and return a
-//   verdict — {ok: true}, {ok: false, lines} or {couldNotRun: why} — and the
-//   push rules read git through an adapter, so a test can hand them a literal
-//   graph. The CLI at the bottom maps a verdict onto the contract above, and
+//   verdict — {ok: true} (with a `note` when a rule passed on the names
+//   alone), {ok: false, lines} or {couldNotRun: why} — and both read git
+//   through an adapter, so a test can hand them a literal graph. The CLI at
+//   the bottom maps a verdict onto the contract above, and
 //   runs only when this file is invoked directly, which it decides by comparing
 //   REAL paths: flow.yml runs a copy materialized in $RUNNER_TEMP, and a hooks
 //   path or a checkout can be a symlink. A guard that decided "imported, not
@@ -144,6 +159,20 @@ const LANE_REF = 'origin/testing'
 /** The one fetch every hint names: the long-lived branches, all of them. */
 const FETCH = `git fetch origin ${LONG_LIVED.join(' ')}`
 
+/** The heads rc takes. A snapshot of testing, and the lanes cut from rc
+ *  itself: a hotfix, the changelog roll, a sync of main. */
+const SNAPSHOT = 'promote/'
+const RC_LANES = ['hotfix/', 'release/', 'sync/']
+
+/** How to make a snapshot, said wherever one is the answer. */
+const SNAPSHOT_HOW = [
+  '  gh workflow run promote-testing.yml --ref main -f open=true',
+  'or by hand, from any clone:',
+  '  git fetch origin testing',
+  '  git push origin origin/testing:refs/heads/promote/testing-$(git rev-parse --short=12 origin/testing)',
+  'and open the pull request into rc from that head.',
+]
+
 const ZERO = /^0{40}$/
 const SHA = /^[0-9a-f]{40}$/
 
@@ -162,6 +191,10 @@ const USAGE = [
 
 /** Pass. Frozen: a rule that returns it shares one object. */
 const PASS = Object.freeze({ ok: true })
+
+/** Pass, with a line the caller should see: a rule that could judge only the
+ *  names it was given says so, rather than passing as if it had looked. */
+const passWith = (note) => ({ ok: true, note })
 
 /** Block. The message is the whole product: what is wrong, why it matters,
  *  and the command or route that does it correctly. */
@@ -198,6 +231,20 @@ export const gitAdapter = {
   hasRef: (ref) => gitOk('rev-parse', '--verify', `${ref}^{commit}`),
   /** A revision's tree; `<sha>^2` names a merge's second parent. */
   tree: (rev) => git('rev-parse', `${rev}^{tree}`),
+  /** A merge's second parent — the branch it merged. */
+  secondParent: (sha) => git('rev-parse', `${sha}^2`),
+  /** The tree merging `a` and `b` would write, or null when they conflict.
+   *  `git merge-tree --write-tree` (git 2.38+) exits 1 on a conflict; any other
+   *  failure — an unknown commit, an old git — throws, which is "could not
+   *  run", never a pass. */
+  mergeTree: (a, b) => {
+    try {
+      return git('merge-tree', '--write-tree', a, b).split('\n')[0]
+    } catch (e) {
+      if (e?.status === 1) return null
+      throw e
+    }
+  },
 }
 
 /** A ref the rules need must exist LOCALLY. A clone that never fetched rc, or
@@ -232,10 +279,13 @@ function listed(g, shas) {
  *   baseFrom  on `edited`, the base it was retargeted from
  *   baseSha   the base commit the event names
  *   headSha   the head commit the event names
+ *
+ * `g` is the git adapter: only the rc rules read it, and only when both shas
+ * are given.
  */
-export function decidePrBase(base, head, opts = {}) {
+export function decidePrBase(base, head, opts = {}, g = gitAdapter) {
   if (!base || !head) return cannot(`${USAGE}\n  pr-base needs a base and a head branch`)
-  const { sameRepo = true, title = '', body = '', action = '', baseFrom = '', headSha = '' } = opts
+  const { sameRepo = true, title = '', body = '', action = '', baseFrom = '', baseSha = '', headSha = '' } = opts
 
   // (a) Nothing may merge into a long-lived branch carrying the text that
   // skips the branch push's own checks. The merge commit's message is the
@@ -259,12 +309,45 @@ export function decidePrBase(base, head, opts = {}) {
     }
   }
 
-  // (b) A retarget into rc or main. The checks on this head ran against the
-  // OLD base, in the mode that base chose — light, for anything but rc or
-  // main — and CI does not re-run on a base change, so the same-named required
-  // checks would stand green for a question nobody asked. A push re-runs them
-  // against the new base, and this rule only reads `edited` events, so the
-  // push's own `synchronize` passes it.
+  // (b) main takes this repository's rc, and nothing else.
+  if (base === TRUNK && (head !== INTEGRATION || !sameRepo)) {
+    return blocked([
+      head === INTEGRATION
+        ? '`rc` from another repository cannot be merged into `main`: only this repository\'s rc can.'
+        : `\`${head}\` cannot be merged into \`main\`, and nothing but \`rc\` can.`,
+      '',
+      'main is the trunk: it moves only by a promotion merge of rc, and only once',
+      'rc is deployed and verified in staging. So:',
+      '',
+      '  1. a feature: open this pull request against `testing` — the integration',
+      '     lane, where it lands at green and is exercised on the testing instance;',
+      '     rc takes a snapshot of testing, and main takes rc;',
+      '  2. the promotion: `.github/workflows/promote.yml` verifies rc\'s tip once',
+      '     it is green and deployed and offers the rc → main pull request, or',
+      '     `gh pr create --base main --head rc` opens it by hand.',
+    ])
+  }
+
+  // (c) rc takes the lanes, from this repository, and nothing else. Before the
+  // retarget rule: a feature retargeted into rc is the wrong door whatever its
+  // checks say, and that is the message it needs.
+  if (base === INTEGRATION) {
+    const lane = decideRcHead(head, sameRepo, baseSha, headSha, g)
+    if (!lane.ok) return lane
+    const retarget = decideRetarget(base, action, baseFrom, headSha)
+    return retarget.ok ? lane : retarget
+  }
+
+  return decideRetarget(base, action, baseFrom, headSha)
+}
+
+/** (d) A retarget into rc or main. The checks on this head ran against the
+ *  OLD base, in the mode that base chose — light, for anything but rc or main
+ *  — and CI does not re-run on a base change, so the same-named required
+ *  checks would stand green for a question nobody asked. A push re-runs them
+ *  against the new base, and this rule only reads `edited` events, so the
+ *  push's own `synchronize` passes it. testing, and any other base: pass. */
+function decideRetarget(base, action, baseFrom, headSha) {
   if ((base === INTEGRATION || base === TRUNK) && action === 'edited' && baseFrom) {
     const which = headSha ? `\`${headSha.slice(0, 12)}\`` : 'this head'
     return blocked([
@@ -276,27 +359,107 @@ export function decidePrBase(base, head, opts = {}) {
       `  git commit --allow-empty -m 'ci: re-run against ${base}' && git push`,
     ])
   }
+  return PASS
+}
 
-  // (c) main takes this repository's rc, and nothing else.
-  if (base === TRUNK && (head !== INTEGRATION || !sameRepo)) {
+/** Whether `head` may be merged into rc. rc takes testing by frozen snapshot
+ *  and the lanes cut from rc itself; a feature pull request targets testing. */
+function decideRcHead(head, sameRepo, baseSha, headSha, g) {
+  if (!sameRepo) {
     return blocked([
-      head === INTEGRATION
-        ? '`rc` from another repository cannot be merged into `main`: only this repository\'s rc can.'
-        : `\`${head}\` cannot be merged into \`main\`, and nothing but \`rc\` can.`,
+      `\`${head}\` from another repository cannot be merged into \`rc\`.`,
       '',
-      'main is the trunk: it moves only by a promotion merge of rc, and only once',
-      'rc is deployed and verified in staging. So:',
-      '',
-      '  1. open this pull request against `rc` — that is where review, CI and',
-      '     the staging deploy all happen;',
-      '  2. the promotion follows: `.github/workflows/promote.yml` verifies rc\'s tip',
-      '     once it is green and deployed and offers the rc → main pull request, or',
-      '     `gh pr create --base main --head rc` opens it by hand.',
+      'rc takes snapshots of testing and the hotfix/, release/ and sync/ lanes, and',
+      'every one of them is a branch of this repository: a fork\'s branch of the same',
+      'name is not that lane. Open the pull request against `testing`.',
     ])
   }
 
-  // (d) testing, rc, and any other base: pass.
-  return PASS
+  if (head === LANE) {
+    return blocked([
+      '`testing` itself cannot be merged into `rc`: promote a frozen snapshot, never the moving branch.',
+      '',
+      'A head that moves restarts the full battery and dismisses the approval on every',
+      'merge into testing, and the commit merged is no longer the one that was checked.',
+      'A snapshot is cut once, checked once, and merged as checked:',
+      ...SNAPSHOT_HOW,
+    ])
+  }
+
+  const both = SHA.test(baseSha) && SHA.test(headSha)
+
+  if (head.startsWith(SNAPSHOT)) {
+    if (!both) return passWith(`\`${head}\` is a snapshot by name; without the two shas, whether it is on testing and whether rc adds to it was not checked.`)
+    const ref = requireRef(g, LANE_REF)
+    if (!ref.ok) return ref
+    const missing = [baseSha, headSha].filter((s) => !g.isCommit(s))
+    if (missing.length) return unreadable(missing)
+    if (!g.isAncestor(headSha, LANE_REF)) {
+      return blocked([
+        `\`${head}\` (\`${headSha.slice(0, 12)}\`) is not on testing, so it is not a snapshot of it.`,
+        '',
+        'A promotion carries testing\'s content and nothing else: the head is cut at a',
+        'commit testing already has, and never moves after. Cut a fresh one:',
+        ...SNAPSHOT_HOW,
+      ])
+    }
+    const merged = g.mergeTree(baseSha, headSha)
+    if (merged === null || merged !== g.tree(headSha)) {
+      return blocked([
+        `rc has content testing lacks (a hotfix or a roll)${merged === null ? ', and it conflicts with the snapshot' : ''}:`,
+        `merging \`${headSha.slice(0, 12)}\` into rc (\`${baseSha.slice(0, 12)}\`) would not land the snapshot's own tree.`,
+        '',
+        'rc takes testing whole, so the promotion merge must add nothing of its own.',
+        'Merge the back-flow pull request into testing first (promote-testing opens',
+        '`sync: rc → testing` from backflow/rc-*), then promote a fresh snapshot:',
+        ...SNAPSHOT_HOW,
+      ])
+    }
+    return PASS
+  }
+
+  if (RC_LANES.some((p) => head.startsWith(p))) {
+    if (!both) return passWith(`\`${head}\` is an rc lane by name; without the two shas, whether it carries testing-only commits was not checked.`)
+    const ref = requireRef(g, LANE_REF)
+    if (!ref.ok) return ref
+    const missing = [baseSha, headSha].filter((s) => !g.isCommit(s))
+    if (missing.length) return unreadable(missing)
+    const carried = g.revList(headSha, baseSha).filter((sha) => g.isAncestor(sha, LANE_REF))
+    if (carried.length === 0) return PASS
+    return blocked([
+      'cut hotfixes and rolls from origin/rc — this head carries testing-only commits into rc:',
+      '',
+      ...listed(g, carried),
+      '',
+      'Work that is on testing reaches rc by the next snapshot, and only that way: a lane',
+      'into rc that carries it would land unpromoted testing content beside the fix.',
+      'Start the branch from rc and bring over only the fix:',
+      `  git fetch origin rc && git switch -c ${head.split('/')[0]}/<name> origin/rc`,
+      '  git cherry-pick <the fix\'s commits>',
+    ])
+  }
+
+  return blocked([
+    `\`${head}\` cannot be merged into \`rc\`: feature pull requests target \`testing\`.`,
+    '',
+    'rc takes snapshots of testing (promote/*) and the hotfix/, release/, sync/ lanes.',
+    'testing is the integration lane — light CI, and every merge deploys to the testing',
+    'instance — and rc takes it by frozen snapshot, with the full battery and a review.',
+    '',
+    'Retarget:',
+    '  gh pr edit <n> --base testing',
+  ])
+}
+
+/** A sha the event names that this clone does not have. */
+function unreadable(shas) {
+  return blocked([
+    `${shas.map((s) => `\`${s.slice(0, 12)}\``).join(' and ')} ${shas.length === 1 ? 'is' : 'are'} not in this repository, so the lane rule cannot be checked.`,
+    '',
+    'Fetch both sides of the pull request and retry:',
+    `  ${FETCH}`,
+    '  git fetch origin pull/<n>/head',
+  ])
 }
 
 // ── push ────────────────────────────────────────────────────────────────────
@@ -402,16 +565,19 @@ function checkTrunkPush(g, after, introduced) {
     'push, a squash merge and a rebase merge are all this same refusal.',
     '',
     'Instead:',
-    '  - land the change on rc first (pull requests target rc); or',
+    '  - land the change through the lanes: a pull request into testing, then a',
+    '    snapshot of testing into rc (a hotfix is a hotfix/ branch cut from rc,',
+    '    into rc); or',
     '  - let the promotion happen: .github/workflows/promote.yml offers the rc →',
     '    main pull request once rc\'s tip is green and deployed, and only a MERGE',
     '    COMMIT can land it. A squash or rebase promotion fails this guard.',
   ])
 }
 
-/** rc: a PR merge (a merge commit), or a fast-forward sync from main. */
+/** rc: a PR merge (a merge commit), or a fast-forward sync from main. A
+ *  merge of testing's content must carry that content's tree. */
 function checkIntegrationPush(g, after, introduced) {
-  if (g.isMerge(after)) return PASS
+  if (g.isMerge(after)) return checkSnapshotMerge(g, after)
 
   const ref = requireRef(g, TRUNK_REF)
   if (!ref.ok) return ref
@@ -426,16 +592,45 @@ function checkIntegrationPush(g, after, introduced) {
     '',
     ...listed(g, foreign),
     '',
-    'rc is the integration branch: review, CI and the staging deploy all happen',
-    'there, per pull request. A commit pushed straight to it skipped all three,',
-    'and the promotion that follows would carry it to main unverified.',
+    'rc is the release candidate: the full battery, a review and the staging deploy',
+    'all happen there, per pull request. A commit pushed straight to it skipped all',
+    'three, and the promotion that follows would carry it to main unverified.',
     '',
     'Instead:',
-    '  - push the branch and open a pull request against rc; or',
+    '  - a feature: push the branch and open a pull request against testing;',
+    '  - a fix rc needs now: a hotfix/ branch cut from origin/rc, by pull request; or',
     '  - if this is meant to sync trunk content into rc, push it as a',
     '    fast-forward of main (every commit already on main passes this guard).',
     '',
     'The rules behind this: docs/BRANCHES.md.',
+  ])
+}
+
+/** rc takes testing whole. A merge whose second parent is on testing — a
+ *  snapshot's merge — adds nothing of its own: its tree IS the snapshot's.
+ *  pr-target checks that before the merge (`git merge-tree`); this is the same
+ *  claim after it, on the content that actually landed. A hotfix that reached
+ *  rc between the check and the merge, or a hand-made merge of testing, gives
+ *  a tree that is neither branch's. Merges whose second parent is not on
+ *  testing — a hotfix, the roll, a sync of main — are not this rule's. */
+function checkSnapshotMerge(g, after) {
+  const ref = requireRef(g, LANE_REF)
+  if (!ref.ok) return ref
+  const merged = g.secondParent(after)
+  if (!g.isAncestor(merged, LANE_REF)) return PASS
+  if (g.tree(after) === g.tree(merged)) return PASS
+  return blocked([
+    `this merge brings testing's \`${merged.slice(0, 12)}\` into rc, and its tree is not that commit's:`,
+    `\`${after.slice(0, 12)}\` carries content neither the snapshot nor a reviewed rc lane does.`,
+    '',
+    'rc takes testing whole: a snapshot merge adds nothing of its own, which is what',
+    'makes "the snapshot testing exercised" and "what rc deploys" the same content.',
+    'A tree that differs means rc held something testing lacked (a hotfix or a roll',
+    'that landed after pr-target checked the snapshot), or the merge was made by hand.',
+    '',
+    'Merge the back-flow pull request into testing (promote-testing opens',
+    '`sync: rc → testing` from backflow/rc-*), and promote a fresh snapshot.',
+    'Rules: docs/BRANCHES.md.',
   ])
 }
 
@@ -508,7 +703,10 @@ export function prOptsFromEnv(env, baseSha = '', headSha = '') {
 /** A verdict onto the contract: 0 pass, 2 block, 1 could not run. A verdict of
  *  any other shape is not a pass either. */
 function exitWith(verdict) {
-  if (verdict?.ok === true) process.exit(0)
+  if (verdict?.ok === true) {
+    if (verdict.note) console.log(`flow-guard: note — ${verdict.note}`)
+    process.exit(0)
+  }
   if (verdict?.ok === false && Array.isArray(verdict.lines)) {
     console.error(`flow-guard: BLOCKED\n\n${verdict.lines.filter(Boolean).join('\n')}\n`)
     process.exit(2)

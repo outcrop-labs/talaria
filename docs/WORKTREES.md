@@ -6,7 +6,7 @@ main dev environment.
 ## TL;DR
 
 ```bash
-git wt <name>                         # = bun talaria worktree <name> (alias set by setup)
+git wt <name> origin/testing          # = bun talaria worktree <name> origin/testing — a feature starts from testing
 cd ../talaria-<name> && bun talaria dev --api-from-ci   # CI's api binary; plain `dev` builds it with cargo
 # … hack away …
 docker compose -p talaria-wt-<name> down -v   # tear down when done
@@ -172,8 +172,8 @@ It prints the exact `talaria dev` command and the teardown steps.
 **The setup is the invoking checkout's, not the base ref's.** `bun talaria worktree`
 runs the CLI of the checkout you call it from, and the `talaria` shim always runs the
 primary's, wherever you call it. That is usually the primary, on `main`, so
-`talaria worktree <name> origin/rc` writes `ui/.env` and picks ports by `main`'s
-rules, however far `rc` has moved. A stack cut that way on
+`talaria worktree <name> origin/testing` writes `ui/.env` and picks ports by `main`'s
+rules, however far `testing` has moved. A stack cut that way on
 2026-10-22 got no `TALARIA_FLEET_PROJECT`, because the primary's CLI predated it.
 When the running `cli/src/cmd/worktree.ts` differs from the base ref's, the command
 ends with a warning that says so: bring the invoking checkout up to the base ref and

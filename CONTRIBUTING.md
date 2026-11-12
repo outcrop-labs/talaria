@@ -7,18 +7,32 @@ Talaria is MIT-licensed — issues and pull requests are the whole idea. The on-
 
 ## The flow, in one screen
 
-**Pull requests target `rc`. Nothing targets `main`.** `rc` is the integration
-branch *and* the staging environment: your pull request is reviewed there, CI runs
-there, and every push to it is deployed and smoke-tested by
-`.github/workflows/rc-deploy.yml`. `main` is the release trunk, and it takes one
-input only — a promotion of the whole of `rc`, offered by
-`.github/workflows/promote.yml` once that deploy is green and merged by a
-maintainer as a merge commit. The model, the gates and the repository settings
-that enforce them: [`docs/BRANCHES.md`](./docs/BRANCHES.md).
+**Pull requests target `testing`.** `testing` is the integration lane: your pull
+request gets light CI there (the surfaces it touched, Linux), it lands as a merge
+commit once that is green, and every push to `testing` deploys the
+[testing instance](./docs/TESTING-INSTANCE.md), where changes are exercised
+together. `rc` is the release candidate and the staging environment: it takes a
+frozen snapshot of `testing` (`promote/testing-<sha12>`, full CI on every
+platform, an approving review), and every push to it is deployed and smoke-tested
+by `.github/workflows/rc-deploy.yml`. `main` is the release trunk, and it takes
+one input only — a promotion of the whole of `rc`, offered by
+`.github/workflows/promote.yml` once that deploy is green. The model, the gates
+and the repository settings that enforce them:
+[`docs/BRANCHES.md`](./docs/BRANCHES.md).
+
+**The hotfix lane.** A fix `rc` needs before the next snapshot is a `hotfix/<name>`
+branch cut from `origin/rc` (never from testing), with no migration in it, opened
+against `rc`; a maintainer merges it, and the back-flow into `testing` is opened
+automatically.
+
+**Who merges.** Into `testing`, the author, once the checks are green (maintainers
+with admin rights merge their own; an outside contributor's pull request waits
+for an approving review). Into `rc` and `main`, a maintainer, after an
+approving review — always as a merge commit.
 
 You do not have to remember any of that from a doc: `scripts/flow-guard.mjs`
-refuses a pull request aimed at `main`, refuses a direct or squashed push to
-either branch, and `talaria setup` wires the same rule into `git push` locally.
+refuses a feature aimed at `rc` or `main`, refuses a direct or squashed push to
+any of the three, and `talaria setup` wires the same rule into `git push` locally.
 
 ## Before you send a PR
 
@@ -45,14 +59,16 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
 4. **Commit in the repo's style:** `area: lowercase sentence — explanation`, one change per
    commit, the changelog entry riding with the change it describes. `git log` carries the
    voice; the em-dash clause says why, not what.
-5. **Open the pull request against `rc`** with a body that mirrors the changelog entry: what
+5. **Open the pull request against `testing`** with a body that mirrors the changelog entry: what
    changed, and what you verified. Run links — this PR's checks, a `gate:remote` result — go
    in the body (`gh pr edit <n> --body-file …`), which starts no compile. If a whole-tree gate
    failed on something that predates your change (several sessions share this tree), say so
    rather than absorbing it silently.
 6. **Watch the pull request until it is actually green.** Do not call the work done while its
-   checks are failing, still pending, or the PR conflicts with `rc`.
-   `node scripts/hooks/pr-watch.mjs`, run in the background, is that gate; the procedure is
+   checks are failing, still pending, or the PR conflicts with its base.
+   `node scripts/hooks/pr-watch.mjs`, run in the background, is that gate. Then merge it
+   into `testing` and, once `node scripts/hooks/testing-watch.mjs <n>` says it is live,
+   exercise it on the testing instance. The procedure is
    [`.claude/skills/ship-a-change/SKILL.md`](./.claude/skills/ship-a-change/SKILL.md).
 7. **Remove the local workspace this task created** before you call the work done —
    worktree, devbox, scratch checkout, throwaway download. Shared caches stay. Do not
@@ -97,7 +113,8 @@ containerized devbox per task: [`docs/DEVBOX.md`](./docs/DEVBOX.md).
 
 ## Review, conduct, and security
 
-Reviews happen on the pull request against `rc`, and a review is about the change rather than
+Reviews happen on the pull request — into `testing` for a change, into `rc` for a snapshot or a
+hotfix — and a review is about the change rather than
 the author: what could break, what the changelog claims versus what the diff shows, and whether
 the verification was real. [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) is the standard we hold
 each other to. Security issues do not belong in an issue tracker entry — report them privately

@@ -90,9 +90,11 @@ one Talaria-owned chassis when you design an agent in the app. Don't edit it by 
 1. Make the change, run `bun run check`, and let CI prove it — the PR, or `bun run gate:remote` before one exists, both in the background. Locally, only cheap targeted runs (one vitest or `bun test` file, `cargo fmt`). Do not run a workspace `cargo test` or `bun run api:check`; CI's api job is that gate, and locally it locks `api/target` while it runs.
 2. Exercise the affected path in the running app (`bun talaria dev` → <http://localhost:5273>).
 3. Add a `changelog/YYYY-MM-DD-<slug>.md` entry that names the gate you verified with
-   ([`CONTRIBUTING.md`](./CONTRIBUTING.md)), then open the pull request **against `rc`** —
-   `main` takes only the promotion of `rc`, opened automatically once `rc`'s staging deploy is
-   green ([`docs/BRANCHES.md`](./docs/BRANCHES.md)).
+   ([`CONTRIBUTING.md`](./CONTRIBUTING.md)), then open the pull request **against `testing`** —
+   merge it yourself once its checks are green, and exercise it on the
+   [testing instance](./docs/TESTING-INSTANCE.md) once `testing-watch` says it is live. `rc`
+   takes a snapshot of `testing`, and `main` takes only the promotion of `rc`
+   ([`docs/BRANCHES.md`](./docs/BRANCHES.md)).
 
 Reset or start over: `bun talaria reset <mode>` clears a wedged stack (secrets, database, or
 fleet); backups and restores are `bun talaria backup` / `bun talaria restore` and
@@ -147,7 +149,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 |---|---|
 | [`docs/CONTAINER.md`](./docs/CONTAINER.md) | The container deploy: production image, instance compose, env-only config, fleet networking, systemd boot, Dokploy |
 | [`RELEASING.md`](./RELEASING.md) | Release channels: nightly/RC/stable on GHCR, the branch model |
-| [`docs/BRANCHES.md`](./docs/BRANCHES.md) | How a change reaches `main`: pull requests to `rc`, the staging deploy, the promotion — and what refuses everything else |
+| [`docs/BRANCHES.md`](./docs/BRANCHES.md) | How a change reaches `main`: pull requests to `testing`, a snapshot into `rc`, the staging deploy, the promotion — and what refuses everything else |
 | [`docs/TESTING-INSTANCE.md`](./docs/TESTING-INSTANCE.md) | The instance that tracks `testing`: its deploy chain (testing-deploy, the follow script, `testing-watch`), provisioning, bootstrap, agent access, data rules and the reset runbook |
 | [`RELEASES/pre-alpha.md`](./RELEASES/pre-alpha.md) | The pre-alpha release notes |
 | [`docs/BACKUPS.md`](./docs/BACKUPS.md) | What a snapshot contains, how to take one, and how to restore |
@@ -198,5 +200,5 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | Doc | What it covers |
 |---|---|
 | [`HANDOFF.md`](./HANDOFF.md) | Where to start; the old phase log lives in history |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | PR norms: verify, exercise, changelog, and the pull request against `rc` |
-| [`docs/BRANCHES.md`](./docs/BRANCHES.md) | The branch model: `rc` integration + staging, `main` by promotion only, the gates and the repository settings that enforce them |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | PR norms: verify, exercise, changelog, and the pull request against `testing` |
+| [`docs/BRANCHES.md`](./docs/BRANCHES.md) | The branch model: `testing` the integration lane, `rc` by snapshot + staging, `main` by promotion only, the gates and the repository settings that enforce them |
