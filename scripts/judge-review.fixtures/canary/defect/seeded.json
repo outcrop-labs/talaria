@@ -1,0 +1,1 @@
+{ "file": "api/crates/notes/src/lib.rs", "lines": [8, 17], "seeded": ["search_notes concatenates the request's prefix into SQL (line 15)", "delete_note lost its owner check (line 9)"] }

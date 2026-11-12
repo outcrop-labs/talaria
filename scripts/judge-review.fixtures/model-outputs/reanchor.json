@@ -1,0 +1,15 @@
+[
+  {
+    "severity": "major",
+    "category": "correctness",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/lib.rs",
+    "line": 40,
+    "quote": "    let sql = format!(\"select * from users where name = '{}'\", name);",
+    "title": "a title",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "none",
+    "confidence": "high"
+  }
+]

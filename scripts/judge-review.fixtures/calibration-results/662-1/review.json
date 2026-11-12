@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "status": "reviewed",
+  "reason": null,
+  "usage": {
+    "cost": 0.02,
+    "ms": 120000,
+    "calls": [
+      {
+        "purpose": "review",
+        "attempt": 1,
+        "cost": 0.02
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "jr-6621a001",
+      "tier": "A",
+      "severity": "major",
+      "category": "correctness",
+      "confidence": "high",
+      "file": "api/crates/talaria-routes-comms/src/activity/working.rs",
+      "line": 78,
+      "endLine": 78,
+      "title": "an untitled thread gets an empty label",
+      "failure": "a thread with an empty title shows a blank name",
+      "gate": false,
+      "wouldGate": false,
+      "verified": "confirmed"
+    }
+  ]
+}

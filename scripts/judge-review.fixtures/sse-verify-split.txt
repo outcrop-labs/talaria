@@ -1,0 +1,23 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"Reading the diff first. "},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"","reasoning_details":[{"type":"reasoning.text","text":"the quoted line formats input into SQL"}]},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"{\"verdicts\":[{\"index\":0,\"verdict\":\"refuted\",\"i"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"nput\":\"\",\"trace\":\"\",\"evidence\":\"A caller shown"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":" validates the name first.\"},{\"index\":1,\"verdi"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"ct\":\"unsure\",\"input\":\"\",\"trace\":\"\",\"evidence\":"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"\"The callers of delete_doc are not shown.\"}]}"},"finish_reason":null}]}
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[],"usage":{"prompt_tokens":9100,"completion_tokens":200,"total_tokens":9300,"cost":0.001,"completion_tokens_details":{"reasoning_tokens":100},"prompt_tokens_details":{"cached_tokens":8800}}}
+
+data: [DONE]

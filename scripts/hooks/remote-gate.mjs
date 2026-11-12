@@ -27,11 +27,14 @@
 //   4. Finds the NEW `CI offload` run for that commit, and waits. It goes red
 //      the moment any job fails, with that job's log tail, while the others
 //      still run: a ui failure at minute 2 is not held for the api job's 20.
-//   5. Green: deletes its ref and prints one proof line.
+//   5. Green: waits for the same push's `offload / judge (review)` (the model
+//      review, judge-review.yml; at most 12 minutes, inside --timeout),
+//      prints what it listed, then deletes its ref and prints one proof line.
+//      The review never changes the exit code; `--no-review` skips the wait.
 //
 // THE CONTRACT (scripts/hooks/README.md). stdin is not read.
 //   exit 0 — green. One proof line on stdout (with --json, the JSON instead):
-//            remote-gate: green — CI offload <url> · <ref> @ <sha12> · <light|full> · ran: … · skipped: …
+//            remote-gate: green — CI offload <url> · <ref> @ <sha12> · <light|full> · ran: … · skipped: … · review: …
 //   exit 2 — block. The verdict on stderr opens with a line that is exactly
 //            the token, one of:
 //              remote-gate: dirty | base | has-pr | check | fmt | no-run |
@@ -75,7 +78,7 @@
 //
 // USAGE
 //   bun run gate:remote [--full] [--detach] [--watch <run-id>] [--rerun]
-//       [--json] [--timeout <min>] [--keep-ref] [--no-check]
+//       [--json] [--timeout <min>] [--keep-ref] [--no-check] [--no-review]
 //
 //   --full       push to ci/full/<branch>: every surface and platform.
 //   --detach     push, find the run, print its id, exit 2 `pending` (with
@@ -90,6 +93,7 @@
 //   --timeout    minutes to wait for the run (default 60).
 //   --keep-ref   do not delete the ref on green.
 //   --no-check   skip `bun run check` and the fmt preflight.
+//   --no-review  do not wait for the model review of the push.
 //
 // The tests are remote-gate.test.mjs (run by `bun run check`): pure, no network.
 
@@ -100,6 +104,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { needsFull, offloadBranch } from '../surfaces.mjs'
 import { OFFLOAD_PREFIX, parseRepo } from './pr-watch.mjs'
+import { OFFLOAD_REVIEW_CHECK, readReview, safeTerminal } from '../judge-review-wire.mjs'
 
 export { needsFull }
 
@@ -114,6 +119,11 @@ export const BASES = ['main', 'rc', 'testing']
 export const OFFLOAD_WORKFLOW = '.github/workflows/ci-offload.yml'
 const OFFLOAD_NAME = 'CI offload'
 
+/** The model review a ci/** push also starts (judge-review.yml). */
+export const REVIEW_WORKFLOW = '.github/workflows/judge-review.yml'
+/** The longest the green path waits for that review, inside --timeout. */
+export const REVIEW_WAIT_MS = 12 * 60_000
+
 /** ci-offload.yml calls ci.yml as job `offload`, so every CI job is named
  *  `offload / <job>`. A job outside that call (the daily prune) is not this
  *  run's work when it is skipped. */
@@ -126,6 +136,7 @@ const BOOLEAN_FLAGS = {
   '--json': 'json',
   '--keep-ref': 'keepRef',
   '--no-check': 'noCheck',
+  '--no-review': 'noReview',
   '--help': 'help',
   '-h': 'help',
 }
@@ -145,6 +156,7 @@ export function parseArgs(argv) {
     timeoutMin: 60,
     keepRef: false,
     noCheck: false,
+    noReview: false,
     help: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -264,10 +276,49 @@ export function verdictOf(run, jobs) {
 }
 
 /** The exit-0 line: the one state an agent may cite. */
-export function proofLine({ run, ref, sha, mode, verdict }) {
+export function proofLine({ run, ref, sha, mode, verdict, review }) {
   const attempt = Number(run?.run_attempt) > 1 ? ` · attempt ${run.run_attempt}` : ''
   const list = (names) => (names.length ? names.join(', ') : 'none')
-  return `remote-gate: green — ${run?.name || OFFLOAD_NAME} ${run?.html_url || ''} · ${ref} @ ${String(sha).slice(0, 12)} · ${mode}${attempt} · ran: ${list(verdict.ran)} · skipped: ${list(verdict.skipped)}`
+  return `remote-gate: green — ${run?.name || OFFLOAD_NAME} ${run?.html_url || ''} · ${ref} @ ${String(sha).slice(0, 12)} · ${mode}${attempt} · ran: ${list(verdict.ran)} · skipped: ${list(verdict.skipped)}${review ? ` · ${reviewClause(review)}` : ''}`
+}
+
+/**
+ * The newest judge-review.yml push run of `sha` whose id is not in
+ * `snapshotIds` (the ref's review runs before this push), or null.
+ * @param {Array<Record<string, any>>} runs  REST `workflow_runs` rows
+ */
+export function pickReviewRun(runs, sha, snapshotIds = []) {
+  const seen = new Set([...snapshotIds].map(String))
+  const fresh = (Array.isArray(runs) ? runs : [])
+    .filter((r) => r && r.head_sha === sha && r.event === 'push' && !seen.has(String(r.id)) && String(r.path ?? '').replace(/@.*$/, '') === REVIEW_WORKFLOW)
+    .sort((a, b) => Number(b.id) - Number(a.id))
+  return fresh[0] ?? null
+}
+
+/** What the review job's annotations say: {status, reason, listed, more, cost}. */
+export function reviewFromAnnotations(annotations) {
+  const r = readReview(annotations)
+  if (!r.verdict) return { status: 'unread', reason: 'no verdict annotation', listed: [], more: 0, cost: null }
+  return {
+    status: r.verdict.status,
+    reason: r.verdict.reason && r.verdict.reason !== 'none' ? r.verdict.reason : null,
+    listed: r.findings.map((f) => ({ id: f.id, severity: f.severity, category: f.category, path: f.path, line: f.line, title: String(f.message).split(' — ')[0] })),
+    more: Number(r.verdict.more || 0),
+    cost: r.verdict.cost && r.verdict.cost !== 'na' ? r.verdict.cost : null,
+  }
+}
+
+/** The proof line's review clause. */
+export function reviewClause(review) {
+  if (!review || review.status === 'none') return 'review: none'
+  if (review.status === 'unread') return `review: not read (${review.reason || 'unknown'})`
+  if (review.status !== 'reviewed') return `review: not reviewed (${review.reason || review.status})`
+  return `review: ${review.listed.length} to read (${review.more} more)${review.cost ? ` $${review.cost}` : ''}`
+}
+
+/** One stderr line per listed finding: id, place, title — never the failure or fix. */
+export function reviewFindingLines(review) {
+  return (review?.listed ?? []).map((f) => `remote-gate: review — ${f.id} ${f.severity} ${f.category} ${f.path}:${f.line} — ${safeTerminal(f.title, 100).replace(/\n/g, ' ')}`)
 }
 
 const STAMP = /^\uFEFF?\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/
@@ -371,6 +422,7 @@ function writeJson(token) {
       skipped: [],
       failing: [],
       pending: [],
+      review: null,
       ...payload,
     })}\n`,
   )
@@ -469,6 +521,40 @@ async function read(gh, path, state) {
 }
 
 const repoPath = (gh) => `/repos/${gh.slug}`
+
+async function reviewRuns(gh, { branch, sha, perPage = 30 } = {}) {
+  const q = new URLSearchParams({ event: 'push', per_page: String(perPage) })
+  if (branch) q.set('branch', branch)
+  if (sha) q.set('head_sha', sha)
+  const body = await read(gh, `${repoPath(gh)}/actions/runs?${q}`, { tries: 3 })
+  return (body?.workflow_runs ?? []).filter((r) => String(r?.path ?? '').replace(/@.*$/, '') === REVIEW_WORKFLOW)
+}
+
+/** The push's model review: wait for its run (≤ REVIEW_WAIT_MS, inside the
+ *  deadline), then read the `offload / judge (review)` job's annotations.
+ *  Never throws: a failure is `unread` or `none`. */
+async function awaitReview(gh, ref, sha, snapshot, deadlineMs) {
+  const until = Math.min(Date.now() + REVIEW_WAIT_MS, deadlineMs)
+  let delay = null
+  let runRow = null
+  try {
+    for (;;) {
+      runRow = runRow ? await read(gh, `${repoPath(gh)}/actions/runs/${runRow.id}`, { tries: 3 }) : pickReviewRun(await reviewRuns(gh, { branch: ref, sha }), sha, snapshot)
+      if (runRow?.status === 'completed') break
+      if (Date.now() >= until) return runRow ? { status: 'unread', reason: `the review run ${runRow.html_url} had not finished`, listed: [], more: 0, cost: null } : { status: 'none', listed: [], more: 0 }
+      delay = nextDelay(delay, (until - Date.now()) / 1000)
+      progress('review', runRow ? `${runRow.html_url} — waiting for the model review` : 'waiting for the judge review run of this push')
+      await sleep(delay * 1000)
+    }
+    const jobs = (await read(gh, `${repoPath(gh)}/actions/runs/${runRow.id}/jobs?per_page=50`, { tries: 3 }))?.jobs ?? []
+    const job = jobs.find((j) => j.name === OFFLOAD_REVIEW_CHECK)
+    if (!job || job.conclusion === 'skipped') return { status: 'none', listed: [], more: 0 }
+    const annotations = await read(gh, `${repoPath(gh)}/check-runs/${job.id}/annotations?per_page=100`, { tries: 3 })
+    return { ...reviewFromAnnotations(annotations), url: runRow.html_url }
+  } catch (e) {
+    return { status: 'unread', reason: safeTerminal(e?.message || String(e), 200), listed: [], more: 0, cost: null }
+  }
+}
 
 async function offloadRuns(gh, { branch, sha, perPage = 100 } = {}) {
   const q = new URLSearchParams({ event: 'push', per_page: String(perPage) })
@@ -705,7 +791,7 @@ async function watch(gh, id, { deadline, minAttempt = 1, settle = false }) {
   }
 }
 
-async function report(gh, { run: runRow, verdict }, { ref, sha, branch, opts, already = false }) {
+async function report(gh, { run: runRow, verdict }, { ref, sha, branch, opts, already = false, reviewSnapshot = [] }) {
   const mode = modeOfRef(ref)
   setPayload(runRow, ref, sha, verdict)
   const url = runRow?.html_url || '(run url unknown)'
@@ -720,7 +806,15 @@ async function report(gh, { run: runRow, verdict }, { ref, sha, branch, opts, al
   }
 
   if (verdict.kind === 'green') {
-    const proof = proofLine({ run: runRow, ref, sha, mode, verdict })
+    // The model review of the same push, before the ref goes: its run fetches
+    // this sha, and the deletion must not race it. It never changes the exit.
+    let review = null
+    if (!opts.noReview) {
+      review = await awaitReview(gh, ref, sha, reviewSnapshot, opts.deadlineMs ?? Date.now() + REVIEW_WAIT_MS)
+      for (const line of reviewFindingLines(review)) process.stderr.write(`${line}\n`)
+      payload.review = review
+    }
+    const proof = proofLine({ run: runRow, ref, sha, mode, verdict, review })
     payload.proof = proof
     if (!opts.keepRef && String(ref).startsWith(OFFLOAD_PREFIX)) {
       // The lease: delete only while the ref still points at the commit that
@@ -787,7 +881,7 @@ function help() {
   return `remote-gate — compile and test on GitHub before a pull request exists.
 
   bun run gate:remote [--full] [--detach] [--watch <run-id>] [--rerun]
-      [--json] [--timeout <min>] [--keep-ref] [--no-check]
+      [--json] [--timeout <min>] [--keep-ref] [--no-check] [--no-review]
 
 Pushes HEAD to ci/<branch> (--full: ci/full/<branch>), watches the CI offload
 run, and goes red on the first failing job with its log. Run it in the
@@ -805,6 +899,7 @@ async function main(opts) {
   jsonOut = opts.json
   if (!existsSync(join(ROOT, 'scripts/hooks/remote-gate.mjs'))) couldNotRun('run from the repo root')
   const deadline = () => Date.now() + opts.timeoutMin * 60_000
+  opts.deadlineMs = deadline()
   const resume = opts.watch !== null || opts.rerun
 
   // (b) Tracked state. A resume pushes nothing, so it does not care.
@@ -945,6 +1040,8 @@ async function main(opts) {
   if (at === null) couldNotRun(`git ls-remote origin refs/heads/${ref} did not answer`)
   let runRow
   let already = false
+  // The ref's review runs before this push: only a newer one is this push's.
+  const reviewSnapshot = at === sha ? [] : (await reviewRuns(gh, { branch: ref }).catch(() => [])).map((r) => r.id)
   if (at === sha) {
     progress('push', `${ref} is already at ${sha.slice(0, 12)} — no push; attaching to its run`)
     const existing = pickNewRun(await offloadRuns(gh, { branch: ref, sha }).catch((e) => couldNotRun(e.message)), sha, [])
@@ -977,7 +1074,7 @@ async function main(opts) {
   const result = already
     ? { run: runRow, verdict: verdictOf(runRow, (await read(gh, `${repoPath(gh)}/actions/runs/${runRow.id}/attempts/${runRow.run_attempt}/jobs?per_page=100`, { tries: 3 }).catch((e) => couldNotRun(e.message)))?.jobs ?? []) }
     : await watch(gh, runRow.id, { deadline: deadline() })
-  return report(gh, result, { ref, sha, branch, opts, already })
+  return report(gh, result, { ref, sha, branch, opts, already, reviewSnapshot })
 }
 
 function invokedDirectly() {

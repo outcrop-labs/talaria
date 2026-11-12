@@ -1,0 +1,267 @@
+# judge review — a model reads every pull request: `judge (review)`.
+#
+# WHAT. scripts/judge-review.mjs sends the change — its diff, the files it
+#   touches, their callers and importers, the author's description and the
+#   repository's rules — to a model on OpenRouter (the model is pinned in that
+#   script; the JUDGE_REVIEW_MODEL repository variable overrides it). Findings
+#   that survive code-side filters and a BLIND second reading become at most
+#   three line annotations, one sticky comment (only when there is one to
+#   read), and a full job summary with the cost. `bun run gate:remote` pushes
+#   to ci/<branch> run the same review as `offload / judge (review)` before a
+#   pull request exists. docs/AGENT-TOOLING.md → The judge.
+#
+# TRUST. The job checks out the TRUSTED tree — the pull request's base when it
+#   is testing, rc or main, otherwise testing — and every script runs from it;
+#   .gitattributes comes from it too. The pull request is read as git objects
+#   only. The key step runs only the trusted tree's reviewer. When the trusted
+#   tree has no reviewer yet, a separate `bootstrap` job dry-runs the head's
+#   own copy. It is a job of its own because a runner holds every secret a job
+#   references from the job's first step, skipped steps included: pull-request
+#   code never runs in the job that names the key. It uploads nothing, so the
+#   comment job posts nothing from it. The review job's token reads only; the
+#   comment job holds `pull-requests: write` and has no secret, no checkout and
+#   no repository script.
+#
+# NEVER. It never fails, never approves and is on no required list. A missing
+#   key, a fork, a draft, a lane PR, a provider error, a timeout, bad output,
+#   the cost ceiling and a crash each give a green job with a `not reviewed:
+#   <reason>` notice. Every step after the checkout is continue-on-error with
+#   a timeout, and the step timeouts sum under the job's, so a hang ends a
+#   step, never the check. Plain `pull_request` only — never the target-branch
+#   variant that hands a fork's code a write token; forks are skipped.
+#   `JUDGE_REVIEW_GATE=off` (a repository variable) skips the review too.
+#
+# SKIPPED IN A STEP, NOT BY THE JOB. A job skipped by its `if` shows its `name:`
+#   expression unevaluated as the check's name. So a draft, a fork or `off`
+#   runs the job, checks out nothing, and says `status=skipped reason=<why>`.
+#   The bootstrap and comment jobs, skipped on most runs, carry static names.
+#
+# WHY NOT IN judge.yml. judge (standards) is exact, fast and red on a `must`;
+#   this is a sampled reading that costs money and minutes and is never red.
+#   One workflow would make the exact half wait on the sampled one.
+#
+# WHY NO `edited`. Every body edit would leave a SKIPPED `judge (review)` run
+#   as the head's latest check, shadowing the real one in GitHub's UI and in
+#   pr-watch. The review reads the base from the API at run time instead, and
+#   its verdict carries `target=`: pr-watch marks a review made against another
+#   base as stale and prints `gh run rerun <id>`.
+
+name: judge review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # `bun run gate:remote` pushes ci/<branch>: the same review before a pull request exists.
+  push:
+    branches: ['ci/**']
+
+concurrency:
+  group: judge-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  review:
+    # The offload's check carries `offload / ` (ci-offload.yml's convention) so it never shadows the PR's own.
+    name: ${{ github.event_name == 'push' && 'offload / judge (review)' || 'judge (review)' }}
+    # Only a ci/** ref's deletion skips the job itself (its run lands on the default branch, not a PR).
+    if: github.event_name != 'push' || github.event.deleted != true
+    runs-on: ubuntu-latest
+    # Above the sum of the step timeouts, so a hang ends a continue-on-error
+    # step and never the job.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read          # fetch-prior: earlier runs and their artifacts
+    # The bootstrap job reads what the trust step chose.
+    outputs:
+      reviewer: ${{ steps.trust.outputs.reviewer }}
+      base: ${{ steps.trust.outputs.base }}
+      rules: ${{ steps.trust.outputs.rules }}
+      target: ${{ steps.trust.outputs.target }}
+      source: ${{ steps.trust.outputs.source }}
+    env:
+      EVENT: ${{ github.event_name }}
+      ACTION: ${{ github.event.action }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PR: ${{ github.event.pull_request.number }}
+      PUSH_REF: ${{ github.ref_name }}
+      REPO: ${{ github.repository }}
+      # Why this run reviews nothing, or empty: the kill switch, a fork, a draft.
+      SKIP: ${{ vars.JUDGE_REVIEW_GATE == 'off' && 'off' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'fork' || github.event_name == 'pull_request' && github.event.pull_request.draft && 'draft' || '' }}
+    steps:
+      # The trusted tree, never the pull request's: every script below runs from it,
+      # and .gitattributes comes from it. The PR is read as git objects only.
+      - uses: actions/checkout@v5
+        if: env.SKIP == ''
+        continue-on-error: true
+        timeout-minutes: 3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Choose the trusted tree and read the pull request
+        id: trust
+        if: env.SKIP == ''
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          J="$RUNNER_TEMP/judge"; mkdir -p "$J/out" "$J/prior"
+          trusted=
+          if [ "$EVENT" = pull_request ]; then
+            gh api "repos/$REPO/pulls/$PR" > "$J/pr.json"
+            gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" > "$J/comments.json"
+            base_ref=$(jq -r .base.ref "$J/pr.json"); source=$(jq -r .head.ref "$J/pr.json")
+            [ "$(jq -r .head.sha "$J/pr.json")" = "$HEAD_SHA" ] || echo "superseded=true" >> "$GITHUB_OUTPUT"
+            git fetch --no-tags --quiet origin "+refs/heads/$base_ref:refs/remotes/origin/$base_ref" "+refs/pull/$PR/head:refs/remotes/pr/head"
+            git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null || git fetch --no-tags --quiet origin "$HEAD_SHA"
+            case "$base_ref" in testing|rc|main) trusted="$base_ref";; esac
+            base="origin/$base_ref"; target="$base_ref"
+          else
+            git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null || git fetch --no-tags --quiet origin "$HEAD_SHA"
+            base=auto; target=auto; source="${PUSH_REF#ci/}"; source="${source#full/}"
+          fi
+          if [ -z "$trusted" ]; then
+            if git rev-parse -q --verify origin/testing >/dev/null; then trusted=testing; else trusted=rc; fi
+          fi
+          git checkout --quiet --force --detach "origin/$trusted"
+          if [ -f scripts/judge-review.mjs ]; then reviewer=trusted
+          elif git cat-file -e "$HEAD_SHA:scripts/judge-review.mjs" 2>/dev/null; then reviewer=bootstrap
+          else reviewer=none; fi
+          { echo "trusted=$trusted"; echo "rules=$(git rev-parse HEAD)"; echo "base=$base"; echo "target=$target"; echo "source=$source"; echo "reviewer=$reviewer"; } >> "$GITHUB_OUTPUT"
+
+      - name: Find earlier reviews of this pull request or head (no key)
+        if: steps.trust.outputs.reviewer == 'trusted' && steps.trust.outputs.superseded != 'true'
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          TRUSTED: ${{ steps.trust.outputs.trusted }}
+        run: node scripts/judge-review.mjs fetch-prior --repo "$REPO" --pr "${PR:-none}" --head "$HEAD_SHA" --run-id "$RUN_ID" --trusted "origin/$TRUSTED" --out "$RUNNER_TEMP/judge/prior"
+
+      # The only step that holds the key. It runs the trusted tree's reviewer, and never in a job where head code ran.
+      - name: Review
+        id: review
+        if: steps.trust.outputs.reviewer == 'trusted' && steps.trust.outputs.superseded != 'true'
+        continue-on-error: true
+        timeout-minutes: 11
+        env:
+          JUDGE_OPENROUTER_API_KEY: ${{ secrets.JUDGE_OPENROUTER_API_KEY }}
+          JUDGE_REVIEW_MODEL: ${{ vars.JUDGE_REVIEW_MODEL }}
+          JUDGE_REVIEW_GATE: ${{ vars.JUDGE_REVIEW_GATE }}
+          BASE: ${{ steps.trust.outputs.base }}
+          RULES: ${{ steps.trust.outputs.rules }}
+          TARGET: ${{ steps.trust.outputs.target }}
+          SOURCE: ${{ steps.trust.outputs.source }}
+        run: |
+          node scripts/judge-review.mjs review --github --event "$EVENT" --action "$ACTION" \
+            --base "$BASE" --rules-from "$RULES" --head "$HEAD_SHA" --target "$TARGET" --source "$SOURCE" \
+            --pr-json "$RUNNER_TEMP/judge/pr.json" --comments-json "$RUNNER_TEMP/judge/comments.json" \
+            --prior "$RUNNER_TEMP/judge/prior" --out "$RUNNER_TEMP/judge/out" --deadline 600
+
+      - name: Say so when the review did not run to the end
+        if: always() && steps.review.outcome != 'success'
+        timeout-minutes: 1
+        env:
+          REVIEWER: ${{ steps.trust.outputs.reviewer }}
+          SUPERSEDED: ${{ steps.trust.outputs.superseded }}
+        run: |
+          case "$SKIP/$SUPERSEDED/$REVIEWER" in
+            off/*) s=skipped; r=off; t='JUDGE_REVIEW_GATE=off, the kill switch, is set' ;;
+            fork/*) s=skipped; r=fork; t="a fork's pull request is never reviewed" ;;
+            draft/*) s=skipped; r=draft; t='a draft is reviewed once it is marked ready' ;;
+            */true/*) s=skipped; r=superseded; t='a newer push is reviewed instead' ;;
+            */bootstrap) s=not-reviewed; r=no-reviewer-on-trusted; t="the trusted branch has no reviewer yet; the keyless bootstrap job dry-runs the head's copy" ;;
+            */none) s=not-reviewed; r=no-reviewer; t='the trusted branch has no reviewer' ;;
+            */) s=not-reviewed; r=setup; t='the trusted tree could not be prepared' ;;
+            *) s=not-reviewed; r=crash; t='the reviewer did not finish; see the steps above' ;;
+          esac
+          echo "::notice title=judge-review verdict::status=$s head=${HEAD_SHA:0:12} reason=$r — $t. Not a finding."
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.trust.outputs.reviewer == 'trusted'
+        continue-on-error: true
+        timeout-minutes: 1
+        with:
+          name: judge-review
+          path: ${{ runner.temp }}/judge/out/
+          if-no-files-found: ignore
+          retention-days: 90
+          overwrite: true
+
+  # The head's own reviewer, dry-run, only while the trusted tree has none. A
+  # job of its own: a runner holds every secret its job references from the
+  # first step, so pull-request code never runs in the job that names the key.
+  # This one references no secret, reads only, and uploads nothing.
+  bootstrap:
+    # Static: skipped on nearly every run, and a skipped job shows its name unevaluated. Nothing reads it.
+    name: judge (review) bootstrap
+    needs: review
+    if: ${{ !cancelled() && needs.review.outputs.reviewer == 'bootstrap' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      BASE: ${{ needs.review.outputs.base }}
+      RULES: ${{ needs.review.outputs.rules }}
+      TARGET: ${{ needs.review.outputs.target }}
+      SOURCE: ${{ needs.review.outputs.source }}
+    steps:
+      - uses: actions/checkout@v5
+        continue-on-error: true
+        timeout-minutes: 3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bootstrap — the trusted branch has no reviewer yet (no key)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -eu
+          git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null || git fetch --no-tags --quiet origin "$HEAD_SHA"
+          git checkout --quiet --force --detach "$RULES"
+          mkdir -p "$RUNNER_TEMP/boot"
+          git archive "$HEAD_SHA" scripts | tar -x -C "$RUNNER_TEMP/boot"
+          JUDGE_REVIEW_OFFLINE=1 node "$RUNNER_TEMP/boot/scripts/judge-review.mjs" review --dry-run --bootstrap --github \
+            --base "$BASE" --rules-from "$RULES" --head "$HEAD_SHA" --target "$TARGET" --source "$SOURCE" --out "$RUNNER_TEMP/boot/out"
+
+  comment:
+    name: judge (review) comment
+    needs: review
+    # Only the trusted reviewer uploads what it posts; a skipped or bootstrap run has nothing to say.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.review.outputs.reviewer == 'trusted' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The write token lives here, with no secret, no checkout and no repository script.
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { name: judge-review, path: review }
+      - name: Keep one review comment on the pull request
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          [ -s review/comment.md ] || { echo 'nothing to post'; exit 0; }
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- judge-review "))) | .id' | tail -1)
+          jq -Rs '{body: .}' < review/comment.md > review/payload.json
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$id" --input review/payload.json >/dev/null
+          elif [ "$(cat review/comment-action 2>/dev/null || true)" = create ]; then gh api -X POST "repos/$REPO/issues/$PR/comments" --input review/payload.json >/dev/null
+          else echo 'nothing new to say; no comment created'; fi

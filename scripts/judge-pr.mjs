@@ -2,24 +2,39 @@
 // judge-pr — measure a change against this repo's standards, from the diff.
 //
 // WHY IT EXISTS. The gates answer "does it pass". They cannot answer "is this
-// the change this repository asked for": that the changelog claims a
-// verification the diff does not support, that a behaviour change arrived with
-// no test, that the pull request is aimed at `main` (or a feature at `rc`),
-// that a generated file moved with nothing regenerating it, that a commit
-// subject broke the house style.
-// Those are decidable from the diff, and that is this file. The half that is NOT
-// decidable — "does this actually work in Talaria" — is the skill beside it
-// (`.claude/skills/judge-pr/SKILL.md`), because it needs someone to read the
-// change against the app.
+// the change this repository asked for": that the pull request is aimed at
+// `main` (or a feature at `rc`), that a hotfix adds a migration, that a
+// promoted changelog entry is rewritten, that a user-visible change carries no
+// entry, that a do-not-touch tree moved. Those are decidable from git alone,
+// and that is this file. The half that is NOT decidable — "does this actually
+// work in Talaria" — is a reading: scripts/judge-review.mjs (`judge (review)`)
+// and the skill beside it (`.claude/skills/judge-pr/SKILL.md`).
 //
 // WHAT IT IS NOT. It does not run the gates (that is `bun run verify`, and CI),
 // and it does not replace a reviewer. Its findings are graded:
 //
-//   must    the repo states this about itself — branch flow, do-not-touch trees,
-//           a user-visible change with no changelog entry, generated drift.
-//   should  a convention with a reason behind it (commit subjects, a gate claim
-//           that misses the surface it covers).
-//   ask     a question for the human. NEVER a reason to hold a change.
+//   must    the repo states this about itself — branch flow (targets-main,
+//           feature-targets-rc, hotfix-adds-migration, changelog-entry-rewritten),
+//           do-not-touch trees (off-limits), a user-visible change with no
+//           changelog entry (no-changelog), an entry appended into CHANGELOG.md
+//           (changelog-not-a-file).
+//   should  a convention with a reason behind it: an entry with no bold lead
+//           (changelog-no-lead) or no word on verification
+//           (changelog-no-verification), a skill off its documented shape
+//           (skill-shape).
+//   ask     a question for the human. NEVER a reason to hold a change: an
+//           empty or unfilled pull-request body, and a change to the reviewer
+//           with no calibration scorecard (reviewer-changed-no-scorecard).
+//
+// WHAT LEFT, AND WHY. The track record (#669–#725: 59 findings, none a defect)
+// cut commit-subject, claim-misses-surface, cli-suite-not-covered-by-verify,
+// no-test, product-skills and generated-drift/changed. `bun run check` already
+// fails generated drift; the rest were noise. The reading moved to
+// scripts/judge-review.mjs.
+//
+// TRUST. In CI this runs from the trusted branch's tree (judge.yml), so a pull
+// request cannot loosen its own musts. It reads the pull request as git objects
+// only — never its working tree.
 //
 // The exit code speaks the contract in scripts/hooks/README.md: 0 when nothing
 // is a `must`, 2 when something is, 1 when the judge could not run at all.
@@ -106,8 +121,12 @@ const sourceArg = arg('--source') ?? (process.env.GITHUB_HEAD_REF || null)
 
 // ── git ─────────────────────────────────────────────────────────────────────
 
+// 256 MiB: a roll's CHANGELOG.md diff once overflowed the default buffer
+// (ENOBUFS) and the judge crashed instead of judging.
 const git = (...args) =>
-  execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 }).trim()
+/** Diffs as git objects, never through a filter the tree under judgement could name. */
+const DIFF = ['diff', '--text', '--no-textconv', '--no-ext-diff']
 
 const couldNotRun = (why) => {
   console.error(`judge-pr could not run — not a pass: ${why}`)
@@ -122,7 +141,7 @@ try {
   execFileSync('git', ['rev-parse', '--verify', `${baseArg}^{commit}`], { cwd: ROOT, stdio: 'ignore' })
   const mergeBase = git('merge-base', baseArg, headArg)
   range = `${mergeBase}..${headArg}`
-  changed = git('diff', '--name-only', range).split('\n').filter(Boolean)
+  changed = git(...DIFF, '--name-only', range).split('\n').filter(Boolean)
 } catch (e) {
   couldNotRun(
     `cannot diff ${baseArg}...${headArg} — fetch the base first (\`git fetch origin testing rc main\`). ${e instanceof Error ? e.message : String(e)}`
@@ -200,16 +219,17 @@ const anyTouched = (...res) => res.some((re) => changed.some((f) => re.test(f)))
  *  pre-cutover history this judge no longer expects — lines in CHANGELOG.md. */
 const changelogAdditions = (() => {
   const additions = []
-  if (changed.includes('CHANGELOG.md'))
+  // The roll rewrites CHANGELOG.md whole by design; its diff is not read.
+  if (changed.includes('CHANGELOG.md') && !isRoll)
     additions.push(
-      ...git('diff', '-U0', range, '--', 'CHANGELOG.md')
+      ...git(...DIFF, '-U0', range, '--', 'CHANGELOG.md')
         .split('\n')
         .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
         .map((l) => l.slice(1)),
     )
   if (changed.some((f) => f.startsWith('changelog/')))
     additions.push(
-      ...git('diff', '-U0', range, '--', 'changelog')
+      ...git(...DIFF, '-U0', range, '--', 'changelog')
         .split('\n')
         .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
         .map((l) => l.slice(1)),
@@ -369,7 +389,7 @@ if (targetBranch === 'rc' && sourceBranch?.startsWith('hotfix/') && changed.incl
     /* pg.ts deleted at the head: no array to add to */
   }
   const inside = span
-    ? addedLineNumbers(git('diff', '-U0', range, '--', PG)).filter((n) => n >= span.start && n <= span.end)
+    ? addedLineNumbers(git(...DIFF, '-U0', range, '--', PG)).filter((n) => n >= span.start && n <= span.end)
     : []
   if (inside.length) {
     finding(
@@ -400,7 +420,7 @@ function existsAt(ref, path) {
 }
 
 if (targetBranch === 'testing') {
-  const rewritten = git('diff', '--name-status', range)
+  const rewritten = git(...DIFF, '--name-status', range)
     .split('\n')
     .filter(Boolean)
     .map((l) => l.split('\t'))
@@ -438,47 +458,7 @@ for (const [re, what] of OFF_LIMITS) {
   }
 }
 
-const productSkills = touched(/^scripts\/skills\//)
-if (productSkills.length) {
-  finding(
-    'ask',
-    'product-skills',
-    '`scripts/skills/` is product surface — those skills ship into Hermes agent containers',
-    productSkills.slice(0, 8),
-    ['If this is REPO TOOLING rather than product, it belongs in `.claude/skills/` (AGENTS.md).']
-  )
-}
-
-// ── 3. generated references must be generated, not edited ──────────────────
-
-const generatedDocs = touched(/^(docs\/(api\/|CLI-REFERENCE\.md)|scripts\/skills\/talaria-apps\/references\/skeleton\.md)/)
-if (generatedDocs.length) {
-  let drift = ''
-  try {
-    execFileSync('bun', ['scripts/gen-docs.mjs', '--check'], { cwd: ROOT, encoding: 'utf8' })
-  } catch (e) {
-    drift = `${e.stdout ?? ''}${e.stderr ?? ''}`.trim().split('\n').slice(-6).join('\n')
-  }
-  if (drift) {
-    finding(
-      'must',
-      'generated-drift',
-      'generated documentation changed and the generator disagrees',
-      drift.split('\n'),
-      [
-        'These files are regenerated, never hand-edited: run `bun run docs:api` and commit the',
-        'result. `bun run check` fails on the same drift, so this is also a red CI job.',
-      ]
-    )
-  } else {
-    finding('ask', 'generated-changed', 'generated documentation moved', generatedDocs.slice(0, 8), [
-      'The generator is clean, so this is its output — good. Worth a sentence in the pull request',
-      'on what changed in the reference, since reviewers read that page.',
-    ])
-  }
-}
-
-// ── 4. the changelog: an entry, and a verification that matches the diff ──
+// ── 3. the changelog: an entry for a user-visible change ──────────────────
 
 const USER_VISIBLE = [
   [/^ui\/src\//, 'the app'],
@@ -488,11 +468,15 @@ const USER_VISIBLE = [
   [/^desktop\/(src|src-tauri)\//, 'the desktop shell'],
   [/^scripts\/skills\//, 'the shipped agent skills'],
   [/^(Dockerfile|docker\/)/, 'the container'],
-  [/^RELEASING\.md$/, 'the release contract'],
 ]
-const userVisible = USER_VISIBLE.filter(([re]) => anyTouched(re))
+// A test is not something a user sees: a diff whose user-visible paths are all
+// tests needs no entry (#717 drew a false `no-changelog` for one).
+const isTestFile = (f) => /\.(test|spec)\.[cm]?[jt]s$|\.test\.svelte$|(^|\/)tests\//.test(f)
+const userVisible = USER_VISIBLE.filter(([re]) => changed.some((f) => re.test(f) && !isTestFile(f)))
 
-if (userVisible.length) {
+// The roll is the changelog: it folds the entries into CHANGELOG.md and asks
+// for none of its own.
+if (userVisible.length && !isRoll) {
   if (changelogAdditions === null) {
     finding(
       'must',
@@ -543,106 +527,7 @@ if (userVisible.length) {
   }
 }
 
-// ── 5. does the claimed verification cover the surfaces the diff touches? ──
-
-/** What a change to each surface has to have named, and where that comes from:
- *  CONTRIBUTING.md's "Before you send a PR" and the dev-loop skill's gate table.
- *  CI is the compile: `bun run gate:remote` runs the surface's CI jobs on a
- *  `ci/` push before a pull request exists, and the pull request's own checks
- *  run them after — so either, named, covers every surface. Locally,
- *  `bun run gate` runs the surface's compile when the diff touches it, and the
- *  full CI commands (`verify`, `api:check`, `desktop:check`) still count if
- *  someone actually ran them. The judge holds the claim to those, never to a
- *  second opinion. `CI` is matched in capitals only: a `ci.yml` in the entry is
- *  not a claim that CI ran. */
-const CI_EVIDENCE = /gate:remote|\bCI\b/
-const CLAIMS = [
-  { re: /^ui\//, needs: /bun run (gate|gate:remote|verify|typecheck|test)|svelte-check/i, what: 'ui/' },
-  { re: /^mcp\//, needs: /bun run (gate|gate:remote|verify|typecheck)|mcp/i, what: 'mcp/' },
-  { re: /^api\//, needs: /bun run gate|gate:remote|api:check/i, what: 'api/' },
-  { re: /^desktop\//, needs: /bun run gate|gate:remote|desktop:check/i, what: 'desktop/' },
-]
-const NAME_THE_GATE =
-  "Name the gate: `bun run gate:remote`, or 'CI: this PR's checks' (put run links in the PR body, not the entry)."
-
-if (changelogAdditions !== null) {
-  for (const { re, needs, what } of CLAIMS) {
-    if (!anyTouched(re)) continue
-    if (!needs.test(changelogText) && !CI_EVIDENCE.test(changelogText)) {
-      finding(
-        'should',
-        'claim-misses-surface',
-        `this change touches \`${what}\` and the verification names no gate that covers it`,
-        [],
-        [NAME_THE_GATE],
-      )
-    }
-  }
-
-  // `bun run verify` does not run the cli suite (check + ui/mcp typecheck + the
-  // ui suite). `bun run gate` does when the diff touches cli/, and so does CI
-  // (`bun run gate:remote`, or the pull request's checks). A cli change whose
-  // only stated evidence is `verify` is an unverified change.
-  if (anyTouched(/^cli\//) && !/bun run gate|cli|bun test/i.test(changelogText) && !CI_EVIDENCE.test(changelogText)) {
-    finding(
-      'ask',
-      'cli-suite-not-covered-by-verify',
-      'this change touches `cli/`, which `bun run verify` does not test',
-      [],
-      [
-        '`bun run gate` runs the cli typecheck and `bun test` when `cli/` moved, and so does CI.',
-        '`bun run verify` does not. ' + NAME_THE_GATE,
-      ]
-    )
-  }
-}
-
-// ── 6. a behaviour change with no test ────────────────────────────────────
-
-const isTest = (f) => /\.(test|spec)\.[cm]?[jt]s$/.test(f) || /\.test\.svelte$/.test(f)
-const BEHAVIOUR = [/^ui\/src\/.*\.(ts|svelte)$/, /^cli\/src\/.*\.ts$/, /^mcp\/src\/.*\.ts$/]
-const behaviour = changed.filter((f) => BEHAVIOUR.some((re) => re.test(f)) && !isTest(f))
-const tests = changed.filter(isTest)
-if (behaviour.length && tests.length === 0) {
-  finding(
-    'ask',
-    'no-test',
-    'behaviour changed and no test moved with it',
-    behaviour.slice(0, 8),
-    [
-      'Not every change needs one — a test earns its place only where a plausible bug would fail',
-      'it (CONTRIBUTING.md, "Before you send a PR"). So this is a question, not a verdict: either',
-      'the change is covered by an existing test (name it), or it is the kind that cannot be',
-      '(say how you exercised it instead).',
-    ]
-  )
-}
-
-// ── 7. commit subjects, in the house style ────────────────────────────────
-
-let subjects = []
-try {
-  subjects = git('log', '--no-merges', '--format=%s', range).split('\n').filter(Boolean)
-} catch {
-  /* an empty range is fine */
-}
-const SUBJECT = /^[a-z][a-z0-9/-]*: [a-z]/
-const odd = subjects.filter((s) => !SUBJECT.test(s) || s.length > 88 || s.endsWith('.'))
-if (odd.length) {
-  finding(
-    'should',
-    'commit-subject',
-    'a commit subject is not in the house style',
-    odd.map((s) => `  ${s}`),
-    [
-      'The shape is `area: lowercase sentence — explanation`: an area prefix, a lowercase',
-      'sentence, and an em-dash clause that says WHY rather than what (CONTRIBUTING.md step 4, and',
-      '`git log` carries the voice). No trailing period.',
-    ]
-  )
-}
-
-// ── 8. the pull request body, when CI handed us one ───────────────────────
+// ── 4. the pull request body, when CI handed us one ───────────────────────
 
 if (prBodyPath && existsSync(prBodyPath)) {
   const body = readFileSync(prBodyPath, 'utf8')
@@ -653,6 +538,17 @@ if (prBodyPath && existsSync(prBodyPath)) {
   const template = existsSync(templatePath) ? readFileSync(templatePath, 'utf8') : ''
   const verified = answer(body, 'Verified', template)
   const entry = answer(body, 'CHANGELOG entry', template)
+  // CI reviews a pull request with the TRUSTED branch's reviewer, not the one
+  // the pull request carries, so a change to the reviewer is measured by the
+  // calibration it ran instead: the scorecard belongs in the body.
+  const REVIEWER = ['scripts/judge-review.mjs', 'scripts/judge-review-wire.mjs', 'scripts/judge-review.prompt.md', 'scripts/judge-review.calibration.json']
+  const reviewerFiles = changed.filter((f) => REVIEWER.includes(f))
+  if (reviewerFiles.length && !/scorecard/i.test(body)) {
+    finding('ask', 'reviewer-changed-no-scorecard', 'this change edits the model reviewer and the body carries no calibration scorecard', reviewerFiles.map((f) => `  ${f}`), [
+      'attach the scorecard from a `judge-calibrate/<name>` push — CI reviews this PR with the trusted',
+      "branch's reviewer, not yours (docs/AGENT-TOOLING.md → Calibrating the reviewer).",
+    ])
+  }
   if (!body.trim()) {
     finding('ask', 'empty-pr-body', 'the pull request has no body', [], [
       'The body mirrors the changelog entry: what changed, and what was verified.',
@@ -673,13 +569,20 @@ if (prBodyPath && existsSync(prBodyPath)) {
   }
 }
 
-// ── 9. the skill half, for changes that touch the tooling ─────────────────
+// ── 5. the skill half, for changes that touch the tooling ─────────────────
 
 if (anyTouched(/^\.claude\/skills\//, /^AGENTS\.md$/)) {
   const newSkills = changed.filter((f) => /^\.claude\/skills\/[^/]+\/SKILL\.md$/.test(f))
   const problems = []
   for (const f of newSkills) {
-    const text = readFileSync(join(ROOT, f), 'utf8')
+    // The head's copy, as an object: in CI the working tree is the trusted
+    // branch's, which may not have this skill at all.
+    let text = ''
+    try {
+      text = git('show', `${headArg}:${f}`)
+    } catch {
+      continue // deleted at the head
+    }
     const name = f.split('/')[2]
     // The frontmatter block, folded lines and all: a description may be wrapped,
     // and requiring the trigger on its first line would fail a correctly written
@@ -720,7 +623,7 @@ lines.push('')
 lines.push(`${changed.length} file(s) changed. ${counts.must} must · ${counts.should} should · ${counts.ask} ask.`)
 if (findings.length === 0) {
   lines.push('')
-  lines.push('Nothing to say: the flow, the changelog claim, the surfaces and the generated trees all match.')
+  lines.push('Nothing to say: the flow, the changelog entry, the do-not-touch trees and the body all match.')
 } else {
   for (const f of findings) {
     lines.push('')
@@ -737,11 +640,9 @@ if (findings.length === 0) {
       ? 'A `must` is something this repository says about itself — fix it, or argue it in the pull request.'
       : 'Nothing here blocks the change. `should` and `ask` are for the author and the reviewer to settle.'
   )
-  lines.push(
-    'This judge reads the diff; it cannot tell whether the change WORKS. That half is a reader: ' +
-      '`.claude/skills/judge-pr/SKILL.md`.'
-  )
 }
+lines.push('')
+lines.push("This judge reads the diff. Whether the change works is judge (review)'s reading and a person's.")
 
 publish(lines.join('\n'), { head: headSha, base: baseBranch, files: changed.length, lane: null, counts, findings })
 

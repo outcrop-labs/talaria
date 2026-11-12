@@ -1,0 +1,15 @@
+[
+  {
+    "severity": "major",
+    "category": "correctness",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/util.rs",
+    "line": 2,
+    "quote": "pub fn clamp_page(n: i64) -> i64 {",
+    "title": "clamp_page no longer refuses a page below one",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "none",
+    "confidence": "high"
+  }
+]

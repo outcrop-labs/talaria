@@ -1,0 +1,28 @@
+[
+  {
+    "severity": "catastrophic",
+    "category": "correctness",
+    "file": "api/crates/demo/src/lib.rs",
+    "line": 5,
+    "quote": "x",
+    "title": "t",
+    "failure": "f",
+    "fix": "x",
+    "rule": "none",
+    "rule_id": "none",
+    "confidence": "high"
+  },
+  {
+    "severity": "major",
+    "category": "correctness",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/lib.rs",
+    "line": "five",
+    "quote": "    let sql = format!(\"select * from users where name = '{}'\", name);",
+    "title": "a title",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "none",
+    "confidence": "high"
+  }
+]

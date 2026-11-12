@@ -9,7 +9,7 @@
 // aimed at rc), and the diff base it picks when none is said.
 // Run by `bun run check`.
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -498,14 +498,97 @@ check('changelog-entry-rewritten: an entry rc does not have yet, and the README,
   eq([r.status, ids(r)], [0, []])
 })
 
-check('claims: `gate:remote` and "CI: this PR\'s checks" cover the surface; nothing, or a lowercase ci.yml, does not', () => {
-  const claimIds = (name) => ids(judgeLane({ head: `claim/${name}`, base: 'origin/testing', target: 'testing', source: `claim/${name}` }))
-  ok(!claimIds('remote').includes('claim-misses-surface'), claimIds('remote').join(' '))
-  ok(!claimIds('ci').includes('claim-misses-surface'), claimIds('ci').join(' '))
-  ok(claimIds('nothing').includes('claim-misses-surface'), claimIds('nothing').join(' '))
-  ok(claimIds('ciyml').includes('claim-misses-surface'), claimIds('ciyml').join(' '))
-  const hint = judgeLane({ head: 'claim/nothing', base: 'origin/testing', target: 'testing' }).findings.find((f) => f.id === 'claim-misses-surface')
-  eq(hint.fix, ["Name the gate: `bun run gate:remote`, or 'CI: this PR's checks' (put run links in the PR body, not the entry)."])
+// ── the cuts and the fixes (judge-review.mjs took the reading) ─────────────
+
+/** A branch off `from` whose one commit is `edit`, with an explicit subject. */
+const scratch = (name, from, edit, subject) => branch(name, from, edit, subject)
+const bodyFile = (text) => {
+  const f = join(repo, `.body-${Math.random().toString(16).slice(2)}.md`)
+  writeFileSync(f, text)
+  return f
+}
+function judgeWith({ head, base = 'origin/testing', target = 'testing', source = 'wt/x', body = null, env = {} }) {
+  const args = [JUDGE, '--base', base, '--head', head, '--target', target, '--source', source, '--json']
+  if (body !== null) args.push('--pr-body', bodyFile(body))
+  const run = spawnSync(process.execPath, args, { cwd: repo, encoding: 'utf8', env: { ...laneEnv, ...env }, maxBuffer: 64 * 1024 * 1024 })
+  if (run.status !== 0 && run.status !== 2) throw new Error(`judge-pr exited ${run.status}: ${run.stderr}`)
+  return { status: run.status, ...JSON.parse(run.stdout) }
+}
+
+scratch('cut/releasing', 'testing', () => put('RELEASING.md', '# Releasing\n\nthe contract, reworded\n'), 'docs: reword the release contract — the fixture needs one')
+scratch('cut/ui-test-only', 'testing', () => put('ui/src/lib/thing.test.ts', 'test("x", () => {})\n'), 'ui: a test only — the fixture needs one')
+scratch('cut/generated', 'testing', () => {
+  put('docs/api/x.md', '# hand edit\n')
+  put('changelog/2026-01-05-gen.md', '- **Generated.** Verified: CI.\n')
+}, 'docs: a generated page by hand — the fixture needs one')
+scratch('cut/long-subject', 'testing', () => put('notes.txt', 'x\n'), `area: ${'a'.repeat(88)}`)
+scratch('cut/prompt', 'testing', () => put('scripts/judge-review.prompt.md', '## system\n\nchanged\n'), 'judge: change the rubric — the fixture needs one')
+// a roll whose CHANGELOG.md diff is over 2 MB: the ENOBUFS regression
+scratch('release/big', 'rc', () => {
+  const bullets = Array.from({ length: 30000 }, (_, i) => `- **Entry ${i}.** ${'x'.repeat(60)} Verified: CI.`).join('\n')
+  put('CHANGELOG.md', `# Changelog\n\n## [Unreleased]\n\n## 0.2.0\n\n${bullets}\n`)
+}, 'changelog: roll 0.2.0 — the fixture needs one')
+// a head that turns diffs off for every file still has its pg.ts bracket parse
+scratch('hotfix/attrs', 'rc', () => {
+  put('.gitattributes', '* -diff\n*.ts binary\n')
+  put(PG_PATH, withLine(PG, PG_ARRAY_END, "  'create table c (id int)',"))
+  entryAndTest('attrs')
+}, 'db: a hotfix migration behind -diff — the fixture needs one')
+
+check('cuts: a RELEASING.md-only diff has no must', () => {
+  const r = judgeWith({ head: 'cut/releasing' })
+  eq([r.status, r.counts.must], [0, 0])
+})
+
+check('cuts: a ui diff of tests only needs no changelog entry', () => {
+  const r = judgeWith({ head: 'cut/ui-test-only' })
+  ok(!ids(r).includes('no-changelog'), ids(r).join(' '))
+})
+
+check('cuts: a generated page draws no generated-* finding, and the judge needs no bun on PATH', () => {
+  const path = (process.env.PATH ?? '').split(':').filter((d) => !existsSync(join(d, 'bun'))).join(':')
+  const r = judgeWith({ head: 'cut/generated', env: { PATH: path } })
+  ok(!ids(r).some((x) => x.startsWith('generated')), ids(r).join(' '))
+})
+
+check('cuts: no commit-subject, claim, no-test or product-skills finding exists any more', () => {
+  const r = judgeWith({ head: 'cut/long-subject' })
+  for (const gone of ['commit-subject', 'claim-misses-surface', 'cli-suite-not-covered-by-verify', 'no-test', 'product-skills']) ok(!ids(r).includes(gone), `${gone}: ${ids(r).join(' ')}`)
+  for (const name of ['remote', 'nothing', 'ciyml']) {
+    const c = judgeWith({ head: `claim/${name}`, source: `claim/${name}` })
+    ok(!ids(c).includes('claim-misses-surface'), ids(c).join(' '))
+  }
+})
+
+check('fixes: a roll with a CHANGELOG.md diff over 2 MB exits 0 (it once died of ENOBUFS)', () => {
+  const r = judgeWith({ head: 'release/big', base: 'origin/rc', target: 'rc', source: 'release/big' })
+  eq([r.status, r.counts.must], [0, 0])
+})
+
+check('fixes: --head <sha> is the head the report names', () => {
+  const sha = rgit('rev-parse', 'cut/releasing')
+  eq(judgeWith({ head: sha }).head, sha.slice(0, 12))
+})
+
+check('asks: a reviewer edit without a scorecard asks for one; with one it does not', () => {
+  const without = judgeWith({ head: 'cut/prompt', body: '## What changed\n\nthe rubric\n' })
+  ok(ids(without).includes('reviewer-changed-no-scorecard'), ids(without).join(' '))
+  const f = without.findings.find((x) => x.id === 'reviewer-changed-no-scorecard')
+  ok(f.severity === 'ask' && f.fix.join(' ').includes('judge-calibrate/<name>'), JSON.stringify(f))
+  const withCard = judgeWith({ head: 'cut/prompt', body: '## What changed\n\nthe rubric\n\nScorecard: R1 pass, N1 pass\n' })
+  ok(!ids(withCard).includes('reviewer-changed-no-scorecard'), ids(withCard).join(' '))
+})
+
+check('fixes: a head adding `* -diff` and `*.ts binary` still has its migration read', () => {
+  const r = judgeWith({ head: 'hotfix/attrs', base: 'origin/rc', target: 'rc', source: 'hotfix/attrs' })
+  ok(ids(r).includes('hotfix-adds-migration'), ids(r).join(' '))
+})
+
+check('skill-shape reads the skill at the head, not the working tree', () => {
+  scratch('skill/new', 'testing', () => put('.claude/skills/fresh/SKILL.md', '---\nname: wrong\ndescription: no trigger here\n---\n# x\n'), 'skills: a new one — the fixture needs one')
+  rgit('switch', '-q', 'rc') // the working tree has no such skill
+  const r = judgeWith({ head: 'skill/new' })
+  ok(ids(r).includes('skill-shape'), ids(r).join(' '))
 })
 
 rmSync(repo, { recursive: true, force: true })

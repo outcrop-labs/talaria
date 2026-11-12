@@ -1,0 +1,16 @@
+[
+  [
+    {
+      "path": ".github",
+      "start_line": 1,
+      "end_line": 1,
+      "start_column": null,
+      "end_column": null,
+      "annotation_level": "notice",
+      "title": "judge-review verdict",
+      "message": "status=not-reviewed head=abcdef012345 base=0123456789ab target=testing listed=0 more=0 gating=0 would=0 gate=report cost=na model=z-ai/glm-5.3-flash provider=na reason=no-key reused=none partial=no — not reviewed: no JUDGE_OPENROUTER_API_KEY in this job. Not a finding.",
+      "raw_details": null,
+      "blob_href": "https://github.com/outcrop-labs/talaria/blob/abcdef0123456789/.github"
+    }
+  ]
+]

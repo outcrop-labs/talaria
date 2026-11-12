@@ -1,32 +1,37 @@
-# The judge — the standards half of review, on every pull request.
+# The judge — the exact half of review, on every pull request.
 #
-# WHY THIS FILE EXISTS. The gates answer "does it pass". They cannot answer "is
-# this the change this repository asked for": that the changelog claims a
-# verification the diff does not support, that a behaviour change arrived with no
-# test, that the pull request is aimed at `main`, that a hotfix adds a migration,
-# that a generated reference was hand-edited, that a commit subject broke the
-# house style. scripts/judge-pr.mjs
-# decides those from the diff (its header lists them and their reasoning); this
-# file runs it on the pull request's own range and puts the answer where the
-# author will read it — one sticky comment, edited in place, plus the job
-# summary.
+# WHAT IT CHECKS. scripts/judge-pr.mjs decides from git alone what this
+# repository states about itself: a pull request aimed at `main` (or a feature
+# at `rc`), a hotfix that adds a migration, a promoted changelog entry
+# rewritten, a user-visible change with no entry, an entry appended into
+# CHANGELOG.md, a do-not-touch tree touched, a skill off its shape, the parts of
+# the body a machine can check. Its header lists them and why each stayed; the
+# ones the track record showed to be noise are gone. This file runs it on the
+# pull request's own range and puts the answer in the job summary and one
+# sticky comment.
 #
-# THE OTHER HALF IS A READER, and this file does not pretend otherwise: whether
-# the change WORKS in Talaria is `.claude/skills/judge-pr/SKILL.md`, which points
-# a reviewer at the docs that decide each question. A script cannot tell a real
-# fallback from a dormant one.
+# THE OTHER HALF is judge-review.yml: `judge (review)`, a model's reading of
+# whether the change works, against the same repository's rules. It never
+# fails. This one fails only on a deterministic `must`.
 #
-# WHY IT IS NOT A REQUIRED CHECK. A judge with a false positive that blocks a
-# merge teaches everyone to route around the judge. So it fails the job on a
-# `must` (visible, red, named) but is deliberately absent from the required
-# contexts in docs/BRANCHES.md → The required settings. Once its findings have
-# earned it, adding `judge (standards)` to that list is the one-line promotion —
-# the same shape the repo uses for every check it trusts.
+# WHY IT IS NOT A REQUIRED CHECK. Neither judge is on any list
+# (docs/BRANCHES.md → The required settings). `judge (standards)` fails only
+# on a `must`, which is exact; it stays off the lists because a judge with a
+# false positive that blocks a merge teaches everyone to route around it, and
+# `pr target (flow)` already refuses the wrong door. The testing-review
+# approval stays a person's: the judges post comments, never reviews.
+#
+# TRUST. The job checks out the TRUSTED branch — the pull request's base when
+# that is testing, rc or main, otherwise testing — and runs that tree's
+# judge-pr.mjs against the pull request's head as git objects, so a pull
+# request cannot loosen its own musts. The token here reads only. The comment
+# is posted by a separate job that holds `pull-requests: write` and has no
+# checkout, no secret and no repository script: it posts the report the read
+# job uploaded.
 #
 # WHY THE COMMENT IS SKIPPED ON FORK PULL REQUESTS. A fork's pull request gets a
 # read-only token, so the comment call would fail rather than report. The report
-# still lands in the job summary, which is where a maintainer reads it, and the
-# job still fails on a `must` — nothing about the verdict depends on the comment.
+# still lands in the job summary, and the job still fails on a `must`.
 
 name: judge
 
@@ -41,97 +46,157 @@ concurrency:
   group: judge-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   judge:
     name: judge (standards)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     permissions:
       contents: read
-      pull-requests: write # the sticky comment (same-repo pull requests only)
+      pull-requests: read
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
     steps:
+      # The trusted tree, never the pull request's: the judge that runs is the
+      # base branch's. The whole history: the judge diffs merge-base(base, head)..head.
       - uses: actions/checkout@v5
         with:
-          # The whole history: the judge diffs merge-base(base, head)..head and
-          # reads the commit subjects in that range.
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          persist-credentials: false
 
-      # The base is the diff's; main and rc are the lanes' (a promoted entry is
-      # one origin/rc has). testing may not exist yet, so its fetch is tolerant.
-      - name: Fetch the base branch and the long-lived branches
+      # The body from the API, not the event, so a re-run judges the body as it
+      # is now. The pull request's head comes in as git objects only (a fork's
+      # too, through refs/pull). main and rc are the lanes' (a promoted entry is
+      # one origin/rc has); testing may not exist, so its fetch is tolerant.
+      - name: Choose the trusted tree and read the pull request
+        id: trust
         env:
-          BASE: ${{ github.base_ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          git fetch --no-tags origin \
-            "+refs/heads/$BASE:refs/remotes/origin/$BASE" \
+          J="$RUNNER_TEMP/judge"; mkdir -p "$J/out"
+          gh api "repos/$REPO/pulls/$PR" > "$J/pr.json"
+          jq -r '.body // ""' "$J/pr.json" > "$J/body.md"
+          base=$(jq -r .base.ref "$J/pr.json")
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/$base:refs/remotes/origin/$base" \
+            "+refs/pull/$PR/head:refs/remotes/pr/head" \
             '+refs/heads/main:refs/remotes/origin/main' \
             '+refs/heads/rc:refs/remotes/origin/rc'
-          git fetch --no-tags origin '+refs/heads/testing:refs/remotes/origin/testing' || echo "origin has no testing branch"
+          git fetch --no-tags --quiet origin '+refs/heads/testing:refs/remotes/origin/testing' || echo "origin has no testing branch"
+          git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null || git fetch --no-tags --quiet origin "$HEAD_SHA"
+          trusted=
+          case "$base" in testing|rc|main) trusted="$base";; esac
+          if [ -z "$trusted" ]; then
+            if git rev-parse -q --verify origin/testing >/dev/null; then trusted=testing; else trusted=rc; fi
+          fi
+          git checkout --quiet --force --detach "origin/$trusted"
+          { echo "base=$base"; echo "trusted=$trusted"; } >> "$GITHUB_OUTPUT"
 
-      - name: Write the pull request body out
-        env:
-          BODY: ${{ github.event.pull_request.body }}
-        run: printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
-
-      # `continue-on-error` so the comment and the failure below both happen: a
-      # judge that hides its report when it finds a `must` is a judge nobody
-      # reads.
-      #
-      # `pipefail`, because the report goes through `tee`. Without it the
-      # pipeline's status was tee's, exit 2 was masked, and 'Fail on a `must`'
-      # never fired: promotion #722 reported 2 musts and passed. (Both were
-      # false positives — the promotion judged as a feature — which the lanes
-      # in judge-pr.mjs now skip.)
-      #
-      # SOURCE is the head branch, for the lanes. A fork's is qualified with its
-      # repository, so a fork's `rc` or `promote/x` never matches a lane.
+      # No continue-on-error: the step itself exits 0 and says what the judge
+      # said in `code`. A crash (exit 1) is a warning, never a finding; a
+      # `must` (exit 2) fails the step after this one. The report is printed
+      # between stop-commands markers, so a path in it cannot forge a workflow
+      # command. SOURCE is the head branch, for the lanes; a fork's is
+      # qualified with its repository, so a fork's `rc` or `promote/x` never
+      # matches a lane.
       - name: Judge the diff
         id: judge
-        continue-on-error: true
         shell: bash
         env:
-          BASE: ${{ github.base_ref }}
+          BASE: ${{ steps.trust.outputs.base }}
           SOURCE: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || format('{0}:{1}', github.event.pull_request.head.repo.full_name, github.head_ref) }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          J="$RUNNER_TEMP/judge"
+          # `shell: bash` runs under -e, which `set -uo pipefail` leaves on: a bare
+          # `code=$?` after a non-zero exit is never reached, so capture it inline.
+          code=0
           node scripts/judge-pr.mjs \
             --base "origin/$BASE" \
+            --head "$HEAD_SHA" \
             --target "$BASE" \
             --source "$SOURCE" \
-            --pr-body "$RUNNER_TEMP/body.md" \
-            --summary | tee "$RUNNER_TEMP/report.md"
+            --pr-body "$J/body.md" \
+            --summary > "$J/out/report.md" 2> "$J/judge.err" || code=$?
+          if [ "$code" != 0 ] && [ "$code" != 2 ]; then
+            { echo '## judge-pr could not run — not a pass, not a finding'; echo; echo '```'; head -c 4000 "$J/judge.err"; echo; echo '```'; } > "$J/out/report.md"
+            cat "$J/out/report.md" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=judge-pr::could not run — see the job summary; this is not a finding"
+          fi
+          token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          echo "::stop-commands::$token"
+          cat "$J/out/report.md"
+          echo "::$token::"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      # Only the comment needs it: a failed upload (or a re-run's name clash)
+      # must never turn the check red with no `must` behind it.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: judge-standards
+          path: ${{ runner.temp }}/judge/out/
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
+
+      # Printed again here so the failing step's log — the tail pr-watch shows —
+      # carries the report itself.
+      - name: Fail on a `must`
+        if: steps.judge.outputs.code == '2'
+        shell: bash
+        run: |
+          token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          echo "::stop-commands::$token"
+          cat "$RUNNER_TEMP/judge/out/report.md"
+          echo "::$token::"
+          echo "::error::judge-pr found something this repository states about itself (a must). A finding you believe is wrong gets argued in the pull request, not silenced: scripts/judge-pr.mjs prints the lines it judged."
+          exit 1
+
+  comment:
+    name: judge (standards) comment
+    needs: judge
+    if: ${{ !cancelled() && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The write token lives here, with no secret, no checkout and no repository script.
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: judge-standards
+          path: standards
 
       - name: Keep one comment on the pull request
-        if: github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -eu
+          [ -s standards/report.md ] || { echo 'nothing to post'; exit 0; }
           # The marker makes the comment addressable, so a re-run edits the
           # verdict instead of stacking a new one.
-          { printf '<!-- judge-pr -->\n'; cat "$RUNNER_TEMP/report.md"; } > "$RUNNER_TEMP/comment.md"
-          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq '.[] | select(.body | contains("<!-- judge-pr -->")) | .id' | tail -1)
+          { printf '<!-- judge-pr -->\n'; cat standards/report.md; } > standards/comment.md
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- judge-pr -->"))) | .id' | tail -1)
+          jq -Rs '{body: .}' < standards/comment.md > standards/payload.json
           if [ -n "$id" ]; then
             echo "updating judge comment $id"
-            jq -Rs '{body: .}' < "$RUNNER_TEMP/comment.md" |
-              gh api -X PATCH "repos/$REPO/issues/comments/$id" --input - >/dev/null
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" --input standards/payload.json >/dev/null
           else
             echo "posting the judge comment"
-            jq -Rs '{body: .}' < "$RUNNER_TEMP/comment.md" |
-              gh api -X POST "repos/$REPO/issues/$PR/comments" --input - >/dev/null
+            gh api -X POST "repos/$REPO/issues/$PR/comments" --input standards/payload.json >/dev/null
           fi
-
-      - name: Fail on a `must`
-        if: steps.judge.outcome == 'failure'
-        run: |
-          echo "::error::judge-pr found something this repository states about itself — read the job summary (and the comment, on a same-repo pull request). A finding you believe is wrong gets argued in the pull request, not silenced: scripts/judge-pr.mjs prints the lines it judged."
-          exit 1

@@ -1,0 +1,15 @@
+[
+  {
+    "severity": "major",
+    "category": "correctness",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/util.rs",
+    "line": 62,
+    "quote": "pub fn filler_58() -> u32 { 58 }",
+    "title": "a title",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "none",
+    "confidence": "high"
+  }
+]

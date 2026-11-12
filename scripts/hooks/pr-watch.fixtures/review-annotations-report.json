@@ -1,0 +1,40 @@
+[
+  [
+    {
+      "path": ".github",
+      "start_line": 1,
+      "end_line": 1,
+      "start_column": null,
+      "end_column": null,
+      "annotation_level": "notice",
+      "title": "judge-review verdict",
+      "message": "status=reviewed head=abcdef012345 base=0123456789ab target=testing listed=2 more=1 gating=0 would=1 gate=report cost=0.0123 model=z-ai/glm-5.3-flash provider=ExampleProvider reason=none reused=none partial=no — 2 confirmed finding(s) to read; the PR comment has each one.",
+      "raw_details": null,
+      "blob_href": "https://github.com/outcrop-labs/talaria/blob/abcdef0123456789/.github"
+    },
+    {
+      "path": "api/crates/demo/src/lib.rs",
+      "start_line": 5,
+      "end_line": 5,
+      "start_column": null,
+      "end_column": null,
+      "annotation_level": "warning",
+      "title": "judge-review jr-1a2b3c4d blocker security would-gate",
+      "message": "User input is formatted into SQL — a name of x or 1=1 reaches query_one as SQL text (the PR comment has the fix)",
+      "raw_details": null,
+      "blob_href": "https://github.com/outcrop-labs/talaria/blob/abcdef0123456789/api/crates/demo/src/lib.rs"
+    },
+    {
+      "path": "api/crates/demo/src/lib.rs",
+      "start_line": 10,
+      "end_line": 10,
+      "start_column": null,
+      "end_column": null,
+      "annotation_level": "warning",
+      "title": "judge-review jr-5e6f7a8b major security",
+      "message": "\u001b[31mdelete_doc no longer checks the caller\u001b[0m — any caller deletes any document (the PR comment has the fix)",
+      "raw_details": null,
+      "blob_href": "https://github.com/outcrop-labs/talaria/blob/abcdef0123456789/api/crates/demo/src/lib.rs"
+    }
+  ]
+]

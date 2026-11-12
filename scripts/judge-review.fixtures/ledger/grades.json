@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "calibration": {},
+  "live": {
+    "800:aaaaaaaaaaaa:jr-00000001": {
+      "real": true,
+      "by": "a person",
+      "at": "2026-11-11",
+      "note": "fixture"
+    },
+    "801:bbbbbbbbbbbb:jr-00000002": {
+      "real": false,
+      "by": "a person",
+      "at": "2026-11-11",
+      "note": "fixture"
+    }
+  }
+}
