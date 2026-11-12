@@ -135,13 +135,17 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
           exit 0
 
+      # Only the comment needs it: a failed upload (or a re-run's name clash)
+      # must never turn the check red with no `must` behind it.
       - uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: judge-standards
           path: ${{ runner.temp }}/judge/out/
           if-no-files-found: ignore
           retention-days: 14
+          overwrite: true
 
       # Printed again here so the failing step's log — the tail pr-watch shows —
       # carries the report itself.

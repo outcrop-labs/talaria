@@ -173,7 +173,9 @@ overrides it) reads every same-repository, non-draft pull request and every `ci/
   pull request is read only as `git show` / `git diff --text --no-textconv --no-ext-diff` /
   `git grep -a`. The key (`JUDGE_OPENROUTER_API_KEY`, dedicated and spend-capped — never the
   app's `OPENROUTER_API_KEY`) is in one step, which runs only the trusted reviewer. Until the
-  trusted branch has a reviewer, a keyless Bootstrap step dry-runs the head's copy instead.
+  trusted branch has a reviewer, a separate keyless job (`judge (review) bootstrap`) dry-runs
+  the head's copy instead — never in the job that names the key, because a runner holds every
+  secret its job references from the first step on.
 - **What it reads**, within a 300k-token budget trimmed in a fixed order: RULES from the
   trusted branch chosen by the paths touched (AGENTS.md and CONTRIBUTING.md always; API, UI,
   RUST-MIGRATION or UPDATES conventions as relevant), REFERENCE docs labelled as never a

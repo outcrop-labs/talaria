@@ -136,6 +136,12 @@ export const LIMITS = {
   marginMs: 15_000,
   minLeftMs: { review: 180_000, verify: 60_000 },
 }
+/** Calibration runs six reviews in one process, and each one's git reads and
+ *  judge-pr runs are synchronous: while one prepares, the others' streams sit
+ *  unread, and a 60 s first-byte timer fires (timers run before I/O) on a
+ *  response that already arrived — a billed retry, or a false R1 failure. The
+ *  attempt cap still bounds every call. */
+export const CALIBRATE_LIMITS = { ...LIMITS, firstByteMs: 300_000, idleMs: 300_000 }
 
 export const LISTED_CATEGORIES = ['concurrency', 'fail-open', 'security', 'correctness', 'dead-wiring', 'migration', 'wire-format', 'data-loss', 'repo-rule', 'accessibility']
 export const GATING_CATEGORIES = ['concurrency', 'fail-open', 'security', 'correctness', 'data-loss', 'migration', 'wire-format', 'repo-rule', 'dead-wiring']
@@ -1798,6 +1804,8 @@ export function sanitizeText(s, cap = 400) {
   t = t.replace(/^(\s*)#/, '$1\\#')
   t = t.replace(/@/g, '@​').replace(/#(\d)/g, '#​$1').replace(/\bGH-(\d)/gi, (m, d) => `${m.slice(0, 2)}​-${d}`)
   t = t.replace(/:\/\//g, ':​//')
+  // GFM links a bare `www.` domain with no scheme at all.
+  t = t.replace(/\b(www)\./gi, '$1​.')
   return t
 }
 
@@ -2846,7 +2854,7 @@ async function cliCalibrate(opts) {
     const dir = join(out, `${e.pr}-${k}`)
     const r = await review(
       { base: e.mergeBase, head: e.head, target: 'rc', source: e.source, rulesFrom: e.mergeBase, title: e.title, body: e.body, out: dir, model, gateMode: 'calibrate', ceiling },
-      { key, deadlineAt: Math.min(deadlineAt, Date.now() + 600_000), onRecord: opts.record && k === 1 ? (purpose, attempt, data) => {
+      { key, deadlineAt: Math.min(deadlineAt, Date.now() + 600_000), limits: CALIBRATE_LIMITS, onRecord: opts.record && k === 1 ? (purpose, attempt, data) => {
         mkdirSync(join(opts.record, String(e.pr)), { recursive: true })
         writeFileSync(join(opts.record, String(e.pr), `${purpose}-${attempt}.sse`), recordable(data))
       } : null },
@@ -2965,8 +2973,14 @@ async function cliCanary(opts) {
       }
     }
     const h = healthOf(verdicts)
-    ok = ok && h.pass
-    lines.push(`- health: ${h.pass ? 'pass' : 'FAIL'} — ${h.bad} of ${h.runs} reviews in 7 days not reviewed for an unexpected reason (${(h.rate * 100).toFixed(0)}%)`)
+    if (!runs.ok) {
+      // No listing is no evidence: a health check that cannot read must not read as healthy.
+      ok = false
+      lines.push(`- health: FAIL — the judge-review runs of the last 7 days could not be listed: ${runs.err || 'gh failed'}`)
+    } else {
+      ok = ok && h.pass
+      lines.push(`- health: ${h.pass ? 'pass' : 'FAIL'} — ${h.bad} of ${h.runs} reviews in 7 days not reviewed for an unexpected reason (${(h.rate * 100).toFixed(0)}%)`)
+    }
   }
   const md = `## judge canary\n\n${lines.join('\n')}\n`
   if (opts.github && process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, md)

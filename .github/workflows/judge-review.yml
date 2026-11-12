@@ -14,11 +14,13 @@
 #   is testing, rc or main, otherwise testing — and every script runs from it;
 #   .gitattributes comes from it too. The pull request is read as git objects
 #   only. The key step runs only the trusted tree's reviewer. When the trusted
-#   tree has no reviewer yet, a Bootstrap step dry-runs the head's own copy
-#   with no secret in its environment, writing outside the uploaded directory,
-#   so the comment job posts nothing from it. The review job's token reads
-#   only; the comment job holds `pull-requests: write` and has no secret, no
-#   checkout and no repository script.
+#   tree has no reviewer yet, a separate `bootstrap` job dry-runs the head's
+#   own copy. It is a job of its own because a runner holds every secret a job
+#   references from the job's first step, skipped steps included: pull-request
+#   code never runs in the job that names the key. It uploads nothing, so the
+#   comment job posts nothing from it. The review job's token reads only; the
+#   comment job holds `pull-requests: write` and has no secret, no checkout and
+#   no repository script.
 #
 # NEVER. It never fails, never approves and is on no required list. A missing
 #   key, a fork, a draft, a lane PR, a provider error, a timeout, bad output,
@@ -65,13 +67,20 @@ jobs:
          github.event.pull_request.head.repo.full_name == github.repository &&
          github.event.pull_request.draft == false))
     runs-on: ubuntu-latest
-    # Above the sum of the step timeouts (Review and Bootstrap never both run),
-    # so a hang ends a continue-on-error step and never the job.
+    # Above the sum of the step timeouts, so a hang ends a continue-on-error
+    # step and never the job.
     timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: read
       actions: read          # fetch-prior: earlier runs and their artifacts
+    # The bootstrap job reads what the trust step chose.
+    outputs:
+      reviewer: ${{ steps.trust.outputs.reviewer }}
+      base: ${{ steps.trust.outputs.base }}
+      rules: ${{ steps.trust.outputs.rules }}
+      target: ${{ steps.trust.outputs.target }}
+      source: ${{ steps.trust.outputs.source }}
     env:
       EVENT: ${{ github.event_name }}
       ACTION: ${{ github.event.action }}
@@ -152,26 +161,8 @@ jobs:
             --pr-json "$RUNNER_TEMP/judge/pr.json" --comments-json "$RUNNER_TEMP/judge/comments.json" \
             --prior "$RUNNER_TEMP/judge/prior" --out "$RUNNER_TEMP/judge/out" --deadline 600
 
-      # Mutually exclusive with Review: runs the head's own copy only when the trusted tree has none, with no secret,
-      # and writes outside the uploaded directory, so the comment job posts nothing from it.
-      - name: Bootstrap — the trusted branch has no reviewer yet (no key)
-        if: steps.trust.outputs.reviewer == 'bootstrap'
-        continue-on-error: true
-        timeout-minutes: 5
-        env:
-          BASE: ${{ steps.trust.outputs.base }}
-          RULES: ${{ steps.trust.outputs.rules }}
-          TARGET: ${{ steps.trust.outputs.target }}
-          SOURCE: ${{ steps.trust.outputs.source }}
-        run: |
-          set -eu
-          mkdir -p "$RUNNER_TEMP/boot"
-          git archive "$HEAD_SHA" scripts | tar -x -C "$RUNNER_TEMP/boot"
-          JUDGE_REVIEW_OFFLINE=1 node "$RUNNER_TEMP/boot/scripts/judge-review.mjs" review --dry-run --bootstrap --github \
-            --base "$BASE" --rules-from "$RULES" --head "$HEAD_SHA" --target "$TARGET" --source "$SOURCE" --out "$RUNNER_TEMP/boot/out"
-
       - name: Say so when the review did not run to the end
-        if: always() && steps.review.outcome != 'success' && steps.trust.outputs.reviewer != 'bootstrap'
+        if: always() && steps.review.outcome != 'success'
         timeout-minutes: 1
         env:
           REVIEWER: ${{ steps.trust.outputs.reviewer }}
@@ -179,6 +170,7 @@ jobs:
         run: |
           case "$SUPERSEDED/$REVIEWER" in
             true/*) s=skipped; r=superseded; t='a newer push is reviewed instead' ;;
+            */bootstrap) s=not-reviewed; r=no-reviewer-on-trusted; t="the trusted branch has no reviewer yet; the keyless bootstrap job dry-runs the head's copy" ;;
             */none) s=not-reviewed; r=no-reviewer; t='the trusted branch has no reviewer' ;;
             */) s=not-reviewed; r=setup; t='the trusted tree could not be prepared' ;;
             *) s=not-reviewed; r=crash; t='the reviewer did not finish; see the steps above' ;;
@@ -195,6 +187,45 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
           overwrite: true
+
+  # The head's own reviewer, dry-run, only while the trusted tree has none. A
+  # job of its own: a runner holds every secret its job references from the
+  # first step, so pull-request code never runs in the job that names the key.
+  # This one references no secret, reads only, and uploads nothing.
+  bootstrap:
+    name: ${{ github.event_name == 'push' && 'offload / judge (review) bootstrap' || 'judge (review) bootstrap' }}
+    needs: review
+    if: ${{ !cancelled() && needs.review.outputs.reviewer == 'bootstrap' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      BASE: ${{ needs.review.outputs.base }}
+      RULES: ${{ needs.review.outputs.rules }}
+      TARGET: ${{ needs.review.outputs.target }}
+      SOURCE: ${{ needs.review.outputs.source }}
+    steps:
+      - uses: actions/checkout@v5
+        continue-on-error: true
+        timeout-minutes: 3
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bootstrap — the trusted branch has no reviewer yet (no key)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -eu
+          git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null || git fetch --no-tags --quiet origin "$HEAD_SHA"
+          git checkout --quiet --force --detach "$RULES"
+          mkdir -p "$RUNNER_TEMP/boot"
+          git archive "$HEAD_SHA" scripts | tar -x -C "$RUNNER_TEMP/boot"
+          JUDGE_REVIEW_OFFLINE=1 node "$RUNNER_TEMP/boot/scripts/judge-review.mjs" review --dry-run --bootstrap --github \
+            --base "$BASE" --rules-from "$RULES" --head "$HEAD_SHA" --target "$TARGET" --source "$SOURCE" --out "$RUNNER_TEMP/boot/out"
 
   comment:
     name: judge (review) comment

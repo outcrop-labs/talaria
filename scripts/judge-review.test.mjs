@@ -698,7 +698,7 @@ check('review: a split verify leaves the blocker in Tier B; refuted drops it', a
 // ── 9. rendering ────────────────────────────────────────────────────────────
 
 const injected = async () => {
-  const content = JSON.stringify({ summary: 'Summary with @owner and <b>html</b> and https://x.example #12', findings: fixture('injection'), verification_gap: 'gap text unique-gap-marker', could_not_judge: ['cnj unique-cnj-marker'] })
+  const content = JSON.stringify({ summary: 'Summary with @owner and <b>html</b> and https://x.example #12 and www.evil.example', findings: fixture('injection'), verification_gap: 'gap text unique-gap-marker', could_not_judge: ['cnj unique-cnj-marker'] })
   return reviewIn({}, { fetchImpl: J.replayFetch(replayDir({ 'review-1.sse': sseOf(content), 'verify-1.sse': read(join(FIX, 'sse-verify-confirm.txt')), 'verify-2.sse': read(join(FIX, 'sse-verify-confirm.txt')) })) })
 }
 
@@ -711,6 +711,7 @@ check('render: model text cannot mention, link, open HTML, forge the marker or f
   ok(!/@owner/.test(c) && c.includes('@​owner'), 'a mention survived')
   ok(!/<script>|<b>/.test(c), 'raw HTML survived')
   ok(!c.includes('https://evil') && !c.includes('https://x.example'), 'a URL survived')
+  ok(!/\bwww\.evil/.test(c) && c.includes('www​.evil'), 'a bare www. domain survived (GFM links it)')
   ok(!/#12\b/.test(c.replace(/#​12/g, '')), 'a reference survived')
   ok(!/[‪-‮]/.test(c), 'a bidi override survived')
   ok(!lines.some((l) => l.startsWith('::')), 'a line opens a workflow command')
@@ -815,6 +816,13 @@ check('exits: canary needs its key, calibrate refuses more than 3 samples', () =
   eq(runCli(['calibrate', '--samples', '4']).status, 1)
 })
 
+check('calibrate: six reviews in one process do not time each other out while one prepares', () => {
+  // Their git reads are synchronous; a stream left unread meanwhile must not trip a 60 s first-byte timer.
+  ok(J.CALIBRATE_LIMITS.firstByteMs >= 240_000 && J.CALIBRATE_LIMITS.idleMs >= 240_000, 'calibrate keeps the PR-review timers')
+  eq(J.CALIBRATE_LIMITS.attemptMs, J.LIMITS.attemptMs, 'the attempt cap still bounds every call')
+  ok(/limits: CALIBRATE_LIMITS/.test(read(SCRIPT)), 'cliCalibrate passes them')
+})
+
 check('canary: a miss and a clean-fixture Tier A are both red; a listed seed and a quiet clean are green', () => {
   const rv = (findings) => ({ status: 'reviewed', usage: { calls: [{ cost: 0.001 }] }, findings })
   const seed = 'api/crates/notes/src/lib.rs'
@@ -903,6 +911,7 @@ check('workflows: permissions — {} on top, read-only review and standards jobs
   const s = jobsOf(WF('judge.yml'))
   for (const f of ['judge.yml', 'judge-review.yml', 'judge-calibrate.yml']) ok(/^permissions: \{\}$/m.test(WF(f)), `${f} top-level permissions`)
   eq(permsOf(r.review.header), 'actions: read, contents: read, pull-requests: read')
+  eq(permsOf(r.bootstrap.header), 'contents: read')
   eq(permsOf(s.judge.header), 'contents: read, pull-requests: read')
   eq(permsOf(r.comment.header), 'pull-requests: write')
   eq(permsOf(s.comment.header), 'pull-requests: write')
@@ -921,31 +930,42 @@ check('workflows: the trusted checkout, and the trusted ref admits only testing,
 check('workflows: the key is in the Review step alone, which runs only the trusted reviewer', () => {
   const t = WF('judge-review.yml')
   eq(t.split('secrets.JUDGE_OPENROUTER_API_KEY').length - 1, 1)
-  const steps = jobsOf(t).review.steps
+  const jobs = jobsOf(t)
+  const steps = jobs.review.steps
   const review = steps.find((s) => /name: Review$/m.test(s))
   ok(review.includes('secrets.JUDGE_OPENROUTER_API_KEY') && review.includes("steps.trust.outputs.reviewer == 'trusted'"), 'Review')
-  for (const s of steps.filter((x) => /reviewer == 'bootstrap'|reviewer != 'trusted'/.test(x))) ok(!s.includes('secrets.'), `a bootstrap step holds a secret:\n${s}`)
+  // The job that names the key never runs the head's code: a runner holds every
+  // secret its job references from the first step, a skipped step's included.
+  const reviewJob = steps.join('\n')
+  for (const bad of ['git archive', '$RUNNER_TEMP/boot', 'Bootstrap']) ok(!reviewJob.includes(bad), `the keyed job runs head code: ${bad}`)
   const nodes = steps.filter((s) => /\bnode /.test(s))
-  eq(nodes.length, 3)
-  const boot = steps.find((s) => s.includes('Bootstrap'))
-  ok(boot.includes('JUDGE_REVIEW_OFFLINE=1') && !boot.includes('secrets.') && boot.includes('$RUNNER_TEMP/boot/out'), 'Bootstrap')
+  eq(nodes.length, 2)
+  ok(nodes.every((s) => /node scripts\/judge-review\.mjs /.test(s)), 'the keyed job runs only the trusted tree\'s reviewer')
+  // The bootstrap job: no secret anywhere in it, offline, and nothing uploaded.
+  const b = jobs.bootstrap
+  const bootAll = [...b.header, ...b.steps].join('\n')
+  ok(!bootAll.includes('secrets.') && !bootAll.includes('upload-artifact') && !bootAll.includes('GH_TOKEN'), 'the bootstrap job holds no secret and uploads nothing')
+  ok(/needs: review/.test(b.header.join('\n')) && /needs\.review\.outputs\.reviewer == 'bootstrap'/.test(b.header.join('\n')), 'bootstrap runs only when the trusted tree has no reviewer')
+  const boot = b.steps.find((s) => s.includes('Bootstrap'))
+  ok(boot.includes('JUDGE_REVIEW_OFFLINE=1') && boot.includes('$RUNNER_TEMP/boot/out'), 'Bootstrap')
   const upload = steps.find((s) => s.includes('upload-artifact'))
   ok(upload.includes('/judge/out/') && !upload.includes('boot'), 'the upload is the trusted out dir')
+  ok(steps.find((s) => s.includes('Say so when')).includes('*/bootstrap) s=not-reviewed; r=no-reviewer-on-trusted'), 'the review job still says why on the bootstrap path')
 })
 
 check('workflows: every review step has a timeout under the job, and is continue-on-error or the notice', () => {
-  const j = jobsOf(WF('judge-review.yml')).review
-  const jobMin = Number(/timeout-minutes: (\d+)/.exec(j.header.join('\n'))[1])
-  let sum = 0
-  let exclusive = 0
-  for (const s of j.steps) {
-    const m = /timeout-minutes: (\d+)/.exec(s)
-    ok(m, `no timeout:\n${s.split('\n')[0]}`)
-    if (/name: Review$|Bootstrap/m.test(s)) exclusive = Math.max(exclusive, Number(m[1]))
-    else sum += Number(m[1])
-    ok(s.includes('continue-on-error: true') || s.includes('Say so when') || s === j.steps[0], `not continue-on-error:\n${s.split('\n')[0]}`)
+  for (const name of ['review', 'bootstrap']) {
+    const j = jobsOf(WF('judge-review.yml'))[name]
+    const jobMin = Number(/timeout-minutes: (\d+)/.exec(j.header.join('\n'))[1])
+    let sum = 0
+    for (const s of j.steps) {
+      const m = /timeout-minutes: (\d+)/.exec(s)
+      ok(m, `${name}: no timeout:\n${s.split('\n')[0]}`)
+      sum += Number(m[1])
+      ok(s.includes('continue-on-error: true') || s.includes('Say so when'), `${name}: not continue-on-error:\n${s.split('\n')[0]}`)
+    }
+    ok(sum <= jobMin, `${name}: steps sum to ${sum} of ${jobMin}`)
   }
-  ok(sum + exclusive <= jobMin, `steps sum to ${sum + exclusive} of ${jobMin}`)
 })
 
 check('workflows: the comment jobs check out nothing, hold no secret and run no script', () => {
@@ -959,7 +979,7 @@ check('workflows: the comment jobs check out nothing, hold no secret and run no 
 
 check('workflows: names, triggers and the concurrency key', () => {
   const r = WF('judge-review.yml')
-  for (const n of ['judge (review)', 'offload / judge (review)', 'judge (review) comment']) ok(r.includes(n), n)
+  for (const n of ['judge (review)', 'offload / judge (review)', 'judge (review) comment', "'judge (review) bootstrap'", "'offload / judge (review) bootstrap'"]) ok(r.includes(n), n)
   const s = WF('judge.yml')
   for (const n of ['name: judge (standards)', 'name: judge (standards) comment']) ok(s.includes(n), n)
   ok(/types: \[opened, synchronize, reopened, ready_for_review\]/.test(r) && !/types:.*edited/.test(r), 'judge-review triggers')
