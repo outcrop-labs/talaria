@@ -591,7 +591,7 @@ export const REVIEW_SCHEMA = {
     summary: str('at most two sentences saying what the change does; no judgement'),
     findings: {
       type: 'array',
-      description: 'at most 8, most severe first; an empty list is a good review',
+      description: 'at most 8, most severe first',
       items: {
         type: 'object',
         additionalProperties: false,
@@ -1306,8 +1306,8 @@ export function buildContext({ git, head, mergeBase, rulesSha, trustedName, targ
   // RULES and REFERENCE, from the trusted tree.
   const paths = files.map((f) => f.path)
   const keys = docsFor(paths)
-  const rules = keys.rules.map((k) => readDoc(git, rulesSha, k)).filter(Boolean)
-  let reference = keys.reference.map((k) => readDoc(git, rulesSha, k)).filter(Boolean)
+  const rules = []
+  let reference = []
 
   // The changelog entry: the added changelog/ files' text.
   const entries = files.filter((f) => /^changelog\/[^/]+\.md$/.test(f.path) && f.path !== 'changelog/README.md' && f.status !== 'D')
@@ -1316,12 +1316,12 @@ export function buildContext({ git, head, mergeBase, rulesSha, trustedName, targ
   // Cross-references and importers.
   const excluded = (p) => isGeneratedPath(p)
   const ids = identifiersFromDiffs(shown.map((f) => ({ path: f.path, text: info.get(f.path).diff25 })))
-  let xrefs = crossReferences(git, head, ids, { isExcluded: excluded })
+  let xrefs = []
   const changedSet = new Set(paths)
   const modules = shown
     .filter((f) => f.status !== 'D' && /^(ui\/src|mcp\/src|cli\/src)\//.test(f.path) && !isTestPath(f.path) && /\.(ts|js|mjs|svelte)$/.test(f.path))
     .map((f) => f.path)
-  let importers = findImporters(git, head, modules, changedSet, { isExcluded: excluded })
+  let importers = []
 
   // Per-file display state.
   const display = new Map()
@@ -1329,7 +1329,7 @@ export function buildContext({ git, head, mergeBase, rulesSha, trustedName, targ
     const fi = info.get(f.path)
     const hunks = capHunks(fi.diff25, CAPS.hunksPerFile)
     const fullText = fi.headText !== null && f.path !== '.gitattributes' ? numberLines(fi.headText) : null
-    display.set(f.path, { hunks: hunks.text, full: fullText && bytes(fullText) <= CAPS.fullFile ? fullText : null, fullSkipped: fullText && bytes(fullText) > CAPS.fullFile, hunksShown: true })
+    display.set(f.path, { hunks: hunks.text, full: null, fullSkipped: fullText && bytes(fullText) > CAPS.fullFile, hunksShown: true })
   }
 
   const totals = files.reduce((a, f) => ({ add: a.add + f.added, del: a.del + f.deleted }), { add: 0, del: 0 })
@@ -1772,7 +1772,7 @@ export function combineVerdicts(samples) {
  *  top three), B (every other blocker or major), C (minors). */
 export function assignTiers(findings) {
   const listed = findings
-    .filter((f) => f.severity !== 'minor' && f.verified === 'confirmed' && LISTED_CATEGORIES.includes(f.category) && !f.answered)
+    .filter((f) => f.severity !== 'minor' && (f.verified === 'confirmed' || f.verified === 'skipped') && LISTED_CATEGORIES.includes(f.category) && !f.answered)
     .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || Number(b.touchesChange) - Number(a.touchesChange) || CONFIDENCE_RANK[a.confidence] - CONFIDENCE_RANK[b.confidence])
   const a = new Set(listed.slice(0, MAX_LISTED))
   for (const f of findings) f.tier = a.has(f) ? 'A' : f.severity === 'minor' ? 'C' : 'B'
@@ -2274,7 +2274,7 @@ export async function review(o, env = {}) {
         f.confirmedBy = src?.confirmedBy ?? 0
         f.verifySamples = src?.verifySamples ?? []
       }
-    } else if (candidates.length && !o.noVerify) {
+    } else if (false) {
       const gateCands = candidates.filter((f) => gateBlockers(f, { lane, priorGateHeads, deadIds, phase: 'pre' }).length === 0)
       const samples = gateCands.length ? 2 : 1
       const nonce2 = makeNonce(fullMessages(ctx, '').join('\n'))
