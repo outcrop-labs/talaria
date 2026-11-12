@@ -244,6 +244,13 @@ graded, ≥ 80% of them real, and ≤ 3% of PRs with a false one. Grades live in
 (an agent may draft them with evidence). A weekly canary (seeded defect, clean fixture, and
 the 7-day not-reviewed rate) goes red if the judge has quietly died.
 
+**The reviewer runs below its keep-on bars, by the owner's decision.** On 2026-11-12 the
+minimal reviewer scored R3 2 of 7, H1 0 of 3 and P1 10 of 19 graded real (run
+43184195389). The reviewer before it scored 0 of 7 and 0 of 3. The owner kept the minimal one
+on in report mode anyway: it never blocks, costs about a cent per review, and half its findings
+were real bugs that review had missed. The bars above stay the target for any change to the
+reviewer and the floor for turning the gate on.
+
 **Never put a calibration PR's specifics in the prompt** — identifiers, values, file names.
 The scorecard would then measure memory; the held-out set exists to notice.
 
