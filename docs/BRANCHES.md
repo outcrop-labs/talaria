@@ -210,7 +210,7 @@ unchecked, and a burst of merges is covered by the run that finishes.
 | `pr-target` (flow.yml) | pull requests into `main`, `rc`, `testing` | `main` takes only this repository's `rc`; `rc` takes only the lanes, checked from the commits; no title or body that would skip the merge's own push checks; no retarget into `rc` or `main` until a push re-runs the checks |
 | `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc` (CI green, deploy green, in runs made on `rc`) and carries no unrolled `changelog/` entries |
 | `judge.yml` | every pull request | the exact rules (branch flow, changelog entry for user-visible paths, do-not-touch trees, PR-body asks), from the trusted branch's copy; one sticky comment from a job with no checkout; red on a deterministic `must` only |
-| `judge-review.yml` | same-repository non-draft pull requests; `ci/**` pushes as `offload / judge (review)` | a model's review (OpenRouter; model pinned in `scripts/judge-review.mjs`) run from the trusted branch: at most 3 confirmed line annotations, one sticky comment only when one is confirmed, cost in the summary. Never fails, never approves, never required |
+| `judge-review.yml` | same-repository non-draft pull requests; `ci/**` pushes as `offload / judge (review)` | a model's review (OpenRouter; model pinned in `scripts/judge-review.mjs`) run from the trusted branch: at most 3 line annotations, one sticky comment only when there is one to read, cost in the summary. Never fails, never approves, never required |
 | `branch-push` (flow.yml) | pushes to `main`, `rc`, `testing` | content provenance: what a push introduces came from where it is allowed to come from |
 | `pre-push` (git hook) | a push from a wired clone | the same provenance rule, before the network |
 | `mobile-package.yml` | pull requests touching `mobile/`, pushes to rc/main, and on demand | a debug-signed Android APK attached to the run — an `adb install` artifact, not distributable |
@@ -380,7 +380,7 @@ Things about those lists that are easy to get wrong:
 - **Neither judge is on any list.** `judge (standards)` fails only on a
   deterministic `must`. `judge (review)` never fails; with
   `JUDGE_REVIEW_GATE=blockers`, pr-watch holds an agent's done on an
-  unanswered, doubly confirmed blocker — never a person's merge. The
+  unanswered, high-confidence blocker — never a person's merge. The
   testing-review approval stays a person's: the judges post comments, never
   reviews, and Actions may not approve pull requests.
 - **A new context joins a ruleset only once its branch reports it.** A required

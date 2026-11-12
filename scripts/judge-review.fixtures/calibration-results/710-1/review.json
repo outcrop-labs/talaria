@@ -7,7 +7,6 @@
     "ms": 120000,
     "calls": [
       {
-        "purpose": "review",
         "attempt": 1,
         "cost": 0.02
       }
@@ -26,8 +25,7 @@
       "title": "hydrate writes $state while a $derived reads it",
       "failure": "rendering the tree calls hydrate, which mutates state during render",
       "gate": false,
-      "wouldGate": true,
-      "verified": "confirmed"
+      "wouldGate": true
     }
   ]
 }

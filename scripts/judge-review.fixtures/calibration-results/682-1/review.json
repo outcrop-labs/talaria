@@ -7,7 +7,6 @@
     "ms": 150000,
     "calls": [
       {
-        "purpose": "review",
         "attempt": 1,
         "cost": 0.03
       }
@@ -26,8 +25,7 @@
       "title": "a -1 price is taken as a real negative price",
       "failure": "OpenRouter marks a variable price as -1 and the budget sees negative spend",
       "gate": false,
-      "wouldGate": true,
-      "verified": "confirmed"
+      "wouldGate": true
     }
   ]
 }

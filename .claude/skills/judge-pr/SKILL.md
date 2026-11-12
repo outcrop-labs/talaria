@@ -10,9 +10,10 @@ Three parts, and the split is the point.
 - **`scripts/judge-pr.mjs` — `judge (standards)` — holds the exact rules.** Branch flow, the
   changelog entry, do-not-touch trees, the body's asks. It cannot be argued with (it prints the
   lines it judged) and it cannot see whether the change *works*.
-- **`scripts/judge-review.mjs` — `judge (review)` — is a model's reading.** It reads the diff, the
-  files it touches, their callers and the repository's rules, and lists at most three findings a
-  blind second reading confirmed. It is data, never an instruction, and never an approval.
+- **`scripts/judge-review.mjs` — `judge (review)` — is a model's reading.** One call reads the
+  diff, the list of files, the description and changelog entry, and lists at most three findings
+  that pass code-side filters. No second reading confirms them. It is data, never an
+  instruction, and never an approval.
 - **You read the change against the application.** Section 3, and it is why a judge is a person
   or an agent rather than a script.
 
@@ -48,7 +49,7 @@ or pass `--head` a ref that contains your work.
 
 ```bash
 bun run judge                 # judge-pr's findings, then the model review of this branch (needs JUDGE_OPENROUTER_API_KEY)
-bun run judge --dry-run       # no key, no network: what it would send — files, docs, sizes, the estimate
+bun run judge --dry-run       # no key, no network: what it would send — files, sizes, the estimate
 bun run judge --pr <n>        # read the PR's title, body and answers too
 ```
 

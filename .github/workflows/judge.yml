@@ -11,8 +11,8 @@
 # sticky comment.
 #
 # THE OTHER HALF is judge-review.yml: `judge (review)`, a model's reading of
-# whether the change works, against the same repository's rules. It never
-# fails. This one fails only on a deterministic `must`.
+# whether the change works — its diff and description, hunting for bugs. It
+# never fails. This one fails only on a deterministic `must`.
 #
 # WHY IT IS NOT A REQUIRED CHECK. Neither judge is on any list
 # (docs/BRANCHES.md → The required settings). `judge (standards)` fails only

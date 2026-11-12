@@ -125,13 +125,13 @@
 //
 // REVIEW. Once everything else is green, the `judge (review)` job's
 // annotations are read (scripts/judge-review-wire.mjs is the contract): its
-// verdict, and at most three findings a blind second reading confirmed. In
-// report mode — the default — they are listed under the proof line (id, place,
-// title; never the failure or fix text) and hold nothing. Only with
-// JUDGE_REVIEW_GATE=blockers does a finding the reviewer marked `gate` (a
-// doubly confirmed blocker in a narrow class) hold an agent's done, as
-// `pr-watch: review`, until it is fixed or answered on the PR:
-// `judge-review answer <id>: <40+ characters>`. Precedence is conflict > red >
+// verdict, and the at most three findings it listed (Tier A — one model
+// reading, never a second). In report mode — the default — they are listed
+// under the proof line (id, place, title; never the failure or fix text) and
+// hold nothing. Only with JUDGE_REVIEW_GATE=blockers does a finding the
+// reviewer marked `gate` (a high-confidence blocker in a narrow class) hold an
+// agent's done, as `pr-watch: review`, until it is fixed or answered on the
+// PR: `judge-review answer <id>: <40+ characters>`. Precedence is conflict > red >
 // pending > review > green. A review that cannot be read, was not made, or was
 // made against another base (stale: `gh run rerun <id>` is printed) never
 // holds, and JUDGE_REVIEW_GATE=off — in this env or as the repository variable
@@ -691,7 +691,7 @@ export function reviewLines(o) {
   const lines = []
   if (o.status === 'reviewed' || o.status === 'stale') {
     for (const f of o.listed) lines.push(`  ${f.id} ${f.severity} ${f.category} ${f.path}:${f.line} — ${safeTerminal(f.title, 100).replace(/\n/g, ' ')}${f.answered ? ' (answered)' : ''}`)
-    if (o.more > 0) lines.push(`  (+${o.more} more in the PR comment, not confirmed — no action needed)`)
+    if (o.more > 0) lines.push(`  (+${o.more} more in the PR comment, beyond the three listed or answered — no action needed)`)
   }
   if (o.status === 'stale') lines.push(`  judge (review) reviewed against ${o.target}; re-run it: ${o.rerun ?? 'gh run rerun <id>'}`)
   return { clause, lines }
@@ -701,11 +701,11 @@ export function reviewLines(o) {
 export function reviewHoldText(pr, o) {
   const rows = o.listed.filter((f) => o.holding.includes(f.id)).map((f) => `  ${f.id}  ${f.severity} · ${f.category}  ${f.path}:${f.line}  ${safeTerminal(f.title, 100).replace(/\n/g, ' ')}`)
   const first = o.holding[0] ?? 'jr-xxxxxxxx'
-  return `#${pr.number} ${pr.url} — judge (review) at ${o.head ?? short(pr.headRefOid)} holds ${o.holding.length} confirmed blocker(s) nobody has answered (JUDGE_REVIEW_GATE=blockers).
+  return `#${pr.number} ${pr.url} — judge (review) at ${o.head ?? short(pr.headRefOid)} holds ${o.holding.length} high-confidence blocker(s) nobody has answered (JUDGE_REVIEW_GATE=blockers).
 
 ${rows.join('\n')}
 
-The full finding is in the PR comment. It is a model's reading, confirmed by two blind second readings — not a verdict. Read the quoted lines and the path it describes, then:
+The full finding is in the PR comment. It is one model's reading — not a verdict. Read the quoted lines and the path it describes, then:
   - real: fix it, \`bun run check\`, commit, push this branch, re-run the watcher;
   - the code is right: answer on the PR, then re-run the watcher —
       gh pr comment ${pr.number} --body 'judge-review answer ${first}: <the evidence, 40+ characters>'

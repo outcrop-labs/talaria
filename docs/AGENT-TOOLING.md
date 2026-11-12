@@ -170,39 +170,41 @@ overrides it) reads every same-repository, non-draft pull request and every `ci/
 (`bun run gate:remote`, as `offload / judge (review)`).
 
 - **The trusted tree.** The job checks out the trusted branch and runs everything from it; the
-  pull request is read only as `git show` / `git diff --text --no-textconv --no-ext-diff` /
-  `git grep -a`. The key (`JUDGE_OPENROUTER_API_KEY`, dedicated and spend-capped — never the
+  pull request is read only as git objects (`git cat-file`, `git diff --text --no-textconv
+  --no-ext-diff`). The key (`JUDGE_OPENROUTER_API_KEY`, dedicated and spend-capped — never the
   app's `OPENROUTER_API_KEY`) is in one step, which runs only the trusted reviewer. Until the
   trusted branch has a reviewer, a separate keyless job (`judge (review) bootstrap`) dry-runs
   the head's copy instead — never in the job that names the key, because a runner holds every
   secret its job references from the first step on.
-- **What it reads**, within a 300k-token budget trimmed in a fixed order: RULES from the
-  trusted branch chosen by the paths touched (AGENTS.md and CONTRIBUTING.md always; API, UI,
-  RUST-MIGRATION or UPDATES conventions as relevant), REFERENCE docs labelled as never a
-  finding by themselves, the body and changelog entry, judge-pr's findings (not to repeat),
-  the previous review's findings and their answers, the diff at `-U25`, the full head files,
-  and computed cross-references — the callers of every function the diff adds or stops
-  calling, and the importers of changed modules.
-- **Two readings.** The first answers in a strict JSON schema. Code then keeps only findings
+- **What it reads** — one call, within a 120k-token budget: a one-page bug-hunting prompt, then
+  the pull request's header, body and changelog entry, judge-pr's findings (not to repeat), the
+  previous review's findings and their answers, the FILES list and the diff at `-U25` (`-U10`,
+  then whole files dropped lowest-risk first, when it does not fit). Nothing else: no
+  repository docs, no full files, no callers or importers, and no second reading. The reviewer
+  that sent all of those (~200k tokens a review) found 0 of the 7 known dev-set bugs in
+  calibration and listed 3 findings in 57 reviews; this one found 2 and listed 19 in 54, 10 of
+  them real.
+- **Filtered in code.** The model answers in a strict JSON schema. Code keeps only findings
   whose quote is verbatim and unique in the head, in a changed file, near a change; drops low
   confidence; caps the noisy categories (claim-vs-code, test-gap, docs-drift, performance) at
-  minor. Every surviving blocker or major gets a **blind** second reading that sees only the
-  file, line, title and quoted lines and must name the triggering input and trace it; a
-  would-be gate finding gets two, and both must confirm.
-- **Three tiers.** Tier A — at most 3, confirmed, major or above, in a defect category — are
-  the only line annotations, the only findings pr-watch lists and the only thing that creates
-  a comment. Tier B (unconfirmed) sits collapsed in an existing comment; Tier C (minors, the
-  verification gap, what it could not judge) is in the job summary with the cost and the
-  context plan.
+  minor. A repo-rule finding must name one of the three rules the prompt states
+  (gateway-bypass, secret-in-config, forced-done) or cite a changed file.
+- **Three tiers.** Tier A — the top 3 unanswered blockers and majors in a defect category, by
+  severity, then a changed line over a nearby one, then confidence — are the only line
+  annotations, the only findings pr-watch lists and the only thing that creates a comment.
+  Tier B (the other blockers and majors) sits collapsed in an existing comment; Tier C
+  (minors, the verification gap, what it could not judge) is in the job summary with the cost
+  and the context plan.
 - **Never red, never an approval.** A missing key, a fork, a draft, a lane PR, a provider
   error, a timeout, bad output, the $0.25 per-run ceiling or a crash is a green job with a
   `not reviewed: <reason>` notice. Neither judge is on any required list.
 - **The gate ladder.** In report mode (the default) nothing holds anyone: an agent fixes what
   is real and names the rest in its report. Only after the prospective bar below may the owner
   set the repository variable `JUDGE_REVIEW_GATE=blockers`; then pr-watch holds an agent's done
-  on a doubly confirmed, high-confidence blocker in a narrow class that touches a changed line
-  and nobody answered — `judge-review answer <id>: <40+ characters>` clears it. A person's
-  merge is never held. `JUDGE_REVIEW_GATE=off` skips the review and releases every hold.
+  on a Tier A, high-confidence blocker in a narrow class (not dead-wiring) that touches a
+  changed line and nobody answered — one model reading, with no second one to confirm it —
+  and `judge-review answer <id>: <40+ characters>` clears it. A person's merge is never held.
+  `JUDGE_REVIEW_GATE=off` skips the review and releases every hold.
 - **Reuse and the debounce.** Finding ids come from the head's text at the anchored line, so
   an answer carries to the same concern on a later head. An unchanged context reuses the
   earlier review (a `gate:remote` review of the same head included) at no cost. A
