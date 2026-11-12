@@ -45,7 +45,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3RTRFMzE4MEVEMEY3MjcKUldRbjk5QU9HT1BrcCtLbUVDTC9EVUV5Snk5a3hhMk9hcXRvMHQyWWhEcDB0cTA4RFhhOEdNdy8K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4M0UzMzk3REU0MkVCOTgKUldTWTYwTGVsek0rR05IQ0xTMDdqLzdzbVdpWkVhZStSYm1WbDV3ZXVma2lrUENmVnhRak5mcUQK",
       "endpoints": [
         "https://github.com/outcrop-labs/talaria/releases/latest/download/latest.json"
       ],
