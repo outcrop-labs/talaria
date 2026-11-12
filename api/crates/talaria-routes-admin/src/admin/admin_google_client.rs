@@ -98,16 +98,13 @@ fn redirect_uris(origin: &str, signin_configured: bool) -> Vec<serde_json::Value
     uris
 }
 
-/// `?role=` → the role, or the 400 that names the two there are.
-fn role_of(q: &HashMap<String, String>) -> Result<ClientRole, Response> {
+/// `?role=` → the role, or the 400 sentence that names the two there are.
+fn role_of(q: &HashMap<String, String>) -> Result<ClientRole, String> {
     let raw = q.get("role").map(String::as_str);
     ClientRole::parse(raw).ok_or_else(|| {
-        house_error(
-            StatusCode::BAD_REQUEST,
-            &format!(
-                "Unknown client role '{}'. Use connections or signin.",
-                raw.unwrap_or_default()
-            ),
+        format!(
+            "Unknown client role '{}'. Use connections or signin.",
+            raw.unwrap_or_default()
         )
     })
 }
@@ -152,7 +149,10 @@ pub async fn put(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_admin(&state, &headers).await?;
-    let role = role_of(&q)?;
+    let role = match role_of(&q) {
+        Ok(r) => r,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let client_id = match string_member(obj, "clientId", 1, 200) {
@@ -229,7 +229,10 @@ pub async fn delete(
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Response, Response> {
     let user = require_admin(&state, &headers).await?;
-    let role = role_of(&q)?;
+    let role = match role_of(&q) {
+        Ok(r) => r,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
     let sb = secretbox_or_500(&state, "[admin/google-client] secretbox unavailable").await?;
     if let Err(e) = clear_google_client_config(&state.pg, role).await {
         return Ok(internal("[admin/google-client] clear failed", e));

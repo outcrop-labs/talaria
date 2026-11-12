@@ -149,9 +149,8 @@ has a card for each, and each has an env twin:
 - **The domain restriction (`hd`) belongs to the connections client.** Login
   sends and enforces the connections client's domain whichever client runs it,
   so setting a sign-in client can never open login to every Google account.
-- Moving login to a sign-in client changes no stored connection. Every grant
-  keeps refreshing with the client that minted it, today the connections
-  client.
+- Moving login to a sign-in client changes no stored connection: every
+  grant keeps refreshing with the connections client, which minted it.
 
 **Why two.** Google now sorts OAuth clients into agentic and not, with the
 checkbox **"Use this client for an AI-powered agent"** under *Google Auth
@@ -159,13 +158,12 @@ Platform → Clients*. Google's notice: "Starting November 11, 2026, Google
 Workspace MCP servers will reject requests from any app or integration whose
 OAuth client is not marked as agentic … OAuth clients that are not marked as
 agentic by November 12, 2026 will remain non-agentic and can't call Google
-Workspace MCP servers." And: "If an existing
-OAuth client is used for both AI agent and non-agent features, create a
-separate OAuth client for the AI agent and mark only that client as agentic.
-Keep the existing client for your non-agent features." The REST APIs Talaria
-calls today are not affected: "Apps and integrations that are not AI agents,
-like those that only call Google Workspace REST APIs, are not affected by this
-change."
+Workspace MCP servers." And: "If an existing OAuth client is used for both AI
+agent and non-agent features, create a separate OAuth client for the AI agent
+and mark only that client as agentic. Keep the existing client for your
+non-agent features." The REST APIs Talaria calls today are not affected: "Apps
+and integrations that are not AI agents, like those that only call Google
+Workspace REST APIs, are not affected by this change."
 
 **Which shape to run.** Signing in is a person, not an agent:
 
@@ -181,8 +179,8 @@ change."
   client. **Do not swap a new client into the connections slot while
   connections are stored:** today every stored grant refreshes with whichever
   client is in that slot, and OAuth binds a refresh token to the client it
-  was issued to (RFC 6749 §6). Grants that remember their own client are separate, later
-  work.
+  was issued to (RFC 6749 §6). Grants that remember their own client are
+  separate, later work.
 
 **Declaring the mark.** Google exposes no API and no token claim for the
 checkbox, so each card asks what Google Cloud shows: *Ticked*, *Unticked* or

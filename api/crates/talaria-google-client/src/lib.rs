@@ -983,13 +983,13 @@ mod tests {
         for login in [true, false] {
             assert_eq!(
                 codes(&st(true, None), &st(true, Some(true)), login),
-                vec!["signin_client_agentic"]
+                ["signin_client_agentic"]
             );
         }
         // Login on, no sign-in client, connections declared agentic.
         assert_eq!(
             codes(&st(true, Some(true)), &st(false, None), true),
-            vec!["login_on_agentic_client"]
+            ["login_on_agentic_client"]
         );
         // ...not while login is off, and not once a sign-in client is set.
         assert!(codes(&st(true, Some(true)), &st(false, None), false).is_empty());
@@ -1005,7 +1005,7 @@ mod tests {
         // Both at once.
         assert_eq!(
             codes(&st(true, Some(true)), &st(true, Some(true)), true),
-            vec!["signin_client_agentic"]
+            ["signin_client_agentic"]
         );
         // Every message quotes Google's checkbox or guidance, not a paraphrase.
         for w in client_warnings(&st(true, Some(true)), &st(true, Some(true)), true)
