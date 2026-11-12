@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use talaria_api_facades::google::agent::{resolve_agent_google, resolve_agent_principal};
-use talaria_api_facades::google::errors::google_fail;
+use talaria_api_facades::google::errors::{google_fail, google_token_fail};
 use talaria_api_facades::google::gmail::list_recent_messages_with_token;
 use talaria_api_facades::google::oauth::query_pairs;
 use talaria_api_facades::google::pending_actions::{QueueAction, queue_action};
@@ -38,14 +38,19 @@ pub async fn get(
         return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    let Some(google) =
-        resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
-    else {
-        return Ok(house_error_msg(
-            StatusCode::CONFLICT,
-            "not_connected",
-            "No Google account is connected for this agent (its owner, or the org account).",
-        ));
+    let google = match resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms())
+        .await
+    {
+        Ok(Some(google)) => google,
+        Ok(None) => {
+            return Ok(house_error_msg(
+                StatusCode::CONFLICT,
+                "not_connected",
+                "No Google account is connected for this agent (its owner, or the org account).",
+            ));
+        }
+        // The token itself failed: Google's words, never "not connected".
+        Err(e) => return Ok(google_token_fail(e, "Gmail")),
     };
     // Absent OR empty q folds to the inbox default.
     let q = query_pairs(uri.query())

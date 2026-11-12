@@ -462,9 +462,11 @@ pub struct ConnectExchange {
 }
 
 /// Exchange an auth code for tokens + the Google identity — the fetch BOTH
-/// flows run. Errors are strings; the callback maps every one to the same
-/// `exchange_failed` bounce, so the only place the detail is allowed to live
-/// is the log.
+/// flows run. Errors are strings for the log. A refusal from Google's token
+/// endpoint keeps Google's body, so the callback can carry Google's OAuth
+/// error CODE on the `exchange_failed` bounce (`connect_bounce_reason`) —
+/// the code only, never the description: the bounce is a URL anyone can
+/// craft.
 pub async fn exchange_google_tokens(
     pg: &PgPool,
     sb: &SecretBox,
@@ -497,7 +499,10 @@ pub async fn exchange_google_tokens(
             "[google/connect] token exchange failed: {status} {}",
             truncate(&text)
         );
-        return Err(format!("google token exchange failed: {status}"));
+        return Err(format!(
+            "google token exchange failed: {status} {}",
+            truncate(&text)
+        ));
     }
     let tokens: serde_json::Value = serde_json::from_str(
         &token_res
@@ -660,11 +665,14 @@ pub async fn handle_connect_callback(
 ) -> (Response, Option<ConnectedAccount>) {
     use axum::response::IntoResponse;
 
-    let back = {
-        |status: &str| {
+    let back_because = {
+        |status: &str, reason: Option<&str>| {
             let mut res = (
                 axum::http::StatusCode::FOUND,
-                [(header::LOCATION, landing(status))],
+                [(
+                    header::LOCATION,
+                    with_bounce_reason(landing(status), reason),
+                )],
             )
                 .into_response();
             if let Ok(v) =
@@ -675,6 +683,7 @@ pub async fn handle_connect_callback(
             (res, None)
         }
     };
+    let back = |status: &str| back_because(status, None);
 
     // The start route's mirror: when a public origin is pinned, the state
     // cookie lives there and Google only knows the pinned callback — anything
@@ -735,8 +744,9 @@ pub async fn handle_connect_callback(
 
     // Truthiness throughout: an empty error param is no error, an empty
     // code/state/cookie is no code/state/cookie.
-    if qp.get("error").is_some_and(|e| !e.is_empty()) {
-        return back("denied");
+    if let Some(error) = qp.get("error").filter(|e| !e.is_empty()) {
+        // Google's own code for why it sent the person back (`access_denied`).
+        return back_because("denied", connect_bounce_reason(error).as_deref());
     }
     let present = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
     if !present(&code) || !present(&state_param) || !present(&cookie_state) {
@@ -784,12 +794,32 @@ pub async fn handle_connect_callback(
             let (res, _) = back("connected");
             (res, Some(ConnectedAccount { user, email }))
         }
-        // The detail names the client or the code; the user sees a fixed
-        // status and the log keeps the sentence.
+        // The log keeps the sentence; the person sees the fixed status plus
+        // Google's OAuth error code when Google refused the exchange
+        // (`invalid_client`, `invalid_grant`).
         Err(e) => {
             tracing::error!("[{log_tag}] connect failed: {e}");
-            back("exchange_failed")
+            back_because("exchange_failed", connect_bounce_reason(&e).as_deref())
         }
+    }
+}
+
+/// Google's OAuth error code for a connect bounce — from a refused
+/// exchange's message or from the `?error=` Google redirected with. Only a
+/// bare snake_case code (`talaria_google_errors::oauth_error_code`).
+pub fn connect_bounce_reason(said: &str) -> Option<String> {
+    talaria_google_errors::oauth_error_code(said)
+}
+
+/// A landing URL with `reason=<code>` appended when there is one. The code
+/// is already a bare snake_case word, so it needs no escaping.
+pub fn with_bounce_reason(landing: String, reason: Option<&str>) -> String {
+    match reason {
+        Some(code) => {
+            let sep = if landing.contains('?') { '&' } else { '?' };
+            format!("{landing}{sep}reason={code}")
+        }
+        None => landing,
     }
 }
 
@@ -804,6 +834,45 @@ fn wall_now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_exchange_bounces_with_googles_code_and_nothing_else() {
+        // Google's token endpoint answering an authorization-code exchange,
+        // 2026-11-12, with no real credential: a real client id with a bogus
+        // secret, and a bogus code under gcloud's published installed-app
+        // client.
+        let bad_secret = "google token exchange failed: 401 Unauthorized {\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The provided client secret is invalid.\"\n}";
+        let bad_code = "google token exchange failed: 400 Bad Request {\n  \"error\": \"invalid_grant\",\n  \"error_description\": \"Bad Request\"\n}";
+        assert_eq!(
+            connect_bounce_reason(bad_secret).as_deref(),
+            Some("invalid_client")
+        );
+        assert_eq!(
+            connect_bounce_reason(bad_code).as_deref(),
+            Some("invalid_grant")
+        );
+        // The redirect's own `?error=`.
+        assert_eq!(
+            connect_bounce_reason("access_denied").as_deref(),
+            Some("access_denied")
+        );
+        // Our own failures carry no Google code; free text never rides.
+        assert_eq!(connect_bounce_reason("no google client configured"), None);
+        assert_eq!(connect_bounce_reason("userinfo: no sub"), None);
+        assert_eq!(connect_bounce_reason("<script>"), None);
+
+        assert_eq!(
+            with_bounce_reason(
+                "/settings/connections?google=exchange_failed".into(),
+                Some("invalid_client")
+            ),
+            "/settings/connections?google=exchange_failed&reason=invalid_client"
+        );
+        assert_eq!(
+            with_bounce_reason("/admin?googleOrg=connected".into(), None),
+            "/admin?googleOrg=connected"
+        );
+    }
 
     #[test]
     fn consent_url_matches_the_ts_serialization() {

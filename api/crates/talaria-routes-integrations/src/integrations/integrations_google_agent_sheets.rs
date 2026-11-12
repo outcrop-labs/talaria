@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use talaria_api_facades::google::agent::{resolve_agent_google, resolve_agent_principal};
-use talaria_api_facades::google::errors::google_fail;
+use talaria_api_facades::google::errors::{google_fail, google_token_fail};
 use talaria_api_facades::google::oauth::query_pairs;
 use talaria_api_facades::google::pending_actions::{QueueAction, queue_action};
 use talaria_api_facades::google::sheets::read_sheet_with_token;
@@ -43,11 +43,13 @@ pub async fn get(
         return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    let Some(google) =
-        resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
-    else {
-        return Ok(not_connected());
-    };
+    let google =
+        match resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await {
+            Ok(Some(google)) => google,
+            Ok(None) => return Ok(not_connected()),
+            // The token itself failed: Google's words, never "not connected".
+            Err(e) => return Ok(google_token_fail(e, "Sheets")),
+        };
     let range = query_pairs(uri.query()).get("range").cloned();
     match read_sheet_with_token(&google.token, &id, range.as_deref()).await {
         Ok(sheet) => Ok(Json(sheet).into_response()),

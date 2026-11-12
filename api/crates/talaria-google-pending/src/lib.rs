@@ -18,11 +18,12 @@ use talaria_google_agent::get_agent_access_token;
 use talaria_google_calendar::{
     CreateEventInput, cancel_event_with_token, create_event_with_token, update_event_with_token,
 };
-use talaria_google_connections::get_access_token;
+use talaria_google_connections::{TokenError, get_access_token};
 use talaria_google_docs::{create_doc_with_token, update_doc_with_token};
 use talaria_google_drive::{
     create_drive_folder_with_token, move_drive_file_with_token, rename_drive_file_with_token,
 };
+use talaria_google_errors::{REASON_MAX_CHARS, upstream_reason};
 use talaria_google_gmail::{SendInput, send_message_with_token};
 use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
 use talaria_google_sheets::update_sheet_with_token;
@@ -51,6 +52,67 @@ pub struct PendingAction {
     pub principal_kind: String,
     pub status: String,
     pub created_ms: i64,
+    /// Why the last approval of this still-pending row did not run — the
+    /// executor's release sentence, quoting Google when Google said why
+    /// (`result.error`). None on a row nobody has tried yet.
+    pub last_error: Option<String>,
+}
+
+/// One row as every pending read selects it: the columns of
+/// `pending_columns!`, in order.
+type PendingRow = (
+    String,
+    String,
+    Option<String>,
+    Value,
+    Option<String>,
+    Option<String>,
+    bool,
+    String,
+    String,
+    i64,
+    Option<String>,
+);
+
+/// The select list behind `PendingRow` — a macro, not a const, so every
+/// query stays one `concat!`ed static string (sqlx's static-string contract).
+macro_rules! pending_columns {
+    () => {
+        "id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, \
+         principal_kind, status, (trunc(extract(epoch from created_at) * 1000))::bigint, \
+         result->>'error'"
+    };
+}
+
+impl From<PendingRow> for PendingAction {
+    fn from(row: PendingRow) -> Self {
+        let (
+            id,
+            kind,
+            summary,
+            payload,
+            agent_model,
+            owner_user_id,
+            is_org,
+            principal_kind,
+            status,
+            created_ms,
+            last_error,
+        ) = row;
+        PendingAction {
+            id,
+            kind,
+            summary,
+            payload,
+            agent_model,
+            owner_user_id,
+            is_org,
+            principal_kind,
+            status,
+            created_ms,
+            last_error,
+        }
+    }
 }
 
 /// What a queueing carries. `payload` is the engine input verbatim — a
@@ -100,26 +162,13 @@ pub async fn queue_action(
             already_pending: true,
         });
     }
-    #[allow(clippy::type_complexity)] // the queued row's own columns, one each
-    let row: (
-        String,
-        String,
-        Option<String>,
-        Value,
-        Option<String>,
-        Option<String>,
-        bool,
-        String,
-        String,
-        i64,
-    ) = sqlx::query_as(
+    let row: PendingRow = sqlx::query_as(concat!(
         "insert into google_pending_actions \
              (kind, summary, payload, agent_model, owner_user_id, is_org, principal_kind) \
          values ($1, $2, $3, $4, $5::uuid, $6, $7) \
-         returning id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, \
-                   principal_kind, status, \
-                   (trunc(extract(epoch from created_at) * 1000))::bigint",
-    )
+         returning ",
+        pending_columns!()
+    ))
     .bind(input.kind)
     .bind(input.summary)
     .bind(input.payload)
@@ -130,30 +179,8 @@ pub async fn queue_action(
     .fetch_one(pg)
     .await
     .map_err(|e| format!("google pending action insert: {e}"))?;
-    let (
-        id,
-        kind,
-        summary,
-        payload,
-        agent_model,
-        owner_user_id,
-        is_org,
-        principal_kind,
-        status,
-        created_ms,
-    ) = row;
-    let action = PendingAction {
-        id: id.clone(),
-        kind,
-        summary,
-        payload,
-        agent_model,
-        owner_user_id,
-        is_org,
-        principal_kind,
-        status,
-        created_ms,
-    };
+    let action = PendingAction::from(row);
+    let id = action.id.clone();
 
     // The row IS an approval the instant it lands, and the agent that drafted
     // it is stopped in front of it. Until this call existed the first a human
@@ -189,62 +216,20 @@ async fn find_same_pending_draft(
     let Some(signature) = gmail_signature(input.payload) else {
         return Ok(None);
     };
-    #[allow(clippy::type_complexity)] // the pending row's own columns, one each
-    let rows: Vec<(
-        String,
-        String,
-        Option<String>,
-        Value,
-        Option<String>,
-        Option<String>,
-        bool,
-        String,
-        String,
-        i64,
-    )> = sqlx::query_as(
-        "select id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, \
-                principal_kind, status, \
-                (trunc(extract(epoch from created_at) * 1000))::bigint \
-         from google_pending_actions \
-         where kind = 'gmail_send' and status = 'pending' \
-           and is_org = $1 and owner_user_id is not distinct from $2::uuid \
-         order by created_at desc",
-    )
+    let rows: Vec<PendingRow> = sqlx::query_as(concat!(
+        "select ",
+        pending_columns!(),
+        " from google_pending_actions \
+          where kind = 'gmail_send' and status = 'pending' \
+            and is_org = $1 and owner_user_id is not distinct from $2::uuid \
+          order by created_at desc"
+    ))
     .bind(input.is_org)
     .bind(input.owner_user_id)
     .fetch_all(pg)
     .await
     .map_err(|e| format!("google pending action dedupe read: {e}"))?;
-    let pending: Vec<PendingAction> = rows
-        .into_iter()
-        .map(
-            |(
-                id,
-                kind,
-                summary,
-                payload,
-                agent_model,
-                owner_user_id,
-                is_org,
-                principal_kind,
-                status,
-                created_ms,
-            )| {
-                PendingAction {
-                    id,
-                    kind,
-                    summary,
-                    payload,
-                    agent_model,
-                    owner_user_id,
-                    is_org,
-                    principal_kind,
-                    status,
-                    created_ms,
-                }
-            },
-        )
-        .collect();
+    let pending: Vec<PendingAction> = rows.into_iter().map(PendingAction::from).collect();
     Ok(pending
         .into_iter()
         .find(|action| gmail_signature(&action.payload).as_deref() == Some(signature.as_str())))
@@ -326,6 +311,7 @@ pub fn pending_wire(a: &PendingAction) -> Value {
         "principalKind": a.principal_kind,
         "status": a.status,
         "createdAt": talaria_agent_auth::epoch_ms_to_iso(a.created_ms),
+        "lastError": a.last_error,
     })
 }
 
@@ -341,59 +327,19 @@ pub async fn list_pending(
     // query keeps sqlx's static-string contract; `$2 and …` gates the arm so a
     // member's false bind short-circuits it to no rows, exactly like an
     // absent clause.
-    #[allow(clippy::type_complexity)] // the listing's own columns, one each
-    let rows: Vec<(
-        String,
-        String,
-        Option<String>,
-        Value,
-        Option<String>,
-        Option<String>,
-        bool,
-        String,
-        String,
-        i64,
-    )> = sqlx::query_as(
-        "select id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, \
-                principal_kind, status, \
-                (trunc(extract(epoch from created_at) * 1000))::bigint \
-         from google_pending_actions \
-         where status = 'pending' \
-           and ((is_org = false and owner_user_id = $1::uuid) or ($2 and is_org = true)) \
-         order by created_at desc",
-    )
+    let rows: Vec<PendingRow> = sqlx::query_as(concat!(
+        "select ",
+        pending_columns!(),
+        " from google_pending_actions \
+          where status = 'pending' \
+            and ((is_org = false and owner_user_id = $1::uuid) or ($2 and is_org = true)) \
+          order by created_at desc"
+    ))
     .bind(user_id)
     .bind(is_admin)
     .fetch_all(pg)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(
-                id,
-                kind,
-                summary,
-                payload,
-                agent_model,
-                owner_user_id,
-                is_org,
-                principal_kind,
-                status,
-                created_ms,
-            )| PendingAction {
-                id,
-                kind,
-                summary,
-                payload,
-                agent_model,
-                owner_user_id,
-                is_org,
-                principal_kind,
-                status,
-                created_ms,
-            },
-        )
-        .collect())
+    Ok(rows.into_iter().map(PendingAction::from).collect())
 }
 /// The confirm-sends queue the approver of this draft actually opens.
 ///
@@ -606,53 +552,66 @@ pub async fn decide_action(
     // Approve → the token of the identity that was queued, not whichever
     // account is_org happens to imply. Agent rows are admin-approved
     // (is_org) and still execute as the agent's own Google account.
-    let token = match principal_kind.as_str() {
-        "agent" => get_agent_access_token(
-            pg,
-            sb,
-            agent_model
-                .as_deref()
-                .expect("agent-identity actions carry an agent model"),
-            now_ms,
-        )
-        .await
-        .map_err(|e| e.to_string())?,
-        "owner" => get_access_token(
-            pg,
-            sb,
-            owner_user_id
-                .as_deref()
-                .expect("personal actions carry an owner"),
-            now_ms,
-        )
-        .await
-        .map_err(|e| e.to_string())?,
-        _ => get_org_access_token(pg, sb, now_ms)
+    let vended = match principal_kind.as_str() {
+        "agent" => {
+            get_agent_access_token(
+                pg,
+                sb,
+                agent_model
+                    .as_deref()
+                    .expect("agent-identity actions carry an agent model"),
+                now_ms,
+            )
             .await
-            .map_err(|e| e.to_string())?,
+        }
+        "owner" => {
+            get_access_token(
+                pg,
+                sb,
+                owner_user_id
+                    .as_deref()
+                    .expect("personal actions carry an owner"),
+                now_ms,
+            )
+            .await
+        }
+        _ => get_org_access_token(pg, sb, now_ms).await,
     };
-    let Some(token) = token else {
+    let reconnect = match principal_kind.as_str() {
+        "agent" => "Reconnect this agent's Google account on its record to run this.",
+        "org" => "Reconnect the org Google account to run this.",
+        _ => "Reconnect Google to run this action.",
+    };
+    let token = match vended {
+        Ok(Some(token)) => token,
         // Nothing ran: hand the row back so the same approval works once the
         // account is reconnected.
-        sqlx::query(
-            "update google_pending_actions set status = 'pending', decided_by = null, decided_at = null \
-             where id = $1::uuid and status = 'executing'",
-        )
-        .bind(action_id)
-        .execute(pg)
-        .await
-        .map_err(|e| format!("google pending action release: {e}"))?;
-        return Ok(Some(DecideOutcome {
-            status: "not_connected".into(),
-            message: Some(
-                match principal_kind.as_str() {
-                    "agent" => "Reconnect this agent's Google account on its record to run this.",
-                    "org" => "Reconnect the org Google account to run this.",
-                    _ => "Reconnect Google to run this action.",
-                }
-                .to_string(),
-            ),
-        }));
+        Ok(None) => {
+            release_claim(pg, action_id, reconnect).await?;
+            return Ok(Some(DecideOutcome {
+                status: "not_connected".into(),
+                message: Some(reconnect.to_string()),
+            }));
+        }
+        // The token itself failed. Nothing ran either, so the row goes back
+        // too — a `?` here used to leave it `executing` until the ten-minute
+        // takeover, with the approver told only "decide failed". Google's
+        // words, when it sent any, are the answer and stay on the row for
+        // the agent's next read; anything else is still the hard failure it
+        // was (the log keeps the detail), released.
+        Err(e) => {
+            let raw = e.to_string();
+            let Some(message) = token_refusal_message(&e, reconnect) else {
+                release_claim(pg, action_id, TOKEN_UNAVAILABLE).await?;
+                return Err(raw);
+            };
+            tracing::warn!("[google/pending] {action_id} token refused: {raw}");
+            release_claim(pg, action_id, &message).await?;
+            return Ok(Some(DecideOutcome {
+                status: "not_connected".into(),
+                message: Some(message),
+            }));
+        }
     };
 
     // Org actions land on the configured shared targets (calendar / send-as
@@ -1060,8 +1019,66 @@ pub async fn decide_action(
             nudge_brief(stale_ids);
             Ok(Some(DecideOutcome {
                 status: "failed".into(),
-                message: Some("Google rejected the action.".into()),
+                message: Some(failure_message(&message)),
             }))
+        }
+    }
+}
+
+/// What a released row says when the token failed without Google saying why
+/// (the refresh never got an answer, or a local fault): the detail is the
+/// log's, not the queue's.
+const TOKEN_UNAVAILABLE: &str =
+    "Nothing ran: a Google token could not be had for this account. Approve again to retry.";
+
+/// Hand a claimed row back to `pending`, with why on it: the sentence the
+/// approver was answered, kept as `result.error` so the agent's next read of
+/// the queue (`lastError`) says why its approved action has not run.
+async fn release_claim(pg: &PgPool, action_id: &str, why: &str) -> Result<(), String> {
+    sqlx::query(
+        "update google_pending_actions \
+         set status = 'pending', decided_by = null, decided_at = null, result = $2 \
+         where id = $1::uuid and status = 'executing'",
+    )
+    .bind(action_id)
+    .bind(json!({ "error": why }))
+    .execute(pg)
+    .await
+    .map_err(|e| format!("google pending action release: {e}"))?;
+    Ok(())
+}
+
+/// The sentence a refused token answers with, or None when Google said
+/// nothing (a transport or local fault — the caller's hard-failure rung).
+/// A refused grant keeps the principal's reconnect sentence; a refused
+/// CLIENT is the admin's to fix, so it names that instead — reconnecting
+/// would not help.
+pub fn token_refusal_message(e: &TokenError, reconnect: &str) -> Option<String> {
+    let reason = upstream_reason(&e.to_string())?;
+    Some(match e {
+        TokenError::ClientRejected(_) => format!(
+            "Google refused this server's OAuth client: «{reason}». Nothing ran; an admin needs to check the client under Admin → Google Workspace."
+        ),
+        TokenError::InvalidGrant(_) => {
+            format!("Google refused the stored Google connection: «{reason}». {reconnect}")
+        }
+        TokenError::Other(_) => {
+            format!(
+                "Google refused the token refresh: «{reason}». Nothing ran; approve again to retry."
+            )
+        }
+    })
+}
+
+/// What a failed execution tells the approver: Google's words when the
+/// failure carries them, otherwise what failed — never a bare "Google
+/// rejected the action" over a fault that was not Google's.
+pub fn failure_message(raw: &str) -> String {
+    match upstream_reason(raw) {
+        Some(reason) => format!("Google rejected the action: «{reason}»"),
+        None => {
+            let said: String = raw.chars().take(REASON_MAX_CHARS).collect();
+            format!("The action did not run: «{said}»")
         }
     }
 }
@@ -1350,6 +1367,60 @@ mod tests {
         );
     }
 
+    // Google's token endpoint, 2026-11-12, no real credential (captured in
+    // talaria-google-connections' tests) — and a Drive 404 from the
+    // outcrop-labs log the same day.
+    const TOKEN_BAD_SECRET: &str = "google token refresh failed: 401 Unauthorized {\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The provided client secret is invalid.\"\n}";
+    const TOKEN_BAD_REFRESH: &str = "google token refresh failed: 400 Bad Request {\n  \"error\": \"invalid_grant\",\n  \"error_description\": \"Bad Request\"\n}";
+    const DRIVE_404: &str = "drive rename failed: 404 Not Found {\n  \"error\": {\n    \"code\": 404,\n    \"message\": \"File not found: talariaCaptureNonexistentDoc0000000000000.\",\n    \"errors\": [\n      {\n        \"message\": \"File not found: talariaCaptureNonexistentDoc0000000000000.\",\n        \"domain\": \"global\",\n        \"reason\": \"notFound\",\n        \"location\": \"fileId\",\n        \"locationType\": \"parameter\"\n      }\n    ]\n  }\n}\n";
+
+    #[test]
+    fn a_refused_token_quotes_google_and_names_whose_fix_it_is() {
+        let reconnect = "Reconnect the org Google account to run this.";
+        assert_eq!(
+            token_refusal_message(
+                &TokenError::InvalidGrant(TOKEN_BAD_REFRESH.into()),
+                reconnect
+            )
+            .as_deref(),
+            Some(
+                "Google refused the stored Google connection: «invalid_grant: Bad Request». Reconnect the org Google account to run this."
+            )
+        );
+        let client = token_refusal_message(
+            &TokenError::ClientRejected(TOKEN_BAD_SECRET.into()),
+            reconnect,
+        )
+        .expect("quoted");
+        assert!(client.starts_with(
+            "Google refused this server's OAuth client: «invalid_client: The provided client secret is invalid.»"
+        ));
+        assert!(
+            !client.contains("Reconnect"),
+            "a refused client is not fixed by a reconnect"
+        );
+        // Google said nothing: no sentence, so the caller keeps the hard failure.
+        assert_eq!(
+            token_refusal_message(
+                &TokenError::Other("no google client configured".into()),
+                reconnect
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_failed_action_says_what_google_said_or_what_failed() {
+        assert_eq!(
+            failure_message(DRIVE_404),
+            "Google rejected the action: «notFound: File not found: talariaCaptureNonexistentDoc0000000000000.»"
+        );
+        assert_eq!(
+            failure_message("doc_update missing fileId"),
+            "The action did not run: «doc_update missing fileId»"
+        );
+    }
+
     #[test]
     fn queued_in_requires_the_same_pending_id() {
         let listed = vec![PendingAction {
@@ -1363,6 +1434,7 @@ mod tests {
             principal_kind: "owner".into(),
             status: "pending".into(),
             created_ms: 0,
+            last_error: None,
         }];
         assert!(queued_in("p-1", &listed));
         assert!(!queued_in("p-2", &listed));

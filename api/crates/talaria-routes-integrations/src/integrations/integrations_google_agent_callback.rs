@@ -14,8 +14,9 @@ use talaria_api_facades::google::agent::{
     upsert_principal,
 };
 use talaria_api_facades::google::oauth::{
-    WORKSPACE_SCOPES, exchange_google_tokens, google_agent_connect_redirect_uri,
-    google_integration_enabled, oauth_relocation, query_pairs,
+    WORKSPACE_SCOPES, connect_bounce_reason, exchange_google_tokens,
+    google_agent_connect_redirect_uri, google_integration_enabled, oauth_relocation, query_pairs,
+    with_bounce_reason,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::percent_encode;
@@ -26,12 +27,17 @@ use talaria_session::{
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let back = |status: &str| {
+    // `reason` is Google's OAuth error code when Google said why — the
+    // Agents page's flash shows it; nothing but the bare code rides.
+    let back_because = |status: &str, reason: Option<&str>| {
         let mut res = (
             StatusCode::FOUND,
             [(
                 header::LOCATION,
-                format!("/agents?googleAgent={}", percent_encode(status)),
+                with_bounce_reason(
+                    format!("/agents?googleAgent={}", percent_encode(status)),
+                    reason,
+                ),
             )],
         )
             .into_response();
@@ -42,6 +48,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         }
         res
     };
+    let back = |status: &str| back_because(status, None);
 
     let path_and_query = format!(
         "{}{}",
@@ -72,8 +79,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     }
 
     let qp = query_pairs(uri.query());
-    if qp.get("error").is_some_and(|e| !e.is_empty()) {
-        return back("denied");
+    if let Some(error) = qp.get("error").filter(|e| !e.is_empty()) {
+        return back_because("denied", connect_bounce_reason(error).as_deref());
     }
     let code = qp.get("code").cloned().filter(|s| !s.is_empty());
     let state_param = qp.get("state").cloned().filter(|s| !s.is_empty());
@@ -106,7 +113,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(ex) => ex,
         Err(e) => {
             tracing::error!("[integrations/google/agent] connect failed: {e}");
-            return back("exchange_failed");
+            return back_because("exchange_failed", connect_bounce_reason(&e).as_deref());
         }
     };
     // Kind first: a save that fails leaves the agent refusing writes instead
