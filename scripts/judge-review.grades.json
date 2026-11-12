@@ -1,6 +1,121 @@
 {
   "version": 1,
   "_doc": "Person-written grades for the reviewer's findings: calibration keys are <pr>:<id>:<category>, live keys <pr>:<head12>:<id>. Each value is {real: bool, by, at, note}. Data, written by a person (an agent may draft with evidence); docs/AGENT-TOOLING.md → Calibrating the reviewer.",
-  "calibration": {},
+  "calibration": {
+    "581:jr-c0cb26d0:fail-open": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). minor — At d04421f8, secret-health lists every web-search vendor key with clearable:true (talaria-secret-health/src/lib.rs:633-661). clear_setting_leaf writes \"\" over it (lib.rs:897-901), and from_stored drops the empty value (agent-web-search lib.rs:190-195). That leaves backend picked, keys {} and public tiers off, a state apply() refuses (lib.rs:380-391). render() (lib.rs:444-501) warns only about unknown backends, withheld SearXNG and search-only extract, so the render and hire logs say nothing, and the panel only shows the env name as the input's placeholder ins"
+    },
+    "649:jr-7d60436d:correctness": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). major — check.ts:78 @64de3ba1 aliases /^zod$/ to <kit>/dist/server/runtime/rt-zod.js. build-sdk-kit.ts:175 builds that file from shimSource('zod') (specifiers.ts:66-69: `export * from \"zod\"`) with zod kept external, so the shim imports bare zod itself. The kit is unpacked outside node_modules (docs/sdk/outside-the-host.md:128,149), so vitest 4.1 inlines it. Vite's SSR import analysis resolves aliased specifiers (the matchAlias guard), and its alias plugin has no importer check, so the shim imports itself and z comes back undefined. rt-talaria-sdk-server.js's own zod "
+    },
+    "658:jr-c3e94292:security": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). The race is real in mechanics. record_to_keep runs at lifecycle.rs:1391 @fb6431bc, before the host is told 'removed' at :1415. The Kept branch (:1425) never rewrites the file, and app server chunks may import node: modules (ui/src/server/app-build/build.ts:321). It has no security effect, though: apps run fully trusted inside the host process (docs/APPS.md:328, docs/sdk/README.md:44), and that process holds DATABASE_URL (ui/src/server/db/pg.ts:21) and the internal token. The same code can rewrite app_sources or the grant rows directly, or write the file after uninsta"
+    },
+    "658:jr-f7830553:security": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). Install reads only the file (lifecycle.rs:778 calls grants_belong_to at :572 @fb6431bc). That is by design: uninstall deletes the app_sources row (forget_source at :1419), so after any supported uninstall the file is the only record left. A row can exist at install time only if an admin deleted apps/<slug> by hand outside uninstall (install checks only the directory, :774). The attack also needs malicious app code, which already runs fully trusted with DATABASE_URL in the host process (docs/APPS.md:328, ui/src/server/db/pg.ts:21) and can write the grants or the row d"
+    },
+    "660:jr-1b49a8eb:accessibility": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). minor — TabBar.svelte:110-131 @51db5204 renders the active item and the inactive tile as separate {#if}/{:else} branches, so activating a tile destroys the focused <a> and mounts a new one; nothing restores focus (tab-strip.ts revealCurrent only scrolls, sv-router and AppLayout.svelte have no focus handling). At the merge base TopDock.svelte:144-154 kept one anchor per item and toggled data-status. The same branch swap is in TabBar.svelte:120-142 on origin/testing. Focus lands on <body>, so the next Tab starts from the top of the page. That is an accessibility regres"
+    },
+    "684:jr-1af67599:fail-open": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). minor — scripts/cleanup-sweep.mjs:582 @3013c456 returns 'remove' for a 14-day-idle side target with no dirty/unpushed check (contrast :591 for the finished-PR branch), and dirty/unpushed are only populated when inspected (:1330-1331), while the PR's .claude/skills/cleanup/SKILL.md says it 'never takes one ... in a dirty or unpushed tree ... at any disk reading'. The behaviour predates the PR (cdaf59e7 :556 removed stale targets unconditionally) and WORKTREES.md's 14-day bullet doesn't promise dirty/unpushed, so the PR added the contradicting promise, not the behaviou"
+    },
+    "684:jr-32254028:concurrency": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). It's true the walk at scripts/cleanup-sweep.mjs:821 @3013c456 never reaches target/<triple>/debug. But cargo always builds the host Layout (target/debug, used for build scripts and proc-macros) next to each --target layout and locks both for the whole compile. So a --target build also holds target/debug's .cargo-* flocks, which the depth-1 walk does see (:820), and targetBusy returns true. On-disk evidence: talaria-jev/api/target, where a --target x86_64-unknown-linux-gnu build wrote host-layout debug/build/crossbeam-utils-1b961ddf.../out within 40 ms of creating the"
+    },
+    "684:jr-4c936002:concurrency": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). This duplicates jr-32254028. The doc comment at scripts/cleanup-sweep.mjs:804 @3013c456 ('a target triple's') does overclaim, since depth<1 at :821 never visits target/<triple>/debug. But any --target cargo also holds the host profile dir's locks (target/debug or target/release, depth 1), so targetBusy still answers true and classify/dropTarget never delete under the build. Only the comment is wrong (origin/testing:806-807,824 unchanged)."
+    },
+    "684:jr-86132575:concurrency": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). minor — cli/src/targetseed.ts:294 @3013c456 checks existsSync(dstTarget) and then calls mkdirSync(dstProfile,{recursive:true}) at :345 with no destination lock; the flocks at :354-357 cover only the source's lock files. On any probe or copy failure, undo (:318) runs rmSync(dstTarget) unconditionally, so a cargo started in the destination inside that window (rust-analyzer in a fresh worktree, or a dev api in a checkout re-seeded with `talaria seed-target`) can have files copied into its target or the dir deleted under it. The window is narrow (the seed takes about 0.3"
+    },
+    "686:jr-5b8f0e8f:security": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). board_allows_agent itself refuses archived boards for every subject, the elevated assistant included: `if !board.exists || board.archived_at.is_some() { return Ok(false) }` (talaria-boards/src/lib.rs:815-818 at 1cbc3050, already present at mergeBase). So the agent branch at moving.rs:537 already refuses an archived destination, and lines 539-543 only word that refusal. Board policy rows cannot bypass the check because it runs before the config lookup. The same guard is at boards lib.rs:816 on origin/testing."
+    },
+    "686:jr-8562da58:concurrency": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). decide-before-lock, anchored at moving.rs:694, 22 lines past the defect's 592-662 range: the move decides from a read taken before the transaction; #688 fixed it."
+    },
+    "700:jr-040a5fa3:concurrency": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). The premise is wrong: the runtime does not retry a step that returns Err. At 8c5814a1, talaria-runs-run/src/lib.rs:1008-1027 (StepRace::Erred) calls store.fail. That sets state='error' (talaria-runs-store/src/lib.rs:578), which is_terminal (runs-define lib.rs:450-455), and no write ever moves an error row back to queued. max_attempts counts only crash reclaims (runs-define lib.rs:386-397; runs-run lib.rs:593), so attempt 2 never runs after a failed muse call. The only re-entry is a driver dying between land and fail, which the module header accepts as at-least-once."
+    },
+    "700:jr-81bb1c68:concurrency": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). minor — At 8c5814a1, slot_design computes `seen` for stored.design.run_id outside the CAS (lib.rs:206), but store::update re-reads the record on every try (store.rs:117-121), and record::stalled calls fail(d, d.run_id) with the CURRENT record's run_id (record.rs:462-476). The answering() guard (record.rs:276-278) therefore passes for a new run R2, and a stale Ended marks R2's live design Error; its landing is later dropped. start_design (lib.rs:441-452) has the same shape. The window is only between the Postgres run read and the Redis read, and it needs a concurrent "
+    },
+    "700:jr-abd6fb6d:concurrency": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). Scorer hit for non-cas-hold: store.rs's held-design writes were plain HSETs; #712 made each a compare-and-set."
+    },
+    "707:jr-0b613874:fail-open": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). The premise is wrong. No version of scripts/chassis.template.yml ever had `cpuset` or `deploy.resources.limits.cpus`: b6b9837b through 74893c36 had `cpus: ${AGENT_CPUS:-2}`, 6915f252 had `:-8`, and 20fc8371 onward has `cpu_shares` only. `git log --all -S cpuset` finds nothing. developer_cpu (talaria-fleet-render/src/lib.rs ~2877 @dc28a920; 2884 @origin/testing, unchanged) clears every CPU key a seeded chassis can carry, so the scenario needs an operator to hand-write those keys into the chassis."
+    },
+    "708:jr-5bb19661:correctness": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). usage_events.agent_model is the name of the key that made the call (gateway/src/usage.rs:1093 binds caller as $1; routes-fleet/src/llm/llm_chat.rs:133 caller_of maps fleet-gateway to api:fleet-gateway and an agent key to its model @0a775507). A container on the shared key books its Hermes crons under api:fleet-gateway too. So `own > 0` from crons happens only when the agent has its own key, and then suppressing 'shared-key' is correct. The finding's scenario (crons under the agent's name while ticket calls land on the shared key) cannot happen."
+    },
+    "708:jr-d1fba0fc:fail-open": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). minor — When spend_of's query fails it returns an empty map (talaria-routes-boards/src/work_status.rs:152-155 @0a775507). statuses then calls unwrap_or_default (:261), which gives calls 0 and no error marker. ui/src/lib/work-pulse.ts:169 shows that as 'no model calls yet' / 'Nothing has been booked to this ticket', while a pulse read failure is shown as 'unknown'. It only appears while the read is failing, and the page reports nothing wrong. Unchanged on origin/testing (work_status.rs:153-154, work-pulse.ts:169)."
+    },
+    "710:jr-2fa08911:correctness": {
+      "real": false,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). Knowledge.svelte:189 @8cd8896e does keep `latched` per mount, so returning re-opens the selected doc's ancestors. That is the specified behaviour, not a defect. The PR's changelog (changelog/2026-11-04-kb-sidebar-tree-expansion.md) promises 'a remembered document is visible in the tree when you come back to it — no more landing on a selection hidden behind a collapsed branch'. The effect's comment (Knowledge.svelte:170-186) says it runs for the restored selection and treats a fresh arrival as a new pair. Branches outside the selected doc's chain stay closed. Logic un"
+    },
+    "717:jr-d4098fdd:fail-open": {
+      "real": true,
+      "by": "agent draft from code reading, for the owner",
+      "at": "2026-11-12",
+      "note": "run 43184195389 (minimal). minor — omapak-submit.yml:109-121 @c021d717 probes only receive-pack, which checks Contents write. A token without Pull requests write passes, runs the vendoring (:153-158) and the push (:168), then fails at `gh pr create` (:177). The run still goes red ('fail-open' is the wrong label), but the failure comes late with a less useful message and a pushed branch left behind. The merge base's .permissions.push check had the same gap, so the PR did not introduce it. Still present on origin/testing (:148 probe, :207 push, :216 gh pr create). The suggested fix (a GET on /pu"
+    }
+  },
   "live": {}
 }

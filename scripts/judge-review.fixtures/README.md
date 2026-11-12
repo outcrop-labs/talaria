@@ -15,7 +15,6 @@ Data for `scripts/judge-review.test.mjs` and the weekly canary — no tests live
   scratch repository the test builds (`api/crates/demo/src/lib.rs`).
 - `canary/{defect,clean}/{base,head}` — the canary's two changes. `defect` seeds a SQL string
   built from a request parameter and a delete that lost its owner check (`seeded.json` names
-  the file); `clean` is a correct refactor. `rules.md` becomes the scratch repository's
-  AGENTS.md.
+  the file); `clean` is a correct refactor.
 - `calibration-results/<pr>-<sample>/review.json` — saved reviews for `score --results`.
 - `ledger/` — a synthetic ledger and grades for `score --ledger`.

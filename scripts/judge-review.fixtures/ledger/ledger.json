@@ -20,8 +20,7 @@
           "title": "t",
           "failure": "f",
           "gate": false,
-          "wouldGate": true,
-          "verified": "confirmed"
+          "wouldGate": true
         }
       ]
     },
@@ -44,8 +43,7 @@
           "title": "t",
           "failure": "f",
           "gate": false,
-          "wouldGate": true,
-          "verified": "confirmed"
+          "wouldGate": true
         }
       ]
     },

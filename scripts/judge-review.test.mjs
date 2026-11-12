@@ -1,7 +1,8 @@
 // judge-review's self-test: the wire, the stream, the call and its retries,
-// the filters, the blind verify, the tiers and the gate, the context and its
-// trims, reuse, rendering and sanitising, the exit codes, the workflows'
-// shape, the model pin, the calibration set and the canary fixtures.
+// the filters, the tiers and the gate, the context and its trims (and that it
+// holds nothing but the PR data and the task), reuse, rendering and
+// sanitising, the exit codes, the workflows' shape, the model pin, the
+// calibration set and the canary fixtures.
 // OFFLINE: no key reaches this process or its children, fetch throws, and
 // every model answer is a recorded or synthesised stream. Run by `bun run check`.
 
@@ -117,19 +118,11 @@ pub fn second_limit() -> usize {
 }
 ${filler}
 `
-const AGENTS = "# AGENTS.md\n\n## The rules that aren't style\n\n- Everything through the Talaria gateway.\n- Secrets live in Postgres, never in config files.\n"
-
 rgit('init', '-q', '-b', 'rc')
-put('AGENTS.md', AGENTS)
-put('CONTRIBUTING.md', '# Contributing\n\n## The rules that aren\'t style\n\n- Keep the guardrails.\n')
 put('api/crates/demo/src/lib.rs', LIB_BASE)
 put('api/crates/demo/src/util.rs', UTIL(true))
 put('docs/api/demo.md', '# demo — generated reference page\n')
 put('ui/src/lib/models.ts', 'export const MODELS = ["a"]\n')
-put('ui/src/lib/use-models.ts', "import { MODELS } from './models'\nexport const first = () => MODELS[0]\n")
-put('ui/src/lib/other.ts', "export const url = fetch('/api/models')\n")
-put('ui/src/other/models.ts', 'export const OTHER = 1\n')
-put('ui/src/other/uses-other.ts', "import { OTHER } from './models'\nexport const o = OTHER\n")
 put('.github/workflows/judge-review.yml', 'name: judge review\n# v1\n')
 rgit('add', '-A')
 rgit('commit', '-q', '-m', 'base: the scratch tree — judge-review test')
@@ -139,7 +132,7 @@ rgit('update-ref', 'refs/remotes/origin/testing', 'HEAD')
 rgit('switch', '-q', '-c', 'wt/demo')
 put('api/crates/demo/src/lib.rs', LIB_HEAD)
 put('api/crates/demo/src/util.rs', UTIL(false))
-put('api/crates/demo/src/many.rs', `${Array.from({ length: 50 }, (_, i) => `pub const MANY_${i + 1}: u32 = ${i + 1}; // padding for the cap test`).join('\n')}\n`)
+put('api/crates/demo/src/many.rs', `${Array.from({ length: 150 }, (_, i) => `pub const MANY_${i + 1}: u32 = ${i + 1}; // padding for the cap test`).join('\n')}\n`)
 put('docs/api/demo.md', '# demo — generated reference page\n\nregenerated\n')
 put('ui/src/lib/models.ts', 'export const MODELS = ["a", "b"]\n')
 put('ui/src/vendor.min.js', `${'x'.repeat(1500)}\n`)
@@ -159,9 +152,9 @@ rgit('switch', '-q', 'rc')
 const git = J.makeGit(repo)
 const PROMPT = J.parsePrompt(read(join(ROOT, 'scripts/judge-review.prompt.md')))
 const ctxOf = (o = {}) =>
-  J.buildContext({ git, head: HEAD_SHA, mergeBase: BASE_SHA, rulesSha: BASE_SHA, trustedName: 'testing', target: 'testing', source: 'wt/demo', title: 'demo', body: 'what changed', judgePr: { findings: [], ids: [] }, prior: null, prompt: PROMPT, ...o })
+  J.buildContext({ git, head: HEAD_SHA, mergeBase: BASE_SHA, target: 'testing', source: 'wt/demo', title: 'demo', body: 'what changed', judgePr: { findings: [], ids: [] }, prior: null, prompt: PROMPT, ...o })
 const CTX = ctxOf()
-const filterCtx = (ctx = CTX) => ({ info: ctx.info, rulesSent: ctx.rules.map((r) => r.path), filePaths: ctx.files.map((f) => f.path) })
+const filterCtx = (ctx = CTX) => ({ info: ctx.info, filePaths: ctx.files.map((f) => f.path) })
 const LIB = 'api/crates/demo/src/lib.rs'
 
 // ── SSE helpers ─────────────────────────────────────────────────────────────
@@ -196,7 +189,7 @@ function fakeFetch(answers) {
   f.calls = calls
   return f
 }
-const FAST = { firstByteMs: 5000, idleMs: 5000, attemptMs: 60_000, marginMs: 0, minLeftMs: { review: 0, verify: 0 } }
+const FAST = { firstByteMs: 5000, idleMs: 5000, attemptMs: 60_000, marginMs: 0, minLeftMs: 0 }
 const sleeps = []
 const fakeSleep = async (ms) => {
   sleeps.push(ms)
@@ -206,9 +199,8 @@ const callWith = (answers, o = {}) => {
   const state = o.state ?? J.callState()
   sleeps.length = 0
   return J.callModel({
-    body: J.requestBody({ model: J.DEFAULT_MODEL, purpose: o.purpose ?? 'review', messages: [{ role: 'user', content: 'x' }] }),
+    body: J.requestBody({ model: J.DEFAULT_MODEL, messages: [{ role: 'user', content: 'x' }] }),
     key: FAKE_KEY,
-    purpose: o.purpose ?? 'review',
     state,
     validate: o.validate ?? J.validateReview,
     fetchImpl,
@@ -303,7 +295,7 @@ check('answers: carried over by a shared 20+ character anchored line; not by a s
 // ── 3. the stream ───────────────────────────────────────────────────────────
 
 check('sse: every fixture parses the same in 1-byte and 7-byte chunks', async () => {
-  for (const name of ['sse-review-ok', 'sse-error-midstream', 'sse-length', 'sse-invalid', 'sse-verify-confirm', 'sse-verify-split']) {
+  for (const name of ['sse-review-ok', 'sse-error-midstream', 'sse-length', 'sse-invalid']) {
     const text = read(join(FIX, `${name}.txt`))
     const a = await J.parseSse(chunked(text, 1))
     const b = await J.parseSse(chunked(text, 7))
@@ -327,13 +319,12 @@ check('sse: a recording drops every reasoning field', async () => {
 // ── 4. the call ─────────────────────────────────────────────────────────────
 
 check('call: the request — model, effort high, strict schema, no sampling knobs, max_price only for a capped model', () => {
-  const b = J.requestBody({ model: J.DEFAULT_MODEL, purpose: 'review', messages: [] })
+  const b = J.requestBody({ model: J.DEFAULT_MODEL, messages: [] })
   eq([b.model, b.stream, b.reasoning.effort, b.response_format.json_schema.strict, b.response_format.json_schema.name, b.max_tokens], [J.DEFAULT_MODEL, true, 'high', true, 'pr_review', 48000])
   for (const k of ['seed', 'top_k', 'temperature', 'tools', 'tool_choice', 'models', 'plugins']) ok(!(k in b), k)
   eq(b.provider.max_price, J.PRICE_CAPS[J.DEFAULT_MODEL])
   eq([b.provider.zdr, b.provider.data_collection, b.provider.require_parameters], [true, 'deny', true])
-  ok(!('max_price' in J.requestBody({ model: 'z-ai/glm-5.3', purpose: 'verify', messages: [] }).provider), 'no max_price for an uncapped model')
-  eq(J.requestBody({ model: J.DEFAULT_MODEL, purpose: 'verify', messages: [] }).max_tokens, 16000)
+  ok(!('max_price' in J.requestBody({ model: 'z-ai/glm-5.3', messages: [] }).provider), 'no max_price for an uncapped model')
   eq(J.requestHeaders(FAKE_KEY).Authorization, `Bearer ${FAKE_KEY}`)
 })
 
@@ -402,19 +393,16 @@ check('call: an error chunk retries once, then provider-error; length retries at
   eq(d.r.reason, 'refused')
 })
 
-check('call: the cost ceiling stops a run, and a run makes at most 3 review and 2 verify calls', async () => {
+check('call: the cost ceiling stops a run, and a run makes at most 3 attempts', async () => {
   const state = J.callState(0.25)
   state.cost = 0.3
   const a = await callWith([{ body: GOOD }], { state })
   eq([a.r.reason, a.fetchImpl.calls.length], ['cost-ceiling', 0])
   const s2 = J.callState()
-  await callWith([{ status: 500 }, { status: 500 }, { status: 500 }, { status: 500 }], { state: s2 })
-  eq(s2.billed.review, 3)
-  const s3 = J.callState()
-  await callWith([{ status: 500 }], { state: s3, purpose: 'verify', validate: (t) => J.validateVerify(t, 1) })
-  await callWith([{ status: 500 }], { state: s3, purpose: 'verify', validate: (t) => J.validateVerify(t, 1) })
-  const third = await callWith([{ body: GOOD }], { state: s3, purpose: 'verify', validate: (t) => J.validateVerify(t, 1) })
-  eq([s3.billed.verify, third.fetchImpl.calls.length], [2, 0])
+  const b = await callWith([{ status: 500 }, { status: 500 }, { status: 500 }, { status: 500 }], { state: s2 })
+  eq([s2.billed, b.fetchImpl.calls.length], [3, 3])
+  const again = await callWith([{ body: GOOD }], { state: s2 })
+  eq(again.fetchImpl.calls.length, 0)
 })
 
 check('call: offline refuses the network; --replay is refused under GitHub Actions', async () => {
@@ -453,15 +441,17 @@ check('filters: a unique quote re-anchors and says so; a deletion-only hunk anch
   eq([...CTX.info.get('api/crates/demo/src/util.rs').points].sort((a, b) => a - b), [2, 3])
 })
 
-check('filters: the caps — noisy categories to minor, accessibility and an unruled repo-rule to major', () => {
+check('filters: the caps — noisy categories to minor, accessibility and an unruled repo-rule to major; a repo-rule cites a changed file or a rule_id', () => {
   const base = fixture('reanchor')[0]
   const k = (o) => J.filterFindings([{ ...base, line: 5, ...o }], filterCtx()).kept[0]
   eq(k({ category: 'test-gap', severity: 'blocker' }).severity, 'minor')
   eq(k({ category: 'claim-vs-code', severity: 'major' }).severity, 'minor')
   eq(k({ category: 'accessibility', severity: 'blocker' }).severity, 'major')
-  eq(k({ category: 'repo-rule', severity: 'blocker', rule: 'AGENTS.md — The rules' }).severity, 'major')
+  eq(k({ category: 'repo-rule', severity: 'blocker', rule: `${LIB} — the comment above find_user` }).severity, 'major')
   const rid = J.filterFindings(fixture('rule-id'), filterCtx()).kept[0]
   eq([rid.severity, rid.ruleId, rid.severityRaw], ['blocker', 'gateway-bypass', 'blocker'])
+  // No repository doc is sent, so citing one is not a citation.
+  eq(J.filterFindings([{ ...base, line: 5, category: 'repo-rule', rule: 'AGENTS.md — The rules' }], filterCtx()).dropped[0]?.reason, 'rule-not-cited')
 })
 
 check('filters: deterministic duplicates drop only as narrowed', () => {
@@ -477,34 +467,15 @@ check('filters: duplicates keep the higher severity; more than 8 are cut', () =>
   eq([t.kept.length, t.dropped.filter((x) => x.reason === 'over-cap').length], [8, 2])
 })
 
-// ── 6. verify, tiers, the gate ──────────────────────────────────────────────
+// ── 6. tiers, the gate ──────────────────────────────────────────────────────
 
-check('verify: the candidates are rendered blind', () => {
-  const k = J.filterFindings(fixture('rule-id'), filterCtx()).kept
-  const text = J.renderCandidates(k)
-  for (const leak of ['blocker', 'repo-rule', 'gateway-bypass', k[0].failure, k[0].fix, 'high']) ok(!text.includes(leak), `leaks ${leak}`)
-  ok(text.includes(k[0].file) && text.includes('let sql'), text)
-})
-
-check('verify: a confirmed verdict needs an input and a trace; split, unsure, refuted, skipped', () => {
-  const c = { verdict: 'confirmed', input: "name = x' or 1=1", trace: 'line 5 formats it and line 6 runs it' }
-  eq(J.combineVerdicts([c, c]), { verified: 'confirmed', confirmedBy: 2 })
-  eq(J.combineVerdicts([{ ...c, input: '' }]).verified, 'unsure')
-  eq(J.combineVerdicts([c, { verdict: 'refuted' }]).verified, 'split')
-  eq(J.combineVerdicts([{ verdict: 'refuted' }, { verdict: 'unsure' }]).verified, 'refuted')
-  eq(J.combineVerdicts([{ verdict: 'unsure' }]).verified, 'unsure')
-  eq(J.combineVerdicts([]).verified, 'skipped')
-})
-
-const F = (o = {}) => ({ id: 'jr-00000000', severity: 'blocker', category: 'security', ruleId: 'none', confidence: 'high', file: 'api/crates/x/src/lib.rs', line: 5, quote: 'q', title: 't', failure: 'f', verified: 'confirmed', confirmedBy: 2, reanchored: false, touchesChange: true, answered: null, tier: 'A', ...o })
+const F = (o = {}) => ({ id: 'jr-00000000', severity: 'blocker', category: 'security', ruleId: 'none', confidence: 'high', file: 'api/crates/x/src/lib.rs', line: 5, quote: 'q', title: 't', failure: 'f', reanchored: false, touchesChange: true, answered: null, tier: 'A', ...o })
 check('gate: the truth table', () => {
-  const g = (o, c = {}) => J.gateBlockers(F(o), { lane: 'feature', priorGateHeads: 0, deadIds: ['can_delete'], ...c })
+  const g = (o, c = {}) => J.gateBlockers(F(o), { lane: 'feature', priorGateHeads: 0, ...c })
   eq(g({}), [])
   eq(g({ tier: 'B' }), ['tier-a'])
   eq(g({ severity: 'major' }), ['blocker'])
   eq(g({ confidence: 'medium' }), ['confidence-high'])
-  eq(g({ confirmedBy: 1 }), ['two-confirmations'])
-  eq(g({ verified: 'split' }), ['two-confirmations'])
   eq(g({ reanchored: true }), ['reanchored'])
   eq(g({ touchesChange: false }), ['touches-change'])
   eq(g({}, { lane: 'skip' }), ['lane'])
@@ -519,40 +490,23 @@ check('gate: the truth table', () => {
   eq(g({ category: 'repo-rule', ruleId: 'secret-in-config', file: 'config/app.yml' }), [])
   eq(g({ category: 'repo-rule', ruleId: 'secret-in-config', file: '.github/workflows/x.yml' }), ['rule-path'])
   eq(g({ category: 'repo-rule', ruleId: 'forced-done', file: 'cli/src/x.ts' }), [])
-  eq(g({ category: 'dead-wiring', title: 'nothing calls it now' }), ['removed-call-fact'])
-  eq(g({ category: 'dead-wiring', title: 'the change removed the last can_delete call' }), [])
+  eq(g({ category: 'dead-wiring', title: 'the change removed the last can_delete call' }), ['category'])
   eq(g({ answered: { by: 'o' } }), ['answered'])
 })
 
-check('gate: tiers cap Tier A at three, and wouldGate mirrors gate by mode', () => {
+check('gate: tiers cap Tier A at three, minors and answered findings are never A, and wouldGate mirrors gate by mode', () => {
   const fs = [1, 2, 3, 4, 5].map((i) => F({ id: `jr-0000000${i}`, severity: i < 3 ? 'blocker' : 'major', tier: undefined }))
   J.assignTiers(fs)
   eq(fs.map((f) => f.tier), ['A', 'A', 'A', 'B', 'B'])
-  const report = J.markGate(fs.map((f) => ({ ...f })), { mode: 'report', lane: 'feature', priorGateHeads: 0, deadIds: [] })
-  const blockers = J.markGate(fs.map((f) => ({ ...f })), { mode: 'blockers', lane: 'feature', priorGateHeads: 0, deadIds: [] })
+  const more = [F({ severity: 'minor', tier: undefined }), F({ answered: { by: 'o' }, tier: undefined }), F({ severity: 'major', confidence: 'medium', tier: undefined })]
+  eq(J.assignTiers(more).map((f) => f.tier), ['C', 'B', 'A'])
+  const report = J.markGate(fs.map((f) => ({ ...f })), { mode: 'report', lane: 'feature', priorGateHeads: 0 })
+  const blockers = J.markGate(fs.map((f) => ({ ...f })), { mode: 'blockers', lane: 'feature', priorGateHeads: 0 })
   eq(report.map((f) => [f.gate, f.wouldGate]), blockers.map((f) => [f.wouldGate, f.gate]))
   eq(blockers.filter((f) => f.gate).length, 2)
 })
 
 // ── 7. the context ──────────────────────────────────────────────────────────
-
-check('context: RULES and REFERENCE by surface; ARCHITECTURE only its Data section, only for migrations; never the skill', () => {
-  eq(J.docsFor(['scripts/x.mjs']).rules, ['AGENTS.md', 'CONTRIBUTING.md'])
-  eq(J.docsFor(['api/crates/a/src/lib.rs']).rules, ['AGENTS.md', 'CONTRIBUTING.md', 'docs/API-CONVENTIONS.md', 'docs/RUST-MIGRATION.md'])
-  eq(J.docsFor(['ui/src/server/db/pg.ts']).rules, ['AGENTS.md', 'CONTRIBUTING.md', 'docs/API-CONVENTIONS.md', 'docs/UI-CONVENTIONS.md', 'docs/UPDATES.md', 'docs/ARCHITECTURE.md#Data'])
-  eq(J.docsFor(['.github/workflows/ci.yml']).reference, ['docs/BRANCHES.md'])
-  eq(J.docsFor(['desktop/src/keyring.rs']).reference, ['docs/ENCRYPTION.md', 'docs/PERMISSIONS.md', 'docs/AGENT-KEY-MIGRATION.md', 'docs/DESKTOP.md'])
-  const all = [...J.RULES_BY_PATH, ...J.REFERENCE_BY_PATH].flatMap((r) => r.docs)
-  ok(!all.some((d) => /ARCHITECTURE\.md$|SKILL\.md/.test(d)), 'the whole ARCHITECTURE.md or a skill is listed')
-})
-
-check('context: every listed doc and section exists in this tree', () => {
-  for (const key of new Set([...J.RULES_BY_PATH, ...J.REFERENCE_BY_PATH].flatMap((r) => r.docs))) {
-    const [path, heading] = key.split('#')
-    ok(existsSync(join(ROOT, path)), `${path} is gone — RULES_BY_PATH names it`)
-    if (heading) ok(J.extractSection(read(join(ROOT, path)), heading), `${path} has no "${heading}" section`)
-  }
-})
 
 check('context: generated, minified and binary files are listed but not shown', () => {
   const info = CTX.info
@@ -573,26 +527,14 @@ check('context: trims run in the fixed order and never touch the fixed sections;
   const big = ctxOf()
   const fixed = big.fixedTokens
   const tight = ctxOf({ budgetTokens: Math.ceil(fixed / 0.39) })
-  const order = ['reference', 'importers', 'full', 'cross-references', 'diff at -U10', 'hunks']
+  const order = ['diff at -U10', 'hunks']
   const ranks = tight.trims.map((t) => order.findIndex((o) => t.startsWith(o)))
   ok(ranks.length > 0 && ranks.every((r, i) => r >= 0 && (i === 0 || r >= ranks[i - 1])), tight.trims.join(', '))
   const s = J.renderSections(tight)
   ok(s.body.includes('what changed') && s.files.includes(LIB), 'a fixed section was trimmed')
   ok(ctxOf({ budgetTokens: fixed * 2 }).tooLarge === true, 'fixed sections over 40% must be too-large')
-  eq(J.compactTrims(['reference docs/A.md', 'reference docs/B.md', 'importers', 'full a', 'full b', 'full c', 'diff at -U10']), 'reference ×2, importers, full ×3, diff at -U10')
+  eq(J.compactTrims(['diff at -U10', 'hunks a', 'hunks b', 'hunks c']), 'diff at -U10, hunks ×3')
   eq([J.riskOf('scripts/judge-review.fixtures/x.json'), J.riskOf('api/crates/a/src/lib.rs'), J.riskOf('docs/x.md'), J.riskOf('ui/src/a.test.ts')], [1, 3, 0, 1])
-})
-
-check('context: a removed call with no use left is a fact; an added pub fn with only test callers has 0 non-test uses', () => {
-  const x = new Map(CTX.xrefs.map((r) => [r.id, r]))
-  eq([x.get('can_delete')?.kind, x.get('can_delete')?.nonTestUses], ['removed-call', 0])
-  eq([x.get('only_tested')?.kind, x.get('only_tested')?.nonTestUses, x.get('only_tested')?.testUses], ['added-item', 0, 1])
-})
-
-check('context: importers resolve the specifier — not a "/api/models" string, not another models.ts', () => {
-  eq(CTX.importers.map((i) => i.path), ['ui/src/lib/use-models.ts'])
-  ok(J.resolvesTo('ui/src/routes/a.ts', '$lib/models', 'ui/src/lib/models.ts'), '$lib')
-  ok(!J.resolvesTo('ui/src/other/uses-other.ts', './models', 'ui/src/lib/models.ts'), 'other models')
 })
 
 check('context: each nonce marker appears once, and the nonce never appears in the PR data', () => {
@@ -603,7 +545,19 @@ check('context: each nonce marker appears once, and the nonce never appears in t
   ok(system.includes(`<<<PR_DATA_${nonce}>>>`), 'the system names the fence')
   const data = user.slice(user.indexOf(`<<<PR_DATA_${nonce}>>>`) + 30, user.indexOf(`<<<END_PR_DATA_${nonce}>>>`))
   ok(!data.includes(nonce), 'the nonce leaked into the PR data')
-  ok(user.indexOf('# RULES') < user.indexOf('<<<PR_DATA_'), 'rules come first')
+  ok(user.startsWith(`<<<PR_DATA_${nonce}>>>`) && user.trimEnd().endsWith(PROMPT.review), 'the PR data, then the task — nothing before or after')
+})
+
+/** The headings the reviewer no longer sends. */
+const GONE = ['# RULES', '# REFERENCE', '## FULL FILES', '## IMPORTERS', '## CROSS-REFERENCES', '## verify', '<<<CANDIDATES_']
+check('context: the model reads the PR data and the task — no rules, reference, full files, importers, cross-references or verify', () => {
+  eq(Object.keys(PROMPT).sort(), ['review', 'system'])
+  ok(J.parsePrompt('## system\nx\n## review\ny').review === 'y', 'a prompt needs no ## verify')
+  const [system, user] = J.fullMessages(CTX, 'NONCE')
+  for (const gone of GONE) ok(!system.includes(gone) && !user.includes(gone), `the messages still hold ${gone}`)
+  for (const kept of ['# PULL REQUEST', '## BODY', '## CHANGELOG ENTRY', '## DETERMINISTIC FINDINGS', '## PREVIOUSLY REPORTED', '## FILES', '## DIFF', '## review']) ok(user.includes(kept), `the messages lack ${kept}`)
+  eq(Object.keys(J.renderSections(CTX)), ['prHeader', 'body', 'changelog', 'deterministic', 'previous', 'files', 'diff'])
+  eq(Object.keys(J.contextPlan(CTX).sections), ['prHeader', 'body', 'changelog', 'deterministic', 'previous', 'files', 'diff'])
 })
 
 check('context: the hash ignores the body and earlier findings, and moves with the diff', () => {
@@ -636,17 +590,32 @@ const replayDir = (files) => {
   for (const [name, src] of Object.entries(files)) writeFileSync(join(d, name), src.startsWith('data:') || src.startsWith(':') ? src : read(join(FIX, src)))
   return d
 }
-const OK_REPLAY = { 'review-1.sse': 'sse-review-ok.txt', 'verify-1.sse': 'sse-verify-confirm.txt', 'verify-2.sse': 'sse-verify-confirm.txt' }
+const OK_REPLAY = { 'review-1.sse': 'sse-review-ok.txt' }
 
-check('reuse: the full review — Tier A, the would-gate, the verify samples, the cost', async () => {
+check('reuse: the full review — Tier A, the would-gate, one call, the cost', async () => {
   const r = await reviewIn({}, { fetchImpl: J.replayFetch(replayDir(OK_REPLAY)) })
   eq(r.status, 'reviewed', r.reasonText)
   const byTier = (t) => r.findings.filter((f) => f.tier === t).map((f) => f.category)
   eq([byTier('A'), byTier('C')], [['security', 'security'], ['test-gap']])
   const b = r.findings.find((f) => f.severity === 'blocker')
-  eq([b.verified, b.confirmedBy, b.wouldGate, b.gate], ['confirmed', 2, true, false])
-  eq(r.usage.calls.map((c) => c.purpose), ['review', 'verify', 'verify'])
-  ok(Math.abs(r.usage.cost - (0.0042 + 0.0011 * 2)) < 1e-9, String(r.usage.cost))
+  eq([b.wouldGate, b.gate, b.gateBlockedBy], [true, false, []])
+  for (const k of ['verified', 'confirmedBy', 'verifySamples']) ok(!(k in b), `a finding still carries ${k}`)
+  eq(r.usage.calls.length, 1)
+  ok(Math.abs(r.usage.cost - 0.0042) < 1e-9, String(r.usage.cost))
+})
+
+check('review: one model call — no second reading — and its user message holds no removed section', async () => {
+  // The review's findings include a blocker and a major: the old reviewer sent both to a verify call.
+  const fetchImpl = fakeFetch([{ body: read(join(FIX, 'sse-review-ok.txt')) }, new Error('a second call was made')])
+  const r = await reviewIn({}, { fetchImpl })
+  eq([r.status, fetchImpl.calls.length], ['reviewed', 1], r.reasonText)
+  const body = fetchImpl.calls[0].body
+  eq([body.response_format.json_schema.name, body.max_tokens, body.messages.map((m) => m.role)], ['pr_review', J.MAX_TOKENS, ['system', 'user']])
+  const user = body.messages[1].content
+  for (const gone of GONE) ok(!user.includes(gone) && !body.messages[0].content.includes(gone), `the request still holds ${gone}`)
+  ok(user.includes('## DIFF') && user.includes('+    let sql = format!'), 'the request lacks the diff')
+  ok(!/^\d{5}\| /m.test(user), 'the request holds a numbered full file')
+  ok(r.findings.some((f) => f.tier === 'A' && f.severity === 'blocker'), 'an unverified blocker still reaches Tier A')
 })
 
 check('reuse: an equal context reuses the earlier review at no cost, with fresh answers', async () => {
@@ -686,20 +655,11 @@ check('debounce: only a synchronize under --github waits, before any call', asyn
   ok(!sleeps.includes(60_000), JSON.stringify(sleeps))
 })
 
-check('review: a split verify leaves the blocker in Tier B; refuted drops it', async () => {
-  const r = await reviewIn({}, { fetchImpl: J.replayFetch(replayDir({ 'review-1.sse': 'sse-review-ok.txt', 'verify-1.sse': 'sse-verify-confirm.txt', 'verify-2.sse': 'sse-verify-split.txt' })) })
-  const b = r.findings.find((f) => f.category === 'security' && f.line === 5)
-  eq([b.verified, b.tier, b.wouldGate], ['split', 'B', false])
-  const both = await reviewIn({}, { fetchImpl: J.replayFetch(replayDir({ 'review-1.sse': 'sse-review-ok.txt', 'verify-1.sse': 'sse-verify-split.txt', 'verify-2.sse': 'sse-verify-split.txt' })) })
-  ok(both.dropped.some((d) => d.reason === 'refuted'), JSON.stringify(both.dropped.map((d) => d.reason)))
-  eq(both.findings.find((f) => f.line === 10)?.severity, 'minor') // all unsure demotes a major
-})
-
 // ── 9. rendering ────────────────────────────────────────────────────────────
 
 const injected = async () => {
   const content = JSON.stringify({ summary: 'Summary with @owner and <b>html</b> and https://x.example #12 and www.evil.example', findings: fixture('injection'), verification_gap: 'gap text unique-gap-marker', could_not_judge: ['cnj unique-cnj-marker'] })
-  return reviewIn({}, { fetchImpl: J.replayFetch(replayDir({ 'review-1.sse': sseOf(content), 'verify-1.sse': read(join(FIX, 'sse-verify-confirm.txt')), 'verify-2.sse': read(join(FIX, 'sse-verify-confirm.txt')) })) })
+  return reviewIn({}, { fetchImpl: J.replayFetch(replayDir({ 'review-1.sse': sseOf(content) })) })
 }
 
 check('render: model text cannot mention, link, open HTML, forge the marker or forge a command', async () => {
@@ -790,7 +750,7 @@ check('exits: locally 1 with no key, 2 with a Tier A finding, 0 with none', () =
   eq(runCli([...RANGE, '--out', join(scratch, 'l1')]).status, 1)
   const two = runCli([...RANGE, '--replay', replayDir(OK_REPLAY), '--out', join(scratch, 'l2')], { JUDGE_OPENROUTER_API_KEY: FAKE_KEY })
   eq(two.status, 2, two.stderr)
-  ok(/judge-review: reviewed [0-9a-f]{12} · 2 to read, 0 more, 1 minor · \$0\.0064/.test(two.stderr), two.stderr)
+  ok(/judge-review: reviewed [0-9a-f]{12} · 2 to read, 0 more, 1 minor · \$0\.0042/.test(two.stderr), two.stderr)
   const none = sseOf(JSON.stringify({ summary: 'fine', findings: [], verification_gap: '', could_not_judge: [] }))
   eq(runCli([...RANGE, '--replay', replayDir({ 'review-1.sse': none }), '--out', join(scratch, 'l0')], { JUDGE_OPENROUTER_API_KEY: FAKE_KEY }).status, 0)
   eq(runCli([...RANGE, '--dry-run', '--out', join(scratch, 'ld')]).status, 0)
@@ -1085,7 +1045,7 @@ check('canary: the fixtures are whole and the seeded lines are there', () => {
   const head = read(join(FIX, 'canary/defect/head/api/crates/notes/src/lib.rs'))
   const base = read(join(FIX, 'canary/defect/base/api/crates/notes/src/lib.rs'))
   ok(head.includes('+ prefix +') && !head.includes('note.owner != user.id') && base.includes('note.owner != user.id'), 'the seeds')
-  ok(existsSync(join(FIX, 'canary/defect/rules.md')) && JSON.parse(read(join(FIX, 'canary/defect/seeded.json'))).file === 'api/crates/notes/src/lib.rs', 'seeded.json')
+  ok(JSON.parse(read(join(FIX, 'canary/defect/seeded.json'))).file === 'api/crates/notes/src/lib.rs', 'seeded.json')
   ok(read(join(FIX, 'canary/clean/head/ui/src/lib/format.ts')).includes('readable('), 'the clean refactor')
   const fx = J.fixtureRepo(join(FIX, 'canary/defect'))
   try {

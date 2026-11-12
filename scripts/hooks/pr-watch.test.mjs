@@ -1158,7 +1158,7 @@ check('review: a gate finding nobody answered holds — token review, after gree
   eq([o.status, o.holding], ['reviewed', ['jr-1a2b3c4d']])
   eq(finalKind({ kind: 'green' }, o), 'review')
   const text = reviewHoldText(RPR, o)
-  ok(/holds 1 confirmed blocker\(s\) nobody has answered/.test(text) && text.includes("gh pr comment 9 --body 'judge-review answer jr-1a2b3c4d:"), text)
+  ok(/holds 1 high-confidence blocker\(s\) nobody has answered/.test(text) && text.includes("gh pr comment 9 --body 'judge-review answer jr-1a2b3c4d:"), text)
 })
 
 check('review: red, conflict and pending outrank a hold', () => {
@@ -1181,7 +1181,7 @@ check('review: report mode is green, lists the findings, and never prints failur
   eq(clause, ' judge (review): reviewed, 2 to read, $0.0123.')
   ok(lines[0].startsWith('  jr-1a2b3c4d blocker security api/crates/demo/src/lib.rs:5 — User input is formatted into SQL'), lines[0])
   ok(!lines.join('\n').includes('reaches query_one') && !lines.join('\n').includes('the PR comment has the fix'), 'failure text reached the terminal')
-  eq(lines.at(-1), '  (+1 more in the PR comment, not confirmed — no action needed)')
+  eq(lines.at(-1), '  (+1 more in the PR comment, beyond the three listed or answered — no action needed)')
 })
 
 check('review: a would-gate title never holds, even under blockers', () => {

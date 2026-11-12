@@ -7,7 +7,6 @@
     "ms": 120000,
     "calls": [
       {
-        "purpose": "review",
         "attempt": 1,
         "cost": 0.02
       }

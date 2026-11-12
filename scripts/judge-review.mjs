@@ -4,12 +4,14 @@
 // WHAT IT IS. The reading half of the pull-request judge. scripts/judge-pr.mjs
 // holds the rules that are exact (branch flow, the changelog entry, the
 // do-not-touch trees, the body's asks) and fails on a `must`. This script
-// sends the change — its diff, the full files it touches, their callers and
-// importers, the author's description and the repository's own rules — to a
-// model on OpenRouter, keeps only the findings that survive code-side filters
-// and a BLIND second reading, and reports at most three of them as line
-// annotations. The calibration and the bars it must pass are in
-// docs/AGENT-TOOLING.md → The judge.
+// sends the change — its diff at -U25, the list of files, the author's
+// description and changelog entry, judge-pr's findings and the earlier
+// findings with their answers — to a model on OpenRouter in one call, keeps
+// the findings that survive code-side filters, and reports at most three of
+// them as line annotations. It sends no repository docs, no full files and no
+// callers, and makes no second reading: the reviewer that did found none of the
+// calibration set's known bugs (docs/AGENT-TOOLING.md → The judge, and the bars
+// it must pass).
 //
 // REPO TOOLING, NOT A FLEET AGENT. AGENTS.md's "Everything through the Talaria
 // gateway" governs agent and persona model calls (CONTRIBUTING.md, "The rules
@@ -21,8 +23,8 @@
 //
 // TRUST. In CI it runs from the TRUSTED branch's tree (.github/workflows/
 // judge-review.yml checks out testing, rc or main — never the pull request's),
-// and reads the pull request only as git objects: `git show`, `git diff --text
-// --no-textconv --no-ext-diff`, `git grep -a`. Nothing from the pull request is
+// and reads the pull request only as git objects: `git cat-file`, `git diff
+// --text --no-textconv --no-ext-diff`. Nothing from the pull request is
 // executed, and .gitattributes comes from the trusted tree. A change to this
 // script is therefore reviewed by the trusted branch's copy, not its own — a
 // reviewer change carries a calibration scorecard instead (judge-pr asks).
@@ -42,7 +44,7 @@
 //                     ceiling and a crash are each a green job with a
 //                     `not reviewed: <reason>` notice.
 //   review (local)    0 reviewed, nothing to read; 2 reviewed, at least one
-//                     confirmed finding to read; 1 could not run.
+//                     finding to read; 1 could not run.
 //   calibrate, canary, score, ledger   0 bar met / 2 bar missed / 1 could not
 //                     run — under --github too. They never run on a pull request.
 // NOTHING HERE MAY FAIL A PULL REQUEST. The only hold is agent-side, in
@@ -52,8 +54,10 @@
 //   node scripts/judge-review.mjs [review] [--base <ref|auto>] [--head <ref>] [--target <branch|auto>]
 //       [--source <branch>] [--rules-from <ref>] [--pr <n>] [--pr-json <f>] [--comments-json <f>]
 //       [--pr-body <f>] [--title <text>] [--prior <dir>] [--event <name>] [--action <name>] [--out <dir>]
-//       [--github] [--json] [--dry-run] [--bootstrap] [--print-prompt <f>] [--no-verify] [--model <id>]
+//       [--github] [--json] [--dry-run] [--bootstrap] [--print-prompt <f>] [--model <id>]
 //       [--budget-tokens <n>] [--deadline <s>] [--record <dir>] [--replay <dir>]
+//     --rules-from is accepted and ignored: judge-review.yml, and the copy of it on
+//     every open pull request's head, still passes the trusted tree's commit.
 //   node scripts/judge-review.mjs fetch-prior --repo <r> --pr <n|none> --head <sha> --run-id <id> --trusted <ref> --out <dir>
 //   node scripts/judge-review.mjs calibrate [--set <f>] [--only <prs>|dev|heldout|clean] [--samples <1-3>]
 //       [--concurrency 6] [--out <dir>] [--github] [--record <dir>] [--model <id>]
@@ -67,7 +71,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, posix, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { pickBase } from './surfaces.mjs'
 import {
@@ -99,7 +103,7 @@ export const KEY_ENV = 'JUDGE_OPENROUTER_API_KEY'
 export const CALIBRATION_KEY_ENV = 'JUDGE_CALIBRATION_OPENROUTER_API_KEY'
 const APP_KEY_ENV = 'OPENROUTER_API_KEY'
 
-export const BUDGET_TOKENS = 300_000
+export const BUDGET_TOKENS = 120_000
 export const CAPS = {
   body: 20_000,
   changelog: 8_000,
@@ -107,11 +111,11 @@ export const CAPS = {
   previous: 6_000,
   filesRows: 400,
   hunksPerFile: 60_000,
-  fullFile: 50_000,
   longLine: 1_000,
 }
-export const XREF = { ids: 30, hitsPerId: 20, bytes: 40_000 }
-export const IMPORTERS = { perModule: 6, perFile: 30_000, bytes: 120_000 }
+/** The most of the budget the untrimmable sections may take: the prompt, the
+ *  PR header, body, changelog entry, judge-pr's findings, the earlier findings
+ *  and the FILES list. Over it, the change is too large to read. */
 export const FIXED_SHARE = 0.4
 
 export const MAX_FINDINGS = 8
@@ -122,19 +126,20 @@ export const MIN_QUOTE_CHARS = 20
 /** Flipped only by a calibration PR (bar C1). */
 export const GATE_NEEDS_HIGH = true
 
-export const MAX_TOKENS = { review: 48_000, verify: 16_000 }
+export const MAX_TOKENS = 48_000
 export const DEBOUNCE_S = 60
-export const ATTEMPTS = { review: 3, verify: 2 }
+/** Billed attempts at the one review call, retries included. */
+export const ATTEMPTS = 3
 export const COST_CEILING = 0.25
 export const CALIBRATION_MODEL_CEILING = 1.0
-export const TIMEOUTS = { git: 30_000, grep: 20_000, judgePr: 60_000, gh: 30_000 }
+export const TIMEOUTS = { git: 30_000, judgePr: 60_000, gh: 30_000 }
 /** Per-attempt limits; injectable for the tests. */
 export const LIMITS = {
   firstByteMs: 60_000,
   idleMs: 120_000,
   attemptMs: 360_000,
   marginMs: 15_000,
-  minLeftMs: { review: 180_000, verify: 60_000 },
+  minLeftMs: 180_000,
 }
 /** Calibration runs six reviews in one process, and each one's git reads and
  *  judge-pr runs are synchronous: while one prepares, the others' streams sit
@@ -144,7 +149,9 @@ export const LIMITS = {
 export const CALIBRATE_LIMITS = { ...LIMITS, firstByteMs: 300_000, idleMs: 300_000 }
 
 export const LISTED_CATEGORIES = ['concurrency', 'fail-open', 'security', 'correctness', 'dead-wiring', 'migration', 'wire-format', 'data-loss', 'repo-rule', 'accessibility']
-export const GATING_CATEGORIES = ['concurrency', 'fail-open', 'security', 'correctness', 'data-loss', 'migration', 'wire-format', 'repo-rule', 'dead-wiring']
+/** A dead-wiring finding no longer gates: its gate needed the computed fact
+ *  that the removed call has no use left, and the reviewer computes no callers. */
+export const GATING_CATEGORIES = ['concurrency', 'fail-open', 'security', 'correctness', 'data-loss', 'migration', 'wire-format', 'repo-rule']
 export const CAPPED_AT_MINOR = ['claim-vs-code', 'test-gap', 'docs-drift', 'performance']
 export const CAPPED_AT_MAJOR = ['accessibility']
 export const CATEGORIES = [
@@ -155,7 +162,7 @@ export const RULE_IDS = ['gateway-bypass', 'secret-in-config', 'forced-done', 'n
 const SEVERITY_RANK = { blocker: 0, major: 1, minor: 2 }
 const CONFIDENCE_RANK = { high: 0, medium: 1, low: 2 }
 
-/** Excluded from the diff, the full files and the findings. */
+/** Excluded from the diff and the findings. */
 export const GENERATED = [
   /^docs\/api\//,
   /^docs\/CLI-REFERENCE\.md$/,
@@ -168,23 +175,6 @@ export const GENERATED = [
   /(^|\/)package-lock\.json$/,
   /^CHANGELOG\.md$/,
 ]
-
-/** The rules a change is read against, chosen by the paths it touches. A
- *  `#Heading` suffix sends only that section. Authoritative. */
-export const RULES_BY_PATH = [
-  { re: null, docs: ['AGENTS.md', 'CONTRIBUTING.md'] },
-  { re: /^api\//, docs: ['docs/API-CONVENTIONS.md', 'docs/RUST-MIGRATION.md'] },
-  { re: /^ui\/src\/server\//, docs: ['docs/API-CONVENTIONS.md'] },
-  { re: /^ui\//, docs: ['docs/UI-CONVENTIONS.md'] },
-  { re: /\/migrations\/|pg\.ts$|\.sql$/, docs: ['docs/UPDATES.md', 'docs/ARCHITECTURE.md#Data'] },
-]
-/** Descriptive documents: context, never a finding by themselves. */
-export const REFERENCE_BY_PATH = [
-  { re: /^\.github\/|^scripts\/(flow-guard|surfaces)\.mjs$|^scripts\/hooks\//, docs: ['docs/BRANCHES.md'] },
-  { re: /secret|encrypt|crypto|keyring|permission|authz|credential/i, docs: ['docs/ENCRYPTION.md', 'docs/PERMISSIONS.md', 'docs/AGENT-KEY-MIGRATION.md'] },
-  { re: /^desktop\//, docs: ['docs/DESKTOP.md'] },
-]
-const REFERENCE_TRIM_ORDER = ['docs/DESKTOP.md', 'docs/BRANCHES.md']
 
 const TEST_PATH = /(^|\/)tests?\/|\.test\.|\.spec\.|_test\.rs$/
 const SKIP_REASONS_FOR_HEALTH = new Set(['lane', 'no-key', 'superseded', 'empty', 'too-large', 'no-reviewer-on-trusted', 'bootstrap'])
@@ -327,7 +317,7 @@ const VALUE_FLAGS = new Set([
   '--prior', '--event', '--action', '--out', '--print-prompt', '--model', '--budget-tokens', '--deadline', '--record', '--replay',
   '--repo', '--run-id', '--trusted', '--set', '--only', '--samples', '--concurrency', '--results', '--ledger', '--grades', '--since',
 ])
-const BOOL_FLAGS = new Set(['--github', '--json', '--dry-run', '--bootstrap', '--no-verify', '--escapes', '--health', '--help', '-h'])
+const BOOL_FLAGS = new Set(['--github', '--json', '--dry-run', '--bootstrap', '--escapes', '--health', '--help', '-h'])
 
 /** `{command, opts}` or `{error}`. */
 export function parseArgs(argv) {
@@ -373,13 +363,6 @@ export function laneOf(target, source) {
  *  become the head sha. */
 export function headWrapped(args, head) {
   return args.map((a) => (a === 'HEAD' ? head : String(a).replace(/\.\.HEAD$/, `..${head}`)))
-}
-
-/** The trusted ref: the target when it is a protected branch, else testing
- *  when this clone has it, else rc — the same rule judge-review.yml uses. */
-export function trustedRefFor(target, resolves) {
-  if (['testing', 'rc', 'main'].includes(target)) return `origin/${target}`
-  return resolves('origin/testing') ? 'origin/testing' : 'origin/rc'
 }
 
 export function gateModeOf(env = process.env) {
@@ -508,54 +491,9 @@ export function riskOf(path) {
   return 2
 }
 
-// ── documents ───────────────────────────────────────────────────────────────
-
-/** A section of a markdown document by its heading text, up to the next
- *  heading of the same level or higher. null when it is absent. */
-export function extractSection(text, heading) {
-  const lines = String(text ?? '').split('\n')
-  let level = 0
-  let start = -1
-  for (let i = 0; i < lines.length; i++) {
-    const m = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(lines[i])
-    if (!m) continue
-    if (start === -1) {
-      if (m[2] === heading) {
-        start = i
-        level = m[1].length
-      }
-    } else if (m[1].length <= level) return lines.slice(start, i).join('\n').trim()
-  }
-  return start === -1 ? null : lines.slice(start).join('\n').trim()
-}
-
-/** The RULES and REFERENCE doc keys (path, or path#Section) for these paths. */
-export function docsFor(paths) {
-  const pick = (table) => {
-    const out = []
-    for (const { re, docs } of table) {
-      if (re === null || paths.some((p) => re.test(p))) for (const d of docs) if (!out.includes(d)) out.push(d)
-    }
-    return out
-  }
-  const rules = pick(RULES_BY_PATH)
-  const reference = pick(REFERENCE_BY_PATH).filter((d) => !rules.includes(d))
-  return { rules, reference }
-}
-
-function readDoc(git, sha, key) {
-  const [path, heading] = key.split('#')
-  const buf = git.blob(sha, path)
-  if (!buf) return null
-  const text = buf.toString('utf8')
-  if (!heading) return { path: key, text }
-  const sec = extractSection(text, heading)
-  return sec ? { path: key, text: sec } : null
-}
-
 // ── the prompt ──────────────────────────────────────────────────────────────
 
-/** The prompt file's `## system`, `## review` and `## verify` sections. */
+/** The prompt file's `## system` and `## review` sections. */
 export function parsePrompt(text) {
   const out = {}
   const parts = String(text).split(/^## /m)
@@ -564,7 +502,7 @@ export function parsePrompt(text) {
     const name = part.slice(0, nl).trim()
     out[name] = part.slice(nl + 1).trim()
   }
-  if (!out.system || !out.review || !out.verify) throw new Error('the prompt file lacks a ## system, ## review or ## verify section')
+  if (!out.system || !out.review) throw new Error('the prompt file lacks a ## system or ## review section')
   return out
 }
 
@@ -591,7 +529,7 @@ export const REVIEW_SCHEMA = {
     summary: str('at most two sentences saying what the change does; no judgement'),
     findings: {
       type: 'array',
-      description: 'at most 8, most severe first; an empty list is a good review',
+      description: 'at most 8, most severe first',
       items: {
         type: 'object',
         additionalProperties: false,
@@ -615,30 +553,6 @@ export const REVIEW_SCHEMA = {
     could_not_judge: { type: 'array', description: 'what you would need to decide a suspicion', items: str('one item') },
   },
 }
-export const VERIFY_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['verdicts'],
-  properties: {
-    verdicts: {
-      type: 'array',
-      description: 'exactly one per candidate, by index',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['index', 'verdict', 'input', 'trace', 'evidence'],
-        properties: {
-          index: { type: 'integer', description: 'the candidate number' },
-          verdict: { type: 'string', enum: ['confirmed', 'refuted', 'unsure'], description: 'confirmed, refuted or unsure' },
-          input: str('the triggering input or state; empty unless confirmed'),
-          trace: str('the path from the input to the wrong result; empty unless confirmed'),
-          evidence: str('one or two sentences naming the decisive line or fact'),
-        },
-      },
-    },
-  },
-}
-
 /** The review output's top-level shape. Findings are checked one by one later. */
 export function validateReview(text) {
   let v
@@ -660,32 +574,9 @@ export function validateReview(text) {
   }
 }
 
-export function validateVerify(text, count) {
-  let v
-  try {
-    v = JSON.parse(String(text).trim().replace(/^```(?:json)?\s*|\s*```$/g, ''))
-  } catch (e) {
-    return { ok: false, error: `not JSON (${e.message})` }
-  }
-  if (!v || !Array.isArray(v.verdicts)) return { ok: false, error: 'verdicts is not a list' }
-  const out = new Array(count).fill(null)
-  for (const r of v.verdicts) {
-    if (!r || !Number.isInteger(r.index) || r.index < 0 || r.index >= count) continue
-    if (!['confirmed', 'refuted', 'unsure'].includes(r.verdict)) continue
-    if (out[r.index]) continue
-    out[r.index] = {
-      verdict: r.verdict,
-      input: typeof r.input === 'string' ? r.input : '',
-      trace: typeof r.trace === 'string' ? r.trace : '',
-      evidence: typeof r.evidence === 'string' ? r.evidence : '',
-    }
-  }
-  return { ok: true, value: out.map((r) => r ?? { verdict: 'unsure', input: '', trace: '', evidence: 'no verdict returned' }) }
-}
-
 // ── the request ─────────────────────────────────────────────────────────────
 
-export function requestBody({ model, effort = 'high', purpose, messages }) {
+export function requestBody({ model, effort = 'high', messages }) {
   const provider = {
     require_parameters: true,
     allow_fallbacks: true,
@@ -697,12 +588,12 @@ export function requestBody({ model, effort = 'high', purpose, messages }) {
   return {
     model,
     stream: true,
-    max_tokens: MAX_TOKENS[purpose],
+    max_tokens: MAX_TOKENS,
     reasoning: { effort, exclude: false },
     provider,
     response_format: {
       type: 'json_schema',
-      json_schema: { name: purpose === 'review' ? 'pr_review' : 'pr_verify', strict: true, schema: purpose === 'review' ? REVIEW_SCHEMA : VERIFY_SCHEMA },
+      json_schema: { name: 'pr_review', strict: true, schema: REVIEW_SCHEMA },
     },
     // Usage accounting: the final chunk carries cost, which the ceiling needs.
     usage: { include: true },
@@ -825,26 +716,20 @@ export function recordable(data) {
   return lines.join('\n')
 }
 
-/** A fetch that answers from recorded files, `<dir>/<purpose>-<n>.sse` (a
- *  200 stream) or `.json` ({status, headers, body}). Test-only. */
+/** A fetch that answers from recorded files, `<dir>/review-<n>.sse` (a 200
+ *  stream) or `.json` ({status, headers, body}), n counting attempts. Test-only. */
 export function replayFetch(dir) {
-  const seen = { review: 0, verify: 0 }
-  return async (_url, init) => {
-    let purpose = 'review'
-    try {
-      purpose = JSON.parse(init.body).response_format.json_schema.name === 'pr_verify' ? 'verify' : 'review'
-    } catch {
-      // the review, by default
-    }
-    const n = ++seen[purpose]
-    const sse = join(dir, `${purpose}-${n}.sse`)
-    const js = join(dir, `${purpose}-${n}.json`)
+  let n = 0
+  return async () => {
+    n++
+    const sse = join(dir, `review-${n}.sse`)
+    const js = join(dir, `review-${n}.json`)
     if (existsSync(sse)) return fakeResponse(200, {}, readFileSync(sse, 'utf8'))
     if (existsSync(js)) {
       const r = JSON.parse(readFileSync(js, 'utf8'))
       return fakeResponse(r.status ?? 200, r.headers ?? {}, typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? ''))
     }
-    throw new Error(`network refused (no recording ${purpose}-${n} in the replay directory)`)
+    throw new Error(`network refused (no recording review-${n} in the replay directory)`)
   }
 }
 
@@ -865,10 +750,10 @@ export function fakeResponse(status, headers, body) {
 
 class OfflineError extends Error {}
 
-/** A run's call budget: the billed attempts per purpose, the summed cost,
- *  the ceiling, and every attempt's record. */
+/** A run's call budget: the billed attempts, the summed cost, the ceiling,
+ *  and every attempt's record. */
 export function callState(ceiling = COST_CEILING) {
-  return { billed: { review: 0, verify: 0 }, cost: 0, ceiling, calls: [], ceilingHit: false }
+  return { billed: 0, cost: 0, ceiling, calls: [], ceilingHit: false }
 }
 
 const RETRYABLE_ERROR_TYPES = new Set(['rate_limit_exceeded', 'provider_overloaded', 'provider_unavailable', 'timeout', 'server', 'server_error'])
@@ -891,7 +776,6 @@ function retryAfterS(res) {
 export async function callModel({
   body,
   key,
-  purpose,
   state,
   validate,
   fetchImpl = globalThis.fetch,
@@ -908,22 +792,22 @@ export async function callModel({
   let last = { reason: 'provider-error', text: '' }
   let retryWait = null
   for (;;) {
-    if (state.billed[purpose] >= ATTEMPTS[purpose]) return { ok: false, ...last }
+    if (state.billed >= ATTEMPTS) return { ok: false, ...last }
     if (retryWait !== null) {
       await sleep(retryWait * 1000, runSignal)
       retryWait = null
     }
     if (runSignal?.aborted) return { ok: false, reason: 'timeout', text: 'the run was stopped' }
     const left = deadlineAt - now()
-    if (left < limits.minLeftMs[purpose]) return { ok: false, reason: 'timeout', text: `${Math.max(0, Math.round(left / 1000))}s left before the deadline — not enough to start a ${purpose} call` }
+    if (left < limits.minLeftMs) return { ok: false, reason: 'timeout', text: `${Math.max(0, Math.round(left / 1000))}s left before the deadline — not enough to start a review call` }
     if (state.cost >= state.ceiling) {
       state.ceilingHit = true
       return { ok: false, reason: 'cost-ceiling', text: `the run has spent $${state.cost.toFixed(4)} of its $${state.ceiling.toFixed(2)} ceiling` }
     }
-    state.billed[purpose]++
+    state.billed++
     const attemptMs = Math.min(limits.attemptMs, left - limits.marginMs)
     const capped = attemptMs >= limits.attemptMs
-    const call = { purpose, attempt: state.billed[purpose], effort, status: null, generationId: null, provider: null, model: null, promptTokens: null, completionTokens: null, reasoningTokens: null, cachedTokens: null, tokensPerSec: null, cost: null, ms: 0, finish: null, errorType: null }
+    const call = { attempt: state.billed, effort, status: null, generationId: null, provider: null, model: null, promptTokens: null, completionTokens: null, reasoningTokens: null, cachedTokens: null, tokensPerSec: null, cost: null, ms: 0, finish: null, errorType: null }
     state.calls.push(call)
     const started = now()
     const attemptCtl = new AbortController()
@@ -975,7 +859,7 @@ export async function callModel({
         return { ok: false, ...last }
       }
       last = { reason: whyAborted === 'idle' ? 'timeout' : 'provider-error', text: whyAborted === 'idle' ? 'the stream stalled' : `network: ${safeTerminal(String(netError?.message ?? netError), 200)}` }
-      retryWait = state.billed[purpose] === 1 ? 5 : 15
+      retryWait = state.billed === 1 ? 5 : 15
       continue
     }
 
@@ -1004,7 +888,7 @@ export async function callModel({
       if (res.status === 404) return { ok: false, reason: 'no-endpoint', text: `${msg} (model ${body.model}; provider filters: zdr, data_collection=deny, quantizations ${body.provider?.quantizations?.join('/')}, require_parameters)` }
       if (res.status === 408 || res.status === 429 || res.status >= 500) {
         last = { reason: res.status === 408 ? 'timeout' : 'provider-error', text: `HTTP ${res.status}: ${msg}` }
-        retryWait = ra !== null && ra <= 30 ? ra : state.billed[purpose] === 1 ? 5 : 15
+        retryWait = ra !== null && ra <= 30 ? ra : state.billed === 1 ? 5 : 15
         continue
       }
       return { ok: false, reason: 'request-rejected', text: `HTTP ${res.status}: ${msg}` }
@@ -1028,7 +912,7 @@ export async function callModel({
     if (call.cost !== null) state.cost += call.cost
     const secs = ((stream.lastByteAt ?? now()) - (stream.firstContentAt ?? stream.firstByteAt ?? started)) / 1000
     if (call.completionTokens && secs > 0) call.tokensPerSec = Math.round((call.completionTokens / secs) * 10) / 10
-    if (onRecord) onRecord(purpose, call.attempt, stream.data)
+    if (onRecord) onRecord(call.attempt, stream.data)
 
     if (whyAborted) {
       call.errorType = whyAborted
@@ -1098,185 +982,13 @@ function raceSignal(promise, signal) {
   })
 }
 
-// ── cross-references and importers ──────────────────────────────────────────
-
-const CALL_STOP = new Set(
-  ('if for while match return switch catch function some none self super new await async typeof instanceof delete void ' +
-    'println print eprintln format write writeln assert assert_eq assert_ne debug_assert expect unwrap unwrap_or unwrap_or_else unwrap_or_default ' +
-    'into from clone len iter into_iter collect filter map flat_map and_then ok_or ok_or_else is_some is_none is_ok is_err as_ref as_str ' +
-    'to_string to_owned push insert remove get set join split slice includes length trim then catch finally resolve reject ' +
-    'console log error warn info trace require import export const let var test describe it expect each before after beforeEach afterEach ' +
-    'string number boolean object array json parse stringify keys values entries assign freeze from of has add sort reverse concat find ' +
-    'replace match exec startsWith endsWith padStart toFixed toString valueOf apply call bind fetch setTimeout clearTimeout ' +
-    'Some None Ok Err Self Vec Box Arc Rc String Option Result HashMap HashSet BTreeMap Promise Object Array JSON Math Number Date Error Map Set')
-    .split(/\s+/)
-    .map((s) => s.toLowerCase()),
-)
-
-/** The identifiers a diff puts in play: calls it removes that no added line
- *  makes again (`removed-call`), and the items it adds (`added-item`), with
- *  where each added item is defined. Removed calls first; 30 at most. */
-export function identifiersFromDiffs(fileDiffs) {
-  const added = []
-  const removedCalls = new Map()
-  const addedItems = new Map()
-  for (const { path, text } of fileDiffs) {
-    let newLine = 0
-    let inHunk = false
-    for (const l of String(text).split('\n')) {
-      const h = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(l)
-      if (h) {
-        newLine = Number(h[1])
-        inHunk = true
-        continue
-      }
-      if (!inHunk) continue
-      if (l.startsWith('+')) {
-        const body = l.slice(1)
-        added.push(body)
-        const items = []
-        for (const m of body.matchAll(/(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([a-z_][a-z0-9_]{2,})/g)) items.push(m[1])
-        for (const m of body.matchAll(/pub\s+(?:struct|enum|trait|const|static)\s+(\w{3,})/g)) items.push(m[1])
-        if (/\.(ts|js|mjs|svelte)$/.test(path)) {
-          for (const m of body.matchAll(/export (?:async )?function (\w{3,})/g)) items.push(m[1])
-          for (const m of body.matchAll(/export (?:const|let|class) (\w{3,})/g)) items.push(m[1])
-        }
-        for (const id of items) if (!addedItems.has(id)) addedItems.set(id, `${path}:${newLine}`)
-        newLine++
-      } else if (l.startsWith('-')) {
-        for (const m of l.slice(1).matchAll(/([A-Za-z_]\w{3,})\s*\(/g)) {
-          const id = m[1]
-          if (CALL_STOP.has(id.toLowerCase())) continue
-          if (/^(fn|function)\s/.test(l.slice(1).trim()) && new RegExp(`(fn|function)\\s+${id}\\b`).test(l)) continue
-          if (!removedCalls.has(id)) removedCalls.set(id, path)
-        }
-      } else if (l.startsWith(' ')) newLine++
-    }
-  }
-  const addedText = added.join('\n')
-  const out = []
-  for (const [id] of removedCalls) {
-    if (new RegExp(`\\b${id}\\s*\\(`).test(addedText)) continue
-    out.push({ id, kind: 'removed-call', definedAt: null })
-  }
-  for (const [id, at] of addedItems) if (!out.some((x) => x.id === id)) out.push({ id, kind: 'added-item', definedAt: at })
-  return out.slice(0, XREF.ids)
-}
-
-const DEF_RE = (id) => new RegExp(`\\b(fn|function|struct|enum|trait|const|static|class|type|interface|let|var|def)\\s+${id}\\b`)
-
-/** Where each identifier is used at head, test and non-test, by git grep. */
-export function crossReferences(git, head, ids, { isExcluded = () => false } = {}) {
-  const cfgTest = new Map()
-  const cfgTestLine = (path) => {
-    if (cfgTest.has(path)) return cfgTest.get(path)
-    if (cfgTest.size >= 50) return Infinity
-    const buf = git.blob(head, path)
-    const lines = buf ? buf.toString('utf8').split('\n') : []
-    const at = lines.findIndex((l) => l.includes('#[cfg(test)]'))
-    const v = at === -1 ? Infinity : at + 1
-    cfgTest.set(path, v)
-    return v
-  }
-  const results = []
-  let used = 0
-  for (const x of ids) {
-    let raw = null
-    try {
-      raw = git(['grep', '-a', '-n', '-z', '-w', '-F', '-e', x.id, head, '--'], { timeout: TIMEOUTS.grep, allowFail: true })
-    } catch {
-      raw = null
-    }
-    const hits = []
-    for (const row of String(raw ?? '').split('\n')) {
-      if (!row) continue
-      const parts = row.split('\0')
-      if (parts.length < 3) continue
-      const path = parts[0].slice(parts[0].indexOf(':') + 1)
-      const line = Number(parts[1])
-      const text = parts.slice(2).join('\0')
-      if (isExcluded(path)) continue
-      if (isBinary(git.blob(head, path))) continue
-      hits.push({ path, line, text: text.trim().slice(0, 200), test: isTestPath(path) || line > cfgTestLine(path), def: DEF_RE(x.id).test(text) })
-    }
-    const defHit = hits.find((h) => h.def && !h.test)
-    const definedAt = x.definedAt ?? (defHit ? `${defHit.path}:${defHit.line}` : null)
-    const uses = hits.filter((h) => !(h.def && `${h.path}:${h.line}` === definedAt) && !(x.kind === 'added-item' && h.def))
-    const nonTestUses = uses.filter((h) => !h.test).length
-    const testUses = uses.filter((h) => h.test).length
-    const header = `### ${x.id} — ${x.kind} — defined at ${definedAt ?? 'unknown'}; ${nonTestUses} non-test uses, ${testUses} in tests at head`
-    const listing = hits.slice(0, XREF.hitsPerId).map((h) => `${h.path}:${h.line}${h.test ? ' [test]' : ''}: ${h.text}`)
-    const text = [header, ...listing, ...(hits.length > XREF.hitsPerId ? [`[${hits.length - XREF.hitsPerId} more hits]`] : [])].join('\n')
-    if (used + bytes(text) > XREF.bytes) break
-    used += bytes(text)
-    results.push({ ...x, definedAt, nonTestUses, testUses, text })
-  }
-  return results
-}
-
-/** The import specifiers of a source file. */
-export function importSpecifiers(text) {
-  return [...String(text).matchAll(/(?:from|import\()\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
-}
-
-/** Does `spec`, imported from `importer`, name `target`? Relative and `$lib` only. */
-export function resolvesTo(importer, spec, target) {
-  let p
-  if (spec.startsWith('$lib/')) p = `ui/src/lib/${spec.slice(5)}`
-  else if (spec === '$lib') p = 'ui/src/lib'
-  else if (spec.startsWith('.')) p = posix.normalize(posix.join(posix.dirname(importer), spec))
-  else return false
-  const cands = [p, `${p}.ts`, `${p}.js`, `${p}.svelte`, p.replace(/\.js$/, '.ts'), `${p}/index.ts`, `${p}/index.js`]
-  return cands.includes(target)
-}
-
-function escapeEre(s) {
-  return s.replace(/[.[\]()*+?^${}|\\]/g, '\\$&')
-}
-
-/** Files at head that import a changed module (ui, mcp, cli), with their
- *  content, within the caps. */
-export function findImporters(git, head, modules, changedSet, { isExcluded = () => false } = {}) {
-  const out = []
-  let total = 0
-  for (const mod of modules) {
-    const pkg = mod.split('/')[0]
-    const base = posix.basename(mod).replace(/\.(ts|js|mjs|svelte)$/, '')
-    const re = `(from|import\\()\\s*['"][^'"]*/${escapeEre(base)}(\\.svelte|\\.js|\\.ts)?['"]`
-    const raw = git(['grep', '-l', '-a', '-E', '-e', re, head, '--', `${pkg}/`], { timeout: TIMEOUTS.grep, allowFail: true })
-    let n = 0
-    for (const row of String(raw ?? '').split('\n')) {
-      if (!row || n >= IMPORTERS.perModule) continue
-      const path = row.slice(row.indexOf(':') + 1)
-      if (changedSet.has(path) || isExcluded(path) || out.some((o) => o.path === path)) continue
-      const buf = git.blob(head, path)
-      if (!buf || isBinary(buf)) continue
-      const text = buf.toString('utf8')
-      if (!importSpecifiers(text).some((s) => resolvesTo(path, s, mod))) continue
-      const numbered = capText(numberLines(text), IMPORTERS.perFile, '[file truncated]')
-      if (total + bytes(numbered) > IMPORTERS.bytes) break
-      total += bytes(numbered)
-      out.push({ path, module: mod, text: numbered })
-      n++
-    }
-  }
-  return out
-}
-
-export function numberLines(text) {
-  return String(text)
-    .split('\n')
-    .map((l, i) => `${String(i + 1).padStart(5, '0')}| ${l}`)
-    .join('\n')
-}
-
 // ── context ─────────────────────────────────────────────────────────────────
 
 /**
  * Everything the model reads, as sections that can be trimmed in a fixed
  * order. Pure over `git` and the inputs; `review()` and the dry run share it.
  */
-export function buildContext({ git, head, mergeBase, rulesSha, trustedName, target, source, title, body, authorKind, judgePr, prior, budgetTokens = BUDGET_TOKENS, prompt }) {
+export function buildContext({ git, head, mergeBase, target, source, title, body, authorKind, judgePr, prior, budgetTokens = BUDGET_TOKENS, prompt }) {
   const files = changedFiles(git, mergeBase, head)
   const trims = []
   const info = new Map()
@@ -1287,57 +999,32 @@ export function buildContext({ git, head, mergeBase, rulesSha, trustedName, targ
     let generated = isGeneratedPath(f.path) ? 'generated' : binary ? 'binary' : null
     const headText = headBuf && !binary ? headBuf.toString('utf8') : null
     if (!generated && headText && headText.split('\n').some((l) => l.length > CAPS.longLine)) generated = 'minified'
-    info.set(f.path, { ...f, binary, generated, headText, headLines: headText ? headText.split('\n') : null, exists: Boolean(headBuf) })
+    info.set(f.path, { ...f, binary, generated, headLines: headText ? headText.split('\n') : null, headText, exists: Boolean(headBuf) })
   }
   // .gitattributes is always shown: it decides how every other diff renders.
   const shown = files.filter((f) => !info.get(f.path).generated || f.path === '.gitattributes')
   const DIFF = ['diff', '--text', '--no-textconv', '--no-ext-diff', '--find-renames']
   const diffOf = (f, u) => git([...DIFF, `-U${u}`, mergeBase, head, '--', ...(f.oldPath && f.oldPath !== f.path ? [f.oldPath, f.path] : [f.path])])
+  // Per-file display state: the hunks at -U25, until a trim takes them.
+  const display = new Map()
   for (const f of shown) {
     const fi = info.get(f.path)
-    const full = diffOf(f, 25)
-    fi.diff25 = full
+    const diff25 = diffOf(f, 25)
     const isNew = f.status === 'A' || (f.status === 'R' && (f.added > 0 || f.deleted > 0))
-    fi.points = changedPoints(full, { allLines: isNew && fi.headLines ? fi.headLines.length : 0 })
+    fi.points = changedPoints(diff25, { allLines: isNew && fi.headLines ? fi.headLines.length : 0 })
     fi.risk = riskOf(f.path)
     fi.churn = f.added + f.deleted
+    display.set(f.path, { hunks: capHunks(diff25, CAPS.hunksPerFile).text, hunksShown: true })
   }
-
-  // RULES and REFERENCE, from the trusted tree.
-  const paths = files.map((f) => f.path)
-  const keys = docsFor(paths)
-  const rules = keys.rules.map((k) => readDoc(git, rulesSha, k)).filter(Boolean)
-  let reference = keys.reference.map((k) => readDoc(git, rulesSha, k)).filter(Boolean)
 
   // The changelog entry: the added changelog/ files' text.
   const entries = files.filter((f) => /^changelog\/[^/]+\.md$/.test(f.path) && f.path !== 'changelog/README.md' && f.status !== 'D')
   const changelog = capText(entries.map((f) => info.get(f.path).headText ?? '').join('\n\n').trim(), CAPS.changelog)
 
-  // Cross-references and importers.
-  const excluded = (p) => isGeneratedPath(p)
-  const ids = identifiersFromDiffs(shown.map((f) => ({ path: f.path, text: info.get(f.path).diff25 })))
-  let xrefs = crossReferences(git, head, ids, { isExcluded: excluded })
-  const changedSet = new Set(paths)
-  const modules = shown
-    .filter((f) => f.status !== 'D' && /^(ui\/src|mcp\/src|cli\/src)\//.test(f.path) && !isTestPath(f.path) && /\.(ts|js|mjs|svelte)$/.test(f.path))
-    .map((f) => f.path)
-  let importers = findImporters(git, head, modules, changedSet, { isExcluded: excluded })
-
-  // Per-file display state.
-  const display = new Map()
-  for (const f of shown) {
-    const fi = info.get(f.path)
-    const hunks = capHunks(fi.diff25, CAPS.hunksPerFile)
-    const fullText = fi.headText !== null && f.path !== '.gitattributes' ? numberLines(fi.headText) : null
-    display.set(f.path, { hunks: hunks.text, full: fullText && bytes(fullText) <= CAPS.fullFile ? fullText : null, fullSkipped: fullText && bytes(fullText) > CAPS.fullFile, hunksShown: true })
-  }
-
   const totals = files.reduce((a, f) => ({ add: a.add + f.added, del: a.del + f.deleted }), { add: 0, del: 0 })
   const ctx = {
     head,
     mergeBase,
-    rulesSha,
-    trustedName,
     target,
     source,
     title: String(title ?? ''),
@@ -1350,21 +1037,16 @@ export function buildContext({ git, head, mergeBase, rulesSha, trustedName, targ
     info,
     shown,
     display,
-    rules,
-    reference,
-    xrefs,
-    importers,
     trims,
     totals,
     diffContext: 25,
     budgetTokens,
     prompt,
   }
-  ctx.sections = () => renderSections(ctx)
 
   // The fixed part: never trimmed. Too much of it and there is no review.
   const s0 = renderSections(ctx)
-  const fixedText = [prompt?.system ?? '', prompt?.review ?? '', ...rules.filter((r) => ['AGENTS.md', 'CONTRIBUTING.md'].includes(r.path)).map((r) => r.text), s0.prHeader, s0.body, s0.changelog, s0.deterministic, s0.previous, s0.files].join('\n')
+  const fixedText = [prompt?.system ?? '', prompt?.review ?? '', s0.prHeader, s0.body, s0.changelog, s0.deterministic, s0.previous, s0.files].join('\n')
   ctx.fixedTokens = estimateTokens(fixedText)
   if (!shown.length) {
     ctx.empty = true
@@ -1375,34 +1057,9 @@ export function buildContext({ git, head, mergeBase, rulesSha, trustedName, targ
     return ctx
   }
 
-  // Trim to the budget, in a fixed order, each step recorded.
-  const total = () => estimateTokens(fullMessages(ctx, 'NONCE0000000000').join('\n'))
-  const over = () => total() > budgetTokens
-  const refOrder = [...REFERENCE_TRIM_ORDER, ...reference.map((r) => r.path).filter((p) => !REFERENCE_TRIM_ORDER.includes(p))]
-  for (const p of refOrder) {
-    if (!over()) break
-    if (ctx.reference.some((r) => r.path === p)) {
-      ctx.reference = ctx.reference.filter((r) => r.path !== p)
-      trims.push(`reference ${p}`)
-    }
-  }
-  if (over() && ctx.importers.length) {
-    ctx.importers = []
-    trims.push('importers')
-  }
-  if (over()) {
-    const bySize = [...display.entries()].filter(([, d]) => d.full).sort((a, b) => bytes(b[1].full) - bytes(a[1].full))
-    for (const [p, d] of bySize) {
-      if (!over()) break
-      d.full = null
-      d.fullTrimmed = true
-      trims.push(`full ${p}`)
-    }
-  }
-  if (over() && ctx.xrefs.length > 10) {
-    ctx.xrefs = ctx.xrefs.slice(0, 10)
-    trims.push('cross-references to 10')
-  }
+  // Trim the diff to the budget, in a fixed order, each step recorded: every
+  // file at -U10, then whole files, the lowest risk and smallest churn first.
+  const over = () => estimateTokens(fullMessages(ctx, 'NONCE0000000000').join('\n')) > budgetTokens
   if (over()) {
     for (const f of shown) display.get(f.path).hunks = capHunks(diffOf(f, 10), CAPS.hunksPerFile).text
     ctx.diffContext = 10
@@ -1422,7 +1079,7 @@ export function buildContext({ git, head, mergeBase, rulesSha, trustedName, targ
   return ctx
 }
 
-/** The PR DATA sections and the doc blocks, as text. */
+/** The PR DATA sections, as text. */
 export function renderSections(ctx) {
   const { info } = ctx
   const prHeader = [
@@ -1462,45 +1119,35 @@ export function renderSections(ctx) {
   })
   if (ctx.files.length > CAPS.filesRows) fileRows.push(`… and ${ctx.files.length - CAPS.filesRows} more`)
   const files = `## FILES (${ctx.files.length} changed, +${ctx.totals.add} −${ctx.totals.del})\n\n${fileRows.join('\n')}`
-  const xrefs = `## CROSS-REFERENCES AT HEAD\n\n${ctx.xrefs.length ? ctx.xrefs.map((x) => x.text).join('\n\n') : 'none'}`
-  const importers = `## IMPORTERS AT HEAD\n\n${ctx.importers.length ? ctx.importers.map((i) => `### ${i.path} (imports ${i.module})\n${i.text}`).join('\n\n') : 'none'}`
   const diffs = []
-  const fulls = []
   for (const f of ctx.shown) {
     const d = ctx.display.get(f.path)
     if (d.hunks) diffs.push(`### ${f.path}\n${d.hunks}`)
-    if (d.full) fulls.push(`### ${f.path}\n${d.full}`)
   }
   const diff = `## DIFF\n\n${diffs.join('\n\n') || 'none'}`
-  const full = `## FULL FILES AT HEAD (line-number prefix "NNNNN| " is not part of the file)\n\n${fulls.join('\n\n') || 'none'}`
-  const rules = `# RULES (from ${ctx.trustedName} at ${short(ctx.rulesSha)})\n\n${ctx.rules.map((r) => `## ${r.path}\n\n${r.text}`).join('\n\n')}`
-  const reference = ctx.reference.length
-    ? `# REFERENCE (descriptive; may be stale; never a finding by itself)\n\n${ctx.reference.map((r) => `## ${r.path}\n\n${r.text}`).join('\n\n')}`
-    : ''
-  return { prHeader, body, changelog, deterministic, previous, files, xrefs, importers, diff, full, rules, reference }
+  return { prHeader, body, changelog, deterministic, previous, files, diff }
 }
 
-/** [system, user] for a review (`candidates` absent) or a verify call. */
-export function fullMessages(ctx, nonce, { task = 'review', candidates = null, nonce2 = null } = {}) {
+/** [system, user]: the PR DATA between the nonce fences, then the task. */
+export function fullMessages(ctx, nonce) {
   const s = renderSections(ctx)
-  const prompt = ctx.prompt ?? { system: '', review: '', verify: '' }
+  const prompt = ctx.prompt ?? { system: '', review: '' }
   const system = prompt.system.replaceAll('{nonce}', nonce)
-  const parts = [s.rules]
-  if (s.reference) parts.push(s.reference)
-  parts.push(`<<<PR_DATA_${nonce}>>>`)
-  parts.push([s.prHeader, s.body, s.changelog, s.deterministic, s.previous, s.files, s.xrefs, s.importers, s.diff, s.full].join('\n\n'))
-  parts.push(`<<<END_PR_DATA_${nonce}>>>`)
-  if (task === 'review') parts.push(`## review\n\n${prompt.review}`)
-  else parts.push(`## verify\n\n${prompt.verify}\n\n<<<CANDIDATES_${nonce2}>>>\n${candidates}\n<<<END_CANDIDATES_${nonce2}>>>`)
-  return [system, parts.join('\n\n')]
+  const user = [
+    `<<<PR_DATA_${nonce}>>>`,
+    [s.prHeader, s.body, s.changelog, s.deterministic, s.previous, s.files, s.diff].join('\n\n'),
+    `<<<END_PR_DATA_${nonce}>>>`,
+    `## review\n\n${prompt.review}`,
+  ]
+  return [system, user.join('\n\n')]
 }
 
 /** The sha256 that decides whether an earlier review can be reused: the
- *  reviewer, the model, the effort, the rules, the target and the code
- *  sections — never the title, body, changelog or earlier findings. */
+ *  reviewer, the model, the effort, the target and the code sections —
+ *  never the title, body, changelog or earlier findings. */
 export function contextHash(ctx, { version, model, effort = 'high' }) {
   const s = renderSections(ctx)
-  return sha256([version, model, effort, ctx.rulesSha, ctx.target, s.files, s.xrefs, s.importers, s.diff, s.full].join('\0'))
+  return sha256([version, model, effort, ctx.target, s.files, s.diff].join('\0'))
 }
 
 export function makeNonce(avoid = '') {
@@ -1514,15 +1161,13 @@ export function makeNonce(avoid = '') {
 export function contextPlan(ctx) {
   const s = renderSections(ctx)
   const sections = {}
-  for (const k of ['rules', 'reference', 'prHeader', 'body', 'changelog', 'deterministic', 'previous', 'files', 'xrefs', 'importers', 'diff', 'full']) sections[k] = bytes(s[k])
+  for (const k of ['prHeader', 'body', 'changelog', 'deterministic', 'previous', 'files', 'diff']) sections[k] = bytes(s[k])
   const msgs = fullMessages(ctx, '0000000000000000')
   const inputTokensEst = estimateTokens(msgs.join('\n'))
   return {
     files: ctx.files.length,
     filesShown: ctx.shown.filter((f) => ctx.display.get(f.path)?.hunksShown).length,
     filesNotShown: ctx.shown.filter((f) => !ctx.display.get(f.path)?.hunksShown).map((f) => f.path),
-    rules: ctx.rules.map((r) => r.path),
-    reference: ctx.reference.map((r) => r.path),
     trims: [...ctx.trims],
     partial: ctx.shown.some((f) => !ctx.display.get(f.path)?.hunksShown),
     diffContext: ctx.diffContext,
@@ -1583,13 +1228,15 @@ function checkFindingShape(f) {
 
 /**
  * The model's findings, filtered in code. `ctx.info` is the changed-file map
- * (path → {exists, generated, headLines, points}), `ctx.rulesSent` the RULES
- * doc paths, `ctx.filePaths` the FILES list. Every drop is in `dropped`.
+ * (path → {exists, generated, headLines, points}), `ctx.filePaths` the FILES
+ * list. A repo-rule finding must name one of the three rules the prompt states
+ * (its rule_id) or cite a changed file (a comment in it); the model is sent no
+ * other rule. Every drop is in `dropped`.
  */
 export function filterFindings(raw, ctx) {
   const kept = []
   const dropped = []
-  const drop = (reason, finding, evidence) => dropped.push({ reason, ...(evidence ? { evidence } : {}), finding })
+  const drop = (reason, finding) => dropped.push({ reason, finding })
   for (const f of Array.isArray(raw) ? raw : []) {
     if (!checkFindingShape(f)) {
       drop('schema', f)
@@ -1639,7 +1286,7 @@ export function filterFindings(raw, ctx) {
     else if (f.category === 'repo-rule' && f.rule_id === 'none' && severity === 'blocker') severity = 'major'
     if (f.category === 'repo-rule') {
       const rule = String(f.rule)
-      const cited = (ctx.rulesSent ?? []).some((d) => rule.includes(d.split('#')[0])) || (ctx.filePaths ?? []).some((p) => rule.includes(p))
+      const cited = f.rule_id !== 'none' || (ctx.filePaths ?? []).some((p) => rule.includes(p))
       if (!cited) {
         drop('rule-not-cited', f)
         continue
@@ -1685,7 +1332,7 @@ export function filterFindings(raw, ctx) {
   return { kept: out.slice(0, MAX_FINDINGS), dropped }
 }
 
-// ── answers, verify, tiers, the gate ────────────────────────────────────────
+// ── answers, tiers, the gate ────────────────────────────────────────────────
 
 /** Answers by id, or carried from an answered prior finding on the same
  *  file whose anchored lines share one of 20+ non-space characters. */
@@ -1717,19 +1364,14 @@ const RULE_PATHS = {
   'forced-done': (p) => /^(api\/crates\/|ui\/src\/server\/|mcp\/src\/|cli\/src\/)/.test(p),
 }
 
-/** The removed-call identifiers whose last non-test use the diff removed. */
-function deadCallIds(xrefs) {
-  return (xrefs ?? []).filter((x) => x.kind === 'removed-call' && x.nonTestUses === 0).map((x) => x.id)
-}
-
-/** The gate conditions a finding fails, by name. `phase: 'pre'` leaves out
- *  the ones only verification can settle (tier and the two confirmations). */
-export function gateBlockers(f, { lane, priorGateHeads = 0, deadIds = [], phase = 'final' }) {
+/** The gate conditions a finding fails, by name. A finding that fails none
+ *  is a Tier A, high-confidence, unanswered blocker in a gating category on a
+ *  changed line of a feature or hotfix. */
+export function gateBlockers(f, { lane, priorGateHeads = 0 }) {
   const out = []
-  if (phase === 'final' && f.tier !== 'A') out.push('tier-a')
+  if (f.tier !== 'A') out.push('tier-a')
   if (f.severity !== 'blocker') out.push('blocker')
   if (GATE_NEEDS_HIGH && f.confidence !== 'high') out.push('confidence-high')
-  if (phase === 'final' && !(f.verified === 'confirmed' && (f.confirmedBy ?? 0) >= 2)) out.push('two-confirmations')
   if (f.reanchored) out.push('reanchored')
   if (!f.touchesChange) out.push('touches-change')
   if (!['feature', 'hotfix'].includes(lane)) out.push('lane')
@@ -1739,40 +1381,16 @@ export function gateBlockers(f, { lane, priorGateHeads = 0, deadIds = [], phase 
     const fits = f.ruleId !== 'none' && RULE_PATHS[f.ruleId]?.(f.file) && !isTestPath(f.file) && !/^(scripts|\.github)\//.test(f.file)
     if (!fits) out.push('rule-path')
   }
-  if (f.category === 'dead-wiring') {
-    const text = `${f.title} ${f.failure} ${f.quote}`
-    if (!deadIds.some((id) => new RegExp(`\\b${id}\\b`).test(text))) out.push('removed-call-fact')
-    else f.removedCallFact = deadIds.find((id) => new RegExp(`\\b${id}\\b`).test(text))
-  }
   if (f.answered) out.push('answered')
   return out
 }
 
-/** The blind rendering of the candidates: index, file, line, a short label
- *  and the head's own lines. No severity, category, failure, fix or confidence. */
-export function renderCandidates(cands) {
-  return cands
-    .map((f, i) => [`[${i}] file: ${f.file}`, `line: ${f.line}`, `label: ${String(f.title).replace(/\s+/g, ' ').slice(0, 100)}`, 'quoted lines:', f.quote].join('\n'))
-    .join('\n\n')
-}
-
-/** One verdict per finding from the samples that ran. */
-export function combineVerdicts(samples) {
-  const eff = samples.map((s) => (s.verdict === 'confirmed' && (s.input ?? '').trim().length >= 10 && (s.trace ?? '').trim().length >= 20 ? 'confirmed' : s.verdict === 'confirmed' ? 'unsure' : s.verdict))
-  if (!eff.length) return { verified: 'skipped', confirmedBy: 0 }
-  const c = eff.filter((v) => v === 'confirmed').length
-  const r = eff.filter((v) => v === 'refuted').length
-  if (c === eff.length) return { verified: 'confirmed', confirmedBy: c }
-  if (c === 0 && r > 0) return { verified: 'refuted', confirmedBy: 0 }
-  if (c > 0) return { verified: 'split', confirmedBy: c }
-  return { verified: 'unsure', confirmedBy: 0 }
-}
-
-/** Tiers: A (confirmed, major or above, a listed category, unanswered; the
- *  top three), B (every other blocker or major), C (minors). */
+/** Tiers: A (major or above, a listed category, unanswered; the top three by
+ *  severity, then a changed line over a nearby one, then confidence), B
+ *  (every other blocker or major), C (minors). */
 export function assignTiers(findings) {
   const listed = findings
-    .filter((f) => f.severity !== 'minor' && f.verified === 'confirmed' && LISTED_CATEGORIES.includes(f.category) && !f.answered)
+    .filter((f) => f.severity !== 'minor' && LISTED_CATEGORIES.includes(f.category) && !f.answered)
     .sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || Number(b.touchesChange) - Number(a.touchesChange) || CONFIDENCE_RANK[a.confidence] - CONFIDENCE_RANK[b.confidence])
   const a = new Set(listed.slice(0, MAX_LISTED))
   for (const f of findings) f.tier = a.has(f) ? 'A' : f.severity === 'minor' ? 'C' : 'B'
@@ -1780,9 +1398,9 @@ export function assignTiers(findings) {
 }
 
 /** Marks: `gate` under JUDGE_REVIEW_GATE=blockers, `wouldGate` otherwise. */
-export function markGate(findings, { mode, lane, priorGateHeads, deadIds }) {
+export function markGate(findings, { mode, lane, priorGateHeads }) {
   for (const f of findings) {
-    f.gateBlockedBy = gateBlockers(f, { lane, priorGateHeads, deadIds })
+    f.gateBlockedBy = gateBlockers(f, { lane, priorGateHeads })
     const pass = f.gateBlockedBy.length === 0
     f.gate = mode === 'blockers' && pass
     f.wouldGate = mode !== 'blockers' && pass
@@ -1874,11 +1492,10 @@ export function renderComment(r, { repo = 'outcrop-labs/talaria' } = {}) {
   if (!a.length) out.push('', `**Nothing to read at ${head12}.** Earlier findings were fixed or not raised again.`)
   if (r.summary) out.push('', `> ${sanitizeText(r.summary, 400)}`)
   const block = (f, i, withFix) => {
-    const conf = (f.confirmedBy ?? 0) >= 2 ? 'confirmed by two blind second readings' : 'confirmed by a blind second reading'
     const holds = f.gate ? " · **holds an agent's done until fixed or answered**" : ''
     const lines = [
       `### ${i + 1} · ${f.severity} · ${f.category} — ${sanitizeText(f.title, 100)}`,
-      `\`${f.id}\` · [${renderPath(`${f.file}:${f.line}`)}](${blobLink(repo, r.head, f.file)}#L${f.line}) · ${f.verified === 'confirmed' ? conf : `not confirmed (${f.verified})`}${holds}`,
+      `\`${f.id}\` · [${renderPath(`${f.file}:${f.line}`)}](${blobLink(repo, r.head, f.file)}#L${f.line}) · ${f.confidence} confidence${holds}`,
       renderQuote(f.quote, f.file),
       `**What breaks:** ${sanitizeText(f.failure, 600)}`,
     ]
@@ -1891,7 +1508,7 @@ export function renderComment(r, { repo = 'outcrop-labs/talaria' } = {}) {
   const footer = [
     '',
     '---',
-    `<sub>A model's reading of this change, not an approval. Each finding above was confirmed by a second reading that saw only the quoted lines. ${
+    `<sub>A model's reading of this change, not an approval: check each finding against the quoted lines before acting on it. ${
       r.gateMode === 'blockers'
         ? 'A finding marked "holds" holds an agent\'s done until it is fixed or answered with `judge-review answer <id>: <why the code is right>` (40+ characters); it never holds a person\'s merge.'
         : 'Nothing here holds a merge. A finding you think is wrong needs no reply.'
@@ -1900,7 +1517,7 @@ export function renderComment(r, { repo = 'outcrop-labs/talaria' } = {}) {
   let bBlocks = b.map((f, i) => block(f, i, false))
   const assemble = () => {
     const parts = [...out]
-    if (bBlocks.length) parts.push('', `<details><summary>${bBlocks.length} more, not confirmed by a second reading (no action needed)</summary>`, '', ...bBlocks.flatMap((x) => [x, '']), '</details>')
+    if (bBlocks.length) parts.push('', `<details><summary>${bBlocks.length} more, beyond the three listed or answered (no action needed)</summary>`, '', ...bBlocks.flatMap((x) => [x, '']), '</details>')
     return [...parts, ...footer].join('\n')
   }
   let text = assemble()
@@ -1917,10 +1534,11 @@ export function renderSummary(r) {
   if (r.reasonText) out.push('', sanitizeText(r.reasonText, 600))
   if (r.summary) out.push('', `> ${sanitizeText(r.summary, 400)}`)
   const table = (rows, head) => (rows.length ? [`| ${head.join(' | ')} |`, `| ${head.map(() => '---').join(' | ')} |`, ...rows.map((r2) => `| ${r2.join(' | ')} |`)].join('\n') : '_none_')
-  const tierRows = (t) => (r.findings ?? []).filter((f) => f.tier === t).map((f) => [`\`${f.id}\``, f.severity, f.category, renderPath(`${f.file}:${f.line}`), f.verified, sanitizeText(f.title, 100), sanitizeText(f.failure, 300)])
-  out.push('', '### Tier A — listed', table(tierRows('A'), ['id', 'severity', 'category', 'place', 'verified', 'title', 'failure']))
-  out.push('', '### Tier B — not confirmed or over the cap', table(tierRows('B'), ['id', 'severity', 'category', 'place', 'verified', 'title', 'failure']))
-  out.push('', '### Tier C — minor', table(tierRows('C'), ['id', 'severity', 'category', 'place', 'verified', 'title', 'failure']))
+  const tierRows = (t) => (r.findings ?? []).filter((f) => f.tier === t).map((f) => [`\`${f.id}\``, f.severity, f.category, renderPath(`${f.file}:${f.line}`), f.confidence, sanitizeText(f.title, 100), sanitizeText(f.failure, 300)])
+  const tierHead = ['id', 'severity', 'category', 'place', 'confidence', 'title', 'failure']
+  out.push('', '### Tier A — listed', table(tierRows('A'), tierHead))
+  out.push('', '### Tier B — over the cap, or answered', table(tierRows('B'), tierHead))
+  out.push('', '### Tier C — minor', table(tierRows('C'), tierHead))
   const gated = (r.findings ?? []).filter((f) => f.tier && f.severity === 'blocker')
   out.push('', '### Gate', table(gated.map((f) => [`\`${f.id}\``, f.gate ? 'gate' : f.wouldGate ? 'would-gate' : 'no', (f.gateBlockedBy ?? []).join(', ') || '—']), ['id', 'mark', 'blocked by']))
   if (r.verificationGap) out.push('', `**Verification gap:** ${sanitizeText(r.verificationGap, 300)}`)
@@ -1928,8 +1546,6 @@ export function renderSummary(r) {
   out.push('', '### Dropped', table((r.dropped ?? []).map((d) => [d.reason, renderPath(`${d.finding?.file ?? '?'}:${d.finding?.line ?? '?'}`), sanitizeText(d.finding?.title ?? '', 100)]), ['reason', 'place', 'title']))
   const c = r.context ?? {}
   out.push('', '### Context', table([
-    ['rules', (c.rules ?? []).join(', ') || '—'],
-    ['reference', (c.reference ?? []).join(', ') || '—'],
     ['files', `${c.filesShown ?? 0} shown of ${c.files ?? 0}${c.partial ? ' (partial)' : ''}`],
     ['diff context', `-U${c.diffContext ?? 25}`],
     ['trims', compactTrims(c.trims) || '—'],
@@ -1939,7 +1555,7 @@ export function renderSummary(r) {
     ['reused', r.reused ? `run ${r.reused.fromRun}` : 'no'],
   ], ['what', 'value']))
   const calls = r.usage?.calls ?? []
-  out.push('', '### Usage', table(calls.map((u) => [u.purpose, u.attempt, slug(u.provider), u.effort, u.promptTokens ?? '—', u.cachedTokens ?? '—', u.completionTokens ?? '—', u.reasoningTokens ?? '—', u.tokensPerSec ?? '—', fmtCost(u.cost), u.ms, slug(u.finish ?? u.errorType ?? '—')]), ['purpose', 'attempt', 'provider', 'effort', 'prompt', 'cached', 'completion', 'reasoning', 'tok/s', 'cost', 'ms', 'finish']))
+  out.push('', '### Usage', table(calls.map((u) => [u.attempt, slug(u.provider), u.effort, u.promptTokens ?? '—', u.cachedTokens ?? '—', u.completionTokens ?? '—', u.reasoningTokens ?? '—', u.tokensPerSec ?? '—', fmtCost(u.cost), u.ms, slug(u.finish ?? u.errorType ?? '—')]), ['attempt', 'provider', 'effort', 'prompt', 'cached', 'completion', 'reasoning', 'tok/s', 'cost', 'ms', 'finish']))
   out.push('', `Total cost: $${fmtCost(r.usage?.cost)}${r.usage?.ceilingHit ? ' (ceiling reached)' : ''}`)
   return `${out.join('\n')}\n`
 }
@@ -1970,7 +1586,7 @@ function humanVerdict(r) {
   if (r.status === 'skipped') return `skipped: ${r.reasonText || r.reason}. Not a finding.`
   if (r.status !== 'reviewed') return `not reviewed: ${r.reasonText || r.reason}. Not a finding.`
   const a = r.findings.filter((f) => f.tier === 'A').length
-  return a ? `${a} confirmed finding(s) to read; the PR comment has each one.` : 'nothing to read.'
+  return a ? `${a} finding(s) to read; the PR comment has each one.` : 'nothing to read.'
 }
 
 /** The workflow commands under --github: the verdict, then one warning per Tier A finding. */
@@ -1995,7 +1611,7 @@ export function renderLocal(r) {
   for (const t of ['A', 'B', 'C']) {
     const fs = (r.findings ?? []).filter((f) => f.tier === t)
     if (!fs.length) continue
-    out.push('', `### ${t === 'A' ? 'To read (confirmed)' : t === 'B' ? 'Not confirmed — no action needed' : 'Minor'}`)
+    out.push('', `### ${t === 'A' ? 'To read' : t === 'B' ? 'More, beyond the three listed or answered — no action needed' : 'Minor'}`)
     for (const f of fs) {
       out.push('', `- ${f.id} ${f.severity} ${f.category} ${f.file}:${f.line} — ${safeTerminal(f.title, 200)}${f.answered ? ' (answered)' : ''}`)
       if (t === 'A') {
@@ -2067,8 +1683,6 @@ function baseResult(o) {
     head: null,
     base: null,
     baseRef: o.base ?? null,
-    rulesFrom: o.rulesFrom ?? null,
-    trusted: null,
     target: o.target ?? null,
     source: o.source ?? null,
     pr: o.pr ?? null,
@@ -2155,15 +1769,6 @@ export async function review(o, env = {}) {
     r.baseRef = baseRef
     r.target = target
     r.lane = laneOf(target, o.source)
-    const rulesFrom = o.rulesFrom ?? trustedRefFor(target, git.resolves)
-    let rulesSha
-    try {
-      rulesSha = git(['rev-parse', '--verify', `${rulesFrom}^{commit}`])
-    } catch {
-      return finish('not-reviewed', 'setup', { reasonText: `the rules ref ${rulesFrom} does not resolve` })
-    }
-    r.rulesFrom = rulesFrom
-    r.trusted = o.trustedName ?? (/^[0-9a-f]{40}$/.test(rulesFrom) ? trustedRefFor(target, git.resolves) : rulesFrom).replace(/^origin\//, '')
     if (r.lane === 'skip') return finish('skipped', 'lane')
 
     const tmp = o.out ?? mkdtempSync(join(tmpdir(), 'judge-review-'))
@@ -2177,8 +1782,6 @@ export async function review(o, env = {}) {
       git,
       head: headSha,
       mergeBase,
-      rulesSha,
-      trustedName: r.trusted,
       target,
       source: o.source,
       title: o.title,
@@ -2206,7 +1809,6 @@ export async function review(o, env = {}) {
     const priorFindings = prior.latest?.review?.findings ?? []
     const reusable = [prior.latest, ...prior.samePush].filter(Boolean).find((p) => p.review.version === 2 && p.review.status === 'reviewed' && p.review.contextHash === r.contextHash)
     let raw
-    let reviewOut = null
     if (reusable) {
       progress('reuse', `run ${reusable.run} reviewed this exact context`)
       r.reused = { fromRun: reusable.run, fromHead: reusable.review.head }
@@ -2226,11 +1828,22 @@ export async function review(o, env = {}) {
       const [system, user] = fullMessages(ctx, nonce)
       const state = env.state ?? callState(o.ceiling ?? COST_CEILING)
       r.usage.calls = state.calls
-      const callEnv = { key: env.key, state, fetchImpl: env.fetchImpl, sleep: env.sleep, now, deadlineAt: env.deadlineAt ?? t0 + 900_000, runSignal: env.runSignal, limits: env.limits ?? LIMITS, onRecord: env.onRecord }
       progress('review', `calling ${r.model.requested} (~${r.context.inputTokensEst} input tokens)`)
       let res
       try {
-        res = await callModel({ ...callEnv, purpose: 'review', body: requestBody({ model: r.model.requested, purpose: 'review', messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }), validate: validateReview })
+        res = await callModel({
+          key: env.key,
+          state,
+          fetchImpl: env.fetchImpl,
+          sleep: env.sleep,
+          now,
+          deadlineAt: env.deadlineAt ?? t0 + 900_000,
+          runSignal: env.runSignal,
+          limits: env.limits ?? LIMITS,
+          onRecord: env.onRecord,
+          body: requestBody({ model: r.model.requested, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
+          validate: validateReview,
+        })
       } catch (e) {
         if (e instanceof OfflineError) return finish('not-reviewed', 'offline')
         throw e
@@ -2239,88 +1852,30 @@ export async function review(o, env = {}) {
         r.usage.ceilingHit = state.ceilingHit
       }
       if (!res.ok) {
-        if (res.raw && o.out) writeFileSync(join(o.out, `raw-${state.billed.review}.txt`), String(res.raw))
+        if (res.raw && o.out) writeFileSync(join(o.out, `raw-${state.billed}.txt`), String(res.raw))
         return finish('not-reviewed', res.reason, { reasonText: `${REASON_TEXT[res.reason] ?? res.reason}${res.text ? `: ${res.text}` : ''}` })
       }
-      reviewOut = res
-      const last = res.call
-      r.model.served = last.model
-      r.model.provider = last.provider
+      r.model.served = res.call.model
+      r.model.provider = res.call.provider
       r.summary = res.value.summary
       r.verificationGap = res.value.verification_gap
       r.couldNotJudge = res.value.could_not_judge.slice(0, 3)
       raw = res.value.findings
-      r._verify = { system, ctx, nonce, callEnv }
     }
 
-    // Filters, answers, verify, tiers, the gate.
-    const { kept, dropped } = filterFindings(raw, { info: ctx.info, rulesSent: ctx.rules.map((x) => x.path), filePaths: ctx.files.map((f) => f.path) })
+    // Filters, answers, tiers, the gate.
+    const { kept, dropped } = filterFindings(raw, { info: ctx.info, filePaths: ctx.files.map((f) => f.path) })
     r.dropped = dropped
     applyAnswers(kept, answers, priorFindings)
-    const deadIds = deadCallIds(ctx.xrefs)
-    const priorGateHeads = r.prior?.gateHeads ?? 0
-    const lane = r.lane
-    const candidates = kept.filter((f) => f.severity !== 'minor' && !f.answered)
-    for (const f of kept) {
-      f.verified = 'n/a'
-      f.verifySamples = []
-      f.confirmedBy = 0
-    }
-    if (reusable) {
-      const before = new Map((reusable.review.findings ?? []).map((x) => [x.id, x]))
-      for (const f of candidates) {
-        const src = before.get(f.id)
-        f.verified = src?.verified && src.verified !== 'n/a' ? src.verified : 'skipped'
-        f.confirmedBy = src?.confirmedBy ?? 0
-        f.verifySamples = src?.verifySamples ?? []
-      }
-    } else if (candidates.length && !o.noVerify) {
-      const gateCands = candidates.filter((f) => gateBlockers(f, { lane, priorGateHeads, deadIds, phase: 'pre' }).length === 0)
-      const samples = gateCands.length ? 2 : 1
-      const nonce2 = makeNonce(fullMessages(ctx, '').join('\n'))
-      const [system, user] = fullMessages(ctx, r._verify.nonce, { task: 'verify', candidates: renderCandidates(candidates), nonce2 })
-      const body = requestBody({ model: r.model.requested, purpose: 'verify', messages: [{ role: 'system', content: system }, { role: 'user', content: user }] })
-      progress('verify', `${candidates.length} candidate(s), ${samples} blind sample(s)`)
-      const runs = await Promise.all(
-        Array.from({ length: samples }, () =>
-          callModel({ ...r._verify.callEnv, purpose: 'verify', body, validate: (t) => validateVerify(t, candidates.length) }).catch((e) => ({ ok: false, reason: e instanceof OfflineError ? 'offline' : 'crash', text: String(e?.message ?? e) })),
-        ),
-      )
-      const state = r._verify.callEnv.state
-      r.usage.cost = state.cost
-      r.usage.ceilingHit = state.ceilingHit
-      const ok = runs.filter((x) => x.ok)
-      candidates.forEach((f, i) => {
-        f.verifySamples = ok.map((x) => x.value[i])
-        const v = combineVerdicts(f.verifySamples)
-        f.verified = v.verified
-        f.confirmedBy = v.confirmedBy
-      })
-    } else {
-      for (const f of candidates) f.verified = 'skipped'
-    }
-    // Refuted drops; all-unsure demotes one level.
-    const survivors = []
-    for (const f of kept) {
-      if (f.verified === 'refuted') {
-        r.dropped.push({ reason: 'refuted', evidence: f.verifySamples.map((s) => s?.evidence).filter(Boolean).join(' / ').slice(0, 600), finding: f })
-        continue
-      }
-      if (f.verified === 'unsure') f.severity = f.severity === 'blocker' ? 'major' : 'minor'
-      survivors.push(f)
-    }
-    assignTiers(survivors)
-    markGate(survivors, { mode: o.gateMode ?? 'report', lane, priorGateHeads, deadIds })
-    r.findings = survivors
+    assignTiers(kept)
+    markGate(kept, { mode: o.gateMode ?? 'report', lane: r.lane, priorGateHeads: r.prior?.gateHeads ?? 0 })
+    r.findings = kept
     const priorList = (prior.latest?.review?.gateHeadList ?? []).filter((h) => h !== short(headSha))
-    r.gateHeadList = survivors.some((f) => f.gate || f.wouldGate) ? [...priorList, short(headSha)] : priorList
+    r.gateHeadList = kept.some((f) => f.gate || f.wouldGate) ? [...priorList, short(headSha)] : priorList
     r.gateHeads = r.gateHeadList.length
     if (reusable) r.usage.cost = 0
-    delete r._verify
-    void reviewOut
     return finish('reviewed', null, { reasonText: '' })
   } catch (e) {
-    delete r._verify
     return finish('not-reviewed', 'crash', { reasonText: `the reviewer crashed: ${safeTerminal(String(e?.stack ?? e), 600)}` })
   }
 }
@@ -2338,11 +1893,11 @@ export function writeOutputs(r, dir, { repo } = {}) {
   return { comment, summary }
 }
 
-/** The trims, grouped for a reader: `full ×12` rather than twelve lines. */
+/** The trims, grouped for a reader: `hunks ×12` rather than twelve lines. */
 export function compactTrims(trims) {
   const groups = new Map()
   for (const t of trims ?? []) {
-    const kind = /^(reference|full|hunks) /.test(t) ? t.split(' ')[0] : t
+    const kind = /^hunks /.test(t) ? 'hunks' : t
     groups.set(kind, (groups.get(kind) ?? 0) + 1)
   }
   return [...groups].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)).join(', ')
@@ -2359,11 +1914,9 @@ export function renderPlan(r) {
     '',
     `- reviewer: ${r.reason === 'no-reviewer-on-trusted' ? "the head's own copy (bootstrap), no key" : 'this tree'}; the key it looks for: \`${KEY_ENV}\``,
     `- files: ${c.filesShown ?? 0} shown of ${c.files ?? 0}${c.partial ? ` (partial: ${(c.filesNotShown ?? []).length} not shown)` : ''}; diff at -U${c.diffContext ?? 25}`,
-    `- rules: ${(c.rules ?? []).join(', ') || '—'}`,
-    `- reference: ${(c.reference ?? []).join(', ') || '—'}`,
     `- trims: ${compactTrims(c.trims) || 'none'}`,
     `- input estimate: ~${est} tokens of ${BUDGET_TOKENS}`,
-    `- estimated cost: $${lo.toFixed(4)}–$${hi.toFixed(4)} for the review call, plus a verify call when a finding survives`,
+    `- estimated cost: $${lo.toFixed(4)}–$${hi.toFixed(4)} for the one review call`,
     '',
     '| section | bytes | ~tokens |',
     '| --- | --- | --- |',
@@ -2632,15 +2185,12 @@ export function fixtureRepo(fixtureDir) {
   }
   run('init', '-q', '-b', 'rc')
   copy(join(fixtureDir, 'base'))
-  const rules = join(fixtureDir, 'rules.md')
-  writeFileSync(join(dir, 'AGENTS.md'), existsSync(rules) ? readFileSync(rules) : '# AGENTS.md\n\nNo rules for this fixture.\n')
-  writeFileSync(join(dir, 'CONTRIBUTING.md'), '# CONTRIBUTING.md\n\nThe fixture has no contribution rules.\n')
   run('add', '-A')
   run('commit', '-q', '-m', 'base: the fixture — canary')
   const base = run('rev-parse', 'HEAD')
   run('update-ref', 'refs/remotes/origin/rc', base)
   run('switch', '-q', '-c', 'canary/change')
-  for (const e of readdirSync(dir)) if (!['.git', 'AGENTS.md', 'CONTRIBUTING.md'].includes(e)) rmSync(join(dir, e), { recursive: true, force: true })
+  for (const e of readdirSync(dir)) if (e !== '.git') rmSync(join(dir, e), { recursive: true, force: true })
   copy(join(fixtureDir, 'head'))
   run('add', '-A')
   run('commit', '-q', '-m', 'canary: the change — canary')
@@ -2757,9 +2307,9 @@ async function cliReview(opts) {
     throw new OfflineError('network refused (offline)')
   }
   const onRecord = opts.record
-    ? (purpose, attempt, data) => {
+    ? (attempt, data) => {
         mkdirSync(opts.record, { recursive: true })
-        writeFileSync(join(opts.record, `${purpose}-${attempt}.sse`), recordable(data))
+        writeFileSync(join(opts.record, `review-${attempt}.sse`), recordable(data))
       }
     : null
   const r = await review(
@@ -2768,7 +2318,6 @@ async function cliReview(opts) {
       head: opts.head ?? 'HEAD',
       target: opts.target ?? 'auto',
       source: opts.source ?? null,
-      rulesFrom: opts['rules-from'] ?? null,
       title,
       body,
       comments,
@@ -2783,7 +2332,6 @@ async function cliReview(opts) {
       dryRun: Boolean(opts['dry-run']),
       bootstrap: Boolean(opts.bootstrap),
       printPrompt: opts['print-prompt'] ?? null,
-      noVerify: Boolean(opts['no-verify']),
       model,
       budgetTokens: opts['budget-tokens'] ? Number(opts['budget-tokens']) : BUDGET_TOKENS,
       gateMode,
@@ -2853,10 +2401,10 @@ async function cliCalibrate(opts) {
     if (Date.now() > deadlineAt - 5 * 60_000) return
     const dir = join(out, `${e.pr}-${k}`)
     const r = await review(
-      { base: e.mergeBase, head: e.head, target: 'rc', source: e.source, rulesFrom: e.mergeBase, title: e.title, body: e.body, out: dir, model, gateMode: 'calibrate', ceiling },
-      { key, deadlineAt: Math.min(deadlineAt, Date.now() + 600_000), limits: CALIBRATE_LIMITS, onRecord: opts.record && k === 1 ? (purpose, attempt, data) => {
+      { base: e.mergeBase, head: e.head, target: 'rc', source: e.source, title: e.title, body: e.body, out: dir, model, gateMode: 'calibrate', ceiling },
+      { key, deadlineAt: Math.min(deadlineAt, Date.now() + 600_000), limits: CALIBRATE_LIMITS, onRecord: opts.record && k === 1 ? (attempt, data) => {
         mkdirSync(join(opts.record, String(e.pr)), { recursive: true })
-        writeFileSync(join(opts.record, String(e.pr), `${purpose}-${attempt}.sse`), recordable(data))
+        writeFileSync(join(opts.record, String(e.pr), `review-${attempt}.sse`), recordable(data))
       } : null },
     )
     writeOutputs(r, dir)
@@ -2950,7 +2498,7 @@ async function cliCanary(opts) {
     try {
       const reviews = []
       for (let k = 0; k < 2; k++) {
-        reviews.push(await review({ base: 'origin/rc', head: fx.head, target: 'rc', source: 'canary/change', rulesFrom: fx.base, cwd: fx.dir, title: `canary: ${kind}`, body: '', gateMode: 'report' }, { key, git: makeGit(fx.dir), deadlineAt: Date.now() + 300_000 }))
+        reviews.push(await review({ base: 'origin/rc', head: fx.head, target: 'rc', source: 'canary/change', cwd: fx.dir, title: `canary: ${kind}`, body: '', gateMode: 'report' }, { key, git: makeGit(fx.dir), deadlineAt: Date.now() + 300_000 }))
       }
       const seeded = readJsonFile(join(SCRIPT_DIR, 'judge-review.fixtures', 'canary', kind, 'seeded.json'))
       const v = canaryVerdict(kind, reviews, seeded?.file ?? null)
@@ -2994,7 +2542,7 @@ const HELP = `judge-review — a model reads a pull request (judge (review)).
   node scripts/judge-review.mjs calibrate | score | ledger | canary
 
 Needs ${KEY_ENV} for a live review; --dry-run needs no key and prints the context plan.
-Exit (local review): 0 nothing to read · 2 confirmed findings to read · 1 could not run.
+Exit (local review): 0 nothing to read · 2 findings to read · 1 could not run.
 Under --github a review always exits 0. docs/AGENT-TOOLING.md → The judge.
 `
 

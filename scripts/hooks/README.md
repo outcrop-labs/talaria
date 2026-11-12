@@ -54,7 +54,7 @@ Five entry points:
   host (`--hostname` on `gh api`, `HOST/OWNER/REPO` on `--repo`), so a GitHub Enterprise PR,
   or a `GH_HOST` set for another host, does not send it elsewhere;
   exit 2 names `red`, `conflict`, `pending`, `timeout`, `closed`, `base` (a base in no
-  lane), or `review` (only under `JUDGE_REVIEW_GATE=blockers`: a doubly confirmed
+  lane), or `review` (only under `JUDGE_REVIEW_GATE=blockers`: a high-confidence
   `judge (review)` blocker nobody answered) on stderr
   (`pending` comes at once, not at the wall clock, when only a push or a reconcile can
   change the head). It does not edit or push. Not wired as a Stop hook — [`ship-a-change`](../../.claude/skills/ship-a-change/SKILL.md)
@@ -88,7 +88,7 @@ Five entry points:
 - [`../judge-review.mjs`](../judge-review.mjs) — the model review (`judge (review)`, `bun run
   judge`). Not a stop hook and not a gate: `review --github` (CI) always exits 0, a
   `not reviewed: <reason>` notice included; locally exit 0 is nothing to read, 2 is at least
-  one confirmed finding to read, 1 could not run (no key: `--dry-run` needs none).
+  one finding to read, 1 could not run (no key: `--dry-run` needs none).
   `calibrate` and `canary` are 0 (bar met) / 2 (bar missed) / 1 (could not run) everywhere —
   they run on their own workflow, never on a pull request.
 - [`testing-watch.mjs`](./testing-watch.mjs) — after a pull request merges into `testing`:

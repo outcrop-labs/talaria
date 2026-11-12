@@ -1,12 +1,12 @@
 # judge review — a model reads every pull request: `judge (review)`.
 #
-# WHAT. scripts/judge-review.mjs sends the change — its diff, the files it
-#   touches, their callers and importers, the author's description and the
-#   repository's rules — to a model on OpenRouter (the model is pinned in that
-#   script; the JUDGE_REVIEW_MODEL repository variable overrides it). Findings
-#   that survive code-side filters and a BLIND second reading become at most
-#   three line annotations, one sticky comment (only when there is one to
-#   read), and a full job summary with the cost. `bun run gate:remote` pushes
+# WHAT. scripts/judge-review.mjs sends the change — its diff, the list of
+#   files, the author's description and changelog entry, and the earlier
+#   findings — to a model on OpenRouter in one call (the model is pinned in
+#   that script; the JUDGE_REVIEW_MODEL repository variable overrides it).
+#   Findings that survive code-side filters become at most three line
+#   annotations, one sticky comment (only when there is one to read), and a
+#   full job summary with the cost. `bun run gate:remote` pushes
 #   to ci/<branch> run the same review as `offload / judge (review)` before a
 #   pull request exists. docs/AGENT-TOOLING.md → The judge.
 #
@@ -152,6 +152,8 @@ jobs:
         if: steps.trust.outputs.reviewer == 'trusted' && steps.trust.outputs.superseded != 'true'
         continue-on-error: true
         timeout-minutes: 11
+        # RULES is the trusted tree's commit. The reviewer reads no repository docs and
+        # ignores --rules-from; it stays because each open pull request's head carries this file.
         env:
           JUDGE_OPENROUTER_API_KEY: ${{ secrets.JUDGE_OPENROUTER_API_KEY }}
           JUDGE_REVIEW_MODEL: ${{ vars.JUDGE_REVIEW_MODEL }}
