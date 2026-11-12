@@ -11,7 +11,7 @@
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage, getJson, getJsonOr } from '@/lib/fetch-json'
   import type { GoogleApiHealth } from '@/lib/google-apis'
-  import { pushToast, toastError } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
   import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
 
@@ -41,13 +41,16 @@
     return () => clearTimeout(t)
   })
 
+  // As on the personal disconnect: the server's sentence when the grant was
+  // kept at Google (an admin's own connection shares it) or Google refused.
+  let revokeNote = $state('')
+
   const disconnect = async () => {
+    revokeNote = ''
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect the org Google account? General agents lose Drive/Docs access.', confirmLabel: 'Disconnect', danger: true }))) return
     try {
-      // revokeNote: as on the personal disconnect — the grant was kept at
-      // Google (an admin's own connection shares it) or Google refused.
       const r = await delJson<{ ok: true; revoked: boolean; revokeNote: string | null }>('/api/integrations/google/org')
-      if (r.revokeNote) pushToast({ title: 'Org Google disconnected', body: r.revokeNote })
+      revokeNote = r.revokeNote ?? ''
     } catch (e) {
       toastError('Disconnect failed', e)
       return
@@ -134,6 +137,7 @@
         <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm' })}>Connect</a>
       {/if}
     </div>
+    {#if revokeNote}<p class="mt-2 max-w-prose text-xs text-muted">{revokeNote}</p>{/if}
     {#if data?.connected}
       <!-- The "can we actually call Google" check — see probeApis above. -->
       <div class="mt-3 space-y-1.5">

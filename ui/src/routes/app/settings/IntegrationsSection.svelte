@@ -12,7 +12,7 @@
   import { delJson, getJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
-  import { pushToast, toastError } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
 
   interface GoogleStatus {
     available: boolean
@@ -44,13 +44,17 @@
     return () => clearTimeout(t)
   })
 
+  // Set when a disconnect forgot the connection but did not revoke the grant
+  // at Google (another stored connection shares it, or Google refused) — the
+  // server's own sentence. Inline, not a toast: a toast cuts it to one line.
+  let revokeNote = $state('')
+
   const disconnect = async () => {
+    revokeNote = ''
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect Google? Your assistant loses mail, calendar, and Drive access until you reconnect.', confirmLabel: 'Disconnect', danger: true }))) return
     try {
-      // revokeNote: the grant was kept at Google (another connection shares
-      // it) or Google refused the revoke — the server's sentence says which.
       const r = await delJson<{ ok: true; revoked: boolean; revokeNote: string | null }>('/api/integrations/google')
-      if (r.revokeNote) pushToast({ title: 'Google disconnected', body: r.revokeNote })
+      revokeNote = r.revokeNote ?? ''
     } catch (e) {
       // Nothing inline to hold it: the status row still claims "connected",
       // so the toast is what says the disconnect didn't happen.
@@ -130,6 +134,7 @@
     <p class="mt-2 max-w-prose text-xs text-muted">
       Your assistant reads your mail and calendar live, finds Drive files, and drafts emails and events as you. Every send waits for your approval in the Inbox. Also powers doc/sheet export into your Drive.
     </p>
+    {#if revokeNote}<p class="mt-2 max-w-prose text-xs text-muted">{revokeNote}</p>{/if}
     {/snippet}
   </QueryState>
 
