@@ -28,8 +28,13 @@
 #   <reason>` notice. Every step after the checkout is continue-on-error with
 #   a timeout, and the step timeouts sum under the job's, so a hang ends a
 #   step, never the check. Plain `pull_request` only — never the target-branch
-#   variant that hands a fork's code a write token; forks are skipped. `JUDGE_REVIEW_GATE=off` (a repository variable) skips
-#   the job entirely.
+#   variant that hands a fork's code a write token; forks are skipped.
+#   `JUDGE_REVIEW_GATE=off` (a repository variable) skips the review too.
+#
+# SKIPPED IN A STEP, NOT BY THE JOB. A job skipped by its `if` shows its `name:`
+#   expression unevaluated as the check's name. So a draft, a fork or `off`
+#   runs the job, checks out nothing, and says `status=skipped reason=<why>`.
+#   The bootstrap and comment jobs, skipped on most runs, carry static names.
 #
 # WHY NOT IN judge.yml. judge (standards) is exact, fast and red on a `must`;
 #   this is a sampled reading that costs money and minutes and is never red.
@@ -60,12 +65,8 @@ jobs:
   review:
     # The offload's check carries `offload / ` (ci-offload.yml's convention) so it never shadows the PR's own.
     name: ${{ github.event_name == 'push' && 'offload / judge (review)' || 'judge (review)' }}
-    if: >-
-      vars.JUDGE_REVIEW_GATE != 'off' && (
-        (github.event_name == 'push' && github.event.deleted != true) ||
-        (github.event_name == 'pull_request' &&
-         github.event.pull_request.head.repo.full_name == github.repository &&
-         github.event.pull_request.draft == false))
+    # Only a ci/** ref's deletion skips the job itself (its run lands on the default branch, not a PR).
+    if: github.event_name != 'push' || github.event.deleted != true
     runs-on: ubuntu-latest
     # Above the sum of the step timeouts, so a hang ends a continue-on-error
     # step and never the job.
@@ -88,10 +89,13 @@ jobs:
       PR: ${{ github.event.pull_request.number }}
       PUSH_REF: ${{ github.ref_name }}
       REPO: ${{ github.repository }}
+      # Why this run reviews nothing, or empty: the kill switch, a fork, a draft.
+      SKIP: ${{ vars.JUDGE_REVIEW_GATE == 'off' && 'off' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'fork' || github.event_name == 'pull_request' && github.event.pull_request.draft && 'draft' || '' }}
     steps:
       # The trusted tree, never the pull request's: every script below runs from it,
       # and .gitattributes comes from it. The PR is read as git objects only.
       - uses: actions/checkout@v5
+        if: env.SKIP == ''
         continue-on-error: true
         timeout-minutes: 3
         with:
@@ -101,6 +105,7 @@ jobs:
 
       - name: Choose the trusted tree and read the pull request
         id: trust
+        if: env.SKIP == ''
         continue-on-error: true
         timeout-minutes: 2
         env:
@@ -168,8 +173,11 @@ jobs:
           REVIEWER: ${{ steps.trust.outputs.reviewer }}
           SUPERSEDED: ${{ steps.trust.outputs.superseded }}
         run: |
-          case "$SUPERSEDED/$REVIEWER" in
-            true/*) s=skipped; r=superseded; t='a newer push is reviewed instead' ;;
+          case "$SKIP/$SUPERSEDED/$REVIEWER" in
+            off/*) s=skipped; r=off; t='JUDGE_REVIEW_GATE=off, the kill switch, is set' ;;
+            fork/*) s=skipped; r=fork; t="a fork's pull request is never reviewed" ;;
+            draft/*) s=skipped; r=draft; t='a draft is reviewed once it is marked ready' ;;
+            */true/*) s=skipped; r=superseded; t='a newer push is reviewed instead' ;;
             */bootstrap) s=not-reviewed; r=no-reviewer-on-trusted; t="the trusted branch has no reviewer yet; the keyless bootstrap job dry-runs the head's copy" ;;
             */none) s=not-reviewed; r=no-reviewer; t='the trusted branch has no reviewer' ;;
             */) s=not-reviewed; r=setup; t='the trusted tree could not be prepared' ;;
@@ -193,7 +201,8 @@ jobs:
   # first step, so pull-request code never runs in the job that names the key.
   # This one references no secret, reads only, and uploads nothing.
   bootstrap:
-    name: ${{ github.event_name == 'push' && 'offload / judge (review) bootstrap' || 'judge (review) bootstrap' }}
+    # Static: skipped on nearly every run, and a skipped job shows its name unevaluated. Nothing reads it.
+    name: judge (review) bootstrap
     needs: review
     if: ${{ !cancelled() && needs.review.outputs.reviewer == 'bootstrap' }}
     runs-on: ubuntu-latest
@@ -230,7 +239,8 @@ jobs:
   comment:
     name: judge (review) comment
     needs: review
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.review.result != 'skipped' }}
+    # Only the trusted reviewer uploads what it posts; a skipped or bootstrap run has nothing to say.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.review.outputs.reviewer == 'trusted' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # The write token lives here, with no secret, no checkout and no repository script.

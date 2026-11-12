@@ -979,7 +979,7 @@ check('workflows: the comment jobs check out nothing, hold no secret and run no 
 
 check('workflows: names, triggers and the concurrency key', () => {
   const r = WF('judge-review.yml')
-  for (const n of ['judge (review)', 'offload / judge (review)', 'judge (review) comment', "'judge (review) bootstrap'", "'offload / judge (review) bootstrap'"]) ok(r.includes(n), n)
+  for (const n of ['judge (review)', 'offload / judge (review)', 'name: judge (review) comment', 'name: judge (review) bootstrap']) ok(r.includes(n), n)
   const s = WF('judge.yml')
   for (const n of ['name: judge (standards)', 'name: judge (standards) comment']) ok(s.includes(n), n)
   ok(/types: \[opened, synchronize, reopened, ready_for_review\]/.test(r) && !/types:.*edited/.test(r), 'judge-review triggers')
@@ -992,6 +992,40 @@ check('workflows: an exit code is captured where -e cannot end the step first', 
   // and a `must` skipped the step that prints its report).
   for (const f of ['judge.yml', 'judge-review.yml', 'judge-calibrate.yml']) ok(!/^\s*\w+=\$\?\s*$/m.test(WF(f)), `${f}: a bare <var>=$? line`)
   ok(/\|\| code=\$\?$/m.test(WF('judge.yml')), "judge.yml captures judge-pr's exit with `|| code=$?`")
+})
+
+check('workflows: a draft, a fork or `off` is skipped in a step, so no check shows an unevaluated name', () => {
+  // A job skipped by its `if` shows its `name:` expression verbatim as the check's
+  // name (#731's draft run). Only the review job's name is an expression, and only a
+  // ci/** deletion — whose run lands on the default branch, never a PR — skips it.
+  for (const f of ['judge.yml', 'judge-review.yml']) {
+    for (const [id, j] of Object.entries(jobsOf(WF(f)))) {
+      const h = j.header.join('\n')
+      if (!/^\s*name: \$\{\{/m.test(h)) continue
+      eq(`${f}:${id}`, 'judge-review.yml:review')
+      ok(/^\s*if: github\.event_name != 'push' \|\| github\.event\.deleted != true$/m.test(h), 'the review job skips only a deletion')
+    }
+  }
+  const review = jobsOf(WF('judge-review.yml')).review
+  const skip = /^\s*SKIP: (.*)$/m.exec(review.header.join('\n'))?.[1] ?? ''
+  for (const why of ["'off'", "'fork'", "'draft'"]) ok(skip.includes(`&& ${why}`), `SKIP names ${why}`)
+  for (const id of ['actions/checkout', 'id: trust']) ok(review.steps.find((s) => s.includes(id)).includes("if: env.SKIP == ''"), `${id} waits on SKIP`)
+  // Replay the notice step under bash: every way through says what happened, in the wire's shape.
+  const sayso = review.steps.find((s) => s.includes('Say so when'))
+  const script = sayso.split('\n').slice(sayso.split('\n').findIndex((l) => /run: \|$/.test(l)) + 1).map((l) => l.slice(10)).join('\n')
+  const say = (SKIP, SUPERSEDED, REVIEWER) => {
+    const r = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], { env: { PATH: process.env.PATH, HEAD_SHA: 'a'.repeat(40), SKIP, SUPERSEDED, REVIEWER }, encoding: 'utf8' })
+    const v = W.parseVerdict(/::notice title=judge-review verdict::(\S+ \S+ \S+)/.exec(r.stdout)?.[1] ?? '')
+    return `${r.status} ${v?.status}/${v?.reason}`
+  }
+  eq(say('off', '', ''), '0 skipped/off')
+  eq(say('fork', '', ''), '0 skipped/fork')
+  eq(say('draft', '', ''), '0 skipped/draft')
+  eq(say('', 'true', 'trusted'), '0 skipped/superseded')
+  eq(say('', '', 'bootstrap'), '0 not-reviewed/no-reviewer-on-trusted')
+  eq(say('', '', 'none'), '0 not-reviewed/no-reviewer')
+  eq(say('', '', ''), '0 not-reviewed/setup')
+  eq(say('', '', 'trusted'), '0 not-reviewed/crash')
 })
 
 // ── 12. the model pin ───────────────────────────────────────────────────────
