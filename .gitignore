@@ -10,6 +10,8 @@ dist/
 
 # Rust build output (api/) — Cargo.lock IS committed, target/ is not
 api/target/
+# The api binary CI built, fetched by `talaria dev --api-from-ci` (cli/src/ci-artifact.ts)
+api/.ci-bin/
 
 # Playground
 playground/

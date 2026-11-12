@@ -5,8 +5,9 @@
 //
 //   • CI-safe (no services): every refusal. The guard answers from the
 //     header before any query, so the lazy pool never connects.
-//   • #[ignore]d live: the credential is admitted and the sync answers. CI's
-//     api-integration job runs it against the migrated scratch database.
+//   • #[ignore]d live: the credential is admitted and the sync answers.
+//     ci.yml's api job runs it in its live-DB steps, against the migrated
+//     scratch database.
 //
 // Its own module, not beside app_mcp_sync_live: CI runs one module at a time,
 // and a sync driven from here must not run inside that test's sequence.

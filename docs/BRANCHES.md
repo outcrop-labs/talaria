@@ -36,8 +36,9 @@ graph LR
    and `flow.yml`'s `pr-target` fails any other. Review, CI and the staging
    deploy all happen on the pull request and on `rc`; there is nothing to gain
    by aiming at the trunk, and a red check says so in one line.
-2. **The pull request's checks run** — `ci.yml` (invariants, ui, mcp, cli, api,
-   desktop), and `migrations.yml` when the change touches the migration array.
+2. **The pull request's checks run** — `ci.yml` (invariants, ui, mcp, cli, api
+   with its live-database suite, desktop, and `migrations (replay + upgrade)`
+   when the change touches the migration array).
    They are the compile and the test; locally an author runs `bun run check`,
    and `bun run gate:remote` runs the same `ci.yml` before a pull request exists.
 3. **Merge it into `rc`.** Merge commit: a squash or rebase merge is a single
@@ -91,7 +92,7 @@ cannot open until the commit has been deployed.
 | `bun run check` | locally, every time | invariants (including this file's own anchors) + every doc link resolves + generated references are not drifted |
 | `bun run gate:remote` | before a pull request exists, in the background | `ci.yml` on a `ci/<branch>` push (`CI offload`): light, or every platform with `--full` — the same jobs a pull request gets |
 | `ci.yml` | pull requests, pushes to `testing`/`rc`/`main`, every publish, and `ci/**` offloads | the tripwire: each surface's tests, typecheck, and the prod-bundle SPA smoke |
-| `migrations.yml` | migration-touching changes | the array replays from zero *and* upgrades a baseline, with the schema snapshot undrifted |
+| `migrations (replay + upgrade)` (ci.yml) | migration-touching changes | the array replays from zero *and* upgrades the array of the branch the change lands on (a pull request's base; `testing` is upgraded from `rc`, `rc` from `main`), with the schema snapshot undrifted; a `hotfix/*` pull request appends no migration — a hotfix flows back into `testing`, whose array is ahead of rc's, so its statement would land at a different index on each |
 | `rc-deploy.yml` | every push to `rc` | the commit's own image boots as a fresh instance and answers — the staging deploy |
 | `pr-target` (flow.yml) | pull requests into `main`, `rc`, `testing` | `main` takes only this repository's `rc`; no title or body that would skip the merge's own push checks (`[skip ci]` and kin); no retarget into `rc` or `main` until a push re-runs the checks against it |
 | `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc` (CI green, deploy green, in runs made on `rc`) and carries no unrolled `changelog/` entries |
@@ -263,11 +264,14 @@ Things about that list that are easy to get wrong:
   job skips per *job* (`needs: [changes]` + a job-level `if`, like every other check on
   the list), and a job skipped that way reports success; the `changes` filter names every
   crate the MCP story passes through, so the skip is honest.
-- **`migrations` is deliberately NOT in either list.** Its workflow is filtered
-  by `paths:`, and a required check whose workflow never starts reports nothing
-  at all — which branch protection reads as "pending" and blocks the merge with.
-  The jobs above are safe because they skip per *job*, and a job skipped by a
-  job-level `if` is reported as a success.
+- **`migrations (replay + upgrade)` is not in either list yet.** It used to be
+  its own workflow, filtered by `paths:`, and a required check whose workflow
+  never starts reports nothing at all — which branch protection reads as
+  "pending" and blocks the merge with. It is a `ci.yml` job now, skipped per
+  *job* like the ones above (a job skipped by a job-level `if` is reported as a
+  success), so it can be required; adding the context is the same by-hand
+  change the e2e entry describes. The api job's live-database suite needs no
+  entry of its own: it runs inside `fmt + clippy + test (api)`.
 - **`PROMOTION_TOKEN` decides whether `promote.yml` can open the pull request
   at all.** GitHub creates no workflow runs for events caused by the
   repository's `GITHUB_TOKEN`, so a promotion pull request opened with the

@@ -4061,8 +4061,8 @@ mod tests {
     // ── Live-DB: a revise round, end to end against a loopback GitHub ───────
     //
     // #[ignore]d (house rule: no service-dependent tests in the default run;
-    // api-integration.yml sweeps ignored lib tests against its scratch
-    // database). The verbs run exactly as the gateway calls them — call_tool
+    // ci.yml's api job sweeps ignored lib tests in its live-DB steps, against
+    // its scratch database). The verbs run exactly as the gateway calls them — call_tool
     // with the agent's subject — and every GitHub call goes to a stub this
     // test binds, via talaria_github::with_api_base.
     //

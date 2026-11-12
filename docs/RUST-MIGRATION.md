@@ -37,8 +37,9 @@ there is no third state. If the api is down, `/api/*` answers
 (rule 2).
 
 In dev, `talaria dev` starts the api as a sidecar by default (`cargo run` in
-`api/`, adopting an instance already on the port, signals forwarded, readiness
-polled without blocking the app; `TALARIA_API=off` opts out), and `healthz`
+`api/`, or with `--api-from-ci` the binary ci.yml's api job built, so nothing
+compiles locally; adopting an instance already on the port, signals forwarded,
+readiness polled without blocking the app; `TALARIA_API=off` opts out), and `healthz`
 reports the effective api URL and probes it. A devbox carries the whole
 toolchain (`docker/devbox.Dockerfile`, pinned like `api/rust-toolchain.toml`).
 
@@ -96,14 +97,16 @@ never local.
    on loopback, stripping hop-by-hop headers.
 8. **Upstream error text dies at the boundary.** The gateway relays status
    codes and fixed sentences, never a provider's prose (`api/src/error.rs`).
-9. **The unit suites are pure.** No test in `api/` needs a service in CI; the
-   `#[ignore]`d integration tests that touch a live DB run in
-   `api-integration.yml` against scratch containers (`cargo test -- --ignored`
-   still works locally against `talaria dev` infra — that is where
-   `typed_binds` and `update_live`, which need more than Postgres+Redis, stay).
-   `bun run verify` never scans `api/`; the CI gate is `bun run
-   api:check` (fmt + clippy `-D warnings` + test) and the `api` CI job, with
-   `api-integration.yml` the depth gate behind them. That command is CI's job,
+9. **The unit suites are pure.** No plain `cargo test` in `api/` needs a
+   service; the `#[ignore]`d integration tests that touch a live DB run in
+   ci.yml's api job, in its live-DB steps, against scratch containers
+   (`cargo test -- --ignored` still works locally against `talaria dev` infra —
+   that is where `typed_binds` and `update_live`, which need more than
+   Postgres+Redis, stay). `bun run verify` never scans `api/`; the CI gate is
+   `bun run api:check` (fmt + clippy `-D warnings` + test) and the `api` CI
+   job, whose live-DB steps are the depth gate behind them (a light run takes
+   only the modules that reach the crates it touched; `scripts/surfaces.mjs`
+   plans it). That command is CI's job,
    never local: the pull request's checks (or `bun run gate:remote`) are the
    proof, and a local compile only reproduces one failure they reported.
 10. **App modules are customer code, never port surface.** Building a microapp

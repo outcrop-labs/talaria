@@ -23,6 +23,8 @@ node_modules
 # api-package.yml); the root Dockerfile doesn't compile it at all, it
 # consumes the published package image.
 api/target
+# The api binary `talaria dev --api-from-ci` fetched from CI (182 MB).
+api/.ci-bin
 
 # Instance state — never bake a machine's data or credentials into a layer.
 fleet
