@@ -115,14 +115,16 @@ jobs:
         run: |
           set -uo pipefail
           J="$RUNNER_TEMP/judge"
+          # `shell: bash` runs under -e, which `set -uo pipefail` leaves on: a bare
+          # `code=$?` after a non-zero exit is never reached, so capture it inline.
+          code=0
           node scripts/judge-pr.mjs \
             --base "origin/$BASE" \
             --head "$HEAD_SHA" \
             --target "$BASE" \
             --source "$SOURCE" \
             --pr-body "$J/body.md" \
-            --summary > "$J/out/report.md" 2> "$J/judge.err"
-          code=$?
+            --summary > "$J/out/report.md" 2> "$J/judge.err" || code=$?
           if [ "$code" != 0 ] && [ "$code" != 2 ]; then
             { echo '## judge-pr could not run — not a pass, not a finding'; echo; echo '```'; head -c 4000 "$J/judge.err"; echo; echo '```'; } > "$J/out/report.md"
             cat "$J/out/report.md" >> "$GITHUB_STEP_SUMMARY"

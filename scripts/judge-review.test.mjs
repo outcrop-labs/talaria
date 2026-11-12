@@ -986,6 +986,14 @@ check('workflows: names, triggers and the concurrency key', () => {
   ok(r.includes('group: judge-review-${{ github.event.pull_request.number || github.ref }}'), 'concurrency')
 })
 
+check('workflows: an exit code is captured where -e cannot end the step first', () => {
+  // `shell: bash` is `bash -e -o pipefail`, and `set -uo pipefail` leaves -e on: a bare
+  // `code=$?` after a failing command is never reached (#731 — judge-pr's crash went red,
+  // and a `must` skipped the step that prints its report).
+  for (const f of ['judge.yml', 'judge-review.yml', 'judge-calibrate.yml']) ok(!/^\s*\w+=\$\?\s*$/m.test(WF(f)), `${f}: a bare <var>=$? line`)
+  ok(/\|\| code=\$\?$/m.test(WF('judge.yml')), "judge.yml captures judge-pr's exit with `|| code=$?`")
+})
+
 // ── 12. the model pin ───────────────────────────────────────────────────────
 
 check('pin: the model id is written in exactly one workflow-or-script file', () => {
