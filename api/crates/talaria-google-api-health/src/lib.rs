@@ -371,6 +371,17 @@ mod tests {
   }
 }"#;
 
+    // Captured the same day: the Sheets probe URL with a bearer that is not a
+    // token → HTTP 401. Drive, Calendar, Gmail and Slides answered the same
+    // sentence from the worktree stack's probe.
+    const SHEETS_BAD_TOKEN: &str = r#"{
+  "error": {
+    "code": 401,
+    "message": "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.",
+    "status": "UNAUTHENTICATED"
+  }
+}"#;
+
     fn body(raw: &str) -> Value {
         serde_json::from_str(raw).expect("captured JSON")
     }
@@ -433,6 +444,18 @@ mod tests {
         assert_eq!(
             got.detail.as_deref(),
             Some("Google rejected the access token. Reconnect the org account.")
+        );
+    }
+
+    #[test]
+    fn a_rejected_token_says_reconnect_and_quotes_google() {
+        let got = classify(entry("sheets"), 401, &body(SHEETS_BAD_TOKEN));
+        assert_eq!(got.state, "error");
+        assert_eq!(
+            got.detail.as_deref(),
+            Some(
+                "Google rejected the access token. Reconnect the org account. Google said: Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project."
+            )
         );
     }
 
