@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import Button from '@/components/ui/Button.svelte'
@@ -36,8 +37,10 @@
   let manageId = $state<string | null>(null)
   const managing = $derived(manageId ? endpoints.find((e) => e.id === manageId) : undefined)
 
-  const local = $derived(endpoints.filter((e) => e.class === 'local'))
-  const cloud = $derived(endpoints.filter((e) => e.class === 'cloud'))
+  const groups = $derived([
+    { title: 'Self-hosted', endpoints: endpoints.filter((e) => e.class === 'local') },
+    { title: 'Cloud', endpoints: endpoints.filter((e) => e.class === 'cloud') },
+  ])
 </script>
 
 {#if session.data && !isAdmin}
@@ -94,11 +97,19 @@
         {:else}
           <!-- data-cards: the hook the page's stagger selector targets, so
                provider rows cascade on entrance and skeletons do not. -->
-          <SettingsGroup data-cards>
-            {#each [...local, ...cloud] as e (e.id)}
-              <ModelsEndpointCard ep={e} />
+          <div class="space-y-10">
+            {#each groups as group (group.title)}
+              {#if group.endpoints.length > 0}
+                <SettingsSection title={group.title}>
+                  <SettingsGroup data-cards>
+                    {#each group.endpoints as e (e.id)}
+                      <ModelsEndpointCard ep={e} />
+                    {/each}
+                  </SettingsGroup>
+                </SettingsSection>
+              {/if}
             {/each}
-          </SettingsGroup>
+          </div>
         {/if}
       {/if}
       {#if tab === 'roles'}<ModelsRolesPanel />{/if}
