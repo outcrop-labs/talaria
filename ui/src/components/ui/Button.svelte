@@ -1,10 +1,12 @@
 <script lang="ts">
   import type { HTMLButtonAttributes } from 'svelte/elements'
-  import { buttonClasses, type ButtonSize, type ButtonVariant } from './button'
+  import { buttonClasses, type ButtonSize, type ButtonVariant, type ButtonVoice } from './button'
 
   interface Props extends HTMLButtonAttributes {
     variant?: ButtonVariant
     size?: ButtonSize
+    /** `sans` is Home's Inbox's sentence-case voice; every other surface keeps the mono default. */
+    voice?: ButtonVoice
     /** bind:ref for imperative focus/measure at call sites that need it. */
     ref?: HTMLButtonElement | null
     /**
@@ -32,6 +34,7 @@
   let {
     variant = 'primary',
     size = 'md',
+    voice = 'mono',
     type = 'button',
     class: className,
     children,
@@ -68,6 +71,7 @@
   class={buttonClasses({
     variant,
     size,
+    voice,
     className: [wantsBloom ? 'dither-fill' : '', className as string | null].filter(Boolean).join(' '),
   })}
   {...rest}

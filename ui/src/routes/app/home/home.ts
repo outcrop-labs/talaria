@@ -1,16 +1,6 @@
-// Shared types, hooks, and tables for the Home/Today suite (Home.svelte +
-// the home/ tab components). Like the query hooks in lib/, the use* functions
-// call createQuery and so must run during component init.
+// The use* functions call createQuery and so must run during component init.
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson, getJsonOr } from '@/lib/fetch-json'
-import type { DotStatus } from '@/components/ui/chip'
-
-// 'work' is one tab over three old ones: plans and research runs are sessions
-// in the work harness now, so Home previews them in one panel (WorkTab). The
-// retired names fall through `tabFromPath`'s fallback to the Inbox, which is
-// what it is for.
-export const HOME_TABS = ['inbox', 'boards', 'comms', 'work', 'docs'] as const
-export type HomeTab = (typeof HOME_TABS)[number]
 
 export interface WorkItem {
   id: string
@@ -53,9 +43,6 @@ export const useHome = () =>
     refetchInterval: 30_000,
   }))
 
-/** The whole query object, passed to tabs that need `isError`/`refetch` too. */
-export type HomeQuery = ReturnType<typeof useHome>
-
 // Time-aware and lightly varied: the pool is keyed by hour + day-of-year so
 // the pick is stable across re-renders (no flicker) but changes through the
 // day and from day to day.
@@ -74,39 +61,6 @@ export const greeting = (name?: string | null) => {
   const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86_400_000)
   return pool[(dayOfYear + h) % pool.length]!
 }
-
-// ── Shared: an area-scoped slice of the workspace activity feed ─────────────
-export interface FeedEvent {
-  at: string
-  actor: string
-  context: string
-  detail: string
-  href: string
-}
-
-// ── Boards: board-scoped briefing, full queues behind a sidebar, audit trail ─
-export type QueueKey = 'triage' | 'review' | 'blocked'
-export const QUEUE_META: Record<QueueKey, { label: string; hint: string; dot: DotStatus }> = {
-  triage: { label: 'To triage', hint: 'New tickets waiting to be assigned', dot: 'accent' },
-  review: { label: 'To review', hint: 'Agent work awaiting your sign-off', dot: 'ok' },
-  blocked: { label: 'Blocked', hint: 'Stalled, needs you to unblock', dot: 'warn' },
-}
-
-// ── Research: runs in flight and fresh reports ──────────────────────────────
-// `awaiting` shares running's accent but not its pulse (WorkTab keys pulse on
-// status === 'running') — waiting on you, not working.
-export const RUN_DOT: Record<string, DotStatus> = {
-  queued: 'warn',
-  running: 'accent',
-  awaiting: 'accent',
-  done: 'ok',
-  error: 'danger',
-}
-
-// ── The assistant's summary is the DAILY BRIEF, not a per-tab panel. Each
-// console tab used to open with its own ephemeral briefing (`AssistantBriefing`);
-// those are gone — the brief on the Inbox tab is the one summary a person is
-// given, and asking about a tab's work happens from the brief's own chat.
 
 export interface AgendaEvent {
   id: string

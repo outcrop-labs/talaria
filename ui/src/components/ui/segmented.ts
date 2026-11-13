@@ -6,4 +6,6 @@ export interface SegmentedOption<T extends string = string> {
   id: T
   label: string | Snippet
   title?: string
+  /** `data-*` attributes for the option's button, e.g. a test or capture hook. */
+  data?: Record<`data-${string}`, string>
 }

@@ -3,8 +3,7 @@
   import { relativeTime } from '@/lib/fleet'
 
   // The one activity/audit row: "actor · detail" + relative time, with an
-  // optional quiet context line underneath. Shared by Home's activity feeds
-  // (ActivityList, Fleet pulse) and the Observability overview's audit trail.
+  // optional quiet context line underneath.
   // Rows carry their own hairline separator (spec §8 "tables/lists: hairline
   // row separators") so every consumer list is separated without needing
   // divide-y on the container.
