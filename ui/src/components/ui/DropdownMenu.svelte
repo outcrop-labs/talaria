@@ -28,6 +28,7 @@
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import { DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle } from '@/lib/dropdown-position'
@@ -65,6 +66,8 @@
     /** Opening this menu closes every other open menu in the same group. */
     group?: string
   } = $props()
+
+  const sans = useUiVoice() === 'sans'
 
   let open = $state(false)
   let ref = $state<HTMLDivElement | null>(null)
@@ -179,7 +182,7 @@
                     ? 'cursor-default text-muted opacity-50'
                     : item.danger
                       ? 'text-danger hover:bg-danger/10'
-                      : cn('dither-fill', item.checked === false ? 'text-muted' : 'text-fg'),
+                      : cn(sans ? 'hover:bg-hover' : 'dither-fill', item.checked === false ? 'text-muted' : 'text-fg'),
                 )}
               >
                 <!-- checked state: leading ✓ slot (kept when unchecked so rows
@@ -192,7 +195,7 @@
                 {/if}
                 <span class="min-w-0 flex-1 truncate">{item.label}</span>
                 {#if item.hint}
-                  <span class="shrink-0 font-mono text-[10px] text-ink-dim">{item.hint}</span>
+                  <span class={sans ? 'shrink-0 font-sans text-xs text-muted' : 'shrink-0 font-mono text-[10px] text-ink-dim'}>{item.hint}</span>
                 {/if}
               </button>
             {/if}

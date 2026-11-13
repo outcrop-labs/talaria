@@ -18,7 +18,7 @@
     type SettingsNavRow,
     type SettingsPageTabs,
   } from '@/lib/settings-nav'
-  import { setUiVoice } from '@/lib/ui-voice'
+  import { holdSansScreen, setUiVoice } from '@/lib/ui-voice'
   import { ADMIN_TABS } from '@/routes/app/admin'
   import { MODEL_TABS } from '@/routes/app/models'
   import { OBS_TABS } from '@/routes/app/observability/observability'
@@ -48,6 +48,10 @@
       route.pathname,
     ),
   )
+
+  $effect(() => {
+    if (nav.inside) return holdSansScreen()
+  })
 
   // The rows this area names itself. NAV and the app manifests carry the rest.
   const ICONS: Record<string, LucideIcon> = {

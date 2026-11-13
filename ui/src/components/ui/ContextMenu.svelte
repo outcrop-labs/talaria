@@ -2,6 +2,7 @@
   import { tick } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import type { ContextMenuController, ContextMenuEntry, ContextMenuItem, MenuIcon } from './context-menu.svelte'
@@ -25,6 +26,8 @@
   // side has room. A menu taller than the screen scrolls inside itself.
 
   let { menu, label = 'Actions' }: { menu: ContextMenuController; label?: string } = $props()
+
+  const sans = useUiVoice() === 'sans'
 
   let el = $state<HTMLDivElement | null>(null)
   let subEl = $state<HTMLDivElement | null>(null)
@@ -240,7 +243,7 @@
   {/if}
   <span class="min-w-0 flex-1 truncate">{it.label}</span>
   {#if it.hint}
-    <span class="shrink-0 font-mono text-[10px] text-ink-dim">{it.hint}</span>
+    <span class={sans ? 'shrink-0 font-sans text-xs text-muted' : 'shrink-0 font-mono text-[10px] text-ink-dim'}>{it.hint}</span>
   {/if}
   {#if hasKids}
     <span class="shrink-0 text-xs text-muted" aria-hidden="true">▸</span>

@@ -15,3 +15,20 @@ export function setUiVoice(voice: UiVoice): void {
 export function useUiVoice(): UiVoice {
   return hasContext(KEY) ? getContext<UiVoice>(KEY) : 'mono'
 }
+
+let sansScreens = 0
+
+/** Declare the screen a sans area until the returned function runs. A host
+ *  mounted at the app root (the confirm dialog) sits above every page, where
+ *  no context reaches it, so it asks `screenVoice()` when it opens. */
+export function holdSansScreen(): () => void {
+  sansScreens += 1
+  return () => {
+    sansScreens -= 1
+  }
+}
+
+/** The voice of the area on screen right now. */
+export function screenVoice(): UiVoice {
+  return sansScreens > 0 ? 'sans' : 'mono'
+}
