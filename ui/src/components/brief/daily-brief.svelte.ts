@@ -160,24 +160,6 @@ export function useBriefActions() {
   }
 }
 
-/** Section headings. Held here rather than on the server because they are
- *  presentation — the server's `section` is an enum, and a rename is a UI
- *  change, not a migration on every row ever written. */
-export const SECTION_TITLE: Record<string, string> = {
-  action: 'Needs you',
-  schedule: 'Today',
-  comms: 'Waiting on you',
-  highlights: 'Worth knowing',
-}
-
-export const SECTION_HINT: Record<string, string> = {
-  action: 'Work that has stopped and is waiting on a decision from you.',
-  schedule: 'Your calendar for today.',
-  comms: 'People who asked you something and have not heard back.',
-  highlights: 'Nothing is blocked on these; they are just worth knowing.',
-}
-
-/** A local time-of-day label. Mono chrome, so it stays short. */
 export function clockLabel(iso: string, zone: string): string {
   try {
     return new Intl.DateTimeFormat('en-US', { timeZone: zone, hour: 'numeric', minute: '2-digit' }).format(new Date(iso))
@@ -186,15 +168,12 @@ export function clockLabel(iso: string, zone: string): string {
   }
 }
 
-/** "Monday · 17 Aug" — the brief's own date, read in its own zone. Built from
- *  the stored `YYYY-MM-DD` rather than from `now`, so a brief opened before
- *  midnight for the following day is titled with the day it is FOR. */
 export function dateLabel(date: string, zone: string): string {
   try {
     const at = new Date(`${date}T12:00:00Z`)
-    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'short' }).formatToParts(at)
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, weekday: 'long', day: 'numeric', month: 'long' }).formatToParts(at)
     const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? ''
-    return `${get('weekday')} · ${get('day')} ${get('month')}`
+    return `${get('weekday')}, ${get('day')} ${get('month')}`
   } catch {
     return date
   }

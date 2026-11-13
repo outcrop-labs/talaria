@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Check, Send, UserCheck, X } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
+  import { ACTION, FILLED, GHOST } from '@/components/inbox-board/inbox-board.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import { fade, QUICK } from '@/lib/motion'
   import type { CommsState } from './daily-brief.svelte'
@@ -46,7 +47,7 @@
 <div class="mt-2 rounded-lg border border-line bg-surface p-3">
   {#if comms.draft}
     <div class="flex items-center gap-2">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
         Your assistant drafted a reply
       </span>
       {#if comms.draft.stale}
@@ -73,11 +74,11 @@
     {/if}
 
     <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
-      <Button size="xs" variant="outline" disabled={comms.draft.stale || busy !== null} onclick={() => void decide('approve')}>
-        <Send size={12} /> {busy === 'approve' ? 'Sending…' : 'Send it'}
+      <Button {...ACTION} class={FILLED} disabled={comms.draft.stale || busy !== null} onclick={() => void decide('approve')}>
+        <Send size={13} /> {busy === 'approve' ? 'Sending…' : 'Send it'}
       </Button>
-      <Button size="xs" variant="ghost" disabled={busy !== null} onclick={() => void decide('reject')}>
-        <X size={12} /> Discard
+      <Button {...ACTION} variant="ghost" class={GHOST} disabled={busy !== null} onclick={() => void decide('reject')}>
+        <X size={13} /> Discard
       </Button>
       <span class="ml-auto"></span>
       {@render delegateToggle()}
@@ -103,12 +104,12 @@
        plainly, because the cost of misreading this one is a message sent to a
        colleague that the owner never saw. -->
   {#if comms.delegated}
-    <Button size="xs" variant="ghost" onclick={() => onDelegate(comms.channelId, false)}>
-      <UserCheck size={12} /> Assistant handles this (stop)
+    <Button {...ACTION} variant="ghost" class={GHOST} onclick={() => onDelegate(comms.channelId, false)}>
+      <UserCheck size={13} /> Assistant handles this (stop)
     </Button>
   {:else}
-    <Button size="xs" variant="ghost" onclick={() => onDelegate(comms.channelId, true)}>
-      <Check size={12} /> Let my assistant reply here
+    <Button {...ACTION} variant="ghost" class={GHOST} onclick={() => onDelegate(comms.channelId, true)}>
+      <Check size={13} /> Let my assistant reply here
     </Button>
   {/if}
 {/snippet}
