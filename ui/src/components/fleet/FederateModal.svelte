@@ -2,7 +2,9 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Modal from '@/components/ui/Modal.svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import Steps from '@/components/ui/Steps.svelte'
@@ -10,7 +12,6 @@
   import { reconcileFleet } from '@/lib/fleet-defs'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import { listStagger, slide, staggerIn } from '@/lib/motion'
-  import { cn } from '@/lib/cn'
 
   interface FederateResult {
     agents: Array<{
@@ -89,18 +90,16 @@
       {#key step}
         {#if step === 0}
           <div use:staggerIn class="space-y-4">
-            <p class="text-sm leading-relaxed text-muted">
-              Point at a Hermes-format directory on the server (<code class="text-fg">agents.yaml</code> roster,
-              each agent's <code class="text-fg">SOUL.md</code> + <code class="text-fg">config.yaml</code>).
-              Each agent is recreated <em>natively</em>: it runs on Talaria itself, with a fresh key and state
-              volume, models mapped into the registry, and its skills carried over. The source directory is never referenced
-              again. Agents whose handle already exists are skipped. A credential written inline in a config is
-              sealed as one of that agent's secrets, never stored as written.
+            <p class="font-sans text-[13px] leading-5 text-muted">
+              Each agent in a Hermes directory is recreated to run on Talaria, with a fresh key and its skills carried
+              over. Agents whose handle already exists are skipped, and credentials written in a config are sealed as
+              that agent's secrets.
             </p>
-            <div>
-              <label for="federate-dir" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Directory on server</label>
+            <SettingsField label="Directory on the server" for="federate-dir" hint="It holds agents.yaml, and a SOUL.md and config.yaml for each agent.">
               <Input
                 id="federate-dir"
+                size="sm"
+                class="font-mono"
                 bind:value={dir}
                 onkeydown={submitOnEnter(() => {
                   if (!busy && dir.trim()) void federate()
@@ -108,13 +107,13 @@
                 placeholder="/path/to/stack"
                 autofocus
               />
-            </div>
-            {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
+            </SettingsField>
+            {#if err}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{err}</p>{/if}
             {#if onSealStored}
-              <p class="border-t border-line pt-3 text-xs leading-relaxed text-muted">
-                Federated agents before credentials were sealed on the way in?
+              <p class="font-sans text-[13px] leading-5 text-muted">
+                Federated agents before credentials were sealed?
                 <button type="button" class="text-accent underline-offset-2 hover:underline" onclick={onSealStored}>
-                  Seal the credentials their stored configs still hold
+                  Seal the credentials in their stored configs
                 </button>
               </p>
             {/if}
@@ -123,32 +122,27 @@
 
         {#if step === 1 && result}
           <div use:staggerIn class="space-y-3">
-            <div class="text-sm text-fg">
+            <div class="font-sans text-sm leading-5 text-fg tabular-nums">
               {fresh.length} federated · {result.agents.length - fresh.length} already here
             </div>
             {#if result.agents.length > 0}
               <!-- data-no-stagger: the surrounding staggerIn cascade skips this
                    list so listStagger alone owns its rows (one cascade rule). -->
-              <ul data-no-stagger use:listStagger class="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line">
+              <ul data-no-stagger use:listStagger class="max-h-64 overflow-y-auto rounded-lg border border-line [&>*+*]:border-t [&>*+*]:border-line-subtle">
                 {#each result.agents as a (a.slug)}
-                  <li class="px-3.5 py-2 text-sm">
+                  <li class="px-4 py-2.5">
                     <div class="flex items-center gap-2">
-                      <span class="font-mono text-xs text-fg">{a.slug}</span>
-                      <span class={cn('ml-auto font-mono text-[10px] uppercase tracking-[0.05em]', a.status === 'federated' ? 'text-accent' : 'text-muted')}>
-                        {a.status === 'federated' ? 'federated' : 'already exists'}
-                      </span>
+                      <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{a.slug}</span>
+                      <Chip tone={a.status === 'federated' ? 'accent' : 'neutral'}>{a.status === 'federated' ? 'Federated' : 'Already exists'}</Chip>
                     </div>
                     {#if a.sealed?.length}
-                      <p class="mt-1 text-xs leading-relaxed text-muted">
-                        Sealed {a.sealed.length} inline credential{a.sealed.length === 1 ? '' : 's'} as its secrets:
-                        <span class="font-mono text-fg">{a.sealed.join(', ')}</span>
+                      <p class="mt-1 font-sans text-[13px] leading-5 text-muted">
+                        Sealed as its secrets: <span class="font-mono text-xs text-fg">{a.sealed.join(', ')}</span>
                       </p>
                     {/if}
                     {#if a.dropped?.length}
-                      <p class="mt-1 text-xs leading-relaxed text-muted">
-                        Not stored: <span class="font-mono text-fg">{a.dropped.join(', ')}</span>. Talaria supplies
-                        these itself: agents reach models through the gateway (the provider's key goes on Models), MCP
-                        servers through the MCP registry, and the API server answers to Talaria's own key.
+                      <p class="mt-1 font-sans text-[13px] leading-5 text-muted">
+                        Not stored, because Talaria supplies these itself: <span class="font-mono text-xs text-fg">{a.dropped.join(', ')}</span>
                       </p>
                     {/if}
                   </li>
@@ -156,15 +150,13 @@
               </ul>
             {/if}
             {#each result.errors as e (e)}
-              <p class="text-xs text-danger">
-                {e}
-              </p>
+              <p class="font-sans text-[13px] leading-5 text-danger">{e}</p>
             {/each}
           </div>
         {/if}
 
         {#if step === 2}
-          <div use:staggerIn><p class="text-sm text-fg">{started}</p></div>
+          <div use:staggerIn><p class="font-sans text-sm leading-5 text-fg">{started}</p></div>
         {/if}
       {/key}
     </div>
@@ -192,9 +184,7 @@
       </div>
     {:else}
       <div class="flex justify-end">
-        <Button size="sm" onclick={onClose}>
-          Done
-        </Button>
+        <Button variant="outline" size="sm" onclick={onClose}>Done</Button>
       </div>
     {/if}
   {/snippet}

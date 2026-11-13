@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -13,21 +14,18 @@
 </script>
 
 <Modal open {onClose} title={`Retire ${d.displayName}?`} width="max-w-md">
-  <div class="space-y-4">
-    <p class="text-sm text-muted">
-      The running container is removed and <span class="text-fg">{d.displayName}</span> leaves the team. Its state
-      volume (memories, plans) and version history are kept, so it can be brought back later.
+  <div class="space-y-5">
+    <p class="font-sans text-[13px] leading-5 text-muted">
+      Its container is removed and <span class="text-fg">{d.displayName}</span> leaves the team. Its memory and version
+      history are kept, so it can be brought back later.
     </p>
-    <div>
-      <label for="retire-confirm" class="mb-1 block text-xs text-muted">
-        Type <code class="text-fg">{d.slug}</code> to confirm
-      </label>
-      <Input id="retire-confirm" bind:value={typed} placeholder={d.slug} autofocus />
-    </div>
-    <div class="flex justify-end gap-2 border-t border-line pt-3">
-      <Button variant="ghost" size="sm" onclick={onClose}>
-        Cancel
-      </Button>
+    <SettingsField label="Type its handle to confirm" for="retire-confirm" hint={`The handle is ${d.slug}.`}>
+      <Input id="retire-confirm" size="sm" class="font-mono" bind:value={typed} placeholder={d.slug} autofocus />
+    </SettingsField>
+  </div>
+  {#snippet footer()}
+    <div class="flex justify-end gap-2">
+      <Button variant="ghost" size="sm" onclick={onClose}>Cancel</Button>
       <Button
         size="sm"
         variant="danger"
@@ -40,5 +38,5 @@
         Retire agent
       </Button>
     </div>
-  </div>
+  {/snippet}
 </Modal>

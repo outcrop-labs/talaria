@@ -44,6 +44,6 @@
       <path d={resolved.logo} />
     </svg>
   {:else}
-    <span class="text-[10px] font-bold text-muted">{resolved.mono}</span>
+    <span class="font-sans text-xs font-bold leading-none text-muted">{resolved.mono}</span>
   {/if}
 </span>

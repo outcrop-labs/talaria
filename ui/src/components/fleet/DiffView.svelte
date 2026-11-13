@@ -1,8 +1,12 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
+  import { useUiVoice } from '@/lib/ui-voice'
   import type { DiffLine } from './line-diff'
 
   let { diff, fallback }: { diff: DiffLine[] | null; fallback: string } = $props()
+
+  // Also the editors and the knowledge base history, which keep the mono voice.
+  const sans = useUiVoice() === 'sans'
 
   const changed = $derived(diff?.some((l) => l.type === 'add' || l.type === 'del') ?? false)
 </script>
@@ -20,7 +24,7 @@
   <div class="h-full overflow-y-auto rounded-lg border border-line py-1">
     {#each diff as l, idx (idx)}
       {#if l.type === 'skip'}
-        <div class="px-3 py-1 text-center text-[11px] text-muted">
+        <div class={sans ? 'px-3 py-1 text-center font-sans text-xs text-muted' : 'px-3 py-1 text-center text-[11px] text-muted' /* voice-ok: the mono voice of the editors */}>
           ··· {l.count} unchanged line{l.count === 1 ? '' : 's'} ···
         </div>
       {:else}

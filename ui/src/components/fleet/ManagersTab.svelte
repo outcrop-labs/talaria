@@ -92,7 +92,7 @@
 <div class="space-y-4">
   <div class="flex items-center gap-4">
     <p class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
-      Managers can change {def.displayName}: its settings, skills, memory, schedules and secrets. Everyone else can only work with it.
+      Managers can change this agent's settings, skills, memory, schedules and secrets.
     </p>
     {#if canManage}
       <Combobox
