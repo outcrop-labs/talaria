@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
+  import { useUiVoice, type UiVoice } from '@/lib/ui-voice'
 
   // A clean collapsible section — collapsed by default. Reuse for thinking traces,
   // tool calls, and any other secondary detail that shouldn't clutter the thread.
@@ -10,25 +11,33 @@
     title,
     icon,
     defaultOpen = false,
+    voice,
     class: className,
     children,
   }: {
     title: string | Snippet
     icon?: Snippet
     defaultOpen?: boolean
+    /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
+    voice?: UiVoice
     class?: string
     children: Snippet
   } = $props()
 
   // svelte-ignore state_referenced_locally -- reason: initial open state per mount; callers wanting a different default remount the instance
   let open = $state(defaultOpen)
+
+  const areaVoice = useUiVoice()
+  const sans = $derived((voice ?? areaVoice) === 'sans')
 </script>
 
 <div class={cn('overflow-hidden rounded-md border border-line bg-card', className)}>
   <button
     type="button"
     onclick={() => (open = !open)}
-    class="group/disc flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg"
+    class={sans
+      ? 'group/disc flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left font-sans text-[13px] leading-5 text-muted transition-colors hover:bg-hover hover:text-fg'
+      : 'group/disc flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg'}
   >
     <!-- The chevron is the affordance, so it gets brighter on hover rather than
          staying the same dim glyph the row's own text is. A row that expands and

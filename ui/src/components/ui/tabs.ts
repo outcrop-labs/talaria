@@ -5,4 +5,6 @@ import type { Snippet } from 'svelte'
 export interface TabItem<T extends string = string> {
   id: T
   label: string | Snippet
+  /** A count beside the label, e.g. how many records the tab holds. */
+  count?: number
 }

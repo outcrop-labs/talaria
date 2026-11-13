@@ -91,6 +91,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
+  import { useUiVoice } from '@/lib/ui-voice'
 
   // A LIBRARY ON THE LEFT, THE THING YOU PICKED ON THE RIGHT.
   //
@@ -138,6 +139,8 @@
     empty,
   }: LibraryPaneProps<T> = $props()
 
+  const sans = useUiVoice() === 'sans'
+
   const total = $derived(groups.reduce((n, g) => n + g.items.length, 0))
   // A group with no label and no rows contributes nothing; one WITH a label
   // still announces itself, because "Your organization (none yet)" is
@@ -152,7 +155,7 @@
   <div class={cn('flex shrink-0 flex-col border-r border-line', listWidth)}>
     {#if title}
       <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{title}</span>
+        <span class={sans ? 'font-sans text-[13px] font-medium leading-5 text-fg' : 'font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'}>{title}</span>
       </div>
     {/if}
 
@@ -174,7 +177,7 @@
       {:else}
         {#each visible as group, gi (group.label ?? gi)}
           {#if group.label}
-            <div class="px-2 pb-1 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+            <div class={sans ? 'px-2 pb-1 pt-2 font-sans text-xs leading-4 text-muted' : 'px-2 pb-1 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'}>
               {group.label}
             </div>
           {/if}

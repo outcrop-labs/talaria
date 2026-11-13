@@ -1,4 +1,5 @@
 import { cn } from '@/lib/cn'
+import type { UiVoice } from '@/lib/ui-voice'
 import { controlSizes, dimDisabled, focusRing, type ControlSize } from './control'
 
 /**
@@ -21,8 +22,7 @@ export type ButtonSize = ControlSize | 'xs'
 
 export type ButtonVariant = 'primary' | 'outline' | 'ghost' | 'danger' | 'danger-outline' | 'accent-soft' | 'link'
 
-/** `sans` is Home's Inbox's sentence-case voice; `mono`, the default, is the house chrome voice. */
-export type ButtonVoice = 'mono' | 'sans'
+export type ButtonVoice = UiVoice
 
 export const sansVoice = 'font-sans normal-case tracking-normal text-[13px]'
 
@@ -74,6 +74,12 @@ const sizes: Record<ButtonSize, string> = {
   md: `${controlSizes.md} px-4 text-[11px]`,
 }
 
+const sansSizes: Record<ButtonSize, string> = {
+  xs: 'h-7 px-2 text-xs',
+  sm: 'h-8 px-3',
+  md: 'h-9 px-3.5',
+}
+
 /** Shared button styling — reuse this on <a>/<label> etc. so links match buttons
  *  without duplicating the classes (see the Google sign-in anchor). */
 export function buttonClasses(opts?: {
@@ -84,7 +90,7 @@ export function buttonClasses(opts?: {
 }): string {
   const { variant = 'primary', size = 'md', voice = 'mono', className } = opts ?? {}
   // Variant AFTER size so `link` can restore the sans prose voice.
-  return cn(base, sizes[size], voice === 'sans' && sansVoice, variants[variant], className)
+  return cn(base, sizes[size], voice === 'sans' && cn(sansVoice, sansSizes[size]), variants[variant], className)
 }
 
 /**

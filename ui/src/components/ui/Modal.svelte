@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte'
   import { fade, pop, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
+  import { useUiVoice, type UiVoice } from '@/lib/ui-voice'
   import CloseButton from './CloseButton.svelte'
 
   // The one modal. Esc + backdrop-click close. Two shapes:
@@ -37,6 +38,7 @@
     height = '',
     padded = true,
     takeover = false,
+    voice,
   }: {
     open: boolean
     onClose: () => void
@@ -52,7 +54,12 @@
      *  two knobs instead of hand-rolling their own shell. */
     padded?: boolean
     takeover?: boolean
+    /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
+    voice?: UiVoice
   } = $props()
+
+  const areaVoice = useUiVoice()
+  const sans = $derived((voice ?? areaVoice) === 'sans')
 </script>
 
 <svelte:document
@@ -67,13 +74,18 @@
     aria-modal="true"
     in:pop|global
     out:fade|global={QUICK}
-    class={takeover
-      ? 'relative z-10 flex h-full w-full flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]'
-      : `relative z-10 flex max-h-full w-full ${width} ${height} flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]`}
+    class={[
+      takeover
+        ? 'relative z-10 flex h-full w-full flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]'
+        : `relative z-10 flex max-h-full w-full ${width} ${height} flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]`,
+      sans && 'font-sans',
+    ]}
   >
     {#if title}
       <div class="flex shrink-0 items-center justify-between border-b border-line px-7 py-4">
-        {#if typeof title === 'string'}
+        {#if typeof title === 'string' && sans}
+          <div class="min-w-0 truncate font-sans text-[15px] font-semibold leading-5 text-fg">{title}</div>
+        {:else if typeof title === 'string'}
           <div class="min-w-0 truncate font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted">{title}</div>
         {:else}
           <div class="min-w-0 text-sm font-semibold text-fg">{@render title()}</div>
