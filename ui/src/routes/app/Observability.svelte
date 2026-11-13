@@ -19,7 +19,6 @@
     if (t === 'overview') void navigate('/observability')
     else void navigate('/observability/:tab', { params: { tab: t } })
   }
-
 </script>
 
 <SettingsPage
@@ -30,15 +29,12 @@
   onTab={setTab}
   staggerItems="[data-obs-sections] > *"
 >
-    <!-- Tab-pane grammar: rise in on switch, no exit; no AutoHeight. On MOUNT
-         the pane is a section whose items cascade: Overview's three blocks
-         (alerts strip, stat-tile grid, audit trail — the [data-obs-sections]
-         hook) rise 30ms apart while the frame fades. The detail panels live in
-         components/observability and stay one block — dense readouts, and not
-         this file's cascade to own. -->
+    <!-- Tab-pane grammar: rise in on switch, no exit, no AutoHeight. On mount
+         Overview's blocks (the [data-obs-sections] hook) rise 30ms apart while
+         the frame fades. The detail panels stay one block each. -->
     {#key tab}
       <div in:fly={{ y: 6, duration: 200 }} data-stagger-items="[data-obs-sections] > *">
-        {#if tab === 'overview'}<OverviewPanel onOpen={setTab} />{/if}
+        {#if tab === 'overview'}<OverviewPanel />{/if}
         {#if tab === 'compute'}<ComputePanel />{/if}
         {#if tab === 'host'}<HostPanel />{/if}
         {#if tab === 'cost'}<CostPanel />{/if}
