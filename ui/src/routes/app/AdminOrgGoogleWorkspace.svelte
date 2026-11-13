@@ -74,7 +74,7 @@
   {/if}
 {/snippet}
 
-{#snippet state(what: 'calendar' | 'drive', ready: boolean)}
+{#snippet resourceState(what: 'calendar' | 'drive', ready: boolean)}
   {#if working === what}
     <RowStatus status="idle">Checking</RowStatus>
   {:else}
@@ -121,7 +121,7 @@
         A calendar everyone on your domain can edit.
       {/if}
     {/snippet}
-    {#snippet status()}{@render state('calendar', !!data.calendarId)}{/snippet}
+    {#snippet status()}{@render resourceState('calendar', !!data.calendarId)}{/snippet}
     {#if data.readiness.connected}{@render action('calendar', !!data.calendarId, 'Actions for the team calendar')}{/if}
   </SettingsRow>
 
@@ -140,7 +140,7 @@
         A shared drive the team owns, open to your whole domain.
       {/if}
     {/snippet}
-    {#snippet status()}{@render state('drive', !!data.sharedDriveId)}{/snippet}
+    {#snippet status()}{@render resourceState('drive', !!data.sharedDriveId)}{/snippet}
     {#if data.readiness.connected}{@render action('drive', !!data.sharedDriveId, 'Actions for the team Drive')}{/if}
   </SettingsRow>
 {/if}
