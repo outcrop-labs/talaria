@@ -21,6 +21,8 @@
 
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { Check } from '@lucide/svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
@@ -33,13 +35,14 @@
   import Markdown from '@/components/ui/Markdown.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import { cn } from '@/lib/cn'
+  import { focusRing } from '@/components/ui/control'
   import { errorMessage, putJson } from '@/lib/fetch-json'
   import { slide, staggerIn } from '@/lib/motion'
   import { useBoards } from '@/lib/boards.svelte'
   import { streamMuse } from '@/lib/muse.svelte'
   import type { SkillOwner } from '@/lib/skills'
   import { createWorkflow, updateWorkflow } from '@/lib/workflows'
-  import Tokens from './Tokens.svelte'
+  import TokenInput from './TokenInput.svelte'
 
   let {
     open,
@@ -99,9 +102,10 @@
     ]
       .filter(Boolean)
       .join(', ')
-    const who =
-      owner === 'shared' ? 'any agent picking it up' : (owners.find((o) => o.owner === owner)?.label ?? 'the agent')
-    return `Tickets ${where || '(no recognition rules yet)'} → ${who} follows “${slugify(name)}”.`
+    const who = owner === 'shared' ? 'every agent' : (owners.find((o) => o.owner === owner)?.label ?? 'the agent')
+    const work = name.trim()
+    if (!where) return `No rules yet, so no ticket is routed. ${who.charAt(0).toUpperCase()}${who.slice(1)} can still use “${work}”.`
+    return `For tickets ${where}, ${owner === 'shared' ? 'any agent that picks one up' : who} follows “${work}”.`
   }
 
   const draft = async () => {
@@ -167,82 +171,80 @@
   }
 
   const canNext = $derived([name.trim().length > 1, true, skillMd.trim().length > 0, !!owner][step])
+  const choice = 'gap-2.5 font-sans text-[13px] leading-5 text-fg'
 </script>
+
+<!-- What the choices so far add up to, in one sentence. An inset well, not a card: the dialog is already a panel. -->
+{#snippet outcome()}
+  <p class="rounded-md border border-line bg-surface px-3 py-2 font-sans text-[13px] leading-5 text-muted">{sentence()}</p>
+{/snippet}
 
 <Modal {open} {onClose} width="max-w-2xl" title={done ? 'Your agents learned something new' : 'Teach your agents'}>
   <!-- Step-to-step motion (ANIMATIONS.md wizard row): AutoHeight glides the
        panel between step heights, {#key step} + staggerIn brings each step's
        sections in 40ms apart. No exit on the outgoing step — the incoming
-       stagger + gliding height IS the transition. Stepper and nav row stay
-       mounted (outside the key) so focus survives step changes. -->
+       stagger + gliding height IS the transition. The stepper and the footer
+       stay mounted (outside the key) so focus survives step changes. -->
   <AutoHeight>
     {#if done}
-      <div use:staggerIn class="space-y-4">
-        <p class="text-sm text-fg">{sentence()}</p>
-        <p class="text-sm text-muted">
+      <div use:staggerIn class="space-y-3">
+        <p class="font-sans text-sm leading-5 text-fg">{sentence()}</p>
+        <p class="font-sans text-[13px] leading-5 text-muted">
           {hasRules
-            ? 'From now on, matching tickets carry this flow when they’re dispatched. You can refine the skill or the rules any time in the Studio.'
-            : 'The skill is in the library. Add recognition rules later (a workflow) and matching tickets will carry it automatically.'}
+            ? 'Matching tickets carry this skill from now on. Change the skill or its rules any time in Agent Studio.'
+            : 'The skill is in the library. Add routing rules later and matching tickets will carry it.'}
         </p>
-        <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" onclick={onClose}>
-            Done
-          </Button>
-        </div>
       </div>
     {:else}
-      <div class="space-y-5">
-        <!-- Stepper -->
-        <div class="flex items-center gap-2">
+      <div class="space-y-6">
+        <!-- The look of `Steps`, as buttons: a step already passed is a way back to it. -->
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-2">
           {#each STEPS as s, i (s)}
+            {#if i > 0}<span aria-hidden="true" class="h-px w-6 bg-line"></span>{/if}
             <button
               type="button"
-              onclick={() => {
-                if (i < step) step = i
-              }}
-              class={cn(
-                'flex items-center gap-1.5 text-xs transition-colors',
-                i === step ? 'text-fg' : i < step ? 'text-accent' : 'text-muted',
-                i < step && 'cursor-pointer',
-              )}
+              disabled={i >= step}
+              aria-current={i === step ? 'step' : undefined}
+              onclick={() => (step = i)}
+              class={cn('flex items-center gap-2 rounded-sm', focusRing, i < step && 'cursor-pointer')}
             >
               <span
                 class={cn(
-                  'flex h-5 w-5 items-center justify-center rounded-full border font-sans text-xs leading-none',
-                  i === step ? 'border-accent text-fg' : i < step ? 'border-accent text-accent' : 'border-line',
+                  'grid h-5 w-5 place-items-center rounded-full font-sans text-xs font-medium tabular-nums',
+                  i < step ? 'bg-accent text-surface' : i === step ? 'border border-accent text-accent' : 'border border-line text-muted',
                 )}
               >
-                {i < step ? '✓' : i + 1}
+                {#if i < step}<Check size={11} />{:else}{i + 1}{/if}
               </span>
-              {s}
-              {#if i < STEPS.length - 1}<span class="mx-0.5 h-px w-4 bg-line"></span>{/if}
+              <span class={cn('font-sans text-[13px] leading-5', i === step ? 'font-medium text-fg' : 'text-muted')}>{s}</span>
             </button>
           {/each}
         </div>
 
         {#key step}
           {#if step === 0}
-            <div use:staggerIn class="space-y-3">
-              <p class="text-sm text-muted">What kind of work are you teaching? Name it the way your team talks about it.</p>
-              <Input
-                autofocus
-                bind:value={name}
-                placeholder={'e.g. "Weekly metrics report" or "Bug triage"'}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' && name.trim().length > 1) step = 1
-                }}
-              />
+            <div use:staggerIn>
+              <SettingsField label="What work are you teaching?" for="guide-name" hint="Name it the way your team talks about it.">
+                <Input
+                  id="guide-name"
+                  autofocus
+                  size="sm"
+                  bind:value={name}
+                  placeholder="Weekly metrics report"
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' && name.trim().length > 1) step = 1
+                  }}
+                />
+              </SettingsField>
             </div>
           {/if}
 
           {#if step === 1}
-            <div use:staggerIn class="space-y-4">
-              <p class="text-sm text-muted">
-                How should Talaria recognize this work? Pick anything that applies; tickets matching it will carry your flow when an agent
-                picks them up. You can also skip this and just add the know-how to the library.
+            <div use:staggerIn class="space-y-5">
+              <p class="font-sans text-[13px] leading-5 text-muted">
+                Tickets that match carry this skill when an agent picks them up. Skip this to add the skill without routing.
               </p>
-              <div class="space-y-1.5">
-                <span class="text-xs font-medium text-fg">On these boards</span>
+              <SettingsField label="Boards">
                 <div class="flex flex-wrap gap-1.5">
                   {#each boards as b (b.id)}
                     <Chip
@@ -253,46 +255,47 @@
                     </Chip>
                   {/each}
                   {#if boards.length === 0 && !boardsList.failed && !boardsList.pending}
-                    <span class="text-xs text-muted">No boards yet.</span>
+                    <span class="font-sans text-[13px] leading-5 text-muted">No boards yet.</span>
                   {/if}
                 </div>
                 {#if boardsList.notice}<div transition:slide={{ duration: 150 }}><QueryError {...boardsList.notice} /></div>{/if}
-              </div>
-              <div class="space-y-1.5">
-                <span class="text-xs font-medium text-fg">With these labels</span>
-                <Tokens value={labels} onChange={(v) => (labels = v)} placeholder="Add a label" />
-              </div>
-              <div class="space-y-1.5">
-                <span class="text-xs font-medium text-fg">Or mentioning</span>
-                <Tokens value={keywords} onChange={(v) => (keywords = v)} placeholder="Add a phrase" />
-              </div>
-              <p class="rounded-lg border border-line bg-card/40 px-3 py-2 font-sans text-xs text-muted">{sentence()}</p>
+              </SettingsField>
+              <SettingsField label="Labels">
+                <TokenInput value={labels} onChange={(v) => (labels = v)} placeholder="Add a label" />
+              </SettingsField>
+              <SettingsField label="Keywords" hint="Words in the ticket's title or description.">
+                <TokenInput value={keywords} onChange={(v) => (keywords = v)} placeholder="Add a keyword" />
+              </SettingsField>
+              {@render outcome()}
             </div>
           {/if}
 
           {#if step === 2}
             <div use:staggerIn class="space-y-3">
-              <p class="text-sm text-muted">
-                Explain how this work should be done, like you would to a new teammate: what matters, what order, what “done” looks like.
-                Muse turns it into a skill your agents follow.
-              </p>
-              <Textarea
-                autoGrow
-                rows={3}
-                bind:value={describe}
-                placeholder={'e.g. "Pull last week\'s numbers first, compare to the previous 4 weeks, lead with the one change that matters, keep it under a page."'}
-                class="max-h-40 text-sm"
-              />
-              <div class="flex items-center gap-2">
-                <Button size="sm" onclick={() => void draft()} disabled={!describe.trim() || drafting}>
-                  {skillMd ? 'Redraft' : 'Draft the skill'}
+              <SettingsField
+                label="How is it done?"
+                for="guide-describe"
+                hint="Explain it as you would to a new teammate. Muse, the writing assistant, drafts the skill from it."
+              >
+                <Textarea
+                  id="guide-describe"
+                  autoGrow
+                  rows={3}
+                  bind:value={describe}
+                  placeholder="Pull last week's numbers first, compare them to the four weeks before, and lead with the one change that matters."
+                  class="max-h-40 text-sm"
+                />
+              </SettingsField>
+              <div class="flex items-center gap-3">
+                <Button size="sm" variant="outline" onclick={() => void draft()} disabled={!describe.trim() || drafting}>
+                  {skillMd ? 'Draft again' : 'Draft the skill'}
                 </Button>
                 {#if drafting}
-                  <span class="flex items-center gap-1.5 text-xs text-muted">
+                  <span class="flex items-center gap-1.5 font-sans text-[13px] leading-5 text-muted">
                     Muse is drafting <WaitingMark site="workflows/muse-draft" size={12} class="text-accent" />
                   </span>
                 {/if}
-                {#if museError}<span class="text-xs text-danger">{museError}</span>{/if}
+                {#if museError}<span class="font-sans text-[13px] leading-5 text-danger">{museError}</span>{/if}
               </div>
               {#if skillMd}
                 {#if editingMd}
@@ -303,8 +306,8 @@
                     onclick={() => {
                       if (!drafting) editingMd = true
                     }}
-                    title="Click to edit"
-                    class="block max-h-72 w-full overflow-y-auto rounded-lg border border-line bg-card/40 px-4 py-3 text-left text-sm"
+                    title="Edit the draft"
+                    class={cn('block max-h-72 w-full overflow-y-auto rounded-md border border-line bg-surface px-4 py-3 text-left text-sm', focusRing)}
                   >
                     <Markdown class="tiptap" children={skillMd} />
                   </button>
@@ -314,47 +317,53 @@
           {/if}
 
           {#if step === 3}
-            <div use:staggerIn class="space-y-4">
-              <p class="text-sm text-muted">Who should know this?</p>
-              <div class="space-y-2">
-                {#if editable.some((o) => o.owner === 'shared')}
-                  <Radio name="owner" checked={owner === 'shared'} onChange={() => (ownerPick = 'shared')} label="Every agent; shared know-how" />
-                {/if}
-                {#each editable.filter((o) => o.owner !== 'shared') as o (o.owner)}
-                  <Radio name="owner" checked={owner === o.owner} onChange={() => (ownerPick = o.owner)} label={`Just ${o.label}`} />
-                {/each}
-                {#if editable.length === 0}
-                  <p class="text-xs text-warning">You don’t have edit access to any agent’s skills; ask an admin for access.</p>
-                {/if}
-              </div>
-              <p class="rounded-lg border border-line bg-card/40 px-3 py-2 font-sans text-xs text-muted">{sentence()}</p>
-              {#if error}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</p>{/if}
+            <div use:staggerIn class="space-y-5">
+              <SettingsField label="Who should know this?">
+                <div class="space-y-2.5 pt-1">
+                  {#if editable.some((o) => o.owner === 'shared')}
+                    <Radio name="owner" checked={owner === 'shared'} onChange={() => (ownerPick = 'shared')} label="Every agent" class={choice} />
+                  {/if}
+                  {#each editable.filter((o) => o.owner !== 'shared') as o (o.owner)}
+                    <Radio name="owner" checked={owner === o.owner} onChange={() => (ownerPick = o.owner)} label={`Only ${o.label}`} class={choice} />
+                  {/each}
+                  {#if editable.length === 0}
+                    <p class="font-sans text-[13px] leading-5 text-warning">You cannot edit any agent's skills. Ask an admin for access.</p>
+                  {/if}
+                </div>
+              </SettingsField>
+              {@render outcome()}
+              {#if error}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger">{error}</p>{/if}
             </div>
           {/if}
         {/key}
-
-        <div class="flex items-center justify-between border-t border-line pt-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            onclick={() => {
-              if (step === 0) onClose()
-              else step = step - 1
-            }}
-          >
-            {step === 0 ? 'Cancel' : 'Back'}
-          </Button>
-          {#if step < STEPS.length - 1}
-            <Button size="sm" onclick={() => (step = step + 1)} disabled={!canNext}>
-              {step === 1 && !hasRules ? 'Skip for now' : 'Next'}
-            </Button>
-          {:else}
-            <Button size="sm" onclick={() => void create()} disabled={!canNext || creating || !skillMd.trim()}>
-              {creating ? 'Creating' : hasRules ? 'Create workflow + skill' : 'Add to the library'}
-            </Button>
-          {/if}
-        </div>
       </div>
     {/if}
   </AutoHeight>
+  {#snippet footer()}
+    <div class="flex justify-end gap-2">
+      {#if done}
+        <Button variant="outline" size="sm" onclick={onClose}>Done</Button>
+      {:else}
+        <Button
+          variant="ghost"
+          size="sm"
+          onclick={() => {
+            if (step === 0) onClose()
+            else step = step - 1
+          }}
+        >
+          {step === 0 ? 'Cancel' : 'Back'}
+        </Button>
+        {#if step < STEPS.length - 1}
+          <Button size="sm" onclick={() => (step = step + 1)} disabled={!canNext}>
+            {step === 1 && !hasRules ? 'Skip routing' : 'Next'}
+          </Button>
+        {:else}
+          <Button size="sm" onclick={() => void create()} disabled={!canNext || creating || !skillMd.trim()}>
+            {creating ? 'Creating' : hasRules ? 'Create skill and routing' : 'Create skill'}
+          </Button>
+        {/if}
+      {/if}
+    </div>
+  {/snippet}
 </Modal>

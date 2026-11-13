@@ -114,6 +114,11 @@
     }
   }
 
+  const backToList = () => {
+    report = null
+    error = null
+  }
+
   /** The report's own button, for a skill the policy allows: the member has
    *  read the findings and installs anyway. The api re-scans (from its
    *  cache) and still refuses anything the policy blocks. */
@@ -141,7 +146,7 @@
       <!-- The scan report: a skill Hermes' install policy blocked, or one it
            allows whose scan still found something. -->
       <div class="flex items-center gap-4">
-        <Button size="sm" variant="outline" onclick={() => ((report = null), (error = null))}>
+        <Button size="sm" variant="outline" onclick={backToList}>
           <ArrowLeft size={14} />
           All skills
         </Button>
@@ -170,15 +175,6 @@
             {scan.verdict} verdict, so you can install it once you have read the report. Nothing is written to
             {destinationLabel} until you do.
           </p>
-          <div class="mt-4 flex items-center gap-2">
-            <Button size="sm" variant="outline" onclick={() => void installReviewed()} disabled={busyId !== null}>
-              {#if busyId === report.entry.id}<WaitingMark site="skills/marketplace-install" size={12} />{/if}
-              Install into {destinationLabel}
-            </Button>
-            <Button size="sm" variant="ghost" onclick={() => ((report = null), (error = null))} disabled={busyId !== null}>
-              Cancel
-            </Button>
-          </div>
         {/if}
         {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
       </div>
@@ -299,4 +295,19 @@
       </div>
     {/if}
   </div>
+  <!-- The dialog's one footer. Installing a skill whose scan found something
+       is its only commit; everywhere else it only shows, and ends in Done. -->
+  {#snippet footer()}
+    <div class="flex justify-end gap-2">
+      {#if report && !reportBlocked}
+        <Button size="sm" variant="ghost" onclick={backToList} disabled={busyId !== null}>Cancel</Button>
+        <Button size="sm" onclick={() => void installReviewed()} disabled={busyId !== null}>
+          {#if busyId === report.entry.id}<WaitingMark site="skills/marketplace-install" size={12} />{/if}
+          Install into {destinationLabel}
+        </Button>
+      {:else}
+        <Button size="sm" variant="outline" onclick={onClose}>Done</Button>
+      {/if}
+    </div>
+  {/snippet}
 </Modal>

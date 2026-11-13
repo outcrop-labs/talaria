@@ -132,7 +132,7 @@
     </div>
     {#each skillOwners as o (o.owner)}
       {#if o.skills.length}
-        <SettingsField label={o.label}>
+        <SettingsField label={o.owner === 'shared' ? 'Every agent' : o.label}>
           <div class="flex flex-wrap gap-1.5">
             {#each o.skills as sk (`${o.owner}/${sk.name}`)}
               {@const on = workflow.skills.includes(sk.name)}
