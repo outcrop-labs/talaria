@@ -25,7 +25,7 @@
     showGroup?: boolean
   } = $props()
 
-  const DOT: Record<SecretState, DotStatus> = { ok: 'ok', unreadable: 'danger', missing: 'warn', env: 'idle' }
+  const DOT: Record<SecretState, DotStatus> = { ok: 'ok', unreadable: 'danger', missing: 'idle', env: 'idle' }
   // An environment variable's name is an identifier; a provider's name is not.
   const identifier = $derived(/^[A-Z][A-Z0-9_]+$/.test(row.label))
   const when = (iso: string) => new Date(iso).toLocaleString()

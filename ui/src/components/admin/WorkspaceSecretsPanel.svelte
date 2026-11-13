@@ -25,12 +25,12 @@
   import Chip from '@/components/ui/Chip.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import { handlesFor, useWorkspaceSecretAction, useWorkspaceSecrets, type WorkspaceSecret } from '@/lib/workspace-secrets'
+  import ToggleField from './ToggleField.svelte'
 
   /** The add dialog. The page header's "Add credentials" button opens it. */
   let { adding = $bindable(false) }: { adding?: boolean } = $props()
@@ -259,18 +259,17 @@
     >
       <Input id="ws-secret-hosts" size="sm" bind:value={hosts} placeholder="github.com registry.outcrop.dev" class="font-mono" />
     </SettingsField>
-    <div class="flex items-center gap-6">
-      <div class="min-w-0 flex-1">
-        <div class="font-sans text-[13px] font-medium leading-5 text-fg">Use once</div>
-        <div class="font-sans text-[13px] leading-5 text-muted">The value is destroyed the first time an agent uses it.</div>
-      </div>
-      <Toggle title="Use once" checked={relay} onChange={(checked) => (relay = checked)} />
-    </div>
+    <ToggleField
+      label="Use once"
+      hint="The value is destroyed the first time an agent uses it."
+      checked={relay}
+      onChange={(checked) => (relay = checked)}
+    />
+    <p class="font-sans text-[13px] leading-5 text-muted">After saving, grant it to an agent from that agent's page.</p>
     {#if msg}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{msg}</div>{/if}
   </div>
   {#snippet footer()}
     <div class="flex items-center justify-end gap-2">
-      <span class="mr-auto font-sans text-[13px] leading-5 text-muted">Grant it to an agent from that agent's page.</span>
       <Button variant="ghost" size="sm" onclick={closeDialog} disabled={busy}>Cancel</Button>
       <Button size="sm" onclick={() => void create()} disabled={busy || !name.trim() || !entries.some((e) => e.key.trim() && e.value)}>
         {busy ? 'Saving' : 'Save credentials'}
