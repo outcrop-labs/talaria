@@ -1,7 +1,8 @@
 <script lang="ts">
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { CircleAlert, Import, LayoutGrid, List, Plus, Repeat } from '@lucide/svelte'
+  import { ChevronRight, CircleAlert, Import, LayoutGrid, List, Plus } from '@lucide/svelte'
   import { designHeadline, pendingDesign, useAgentDesign } from '@/lib/agent-design'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { searchParams } from 'sv-router'
@@ -105,11 +106,11 @@
     ),
   )
 
-  // ROLLING THE WHOLE FLEET. The picture is admin-only (so is the route):
-  // one row per managed agent, polled every five seconds while anything
-  // rolls. Every tile and row reads its own line off it — the chip, the
-  // failure sentence, the disabled Roll control — and the strip above the
-  // roster reads the whole.
+  // RESTARTING THE WHOLE FLEET (a roll: every agent on a fresh container).
+  // The picture is admin-only (so is the route): one row per managed agent,
+  // polled every five seconds while anything rolls. Every tile and row reads
+  // its own line off it — the chip, the failure sentence, the disabled menu
+  // item — and the strip above the roster reads the whole.
   const rollQuery = useFleetRoll(() => isAdmin)
   // By slug, not department (`rollRowsBySlug`): an agent left out of a shared
   // department reads its own idle row, not the runner's.
@@ -155,6 +156,7 @@
 
   let view = $state<'grid' | 'list'>('grid')
   let creating = $state(false)
+  let scheduling = $state(false)
   let duplicateFrom = $state<AgentDef | null>(null)
   let federateOpen = $state(false)
   let sealOpen = $state(false)
@@ -181,8 +183,8 @@
   // `anyLoading`, never `||`: with `||` the roster stayed on its skeletons
   // for good whenever containers answered before defs (anyLoading says why).
   const rosterLoading = $derived(anyLoading(defsQuery, containersQuery))
-  const gridClasses = 'grid grid-cols-2 gap-3 sm:grid-cols-3'
-  const listClasses = 'divide-y divide-line overflow-hidden rounded-lg border border-line bg-panel'
+  const gridClasses = 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3'
+  const listClasses = 'overflow-hidden rounded-lg border border-line bg-panel [&>*+*]:border-t [&>*+*]:border-line-subtle'
   // The list container classes only apply while there are items (or their
   // skeletons) to frame — error/idle/empty render full-width, unframed.
   const rosterClasses = $derived(
@@ -191,40 +193,39 @@
 
   // Silhouette widths vary per index so the sketch doesn't look stamped.
   const nameW = ['w-24', 'w-32', 'w-20', 'w-28']
-  const roleW = ['w-16', 'w-24', 'w-28', 'w-14']
+  const roleW = ['w-40', 'w-48', 'w-36', 'w-44']
 </script>
 
-<!-- One tile's silhouette (see AgentTile: avatar + name/role, then the
-     controls row) — same Panel frame, so the real tile materializes over it. -->
+<!-- One tile's silhouette (see AgentTile: avatar + name/role, then the status
+     line) in the same frame, so the real tile materializes over it. -->
 {#snippet tileSkeleton(i: number)}
-  <div aria-hidden="true" class="flex flex-col gap-3 rounded-lg border border-line bg-panel p-6">
-    <div class="flex items-center gap-2.5">
-      <Skeleton class="h-9 w-9 shrink-0 rounded-full" />
-      <div class="min-w-0 flex-1 space-y-1.5">
+  <div aria-hidden="true" class="flex flex-col gap-4 rounded-lg border border-line bg-panel p-5">
+    <div class="flex items-start gap-3">
+      <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
+      <div class="min-w-0 flex-1 space-y-2 py-1">
         <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} />
-        <Skeleton class={`h-2.5 rounded-full ${roleW[i % roleW.length]}`} />
+        <Skeleton class={`h-3 rounded-full ${roleW[i % roleW.length]}`} />
       </div>
-      <!-- Fixed geometry, so nothing about it is uncertain — a flat rail, not a skeleton (UI-CONVENTIONS, Loading). -->
-      <div class="h-2 w-2 shrink-0 rounded-full bg-line"></div>
     </div>
-    <div class="flex justify-end gap-1">
-      <Skeleton class="h-7 w-7 rounded-md" />
-      <Skeleton class="h-7 w-7 rounded-md" />
+    <div class="flex h-8 items-center gap-2">
+      <!-- Fixed geometry, so nothing about it is uncertain: a flat dot, not a skeleton (UI-CONVENTIONS, Loading). -->
+      <div class="h-1.5 w-1.5 shrink-0 rounded-full bg-line"></div>
+      <Skeleton class="h-3 w-16 rounded-full" />
+      <Skeleton class="ml-auto h-3 w-28 rounded-full" />
     </div>
   </div>
 {/snippet}
 
-<!-- One list row's silhouette (see AgentListRow: dot + avatar + name/role + controls). -->
+<!-- One list row's silhouette (see AgentListRow: avatar + name/role + status + menu). -->
 {#snippet rowSkeleton(i: number)}
-  <div aria-hidden="true" class="flex items-center gap-3 px-4 py-3">
-    <div class="h-2 w-2 shrink-0 rounded-full bg-line"></div>
-    <Skeleton class="h-7 w-7 shrink-0 rounded-full" />
-    <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} />
-    <Skeleton class={`h-2.5 rounded-full ${roleW[(i + 1) % roleW.length]}`} />
-    <span class="ml-auto flex shrink-0 items-center gap-1">
-      <Skeleton class="h-7 w-7 rounded-md" />
-      <Skeleton class="h-7 w-7 rounded-md" />
-    </span>
+  <div aria-hidden="true" class="flex min-h-[60px] items-center gap-4 px-5 py-3">
+    <Skeleton class="h-8 w-8 shrink-0 rounded-full" />
+    <div class="min-w-0 flex-1 space-y-2">
+      <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} />
+      <Skeleton class={`h-3 rounded-full ${roleW[(i + 1) % roleW.length]}`} />
+    </div>
+    <Skeleton class="h-3 w-16 rounded-full" />
+    <Skeleton class="h-7 w-7 rounded-md" />
   </div>
 {/snippet}
 
@@ -232,8 +233,8 @@
   {#if view === 'grid'}{@render tileSkeleton(i)}{:else}{@render rowSkeleton(i)}{/if}
 {/snippet}
 
-{#snippet gridIcon()}<LayoutGrid size={14} />{/snippet}
-{#snippet listIcon()}<List size={14} />{/snippet}
+{#snippet gridIcon()}<LayoutGrid size={16} class="my-0.5" />{/snippet}
+{#snippet listIcon()}<List size={16} class="my-0.5" />{/snippet}
 
 <!-- The roster region is ONE child of the page; the tile cascade lives on
      the loaded branch's own stagger below. -->
@@ -247,296 +248,281 @@
   ]}
   {tab}
   onTab={goTab}
+  fill={tab === 'templates'}
 >
-      {#snippet actions()}
-        <span class="mr-1 font-sans text-[13px] leading-5 text-muted tabular-nums">
-          {#if t}
-            {t.online}/{t.agents} online · {t.activeToday} active today
-          {:else if fleetQuery.isError}
-            <!-- Missing totals with no explanation read as "nothing is running". -->
-            <span class="text-danger" title={errorMessage(fleetQuery.error)}>Agent status unavailable</span>
-          {:else if fleetQuery.isLoading}
-            <!-- Hold the slot so the toolbar doesn't jog when the totals land. -->
-            <Skeleton class="h-3 w-40" />
+  {#snippet actions()}
+    <span class="mr-1 font-sans text-[13px] leading-5 text-muted tabular-nums">
+      {#if t}
+        {t.online} of {t.agents} online · {t.activeToday} active today
+      {:else if fleetQuery.isError}
+        <!-- Missing totals with no explanation read as "nothing is running". -->
+        <span class="text-danger" title={errorMessage(fleetQuery.error)}>Agent status unavailable</span>
+      {:else if fleetQuery.isLoading}
+        <!-- Hold the slot so the toolbar doesn't jog when the totals land. -->
+        <Skeleton class="h-3 w-40" />
+      {/if}
+    </span>
+    <!-- Roster controls, and only on the roster: a grid/list switch means
+         nothing next to a template library or a schedule list. -->
+    {#if tab === 'agents'}
+      <Segmented
+        options={[
+          { id: 'grid', label: gridIcon, title: 'Grid' },
+          { id: 'list', label: listIcon, title: 'List' },
+        ]}
+        value={view}
+        onChange={(id) => (view = id)}
+      />
+      {#if isAdmin}
+        <!-- Disabled while a batch is in flight: a second one would only find
+             every department already rolling. -->
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={anyRolling || rollConfirming}
+          onclick={() => (rollConfirming = true)}
+          title="Restart every running agent on a fresh container"
+        >
+          Restart all
+        </Button>
+        {#if canHire}
+          <SettingsRowMenu
+            label="More agent actions"
+            items={[{ label: 'Federate outside agents', icon: [Import, { size: 14 }], onSelect: () => (federateOpen = true) }]}
+          />
+        {/if}
+      {/if}
+      {#if canHire}
+        <!-- The mark: a design generating or waiting for review keeps a dot
+             on the entry point, wherever the row has scrolled to. -->
+        <span class="relative inline-flex">
+          <Button
+            size="sm"
+            onclick={() => (creating = true)}
+            title={designRow ? (designRow.status === 'generating' ? 'A design is generating' : designRow.status === 'ready' ? 'A design is waiting for review' : 'The design failed') : undefined}
+          >
+            <Plus size={16} />
+            New agent
+          </Button>
+          {#if designRow}
+            <span class="pointer-events-none absolute -right-0.5 -top-0.5 flex" data-testid="design-mark" data-status={designRow.status}>
+              <StatusDot status={designRow.status === 'error' ? 'danger' : 'accent'} pulse={designRow.status === 'generating'} class="h-2 w-2" />
+            </span>
           {/if}
         </span>
-        <!-- Roster controls, and only on the roster: a grid/list toggle means
-             nothing next to a template library or a schedule list. -->
-        {#if tab === 'agents'}
-        <!-- Grid / list toggle — the §8 segmented tile pair. -->
-        <Segmented
-          options={[
-            { id: 'grid', label: gridIcon, title: 'Grid' },
-            { id: 'list', label: listIcon, title: 'List' },
-          ]}
-          value={view}
-          onChange={(id) => (view = id)}
-        />
-        {#if canHire}
-          <!-- The mark: a design generating or waiting for review keeps a dot
-               on the entry point, wherever the row has scrolled to. -->
-          <span class="relative inline-flex">
-            <Button
-              size="sm"
-              class="w-9 px-0"
-              onclick={() => (creating = true)}
-              title={designRow ? (designRow.status === 'generating' ? 'New agent — a design is generating' : designRow.status === 'ready' ? 'New agent — a design is waiting for review' : 'New agent — the design failed') : 'New agent'}
-              aria-label="New agent"
-            >
-              <Plus size={16} />
-            </Button>
-            {#if designRow}
-              <span class="pointer-events-none absolute -right-0.5 -top-0.5 flex" data-testid="design-mark" data-status={designRow.status}>
-                <StatusDot status={designRow.status === 'error' ? 'danger' : 'accent'} pulse={designRow.status === 'generating'} class="h-2 w-2" />
-              </span>
-            {/if}
-          </span>
-          {#if isAdmin}
-            <Button
-              variant="outline"
-              size="sm"
-              class="w-9 px-0"
-              onclick={() => (federateOpen = true)}
-              title="Federate outside agents into Talaria"
-              aria-label="Federate agents"
-            >
-              <Import size={15} />
-            </Button>
-          {/if}
-        {/if}
-        {#if isAdmin}
-          <!-- Deploying, so labeled (UI-CONVENTIONS, Controls). Disabled while
-               a batch is in flight: a second one would only find every
-               department already rolling. -->
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={anyRolling || rollConfirming}
-            onclick={() => (rollConfirming = true)}
-            title="Roll every running agent: a fresh container each, recreated in place"
-          >
-            <Repeat size={14} />
-            Roll all
-          </Button>
-        {/if}
-        {/if}
-      {/snippet}
-
-    <!-- Tab-pane grammar: rise in on switch, no exit (ANIMATIONS.md). -->
-    {#key tab}
-      <div in:fly={{ y: 6, duration: 200 }} class="space-y-6">
-        {#if tab === 'templates'}
-          <RoleTemplatesTab />
-        {:else if tab === 'schedules'}
-          <FleetCronsTab />
-        {:else}
-    <!-- Docker unreachable ≠ every agent stopped. Without this the dots all
-         go red and the roster quietly libels the fleet. -->
-    {#if containersQuery.isError && defsQuery.data !== undefined}
-      <div transition:slide={{ duration: 150 }}>
-        <QueryError
-          variant="inline"
-          title={containersQuery.data === undefined ? 'Could not read container status' : 'Container status may be out of date'}
-          error={containersQuery.error}
-          onRetry={() => void containersQuery.refetch()}
-        />
-      </div>
+      {/if}
+    {:else if tab === 'schedules'}
+      <Button size="sm" onclick={() => (scheduling = true)}>
+        <Plus size={16} />
+        New schedule
+      </Button>
     {/if}
+  {/snippet}
 
-    <!-- ROLL ALL: the confirm step, in the page. Says what will happen and
-         to how many, offers the stopped ones as an opt-in, and nothing moves
-         until the labeled button. -->
-    {#if rollConfirming}
-      <div transition:slide={{ duration: 150 }}>
-        <Panel class="space-y-3 px-4 py-3">
-          <div class="flex items-start gap-3">
-            <Repeat size={16} class="mt-0.5 shrink-0 text-accent" />
-            <div class="min-w-0 flex-1 space-y-1">
-              <p class="font-sans text-sm text-fg">
-                Roll {runningCount === 1 ? 'the one running agent' : `all ${runningCount} running agents`}?
-              </p>
-              <p class="font-sans text-xs text-muted">
-                Each container is recreated in place: it stops, a fresh one starts on the current render, and the agent is offline for the minute or so that takes (chats wait for it). A few roll at a time so the host stays responsive. Agents already mid-roll are skipped.
-              </p>
-            </div>
-            <CloseButton label="Cancel" onClick={() => (rollConfirming = false)} />
+  <!-- Tab-pane grammar: rise in on switch, no exit (ANIMATIONS.md). -->
+  {#key tab}
+    <div in:fly={{ y: 6, duration: 200 }} class={tab === 'templates' ? 'h-full' : 'space-y-4'}>
+      {#if tab === 'templates'}
+        <RoleTemplatesTab />
+      {:else if tab === 'schedules'}
+        <FleetCronsTab bind:composing={scheduling} />
+      {:else}
+        <!-- Docker unreachable ≠ every agent stopped. Without this the dots all
+             go red and the roster quietly libels the fleet. -->
+        {#if containersQuery.isError && defsQuery.data !== undefined}
+          <div transition:slide={{ duration: 150 }}>
+            <QueryError
+              variant="inline"
+              title={containersQuery.data === undefined ? 'Could not read container status' : 'Container status may be out of date'}
+              error={containersQuery.error}
+              onRetry={() => void containersQuery.refetch()}
+            />
           </div>
-          <div class="flex items-center justify-between gap-3">
-            <Checkbox checked={rollStopped} onChange={(v) => (rollStopped = v)} label="Also start and roll agents that are stopped" />
-            <div class="flex items-center gap-2">
-              <Button variant="ghost" size="sm" onclick={() => (rollConfirming = false)} disabled={rollStarting}>Cancel</Button>
-              <Button size="sm" onclick={() => void startRollAll()} disabled={rollStarting}>
-                {#if rollStarting}<WaitingMark site="fleet/agent-apply" size={12} />{/if}
-                Roll all agents
-              </Button>
-            </div>
+        {/if}
+
+        <!-- RESTART ALL: the confirm step lives in the page, above the roster,
+             so what is about to happen is visible beside the agents it happens
+             to. Nothing moves until the labeled button. -->
+        {#if rollConfirming}
+          <div transition:slide={{ duration: 150 }}>
+            <Panel class="p-0">
+              <div class="px-5 py-4">
+                <p class="font-sans text-sm font-medium leading-5 text-fg">
+                  Restart {runningCount === 1 ? 'the one running agent' : `all ${runningCount} running agents`}?
+                </p>
+                <p class="mt-0.5 font-sans text-[13px] leading-5 text-muted">
+                  Each agent restarts on a fresh container and is offline for about a minute. Chats wait for it.
+                </p>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line-subtle px-5 py-3">
+                <Checkbox checked={rollStopped} onChange={(v) => (rollStopped = v)} label="Also start agents that are stopped" />
+                <div class="flex items-center gap-2">
+                  <Button variant="ghost" size="sm" onclick={() => (rollConfirming = false)} disabled={rollStarting}>Cancel</Button>
+                  <Button variant="outline" size="sm" onclick={() => void startRollAll()} disabled={rollStarting}>
+                    {#if rollStarting}<WaitingMark site="fleet/agent-apply" size={12} />{/if}
+                    Restart all agents
+                  </Button>
+                </div>
+              </div>
+            </Panel>
           </div>
-        </Panel>
-      </div>
-    {/if}
+        {/if}
 
-    <!-- The batch this page started: progress while it rolls, the tally and
-         every failure sentence once it is done. A refusal (the route's
-         error) lands in the same place. -->
-    {#if rollStart}
-      <div transition:slide={{ duration: 150 }}>
-        <Panel class="space-y-2 px-4 py-3">
-          <div class="flex items-center gap-3">
-            {#if rollStart.error}
-              <CircleAlert size={14} class="shrink-0 text-danger" />
-              <span class="min-w-0 flex-1 truncate font-sans text-sm text-danger" title={rollStart.error}>Could not start the roll: {rollStart.error}</span>
-            {:else if batchRolling > 0}
-              <WaitingMark site="fleet/agent-apply" size={12} class="shrink-0 text-accent" />
-              <span class="min-w-0 flex-1 truncate font-sans text-sm text-muted">
-                Rolling {batchDone + batchFailed.length} of {batchRows.length} done, {batchRolling} to go
-              </span>
-            {:else if (rollStart.rolling?.length ?? 0) === 0}
-              <span class="min-w-0 flex-1 truncate font-sans text-sm text-muted">Nothing to roll.</span>
-            {:else}
-              <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">
-                Rolled {batchDone} of {batchRows.length || rollStart.rolling?.length || 0}{batchFailed.length > 0 ? `, ${batchFailed.length} failed` : ''}
-              </span>
-            {/if}
-            <span class="ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">roll all</span>
-            <CloseButton label="Dismiss" onClick={() => (rollStart = null)} />
-          </div>
-          {#if (rollStart.skipped?.length ?? 0) > 0}
-            <p class="font-sans text-xs text-muted">
-              Skipped: {rollStart.skipped?.map((s) => `${s.slug} (${s.why})`).join(', ')}
-            </p>
-          {/if}
-          {#if batchFailed.length > 0}
-            <ul class="space-y-0.5">
-              {#each batchFailed as f (f.slug)}
-                <li class="truncate font-sans text-xs text-danger" title={f.detail ?? ''}>{f.displayName}: {f.detail ?? 'the roll failed'}</li>
-              {/each}
-            </ul>
-          {/if}
-        </Panel>
-      </div>
-    {/if}
-
-    <!-- Hires land here, above the tiles they become: a row per agent being
-         created (the run's own phase sentence), a row per recent failure.
-         Nothing renders once the work is done — the tile materializing over
-         the strip IS the completion event. -->
-    <HiringStrip hires={stripHires} />
-
-    <!-- TALA-11: an agent DESIGN running in the background (or finished but
-         unclaimed) — the same shelf the hires use, one slim status row. It
-         is a pointer into the modal, not a surface of its own: click to
-         re-enter the work. Renders nothing when there is no design. -->
-    {#if designRow}
-      <div transition:slide={{ duration: 150 }}>
-        <Panel class="px-4 py-3">
-          <button
-            type="button"
-            class="flex w-full items-center gap-3 text-left"
-            onclick={() => {
-              creating = true
-            }}
-          >
-            {#if designRow.status === 'generating'}
-              <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
-              <span class="truncate font-sans text-sm text-muted">Designing {designRow.headline}</span>
-            {:else if designRow.status === 'error'}
-              <CircleAlert size={14} class="shrink-0 text-danger" />
-              <span class="truncate font-sans text-sm text-danger">The design failed: {designRow.headline}</span>
-            {:else}
-              <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
-              <span class="truncate font-sans text-sm text-fg">{designRow.headline} is designed and waiting for review</span>
-            {/if}
-            <span class="ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">design</span>
-          </button>
-        </Panel>
-      </div>
-    {/if}
-
-    <!-- "No agents yet" is a claim about the fleet, and for months a 500 from
-         /api/fleet/defs made this surface state it — the owner reading that
-         his fleet was empty while the box was down. It is now reachable ONLY
-         from a 200 that really carried zero defs; the failure renders as a
-         failure, and a disabled read (no manage access) says that instead.
-
-         Skeleton → content as one motion: view-shaped skeletons (tiles or
-         rows) materialize into the roster — Materialize grid-stacks the
-         branches and its content branch owns the cascade, replacing the old
-         double skeleton swap (defs, then containers). QueryState stays for
-         ERROR / IDLE / EMPTY; its own loading branch only covers the
-         paused-fetch edge, with the same item silhouette. A view toggle
-         remounts via {#key view} and keeps the tab-pane fly. -->
-    {#key view}
-      <div in:fly={{ y: 6, duration: 200 }}>
-        <Materialize loading={rosterLoading} count={6} class={rosterClasses}>
-          {#snippet skeleton(i)}{@render itemSkeleton(i)}{/snippet}
-          <QueryState
-            query={defsQuery}
-            errorTitle="Could not load the agent roster"
-            errorVariant="compact"
-            isEmpty={(d) => d.defs.length === 0}
-            idle={null}
-          >
-            {#snippet skeleton()}{@render itemSkeleton(0)}{/snippet}
-            {#snippet empty()}
-              <!-- TWO DIFFERENT EMPTIES, and the server says which. Somebody
-                   who can hire has no agents yet; somebody who cannot has
-                   none of their own, and "design your first agent" under a
-                   button they will be 403'd by is the wrong sentence. -->
-              {#if canHire}
-                <Panel>
-                  <EmptyState
-                    title="No agents yet"
-                    hint="Describe the first one and Muse designs it: identity, soul, and starter skills."
-                  >
-                    {#snippet action()}
-                      <Button size="sm" onclick={() => (creating = true)}>
-                        Design your first agent
-                      </Button>
-                    {/snippet}
-                  </EmptyState>
-                </Panel>
-              {:else}
-                <!-- p-0: the zero state brings its own padding and its vignette fills this
-         box, so panel padding would be a band it cannot reach. -->
-                <Panel class="p-0">
-                  <EmptyState
-                    title="No agents are yours to manage"
-                    hint="You see an agent here once somebody makes you one of its managers. Ask an admin, or whoever runs the agent you need."
-                  />
-                </Panel>
-              {/if}
-            {/snippet}
-            {#snippet children(data)}
-              {@const endpoints = data.endpoints}
-              {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
-              {#each data.defs as d (d.id)}
-                {#if view === 'grid'}
-                  <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
+        <!-- The batch this page started: progress while it runs, the tally and
+             every failure sentence once it is done. A refusal (the route's
+             error) lands in the same place. -->
+        {#if rollStart}
+          <div transition:slide={{ duration: 150 }}>
+            <Panel class="space-y-1.5 px-5 py-3">
+              <div class="flex items-center gap-3">
+                {#if rollStart.error}
+                  <CircleAlert size={16} class="shrink-0 text-danger" />
+                  <span class="min-w-0 flex-1 font-sans text-sm leading-5 text-danger">Could not restart the agents: {rollStart.error}</span>
+                {:else if batchRolling > 0}
+                  <WaitingMark site="fleet/agent-apply" size={12} class="shrink-0 text-accent" />
+                  <span class="min-w-0 flex-1 font-sans text-sm leading-5 text-fg tabular-nums">
+                    Restarting agents: {batchDone + batchFailed.length} of {batchRows.length} done
+                  </span>
+                {:else if (rollStart.rolling?.length ?? 0) === 0}
+                  <span class="min-w-0 flex-1 font-sans text-sm leading-5 text-muted">No agents to restart.</span>
                 {:else}
-                  <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
+                  <span class="min-w-0 flex-1 font-sans text-sm leading-5 text-fg tabular-nums">
+                    Restarted {batchDone} of {batchRows.length || rollStart.rolling?.length || 0}{batchFailed.length > 0 ? `, ${batchFailed.length} failed` : ''}
+                  </span>
                 {/if}
-              {/each}
-            {/snippet}
-          </QueryState>
-        </Materialize>
-      </div>
-    {/key}
+                <CloseButton label="Dismiss" onClick={() => (rollStart = null)} class="-mr-1.5" />
+              </div>
+              {#if (rollStart.skipped?.length ?? 0) > 0}
+                <p class="font-sans text-[13px] leading-5 text-muted">
+                  Skipped: {rollStart.skipped?.map((s) => `${s.slug} (${s.why})`).join(', ')}
+                </p>
+              {/if}
+              {#if batchFailed.length > 0}
+                <ul class="space-y-0.5">
+                  {#each batchFailed as f (f.slug)}
+                    <li class="font-sans text-[13px] leading-5 text-danger">{f.displayName}: {f.detail ?? 'the restart failed'}</li>
+                  {/each}
+                </ul>
+              {/if}
+            </Panel>
+          </div>
         {/if}
-      </div>
-    {/key}
 
-    {#if federateOpen}
-      <FederateModal
-        onClose={() => (federateOpen = false)}
-        onSealStored={() => {
-          federateOpen = false
-          sealOpen = true
-        }}
-      />
-    {/if}
-    {#if sealOpen}<SealConfigsModal onClose={() => (sealOpen = false)} />{/if}
-    {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} />{/if}
-    {#if duplicateFrom}
-      <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />
-    {/if}
+        <!-- Hires land here, above the tiles they become: a row per agent being
+             created (the run's own phase sentence), a row per recent failure.
+             Nothing renders once the work is done — the tile materializing over
+             the strip IS the completion event. -->
+        <HiringStrip hires={stripHires} />
+
+        <!-- TALA-11: an agent DESIGN running in the background (or finished but
+             unclaimed) — the same shelf the hires use, one slim status row. It
+             is a pointer into the modal, not a surface of its own: click to
+             re-enter the work. Renders nothing when there is no design. -->
+        {#if designRow}
+          <div transition:slide={{ duration: 150 }}>
+            <Panel class="overflow-hidden p-0">
+              <button
+                type="button"
+                class="flex w-full items-center gap-3 px-5 py-3.5 text-left transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                onclick={() => {
+                  creating = true
+                }}
+              >
+                {#if designRow.status === 'generating'}
+                  <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
+                  <span class="min-w-0 flex-1 truncate font-sans text-sm leading-5 text-muted">Designing {designRow.headline}</span>
+                {:else if designRow.status === 'error'}
+                  <CircleAlert size={16} class="shrink-0 text-danger" />
+                  <span class="min-w-0 flex-1 truncate font-sans text-sm leading-5 text-danger">The design failed: {designRow.headline}</span>
+                {:else}
+                  <StatusDot status="accent" class="shrink-0" />
+                  <span class="min-w-0 flex-1 truncate font-sans text-sm leading-5 text-fg">{designRow.headline} is designed and waiting for review</span>
+                {/if}
+                <ChevronRight size={16} class="shrink-0 text-muted" />
+              </button>
+            </Panel>
+          </div>
+        {/if}
+
+        <!-- "No agents yet" is a claim about the fleet, and for months a 500 from
+             /api/fleet/defs made this surface state it — the owner reading that
+             his fleet was empty while the box was down. It is now reachable ONLY
+             from a 200 that really carried zero defs; the failure renders as a
+             failure, and a disabled read (no manage access) says that instead.
+
+             Skeleton → content as one motion: view-shaped skeletons (tiles or
+             rows) materialize into the roster — Materialize grid-stacks the
+             branches and its content branch owns the cascade. QueryState stays
+             for ERROR / IDLE / EMPTY; its own loading branch only covers the
+             paused-fetch edge, with the same item silhouette. A view switch
+             remounts via {#key view} and keeps the tab-pane fly. -->
+        {#key view}
+          <div in:fly={{ y: 6, duration: 200 }}>
+            <Materialize loading={rosterLoading} count={6} class={rosterClasses}>
+              {#snippet skeleton(i)}{@render itemSkeleton(i)}{/snippet}
+              <QueryState
+                query={defsQuery}
+                errorTitle="Could not load the agent roster"
+                errorVariant="compact"
+                isEmpty={(d) => d.defs.length === 0}
+                idle={null}
+              >
+                {#snippet skeleton()}{@render itemSkeleton(0)}{/snippet}
+                {#snippet empty()}
+                  <!-- TWO DIFFERENT EMPTIES, and the server says which. Somebody
+                       who can hire has no agents yet; somebody who cannot has
+                       none of their own, and "design your first agent" under a
+                       button they will be 403'd by is the wrong sentence. -->
+                  {#if canHire}
+                    <Panel>
+                      <EmptyState title="No agents yet" hint="Describe the first one and Muse designs it for you.">
+                        {#snippet action()}
+                          <Button variant="outline" size="sm" onclick={() => (creating = true)}>Design your first agent</Button>
+                        {/snippet}
+                      </EmptyState>
+                    </Panel>
+                  {:else}
+                    <!-- p-0: the zero state brings its own padding and its vignette fills this
+                         box, so panel padding would be a band it cannot reach. -->
+                    <Panel class="p-0">
+                      <EmptyState
+                        title="No agents are yours to manage"
+                        hint="An agent shows here once you are one of its managers. Ask an admin to add you."
+                      />
+                    </Panel>
+                  {/if}
+                {/snippet}
+                {#snippet children(data)}
+                  {@const endpoints = data.endpoints}
+                  {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
+                  {#each data.defs as d (d.id)}
+                    {#if view === 'grid'}
+                      <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
+                    {:else}
+                      <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
+                    {/if}
+                  {/each}
+                {/snippet}
+              </QueryState>
+            </Materialize>
+          </div>
+        {/key}
+      {/if}
+    </div>
+  {/key}
+
+  {#if federateOpen}
+    <FederateModal
+      onClose={() => (federateOpen = false)}
+      onSealStored={() => {
+        federateOpen = false
+        sealOpen = true
+      }}
+    />
+  {/if}
+  {#if sealOpen}<SealConfigsModal onClose={() => (sealOpen = false)} />{/if}
+  {#if creating}<CreateAgentModal open={creating} onClose={() => (creating = false)} templates={defs.filter((d) => d.enabled)} />{/if}
+  {#if duplicateFrom}
+    <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />
+  {/if}
 </SettingsPage>
