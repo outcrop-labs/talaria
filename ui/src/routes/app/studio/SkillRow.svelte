@@ -1,9 +1,12 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { MoreHorizontal, Lock } from '@lucide/svelte'
+  import { BookOpen } from '@lucide/svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Chip from '@/components/ui/Chip.svelte'
-  import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
+  import { focusRing } from '@/components/ui/control'
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
+  import { skillTitle } from '@/components/skills/skill-title'
   import { cn } from '@/lib/cn'
   import { SKILLS_KEY, deleteSkill, renameSkill, type SkillOwner } from '@/lib/skills'
   import { copySkillTo, moveSkillTo } from '@/lib/workflows'
@@ -27,6 +30,7 @@
   const qc = useQueryClient()
   const refresh = () => qc.invalidateQueries({ queryKey: SKILLS_KEY })
   const editableTargets = $derived(owners.filter((o) => o.canEdit && o.owner !== owner))
+  const title = $derived(skillTitle(skill.name))
   const fail = (e: unknown) => void confirm({ title: 'That didn’t work', message: (e as Error).message, confirmLabel: 'OK' })
 
   const doRename = async () => {
@@ -41,53 +45,43 @@
   }
 </script>
 
-<div class="group flex w-full items-center gap-3 px-5 py-3 transition-colors dither-fill">
-  <button type="button" onclick={onOpen} class="min-w-0 flex-1 text-left">
-    <span class="flex items-center gap-2">
-      <span class="truncate text-sm font-medium text-fg">{skill.name}</span>
-      {#if skill.platform}
-        <Chip title="Platform skill (essential plumbing, admins only)" class="shrink-0">
-          <Lock size={9} class="mr-0.5 inline" />
-          platform
-        </Chip>
-      {/if}
-      {#if sharedBadge}<Chip class="shrink-0">shared</Chip>{/if}
-    </span>
-    <span class="mt-0.5 block text-sm leading-snug text-muted">{skill.description || '…'}</span>
-  </button>
+<!-- The title is the row's button, stretched over the whole row, so the menu
+     beside it stays a separate control. -->
+<SettingsRow class="relative transition-colors hover:bg-hover" hint={skill.description || 'No description yet.'}>
+  {#snippet icon()}<BookOpen size={16} />{/snippet}
+  {#snippet label()}
+    <button type="button" onclick={onOpen} class={cn('rounded-sm text-left after:absolute after:inset-0', focusRing)}>{title}</button>
+  {/snippet}
+  {#snippet meta()}
+    <span class="shrink-0 font-mono text-xs text-muted">{skill.name}</span>
+    {#if sharedBadge}<Chip class="-my-px">Shared</Chip>{/if}
+    {#if skill.platform}<Chip class="-my-px">Built-in</Chip>{/if}
+  {/snippet}
   {#if canEdit}
-    <DropdownMenu
-      items={[
-        { label: 'Open', onSelect: onOpen },
-        { label: 'Rename…', onSelect: () => void doRename() },
-        ...(editableTargets.length
-          ? [
-              {
-                label: 'Copy to',
-                children: editableTargets.map((o) => ({
-                  label: o.owner === 'shared' ? 'Every agent' : o.label,
-                  onSelect: () => void copySkillTo(owner, skill.name, o.owner).then(refresh).catch(fail),
-                })),
-              },
-            ]
-          : []),
-        ...(owner !== 'shared' && editableTargets.some((o) => o.owner === 'shared')
-          ? [{ label: 'Promote to every agent', onSelect: () => void moveSkillTo(owner, skill.name, 'shared').then(refresh).catch(fail) }]
-          : []),
-        'sep' as const,
-        { label: 'Delete', danger: true, onSelect: () => void doDelete() },
-      ]}
-    >
-      {#snippet trigger(open)}
-        <span
-          class={cn(
-            'rounded-md p-1 text-muted transition-opacity hover:text-fg',
-            open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
-          )}
-        >
-          <MoreHorizontal size={16} />
-        </span>
-      {/snippet}
-    </DropdownMenu>
+    <span class="relative">
+      <SettingsRowMenu
+        label={`Actions for ${title}`}
+        items={[
+          { label: 'Edit', onSelect: onOpen },
+          { label: 'Rename', onSelect: () => void doRename() },
+          ...(editableTargets.length
+            ? [
+                {
+                  label: 'Copy to',
+                  children: editableTargets.map((o) => ({
+                    label: o.owner === 'shared' ? 'Every agent' : o.label,
+                    onSelect: () => void copySkillTo(owner, skill.name, o.owner).then(refresh).catch(fail),
+                  })),
+                },
+              ]
+            : []),
+          ...(owner !== 'shared' && editableTargets.some((o) => o.owner === 'shared')
+            ? [{ label: 'Move to every agent', onSelect: () => void moveSkillTo(owner, skill.name, 'shared').then(refresh).catch(fail) }]
+            : []),
+          'sep' as const,
+          { label: 'Delete skill', danger: true, onSelect: () => void doDelete() },
+        ]}
+      />
+    </span>
   {/if}
-</div>
+</SettingsRow>
