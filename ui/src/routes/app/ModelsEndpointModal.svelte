@@ -20,15 +20,18 @@
   import ModelsModelAdder from './ModelsModelAdder.svelte'
   import ModelsEffortRow from './ModelsEffortRow.svelte'
   import ModelsPrivacyRow from './ModelsPrivacyRow.svelte'
+  import ModelName from '@/components/models/ModelName.svelte'
+  import { useModelNames } from '@/components/models/model-names.svelte'
   import { PRICING_QUERY_KEYS, UNPRICED_ANCHOR, clearPrice, includedBody, setPrice, settingLabel } from '@/components/observability/pricing'
   import { toastError } from '@/lib/toast.svelte'
   import { describeAffected } from './models'
 
   // The provider's full surface: models (add/remove with catalog search), pricing,
   // class, privacy routing, and removal.
-  let { ep, onClose }: { ep: LlmEndpoint; onClose: () => void } = $props()
+  let { ep, onClose, focusKey = false }: { ep: LlmEndpoint; onClose: () => void; /** Open with the cursor in the key field. */ focusKey?: boolean } = $props()
 
   const qc = useQueryClient()
+  const modelName = useModelNames()
   const availableQuery = useAvailableModels(() => ep.id)
   const available = $derived(availableQuery.data)
   let err = $state<string | null>(null)
@@ -150,7 +153,7 @@
 </script>
 
 {#snippet model(id: string)}
-  <span class="font-mono text-[13px] font-normal">{id}</span>
+  <ModelName {id} name={modelName(id)} />
 {/snippet}
 
 <Modal open {onClose} title={ep.name} width="max-w-2xl">
@@ -188,8 +191,9 @@
           onkeydown={submitOnEnter(() => key.trim() && !savingKey && void saveKey(key.trim()))}
           placeholder={ep.hasKey ? 'Paste a new key to replace it' : 'Paste the provider key'}
           autocomplete="off"
+          autofocus={focusKey}
         />
-        <Button size="md" variant="outline" disabled={!key.trim() || savingKey} onclick={() => void saveKey(key.trim())}>
+        <Button size="md" disabled={!key.trim() || savingKey} onclick={() => void saveKey(key.trim())}>
           {ep.hasKey ? 'Replace key' : 'Save key'}
         </Button>
       </div>
@@ -246,6 +250,7 @@
           {#each ep.models as m (m)}
             <ModelsEffortRow
               model={m}
+              modelName={modelName(m)}
               catalogEfforts={available?.catalog?.find((c) => c.id === m)?.efforts ?? null}
               declared={ep.modelEfforts?.[m]}
               onDeclare={(levels) => setEfforts(m, levels)}
@@ -285,7 +290,9 @@
                 <tbody>
                   {#each ep.providerPrices ?? [] as row (`${row.model}:${row.variant}`)}
                     <tr class="h-10 border-b border-line-subtle last:border-0">
-                      <td class="px-5 font-mono text-xs text-fg">{row.model}{row.variant ? ` · ${row.variant}` : ''}</td>
+                      <td class="px-5 font-sans text-[13px] text-fg" title={row.model}>
+                        {#if modelName(row.model)}{modelName(row.model)}{:else}<span class="font-mono text-xs">{row.model}</span>{/if}{row.variant ? ` · ${row.variant}` : ''}
+                      </td>
                       <td class="px-3 text-right font-sans text-[13px] tabular-nums text-fg">{rate(row.in)}</td>
                       <td class="px-3 text-right font-sans text-[13px] tabular-nums text-fg">{rate(row.out)}</td>
                       <td class="px-3 text-right font-sans text-[13px] tabular-nums text-muted">{rate(row.cacheRead)}</td>

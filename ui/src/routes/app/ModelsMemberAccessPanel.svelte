@@ -15,6 +15,7 @@
   import { useModels } from '@/lib/muse.svelte'
   import { anyPending } from '@/components/ui/query-state'
   import CapabilityTags from '@/components/models/CapabilityTags.svelte'
+  import ModelName from '@/components/models/ModelName.svelte'
   import { useModelCapabilities } from '@/components/models/fitness-queries'
 
   // Which models MEMBERS may pick (preferred model, muse drafting). Admins are
@@ -162,7 +163,7 @@
             <table class="w-full border-collapse text-left">
               <thead>
                 <tr class="border-b border-line font-sans text-xs font-medium leading-4 text-muted">
-                  <th class="px-5 py-2.5 font-medium">Model</th>
+                  <th class="w-[38%] px-5 py-2.5 font-medium">Model</th>
                   <th class="px-3 py-2.5 font-medium">Provider</th>
                   <th class="px-3 py-2.5 font-medium">Capabilities</th>
                   <th class="py-2.5 pl-3 pr-5 text-right font-medium">Members</th>
@@ -171,12 +172,7 @@
               <tbody>
                 {#each models as m (m.id)}
                   <tr class="h-11 border-b border-line-subtle transition-colors last:border-0 hover:bg-hover">
-                    <td class="px-5 py-2" title={m.blurb}>
-                      <span class="font-mono text-[13px] leading-5 text-fg">{m.id}</span>
-                      {#if m.label && m.label !== m.id}
-                        <span class="ml-2 font-sans text-[13px] leading-5 text-muted">{m.label}</span>
-                      {/if}
-                    </td>
+                    <td class="max-w-0 px-5 py-2" title={m.blurb}><ModelName id={m.id} name={m.label} /></td>
                     <td class="whitespace-nowrap px-3 py-2 font-sans text-[13px] leading-5 text-muted">
                       {(providersOf.get(m.id) ?? []).join(', ')}
                     </td>
@@ -191,7 +187,7 @@
                         class="justify-end"
                         checked={selection.includes(m.id)}
                         onChange={() => toggle(m.id)}
-                        title={`Members can use ${m.id}`}
+                        title={`Members can use ${m.label ?? m.id}`}
                       />
                     </td>
                   </tr>

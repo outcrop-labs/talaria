@@ -23,6 +23,8 @@
   import FitnessRunModal from '@/components/models/FitnessRunModal.svelte'
   import FitnessHealth from '@/components/models/FitnessHealth.svelte'
   import FitnessValue from '@/components/models/FitnessValue.svelte'
+  import ModelName from '@/components/models/ModelName.svelte'
+  import { useModelNames } from '@/components/models/model-names.svelte'
   import FitnessAppModels from '@/components/models/FitnessAppModels.svelte'
   import { TIER_META, usd, valueVersion, worthRetrying } from '@/components/models/fitness'
   import { useFitnessDetail, useFitnessHealth, useFitnessValue, useModelFitness } from '@/components/models/fitness-queries'
@@ -35,6 +37,7 @@
   // the answer at a glance; the run fills it; the drill-down is what makes it
   // trustworthy.
   const qc = useQueryClient()
+  const modelName = useModelNames()
   const query = useModelFitness()
   const data = $derived(query.data)
 
@@ -230,8 +233,8 @@
 {:else}
   <div class="space-y-8">
     <SettingsSection
-      title="Model fitness"
-      description="Which models are good at which jobs, measured by test runs."
+      title="Test results"
+      description="Which models are good at which jobs, from test runs."
       info={`One run fills every view here. The matrix says whether a model holds a job, and cost says what holding it would cost you on the work your agents actually do. Gray means nothing has measured it, which is not a pass. This install has ${data.registry.harnesses} harnesses, ${data.registry.fixtures} fixtures and ${data.registry.provocations} safety provocations.`}
     >
       {#snippet action()}
@@ -241,7 +244,7 @@
           {:else if lastFinished?.state === 'error'}
             <span class="text-danger">Last run failed: {lastFinished.error}</span>
           {:else if lastFinished?.state === 'done' && lastFinished.model}
-            Last run: <span class="font-mono text-xs">{lastFinished.model}</span>
+            Last tested: {#if modelName(lastFinished.model)}{modelName(lastFinished.model)}{:else}<span class="font-mono text-xs">{lastFinished.model}</span>{/if}
           {/if}
         </span>
         <!-- BEHIND A MENU, not beside the button. Clearing EVERY result is the
@@ -284,7 +287,7 @@
                 >
                   <WaitingMark site="models/fitness-panel" size={14} />
                   <span class="min-w-0">
-                    <span class="block truncate font-mono text-[13px] leading-5 text-fg">{run.model}</span>
+                    <ModelName id={run.model ?? ''} name={modelName(run.model)} class="block" />
                     <span class="block font-sans text-[13px] leading-5 text-muted">
                       {run.phase === 'scoring' ? 'Scoring' : run.phase ? TIER_META[run.phase].label : 'Starting'}
                       {#if run.total > 0}
@@ -318,7 +321,7 @@
           <button
             type="button"
             onclick={() => setView('health')}
-            class="block text-left font-sans text-[13px] leading-5 text-danger underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            class="block text-left font-sans text-[13px] leading-5 text-warning underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             {data.health?.ours} fixture{data.health?.ours === 1 ? '' : 's'} failed on every model tested, which points at the fixture and not the models. See harness health.
           </button>
@@ -398,7 +401,7 @@
     <Modal open={true} onClose={() => closeReport()} takeover padded={false}>
       {#snippet title()}
         <span class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <span class="font-mono text-sm font-medium text-fg">{selected}</span>
+          <ModelName id={selected} name={modelName(selected)} />
           <span class="font-sans text-[13px] font-normal leading-5 text-muted">
             {#if data.index[selected]}
               {data.index[selected]?.calls} calls · {usd(data.index[selected]?.costUsd ?? null)}{#if data.index[selected]?.partial} · partial run{/if}

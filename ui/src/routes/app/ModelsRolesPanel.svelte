@@ -6,6 +6,7 @@
   import { anyFailed, anyPending } from '@/components/ui/query-state'
   import { toastError } from '@/lib/toast.svelte'
   import CategoryDetail from '@/components/models/CategoryDetail.svelte'
+  import { useModelNames } from '@/components/models/model-names.svelte'
   import { slotState, type ModelRoleRow, type PlatformAgentRow, type RoleIssue, type Slot } from '@/components/models/slot'
 
   // ── Roles & workers — which model runs what ────────────────────────────────
@@ -148,7 +149,20 @@
 
   // The row's second line: the models the job's settings run on, each named
   // once, so the whole fleet still reads from the menu without clicking in.
-  const sublineOf = (c: { slots: Slot[] }) => [...new Set(c.slots.map((s) => slotState(s, assignmentOf(s))))].join(' · ')
+  // A model the catalog names reads by that name, and one it does not is its id.
+  const modelName = useModelNames()
+  const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+  const sublineOf = (c: { slots: Slot[] }) => {
+    const parts = new Map<string, { text: string; id: boolean }>()
+    for (const s of c.slots) {
+      const assigned = assignmentOf(s)
+      const state = slotState(s, assigned)
+      if (parts.has(state)) continue
+      const name = state === assigned ? modelName(assigned) : sentence(state)
+      parts.set(state, { text: name ?? state, id: !name })
+    }
+    return [...parts].map(([key, part]) => ({ key, ...part }))
+  }
 
   // Both reads green or neither has data — one load-failed state for the
   // pane, not two competing banners.
@@ -182,7 +196,9 @@
   >
     {#snippet row(c: (typeof categories)[number])}
       <span class="block truncate font-medium leading-5 text-fg">{c.label}</span>
-      <span class="block truncate font-mono text-xs leading-4 text-muted">{sublineOf(c)}</span>
+      <span class="block truncate font-sans text-xs leading-4 text-muted">
+        {#each sublineOf(c) as part, i (part.key)}{i > 0 ? ' · ' : ''}<span class={part.id ? 'font-mono' : undefined}>{part.text}</span>{/each}
+      </span>
     {/snippet}
 
     {#snippet empty()}

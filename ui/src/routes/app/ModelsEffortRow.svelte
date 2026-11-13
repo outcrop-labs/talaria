@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import ModelName from '@/components/models/ModelName.svelte'
   import { submitOnEnter } from '@/components/ui/control'
 
   // One model's effort-ladder row in the endpoint modal.
@@ -19,12 +20,15 @@
   // the model rejects. Comma or space separated; cleared = undeclare.
   let {
     model,
+    modelName,
     catalogEfforts,
     declared,
     onDeclare,
   }: {
     /** Upstream model id on this endpoint. */
     model: string
+    /** The catalog's name for it, when it has one. */
+    modelName?: string
     /** What the provider's catalog publishes right now (null = silent). */
     catalogEfforts: string[] | null
     /** The admin's stored declaration for this model, if any. */
@@ -53,7 +57,7 @@
 </script>
 
 <SettingsRow class="min-h-[52px] py-3">
-  {#snippet label()}<span class="font-mono text-[13px] font-normal">{model}</span>{/snippet}
+  {#snippet label()}<ModelName id={model} name={modelName} />{/snippet}
   <!-- The provider's word, or its silence: the reason this row exists. -->
   {#snippet hint()}
     {#if declared}

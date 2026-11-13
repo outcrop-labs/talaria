@@ -116,16 +116,20 @@
   {#if fixed && slot.kind === 'agent'}
     <!-- Fixed by design (the person's own assistant): identity, not a slot, so
          there is no picker, and the catalog's own line says what runs it. -->
-    <span class="max-w-[280px] text-right font-sans text-[13px] leading-5 text-muted">{sentence(slot.row.auto)}</span>
+    <span class="w-[260px] font-sans text-[13px] leading-5 text-muted">{sentence(slot.row.auto)}</span>
   {:else}
-    <EffortSlotPicker model={assigned} value={effort ?? ''} onChange={onEffort} class="w-[132px]" />
-    <ModelIdPicker
-      {models}
-      value={assigned ?? null}
-      onChange={onModel}
-      emptyLabel="Auto"
-      emptySub={slot.kind === 'agent' ? sentence(slot.row.auto) : 'Its fallback chain'}
-      class="w-[280px]"
-    />
+    <!-- One column, so every row's model sits in the same place whether or
+         not its model takes an effort level. -->
+    <div class="flex w-[260px] flex-col gap-2">
+      <ModelIdPicker
+        {models}
+        value={assigned ?? null}
+        onChange={onModel}
+        emptyLabel="Auto"
+        emptySub={slot.kind === 'agent' ? sentence(slot.row.auto) : 'Its fallback chain'}
+        class="w-full"
+      />
+      <EffortSlotPicker model={assigned} value={effort ?? ''} onChange={onEffort} class="w-full" />
+    </div>
   {/if}
 </SettingsRow>

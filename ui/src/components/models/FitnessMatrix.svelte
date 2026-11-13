@@ -2,6 +2,8 @@
   import { cn } from '@/lib/cn'
   import CapabilityTags from './CapabilityTags.svelte'
   import FitnessMark from './FitnessMark.svelte'
+  import ModelName from './ModelName.svelte'
+  import { useModelNames } from './model-names.svelte'
   import {
     SAFETY_META,
     BAND_META,
@@ -37,6 +39,8 @@
     index: Record<string, FitnessIndexEntry>
     onSelect: (model: string) => void
   } = $props()
+
+  const modelName = useModelNames()
 
   const focus = 'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent'
 
@@ -119,7 +123,12 @@
               class={cn('flex w-full min-w-[18rem] cursor-pointer flex-col items-start gap-0.5 px-5 py-3 text-left', focus)}
             >
               <span class="flex min-w-0 max-w-full items-center gap-2">
-                <span class="truncate font-mono text-[13px] leading-5 text-fg">{m.id}</span>
+                <!-- The name leads and the id is left to the report this row opens. -->
+                {#if modelName(m.id)}
+                  <span class="truncate font-sans text-sm font-medium leading-5 text-fg" title={m.id}>{modelName(m.id)}</span>
+                {:else}
+                  <ModelName id={m.id} />
+                {/if}
                 <CapabilityTags row={m} negativeOnly />
               </span>
               <span class="whitespace-nowrap font-sans text-xs leading-4 text-muted">

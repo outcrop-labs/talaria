@@ -17,6 +17,7 @@
     type ModelValue,
     type ValuePayload,
   } from './fitness'
+  import { useModelNames } from './model-names.svelte'
 
   // PRICE AGAINST PERFORMANCE. The matrix says whether a model CAN hold a slot;
   // this says what holding it costs and how much of a real day it covers. The
@@ -65,8 +66,38 @@
     return (Math.log10(usd) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo)) * 100
   }
 
+  const modelName = useModelNames()
+  /** What a point, a row or a chip calls a model: the catalog's name, else the
+   *  id without its provider prefix. */
+  const shortName = (model: string) => modelName(model) ?? model.split('/').at(-1) ?? model
+
   const plotted = $derived(rows.filter((m) => m.usdPerDay !== null))
   const unpriced = $derived(rows.filter((m) => m.usdPerDay === null))
+
+  // A point's label sits under it. Where two models land close together the
+  // second label would print over the first, so it goes above its point.
+  const LABEL = { charPx: 7, maxPx: 144, heightPx: 16, gapPx: 6 }
+  let plotW = $state(0)
+  let plotH = $state(0)
+  const labelSide = $derived.by(() => {
+    type Box = { left: number; right: number; top: number; bottom: number }
+    const placed: Box[] = []
+    const sides = new Map<string, 'below' | 'above'>()
+    const hits = (b: Box) => placed.some((p) => b.left < p.right && b.right > p.left && b.top < p.bottom && b.bottom > p.top)
+    for (const m of [...plotted].sort((a, b) => xOf(a.usdPerDay) - xOf(b.usdPerDay))) {
+      const width = Math.min(LABEL.maxPx, shortName(m.model).length * LABEL.charPx)
+      const x = (xOf(m.usdPerDay) / 100) * plotW
+      const y = (1 - m.readyShare) * plotH
+      const box = (side: 'below' | 'above'): Box => {
+        const top = side === 'below' ? y + LABEL.gapPx : y - LABEL.gapPx - LABEL.heightPx
+        return { left: x - width / 2, right: x + width / 2, top, bottom: top + LABEL.heightPx }
+      }
+      const side = hits(box('below')) && !hits(box('above')) ? 'above' : 'below'
+      placed.push(box(side))
+      sides.set(m.model, side)
+    }
+    return sides
+  })
 
   const dotTone = (m: ModelValue): FitnessBand =>
     m.readyShare >= 0.9 ? 'ready' : m.readyShare > 0 ? 'workable' : m.shares.unfit > 0 ? 'unfit' : 'untested'
@@ -114,7 +145,7 @@
              hide the cheapest and the dearest model, which are the two an admin
              is looking for. -->
         <div class="relative mt-4 h-60">
-          <div class="absolute bottom-10 left-16 right-16 top-2 border-b border-l border-line">
+          <div bind:clientWidth={plotW} bind:clientHeight={plotH} class="absolute bottom-10 left-16 right-16 top-2 border-b border-l border-line">
             {#each [1, 0.75, 0.5, 0.25] as line (line)}
               <div class="absolute inset-x-0 border-t border-line-subtle" style:bottom="{line * 100}%">
                 <span class="absolute -left-2 -top-2 -translate-x-full font-sans text-xs leading-4 tabular-nums text-muted">{pct(line)}</span>
@@ -141,11 +172,13 @@
               >
                 <span
                   class={cn(
-                    'pointer-events-none absolute left-1/2 top-3.5 max-w-28 -translate-x-1/2 truncate font-mono text-xs',
+                    'pointer-events-none absolute left-1/2 max-w-36 -translate-x-1/2 truncate text-xs leading-4',
+                    labelSide.get(m.model) === 'above' ? 'bottom-3.5' : 'top-3.5',
+                    modelName(m.model) ? 'font-sans' : 'font-mono',
                     selected === m.model ? 'text-fg' : 'text-muted',
                   )}
                 >
-                  {m.model.split('/').at(-1)}
+                  {shortName(m.model)}
                 </span>
               </button>
             {/each}
@@ -162,7 +195,7 @@
         {#if unpriced.length > 0}
           <p class="mt-3 font-sans text-[13px] leading-5 text-muted">
             {unpriced.length} tested model{unpriced.length === 1 ? ' is' : 's are'} off the chart because nothing on this install prices
-            <span class="font-mono text-xs">{unpriced.map((m) => m.model).join(', ')}</span>. Set a price on the provider to place {unpriced.length === 1 ? 'it' : 'them'}.
+            {unpriced.map((m) => shortName(m.model)).join(', ')}. Set a price on the provider to place {unpriced.length === 1 ? 'it' : 'them'}.
           </p>
         {/if}
       </figure>
@@ -206,7 +239,12 @@
                     title="Open {m.model} for per-slot verdicts, capabilities and every failing fixture"
                     class={cn('flex w-full cursor-pointer flex-col items-start gap-0.5 px-5 py-3 text-left', focus)}
                   >
-                    <span class="max-w-[20rem] truncate font-mono text-[13px] leading-5 text-fg">{m.model}</span>
+                    <span
+                      class={cn('max-w-[20rem] truncate leading-5 text-fg', modelName(m.model) ? 'font-sans text-sm font-medium' : 'font-mono text-[13px]')}
+                      title={m.model}
+                    >
+                      {modelName(m.model) ?? m.model}
+                    </span>
                     <span class="font-sans text-xs leading-4 text-muted">
                       {m.at ? `Tested ${new Date(m.at).toLocaleDateString()}` : 'Never tested'}
                     </span>
@@ -292,8 +330,13 @@
                   <td class={cn(num, 'py-0 text-muted')}>{perDay(slot.perDay)}</td>
                   <td class="px-3">
                     {#if best}
-                      <button type="button" onclick={() => onSelect(best.model)} class={cn('rounded font-mono text-xs text-fg underline-offset-2 hover:underline', focus)}>
-                        {best.model}
+                      <button
+                        type="button"
+                        onclick={() => onSelect(best.model)}
+                        title={best.model}
+                        class={cn('rounded text-fg underline-offset-2 hover:underline', modelName(best.model) ? 'font-sans text-[13px]' : 'font-mono text-xs', focus)}
+                      >
+                        {modelName(best.model) ?? best.model}
                       </button>
                     {:else}
                       <span class="font-sans text-[13px] text-muted" title="Nothing tested reaches Ready here. That is a finding, not a gap. Test another model, or read the reason in the matrix.">
@@ -309,7 +352,7 @@
                           tone={BAND_META[c.band].tone}
                           title="{c.model}: {BAND_META[c.band].label}. This slot would cost {usdRate(c.usdPerDay, 'day')} on it."
                         >
-                          {c.model.split('/').at(-1)}
+                          {shortName(c.model)}
                         </Chip>
                       {/each}
                       {#if slot.candidates.length === 0}
