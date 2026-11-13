@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
+  import Disclosure from '@/components/ui/Disclosure.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -22,21 +23,24 @@
   } from '@/lib/notify-center'
   import { notifyStatus } from '@/lib/notify-status.svelte'
   import { p } from '@/router'
+  import { useBrowserAlerts } from './browser-alerts.svelte'
+  import BrowserChecks from './BrowserChecks.svelte'
   import BrowserNotifications from './BrowserNotifications.svelte'
   import NotifyDevices from './NotifyDevices.svelte'
 
   // STATUS AND TROUBLESHOOTING (D9, EB-03): the one place that answers "why
-  // didn't I get that?" without a support ticket. Four sections, each a fact
-  // the person can check, not a guess:
+  // didn't I get that?" without a support ticket. What a person CHOOSES is on
+  // the page; what only explains a miss is behind Troubleshooting, closed:
   //
-  //   1. This browser — permission (live), worker, subscription, whether the
-  //      server has it on file, and a local test banner.
+  //   1. This browser — the desktop alerts switch and a local test banner.
   //   2. Your devices — every browser registered for push, with what the push
   //      service last said, a per-device test and Remove.
-  //   3. Live connection — the event stream, this tab's role, and which of
-  //      your devices alerts go to right now (the presence winner, I-17).
-  //   4. Talaria Desktop — in the desktop app, its own notification service
+  //   3. Talaria Desktop — in the desktop app, its own notification service
   //      and test, through the shell bridge.
+  //   4. Troubleshooting — this browser's permission (live), worker,
+  //      subscription and whether the server has it on file; then the event
+  //      stream, this tab's role, and which of your devices alerts go to
+  //      right now (the presence winner, I-17).
   //
   // What Do Not Disturb is doing now is said in its own card, above this one.
   //
@@ -45,6 +49,7 @@
   const query = useNotifySettings()
   const features = $derived(featureSet(query.data))
   const shell = inDesktopShell()
+  const alerts = useBrowserAlerts()
   const devices = useDevices(() => features.has('devices'))
   const serverKnows = $derived(devices.data ? thisBrowserId(devices.data.devices) !== null : null)
   const presence = usePresenceSnapshot(() => features.has('presence-store'))
@@ -126,9 +131,9 @@
 
 <div class="space-y-10" data-notify-status-panel>
   <div data-status-section="browser">
-    <SettingsSection title="This browser" description="Start here when something did not arrive.">
+    <SettingsSection title="This browser">
       <SettingsGroup>
-        <BrowserNotifications serverKnows={features.has('devices') ? serverKnows : null} />
+        <BrowserNotifications {alerts} />
       </SettingsGroup>
     </SettingsSection>
   </div>
@@ -141,10 +146,47 @@
     </div>
   {/if}
 
-  <div data-status-section="live">
-    <SettingsSection title="Live connection">
-      <SettingsGroup>
-        <dl class="grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 px-5 py-4 font-sans text-[13px] leading-5">
+  {#if shell}
+    <div data-status-section="desktop">
+      <SettingsSection title="Talaria Desktop">
+        <SettingsGroup>
+          <SettingsRow label="Notification service">
+            {#snippet hint()}
+              {#if shellLine}
+                <span class="flex items-center gap-2" data-shell-status={shellNote?.permission}>
+                  <StatusDot status={shellLine.status} />{shellLine.text}
+                </span>
+                {#if shellNote?.lastError}<span class="block text-danger">Last error: {shellNote.lastError}</span>{/if}
+              {:else}
+                This version of the desktop app does not report its notification service.
+              {/if}
+              {#if shellMsg}
+                <span class="block {shellMsg.ok ? 'text-muted' : 'text-danger'}" data-shell-test-result>{shellMsg.text}</span>
+              {/if}
+            {/snippet}
+            <a class="font-sans text-[13px] text-accent underline-offset-2 hover:underline" href={p('/settings')}>Desktop settings</a>
+            {#if shellNote}
+              <Button size="sm" variant="outline" disabled={shellBusy} onclick={() => void shellTest()} data-shell-test>Send test</Button>
+            {/if}
+          </SettingsRow>
+        </SettingsGroup>
+      </SettingsSection>
+    </div>
+  {/if}
+
+  <!-- Kept mounted while closed: the readings stay live, so opening it shows
+       the state as it is now rather than as it was when the page loaded. -->
+  <Disclosure title="Troubleshooting" variant="card" keepMounted>
+    <div class="space-y-5" data-notify-troubleshooting>
+      {#if !shell}
+        <section>
+          <h3 class="mb-2 font-sans text-xs font-medium leading-4 text-muted">This browser</h3>
+          <BrowserChecks {alerts} serverKnows={features.has('devices') ? serverKnows : null} />
+        </section>
+      {/if}
+      <section data-status-section="live">
+        <h3 class="mb-2 font-sans text-xs font-medium leading-4 text-muted">Live connection</h3>
+        <dl class="grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 font-sans text-[13px] leading-5">
           <dt class="text-muted">Event stream</dt>
           <dd class="flex flex-wrap items-center gap-2 text-fg" data-live="stream" data-state={streamReported ? status.stream.state : 'unknown'}>
             {#if streamReported}
@@ -181,46 +223,18 @@
             {/if}
           {/if}
         </dl>
-      </SettingsGroup>
-      <!-- Each sentence is said only where this instance does it: the client
-           side by the web runtime (it reports here), the push side by the
-           delivery engine (`presence-gated-push`). -->
-      <p class="mt-2 max-w-[72ch] font-sans text-[13px] leading-5 text-muted" data-live-explain={gatedPush ? 'gated' : 'immediate'}>
-        {#if streamReported}The device you are looking at shows the banner, and your other devices stay quiet.{/if}
-        {#if gatedPush}
-          Push waits a minute while you are using one of your devices.
-        {:else}
-          This instance pushes every alert to every registered browser at once.
-        {/if}
-      </p>
-    </SettingsSection>
-  </div>
-
-  {#if shell}
-    <div data-status-section="desktop">
-      <SettingsSection title="Talaria Desktop">
-        <SettingsGroup>
-          <SettingsRow label="Notification service">
-            {#snippet hint()}
-              {#if shellLine}
-                <span class="flex items-center gap-2" data-shell-status={shellNote?.permission}>
-                  <StatusDot status={shellLine.status} />{shellLine.text}
-                </span>
-                {#if shellNote?.lastError}<span class="block text-danger">Last error: {shellNote.lastError}</span>{/if}
-              {:else}
-                This version of the desktop app does not report its notification service.
-              {/if}
-              {#if shellMsg}
-                <span class="block {shellMsg.ok ? 'text-muted' : 'text-danger'}" data-shell-test-result>{shellMsg.text}</span>
-              {/if}
-            {/snippet}
-            <a class="font-sans text-[13px] text-accent underline-offset-2 hover:underline" href={p('/settings')}>Desktop settings</a>
-            {#if shellNote}
-              <Button size="sm" variant="outline" disabled={shellBusy} onclick={() => void shellTest()} data-shell-test>Send test</Button>
-            {/if}
-          </SettingsRow>
-        </SettingsGroup>
-      </SettingsSection>
+        <!-- Each sentence is said only where this instance does it: the client
+             side by the web runtime (it reports here), the push side by the
+             delivery engine (`presence-gated-push`). -->
+        <p class="mt-3 max-w-[72ch] font-sans text-[13px] leading-5 text-muted" data-live-explain={gatedPush ? 'gated' : 'immediate'}>
+          {#if streamReported}The device you are looking at shows the banner, and your other devices stay quiet.{/if}
+          {#if gatedPush}
+            Push waits a minute while you are using one of your devices.
+          {:else}
+            This instance pushes every alert to every registered browser at once.
+          {/if}
+        </p>
+      </section>
     </div>
-  {/if}
+  </Disclosure>
 </div>

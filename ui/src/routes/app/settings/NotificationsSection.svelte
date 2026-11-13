@@ -8,6 +8,7 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
@@ -140,7 +141,7 @@
     if (
       next &&
       !(await confirm({
-        title: 'Turn on email for this whole instance',
+        title: 'Turn on email for the whole workspace',
         message:
           'Talaria will start sending notification and digest email to every user in this workspace, ' +
           'following each person’s own settings, including people who have never opened this page. ' +
@@ -181,29 +182,16 @@
     onRetry={() => void query.refetch()}
   />
 {:else}
-  <!-- The instance switch. An admin always sees it: it is the control, and
-       the state it is in is half of what the rest of this page means. A
-       MEMBER sees it only when it is OFF, because that is the case where the
-       page below would otherwise lie to them: every Email box can be ticked
-       and not one of them sends anything. -->
-  {#if data.canSetDelivery || !emailOn}
+  <!-- A MEMBER is told only when workspace email is OFF, and first, because
+       that is the case where the page below would otherwise lie to them:
+       every Email box can be ticked and not one of them sends anything. -->
+  {#if !data.canSetDelivery && !emailOn}
     <SettingsGroup>
-      <div data-email-switch={emailOn ? 'on' : 'off'}>
-        <SettingsRow
-          label="Email for this instance"
-          hint={data.canSetDelivery
-            ? 'Sends notification and digest email to everyone in this workspace.'
-            : 'Nothing below sends mail. Only an admin can turn it back on.'}
-          info={data.canSetDelivery
-            ? 'The instance-wide switch. It overrules every personal setting on this page, for every user. Off stops all notification and digest email at once, including mail already queued.'
-            : undefined}
-        >
+      <div data-email-switch="off">
+        <SettingsRow label="Email is off for this workspace" hint="Nothing below sends mail. Only an admin can turn it back on.">
           <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
-            <StatusDot status={emailOn ? 'ok' : 'warn'} />{emailOn ? 'On' : 'Off'}
+            <StatusDot status="warn" />Off
           </span>
-          {#if data.canSetDelivery}
-            <Toggle checked={emailOn} onChange={(on) => void setDelivery(on)} title="Email for this instance" />
-          {/if}
         </SettingsRow>
       </div>
     </SettingsGroup>
@@ -256,6 +244,28 @@
       {#if error}<span class="text-danger" role="alert">{error}</span>{/if}
     </p>
   </SettingsSection>
+
+  <!-- The workspace switch sits under the personal Email settings it
+       overrules, in a section of its own that says whose it is. -->
+  {#if data.canSetDelivery}
+    <SettingsSection title="Workspace email" description="Only admins see this. It applies to everyone in the workspace.">
+      <SettingsGroup>
+        <div data-email-switch={emailOn ? 'on' : 'off'}>
+          <SettingsRow
+            label="Send email to everyone"
+            hint="Notification and digest email for every person, following their own settings."
+            info="It overrules every personal setting on this page, for every person. Off stops all notification and digest email at once, including mail already queued."
+          >
+            {#snippet meta()}<Chip>Admin only</Chip>{/snippet}
+            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+              <StatusDot status={emailOn ? 'ok' : 'warn'} />{emailOn ? 'On' : 'Off'}
+            </span>
+            <Toggle checked={emailOn} onChange={(on) => void setDelivery(on)} title="Send email to everyone in the workspace" />
+          </SettingsRow>
+        </div>
+      </SettingsGroup>
+    </SettingsSection>
+  {/if}
 {/if}
 
 {#if data?.dnd}
