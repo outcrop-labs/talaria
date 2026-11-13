@@ -1,41 +1,42 @@
 <script lang="ts">
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import ProviderMark from '@/components/fleet/ProviderMark.svelte'
-  import { cn } from '@/lib/cn'
   import type { LlmEndpoint } from '@/lib/fleet-defs'
   import ModelsEndpointModal from './ModelsEndpointModal.svelte'
 
-  // Compact provider card — identity + a model count + Manage. Everything
-  // detailed (the model list, pricing, privacy) lives in the modal so the main
-  // view stays scannable.
   let { ep }: { ep: LlmEndpoint } = $props()
 
   let managing = $state(false)
+
+  // What is known about the key without a request: a stored one, an env-var
+  // fallback, or a cloud provider that has neither and cannot answer.
+  const key = $derived.by((): { status: 'ok' | 'idle' | 'warn'; text: string } | null => {
+    if (ep.hasKey) return { status: 'ok', text: 'Key stored' }
+    if (ep.apiKeyEnv) return { status: 'idle', text: 'Key from environment' }
+    return ep.class === 'cloud' ? { status: 'warn', text: 'Needs a key' } : null
+  })
 </script>
 
-<Panel class="flex items-center gap-3">
-  <ProviderMark provider={ep.provider} name={ep.name} />
-  <div class="min-w-0 flex-1">
-    <div class="flex items-baseline gap-2">
-      <span class="font-sans text-sm font-semibold text-fg">{ep.name}</span>
-      <span
-        class={cn(
-          'shrink-0 font-mono text-[10px] uppercase tracking-[0.05em]',
-          ep.class === 'local' ? 'text-success' : 'text-accent',
-        )}
-      >
-        {ep.class === 'local' ? 'self-hosted' : 'cloud'}
+<!-- One provider as a row of the providers card. -->
+<div>
+  <SettingsRow label={ep.name}>
+    {#snippet icon()}<ProviderMark provider={ep.provider} name={ep.name} class="border-0 bg-transparent" />{/snippet}
+    {#snippet meta()}<Chip>{ep.class === 'local' ? 'Self-hosted' : 'Cloud'}</Chip>{/snippet}
+    {#snippet hint()}
+      {ep.models.length} model{ep.models.length === 1 ? '' : 's'}
+      {#if ep.baseUrl}· <span class="font-mono text-xs">{ep.baseUrl}</span>{/if}
+    {/snippet}
+    {#if key}
+      <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+        <StatusDot status={key.status} />{key.text}
       </span>
-    </div>
-    <div class="truncate font-mono text-[11px] text-muted">
-      {ep.models.length} model{ep.models.length === 1 ? '' : 's'}{ep.baseUrl ? ` · ${ep.baseUrl}` : ''}
-    </div>
-  </div>
-  <Button variant="outline" size="sm" class="shrink-0" onclick={() => (managing = true)}>
-    Manage
-  </Button>
-</Panel>
-{#if managing}
-  <ModelsEndpointModal {ep} onClose={() => (managing = false)} />
-{/if}
+    {/if}
+    <Button variant="outline" size="sm" onclick={() => (managing = true)}>Manage</Button>
+  </SettingsRow>
+  {#if managing}
+    <ModelsEndpointModal {ep} onClose={() => (managing = false)} />
+  {/if}
+</div>
