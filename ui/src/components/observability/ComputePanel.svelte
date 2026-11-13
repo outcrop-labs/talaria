@@ -81,14 +81,14 @@
                   No model reported as loaded
                 {/if}
               {/snippet}
-              <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+              {#snippet status()}
                 <StatusDot status={b.health.ok ? 'ok' : 'danger'} />
                 {#if b.health.ok}
                   Up{b.health.latencyMs != null ? ` · ${b.health.latencyMs} ms` : ''}
                 {:else}
                   Unreachable
                 {/if}
-              </span>
+              {/snippet}
             </SettingsRow>
           {/each}
         </SettingsGroup>

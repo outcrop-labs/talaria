@@ -8,6 +8,7 @@
 
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -274,9 +275,6 @@
     ].filter((g) => g.grants.length > 0)
   })
 
-  // Rows straight on the pane, divided by hairlines: the pane is already a
-  // panel, and a card inside it would be a box in a box.
-  const rows = 'border-y border-line-subtle [&>*+*]:border-t [&>*+*]:border-line-subtle'
   const ROLE_LABEL: Record<TeamRole, string> = { owner: 'Owner', member: 'Member' }
   const subtitle = $derived(
     team.role ? `${teamCounts(team)} · You are ${team.role === 'owner' ? 'an owner' : 'a member'}` : teamCounts(team),
@@ -297,11 +295,11 @@
 
   <div class="mt-6 space-y-8">
     <SettingsSection title="Details">
-      <div class={rows}>
-        <SettingsRow label="Name" as="label" class="px-0">
+      <SettingsGroup bare>
+        <SettingsRow label="Name" as="label">
           <Input size="sm" class="w-[280px]" bind:value={name} disabled={!canManage} placeholder="Name" onblur={() => void saveMeta()} />
         </SettingsRow>
-        <SettingsRow label="Description" stacked class="px-0">
+        <SettingsRow label="Description" stacked>
           <Textarea
             bind:value={description}
             disabled={!canManage}
@@ -310,19 +308,19 @@
             onblur={() => void saveMeta()}
           />
         </SettingsRow>
-      </div>
+      </SettingsGroup>
     </SettingsSection>
 
     <SettingsSection title="People" description="Owners manage the team's name, people and agents.">
       {#if membersList.notice}<div class="mb-3"><QueryError {...membersList.notice} /></div>{/if}
-      <div class={rows}>
+      <SettingsGroup bare>
         {#if membersList.pending}
           <SkeletonRows rows={3} avatar class="py-4" />
         {/if}
         {#each members as m (m.userId)}
-          <SettingsRow label={m.name ?? m.email ?? m.userId} hint={m.name && m.email ? m.email : undefined} class="px-0">
+          <SettingsRow label={m.name ?? m.email ?? m.userId} hint={m.name && m.email ? m.email : undefined}>
             {#snippet lead()}<Avatar name={m.name ?? m.email} />{/snippet}
-            <span class="font-sans text-[13px] leading-5 text-muted">{ROLE_LABEL[m.role]}</span>
+            {#snippet status()}{ROLE_LABEL[m.role]}{/snippet}
             {#if canRemove(m.role)}
               <SettingsRowMenu
                 label={`Actions for ${m.name ?? m.email ?? 'this person'}`}
@@ -338,7 +336,7 @@
           </SettingsRow>
         {/each}
         {#if canManage}
-          <SettingsRow label="Add a person" hint="Pick who joins, and as what." class="px-0">
+          <SettingsRow label="Add a person" hint="Pick who joins, and as what." apart>
             <UserPicker
               class="w-[280px]"
               size="sm"
@@ -354,15 +352,15 @@
             </Select>
           </SettingsRow>
         {/if}
-      </div>
+      </SettingsGroup>
       {#if memberError}<div class="mt-2 font-sans text-[13px] leading-5 text-danger">{memberError}</div>{/if}
     </SettingsSection>
 
     <SettingsSection title="Agents" description="Agents on a team act as its members. They never own it.">
       {#if agentsList.notice}<div class="mb-3"><QueryError {...agentsList.notice} /></div>{/if}
-      <div class={rows}>
+      <SettingsGroup bare>
         {#each agents as a (a.agentModel)}
-          <SettingsRow label={a.label ?? a.agentModel} class="px-0">
+          <SettingsRow label={a.label ?? a.agentModel}>
             {#snippet lead()}<Avatar name={a.label ?? a.agentModel} />{/snippet}
             {#if canManage}
               <SettingsRowMenu
@@ -383,7 +381,7 @@
               />
             </div>
           {:else}
-            <SettingsRow label="Add an agent" class="px-0">
+            <SettingsRow label="Add an agent" apart>
               <Combobox
                 class="w-[280px]"
                 options={agentOptions}
@@ -398,9 +396,9 @@
             </SettingsRow>
           {/if}
         {:else if agents.length === 0 && !agentsList.pending && !agentsList.notice}
-          <SettingsRow label="No agents on this team" class="px-0" />
+          <SettingsRow label="No agents on this team" />
         {/if}
-      </div>
+      </SettingsGroup>
     </SettingsSection>
 
     {#if isAdmin}
@@ -413,7 +411,7 @@
             onRetry={() => void accessQuery.refetch()}
           />
         {:else if accessQuery.data && catalog.length}
-          <div class={rows}>
+          <SettingsGroup bare>
             {#each grantGroups as group (group.label)}
               <div class="py-4">
                 <div class="font-sans text-sm font-medium leading-5 text-fg">{group.label}</div>
@@ -434,7 +432,7 @@
                 </div>
               </div>
             {/each}
-          </div>
+          </SettingsGroup>
         {/if}
       </SettingsSection>
     {/if}

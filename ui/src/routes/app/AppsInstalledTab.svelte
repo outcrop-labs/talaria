@@ -377,7 +377,7 @@
   <SettingsSection title="Installed apps">
     <SettingsGroup data-app-cards>
       {#each apps as a (a.slug)}
-        {@const status = statusOf(a)}
+        {@const standing = statusOf(a)}
         {@const primary = primaryOf(a)}
         {@const menu = menuOf(a)}
         <div>
@@ -407,18 +407,18 @@
               {/if}
               {@render attention(a)}
             {/snippet}
-            <span class={`flex w-32 shrink-0 items-center gap-2 ${note} text-muted`} title={status.title}>
-              <StatusDot status={status.dot} pulse={status.pulse} />{status.text}
-            </span>
-            <span class="flex w-[76px] shrink-0 justify-end">
-              {#if primary === 'rebuild'}
-                <Button size="sm" variant="outline" disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</Button>
-              {:else if primary === 'enable'}
-                <Button size="sm" variant="outline" disabled={busy === a.slug} onclick={() => void toggle(a)}>Enable</Button>
-              {:else if primary === 'open'}
-                <a href={p('/x/:app', { params: { app: a.slug } })} class={buttonClasses({ variant: 'outline', size: 'sm', voice: 'sans' })}>Open</a>
-              {/if}
-            </span>
+            {#snippet status()}
+              <span class="flex items-center gap-2" title={standing.title}>
+                <StatusDot status={standing.dot} pulse={standing.pulse} />{standing.text}
+              </span>
+            {/snippet}
+            {#if primary === 'rebuild'}
+              <Button size="sm" variant="outline" disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</Button>
+            {:else if primary === 'enable'}
+              <Button size="sm" variant="outline" disabled={busy === a.slug} onclick={() => void toggle(a)}>Enable</Button>
+            {:else if primary === 'open'}
+              <a href={p('/x/:app', { params: { app: a.slug } })} class={buttonClasses({ variant: 'outline', size: 'sm', voice: 'sans' })}>Open</a>
+            {/if}
             {#if menu.length}<SettingsRowMenu label={`Actions for ${a.name}`} items={menu} />{/if}
           </SettingsRow>
           {#if detailsOpen[a.slug] && hasDetails(a)}

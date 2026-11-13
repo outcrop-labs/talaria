@@ -114,7 +114,7 @@
       <SettingsRow label="No catalog source yet" hint={isAdmin ? 'Discover lists nothing until you add one.' : 'Discover lists nothing until an admin adds one.'} />
     {/if}
     {#each catalogs as c, i (c.id)}
-      {@const status = statusOf(c)}
+      {@const standing = statusOf(c)}
       <div data-catalog-row>
         {#if editing?.id === c.id}
           <div class="flex min-h-[60px] flex-wrap items-center gap-3 px-5 py-3">
@@ -133,9 +133,7 @@
                 <div>Also lists {c.shadowed.join(', ')}, shown from a source higher in the list.</div>
               {/if}
             {/snippet}
-            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
-              <StatusDot status={status.dot} />{status.text}
-            </span>
+            {#snippet status()}<StatusDot status={standing.dot} />{standing.text}{/snippet}
             {#if isAdmin}
               <Toggle
                 checked={c.enabled}
@@ -160,7 +158,7 @@
     {/each}
 
     {#if isAdmin}
-      <SettingsRow label="Add a source" hint="An address that serves a JSON list of apps.">
+      <SettingsRow label="Add a source" hint="An address that serves a JSON list of apps." apart>
         <Input size="sm" bind:value={name} placeholder="Name" class="w-40" />
         <Input
           size="sm"

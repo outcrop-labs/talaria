@@ -61,7 +61,7 @@
   // The Workbench is granted by each agent's Developer Agent switch, not from
   // here. The api refuses assignment and access rows for it.
   const isWorkbench = $derived(s.name === 'workbench')
-  const status = $derived(serverStatus(s))
+  const verdict = $derived(serverStatus(s))
   // Assignments whose tool subset names a tool the catalog no longer offers;
   // each agent's MCP tab offers the one-click fix.
   const stale = $derived(staleAssignments(s.assignments, s.tools))
@@ -84,8 +84,8 @@
   type Fix = { label: string; title?: string; run: () => void }
   const fix = $derived.by((): Fix | null => {
     if (!s.enabled) return null
-    if (status.action === 'connect') {
-      return status.kind === 'reconnect'
+    if (verdict.action === 'connect') {
+      return verdict.kind === 'reconnect'
         ? {
             label: 'Reconnect',
             title: 'The provider refused to refresh the org account. Sign in again so agents can use it',
@@ -97,13 +97,13 @@
             run: () => void connectPopup(s.id, 'org'),
           }
     }
-    if (status.action === 'set-credentials') {
-      return { label: 'Set credentials', title: status.detail ?? undefined, run: () => (credentialsOpen = true) }
+    if (verdict.action === 'set-credentials') {
+      return { label: 'Set credentials', title: verdict.detail ?? undefined, run: () => (credentialsOpen = true) }
     }
-    if (status.action === 'setup-oauth-app' && s.oauthMeta) {
-      return { label: 'Set up', title: status.detail ?? undefined, run: () => (oauthOpen = true) }
+    if (verdict.action === 'setup-oauth-app' && s.oauthMeta) {
+      return { label: 'Set up', title: verdict.detail ?? undefined, run: () => (oauthOpen = true) }
     }
-    if (healthChecked(s) && (status.kind === 'unreachable' || status.kind === 'error' || status.kind === 'untested')) {
+    if (healthChecked(s) && (verdict.kind === 'unreachable' || verdict.kind === 'error' || verdict.kind === 'untested')) {
       return {
         label: 'Check now',
         title: 'Ask the server again now: the handshake, its tool list, and whether the credentials still work',
@@ -199,23 +199,24 @@
         <Chip class="-my-px" tone="warn" title={`${count(stale.length, 'agent')} named tools this server no longer offers. Manage shows which.`}>Tools changed</Chip>
       {/if}
     {/snippet}
+    {#snippet status()}
+      <!-- A fixed width, so the dot after it starts at one place down the list. -->
+      <span class="hidden w-40 truncate lg:block">{use}</span>
+      <span class="flex items-center gap-2" title={verdict.detail ?? undefined}>
+        {#if checking}
+          <WaitingMark site="mcp/server-refresh" size={12} />Checking
+        {:else}
+          <StatusDot status={STATUS_DOT[verdict.tone]} />{STATUS_WORD[verdict.kind]}
+        {/if}
+      </span>
+    {/snippet}
 
-    <span class="hidden w-40 truncate font-sans text-[13px] leading-5 text-muted lg:block">{use}</span>
-    <span class="flex w-40 items-center gap-2 font-sans text-[13px] leading-5 text-muted" title={status.detail ?? undefined}>
-      {#if checking}
-        <WaitingMark site="mcp/server-refresh" size={12} />Checking
-      {:else}
-        <StatusDot status={STATUS_DOT[status.tone]} />{STATUS_WORD[status.kind]}
-      {/if}
-    </span>
-    <div class="flex w-[168px] items-center justify-end gap-2">
-      {#if fix}
-        <Button variant="outline" size="sm" title={fix.title} disabled={checking} onclick={fix.run}>{fix.label}</Button>
-      {:else}
-        <Button variant="outline" size="sm" onclick={() => (manageOpen = true)}>Manage</Button>
-      {/if}
-      {#if !s.builtin}<SettingsRowMenu label={`Actions for ${s.label}`} items={menu} />{/if}
-    </div>
+    {#if fix}
+      <Button variant="outline" size="sm" title={fix.title} disabled={checking} onclick={fix.run}>{fix.label}</Button>
+    {:else}
+      <Button variant="outline" size="sm" onclick={() => (manageOpen = true)}>Manage</Button>
+    {/if}
+    {#if !s.builtin}<SettingsRowMenu label={`Actions for ${s.label}`} items={menu} />{/if}
   </SettingsRow>
   {#if error}<div class="px-5 pb-4 font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
 

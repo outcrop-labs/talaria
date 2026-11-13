@@ -167,10 +167,10 @@
           <span class="font-mono text-xs">@{assistant.slug}</span>
           {#if assistant.currentModel}· <span class="font-mono text-xs">{assistant.currentModel}</span>{/if}
         {/snippet}
-        <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+        {#snippet status()}
           <StatusDot status={assistant.running ? 'ok' : 'idle'} />
           {power ? (assistant.running ? 'Stopping' : 'Starting') : assistant.running ? 'Online' : 'Offline'}
-        </span>
+        {/snippet}
         <a href={p('/chat')} class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Open chat</a>
         <SettingsRowMenu
           label={`Actions for ${assistant.displayName}`}

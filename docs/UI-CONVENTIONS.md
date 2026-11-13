@@ -90,7 +90,9 @@ instead of styling its own panels:
   widest row needs. Put the state of a thing in `status`, not among the
   controls, and down a list every status starts at the same place and every
   control ends at the card edge. Below `sm` a row wraps, so a wide control
-  drops under its label.
+  drops under its label. The add row at the foot of an entity list is `apart`,
+  so its wide field does not size that column. On a surface that is already a
+  panel (a `LibraryPane` detail), the group is `bare`: hairlines, no card.
 - `StatStrip` and `Stat` are one card of numbers. Any count from one to eight
   fills the card: the strip sizes its rows from the count and the last stat
   spans what is left. `SettingsField` is a stacked field for a dialog.

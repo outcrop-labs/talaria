@@ -16,6 +16,7 @@
     meta,
     status,
     stacked = false,
+    apart = false,
     as = 'div',
     href,
     onclick,
@@ -38,6 +39,9 @@
     status?: Snippet
     /** The control takes the full width under the label (textareas, editors). */
     stacked?: boolean
+    /** The control keeps its own width instead of sizing the column the
+     *  group's rows share: the add row at the foot of an entity list. */
+    apart?: boolean
     /** `label` makes the whole row the control's label. Only for a row whose
      *  control is one native input, select or textarea. */
     as?: 'div' | 'label'
@@ -59,7 +63,7 @@
   {onclick}
   type={onclick ? 'button' : undefined}
   disabled={onclick ? disabled : undefined}
-  data-settings-row={stacked ? 'stacked' : ''}
+  data-settings-row={stacked ? 'stacked' : apart ? 'apart' : ''}
   class={cn(
     'flex min-h-[60px] px-5 py-4',
     // Not stacked still wraps: on a phone a wide control drops under its label.
@@ -93,7 +97,8 @@
     </div>
   </div>
   {#if children || status}
-    <div data-row-controls class={cn('flex max-w-full items-center gap-3', stacked ? 'w-full' : 'shrink-0 justify-end')}>
+    <!-- empty:hidden: a control only some viewers get must not hold the row's gap open for the rest. -->
+    <div data-row-controls class={cn('flex max-w-full items-center gap-3 empty:hidden', stacked ? 'w-full' : 'shrink-0 justify-end')}>
       {#if status}
         <span class="mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">{@render status()}</span>
       {/if}
