@@ -6,15 +6,19 @@
   // job is provenance and health rather than content — what it is, what breaks
   // without it, when it was set, whether it still decrypts. And an operator
   // arrives here in one of two moods: "what does this instance have?" (browsing)
-  // or "three things broke at once" (recovering). The unreadable strip at the
-  // top serves the second without making the first read like an incident.
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  // or "three things broke at once" (recovering). So what needs a decision
+  // leads: unreadable secrets, then the ones never set, then the rest by group.
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
+  import StatStrip from '@/components/settings/StatStrip.svelte'
   import Button from '@/components/ui/Button.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import { listStagger, slide } from '@/lib/motion'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import { slide } from '@/lib/motion'
   import { GROUP_LABELS, useClearSecret, useSecretHealth, type SecretGroup, type SecretRow } from '@/lib/secrets'
   import RootCard from './RootCard.svelte'
   import SecretsRow from './SecretsRow.svelte'
@@ -34,7 +38,7 @@
       // contract `talaria reset secrets` keeps, at the granularity of one row.
       message: `This deletes the stored value and nothing else. What stops working: ${row.unlocks}. To restore it, enter the value again in ${row.surface}.${
         row.id.startsWith('agent-key:')
-          ? ' The agent will need a fleet re-render to get a new credential.'
+          ? ' The agent will need its configuration rebuilt to get a new credential.'
           : ''
       }`,
       confirmLabel: 'Clear',
@@ -73,76 +77,77 @@
   }
 </script>
 
-<Panel>
-  <SectionHeader
-    class="mb-4"
-    title="Secrets"
-    info="Every credential this instance holds, wherever it was entered. Values are never shown: sealed secrets cannot be read back, only replaced. Each row says what it unlocks and whether this instance can still decrypt it."
-  />
+<!-- An empty inventory over a failed read would read as "this instance holds
+     nothing" — the most reassuring possible way to be wrong, so QueryState's
+     error branch owns that. -->
+<QueryState query={query} errorTitle="Could not load the secrets inventory" errorVariant="compact">
+  {#snippet skeleton()}
+    <Skeleton class="h-[104px] w-full rounded-lg" />
+    <SettingsGroup><div class="px-5 py-4"><SkeletonRows rows={5} /></div></SettingsGroup>
+  {/snippet}
+  {#snippet children(data)}
+    {@const unreadable = data.rows.filter((r) => r.state === 'unreadable')}
+    {@const missing = data.rows.filter((r) => r.state === 'missing')}
+    <StatStrip>
+      <Stat label="Stored" value={data.counts.ok} sub="Readable with the current key" />
+      <Stat label="Not set" value={data.counts.missing} sub="Nothing entered yet" />
+      <Stat label="From environment" value={data.counts.env} sub="Set where the server runs" />
+      <Stat label="Unreadable" value={data.counts.unreadable} sub="Locked with a key that is gone" />
+    </StatStrip>
 
-  <QueryState query={query} errorTitle="Could not load the secrets inventory" errorVariant="compact">
-    {#snippet skeleton()}
-      <div class="space-y-3">
-        <Skeleton class="h-16 w-full rounded-md" />
-        {#each Array.from({ length: 5 }) as _, i (i)}
-          <div class="space-y-1.5 py-1">
-            <Skeleton class="h-3 w-48 rounded-full" />
-            <Skeleton class="h-2.5 w-72 rounded-full" />
-          </div>
-        {/each}
+    <SettingsSection title="Encryption" description="One value protects every secret on this page.">
+      <SettingsGroup><RootCard root={data.root} /></SettingsGroup>
+    </SettingsSection>
+
+    {#if msg}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-muted">{msg}</p>{/if}
+
+    {#if data.counts.unreadable > 0}
+      <div transition:slide={{ duration: 150 }}>
+        <SettingsSection
+          title="Unreadable"
+          description="Locked with a key this instance no longer has. Restore the original root key, or clear them and enter the values again."
+        >
+          {#snippet action()}
+            <Button size="sm" variant="danger-outline" onclick={() => void clearAllUnreadable()} disabled={busy}>
+              Clear all unreadable
+            </Button>
+          {/snippet}
+          <SettingsGroup>
+            {#each unreadable as r (r.id)}
+              <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} showGroup />
+            {/each}
+          </SettingsGroup>
+        </SettingsSection>
       </div>
-    {/snippet}
-    {#snippet children(data)}
-    <!-- An empty inventory over a failed read would read as "this instance
-         holds nothing" — the most reassuring possible way to be wrong, so
-         QueryState's error branch owns that. -->
-    <div class="space-y-5">
-      <RootCard root={data.root} />
+    {/if}
 
-      {#if data.counts.unreadable > 0}
-        <div transition:slide={{ duration: 150 }} class="rounded-md border border-danger/40 p-4">
-          <div class="mb-2 flex items-center gap-1.5">
-            <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-danger">
-              {data.counts.unreadable} unreadable
-            </span>
-            <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">Irreversible</span>
-          </div>
-          <p class="mb-3 text-xs leading-relaxed text-muted">
-            These were sealed with a key this instance no longer has. If you still have the original root secret
-            anywhere, restoring it recovers them. Clearing deletes them so the value can be entered again;
-            everything readable is left alone.
-          </p>
-          <Button size="sm" variant="danger" onclick={() => void clearAllUnreadable()} disabled={busy}>
-            Clear all unreadable
-          </Button>
-        </div>
+    {#if missing.length}
+      <SettingsSection title="Not set" description="Nothing is stored for these yet. Whatever depends on one stays off until it is set.">
+        <SettingsGroup>
+          {#each missing as r (r.id)}
+            <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} showGroup />
+          {/each}
+        </SettingsGroup>
+      </SettingsSection>
+    {/if}
+
+    {#each GROUP_ORDER as group (group)}
+      {@const rows = data.rows.filter((r) => r.group === group && r.state !== 'unreadable' && r.state !== 'missing')}
+      {#if rows.length}
+        <SettingsSection title={GROUP_LABELS[group]}>
+          <SettingsGroup>
+            {#each rows as r (r.id)}
+              <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} />
+            {/each}
+          </SettingsGroup>
+        </SettingsSection>
       {/if}
+    {/each}
 
-      {#if msg}<p transition:slide={{ duration: 150 }} class="text-xs text-muted">{msg}</p>{/if}
-
-      {#each GROUP_ORDER as group (group)}
-        {@const rows = data.rows.filter((r) => r.group === group)}
-        {#if rows.length}
-          <section>
-            <h3 class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-              {GROUP_LABELS[group]}
-            </h3>
-            <ul class="divide-y divide-line-subtle" use:listStagger>
-              {#each rows as r (r.id)}
-                <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} />
-              {/each}
-            </ul>
-          </section>
-        {/if}
-      {/each}
-
-      {#if !data.rows.length}
-        <p class="text-xs text-muted">
-          Nothing configured yet. Secrets appear here as you add them: a provider key on Models, an integration,
-          an agent secret.
-        </p>
-      {/if}
-    </div>
-    {/snippet}
-  </QueryState>
-</Panel>
+    {#if !data.rows.length}
+      <SettingsGroup>
+        <SettingsRow label="Nothing stored yet" hint="Secrets appear here as you add them: a provider key on Models, a connection, an agent secret." />
+      </SettingsGroup>
+    {/if}
+  {/snippet}
+</QueryState>

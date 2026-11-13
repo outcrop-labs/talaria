@@ -44,9 +44,10 @@
   const me = $derived(session.data)
   const permsQuery = useAdminPermissions()
   const perms = $derived(permsQuery.data)
-  // The People tab's one primary action sits in the page header; the invites
-  // panel owns the dialog and binds its open state here.
+  // Each tab's one primary action sits in the page header; the panel that
+  // owns the dialog binds its open state here.
   let inviting = $state(false)
+  let addingCredentials = $state(false)
 
   // /admin/security deep-links a concern.
   // THE URL IS THE TAB — /admin and /admin/<tab>.
@@ -65,6 +66,8 @@
       {#snippet actions()}
         {#if tab === 'people'}
           <Button size="sm" onclick={() => (inviting = true)}>Invite people</Button>
+        {:else if tab === 'secrets'}
+          <Button size="sm" onclick={() => (addingCredentials = true)}>Add credentials</Button>
         {/if}
       {/snippet}
 
@@ -118,8 +121,10 @@
            inventory answers "is this instance healthy", the panel below answers
            "what may my agents spend". Sharing a tab is right — they are both
            credentials — and sharing a heading would not be. -->
-      {#if tab === 'secrets'}<SecretsPanel />{/if}
-      {#if tab === 'secrets'}<WorkspaceSecretsPanel />{/if}
+      {#if tab === 'secrets'}
+        <SecretsPanel />
+        <WorkspaceSecretsPanel bind:adding={addingCredentials} />
+      {/if}
       {#if tab === 'security'}
         <AdminEncryptionPanel />
         <AdminSettingsPanel />

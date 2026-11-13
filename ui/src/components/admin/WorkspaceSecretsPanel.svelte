@@ -5,7 +5,7 @@
   // comes back — no read path returns one — so a row's job is not content, it is
   // ANSWERING TWO QUESTIONS an operator actually has: what is this, and who can
   // spend it. Everything on a row serves one of those; the handle is there
-  // because it is the string a human pastes into a soul or a ticket, and a
+  // because it is the string a human pastes into an agent's instructions or a ticket, and a
   // credential nobody can address is one nobody uses.
   //
   // A DOC HOLDS ONE OR MANY, and the form does not make you choose upfront: you
@@ -13,20 +13,27 @@
   // decision the store makes, for the same reason — a deploy needs a PAT, a
   // registry password and a signing key TOGETHER, and making somebody create
   // three unrelated secrets is how the wrong one gets used.
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
   import SecretEntriesEditor, { emptySecretEntry, type SecretEntry } from '@/components/ui/SecretEntriesEditor.svelte'
   import Chip from '@/components/ui/Chip.svelte'
-  import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { listStagger, slide } from '@/lib/motion'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
   import { handlesFor, useWorkspaceSecretAction, useWorkspaceSecrets, type WorkspaceSecret } from '@/lib/workspace-secrets'
-  import { KeyRound, Plus, Trash2, X } from '@lucide/svelte'
+
+  /** The add dialog. The page header's "Add credentials" button opens it. */
+  let { adding = $bindable(false) }: { adding?: boolean } = $props()
 
   const query = useWorkspaceSecrets()
   const act = useWorkspaceSecretAction()
@@ -47,7 +54,6 @@
 
   let busy = $state(false)
   let msg = $state<string | null>(null)
-  let open = $state(false)
 
   // The draft. `value` lives here and nowhere else — it is cleared the moment
   // the create returns, because a form that keeps a credential in component
@@ -90,7 +96,7 @@
     // to retype it is a far better outcome than leaving it there.
     reset()
     if (res.error) msg = res.error
-    else open = false
+    else adding = false
   }
 
   const remove = async (s: WorkspaceSecret) => {
@@ -115,166 +121,164 @@
     busy = false
     msg = res.error ?? null
   }
+
+  const rowMenu = (s: WorkspaceSecret): ContextMenuEntry[] => [
+    ...s.grants.map((g): ContextMenuEntry => ({ label: `Remove access for ${g}`, disabled: busy, onSelect: () => void revoke(s, g) })),
+    ...(s.grants.length ? (['sep'] as const) : []),
+    { label: 'Delete credential', danger: true, disabled: busy, onSelect: () => void remove(s) },
+  ]
+  const closeDialog = () => {
+    reset()
+    adding = false
+  }
+
+  const COLS = 'grid grid-cols-[minmax(0,1fr)_15rem_8rem_5.5rem_1.75rem] gap-4 px-5'
 </script>
 
-<Panel>
-  <SectionHeader
-    title="Agent credentials"
-    info="Credentials an agent can USE without ever reading one. The value is sealed here and substituted at the boundary that spends it (a tool call, a push), so it never enters a model's context and never reaches a provider. Values are write-only: nothing on this page, and no API, can show one again."
-  />
-
-  <QueryState query={query} errorTitle="Could not load your agent credentials">
-    {#snippet skeleton()}<Skeleton class="h-24" />{/snippet}
-    {#snippet children(_data)}
-    {#if secrets.length === 0}
-      <EmptyState
-        variant="compact"
-        title={all.length > 0 ? 'No live credentials' : 'No agent credentials yet'}
-        hint={all.length > 0
-          ? 'Every credential here has been spent or has expired.'
-          : 'Add one to let an agent push, publish or authenticate without the value ever entering its context.'}
-      />
-    {:else}
-      <ul class="space-y-2" use:listStagger>
-        {#each secrets as s (s.id)}
-          <li class="rounded-md border border-line p-3" transition:slide>
-            <div class="flex flex-wrap items-baseline gap-2">
-              <KeyRound size={14} class="text-muted" aria-hidden="true" />
-              <span class="font-sans text-sm text-fg">{s.title}</span>
-              {#if s.kind === 'relay'}
-                <Chip tone="warn">one-shot{s.usesRemaining !== null ? ` · ${s.usesRemaining} left` : ''}</Chip>
-              {/if}
-              {#if s.usesRemaining !== null && s.usesRemaining <= 0}
-                <!-- The value behind a spent row is destroyed, not merely
-                     unreachable — see resolveHandles. The row is the receipt. -->
-                <Chip tone="neutral">spent · value destroyed</Chip>
-              {:else if s.expiresAt && new Date(s.expiresAt).getTime() <= Date.now()}
-                <Chip tone="neutral">expired</Chip>
-              {/if}
-              <span class="ml-auto font-mono text-[10px] text-ink-dim">
-                {s.lastUsedAt ? `last used ${new Date(s.lastUsedAt).toLocaleDateString()}` : 'never used'}
+<SettingsSection
+  title="Agent credentials"
+  description="Logins and keys an agent can use without ever seeing the value."
+  info="A value is stored once and filled in only at the moment an agent's tool call or push needs it, so it never reaches a model or a provider. Nothing on this page, and no API, can show a value again."
+>
+  {#snippet action()}
+    {#if spent.length > 0}
+      <Button size="sm" variant="ghost" onclick={() => (showSpent = !showSpent)}>
+        {showSpent ? 'Hide' : 'Show'}
+        {spent.length} used up or expired
+      </Button>
+    {/if}
+  {/snippet}
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load your agent credentials" errorVariant="compact">
+      {#snippet skeleton()}<div class="px-5 py-4"><SkeletonRows rows={3} /></div>{/snippet}
+      {#snippet children(_data)}
+        {#if secrets.length === 0}
+          <SettingsRow
+            label={all.length > 0 ? 'No live credentials' : 'No agent credentials yet'}
+            hint={all.length > 0
+              ? 'Every credential here has been used up or has expired.'
+              : 'Add one to let an agent sign in, push or publish without seeing the value.'}
+          />
+        {:else}
+          <div class="{COLS} h-10 items-center font-sans text-xs font-medium leading-4 text-muted">
+            <span>Credential</span>
+            <span>Can be used at</span>
+            <span>Agents</span>
+            <span>Last used</span>
+            <span></span>
+          </div>
+          {#each secrets as s (s.id)}
+            <div class="{COLS} items-start py-4" transition:slide>
+              <div class="min-w-0">
+                <div class="flex min-w-0 flex-wrap items-center gap-2">
+                  <span class="min-w-0 truncate font-sans text-sm font-medium leading-5 text-fg">{s.title}</span>
+                  {#if s.kind === 'relay'}
+                    <Chip tone="warn">One use{s.usesRemaining !== null ? ` · ${s.usesRemaining} left` : ''}</Chip>
+                  {/if}
+                  {#if s.usesRemaining !== null && s.usesRemaining <= 0}
+                    <!-- The value behind a spent row is destroyed, not merely
+                         unreachable — see resolveHandles. The row is the receipt. -->
+                    <Chip tone="neutral">Used up · value destroyed</Chip>
+                  {:else if s.expiresAt && new Date(s.expiresAt).getTime() <= Date.now()}
+                    <Chip tone="neutral">Expired</Chip>
+                  {/if}
+                </div>
+                {#if s.note}<p class="font-sans text-[13px] leading-5 text-muted">{s.note}</p>{/if}
+                <!-- THE HANDLE IS THE POINT OF THE ROW. It is what a human pastes
+                     into an agent's instructions, a ticket or a runbook, and a
+                     credential nobody can address is one nobody uses. A bundle
+                     shows the qualified form because the bare one refuses as
+                     ambiguous. -->
+                <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                  {#each handlesFor(s) as h (h)}
+                    <code class="font-mono text-xs leading-5 text-muted">{h}</code>
+                  {/each}
+                </div>
+              </div>
+              <!-- USABLE WHERE. An unrestricted credential is the dangerous
+                   default, and a default that shows as blank space is one nobody
+                   ever notices — so it says so in words. -->
+              <div class="min-w-0 font-sans text-[13px] leading-5">
+                {#if s.allowedHosts.length === 0}
+                  <span class="text-warning">Any destination</span>
+                {:else}
+                  {#each s.allowedHosts as h (h)}
+                    <code class="block truncate font-mono text-xs leading-5 text-fg">{h}</code>
+                  {/each}
+                {/if}
+              </div>
+              <div class="min-w-0 font-sans text-[13px] leading-5">
+                {#if s.grants.length === 0}
+                  <span class="text-warning" title="This credential does nothing until an agent is granted it.">No agents yet</span>
+                {:else}
+                  {#each s.grants as g (g)}
+                    <code class="block truncate font-mono text-xs leading-5 text-fg">{g}</code>
+                  {/each}
+                {/if}
+              </div>
+              <span
+                class="font-sans text-[13px] leading-5 tabular-nums text-muted"
+                title={s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : undefined}
+              >
+                {s.lastUsedAt ? relativeTime(s.lastUsedAt) : 'Never'}
+              </span>
+              <span class="-mt-1 flex justify-end">
+                <SettingsRowMenu label={`Actions for ${s.title}`} items={() => rowMenu(s)} />
               </span>
             </div>
+          {/each}
+        {/if}
+      {/snippet}
+    </QueryState>
+    {#if msg && !adding}<p class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{msg}</p>{/if}
+  </SettingsGroup>
+</SettingsSection>
 
-            {#if s.note}<p class="mt-1 font-sans text-xs text-muted">{s.note}</p>{/if}
-
-            <!-- THE HANDLE IS THE POINT OF THE ROW. It is what a human pastes
-                 into a soul, a ticket or a runbook, and a credential nobody can
-                 address is one nobody uses. A bundle shows the qualified form
-                 because the bare one refuses as ambiguous. -->
-            <div class="mt-2 flex flex-wrap gap-1.5">
-              {#each handlesFor(s) as h (h)}
-                <code class="rounded bg-panel px-1.5 py-0.5 font-mono text-[11px] text-accent">{h}</code>
-              {/each}
-            </div>
-
-            <!-- SPENDABLE WHERE. An unrestricted credential is the dangerous
-                 default, and a default that shows as blank space is one nobody
-                 ever notices — so it says so in words. -->
-            <div class="mt-2 flex flex-wrap items-center gap-1.5">
-              <span class="font-mono text-[10px] text-ink-dim">spendable at</span>
-              {#if s.allowedHosts.length === 0}
-                <span class="font-sans text-xs text-warning">any destination</span>
-              {:else}
-                {#each s.allowedHosts as h (h)}
-                  <code class="rounded bg-panel px-1.5 py-0.5 font-mono text-[11px] text-fg">{h}</code>
-                {/each}
-              {/if}
-            </div>
-
-            <div class="mt-2 flex flex-wrap items-center gap-1.5">
-              <span class="font-mono text-[10px] text-ink-dim">granted to</span>
-              {#if s.grants.length === 0}
-                <span class="font-sans text-xs text-warning">nobody; this credential does nothing until an agent is granted it</span>
-              {:else}
-                {#each s.grants as g (g)}
-                  <button
-                    type="button"
-                    onclick={() => revoke(s, g)}
-                    disabled={busy}
-                    title="Revoke {g}"
-                    class="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted hover:text-fg"
-                  >
-                    {g}
-                    <X size={10} aria-hidden="true" />
-                  </button>
-                {/each}
-              {/if}
-              <Button size="sm" variant="ghost" onclick={() => remove(s)} disabled={busy} class="ml-auto">
-                <Trash2 size={13} aria-hidden="true" />
-                Delete
-              </Button>
-            </div>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-
-    <div class="mt-3">
-      {#if !open}
-        <div class="flex flex-wrap items-center gap-2">
-          <Button size="sm" onclick={() => (open = true)}>
-            <Plus size={14} aria-hidden="true" />
-            Add credentials
-          </Button>
-          {#if spent.length > 0}
-            <Button size="sm" variant="ghost" onclick={() => (showSpent = !showSpent)}>
-              {showSpent ? 'Hide' : 'Show'}
-              {spent.length} spent or expired
-            </Button>
-          {/if}
-        </div>
-      {:else}
-        <div class="rounded-md border border-line p-3" transition:slide>
-          <div class="grid gap-2 sm:grid-cols-2">
-            <label class="font-sans text-xs text-muted">
-              Handle name
-              <Input bind:value={name} placeholder="deploy" size="sm" class="mt-1 font-[var(--font-mono)]" />
-            </label>
-            <label class="font-sans text-xs text-muted">
-              Title
-              <Input bind:value={title} placeholder="Deploy credentials" size="sm" class="mt-1" />
-            </label>
-          </div>
-          <label class="mt-2 block font-sans text-xs text-muted">
-            What it is for
-            <Input bind:value={note} placeholder="Pushing to the release repo" size="sm" class="mt-1" />
-          </label>
-
-          <SecretEntriesEditor bind:entries keyPlaceholder="github_pat" labelPlaceholder="GitHub token" />
-
-          <label class="mt-3 block font-sans text-xs text-muted">
-            Spendable at (optional): hosts, space or comma separated
-            <Input bind:value={hosts} placeholder="github.com  registry.outcrop.dev" size="sm" class="mt-1 font-[var(--font-mono)]" />
-            <span class="mt-1 block text-[11px] text-ink-dim">
-              {#if hosts.trim()}
-                Talaria refuses to substitute this credential into anything bound elsewhere, including a call whose destination it cannot read.
-              {:else}
-                Leave empty and this credential can be spent against any destination an agent is talked into.
-              {/if}
-            </span>
-          </label>
-
-          <Checkbox class="mt-3 gap-2 font-sans" checked={relay} onChange={(checked) => (relay = checked)} label="One-shot: spent the first time an agent uses it" />
-
-          <div class="mt-3 flex items-center gap-2">
-            <Button size="sm" onclick={create} disabled={busy || !name.trim() || !entries.some((e) => e.key.trim() && e.value)}>Store</Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onclick={() => {
-                reset()
-                open = false
-              }}
-              disabled={busy}>Cancel</Button
-            >
-            <span class="font-sans text-xs text-muted">Grant it to an agent from that agent's page once it exists.</span>
-          </div>
-        </div>
-      {/if}
+<Modal open={adding} onClose={closeDialog} title="Add credentials" width="max-w-2xl">
+  <div class="space-y-5">
+    <div class="grid gap-5 sm:grid-cols-2">
+      <SettingsField label="Name" for="ws-secret-title">
+        <Input id="ws-secret-title" size="sm" bind:value={title} placeholder="Deploy credentials" />
+      </SettingsField>
+      <SettingsField label="Handle" for="ws-secret-name" hint="The short name agents refer to it by.">
+        <Input id="ws-secret-name" size="sm" bind:value={name} placeholder="deploy" class="font-mono" />
+      </SettingsField>
     </div>
-    {/snippet}
-  </QueryState>
-
-  {#if msg}<p class="mt-2 font-sans text-xs text-danger">{msg}</p>{/if}
-</Panel>
+    <SettingsField label="What it is for" for="ws-secret-note">
+      <Input id="ws-secret-note" size="sm" bind:value={note} placeholder="Pushing to the release repo" />
+    </SettingsField>
+    <SettingsField label="Values" hint="A key, a label and the value. Add a row for each part, such as a username and a password.">
+      <!-- The shared editor still draws its own small mono caption; the field
+           label above replaces it here. -->
+      <div class="[&>p:first-child]:hidden">
+        <SecretEntriesEditor bind:entries keyPlaceholder="github_pat" labelPlaceholder="GitHub token" valuePlaceholder="Value, stored and never shown again" />
+      </div>
+    </SettingsField>
+    <SettingsField
+      label="Where it can be used"
+      for="ws-secret-hosts"
+      hint={hosts.trim()
+        ? 'Talaria will not fill this in for any other destination, or for one it cannot read.'
+        : 'Optional host names, separated by spaces. Left empty, an agent can use it anywhere.'}
+    >
+      <Input id="ws-secret-hosts" size="sm" bind:value={hosts} placeholder="github.com registry.outcrop.dev" class="font-mono" />
+    </SettingsField>
+    <div class="flex items-center gap-6">
+      <div class="min-w-0 flex-1">
+        <div class="font-sans text-[13px] font-medium leading-5 text-fg">Use once</div>
+        <div class="font-sans text-[13px] leading-5 text-muted">The value is destroyed the first time an agent uses it.</div>
+      </div>
+      <Toggle title="Use once" checked={relay} onChange={(checked) => (relay = checked)} />
+    </div>
+    {#if msg}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{msg}</div>{/if}
+  </div>
+  {#snippet footer()}
+    <div class="flex items-center justify-end gap-2">
+      <span class="mr-auto font-sans text-[13px] leading-5 text-muted">Grant it to an agent from that agent's page.</span>
+      <Button variant="ghost" size="sm" onclick={closeDialog} disabled={busy}>Cancel</Button>
+      <Button size="sm" onclick={() => void create()} disabled={busy || !name.trim() || !entries.some((e) => e.key.trim() && e.value)}>
+        {busy ? 'Saving' : 'Save credentials'}
+      </Button>
+    </div>
+  {/snippet}
+</Modal>

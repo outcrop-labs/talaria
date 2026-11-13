@@ -1,7 +1,8 @@
 <script lang="ts">
-  import StatusDot from '@/components/ui/StatusDot.svelte'
-  import { cn } from '@/lib/cn'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import type { RootHealth } from '@/lib/secrets'
+  import RowStatus from './RowStatus.svelte'
 
   // ── The root ─────────────────────────────────────────────────────────────────
   // Deliberately the first thing on the page, and deliberately not editable. It
@@ -13,43 +14,41 @@
   const tone = $derived(
     root.state === 'ok' ? 'ok' : root.state === 'fallback' ? 'warn' : ('danger' as const),
   )
-  const headline = $derived(
+  const word = $derived(
     root.state === 'ok'
-      ? `Set from ${root.name}`
+      ? 'Healthy'
       : root.state === 'fallback'
-        ? 'Borrowing AUTH_SECRET'
+        ? 'Borrowed'
         : root.state === 'absent'
           ? 'Not set'
-          : 'Does not match this database',
+          : 'Does not match',
   )
-  const body = $derived(
+  const hint = $derived(
     root.state === 'ok'
-      ? 'Every secret below is sealed with a data key wrapped by this value. Back it up with the database. A dump restored without it gives an instance that cannot read its own secrets.'
+      ? 'Back it up with the database. A restore without it cannot read any secret.'
       : root.state === 'fallback'
-        ? 'TALARIA_SECRET_KEY is not set, so AUTH_SECRET is doing this job. Rotating AUTH_SECRET would make every secret below unrecoverable. Set TALARIA_SECRET_KEY to the current AUTH_SECRET value to pin it.'
+        ? 'AUTH_SECRET is doing this job. Set TALARIA_SECRET_KEY to the same value to pin it.'
         : root.state === 'absent'
-          ? 'Neither TALARIA_SECRET_KEY nor AUTH_SECRET is set, so nothing new can be sealed. Set TALARIA_SECRET_KEY and restart.'
-          : (root.failure ??
-            'The root secret this process has is not the one these secrets were sealed with.'),
+          ? 'Nothing new can be stored until TALARIA_SECRET_KEY is set and the server restarts.'
+          : (root.failure ?? 'The root key this server has is not the one these secrets were stored with.'),
   )
+  const info = $derived(
+    root.state === 'fallback'
+      ? 'TALARIA_SECRET_KEY is not set, so AUTH_SECRET stands in for it. Changing AUTH_SECRET would then make every secret below unrecoverable.'
+      : 'Every secret below is locked with a key that this value protects. It lives where the server is configured, so it can only be reported here, not changed.',
+  )
+  const lostVersions = $derived(root.storedVersions - root.loadedVersions.length)
 </script>
 
-<div
-  class={cn(
-    'rounded-md border p-4',
-    root.state === 'ok' ? 'border-line' : root.state === 'fallback' ? 'border-warning/40' : 'border-danger/40',
-  )}
->
-  <div class="mb-1.5 flex flex-wrap items-center gap-2">
-    <StatusDot status={tone} />
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Encryption root</span>
-    <span class="text-sm font-medium text-fg">{headline}</span>
-    <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">
-      {root.activeVersion ? `key v${root.activeVersion}` : 'no key'}
-      {root.storedVersions > root.loadedVersions.length
-        ? ` · ${root.storedVersions - root.loadedVersions.length} version${root.storedVersions - root.loadedVersions.length === 1 ? '' : 's'} unreadable`
-        : ''}
-    </span>
-  </div>
-  <p class="text-xs leading-relaxed text-muted">{body}</p>
-</div>
+<SettingsRow label="Root key" {hint} {info}>
+  {#snippet meta()}
+    {#if root.state === 'ok'}<code class="shrink-0 font-mono text-xs text-muted">{root.name}</code>{/if}
+    {#if lostVersions > 0}
+      <Chip tone="danger">{lostVersions} {lostVersions === 1 ? 'version' : 'versions'} unreadable</Chip>
+    {/if}
+  {/snippet}
+  <span class="font-sans text-[13px] leading-5 tabular-nums text-muted">
+    {root.activeVersion ? `Key version ${root.activeVersion}` : 'No key'}
+  </span>
+  <RowStatus status={tone}>{word}</RowStatus>
+</SettingsRow>
