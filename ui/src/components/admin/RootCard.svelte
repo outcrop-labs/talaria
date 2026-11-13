@@ -20,14 +20,14 @@
       : root.state === 'fallback'
         ? 'Borrowed'
         : root.state === 'absent'
-          ? 'Not set'
+          ? 'Missing'
           : 'Does not match',
   )
   const hint = $derived(
     root.state === 'ok'
-      ? 'Back it up with the database. A restore without it cannot read any secret.'
+      ? 'Back it up with the database, because a restore without it cannot read any secret.'
       : root.state === 'fallback'
-        ? 'AUTH_SECRET is doing this job. Set TALARIA_SECRET_KEY to the same value to pin it.'
+        ? 'AUTH_SECRET is doing this job, so set TALARIA_SECRET_KEY to the same value to pin it.'
         : root.state === 'absent'
           ? 'Nothing new can be stored until TALARIA_SECRET_KEY is set and the server restarts.'
           : (root.failure ?? 'The root key this server has is not the one these secrets were stored with.'),

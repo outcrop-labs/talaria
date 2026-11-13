@@ -111,7 +111,7 @@
               class="w-[72px] font-mono"
             />
           </SettingsRow>
-          <SettingsRow label="Encrypt from the first byte" hint="On for port 465. Off uses STARTTLS, usually on port 587.">
+          <SettingsRow label="Encrypt from the first byte" hint="On for port 465, off for STARTTLS on port 587.">
             <Toggle
               title="Encrypt from the first byte"
               checked={data.smtp.secure}

@@ -83,7 +83,7 @@
     </QueryState>
     <SettingsRow
       label="Rotate the key"
-      hint="Re-encrypts every secret under a new key. The old key is retired for good."
+      hint="Re-encrypts every secret under a new key and retires the old one for good."
       info="Leave the field empty to keep the current root key. If you enter a new one, set TALARIA_SECRET_KEY, or the key file, to the same value before the next restart."
     >
       <Input

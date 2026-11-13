@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
+  import { secretHint } from '@/components/admin/secret-hint'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -110,7 +111,7 @@
             <SettingsField
               label="Private key"
               for="gh-app-key-{host.id}"
-              hint={gh.app.keySet ? 'A key is stored. Paste a .pem file to replace it.' : 'Paste the whole .pem file, first and last lines included.'}
+              hint={gh.app.keySet ? 'A key is stored, and pasting a .pem file replaces it.' : 'Paste the whole .pem file, first and last lines included.'}
             >
               <Textarea id="gh-app-key-{host.id}" aria-label="App private key" rows={3} bind:value={privateKey} class="font-mono text-xs" />
             </SettingsField>
@@ -147,7 +148,7 @@
             <SettingsField
               label="Access token"
               for="gh-token-{host.id}"
-              hint={gh.patSet ? 'A token is stored. Paste a new one to replace it.' : 'Stored encrypted. It is never shown again.'}
+              hint={secretHint(gh.patSet, 'token')}
             >
               <Input id="gh-token-{host.id}" size="sm" type="password" autocomplete="off" bind:value={pat} placeholder="github_pat_" class="font-mono" />
             </SettingsField>

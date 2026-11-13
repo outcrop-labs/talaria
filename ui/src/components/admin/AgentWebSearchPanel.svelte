@@ -80,7 +80,7 @@
 
 <SettingsSection
   title="Agent web search"
-  description="The provider every agent searches the web with. Changes reach an agent at its next restart."
+  description="The provider every agent searches the web with, picked up at an agent's next restart."
   info="Written into every agent's config as web.search_backend and web.extract_backend, with the provider key in the agent's environment. Research does not use it: research searches with the search endpoint above or a registered search MCP server. Left on the default, Talaria writes nothing and recommends no provider."
 >
   <div class="space-y-3">

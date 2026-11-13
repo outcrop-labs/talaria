@@ -76,7 +76,7 @@
     <QueryState {query} errorTitle="Could not load the git hosts" errorVariant="compact" isEmpty={(d) => d.hosts.length === 0}>
       {#snippet skeleton()}<div class="px-5 py-4"><SkeletonRows rows={2} avatar /></div>{/snippet}
       {#snippet empty()}
-        <EmptyState variant="compact" title="No git host yet" hint="Agents cannot start a coding job until a host is connected. Use Add host at the top of the page." />
+        <EmptyState variant="compact" title="No git host yet" hint="Agents cannot start a coding job until you add a host at the top of the page." />
       {/snippet}
       {#snippet children(d)}
         {#each d.hosts as h (h.id)}<AdminGitHostRow host={h} />{/each}

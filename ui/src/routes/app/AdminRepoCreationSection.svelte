@@ -87,7 +87,7 @@
 
 <SettingsSection
   title="Repository requests"
-  description="New repositories your agents have asked for. Approving one creates it and gives the agent access."
+  description="New repositories your agents asked for, created and shared with the agent when you approve."
   info="Agents can ask only in the organizations a host allows, which you set on the host. A rejection posts its reason on the ticket that asked."
 >
   <div class="space-y-3">
@@ -126,12 +126,12 @@
             <option value="public">Public</option>
           </Select>
         </SettingsRow>
-        <SettingsRow label="Protect the default branch" hint="Blocks force-pushes and deletion. Adds no required reviews or checks.">
+        <SettingsRow label="Protect the default branch" hint="Blocks force-pushes and deletion, with no required reviews or checks.">
           <Toggle checked={!unprotected[r.id]} onChange={(on) => (unprotected[r.id] = !on)} title="Protect the default branch" />
         </SettingsRow>
         {#if rejecting === r.id}
           <div transition:slide={{ duration: 150 }}>
-            <SettingsRow label="Reason" hint="Optional. Posted on the ticket that asked." as="label">
+            <SettingsRow label="Reason" hint="Optional, and posted on the ticket that asked." as="label">
               <Input size="sm" bind:value={rejectNote} maxlength={500} placeholder="Why not?" class="w-[280px]" />
               <Button size="md" variant="outline" onclick={() => void decide(r, 'reject')}>Reject request</Button>
             </SettingsRow>

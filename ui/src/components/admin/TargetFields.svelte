@@ -38,13 +38,13 @@
   <SettingsField label="Secret access key" for="{id}-secret" hint={secretHint(t.hasSecret)}>
     <Input id="{id}-secret" size="sm" type="password" autocomplete="off" value={secret} oninput={(e) => onSecret(e.currentTarget.value)} />
   </SettingsField>
-  <SettingsField label="Key prefix" for="{id}-prefix" hint="Optional. Ends with a slash." class="sm:col-span-2">
+  <SettingsField label="Key prefix" for="{id}-prefix" hint="Optional, and ends with a slash." class="sm:col-span-2">
     <Input id="{id}-prefix" size="sm" class="font-mono" value={t.prefix} oninput={(e) => onChange({ prefix: e.currentTarget.value })} placeholder="talaria/" />
   </SettingsField>
   <div class="sm:col-span-2">
     <ToggleField
       label="Path-style requests"
-      hint="Works everywhere. Turn off only for virtual-host buckets."
+      hint="Works everywhere, so turn it off only for virtual-host buckets."
       checked={t.pathStyle}
       onChange={(checked) => onChange({ pathStyle: checked })}
     />

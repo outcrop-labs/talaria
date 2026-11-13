@@ -172,7 +172,7 @@
              rule), so QueryState's error branch owns that verdict. -->
         {#if !mine}
           <div>
-            <SettingsRow label="Your account" hint="You sign in with Google. A password gives you a second way in.">
+            <SettingsRow label="Your account" hint="You sign in with Google, and a password gives you a second way in.">
               <Button size="sm" variant="outline" onclick={() => openSet('me')} disabled={busy} aria-expanded={open === 'me'}>
                 {open === 'me' ? 'Close' : 'Set a password'}
               </Button>
@@ -206,7 +206,7 @@
         {/if}
       {/snippet}
     </QueryState>
-    <SettingsRow label="Add an account" hint="Give someone an email and a first password. The name is optional." stacked>
+    <SettingsRow label="Add an account" hint="Give someone an email and a first password, with a name if you like." stacked>
       <Input size="sm" type="email" aria-label="Email address" bind:value={email} placeholder="teammate@yourcompany.com" class="min-w-0 flex-1" />
       <Input
         size="sm"

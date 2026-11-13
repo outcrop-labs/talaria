@@ -194,7 +194,7 @@
             {@render unit('hours')}
           </span>
         </SettingsRow>
-        <SettingsRow label="Whole organization" hint="A limit in tokens, in dollars, or both. Empty means no limit.">
+        <SettingsRow label="Whole organization" hint="In tokens, in dollars, or both, and empty means no limit.">
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -300,7 +300,7 @@
 {#if floorRows.length}
   <SettingsSection
     title="Agent tools"
-    description="The tool groups any agent may use. Turn one off and no agent can use it."
+    description="The tool groups any agent may use, and one turned off here is off for every agent."
     info="A group turned off here shows as locked in each agent's own editor. Talaria's own to-do and clarify tools replace two built-in ones, so those two stay off. Saving restarts nobody: each running agent picks up the change on its next turn."
   >
     <SettingsGroup>

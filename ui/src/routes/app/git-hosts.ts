@@ -105,7 +105,7 @@ export interface HostState {
 export function hostState(read: 'pending' | 'failed' | 'ok', status: GitHostStatus | undefined): HostState {
   if (read === 'pending') return { status: 'idle', word: 'Checking', fix: null }
   if (read === 'failed' || !status) return { status: 'warn', word: 'Status unknown', fix: null }
-  if (!status.configured) return { status: 'warn', word: 'Not connected', fix: 'connect' }
+  if (!status.configured) return { status: 'idle', word: 'Not connected', fix: 'connect' }
   if (!status.error) return { status: 'ok', word: 'Connected', fix: null }
   const word = /revoked/i.test(status.error)
     ? 'Token revoked'

@@ -117,7 +117,7 @@
       <div transition:slide={{ duration: 150 }}>
         <SettingsSection
           title="Unreadable"
-          description="Locked with a key this instance no longer has. Restore the original root key, or clear them and enter the values again."
+          description="Locked with a key this instance no longer has, so restore that root key or clear them and enter the values again."
         >
           {#snippet action()}
             <DangerLink onClick={() => void clearAllUnreadable()} disabled={busy}>Clear all unreadable</DangerLink>
@@ -132,7 +132,7 @@
     {/if}
 
     {#if missing.length}
-      <SettingsSection title="Not set" description="Nothing is stored for these yet. Whatever depends on one stays off until it is set.">
+      <SettingsSection title="Not set" description="Nothing is stored for these yet, and whatever depends on one stays off until it is set.">
         <SettingsGroup>
           {#each missing as r (r.id)}
             <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} showGroup />

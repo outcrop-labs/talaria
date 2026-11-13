@@ -210,7 +210,7 @@
 
 <SettingsSection
   title="Decision model"
-  description="The model that answers Talaria's own yes-or-no and pick-one questions. Off by default."
+  description="The model that answers Talaria's own yes-or-no and pick-one questions, off until you choose one."
   info="A decision model answers a typed question, such as yes or no, pick one, or how much, with a probability, instead of writing prose that code has to read back. Use a hosted decision API, a classifier on your own hardware, a model you already added on Models, or any endpoint of your own. Talaria ships no default and recommends no model. Changes apply at once."
 >
   {#snippet action()}

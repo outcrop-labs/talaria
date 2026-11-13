@@ -214,7 +214,7 @@
         <SettingsField label="Base URL" for="git-host-url-{host.id}">
           <Input id="git-host-url-{host.id}" size="sm" bind:value={baseUrl} class="font-mono" />
         </SettingsField>
-        <SettingsField label="API URL" for="git-host-api-{host.id}" hint="Optional. Left blank, it is worked out from the base URL.">
+        <SettingsField label="API URL" for="git-host-api-{host.id}" hint="Optional, and worked out from the base URL when left blank.">
           <Input
             id="git-host-api-{host.id}"
             size="sm"
@@ -226,7 +226,7 @@
         <SettingsField
           label="Organizations for new repositories"
           for="git-host-orgs-{host.id}"
-          hint="Agents may ask for new repositories in these. Separate with commas, or leave empty for none."
+          hint="Where agents may ask for new repositories, separated by commas, or empty for none."
         >
           <Input id="git-host-orgs-{host.id}" size="sm" bind:value={orgs} class="font-mono" placeholder="acme, acme-labs" />
         </SettingsField>

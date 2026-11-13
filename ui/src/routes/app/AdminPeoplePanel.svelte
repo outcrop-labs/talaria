@@ -238,7 +238,7 @@
                   </div>
                   {#if appsList.notice}<QueryError {...appsList.notice} />{/if}
                   {#if perms}
-                    <SettingsField label="Permissions" hint="A dot marks a change from the member defaults. Select it again to go back.">
+                    <SettingsField label="Permissions" hint="A dot marks a change from the member defaults, and selecting it again goes back.">
                       <AdminUserPermChips userId={u.id} {perms} />
                     </SettingsField>
                   {/if}

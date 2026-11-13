@@ -240,7 +240,7 @@
             <SettingsField
               label="Workspace domain"
               for="google-client-domain"
-              hint="Optional. Limits sign-in and connections to Google accounts on this domain."
+              hint="Optional, and limits sign-in and connections to Google accounts on this domain."
             >
               <Input id="google-client-domain" size="sm" class="font-mono" bind:value={hd} placeholder="yourcompany.com" />
             </SettingsField>

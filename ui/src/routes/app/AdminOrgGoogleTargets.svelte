@@ -39,7 +39,7 @@
 
 <SettingsRow
   label="Save files to"
-  hint="A shared drive or folder ID. Blank uses the account's My Drive."
+  hint="A shared drive or folder ID, or blank for the account's My Drive."
   info="Files agents create are saved here, so the team owns them. The shared account must be a member of the shared drive."
   as="label"
 >
@@ -52,7 +52,7 @@
     placeholder="Shared drive or folder ID"
   />
 </SettingsRow>
-<SettingsRow label="Add events to" hint="A calendar ID. Blank uses the account's main calendar." as="label">
+<SettingsRow label="Add events to" hint="A calendar ID, or blank for the account's main calendar." as="label">
   <Input
     size="sm"
     class="w-[280px] font-mono"
@@ -62,7 +62,7 @@
     placeholder="team@group.calendar.google.com"
   />
 </SettingsRow>
-<SettingsRow label="Send mail as" hint="A verified alias on the account. Blank uses its own address." as="label">
+<SettingsRow label="Send mail as" hint="A verified alias on the account, or blank for its own address." as="label">
   <Input
     size="sm"
     class="w-[280px]"

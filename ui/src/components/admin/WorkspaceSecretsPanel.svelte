@@ -247,7 +247,7 @@
     <SettingsField label="What it is for" for="ws-secret-note">
       <Input id="ws-secret-note" size="sm" bind:value={note} placeholder="Pushing to the release repo" />
     </SettingsField>
-    <SettingsField label="Values" hint="A key, a label and the value. Add a row for each part, such as a username and a password.">
+    <SettingsField label="Values" hint="A key, a label and the value, with one row for each part such as a username and a password.">
       <SecretEntriesEditor bind:entries keyPlaceholder="github_pat" labelPlaceholder="GitHub token" valuePlaceholder="Value, stored and never shown again" />
     </SettingsField>
     <SettingsField

@@ -3,5 +3,5 @@
  *  field holds: a key, a password, a token. */
 export const secretHint = (stored: boolean, noun = 'key'): string =>
   stored
-    ? `A ${noun} is stored. Enter a new one and save to replace it.`
+    ? `A ${noun} is stored, and saving a new one replaces it.`
     : `Stored encrypted when you save, and never shown again.`
