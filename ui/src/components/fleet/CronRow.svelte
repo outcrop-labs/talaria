@@ -131,7 +131,7 @@
         <Textarea autoGrow rows={3} bind:value={prompt} class="max-h-64" maxlength={MAX_CRON_PROMPT} />
       </SettingsField>
       <div class="flex items-center gap-2">
-        <Button size="sm" variant="outline" disabled={busy || !name.trim() || !prompt.trim() || !schedToString(sched)} onclick={() => void saveEdit()}>
+        <Button size="sm" disabled={busy || !name.trim() || !prompt.trim() || !schedToString(sched)} onclick={() => void saveEdit()}>
           Save changes
         </Button>
         <Button size="sm" variant="ghost" onclick={() => (editing = false)}>Cancel</Button>

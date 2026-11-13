@@ -43,6 +43,12 @@
    *  shadows a built-in) rather than update an existing org one. */
   const isNew = $derived(!!draft && !templates.some((t) => t.slug === draft!.slug && !t.builtIn))
 
+  // What the draft was opened from. A draft with no origin is a new role, and
+  // one that matches its origin has nothing to save.
+  const origin = $derived(selected ? templates.find((t) => t.slug === selected) : undefined)
+  const DRAFT_FIELDS = ['slug', 'name', 'role', 'department', 'description', 'soul'] as const
+  const changed = $derived(!!draft && (!origin || DRAFT_FIELDS.some((k) => draft![k] !== origin[k])))
+
   const refresh = () => qc.invalidateQueries({ queryKey: ROLE_TEMPLATES_KEY })
 
   const pick = (t: RoleTemplate) => {
@@ -193,7 +199,14 @@
         <span class={['min-w-0 flex-1 truncate text-right font-sans text-[13px] leading-5', err ? 'text-danger' : 'text-muted']}>
           {#if err}{err}{:else if isNew && selected}Saves as your organization’s version of “{draft.name}”.{/if}
         </span>
-        <Button size="sm" variant="outline" class="shrink-0" onclick={() => void save()} disabled={busy || !draft.slug.trim() || !draft.name.trim() || !draft.soul.trim()}>
+        <!-- Gold once there is an edit to save. An untouched common role can still be copied as it stands. -->
+        <Button
+          size="sm"
+          variant={changed ? 'primary' : 'outline'}
+          class="shrink-0"
+          onclick={() => void save()}
+          disabled={busy || (!changed && !isNew) || !draft.slug.trim() || !draft.name.trim() || !draft.soul.trim()}
+        >
           {busy ? 'Saving' : isNew ? 'Save as ours' : 'Save'}
         </Button>
       </div>
