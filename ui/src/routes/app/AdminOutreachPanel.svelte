@@ -1,14 +1,19 @@
 <script lang="ts">
+  import { ChevronRight } from '@lucide/svelte'
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import { tableCell, tableHead, tableRow } from '@/components/admin/table'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
+  import { cn } from '@/lib/cn'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
 
   interface OutreachData {
@@ -44,112 +49,130 @@
     // two steps, so a rejected PUT may still have changed half of it.
     await qc.invalidateQueries({ queryKey: ['admin-outreach'] })
   }
+  let showEvents = $state(false)
+  const unit = 'w-14 font-sans text-[13px] leading-5 text-muted'
+  const KIND_LABEL: Record<string, string> = { dm: 'Message', sweep: 'Check-in' }
+  const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1)
 </script>
 
-<Panel>
-  <SectionHeader
-    class="mb-4"
-    title="Proactive outreach"
-    info="Opted-in agents get a periodic check-in: a look at their stale or blocked work, and the chance to act through their normal tools (a ticket comment, a channel post, or a direct message to your inbox). Everything stays attributed and board-policy-gated; DMs are capped per person per day. Off by default."
-  />
-  <QueryState query={query} errorTitle="Could not load outreach settings" errorVariant="compact">
-    {#snippet skeleton()}
-      <!-- Controls, agent chips, and the recent list all seed from the query —
-           hold their footprint so the toggle never flashes unchecked. -->
-      <div class="flex flex-wrap items-center gap-4">
-        <Skeleton class="h-4 w-44 rounded-full" />
-        <Skeleton class="h-8 w-32" />
-        <Skeleton class="h-8 w-28" />
-      </div>
-      <div class="mt-3">
-        <Skeleton class="mb-2 h-2.5 w-28 rounded-full" />
-        <div class="flex flex-wrap gap-x-4 gap-y-1.5">
-          {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
-            <Skeleton class="h-4 w-28 rounded-full" />
-          {/each}
-        </div>
-      </div>
-      <div class="mt-4">
-        <SkeletonRows rows={3} />
-      </div>
-    {/snippet}
-    {#snippet children(_data)}
-    <!-- QueryState's error branch holds a failed read: an unchecked toggle and
-         an empty agent list are this component's defaults, not the org's
-         actual policy. -->
-    <div class="flex flex-wrap items-center gap-4">
-      <Checkbox
-        class="gap-2"
-        checked={cfg?.enabled ?? false}
-        onChange={(checked) => void save({ enabled: checked })}
-        label="Enable periodic check-ins"
-      />
-      <label class="flex items-center gap-2 text-xs text-muted" title="Minimum minutes between one agent's check-ins">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Every</span>
-        <Input
-          size="sm" type="number" min={15} max={1440} class="w-20"
-          value={cfg?.intervalMinutes ?? 240}
-          disabled={!cfg?.enabled}
-          oninput={(e) => void save({ intervalMinutes: Math.max(15, Math.min(1440, Number(e.currentTarget.value) || 240)) })}
-        />
-        <span>min</span>
-      </label>
-      <label class="flex items-center gap-2 text-xs text-muted" title="Agent-initiated direct messages allowed per person per day">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">DM cap</span>
-        <Input
-          size="sm" type="number" min={1} max={20} class="w-16"
-          value={cfg?.dailyDmCap ?? 3}
-          oninput={(e) => void save({ dailyDmCap: Math.max(1, Math.min(20, Number(e.currentTarget.value) || 3)) })}
-        />
-        <span>/day</span>
-      </label>
-      <label class="flex items-center gap-2 text-xs text-muted" title="Agent-initiated direct messages allowed per agent per day, everyone counted">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent total</span>
-        <Input
-          size="sm" type="number" min={1} max={500} class="w-16"
-          value={cfg?.dailyDmTotalCap ?? 20}
-          oninput={(e) => void save({ dailyDmTotalCap: Math.max(1, Math.min(500, Number(e.currentTarget.value) || 20)) })}
-        />
-        <span>/day</span>
-      </label>
-    </div>
-    {#if agents.length > 0}
-      <div class="mt-3">
-        <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Proactive agents</div>
-        <div class="flex flex-wrap gap-x-4 gap-y-1.5">
-          {#each agents as a (a.model)}
-            {#snippet agentLabel()}
-              {a.displayName}
-              {#if a.personal}<span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">personal</span>{/if}
-            {/snippet}
-            <Checkbox
-              class="gap-2 text-sm text-fg"
-              checked={a.proactive}
-              onChange={(checked) => {
-                const next = agents.filter((x) => (x.model === a.model ? checked : x.proactive)).map((x) => x.model)
-                void save({}, next)
-              }}
-              label={agentLabel}
-            />
-          {/each}
-        </div>
-      </div>
-    {/if}
-    {#if data?.events && data.events.length > 0}
-      <div class="mt-4">
-        <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Recent outreach</div>
-        <div class="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-md border border-line">
-          {#each data.events as ev, i (i)}
-            <div class="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors dither-fill">
-              <span class="shrink-0 rounded px-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{ev.kind}</span>
-              <span class="min-w-0 flex-1 truncate text-muted" title={ev.note ?? ''}>{ev.note ?? '—'}</span>
-              <span class="shrink-0 font-mono text-[10px] text-muted">{ev.agentModel}</span>
-              <span class="shrink-0 font-mono text-[10px] text-muted">{relativeTime(ev.createdAt)}</span>
+<SettingsSection
+  title="Agent check-ins"
+  description="Let agents look at their stalled work on a schedule and reach out about it."
+  info="An agent you turn on gets a regular look at its stale or blocked work, and may act through its normal tools: a ticket comment, a channel post, or a direct message to your inbox. Everything it does stays attributed to it and follows each board's rules."
+>
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load outreach settings" errorVariant="compact">
+      {#snippet skeleton()}
+        <!-- Controls, agents and the recent list all seed from the query —
+             hold their footprint so the toggle never flashes off. -->
+        <div class="px-5 py-4"><SkeletonRows rows={6} /></div>
+      {/snippet}
+      {#snippet children(d)}
+        <!-- QueryState's error branch holds a failed read: a toggle that is off
+             and an empty agent list are this component's defaults, not the
+             org's actual policy. -->
+        <SettingsRow label="Scheduled check-ins" hint="The agents turned on below check in on their own.">
+          <Toggle checked={cfg?.enabled ?? false} onChange={(checked) => void save({ enabled: checked })} title="Enable scheduled check-ins" />
+        </SettingsRow>
+        <SettingsRow label="Time between check-ins" hint="The shortest gap between one agent's check-ins." as="label">
+          <Input
+            size="sm" type="number" min={15} max={1440} class="w-24 tabular-nums"
+            value={cfg?.intervalMinutes ?? 240}
+            disabled={!cfg?.enabled}
+            oninput={(e) => void save({ intervalMinutes: Math.max(15, Math.min(1440, Number(e.currentTarget.value) || 240)) })}
+          />
+          <span class={unit}>minutes</span>
+        </SettingsRow>
+        <SettingsRow label="Messages per person" hint="Direct messages an agent may start with one person each day." as="label">
+          <Input
+            size="sm" type="number" min={1} max={20} class="w-24 tabular-nums"
+            value={cfg?.dailyDmCap ?? 3}
+            oninput={(e) => void save({ dailyDmCap: Math.max(1, Math.min(20, Number(e.currentTarget.value) || 3)) })}
+          />
+          <span class={unit}>a day</span>
+        </SettingsRow>
+        <SettingsRow label="Messages per agent" hint="Direct messages one agent may start each day, everyone counted." as="label">
+          <Input
+            size="sm" type="number" min={1} max={500} class="w-24 tabular-nums"
+            value={cfg?.dailyDmTotalCap ?? 20}
+            oninput={(e) => void save({ dailyDmTotalCap: Math.max(1, Math.min(500, Number(e.currentTarget.value) || 20)) })}
+          />
+          <span class={unit}>a day</span>
+        </SettingsRow>
+        {#if agents.length > 0}
+          <table class="w-full table-fixed">
+            <colgroup>
+              <col />
+              <col class="w-28" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th class={tableHead}>Agent</th>
+                <th class={cn(tableHead, 'text-right')}>Checks in</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each agents as a (a.model)}
+                <tr class={tableRow}>
+                  <td class={tableCell}>
+                    <span class="flex items-center gap-2">
+                      <span class="truncate font-medium">{a.displayName}</span>
+                      {#if a.personal}<Chip>Personal</Chip>{/if}
+                    </span>
+                  </td>
+                  <td class={tableCell}>
+                    <span class="flex justify-end">
+                      <Toggle
+                        checked={a.proactive}
+                        title={`Let ${a.displayName} check in`}
+                        onChange={(checked) => {
+                          const next = agents.filter((x) => (x.model === a.model ? checked : x.proactive)).map((x) => x.model)
+                          void save({}, next)
+                        }}
+                      />
+                    </span>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+        {#if d.events.length > 0}
+          <SettingsRow label="Recent outreach" hint="What agents did at their last check-ins." onclick={() => (showEvents = !showEvents)}>
+            <ChevronRight size={16} class={cn('text-muted transition-transform duration-150', showEvents && 'rotate-90')} />
+          </SettingsRow>
+          {#if showEvents}
+            <div transition:slide={{ duration: 150 }} class="max-h-[352px] overflow-y-auto">
+              <table class="w-full table-fixed">
+                <colgroup>
+                  <col class="w-36" />
+                  <col />
+                  <col class="w-36" />
+                  <col class="w-28" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th class={tableHead}>Outcome</th>
+                    <th class={tableHead}>Note</th>
+                    <th class={tableHead}>Agent</th>
+                    <th class={cn(tableHead, 'text-right')}>When</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each d.events as ev, i (i)}
+                    <tr class={tableRow}>
+                      <td class={tableCell}>{kindLabel(ev.kind)}</td>
+                      <td class={cn(tableCell, 'truncate text-muted')} title={ev.note ?? ''}>{ev.note ?? '—'}</td>
+                      <td class={cn(tableCell, 'truncate font-mono text-xs text-muted')}>{ev.agentModel}</td>
+                      <td class={cn(tableCell, 'whitespace-nowrap text-right text-muted')}>{relativeTime(ev.createdAt)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
             </div>
-          {/each}
-        </div>
-      </div>
-    {/if}
-    {/snippet}
-  </QueryState>
-</Panel>
+          {/if}
+        {/if}
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
+</SettingsSection>

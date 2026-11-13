@@ -1,18 +1,27 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import FactsList from '@/components/admin/FactsList.svelte'
+  import NoticeRow from '@/components/admin/NoticeRow.svelte'
+  import RowStatus from '@/components/admin/RowStatus.svelte'
+  import type { Fact } from '@/components/admin/facts'
+  import { tableCell, tableHead, tableNum, tableRow } from '@/components/admin/table'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Select from '@/components/ui/Select.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { cn } from '@/lib/cn'
   import { getJson, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
+  import AdminDecideSiteModal from './AdminDecideSiteModal.svelte'
+  import { PRIMITIVE_LABEL, pct, siteStatus, type DecideData } from './admin-decide'
 
   // THE DECISION MODEL — the port Talaria's own judgments can run on instead
   // of asking a text model to decide and parsing the answer back out.
@@ -24,87 +33,6 @@
   // all. A provider whose answers are uncalibrated still works; every
   // confidence-gated call site will just keep falling back, and an operator
   // has to be able to see that here rather than infer it from behaviour.
-  type Provider = {
-    id: string
-    label: string
-    country: string
-    needsUrl: boolean
-    needsKey: boolean
-    needsModel: boolean
-    needsWire: boolean
-    wire: string
-    fallbackModels: string[]
-    liveCatalog: boolean
-    primitives: string[]
-    fansOut: boolean
-    calibration: string
-  }
-  type DecideData = {
-    providers: Provider[]
-    wires: string[]
-    config: {
-      provider: string
-      url?: string | null
-      model?: string | null
-      wire?: string | null
-      timeoutMs?: number | null
-      hasKey: boolean
-    }
-    configured: boolean
-    shadow: SiteShadow[]
-    sites: Site[]
-    speechRooms: Array<{ id: string; name: string; agents: number }>
-  }
-  type LedgerRow = {
-    subjectRef: string | null
-    baseline: string | null
-    portAnswer: string | null
-    certainty: number | null
-    calibrated: boolean
-    model: string | null
-    latencyMs: number | null
-    agreed: boolean | null
-    at: string | null
-  }
-  // THE CENSUS — every place in Talaria that asks a decision model anything.
-  // Listed in full, including the sites this panel cannot switch: "where is a
-  // decision model being used" has to have one complete answer, or the answer
-  // is "nobody is sure".
-  type Site = {
-    id: string
-    label: string
-    primitive: string
-    acts: string
-    on: boolean
-    floor: number
-    defaultOn: boolean
-    defaultFloor: number
-    reads: string
-    floorWhy: string
-    switchLivesAt: string | null
-    /** Where this site's numbers live when they are not in the shadow ledger.
-     *  A guard finding IS the output, so there is no second answer to compare
-     *  it against — a row that said "no comparisons yet" for ever would read
-     *  as a bug rather than as the truth. */
-    measuredAt: string | null
-  }
-  type SiteShadow = {
-    site: string
-    compared: number
-    acted: number
-    answered: number
-    agreed: number
-    judgments: number
-    calibrated: number
-    models: Array<{ model: string; judgments: number }>
-    tokensIn: number
-    metered: number
-    p50Ms: number | null
-    p99Ms: number | null
-    meanCertaintyWhenDisagreed: number | null
-    provider: string | null
-    newest: string | null
-  }
   type ModelInfo = { name: string; description?: string; released?: string }
   type ModelsResult = { ok: boolean; kind?: string; reason?: string; models?: ModelInfo[] }
   type TestResult = {
@@ -130,37 +58,13 @@
   const shadow = $derived(data?.shadow ?? [])
   const allSites = $derived(data?.sites ?? [])
   const speechRooms = $derived(data?.speechRooms ?? [])
-  // THE ROWS BEHIND THE PERCENTAGE. "Agreed on 94% of 300" is evidence about a
-  // population; a person deciding whether to trust a judgment needs the cases
-  // — and specifically the disagreements, because whether those were the model
-  // being right or the model being wrong is the whole question.
-  let openRows = $state<string | null>(null)
-  let rows = $state<LedgerRow[]>([])
-  let loadingRows = $state(false)
-  const showRows = async (site: string) => {
-    if (openRows === site) {
-      openRows = null
-      return
-    }
-    openRows = site
-    rows = []
-    loadingRows = true
-    try {
-      const r = await postJson<{ rows: LedgerRow[] }>('/api/admin/decide', {
-        action: 'rows',
-        site,
-        limit: 25,
-      })
-      rows = r.rows ?? []
-    } catch (e) {
-      toastError('Could not read that site\u2019s ledger', e)
-      openRows = null
-    } finally {
-      loadingRows = false
-    }
-  }
-  const num = (n: number) => n.toLocaleString()
+  // One site's detail at a time, looked up by id so the dialog follows a save.
+  let openSiteId = $state<string | null>(null)
+  const openSite = $derived(allSites.find((s) => s.id === openSiteId))
   const shadowFor = (id: string) => shadow.find((s) => s.site === id)
+  const setFloor = (floor: number) => {
+    if (openSiteId) void applySite(openSiteId, { floor })
+  }
   // Writing a site's switch or floor goes through the same PUT, under its own
   // key, so it gets its own audit entry rather than riding a provider change.
   const applySite = async (id: string, patch: { on?: boolean; floor?: number }) => {
@@ -173,7 +77,6 @@
     await qc.invalidateQueries({ queryKey: ['decide-config'] })
     savedFlash.flash()
   }
-  const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—')
   const savedFlash = useSavedFlash()
 
   let key = $state('')
@@ -275,441 +178,275 @@
     }
   }
 
-  const PRIMITIVE_LABEL: Record<string, string> = {
-    noul: 'yes/no',
-    choice: 'pick one',
-    score: 'how much',
-  }
   const CALIBRATION_NOTE: Record<string, string> = {
-    native: 'the model emits calibrated probabilities directly',
-    classifier: 'probabilities come from a classification head',
-    logprobs: 'probabilities are derived from token logprobs — absent entirely on an endpoint that does not serve them',
+    native: 'The model reports calibrated probabilities itself',
+    classifier: 'Probabilities come from a classification head',
+    logprobs: 'Worked out from token logprobs, so missing on an endpoint that does not serve them',
   }
+  const sentence = (parts: string[]) => parts.map((p, i) => (i === 0 ? p : p.toLowerCase())).join(', ')
+  // THE CAPABILITY SHEET. Stated rather than assumed: a call site asking a
+  // shape this provider does not serve falls back instead of guessing, so an
+  // operator should be able to see which shapes those are.
+  const capabilities = $derived.by((): Fact[] =>
+    meta
+      ? [
+          { label: 'Answers', value: sentence(meta.primitives.map((p) => PRIMITIVE_LABEL[p] ?? p)) },
+          { label: 'Per request', value: meta.fansOut ? 'Several questions' : 'One question' },
+          { label: 'Confidence', value: CALIBRATION_NOTE[meta.calibration] ?? meta.calibration },
+        ]
+      : [],
+  )
 </script>
 
-<Panel>
-  <SectionHeader
-    class="mb-1"
-    title="Decision model"
-    info="A decision model answers a typed question — yes/no, pick one, how much — with a calibrated probability, instead of writing prose that code has to parse. Talaria's own judgments can run on one: the ticket-thread gate, guardrail checks, workflow matching, retrieval reranking. Optional and off by default; with it off every one of those keeps the behaviour it has today."
-  />
-  <p class="mb-3 text-xs text-muted">
-    Run whichever model you want — a hosted decision API, a classifier on your own hardware, a model you
-    already registered on Models, or any endpoint of your own that speaks one of the wires below. We ship
-    no default and recommend no model. Changes apply immediately.
-  </p>
-  <QueryState query={query} errorTitle="Could not load the decision-model configuration" errorVariant="compact">
-    {#snippet skeleton()}
-      <div class="flex flex-wrap items-center gap-2">
-        <Skeleton class="h-8 w-56" />
-        <Skeleton class="h-8 w-64" />
-      </div>
-    {/snippet}
-    {#snippet children(_d)}
-    <div class="flex flex-wrap items-center gap-2">
-      <Select
-        size="sm"
-        value={cfg?.provider ?? 'off'}
-        onchange={(e) => void apply({ provider: e.currentTarget.value, model: null, url: null, wire: null })}
-        class="w-56"
-      >
-        {#each data?.providers ?? [] as p (p.id)}
-          <option value={p.id}>{p.label}{p.id === 'off' ? '' : ` (${p.country})`}</option>
-        {/each}
-      </Select>
-
-      {#if meta?.needsWire}
-        <Select
-          size="sm"
-          value={cfg?.wire ?? ''}
-          onchange={(e) => void apply({ wire: e.currentTarget.value || null })}
-          class="w-40"
-        >
-          <option value="">Wire…</option>
-          {#each data?.wires ?? [] as w (w)}<option value={w}>{w}</option>{/each}
-        </Select>
-      {/if}
-
-      {#if meta?.needsUrl}
-        <Input
-          size="sm"
-          value={cfg?.url ?? ''}
-          onblur={(e) => e.currentTarget.value !== (cfg?.url ?? '') && void apply({ url: e.currentTarget.value || null })}
-          placeholder="http://tei.internal:80"
-          class="w-64"
-        />
-      {/if}
-
-      {#if meta?.needsKey}
-        <Input
-          size="sm"
-          type="password"
-          bind:value={key}
-          onkeydown={submitOnEnter(() => key && !savingKey && void saveKey())}
-          placeholder={cfg?.hasKey ? 'replace saved key' : 'API key'}
-          class="w-52"
-        />
-        {#if key}
-          <Button size="sm" onclick={() => void saveKey()} disabled={savingKey}>Save key</Button>
-        {/if}
-      {/if}
-
-      {#if meta?.needsModel}
-        <!-- STILL FREE TEXT, now with the endpoint's own list behind it. A
-             picker would be a cage: the whole position of this registry is
-             that an operator runs whichever model they want, including one we
-             have never heard of. So the detected ids are offered and a
-             mismatch is called out below, and nothing is refused. -->
-        <Input
-          size="sm"
-          value={cfg?.model ?? ''}
-          onblur={(e) => e.currentTarget.value !== (cfg?.model ?? '') && void apply({ model: e.currentTarget.value || null })}
-          placeholder={modelOptions[0] ?? 'endpoint:model'}
-          list={`decide-models-${meta.id}`}
-          class="w-56"
-        />
-        {#if modelOptions.length > 0}
-          <datalist id={`decide-models-${meta.id}`}>
-            {#each modelOptions as m (m)}<option value={m}></option>{/each}
-          </datalist>
-        {/if}
-        <Button
-          size="sm"
-          variant="ghost"
-          onclick={() => void detect()}
-          disabled={detecting || !data?.configured}
-        >
-          {detecting ? 'Detecting…' : 'Detect models'}
-        </Button>
-      {/if}
-
-      {#if meta}
-        <Button size="sm" variant="outline" onclick={() => void test()} disabled={testing || !data?.configured}>
-          {testing ? 'Testing…' : 'Test'}
-        </Button>
-      {/if}
-      {#if savedFlash.saved}<span class="text-xs text-success">Saved</span>{/if}
-    </div>
-
-    {#if meta?.needsModel && (unknownModel || detectError || (detected && detected.length > 0))}
-      <div transition:slide={{ duration: 150 }} class="mt-2 text-[11px]">
-        {#if unknownModel}
-          <!-- THE WARNING THAT WOULD HAVE SAVED AN AFTERNOON. The endpoint
-               listed its ids and the one configured is not among them, which
-               means every call will be refused — said here rather than
-               discovered from a call site silently falling back forever. -->
-          <p class="text-warn">
-            This endpoint does not list <span class="font-mono text-fg">{cfg?.model}</span> among the
-            models it accepts. It offers {detected?.map((m) => m.name).join(', ')} — calls will be
-            refused until this matches one of them, unless the endpoint takes ids it does not publish.
-          </p>
-        {:else if detected && detected.length > 0}
-          <p class="text-muted">
-            This endpoint accepts {detected.length === 1 ? '1 model' : `${detected.length} models`}:
-            {#each detected as m, i (m.name)}<span class="font-mono text-fg">{m.name}</span>{#if m.released}<span class="text-muted"> ({m.released})</span>{/if}{#if i < detected.length - 1}<span class="text-muted">, </span>{/if}{/each}
-          </p>
-        {/if}
-        {#if detectError}
-          <!-- Not a failure of the config: plenty of endpoints serve
-               judgments and publish no catalog, so this is a note and the
-               field keeps working. -->
-          <p class="text-muted">Could not list this endpoint's models — {detectError}</p>
-        {/if}
-      </div>
-    {/if}
-
+<SettingsSection
+  title="Decision model"
+  description="The model that answers Talaria's own yes-or-no and pick-one questions. Off by default."
+  info="A decision model answers a typed question, such as yes or no, pick one, or how much, with a probability, instead of writing prose that code has to read back. Use a hosted decision API, a classifier on your own hardware, a model you already added on Models, or any endpoint of your own. Talaria ships no default and recommends no model. Changes apply at once."
+>
+  {#snippet action()}
+    {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     {#if meta}
-      <!-- THE CAPABILITY SHEET. Stated rather than assumed: a call site asking
-           a shape this provider does not serve falls back instead of guessing,
-           so an operator should be able to see which shapes those are. -->
-      <div transition:slide={{ duration: 150 }} class="mt-3 space-y-1.5 border-t border-line-subtle pt-3">
-        <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What this provider answers</div>
-        <p class="text-[11px] text-muted">
-          {meta.primitives.map((p) => PRIMITIVE_LABEL[p] ?? p).join(' · ')}
-          {#if !meta.fansOut}· one question per round trip{:else}· several questions in one round trip{/if}
-        </p>
-        <p class="text-[11px] text-muted">Confidence: {CALIBRATION_NOTE[meta.calibration] ?? meta.calibration}</p>
-        {#if meta.country !== 'your hardware' && meta.country !== '—'}
-          <p class="text-[11px] text-warn">
-            Ticket and message text is sent to this provider to be judged. It leaves your instance.
-          </p>
-        {/if}
-        <div class="flex items-center gap-2 pt-1">
-          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Timeout</span>
-          <Input
-            size="sm"
-            type="number"
-            value={String(cfg?.timeoutMs ?? 4000)}
-            onblur={(e) => Number(e.currentTarget.value) !== (cfg?.timeoutMs ?? 4000) && void apply({ timeoutMs: Number(e.currentTarget.value) })}
-            class="w-24"
-          />
-          <span class="text-[11px] text-muted">ms — past this the caller runs its own path instead of waiting.</span>
-        </div>
-      </div>
+      <Button size="sm" variant="outline" onclick={() => void test()} disabled={testing || !data?.configured}>
+        {testing ? 'Testing' : 'Test'}
+      </Button>
     {/if}
+  {/snippet}
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load the decision-model configuration" errorVariant="compact">
+      {#snippet skeleton()}
+        <div class="px-5 py-4"><SkeletonRows rows={3} /></div>
+      {/snippet}
+      {#snippet children(_d)}
+        <SettingsRow
+          label="Provider"
+          hint={meta && meta.id !== 'off' ? `Where it runs: ${meta.country}.` : 'Every decision keeps the behaviour it has today.'}
+          as="label"
+        >
+          <Select
+            size="sm"
+            value={cfg?.provider ?? 'off'}
+            onchange={(e) => void apply({ provider: e.currentTarget.value, model: null, url: null, wire: null })}
+            class="w-[280px]"
+          >
+            {#each data?.providers ?? [] as p (p.id)}
+              <option value={p.id}>{p.label}</option>
+            {/each}
+          </Select>
+        </SettingsRow>
 
-    <!-- THE CENSUS, with each site's own numbers beside its own switch. That
-         adjacency is the whole point of this section: shadow mode's argument
-         is that a site switches over when its own traffic says so, and a
-         number an operator can read but not act on is a dashboard rather than
-         a feature. -->
-    <div class="mt-4 border-t border-line-subtle pt-3">
-      <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-        Where it is used
-      </div>
-      <div class="space-y-3">
-        {#each allSites as s (s.id)}
-          {@const m = shadowFor(s.id)}
-          <div class="text-[11px]">
-            <div class="flex flex-wrap items-center gap-2">
-              {#if s.switchLivesAt}
-                <span class="font-mono text-fg">{s.label}</span>
-                <span class="text-ink-dim">· {s.primitive}</span>
+        {#if meta?.needsWire}
+          <SettingsRow label="Protocol" hint="The request format your endpoint speaks." as="label">
+            <Select size="sm" value={cfg?.wire ?? ''} onchange={(e) => void apply({ wire: e.currentTarget.value || null })} class="w-[280px]">
+              <option value="">Choose a protocol</option>
+              {#each data?.wires ?? [] as w (w)}<option value={w}>{w}</option>{/each}
+            </Select>
+          </SettingsRow>
+        {/if}
+
+        {#if meta?.needsUrl}
+          <SettingsRow label="Endpoint URL" as="label">
+            <Input
+              size="sm"
+              value={cfg?.url ?? ''}
+              onblur={(e) => e.currentTarget.value !== (cfg?.url ?? '') && void apply({ url: e.currentTarget.value || null })}
+              placeholder="http://tei.internal:80"
+              class="w-[280px] font-mono"
+            />
+          </SettingsRow>
+        {/if}
+
+        {#if meta?.needsKey}
+          <SettingsRow label="API key" hint={cfg?.hasKey ? 'A key is stored. Type a new one to replace it.' : 'Stored encrypted. It is never shown again.'}>
+            <Input
+              size="sm"
+              type="password"
+              autocomplete="off"
+              aria-label="Decision model API key"
+              bind:value={key}
+              onkeydown={submitOnEnter(() => key && !savingKey && void saveKey())}
+              placeholder={cfg?.hasKey ? 'Paste a new key' : 'Paste the provider key'}
+              class="w-[280px]"
+            />
+            {#if key}
+              <Button size="md" onclick={() => void saveKey()} disabled={savingKey}>Save key</Button>
+            {/if}
+          </SettingsRow>
+        {/if}
+
+        {#if meta?.needsModel}
+          <!-- STILL FREE TEXT, now with the endpoint's own list behind it. A
+               picker would be a cage: the whole position of this registry is
+               that an operator runs whichever model they want, including one we
+               have never heard of. So the detected ids are offered and a
+               mismatch is called out below, and nothing is refused. -->
+          <SettingsRow
+            label="Model"
+            info={detected && detected.length > 0
+              ? `This endpoint accepts: ${detected.map((m) => (m.released ? `${m.name} (${m.released})` : m.name)).join(', ')}`
+              : undefined}
+          >
+            {#snippet hint()}
+              {#if detectError}
+                <!-- Not a failure of the config: plenty of endpoints serve
+                     judgments and publish no catalog, so this is a note and
+                     the field keeps working. -->
+                Could not list this endpoint's models: {detectError}
+              {:else if detected && detected.length > 0}
+                This endpoint accepts {detected.length === 1 ? '1 model' : `${detected.length} models`}.
               {:else}
-                <Checkbox
-                  class="gap-2 text-[11px] text-fg"
-                  checked={s.on}
-                  onChange={(on) => void applySite(s.id, { on })}
-                  label={s.label}
-                />
-                <span class="text-ink-dim">· {s.primitive}</span>
-                {#if s.on}
-                  <span class="text-muted">acts at</span>
-                  <Input
-                    size="sm"
-                    type="number"
-                    step="0.05"
-                    min="0"
-                    max="1"
-                    value={String(s.floor)}
-                    onblur={(e) =>
-                      Number(e.currentTarget.value) !== s.floor &&
-                      void applySite(s.id, { floor: Number(e.currentTarget.value) })}
-                    class="w-20"
-                  />
-                  <span class="text-muted">
-                    {s.reads === 'lean' ? 'probability of yes' : 'certainty'}
-                  </span>
-                  {#if s.floor !== s.defaultFloor}
-                    <Button size="sm" variant="link" onclick={() => void applySite(s.id, { floor: s.defaultFloor })}>
-                      reset to {s.defaultFloor}
-                    </Button>
-                  {/if}
-                {/if}
+                Any model id the endpoint accepts.
               {/if}
+            {/snippet}
+            <Input
+              size="sm"
+              aria-label="Decision model id"
+              value={cfg?.model ?? ''}
+              onblur={(e) => e.currentTarget.value !== (cfg?.model ?? '') && void apply({ model: e.currentTarget.value || null })}
+              placeholder={modelOptions[0] ?? 'endpoint:model'}
+              list={`decide-models-${meta.id}`}
+              class="w-[280px] font-mono"
+            />
+            {#if modelOptions.length > 0}
+              <datalist id={`decide-models-${meta.id}`}>
+                {#each modelOptions as m (m)}<option value={m}></option>{/each}
+              </datalist>
+            {/if}
+            <Button size="md" variant="outline" onclick={() => void detect()} disabled={detecting || !data?.configured}>
+              {detecting ? 'Detecting' : 'Detect'}
+            </Button>
+          </SettingsRow>
+          {#if unknownModel}
+            <!-- THE WARNING THAT WOULD HAVE SAVED AN AFTERNOON. The endpoint
+                 listed its ids and the one configured is not among them, which
+                 means every call will be refused — said here rather than
+                 discovered from a call site silently falling back forever. -->
+            <div transition:slide={{ duration: 150 }}>
+              <NoticeRow status="warn">
+                This endpoint does not list <span class="font-mono text-xs text-fg">{cfg?.model}</span>, so calls will be refused unless it
+                takes ids it does not publish.
+              </NoticeRow>
             </div>
-            <p class="mt-0.5 pl-6 text-muted">{s.acts}</p>
-            {#if s.switchLivesAt}
-              <!-- Named rather than offered twice: two spellings of one switch
-                   is how the two come to disagree. -->
-              <p class="pl-6 text-ink-dim">Switched on from {s.switchLivesAt}.</p>
-            {:else}
-              <p class="pl-6 text-ink-dim">{s.floorWhy}</p>
-            {/if}
-            {#if s.id === 'channel-speech'}
-              <!-- THE SECOND GATE, which is per-room by necessity and was
-                   therefore the one control invisible from here. "Which rooms
-                   would start talking if I flip this" is the question somebody
-                   asks immediately before flipping it. Read-only: the switch
-                   stays in each room's own settings. -->
-              <p class="pl-6 text-muted">
-                {#if speechRooms.length === 0}
-                  No channel has its own Agent initiative switch on, so nothing would speak yet.
-                {:else}
-                  {speechRooms.filter((r) => r.agents > 0).length} of {speechRooms.length}
-                  {speechRooms.length === 1 ? 'room allows' : 'rooms allow'} this and
-                  {speechRooms.filter((r) => r.agents > 0).length === 1 ? 'has' : 'have'} an agent in
-                  {speechRooms.filter((r) => r.agents > 0).length === 1 ? 'it' : 'them'}:
-                  {#each speechRooms.filter((r) => r.agents > 0).slice(0, 8) as r, i (r.id)}<span
-                      class="font-mono text-fg">#{r.name}</span
-                    >{#if i < Math.min(speechRooms.filter((x) => x.agents > 0).length, 8) - 1}, {/if}{/each}{#if speechRooms.filter(
-                    (r) => r.agents > 0,
-                  ).length > 8}, and more{/if}. Each room's own switch is in its settings.
-                {/if}
-              </p>
-            {/if}
+          {/if}
+        {/if}
 
-            {#if m}
-              <!-- SHADOW MODE — what the port WOULD have decided, beside what
-                   the existing code did decide. A site that has not switched
-                   over runs its own path and the port is asked the same
-                   question with nobody listening, so a threshold can be chosen
-                   from this install's own traffic rather than from a vendor's
-                   published numbers. -->
-              <div transition:slide={{ duration: 150 }} class="mt-1 pl-6">
-                {#if m.compared > 0}
-                  <p class="text-muted">
-                    Agreed with the existing code on
-                    <span class="text-fg">{pct(m.agreed, m.answered)}</span>
-                    of {m.answered} answered
-                    {#if m.compared > m.answered}
-                      — the port said nothing on {m.compared - m.answered} of {m.compared}
-                    {/if}
-                    {#if m.p50Ms !== null}· {m.p50Ms}ms median, {m.p99Ms}ms p99{/if}
-                  </p>
-                {/if}
-                {#if m.acted > 0}
-                  <!-- Counted apart from the comparisons on purpose: once a
-                       site is switched over there is no second answer, and
-                       folding these in would make it read as 100% agreement
-                       forever. -->
-                  <p class="text-muted">
-                    Decided <span class="text-fg">{m.acted}</span>
-                    {m.acted === 1 ? 'turn' : 'turns'} on its own since it was switched over — those have
-                    no baseline to agree with.
-                  </p>
-                {/if}
-                {#if m.judgments > m.calibrated}
-                  <!-- Counted over the rows that carried a SINGLE judgment. A
-                       derived row — the tool keep-set, the brief's reorder —
-                       has no one probability behind it, so warning about its
-                       missing distribution would be warning about something
-                       that was never supposed to be there. -->
-                  <p class="text-warn">
-                    {m.judgments - m.calibrated} of {m.judgments} answers carried no real
-                    distribution, so their confidence is unavailable.
-                  </p>
-                {/if}
-                {#if m.meanCertaintyWhenDisagreed !== null}
-                  <p class="text-muted">
-                    When it disagreed, mean certainty was
-                    <span class="text-fg">{m.meanCertaintyWhenDisagreed.toFixed(2)}</span>
-                    — low means a threshold can filter the disagreements; high means read
-                    them case by case before switching this site over.
-                  </p>
-                {/if}
-                {#if m.models.length > 1}
-                  <!-- TWO MODELS AT ONE SITE, which makes the rate above about
-                       neither of them. An alias like jev-latest creates this
-                       silently the day it starts pointing somewhere new, which
-                       is why the ledger records the model that ANSWERED rather
-                       than the one we asked for. -->
-                  <p class="text-warn">
-                    {m.models.length} models answered here —
-                    {#each m.models as mm, i (mm.model)}<span class="font-mono text-fg">{mm.model}</span>
-                      ({num(mm.judgments)}){#if i < m.models.length - 1}, {/if}{/each}
-                    — so this agreement rate is not about either of them.
-                  </p>
-                {:else if m.models.length === 1}
-                  {@const only = m.models[0]}
-                  <p class="text-muted">
-                    Answered by <span class="font-mono text-fg">{only?.model ?? '—'}</span>.
-                  </p>
-                {/if}
-                {#if m.metered > 0}
-                  <!-- WHAT IT COST. These calls do not go through the metered
-                       relay — a decision is not a conversation — so they never
-                       reach the token ledger and this is the only place a
-                       site's spend is visible at all. -->
-                  <p class="text-muted">
-                    <span class="text-fg">{num(m.tokensIn)}</span> billable input tokens over
-                    {num(m.metered)} reported {m.metered === 1 ? 'call' : 'calls'}
-                    {#if m.metered < m.compared + m.acted}
-                      — the other {num(m.compared + m.acted - m.metered)} reported no usage
-                    {/if}
-                  </p>
-                {:else if m.compared + m.acted > 0}
-                  <p class="text-ink-dim">This provider reports no token usage.</p>
-                {/if}
-                {#if m.compared + m.acted > 0}
-                  <Button size="sm" variant="link" onclick={() => void showRows(s.id)}>
-                    {openRows === s.id ? 'Hide the rows' : 'Read the rows'}
-                  </Button>
-                {/if}
-                {#if openRows === s.id}
-                  <div transition:slide={{ duration: 150 }} class="mt-1">
-                    {#if loadingRows}
-                      <p class="text-ink-dim">Reading…</p>
-                    {:else if rows.length === 0}
-                      <p class="text-ink-dim">Nothing recorded.</p>
-                    {:else}
-                      <!-- Disagreements first: they are what is being audited,
-                           and an operator should not page past the easy rows to
-                           reach them. The SUBJECT is a reference, never the
-                           text — a ticket message is somebody's words and this
-                           ledger is the wrong place to accumulate them. -->
-                      <table class="w-full text-[10px]">
-                        <thead class="text-ink-dim">
-                          <tr class="text-left">
-                            <th class="pr-2 font-normal">subject</th>
-                            <th class="pr-2 font-normal">was</th>
-                            <th class="pr-2 font-normal">judged</th>
-                            <th class="pr-2 font-normal">certainty</th>
-                            <th class="pr-2 font-normal">model</th>
-                            <th class="font-normal">when</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {#each rows as r, i (`${r.at}-${i}`)}
-                            <tr class={r.agreed === false ? 'text-warn' : 'text-muted'}>
-                              <td class="max-w-[14rem] truncate pr-2 font-mono">{r.subjectRef ?? '—'}</td>
-                              <td class="pr-2 font-mono">{r.baseline ?? '—'}</td>
-                              <td class="pr-2 font-mono">{r.portAnswer ?? '— (silent)'}</td>
-                              <td class="pr-2 font-mono">
-                                {r.certainty === null ? '—' : r.certainty.toFixed(2)}{r.calibrated
-                                  ? ''
-                                  : '*'}
-                              </td>
-                              <td class="max-w-[10rem] truncate pr-2 font-mono">{r.model ?? '—'}</td>
-                              <td class="font-mono">{r.at?.slice(0, 16) ?? '—'}</td>
-                            </tr>
-                          {/each}
-                        </tbody>
-                      </table>
-                      <p class="mt-1 text-ink-dim">
-                        Highlighted rows are the disagreements. A certainty marked * carried no real
-                        distribution. "— (silent)" is a call the port did not answer, which counts in
-                        the denominator above.
-                      </p>
-                    {/if}
-                  </div>
-                {/if}
-              </div>
-            {:else if s.measuredAt}
-              <!-- Not an empty ledger: this site has nothing to compare
-                   against, and says where its numbers are instead. -->
-              <p class="pl-6 text-ink-dim">Measured as {s.measuredAt}.</p>
-            {:else if !s.switchLivesAt}
-              <p class="pl-6 text-ink-dim">
-                No comparisons recorded yet{data?.configured ? '' : ' — nothing is configured'}.
-              </p>
+        {#if meta}
+          <SettingsRow label="Timeout" hint="Past this, the caller uses its own path instead of waiting." as="label">
+            <Input
+              size="sm"
+              type="number"
+              value={String(cfg?.timeoutMs ?? 4000)}
+              onblur={(e) => Number(e.currentTarget.value) !== (cfg?.timeoutMs ?? 4000) && void apply({ timeoutMs: Number(e.currentTarget.value) })}
+              class="w-28 tabular-nums"
+            />
+            <span class="font-sans text-[13px] leading-5 text-muted">ms</span>
+          </SettingsRow>
+          <div transition:slide={{ duration: 150 }}><FactsList facts={capabilities} /></div>
+          {#if meta.country !== 'your hardware' && meta.country !== '—'}
+            <NoticeRow status="warn">Ticket and message text is sent to this provider to be judged, so it leaves your instance.</NoticeRow>
+          {/if}
+        {/if}
+
+        {#if result}
+          <div transition:slide={{ duration: 150 }}>
+            {#if result.ok}
+              <NoticeRow status="ok">
+                Answered in <span class="tabular-nums">{result.latencyMs}</span> ms from {result.provider}{#if result.model}{' · '}<span class="font-mono text-xs">{result.model}</span>{/if}.
+                It rated a clearly urgent report
+                <span class="tabular-nums text-fg">{((result.probability ?? 0) * 100).toFixed(0)}%</span> yes, and near 100% means it reads
+                the question as intended.
+              </NoticeRow>
+              {#if result.calibrated === false}
+                <NoticeRow status="warn" class="border-t border-line-subtle">
+                  The answer carried no confidence, so every decision that needs one will fall back to its own path. For a model from
+                  Models this usually means the endpoint does not serve logprobs.
+                </NoticeRow>
+              {/if}
+            {:else}
+              <!-- The PROVIDER'S own sentence where there is one. `refused`
+                   means it answered and said why; the rest are ours because
+                   there was no reply to quote. -->
+              <NoticeRow status="danger">
+                {result.reason}{#if result.kind === 'refused' && unknownModel}{' '}The model id is the usual cause.{/if}
+              </NoticeRow>
             {/if}
           </div>
-        {/each}
-      </div>
-    </div>
-
-    {#if result}
-      <div transition:slide={{ duration: 150 }} class="mt-3 border-t border-line-subtle pt-3 text-xs">
-        {#if result.ok}
-          <p class="text-fg">
-            Answered in {result.latencyMs}ms — {result.provider}{result.model ? ` · ${result.model}` : ''}
-          </p>
-          <p class="mt-1 text-muted">
-            Asked whether a report of a broken deploy blocking the team is urgent, and answered
-            <span class="font-mono text-fg">{((result.probability ?? 0) * 100).toFixed(0)}%</span> yes.
-            Near 100% means it is wired up and reading the question the way we intend.
-          </p>
-          {#if result.calibrated === false}
-            <p class="mt-1 text-warn">
-              The answer carried no real distribution, so its confidence is unavailable. This provider
-              will still answer, but every call site that gates on confidence will fall back to its own
-              path. For a registered chat model this usually means the endpoint does not serve logprobs.
-            </p>
-          {/if}
-        {:else}
-          <!-- The PROVIDER'S own sentence where there is one. `refused` means
-               it answered and said why; the rest are ours because there was no
-               reply to quote. -->
-          <p class="text-danger">{result.reason}</p>
-          {#if result.kind === 'refused' && unknownModel}
-            <p class="mt-1 text-muted">
-              The model id is the usual cause — see the detected list above.
-            </p>
-          {/if}
         {/if}
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
+</SettingsSection>
+
+<!-- THE CENSUS, with each site's own numbers beside its own switch. That
+     adjacency is the whole point of this section: shadow mode's argument is
+     that a site switches over when its own traffic says so, and a number an
+     operator can read but not act on is a dashboard rather than a feature. -->
+{#if allSites.length > 0}
+  <SettingsSection
+    title="Where it decides"
+    description="Each place Talaria can ask the decision model, with what its own traffic measured."
+    info="A decision that is off keeps running its existing code, and the model is asked the same question with nobody listening. Agreement is how often the two matched, so you can turn a decision on when its own numbers say so."
+  >
+    <SettingsGroup>
+      <div class="overflow-x-auto">
+      <table class="w-full min-w-[760px] table-fixed">
+        <colgroup>
+          <col />
+          <col class="w-44" />
+          <col class="w-28" />
+          <col class="w-24" />
+          <col class="w-40" />
+          <col class="w-16" />
+          <col class="w-28" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th class={tableHead}>Decision</th>
+            <th class={tableHead}>Model</th>
+            <th class={cn(tableHead, 'text-right')}>Agreement</th>
+            <th class={cn(tableHead, 'text-right')}>Threshold</th>
+            <th class={tableHead}>Status</th>
+            <th class={tableHead}><span class="sr-only">On</span></th>
+            <th class={tableHead}><span class="sr-only">Details</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each allSites as s (s.id)}
+            {@const m = shadowFor(s.id)}
+            {@const st = siteStatus(s, m)}
+            <tr class={tableRow}>
+              <td class={cn(tableCell, 'truncate font-medium')}>{s.label}</td>
+              <td class={cn(tableCell, 'truncate font-mono text-xs text-muted')}>
+                {#if m && m.models.length === 1}{m.models[0]?.model}{:else if m && m.models.length > 1}{m.models.length} models{:else}—{/if}
+              </td>
+              <td class={cn(tableCell, tableNum, !(m && m.answered > 0) && 'text-muted')}>{m ? pct(m.agreed, m.answered) : '—'}</td>
+              <td class={cn(tableCell, tableNum, !(s.on && !s.switchLivesAt) && 'text-muted')}>
+                {s.on && !s.switchLivesAt ? s.floor.toFixed(2) : '—'}
+              </td>
+              <td class={tableCell}><RowStatus status={st.status} title={s.switchLivesAt ?? undefined}>{st.word}</RowStatus></td>
+              <td class={tableCell}>
+                {#if !s.switchLivesAt}
+                  <Toggle checked={s.on} onChange={(on) => void applySite(s.id, { on })} title={`Use the decision model for ${s.label}`} />
+                {/if}
+              </td>
+              <td class={cn(tableCell, 'text-right')}>
+                <Button size="sm" variant="outline" onclick={() => (openSiteId = s.id)}>Details</Button>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
       </div>
-    {/if}
-    {/snippet}
-  </QueryState>
-</Panel>
+    </SettingsGroup>
+  </SettingsSection>
+{/if}
+
+{#if openSite}
+  <AdminDecideSiteModal
+    site={openSite}
+    shadow={shadowFor(openSite.id)}
+    configured={data?.configured ?? false}
+    {speechRooms}
+    onFloor={setFloor}
+    onClose={() => (openSiteId = null)}
+  />
+{/if}

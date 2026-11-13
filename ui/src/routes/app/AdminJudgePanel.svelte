@@ -1,12 +1,13 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Select from '@/components/ui/Select.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
@@ -39,52 +40,51 @@
   }
 </script>
 
-<Panel>
-  <SectionHeader
-    class="mb-4"
-    title="QA judge"
-    info="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Enforcing: bad submissions never sit in QA. Revise verdicts bounce straight back to the agent with the issues (capped, then a human takes over). Advisory: verdicts only, the human decides. Pick a strong model for the sharpest review."
-  />
-  <QueryState query={query} errorTitle="Could not load the judge configuration" errorVariant="compact">
-    {#snippet skeleton()}
-      <!-- The checkbox and model select seed from the query — hold the whole
-           control row so nothing renders unchecked and then flips. -->
-      <div class="flex flex-wrap items-center gap-3">
-        <Skeleton class="h-4 w-4" />
-        <Skeleton class="h-3 w-52 rounded-full" />
-        <Skeleton class="h-8 w-64" />
-      </div>
-    {/snippet}
-    {#snippet children(_data)}
-    <!-- The controls seed from the response, so a failed read must never render
-         them: it would show the judge as OFF, and the first click would then
-         save it off for real. QueryState's error branch holds that. -->
-    <div class="flex flex-wrap items-center gap-3">
-      <Checkbox
-        class="gap-2 text-sm text-fg"
-        checked={enabled}
-        onChange={(checked) => void save({ enabled: checked })}
-        label="Run the judge on quality review"
-      />
-      <Segmented
-        options={[
-          { id: 'enforcing', label: 'Enforcing' },
-          { id: 'advisory', label: 'Advisory' },
-        ] as const}
-        value={mode}
-        onChange={(m) => void save({ mode: m })}
-      />
-      <div class="flex items-center gap-2">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model</span>
-        <Select size="sm" value={model} onchange={(e) => void save({ model: e.currentTarget.value || null })} class="w-64" disabled={!enabled}>
-          <option value="">Default (self-hosted)</option>
-          {#each data?.models ?? [] as m (m)}<option value={m}>{m}</option>{/each}
-          {#if model && !(data?.models ?? []).includes(model)}<option value={model}>{model}</option>{/if}
-        </Select>
-      </div>
-      {#if savedFlash.saved}<span class="text-xs text-success">Saved</span>{/if}
-    </div>
-    {/snippet}
-  </QueryState>
-  <p class="mt-3 text-[11px] text-muted">Per-board override lives on each board (enforcing / advisory / off); boards on "inherit" follow this stance.</p>
-</Panel>
+<SettingsSection
+  title="Quality review"
+  description="A judge model checks an agent's work when a ticket reaches quality review."
+  info="The judge posts a verdict of pass, revise or escalate, with the specific issues. A strong model gives the sharpest review."
+>
+  {#snippet action()}
+    {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
+  {/snippet}
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load the judge configuration" errorVariant="compact">
+      {#snippet skeleton()}
+        <!-- The toggle and model select seed from the query — hold the rows so
+             nothing renders off and then flips. -->
+        <div class="px-5 py-4"><SkeletonRows rows={3} /></div>
+      {/snippet}
+      {#snippet children(_data)}
+        <!-- The controls seed from the response, so a failed read must never
+             render them: it would show the judge as OFF, and the first click
+             would then save it off for real. QueryState's error branch holds
+             that. -->
+        <SettingsRow label="Run the judge" hint="Review every ticket handed to quality review.">
+          <Toggle checked={enabled} onChange={(checked) => void save({ enabled: checked })} title="Run the judge on quality review" />
+        </SettingsRow>
+        <SettingsRow
+          label="When work needs changes"
+          hint={mode === 'enforcing' ? 'The ticket goes straight back to the agent with the issues.' : 'The verdict is posted and a person decides.'}
+          info="Enforcing sends work back to the agent a limited number of times, then a person takes over. Each board can override this, and boards set to inherit follow it."
+        >
+          <Segmented
+            options={[
+              { id: 'enforcing', label: 'Enforcing' },
+              { id: 'advisory', label: 'Advisory' },
+            ] as const}
+            value={mode}
+            onChange={(m) => void save({ mode: m })}
+          />
+        </SettingsRow>
+        <SettingsRow label="Judge model" hint="The model that writes the verdict." as="label">
+          <Select size="sm" value={model} onchange={(e) => void save({ model: e.currentTarget.value || null })} class="w-[280px]" disabled={!enabled}>
+            <option value="">Default (self-hosted)</option>
+            {#each data?.models ?? [] as m (m)}<option value={m}>{m}</option>{/each}
+            {#if model && !(data?.models ?? []).includes(model)}<option value={model}>{model}</option>{/if}
+          </Select>
+        </SettingsRow>
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
+</SettingsSection>

@@ -1,14 +1,19 @@
 <script lang="ts">
+  import { ChevronRight } from '@lucide/svelte'
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
+  import { tableCell, tableHead, tableNum, tableRow } from '@/components/admin/table'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Select from '@/components/ui/Select.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { cn } from '@/lib/cn'
   import { getJson, putJson } from '@/lib/fetch-json'
+  import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
 
   interface GuardData {
@@ -40,99 +45,151 @@
     await qc.invalidateQueries({ queryKey: ['guardrails'] })
   }
   const rules = $derived(data?.rules ?? [])
+  const off = $derived(cfg?.mode === 'off')
+  let showFindings = $state(false)
+
+  const MODE_HINT: Record<string, string> = {
+    off: 'No replies are checked.',
+    observe: 'Findings are recorded and replies are left alone.',
+    annotate: 'Findings are recorded and the reply is flagged.',
+    strict: 'Findings are recorded and the flagged text is removed.',
+  }
+  // A rule's label carries its explanation in brackets: "Secret leak
+  // (credential in output)".
+  const ruleParts = (label: string): { name: string; catches: string } => {
+    const m = /^(.*?)\s*\((.*)\)$/.exec(label)
+    const catches = m?.[2] ?? ''
+    return { name: m?.[1] ?? label, catches: catches.charAt(0).toUpperCase() + catches.slice(1) }
+  }
+  const checkName = (id: string) => {
+    const rule = rules.find((r) => r.id === id)
+    if (rule) return ruleParts(rule.label).name
+    const words = id.replace(/_/g, ' ')
+    return words.charAt(0).toUpperCase() + words.slice(1)
+  }
 </script>
 
-<Panel>
-  <SectionHeader
-    class="mb-4"
-    title="Confab guard"
-    info={"A structural check on every model output at the gateway: fabricated tool claims, invented links, outage stories, leaked secrets and PII. Observe records findings; annotate flags the reply; strict also redacts. Flagged content never re-enters an agent’s context."}
-  />
-  <QueryState query={query} errorTitle="Could not load the guardrail configuration" errorVariant="compact">
-    {#snippet skeleton()}
-      <!-- Everything here seeds from the query (mode, slider, coach toggle,
-           rules) — hold the full control area so no false defaults flash. -->
-      <div class="flex flex-wrap items-center gap-4">
-        <Skeleton class="h-8 w-40" />
-        <Skeleton class="h-4 w-40 rounded-full" />
-        <Skeleton class="h-4 w-44 rounded-full" />
-      </div>
-      <div class="mt-3 space-y-1.5">
-        {#each Array.from({ length: 6 }, (_, i) => i) as i (i)}
-          <div class="flex items-center gap-2 py-0.5">
-            <Skeleton class="h-4 w-4" />
-            <Skeleton class="h-3 w-48 rounded-full" />
-          </div>
-        {/each}
-      </div>
-      <div class="mt-4">
-        <SkeletonRows rows={3} />
-      </div>
-    {/snippet}
-    {#snippet children(_data)}
-    <!-- "0 findings" and mode=observe are both defaults this component invents
-         when the read failed — over a failure that reads as a guard quietly
-         running and finding nothing. QueryState's error branch holds it. -->
-    <div class="flex flex-wrap items-center gap-4">
-      <div class="flex items-center gap-2">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mode</span>
-        <Select size="sm" value={cfg?.mode ?? 'observe'} onchange={(e) => void save({ mode: e.currentTarget.value })} class="w-40">
-          <option value="off">Off</option>
-          <option value="observe">Observe</option>
-          <option value="annotate">Annotate</option>
-          <option value="strict">Strict</option>
-        </Select>
-      </div>
-      <label class="flex items-center gap-2 text-xs text-muted" title="Findings below this confidence are dropped">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Min confidence</span>
-        <input
-          type="range" min={0} max={1} step={0.05}
-          value={cfg?.minConfidence ?? 0.5}
-          disabled={cfg?.mode === 'off'}
-          onchange={(e) => void save({ minConfidence: Number(e.currentTarget.value) })}
-          class="w-28 accent-accent"
-        />
-        <span class="w-8 font-mono text-[11px] text-fg">{((cfg?.minConfidence ?? 0.5) * 100).toFixed(0)}%</span>
-      </label>
-      <Checkbox
-        class="gap-2"
-        title="Repeated findings become templated behavioral notes in the agent's rendered soul (counts + advice only, never the flagged content). Applies the next time your agents are rendered."
-        checked={cfg?.coach ?? false}
-        disabled={cfg?.mode === 'off'}
-        onChange={(checked) => void save({ coach: checked })}
-        label="Coach agents from findings"
-      />
-      <div class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{data?.stats.total ?? 0} findings</div>
-    </div>
-    <div class="mt-3 space-y-1.5">
-      {#each rules as c (c.id)}
-        {#snippet ruleLabel()}
-          {c.label}
-          {#if data?.stats.byCheck[c.id]}<span class="text-[11px] text-muted">· {data.stats.byCheck[c.id]}</span>{/if}
-        {/snippet}
-        <Checkbox
-          class="gap-2 text-sm text-fg"
-          checked={cfg?.checks[c.id] ?? c.defaultOn}
-          disabled={cfg?.mode === 'off'}
-          onChange={(checked) => cfg && void save({ checks: { ...cfg.checks, [c.id]: checked } })}
-          label={ruleLabel}
-        />
-      {/each}
-    </div>
-    {#if data?.findings && data.findings.length > 0}
-      <div class="mt-4">
-        <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Recent findings</div>
-        <div class="max-h-48 divide-y divide-line-subtle overflow-y-auto rounded-md border border-line">
-          {#each data.findings.slice(0, 20) as f (f.id)}
-            <div class="flex items-start gap-2 px-2 py-1.5 text-xs transition-colors dither-fill">
-              <span class={cn('shrink-0 rounded px-1 font-mono text-[10px] uppercase tracking-[0.05em]', f.severity === 'high' ? 'text-danger' : 'text-warning')}>{f.check.replace(/_/g, ' ')}</span>
-              <span class="min-w-0 flex-1 truncate text-muted" title={f.snippet}>{f.snippet || f.message}</span>
-              <span class="shrink-0 font-mono text-[10px] text-muted">{f.model}</span>
+<SettingsSection
+  title="Guardrails"
+  description="Checks every model reply for made-up tool results, invented links and leaked secrets."
+  info="A check on every model reply at the gateway: claims of work no tool did, invented links, outage stories, leaked secrets and personal data. Flagged content never goes back into an agent's context."
+>
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load the guardrail configuration" errorVariant="compact">
+      {#snippet skeleton()}
+        <!-- Everything here seeds from the query (mode, slider, coach toggle,
+             rules) — hold the rows so no false defaults flash. -->
+        <div class="px-5 py-4"><SkeletonRows rows={6} /></div>
+      {/snippet}
+      {#snippet children(d)}
+        <!-- "0 findings" and mode=observe are both defaults this component
+             invents when the read failed — over a failure that reads as a
+             guard quietly running and finding nothing. QueryState's error
+             branch holds it. -->
+        <SettingsRow label="Mode" hint={MODE_HINT[cfg?.mode ?? 'observe']} as="label">
+          <Select size="sm" value={cfg?.mode ?? 'observe'} onchange={(e) => void save({ mode: e.currentTarget.value })} class="w-[280px]">
+            <option value="off">Off</option>
+            <option value="observe">Observe</option>
+            <option value="annotate">Annotate</option>
+            <option value="strict">Strict</option>
+          </Select>
+        </SettingsRow>
+        <SettingsRow label="Minimum confidence" hint="Findings the check is less sure of than this are dropped." as="label">
+          <input
+            type="range" min={0} max={1} step={0.05}
+            value={cfg?.minConfidence ?? 0.5}
+            disabled={off}
+            onchange={(e) => void save({ minConfidence: Number(e.currentTarget.value) })}
+            class="w-40 accent-accent disabled:opacity-50"
+          />
+          <span class="w-10 text-right font-sans text-[13px] leading-5 tabular-nums text-fg">{((cfg?.minConfidence ?? 0.5) * 100).toFixed(0)}%</span>
+        </SettingsRow>
+        <SettingsRow
+          label="Coach agents"
+          hint="Repeated findings become advice in the agent's instructions."
+          info="Only counts and advice are added, never the flagged content. It applies the next time your agents are restarted."
+        >
+          <Toggle checked={cfg?.coach ?? false} disabled={off} onChange={(checked) => void save({ coach: checked })} title="Coach agents from findings" />
+        </SettingsRow>
+        <table class="w-full table-fixed">
+          <colgroup>
+            <col class="w-64" />
+            <col />
+            <col class="w-28" />
+            <col class="w-[4.5rem]" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th class={tableHead}>Check</th>
+              <th class={tableHead}>Catches</th>
+              <th class={cn(tableHead, 'text-right')}>Findings</th>
+              <th class={tableHead}><span class="sr-only">On</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each rules as c (c.id)}
+              {@const r = ruleParts(c.label)}
+              <tr class={tableRow}>
+                <td class={cn(tableCell, 'truncate font-medium')}>{r.name}</td>
+                <td class={cn(tableCell, 'truncate text-muted')}>{r.catches}</td>
+                <td class={cn(tableCell, tableNum, !d.stats.byCheck[c.id] && 'text-muted')}>{(d.stats.byCheck[c.id] ?? 0).toLocaleString()}</td>
+                <td class={tableCell}>
+                  <Toggle
+                    checked={cfg?.checks[c.id] ?? c.defaultOn}
+                    disabled={off}
+                    onChange={(checked) => cfg && void save({ checks: { ...cfg.checks, [c.id]: checked } })}
+                    title={`Run the ${r.name} check`}
+                  />
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        {#if d.findings.length > 0}
+          <SettingsRow
+            label="Recent findings"
+            hint="{d.stats.total.toLocaleString()} recorded in all."
+            onclick={() => (showFindings = !showFindings)}
+          >
+            <ChevronRight size={16} class={cn('text-muted transition-transform duration-150', showFindings && 'rotate-90')} />
+          </SettingsRow>
+          {#if showFindings}
+            <div transition:slide={{ duration: 150 }} class="max-h-[352px] overflow-y-auto">
+              <table class="w-full table-fixed">
+                <colgroup>
+                  <col class="w-56" />
+                  <col />
+                  <col class="w-44" />
+                  <col class="w-28" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th class={tableHead}>Check</th>
+                    <th class={tableHead}>Reply</th>
+                    <th class={tableHead}>Model</th>
+                    <th class={cn(tableHead, 'text-right')}>When</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each d.findings.slice(0, 20) as f (f.id)}
+                    <tr class={tableRow}>
+                      <td class={tableCell}>
+                        <span class="flex items-center gap-2">
+                          <StatusDot status={f.severity === 'high' ? 'danger' : 'warn'} title="{f.severity} severity" />
+                          <span class="truncate">{checkName(f.check)}</span>
+                        </span>
+                      </td>
+                      <td class={cn(tableCell, 'truncate text-muted')} title={f.snippet}>{f.snippet || f.message}</td>
+                      <td class={cn(tableCell, 'truncate font-mono text-xs text-muted')}>{f.model}</td>
+                      <td class={cn(tableCell, 'whitespace-nowrap text-right text-muted')}>{relativeTime(f.createdAt)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
             </div>
-          {/each}
-        </div>
-      </div>
-    {/if}
-    {/snippet}
-  </QueryState>
-</Panel>
+          {/if}
+        {/if}
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
+</SettingsSection>
