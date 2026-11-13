@@ -90,7 +90,7 @@
       query = ''
     } else if (e.key === 'Enter' && matches[0]) {
       e.preventDefault()
-      void navigate(matches[0].to)
+      void navigate(matches[0].to as never)
       query = ''
     }
   }
