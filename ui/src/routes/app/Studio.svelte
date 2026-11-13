@@ -2,15 +2,18 @@
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ChevronRight, LifeBuoy, Route, Users } from '@lucide/svelte'
+  import { ChevronDown, ChevronRight, Users } from '@lucide/svelte'
   import { navigate } from '@/router'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -102,14 +105,15 @@
   const sharedSkills = $derived(new Set(shared?.skills.map((s) => s.name) ?? []))
   const boardName = (id: string) => boards.find((b) => b.id === id)?.name ?? 'a board'
   const agentMeta = (o: SkillOwner) => agentsData?.agents.find((a) => a.id === o.model)
-  const firstName = (o: SkillOwner) => o.label.split(' ')[0]!
-  const roleOf = (o: SkillOwner) => agentMeta(o)?.role ?? o.model ?? ''
+  // How the page refers to the agent in a sentence. A long name is a title, not
+  // a name ("Carrier Compliance & Insurance Certificate Reviewer"), and its
+  // first word alone is the wrong name, so the sentence says "this agent".
+  const callName = (o: SkillOwner) => (o.label.length <= 18 ? o.label : 'this agent')
+  // An agent with no role shows none. Its model id stands in only when the roles could not be read at all.
+  const roleOf = (o: SkillOwner) => agentMeta(o)?.role ?? (agentsQuery.isError ? (o.model ?? '') : '')
   /** Who a request came from, by the name people know the agent by. */
   const askerOf = (g: CapabilityGap) => owners.find((o) => o.model === g.agentModel)?.label ?? g.agentModel
-  const sentence = (slug: string) => {
-    const words = slug.replace(/-/g, ' ')
-    return words.charAt(0).toUpperCase() + words.slice(1)
-  }
+  const times = (n: number) => (n === 1 ? 'once' : `${n} times`)
   const or = (items: string[]) => items.join(' or ')
 
   /** Workflows steering work onto this owner: any bound skill it carries.
@@ -172,11 +176,20 @@
   }
 </script>
 
+<!-- A section with nothing in it is its title and one line: an empty card in
+     the page's first position only pushes the skills down. -->
+{#snippet quiet(title: string, line: string)}
+  <section>
+    <h2 class="font-sans text-[15px] font-semibold leading-5 text-fg">{title}</h2>
+    <p class="mt-1 font-sans text-[13px] leading-5 text-muted">{line}</p>
+  </section>
+{/snippet}
+
 <SettingsPage title="Agent Studio" blurb="Teach an agent a new skill and review what it knows.">
   {#snippet actions()}
     {#if selected?.canEdit}
       <Button size="sm" onclick={() => selected && teach(selected)}>
-        Teach {selected.owner === 'shared' ? 'everyone' : firstName(selected)}
+        Teach {selected.owner === 'shared' ? 'everyone' : callName(selected)}
       </Button>
     {/if}
   {/snippet}
@@ -206,13 +219,13 @@
            fades while the rail's rows and the world's blocks (agent header,
            Asked for help, Skills, Routed work) rise 30ms apart, capped —
            staggerIn's data-stagger-items contract. -->
-      <div class="grid gap-10 lg:grid-cols-[19rem_minmax(0,1fr)]" data-stagger-items="aside > *, main > *">
+      <div class="grid gap-8 lg:grid-cols-[17rem_minmax(0,1fr)]" data-stagger-items="aside > *, main > *">
         <AgentPicker {agents} {shared} {selectedKey} {roleOf} openCount={(o) => ownerGaps(o).length} onSelect={select} />
 
         <!-- ── The selected agent's world ── -->
         {#if selected}
           {@const everyone = selected.owner === 'shared'}
-          {@const who = everyone ? 'every agent' : firstName(selected)}
+          {@const who = everyone ? 'every agent' : callName(selected)}
           {@const requests = ownerGaps(selected)}
           {@const routed = routedTo(selected)}
           <main class="min-w-0 space-y-8">
@@ -226,42 +239,45 @@
               {/if}
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
-                  <h2 class="truncate font-sans text-lg font-semibold leading-6 text-fg">{everyone ? 'Every agent' : selected.label}</h2>
+                  <h2 class="min-w-0 break-words font-sans text-lg font-semibold leading-6 text-fg">{everyone ? 'Every agent' : selected.label}</h2>
                   {#if !selected.canEdit}<Chip>View only</Chip>{/if}
                 </div>
-                <p class="truncate font-sans text-[13px] leading-5 text-muted">
-                  {everyone ? 'Skills here reach every agent on the team.' : roleOf(selected)}
-                </p>
+                {#if everyone || roleOf(selected)}
+                  <p class="font-sans text-[13px] leading-5 text-muted">
+                    {everyone ? 'Skills here reach every agent on the team.' : roleOf(selected)}
+                  </p>
+                {/if}
               </div>
             </div>
 
-            <SettingsSection
-              title="Asked for help"
-              description={everyone
-                ? 'Work an agent could not do properly. Build the skill and it stops asking.'
-                : `Work ${who} could not do properly. Build the skill and it stops asking.`}
-            >
-              <SettingsGroup>
-                {#each requests as g (g.id)}
-                  <SettingsRow>
-                    {#snippet icon()}<LifeBuoy size={16} />{/snippet}
-                    {#snippet label()}<span class="whitespace-normal">{g.missing}</span>{/snippet}
-                    {#snippet meta()}<Chip class="-my-px" title="The kind of work it was doing">{sentence(g.kind)}</Chip>{/snippet}
-                    {#snippet hint()}
-                      {everyone ? `${askerOf(g)} asked` : 'Asked'}
-                      {g.seenCount === 1 ? 'once' : `${g.seenCount} times`}, last {relativeTime(g.lastSeen)}{g.needs ? '.' : ''}
-                      {#if g.needs}Needs: {g.needs}{/if}
-                    {/snippet}
-                    {#if selected.canEdit}
-                      <Button size="sm" variant="outline" onclick={() => selected && build(selected, g)}>Build it</Button>
-                    {/if}
-                    <Button size="sm" variant="ghost" onclick={() => dismiss(g)}>Dismiss</Button>
-                  </SettingsRow>
-                {:else}
-                  <p class="flex min-h-[60px] items-center px-5 py-4 font-sans text-[13px] leading-5 text-muted">No open requests.</p>
-                {/each}
-              </SettingsGroup>
-            </SettingsSection>
+            {#if requests.length}
+              <SettingsSection
+                title="Asked for help"
+                description={everyone
+                  ? 'Work an agent could not do properly. Build the skill and it stops asking.'
+                  : `Work ${who} could not do properly. Build the skill and it stops asking.`}
+              >
+                <SettingsGroup>
+                  {#each requests as g (g.id)}
+                    {@const kind = skillTitle(g.kind)}
+                    <SettingsRow label={kind} info={g.needs ? `What it says it needs: ${g.needs}` : undefined}>
+                      {#snippet hint()}
+                        <span class="block">{g.missing}</span>
+                        <span class="mt-1 block">
+                          {everyone ? `${askerOf(g)} asked` : 'Asked'} {times(g.seenCount)}, last {relativeTime(g.lastSeen)}
+                        </span>
+                      {/snippet}
+                      {#if selected.canEdit}
+                        <Button size="sm" variant="outline" onclick={() => selected && build(selected, g)}>Build it</Button>
+                      {/if}
+                      <SettingsRowMenu label={`Actions for ${kind}`} items={[{ label: 'Dismiss', onSelect: () => dismiss(g) }]} />
+                    </SettingsRow>
+                  {/each}
+                </SettingsGroup>
+              </SettingsSection>
+            {:else}
+              {@render quiet('Asked for help', 'No open requests')}
+            {/if}
 
             <SettingsSection
               title="Skills"
@@ -269,8 +285,18 @@
             >
               {#snippet action()}
                 {#if selected?.canEdit}
-                  <Button size="sm" variant="ghost" onclick={() => (market = true)}>Browse marketplace</Button>
-                  <Button size="sm" variant="outline" onclick={() => selected && teach(selected)}>New skill</Button>
+                  <DropdownMenu
+                    items={[
+                      { label: 'New skill', onSelect: () => selected && teach(selected) },
+                      { label: 'Browse marketplace', onSelect: () => (market = true) },
+                    ]}
+                  >
+                    {#snippet trigger(open)}
+                      <Button size="sm" variant="outline" aria-haspopup="menu" aria-expanded={open}>
+                        Add skill <ChevronDown size={14} class="-mr-0.5 text-muted" />
+                      </Button>
+                    {/snippet}
+                  </DropdownMenu>
                 {/if}
               {/snippet}
               <SettingsGroup>
@@ -307,24 +333,23 @@
               </SettingsGroup>
             </SettingsSection>
 
-            <SettingsSection
-              title="Routed work"
-              description={everyone ? 'Tickets any agent can take, and the skills they arrive with.' : `Tickets sent to ${who}, and the skills they arrive with.`}
-            >
-              <SettingsGroup>
-                {#each routed as w (w.id)}
-                  <SettingsRow label={w.name} hint={describe(w)} onclick={() => void navigate('/studio', { search: { a: selectedKey, w: w.id } })}>
-                    {#snippet icon()}<Route size={16} />{/snippet}
-                    {#snippet meta()}{#if !w.enabled}<Chip class="-my-px">Off</Chip>{/if}{/snippet}
-                    <ChevronRight size={16} class="text-muted" />
-                  </SettingsRow>
-                {:else}
-                  <p class="flex min-h-[60px] items-center px-5 py-4 font-sans text-[13px] leading-5 text-muted">
-                    No routing yet.{selected.canEdit ? ' Add rules while teaching a skill and matching tickets carry it.' : ''}
-                  </p>
-                {/each}
-              </SettingsGroup>
-            </SettingsSection>
+            {#if routed.length}
+              <SettingsSection
+                title="Routed work"
+                description={everyone ? 'Tickets any agent can take, and the skills they arrive with.' : `Tickets sent to ${who}, and the skills they arrive with.`}
+              >
+                <SettingsGroup>
+                  {#each routed as w (w.id)}
+                    <SettingsRow label={w.name} hint={describe(w)} onclick={() => void navigate('/studio', { search: { a: selectedKey, w: w.id } })}>
+                      {#snippet status()}{#if !w.enabled}<StatusDot status="idle" />Off{/if}{/snippet}
+                      <ChevronRight size={16} class="text-muted" />
+                    </SettingsRow>
+                  {/each}
+                </SettingsGroup>
+              </SettingsSection>
+            {:else}
+              {@render quiet('Routed work', selected.canEdit ? 'No routing yet. Teach a skill with rules and matching tickets carry it.' : 'No routing yet')}
+            {/if}
           </main>
         {:else if libraryQuery.isError && libraryQuery.data === undefined}
           <!-- Nothing to select because the library read FAILED, not because

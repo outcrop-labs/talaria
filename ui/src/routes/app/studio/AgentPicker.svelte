@@ -43,9 +43,10 @@
     {:else}
       <Avatar {name} class="h-8 w-8" />
     {/if}
+    <!-- A name gets the width it needs: it wraps instead of ending in dots. -->
     <span class="min-w-0 flex-1">
-      <span class="block truncate font-sans text-sm font-medium leading-5 text-fg">{name}</span>
-      <span class="block truncate font-sans text-[13px] leading-5 text-muted" title={sub}>{sub}</span>
+      <span class="block break-words font-sans text-sm font-medium leading-5 text-fg">{name}</span>
+      {#if sub}<span class="line-clamp-2 font-sans text-[13px] leading-5 text-muted" title={sub}>{sub}</span>{/if}
     </span>
     {#if count > 0}
       <span class="shrink-0 font-sans text-xs tabular-nums text-muted" title={`${count} open ${count === 1 ? 'request' : 'requests'}`}>

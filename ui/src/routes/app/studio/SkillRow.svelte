@@ -1,6 +1,5 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { BookOpen } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -46,14 +45,14 @@
 </script>
 
 <!-- The title is the row's button, stretched over the whole row, so the menu
-     beside it stays a separate control. -->
+     beside it stays a separate control and the row's tooltip is the name
+     agents load the skill by. `SettingsRow`'s own `onOpen` cannot carry a
+     `title`. -->
 <SettingsRow class="relative transition-colors hover:bg-hover" hint={skill.description || 'No description yet.'}>
-  {#snippet icon()}<BookOpen size={16} />{/snippet}
   {#snippet label()}
-    <button type="button" onclick={onOpen} class={cn('rounded-sm text-left after:absolute after:inset-0', focusRing)}>{title}</button>
+    <button type="button" onclick={onOpen} title={skill.name} class={cn('rounded-sm text-left after:absolute after:inset-0', focusRing)}>{title}</button>
   {/snippet}
   {#snippet meta()}
-    <span class="shrink-0 font-mono text-xs text-muted">{skill.name}</span>
     {#if sharedBadge}<Chip class="-my-px">Shared</Chip>{/if}
     {#if skill.platform}<Chip class="-my-px">Built-in</Chip>{/if}
   {/snippet}
