@@ -1,16 +1,17 @@
 <script lang="ts">
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import AdminGitHostCard from './AdminGitHostCard.svelte'
+  import AdminGitHostRow from './AdminGitHostRow.svelte'
   import { useGitHosts, useGitHostsRefresh, type GitHostKind } from './git-hosts'
 
   /** Admin → Git hosts: the git providers this instance works repositories
@@ -63,30 +64,29 @@
   }
 </script>
 
-<Panel class="mt-4 p-3 sm:p-4">
-  <SectionHeader
-    title="Git hosts"
-    info="Where your agents' repositories live. Add each git host they work on; which agent may touch which repo stays an explicit per-agent grant. A GitHub host connects with a GitHub App or an access token; a Forgejo / Gitea host authenticates with a workspace secret."
-  >
-    {#snippet action()}
-      <Button size="sm" variant="outline" onclick={open}>Add host</Button>
-    {/snippet}
-  </SectionHeader>
-  <QueryState {query} errorTitle="Could not load the git hosts" errorVariant="compact" isEmpty={(d) => d.hosts.length === 0}>
-    {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
-    {#snippet empty()}
-      <EmptyState variant="compact" title="No git host yet" hint="Add the host your repositories live on — agents cannot start a workbench job until one is connected." />
-    {/snippet}
-    {#snippet children(d)}
-      <div class="space-y-3">
-        {#each d.hosts as h (h.id)}<AdminGitHostCard host={h} />{/each}
-      </div>
-    {/snippet}
-  </QueryState>
-</Panel>
+<SettingsSection
+  title="Git hosts"
+  description="Where your agents' repositories live."
+  info="Add each git host your agents work on. Which agent may touch which repository stays a grant you give per agent. A GitHub host connects with a GitHub App or an access token. A Forgejo or Gitea host signs in with a workspace secret."
+>
+  {#snippet action()}
+    <Button size="sm" variant="outline" onclick={open}>Add host</Button>
+  {/snippet}
+  <SettingsGroup>
+    <QueryState {query} errorTitle="Could not load the git hosts" errorVariant="compact" isEmpty={(d) => d.hosts.length === 0}>
+      {#snippet skeleton()}<div class="px-5 py-4"><SkeletonRows rows={2} avatar /></div>{/snippet}
+      {#snippet empty()}
+        <EmptyState variant="compact" title="No git host yet" hint="Agents cannot start a coding job until a host is connected." />
+      {/snippet}
+      {#snippet children(d)}
+        {#each d.hosts as h (h.id)}<AdminGitHostRow host={h} />{/each}
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
+</SettingsSection>
 
-<Modal open={adding} onClose={() => (adding = false)} title="Add a git host" width="max-w-lg">
-  <div class="space-y-3">
+<Modal open={adding} onClose={() => (adding = false)} title="Add git host" width="max-w-lg">
+  <div class="space-y-5">
     <Segmented
       options={[
         { id: 'forgejo', label: 'Forgejo / Gitea' },
@@ -98,29 +98,32 @@
         if (k === 'github' && !baseUrl) baseUrl = 'https://github.com'
       }}
     />
-    <label class="block space-y-1 text-xs text-muted">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</span>
-      <Input size="sm" bind:value={name} maxlength={80} placeholder={kind === 'github' ? 'GitHub Enterprise' : 'Company Forgejo'} />
-    </label>
-    <label class="block space-y-1 text-xs text-muted">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Base URL</span>
-      <Input size="sm" bind:value={baseUrl} class="font-mono" placeholder={kind === 'github' ? 'https://github.com or https://ghe.example.com' : 'https://git.example.com'} />
-      <span class="block text-[11px]">The host's origin, https:// (plain http:// only to this machine's loopback).</span>
-    </label>
-    <label class="block space-y-1 text-xs text-muted">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Id</span>
-      <Input size="sm" bind:value={id} oninput={() => (idTouched = true)} maxlength={40} class="font-mono" placeholder="company-forgejo" />
-      <span class="block text-[11px]">A short slug agents name the host by when a repo is on two hosts.</span>
-    </label>
-    <p class="text-xs text-muted">
+    <SettingsField label="Name" for="git-host-name">
+      <Input id="git-host-name" size="sm" bind:value={name} maxlength={80} placeholder={kind === 'github' ? 'GitHub Enterprise' : 'Company Forgejo'} />
+    </SettingsField>
+    <SettingsField label="Base URL" for="git-host-url" hint="The host's address, starting with https://.">
+      <Input
+        id="git-host-url"
+        size="sm"
+        bind:value={baseUrl}
+        class="font-mono"
+        placeholder={kind === 'github' ? 'https://github.com' : 'https://git.example.com'}
+      />
+    </SettingsField>
+    <SettingsField label="Id" for="git-host-id" hint="A short name agents use when a repository is on two hosts.">
+      <Input id="git-host-id" size="sm" bind:value={id} oninput={() => (idTouched = true)} maxlength={40} class="font-mono" placeholder="company-forgejo" />
+    </SettingsField>
+    <p class="font-sans text-[13px] leading-5 text-muted">
       {kind === 'github'
-        ? 'Once added, open it to connect a GitHub App (recommended) or an access token.'
-        : 'Once added, open it to name the workspace secret that holds its token.'}
+        ? 'Next, connect it with a GitHub App or an access token.'
+        : 'Next, choose the workspace secret that holds its token.'}
     </p>
-    {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
+    {#if error}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
   </div>
   {#snippet footer()}
-    <Button size="sm" variant="ghost" onclick={() => (adding = false)}>Cancel</Button>
-    <Button size="sm" disabled={busy || !id.trim() || !name.trim() || !baseUrl.trim()} onclick={() => void create()}>Add host</Button>
+    <div class="flex justify-end gap-2">
+      <Button size="sm" variant="ghost" onclick={() => (adding = false)}>Cancel</Button>
+      <Button size="sm" disabled={busy || !id.trim() || !name.trim() || !baseUrl.trim()} onclick={() => void create()}>Add host</Button>
+    </div>
   {/snippet}
 </Modal>

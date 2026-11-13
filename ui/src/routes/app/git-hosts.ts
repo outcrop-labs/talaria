@@ -77,6 +77,44 @@ export function useGitHostsRefresh() {
 export const hostInUse = (h: GitHost): boolean =>
   !!h.inUse && h.inUse.grants + h.inUse.jobs + h.inUse.repoRequests + h.inUse.installRequests + h.inUse.plugins > 0
 
+/** What still names the host, in words: "3 grants · 41 jobs". Empty when nothing does. */
+export function inUseSummary(h: GitHost): string {
+  const u = h.inUse
+  if (!u) return ''
+  const count = (n: number, noun: string) => (n ? [`${n} ${noun}${n === 1 ? '' : 's'}`] : [])
+  return [
+    ...count(u.grants, 'grant'),
+    ...count(u.jobs, 'job'),
+    ...count(u.repoRequests, 'repo request'),
+    ...count(u.installRequests, 'install request'),
+    ...count(u.plugins, 'plugin'),
+  ].join(' · ')
+}
+
+/** A host's row status. `fix` is the one action that resolves it: a host that
+ *  never had a connection needs one, a host whose connection stopped
+ *  answering needs it replaced. */
+export interface HostState {
+  status: 'ok' | 'warn' | 'danger' | 'idle'
+  word: string
+  fix: 'connect' | 'reconnect' | null
+}
+
+/** `read` is the live status read itself: a host we could not ask is not a
+ *  host that is down, so a failed read claims nothing about the connection. */
+export function hostState(read: 'pending' | 'failed' | 'ok', status: GitHostStatus | undefined): HostState {
+  if (read === 'pending') return { status: 'idle', word: 'Checking', fix: null }
+  if (read === 'failed' || !status) return { status: 'warn', word: 'Status unknown', fix: null }
+  if (!status.configured) return { status: 'warn', word: 'Not connected', fix: 'connect' }
+  if (!status.error) return { status: 'ok', word: 'Connected', fix: null }
+  const word = /revoked/i.test(status.error)
+    ? 'Token revoked'
+    : /\b40[13]\b|unauthori[sz]ed|forbidden/i.test(status.error)
+      ? 'Not authorized'
+      : 'Connection failed'
+  return { status: 'danger', word, fix: 'reconnect' }
+}
+
 /** A repo on a host, as the workbench routes spell it. */
 export interface HostRepo {
   host: string
