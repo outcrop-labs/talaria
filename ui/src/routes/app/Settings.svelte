@@ -2,7 +2,7 @@
   import PageSurface from '@/components/app/PageSurface.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { navigate, route } from '@/router'
+  import { route } from '@/router'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -17,7 +17,6 @@
   import AppSurface from '@/components/app/AppSurface.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { appAccess } from '@/lib/app-grants'
-  import Tabs from '@/components/ui/Tabs.svelte'
   import { fly, staggerIn } from '@/lib/motion'
   import { claimViewTitle } from '@/lib/view-title.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
@@ -68,10 +67,6 @@
     const raw = route.pathname.startsWith('/settings/') ? decodeURIComponent(route.pathname.slice('/settings/'.length)) : ''
     return /^app:[a-z0-9-]+$/.test(raw) ? (raw as SettingsTab) : 'profile'
   })
-  const setTab = (t: SettingsTab) => {
-    if (t === 'profile') void navigate('/settings')
-    else void navigate('/settings/:tab', { params: { tab: t } })
-  }
   // Enabled apps with a settings surface get their own tab, labeled by the
   // app — only for people granted it. A settings tab follows the app's
   // MANAGE grant (app-grants.ts); it used to follow the work view, which a
@@ -109,8 +104,7 @@
 
 <PageSurface>
   <div>
-    <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} class="mb-6" />
-    {#if appsList.notice}<div class="-mt-4 mb-6"><QueryError {...appsList.notice} /></div>{/if}
+    {#if appsList.notice}<div class="mb-6"><QueryError {...appsList.notice} /></div>{/if}
     <!-- Tab-pane grammar: pane rises in on switch (no exit) and its sections
          stagger — settings panes are section stacks. Keying is safe here: the
          profile input's state (`name`) lives in this component, not the pane.

@@ -6,7 +6,7 @@
   import WingMark from '@/components/WingMark.svelte'
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
   import TabBar from '@/components/app/TabBar.svelte'
-  import ManageSidebar from '@/components/app/ManageSidebar.svelte'
+  import SettingsSidebar from '@/components/settings/SettingsSidebar.svelte'
   import DesktopTitlebar from '@/components/app/DesktopTitlebar.svelte'
   import FileViewerHost from '@/components/app/FileViewerHost.svelte'
   import TimezoneAdopt from '@/components/app/TimezoneAdopt.svelte'
@@ -37,9 +37,10 @@
   // had room for. Its contents moved into the dock's right cluster and the
   // component was deleted.
   //
-  // The manage half of the menu is the /manage area: the dock's gear goes to
-  // its overview, and ManageSidebar (a sibling below) is docked beside every
-  // manage page — a column at md and up, a strip above the page below it.
+  // The manage half of the menu is the settings area: the dock's gear goes to
+  // its overview, and SettingsSidebar (a sibling below) is docked beside every
+  // manage, settings and admin page — a column at md and up, a strip above the
+  // page below it.
   let { children }: { children: Snippet } = $props()
 
   const session = useSession()
@@ -281,7 +282,7 @@
          of the drawer. Nothing sits between it and the view any more. -->
     <TabBar {user} onLogout={() => void logout()} />
     <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
-      <ManageSidebar {user} />
+      <SettingsSidebar {user} />
       <!-- THE ASSISTANT DRAWER IS A PEER OF THE DOCK'S ROW, not of the page
            body. It used to open inside `vt-view`, below the top strip and
            the banner, so a panel that is conceptually a second rail started
