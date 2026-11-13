@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -15,7 +15,7 @@
   let { perms }: { perms: PermsData } = $props()
 
   const qc = useQueryClient()
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
   const set = async (perm: string, enabled: boolean | null) => {
     try {
       await putJson<{ ok: true }>('/api/admin/permissions', { orgDefault: { perm, enabled } })

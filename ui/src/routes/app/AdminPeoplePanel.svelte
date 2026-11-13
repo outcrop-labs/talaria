@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsField from '@/components/settings/SettingsField.svelte'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -28,7 +28,7 @@
   // The people of the instance as a table: who they are, their role, a one-line
   // summary of what they can reach, and the full access controls under the row.
   const qc = useQueryClient()
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
   const session = useSession()
   const me = $derived(session.data)
   const usersQuery = useAdminUsers()

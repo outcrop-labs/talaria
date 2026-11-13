@@ -5,7 +5,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { inlineEditKeys } from '@/components/ui/control'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
 
   /** The instance's DISPLAY name — the second half of every browser tab
@@ -25,7 +25,7 @@
   let seeded = $state(false)
   let error = $state<string | null>(null)
   let busy = $state(false)
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
   // Seed the input once the current name arrives, and only once — later
   // refetches (another admin's change) must not clobber what's being typed.
   $effect(() => {

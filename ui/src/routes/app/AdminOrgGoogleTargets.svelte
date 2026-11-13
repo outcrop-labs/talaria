@@ -3,7 +3,7 @@
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Input from '@/components/ui/Input.svelte'
   import { inlineEditKeys } from '@/components/ui/control'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
 
@@ -22,7 +22,7 @@
   let cal = $state(targets.calendarId ?? '')
   // svelte-ignore state_referenced_locally -- reason: seed-once form drafts; parent gates on loaded data, dirty tracks the live prop
   let sendAs = $state(targets.sendAs ?? '')
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
   const dirty = $derived(drive !== (targets.driveFolderId ?? '') || cal !== (targets.calendarId ?? '') || sendAs !== (targets.sendAs ?? ''))
   const save = async () => {
     if (!dirty) return

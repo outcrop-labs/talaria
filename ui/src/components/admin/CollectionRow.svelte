@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -37,7 +37,7 @@
   } = $props()
 
   const qc = useQueryClient()
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
   const agentsQuery = useAgents()
   const fleet = $derived(agentsQuery.data)
   // These two feed the pickers that decide WHO CAN RETRIEVE this collection.

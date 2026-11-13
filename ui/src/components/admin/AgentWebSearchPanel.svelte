@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -26,7 +26,7 @@
   type Field = 'backend' | 'extractBackend'
 
   const qc = useQueryClient()
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
   const query = useAgentWebSearch()
   let draft = $state<{ field: Field; name: string } | null>(null)
   let typed = $state<Record<string, string>>({})

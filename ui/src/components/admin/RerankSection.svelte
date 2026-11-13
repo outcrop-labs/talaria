@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -19,7 +19,7 @@
   let { rag }: { rag: RagAdmin } = $props()
 
   const qc = useQueryClient()
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
   const cfg = $derived(rag.rerank.config)
   let key = $state('')
   let models = $state<string[] | null>(null)

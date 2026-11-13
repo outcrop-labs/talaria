@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SaveAction from '@/components/admin/SaveAction.svelte'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -20,7 +20,7 @@
   const qc = useQueryClient()
   const query = useAdminSettings()
   const data = $derived(query.data)
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
   let days = $state('')
   const value = $derived(days !== '' ? days : String(data?.auditRetentionDays ?? ''))
   const save = async () => {

@@ -9,7 +9,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import { cn } from '@/lib/cn'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
@@ -47,7 +47,7 @@
     queryFn: (): Promise<Body> => getJson<Body>('/api/admin/coding-accounts'),
   }))
   const data = $derived(query.data)
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
 
   const save = async (patch: { enabled?: boolean; services?: string[] }) => {
     const body = {

@@ -3,24 +3,26 @@ import { createQuery } from '@tanstack/svelte-query'
 import { getJson, getList } from '@/lib/fetch-json'
 
 export type AdminTab = 'org' | 'people' | 'agents' | 'git' | 'search' | 'retrieval' | 'storage' | 'secrets' | 'security'
-export const ADMIN_TABS: { id: AdminTab; label: string }[] = [
-  { id: 'org', label: 'Organization' },
-  { id: 'people', label: 'People' },
-  { id: 'agents', label: 'Agents' },
+/** `autosave` marks a tab whose fields save on change, so the page header
+ *  says so there and nowhere else. */
+export const ADMIN_TABS: { id: AdminTab; label: string; autosave?: true }[] = [
+  { id: 'org', label: 'Organization', autosave: true },
+  { id: 'people', label: 'People', autosave: true },
+  { id: 'agents', label: 'Agents', autosave: true },
   // Where agents' repositories live: the operator's git hosts (GitHub,
   // Forgejo / Gitea), the repo requests waiting on a human, and each repo's
   // PR base.
-  { id: 'git', label: 'Git hosts' },
+  { id: 'git', label: 'Git hosts', autosave: true },
   // Two kinds of search, named for what is searched: the web, and the
   // workspace's own knowledge.
-  { id: 'search', label: 'Web search' },
-  { id: 'retrieval', label: 'Knowledge search' },
+  { id: 'search', label: 'Web search', autosave: true },
+  { id: 'retrieval', label: 'Knowledge search', autosave: true },
   { id: 'storage', label: 'Storage' },
   // Its own tab rather than a section under Security: an operator whose
   // secrets are unreadable is not thinking about security policy, and this is
   // the page they get linked to from the banner.
   { id: 'secrets', label: 'Secrets' },
-  { id: 'security', label: 'Security' },
+  { id: 'security', label: 'Security', autosave: true },
 ]
 
 export interface AdminUser {

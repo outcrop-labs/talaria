@@ -6,7 +6,7 @@
   import type { Fact } from '@/components/admin/facts'
   import SaveAction from '@/components/admin/SaveAction.svelte'
   import { secretHint } from '@/components/admin/secret-hint'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useSavedCue } from '@/components/admin/saved-cue'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -79,7 +79,7 @@
     await qc.invalidateQueries({ queryKey: ['decide-config'] })
     autosave.flash()
   }
-  const autosave = useAutosave()
+  const autosave = useSavedCue()
 
   let key = $state('')
   let savingKey = $state(false)
