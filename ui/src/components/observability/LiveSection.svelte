@@ -3,25 +3,15 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Stat from '@/components/settings/Stat.svelte'
   import StatStrip from '@/components/settings/StatStrip.svelte'
-  import StatusDot from '@/components/ui/StatusDot.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import { cn } from '@/lib/cn'
-  import { agentLabel, formatTokens } from '@/lib/cost.svelte'
-  import { relativeTime } from '@/lib/fleet'
-  import type { InferenceLive } from './inference'
-  import { table } from './grammar'
+  import ActiveAgents from './ActiveAgents.svelte'
+  import { fleetTrouble, type InferenceLive } from './inference'
 
   /** The live strip: generating-now, gateway pulse, fleet temperature, and the
    *  last hour of per-agent activity. */
   let { live }: { live: InferenceLive } = $props()
 
   const generatingTotal = $derived(live.generating.reduce((n, g) => n + g.count, 0))
-  const genByAgent = $derived(new Map(live.generating.map((g) => [g.agentModel, g.count])))
-  const troubled = $derived([
-    ...(live.fleet.warming ? [`${live.fleet.warming} warming`] : []),
-    ...(live.fleet.unhealthy ? [`${live.fleet.unhealthy} unhealthy`] : []),
-    ...(live.fleet.down ? [`${live.fleet.down} down`] : []),
-  ])
   const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`
 </script>
 
@@ -45,51 +35,20 @@
   <Stat
     label="Gateway requests"
     value={live.gateway.requests.toLocaleString('en-US')}
-    sub={`Last 15 min · ${live.gateway.errors ? `${live.gateway.errors} errors` : 'no errors'}`}
+    sub={`${live.gateway.errors ? `${live.gateway.errors} errors` : 'No errors'} · last 15 min`}
   />
   <Stat
     label="Time to first byte"
     value={live.gateway.p50 != null ? seconds(live.gateway.p50) : '—'}
     sub={live.gateway.p95 != null ? `Median · p95 ${seconds(live.gateway.p95)}` : 'No recent requests'}
   />
-  <Stat label="Agents running" value={live.fleet.running} sub={troubled.join(' · ') || 'All healthy'} />
+  <Stat label="Agents running" value={live.fleet.running} sub={fleetTrouble(live.fleet).join(' · ') || 'All healthy'} />
 </StatStrip>
 
 {#if live.lastHour.length > 0}
   <SettingsSection title="Active this hour" description="Agents that generated in the last 60 minutes.">
     <SettingsGroup>
-      <div class="overflow-x-auto">
-        <table class={table.root}>
-          <thead>
-            <tr>
-              <th class={table.th}>Agent</th>
-              <th class={table.th}>Status</th>
-              <th class={cn(table.th, table.num)}>Generations</th>
-              <th class={cn(table.th, table.num)}>Tokens</th>
-              <th class={cn(table.th, table.num)}>Last active</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each live.lastHour as a (a.agentModel)}
-              <tr class={table.tr}>
-                <td class={cn(table.td, 'font-medium')}>{agentLabel(a.agentModel).label}</td>
-                <td class={cn(table.td, 'text-[13px] text-muted')}>
-                  {#if genByAgent.has(a.agentModel)}
-                    <span class="flex items-center gap-2 text-fg">
-                      <WaitingMark site="observability/live-agent" size={12} class="text-accent" />Generating
-                    </span>
-                  {:else}
-                    <span class="flex items-center gap-2"><StatusDot status="idle" />Idle</span>
-                  {/if}
-                </td>
-                <td class={cn(table.td, table.num)}>{a.generations.toLocaleString('en-US')}</td>
-                <td class={cn(table.td, table.num)}>{formatTokens(a.tokens)}</td>
-                <td class={cn(table.td, table.num, 'text-muted')}>{relativeTime(a.lastAt)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+      <ActiveAgents {live} />
     </SettingsGroup>
   </SettingsSection>
 {/if}

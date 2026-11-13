@@ -2,6 +2,7 @@
 // (ComputePanel.svelte + LiveSection.svelte).
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
+import { HEALTH_LABEL } from '@/routes/app/agents.svelte'
 
 export interface LocalBackend {
   id: string
@@ -23,6 +24,19 @@ export interface InferenceData {
   backends: LocalBackend[]
   usage: { today: number; month: number; generations: number; perModel: Array<{ llmModel: string | null; tokens: number }> }
 }
+
+/** The agents that are not simply running, counted in the words the Agents
+ *  page puts beside the same states. Empty when every agent is healthy. */
+export const fleetTrouble = (fleet: InferenceLive['fleet']): string[] =>
+  (
+    [
+      ['warming', fleet.warming],
+      ['degraded', fleet.unhealthy],
+      ['down', fleet.down],
+    ] as const
+  )
+    .filter(([, count]) => count > 0)
+    .map(([health, count]) => `${count} ${HEALTH_LABEL[health].toLowerCase()}`)
 
 export const useInference = () =>
   createQuery(() => ({

@@ -72,8 +72,8 @@
       </Stat>
       <Stat
         label="Load, 1 min"
-        sub={load && cpu
-          ? `${load.one > cpu.cores ? 'Above ' : 'Of '}${cpu.cores} cores · 5 min ${load.five.toFixed(2)} · 15 min ${load.fifteen.toFixed(2)}`
+        sub={load
+          ? `${cpu && load.one > cpu.cores ? `Above ${cpu.cores} cores · ` : ''}5 min ${load.five.toFixed(2)} · 15 min ${load.fifteen.toFixed(2)}`
           : undefined}
       >
         {#snippet value()}

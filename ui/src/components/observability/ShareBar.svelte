@@ -1,7 +1,7 @@
 <script lang="ts">
   // One part of a whole, as a bar on a full-width track with its percentage
-  // at the right. `color` is the series colour when the bar belongs to one.
-  let { share, color = 'var(--theme-accent)' }: { share: number; color?: string } = $props()
+  // at the right, in the colour of the series it belongs to.
+  let { share, color }: { share: number; color: string } = $props()
 
   const percent = $derived(Math.min(100, Math.max(0, share * 100)))
   const text = $derived(percent > 0 && percent < 1 ? '<1%' : `${Math.round(percent)}%`)

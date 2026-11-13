@@ -14,6 +14,7 @@
   import { useSession } from '@/lib/session'
   import { useInference } from './inference'
   import LiveSection from './LiveSection.svelte'
+  import { SERIES } from './series'
   import ShareBar from './ShareBar.svelte'
   import StatStripSkeleton from './StatStripSkeleton.svelte'
   import { sectionLink, table } from './grammar'
@@ -111,7 +112,7 @@
                 {#each perModel as m (m.llmModel ?? '?')}
                   <tr class={table.tr}>
                     <td class={cn(table.td, m.llmModel ? table.id : 'text-muted')}>{m.llmModel ?? 'Unattributed'}</td>
-                    <td class={table.td}><ShareBar share={servedTokens ? m.tokens / servedTokens : 0} /></td>
+                    <td class={table.td}><ShareBar share={servedTokens ? m.tokens / servedTokens : 0} color={SERIES.local.color} /></td>
                     <td class={cn(table.td, table.num)}>{formatTokens(m.tokens)}</td>
                   </tr>
                 {/each}
