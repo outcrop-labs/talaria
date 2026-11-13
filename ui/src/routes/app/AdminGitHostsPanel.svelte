@@ -18,10 +18,12 @@
    *  on. Operators choose their providers — GitHub (github.com or an
    *  Enterprise Server) or Forgejo / Gitea — and agents reach a repo only
    *  through the host it lives on and a per-agent grant. */
+  /** The add dialog. The page header's "Add host" button opens it. */
+  let { adding = $bindable(false) }: { adding?: boolean } = $props()
+
   const query = useGitHosts()
   const refresh = useGitHostsRefresh()
 
-  let adding = $state(false)
   let kind = $state<GitHostKind>('forgejo')
   let id = $state('')
   let name = $state('')
@@ -29,13 +31,15 @@
   let busy = $state(false)
   let error = $state<string | null>(null)
 
-  const open = () => {
+  // Closing drops the draft, so the dialog always opens empty.
+  const close = () => {
+    adding = false
     kind = 'forgejo'
     id = ''
     name = ''
     baseUrl = ''
+    idTouched = false
     error = null
-    adding = true
   }
   // The slug follows the name until it is typed itself.
   let idTouched = $state(false)
@@ -54,8 +58,7 @@
     error = null
     try {
       await postJson('/api/workbench/git-hosts', { id: id.trim(), kind, name: name.trim(), baseUrl: baseUrl.trim() })
-      adding = false
-      idTouched = false
+      close()
     } catch (e) {
       error = errorMessage(e)
     }
@@ -69,14 +72,11 @@
   description="Where your agents' repositories live."
   info="Add each git host your agents work on. Which agent may touch which repository stays a grant you give per agent. A GitHub host connects with a GitHub App or an access token. A Forgejo or Gitea host signs in with a workspace secret."
 >
-  {#snippet action()}
-    <Button size="sm" variant="outline" onclick={open}>Add host</Button>
-  {/snippet}
   <SettingsGroup>
     <QueryState {query} errorTitle="Could not load the git hosts" errorVariant="compact" isEmpty={(d) => d.hosts.length === 0}>
       {#snippet skeleton()}<div class="px-5 py-4"><SkeletonRows rows={2} avatar /></div>{/snippet}
       {#snippet empty()}
-        <EmptyState variant="compact" title="No git host yet" hint="Agents cannot start a coding job until a host is connected." />
+        <EmptyState variant="compact" title="No git host yet" hint="Agents cannot start a coding job until a host is connected. Use Add host at the top of the page." />
       {/snippet}
       {#snippet children(d)}
         {#each d.hosts as h (h.id)}<AdminGitHostRow host={h} />{/each}
@@ -85,7 +85,7 @@
   </SettingsGroup>
 </SettingsSection>
 
-<Modal open={adding} onClose={() => (adding = false)} title="Add git host" width="max-w-lg">
+<Modal open={adding} onClose={close} title="Add git host" width="max-w-lg">
   <div class="space-y-5">
     <Segmented
       options={[
@@ -122,7 +122,7 @@
   </div>
   {#snippet footer()}
     <div class="flex justify-end gap-2">
-      <Button size="sm" variant="ghost" onclick={() => (adding = false)}>Cancel</Button>
+      <Button size="sm" variant="ghost" onclick={close}>Cancel</Button>
       <Button size="sm" disabled={busy || !id.trim() || !name.trim() || !baseUrl.trim()} onclick={() => void create()}>Add host</Button>
     </div>
   {/snippet}

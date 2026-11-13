@@ -46,6 +46,7 @@
   // Each tab's one primary action sits in the page header; the panel that
   // owns the dialog binds its open state here.
   let inviting = $state(false)
+  let addingHost = $state(false)
   let addingCredentials = $state(false)
 
   // /admin/security deep-links a concern.
@@ -65,6 +66,8 @@
       {#snippet actions()}
         {#if tab === 'people'}
           <Button size="sm" onclick={() => (inviting = true)}>Invite people</Button>
+        {:else if tab === 'git'}
+          <Button size="sm" onclick={() => (addingHost = true)}>Add host</Button>
         {:else if tab === 'secrets'}
           <Button size="sm" onclick={() => (addingCredentials = true)}>Add credentials</Button>
         {/if}
@@ -103,7 +106,7 @@
       {/if}
       {#if tab === 'git'}
         <!-- The hosts first: requests and PR bases are about repos on them. -->
-        <AdminGitHostsPanel />
+        <AdminGitHostsPanel bind:adding={addingHost} />
         <AdminRepoCreationSection />
         <AdminRepoFlowSection />
       {/if}

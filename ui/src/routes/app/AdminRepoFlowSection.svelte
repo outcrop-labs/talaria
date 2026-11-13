@@ -8,7 +8,7 @@
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { repoKey, type HostRepo } from './git-hosts'
@@ -28,7 +28,7 @@
     queryFn: (): Promise<FlowData> => getJson<FlowData>('/api/workbench/flow'),
   }))
   const data = $derived(query.data)
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
 
   const save = async (r: HostRepo, baseBranch: string | null) => {
     try {
@@ -37,7 +37,7 @@
       toastError('Save failed', e)
       return
     }
-    savedFlash.flash()
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
   }
   // Every reachable repo is a row; configs for repos a host no longer
@@ -60,9 +60,6 @@
   description="The branch each repository's jobs start from and its pull requests target."
   info="Leave a field blank to use the repository's default branch. Talaria's job ends at the pull request. How it is reviewed and merged belongs to the repository's own branch protection and CI."
 >
-  {#snippet action()}
-    {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
-  {/snippet}
   <SettingsGroup>
     {#if !data}
       {#if query.isError}
@@ -72,14 +69,14 @@
       {/if}
     {:else}
       {#each data.hosts.filter((h) => h.error) as h (h.id)}
-        <NoticeRow status="warn">{h.name} could not list its repositories: {h.error}</NoticeRow>
+        <NoticeRow status="danger">{h.name} could not list its repositories: {h.error}</NoticeRow>
       {/each}
       {#each rows as r (repoKey(r))}
         {@const f = data.flows.find((x) => x.host === r.host && x.repo === r.repo)}
         {@const unreachable = !data.repos.some((x) => x.host === r.host && x.repo === r.repo)}
         <SettingsRow hint={manyHosts ? hostName(r.host) : undefined} as="label">
           {#snippet label()}<span class="font-mono text-[13px] font-normal">{r.repo}</span>{/snippet}
-          {#snippet status()}{#if unreachable}<RowStatus status="warn">Unreachable</RowStatus>{/if}{/snippet}
+          {#snippet status()}{#if unreachable}<RowStatus status="danger">Unreachable</RowStatus>{/if}{/snippet}
           <Input
             size="sm"
             class="w-[280px] font-mono"

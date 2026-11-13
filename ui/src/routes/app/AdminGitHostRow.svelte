@@ -1,5 +1,6 @@
 <script lang="ts">
   import { GitBranch } from '@lucide/svelte'
+  import { publicIconDomain } from '@/lib/icon-domain'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -9,6 +10,7 @@
   import type { Fact } from '@/components/admin/facts'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -18,6 +20,7 @@
   import { slide } from '@/lib/motion'
   import { useWorkspaceSecrets } from '@/lib/workspace-secrets'
   import AdminGithubConnectModal from './AdminGithubConnectModal.svelte'
+  import McpServerMark from './McpServerMark.svelte'
   import { hostInUse, hostState, inUseSummary, useGitHost, useGitHostsRefresh, type GitHost, type GitHostTest } from './git-hosts'
 
   /** One git host in Admin → Git hosts: what it is and whether its connection
@@ -133,9 +136,12 @@
     if (current.kind === 'github') connecting = true
     else edit()
   }
+  // The host's own mark: GitHub's for any GitHub host, and a self-hosted
+  // one's own favicon when its address is public.
+  const markDomain = $derived(current.kind === 'github' ? 'github.com' : publicIconDomain(hostname))
   const menu = $derived.by((): ContextMenuEntry[] => [
+    { label: 'Edit host', onSelect: edit },
     { label: 'Test connection', disabled: testing, onSelect: () => void test() },
-    ...(fix ? [{ label: 'Edit host', onSelect: edit }] : []),
     ...(!fix && current.kind === 'github' ? [{ label: 'Change connection', onSelect: () => (connecting = true) }] : []),
     'sep',
     { label: 'Remove host', danger: true, disabled: hostInUse(host), onSelect: () => void remove() },
@@ -158,18 +164,24 @@
 </script>
 
 <div data-testid="git-host">
-  <SettingsRow label={current.name}>
-    {#snippet icon()}<GitBranch size={16} />{/snippet}
+  <SettingsRow label={current.name} onOpen={edit} openLabel={`Edit ${current.name}`}>
+    {#snippet lead()}
+      {#if markDomain}
+        <!-- GitHub's mark is one black shape, which the dark theme's tile would
+             swallow. GitHub publishes the same mark in white, so it is inverted there. -->
+        <span class={current.kind === 'github' ? "[[data-theme='mercury']_&_img]:invert" : undefined}>
+          <McpServerMark title={current.name} domain={markDomain} />
+        </span>
+      {:else}
+        <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-raised text-muted"><GitBranch size={16} /></span>
+      {/if}
+    {/snippet}
     {#snippet meta()}<Chip>{current.kindLabel}</Chip>{/snippet}
     {#snippet hint()}
       <span class="font-mono text-xs">{current.baseUrl}</span>{#if detail}{' · '}{detail}{/if}
     {/snippet}
     {#snippet status()}<RowStatus status={testing ? 'idle' : conn.status}>{testing ? 'Testing' : conn.word}</RowStatus>{/snippet}
-    {#if fix}
-      <Button variant="outline" size="sm" onclick={openFix}>{fix}</Button>
-    {:else}
-      <Button variant="outline" size="sm" onclick={edit}>Manage</Button>
-    {/if}
+    {#if fix}<Button variant="outline" size="sm" onclick={openFix}>{fix}</Button>{/if}
     <SettingsRowMenu label={`Actions for ${current.name}`} items={menu} />
   </SettingsRow>
   {#if tested}
@@ -236,7 +248,17 @@
       </div>
     </div>
     {#snippet footer()}
-      <div class="flex justify-end gap-2">
+      <div class="flex items-center gap-2">
+        <DangerLink
+          disabled={hostInUse(host)}
+          onClick={() => {
+            open = false
+            void remove()
+          }}
+        >
+          Remove host
+        </DangerLink>
+        <span class="flex-1"></span>
         <Button size="sm" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
         <Button size="sm" disabled={busy || !name.trim() || !baseUrl.trim()} onclick={() => void save()}>Save</Button>
       </div>

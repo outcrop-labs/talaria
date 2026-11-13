@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { FolderGit } from '@lucide/svelte'
   import NoticeRow from '@/components/admin/NoticeRow.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
@@ -109,7 +108,6 @@
     {#each requests as r (r.id)}
       <SettingsGroup data-testid="repo-request">
         <SettingsRow>
-          {#snippet icon()}<FolderGit size={16} />{/snippet}
           {#snippet label()}<span class="font-mono text-[13px] font-normal">{r.org}/{r.name}</span>{/snippet}
           {#snippet meta()}{#if r.appSlug}<Chip title="The Talaria app this repository will hold">App {r.appSlug}</Chip>{/if}{/snippet}
           {#snippet hint()}
