@@ -6,7 +6,9 @@
   import { cn } from '@/lib/cn'
   import { staggerIn } from '@/lib/motion'
   import { setUiVoice } from '@/lib/ui-voice'
+  import { Check } from '@lucide/svelte'
   import { claimViewTitle } from '@/lib/view-title.svelte'
+  import { provideAutosave } from './autosave.svelte'
 
   // The settings area's page grammar: a title and one sentence, the tabs, then
   // the content. Every page in the area renders exactly one.
@@ -17,6 +19,8 @@
     tab,
     onTab,
     actions,
+    autosave = false,
+    saved = false,
     fill = false,
     staggerItems,
     children,
@@ -29,6 +33,11 @@
     onTab?: (id: T) => void
     /** Right of the title. At most one primary button. */
     actions?: Snippet
+    /** The page's fields save on change, so the header says so. A field inside
+     *  the page can ask for the same cue with `useAutosave()`. */
+    autosave?: boolean
+    /** Flash "Saved" in the cue, for a page that owns its own save. */
+    saved?: boolean
     /** The content takes the window height left under the header, for a pane
      *  that owns its own scroll (a `LibraryPane`). */
     fill?: boolean
@@ -39,6 +48,7 @@
   } = $props()
 
   setUiVoice('sans')
+  const cue = provideAutosave()
   // svelte-ignore state_referenced_locally -- reason: called during render, so it re-runs with fresh props on every render
   claimViewTitle(title)
 </script>
@@ -50,7 +60,16 @@
         <h1 class="font-sans text-[22px] font-semibold leading-7 tracking-[-0.01em] text-fg">{title}</h1>
         {#if blurb}<p class="mt-1 max-w-[72ch] font-sans text-sm leading-5 text-muted">{blurb}</p>{/if}
       </div>
-      {#if actions}<div class="flex shrink-0 flex-wrap items-center gap-2">{@render actions()}</div>{/if}
+      {#if autosave || cue.active || actions}
+        <div class="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
+          {#if autosave || cue.active}
+            <span role="status" class="flex h-8 items-center gap-1.5 font-sans text-[13px] leading-5 text-muted">
+              {#if saved || cue.saved}<Check size={14} aria-hidden="true" class="text-success" />Saved{:else}Changes save automatically{/if}
+            </span>
+          {/if}
+          {#if actions}<div class="flex flex-wrap items-center gap-2">{@render actions()}</div>{/if}
+        </div>
+      {/if}
     </header>
     {#if tabs && tab !== undefined && onTab}
       <Tabs items={tabs} value={tab} onChange={onTab} class="mt-5 shrink-0" />

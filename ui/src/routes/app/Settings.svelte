@@ -105,7 +105,7 @@
   }
 </script>
 
-<SettingsPage title={page.label} blurb={page.blurb}>
+<SettingsPage title={page.label} blurb={page.blurb} autosave={tab === 'profile'} saved={savedFlash.saved}>
     {#if appsList.notice}<QueryError {...appsList.notice} />{/if}
     <!-- Pane grammar: the pane rises in on switch (no exit) and its sections
          stagger. Keying is safe here: the profile input's state (`name`)
@@ -122,7 +122,6 @@
         {:else}
           <ProfilePhotoField {user} />
           <SettingsRow label="Name" hint="How teammates and agents see you." as="label">
-            {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
             <Input
               size="sm"
               class="w-[280px]"
