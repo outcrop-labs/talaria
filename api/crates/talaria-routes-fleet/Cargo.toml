@@ -50,6 +50,7 @@ talaria-personal-agent = { workspace = true }
 talaria-price-oracle = { workspace = true }
 talaria-ratelimit = { workspace = true }
 talaria-realtime-watch = { workspace = true }
+talaria-runs-store = { workspace = true }
 talaria-safe-fetch = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-session = { workspace = true }
