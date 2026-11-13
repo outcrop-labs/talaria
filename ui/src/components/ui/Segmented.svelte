@@ -1,6 +1,7 @@
 <script lang="ts" generics="T extends string">
   import { cn } from '@/lib/cn'
   import { markCrossfade } from '@/lib/motion'
+  import { sansVoice, type ButtonVoice } from './button'
   import { focusRing } from './control'
   import type { SegmentedOption } from './segmented'
 
@@ -13,12 +14,17 @@
     value,
     onChange,
     size = 'sm',
+    variant = 'dither',
+    voice = 'mono',
     class: className,
   }: {
     options: ReadonlyArray<SegmentedOption<T>>
     value: T
     onChange: (id: T) => void
     size?: 'xs' | 'sm'
+    variant?: 'dither' | 'solid'
+    /** `sans` is Home's Inbox's sentence-case voice; every other surface keeps the mono default. */
+    voice?: ButtonVoice
     class?: string
   } = $props()
 
@@ -30,6 +36,7 @@
 <div class={cn('relative inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
   {#each options as o (o.id)}
     <button
+      {...o.data}
       type="button"
       title={o.title}
       aria-pressed={value === o.id}
@@ -38,7 +45,8 @@
         'relative select-none rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,
         size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : 'px-2.5 py-1 text-[10px] leading-4',
-        'dither-fill',
+        voice === 'sans' && cn(sansVoice, 'px-2.5 font-medium leading-5'),
+        variant === 'dither' && 'dither-fill',
         value === o.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}
     >
@@ -47,8 +55,11 @@
           aria-hidden="true"
           in:receiveMark={{ key: 'mark' }}
           out:sendMark={{ key: 'mark' }}
-          data-dither-band="0"
-          class="dither-mark absolute inset-0 rounded bg-raised"
+          data-dither-band={variant === 'dither' ? '0' : undefined}
+          class={cn(
+            'absolute inset-0 rounded bg-raised',
+            variant === 'dither' ? 'dither-mark' : 'border border-line-strong shadow-[var(--theme-shadow-1)]',
+          )}
         ></span>
       {/if}
       <span class="relative">
