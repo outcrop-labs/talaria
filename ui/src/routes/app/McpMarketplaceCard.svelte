@@ -52,7 +52,7 @@
 </script>
 
 {#if sans}
-  <div class={cn('flex flex-col rounded-lg border border-line p-4 transition-colors hover:border-line-strong', dead && 'opacity-70')}>
+  <div data-mcp-market={l.registryName} class={cn('flex flex-col rounded-lg border border-line p-4 transition-colors hover:border-line-strong', dead && 'opacity-70')}>
     <div class="flex items-center gap-3">
       <McpServerMark title={l.title} domain={l.domain} icon={l.icon} />
       <div class="min-w-0 flex-1">

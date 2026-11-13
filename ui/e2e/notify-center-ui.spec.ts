@@ -166,6 +166,10 @@ function bellRows(other: Person): Seed[] {
 }
 
 const bell = (page: Page) => page.getByRole('button', { name: 'Notifications', exact: true })
+/** Settings → Notifications keeps what only explains a miss (this browser's
+ *  checks, the live connection) behind a closed Troubleshooting card. The
+ *  card stays mounted, so its readings are live before it is opened. */
+const openTroubleshooting = (page: Page) => page.getByRole('button', { name: 'Troubleshooting' }).click()
 const bellRowsIn = (page: Page) => page.locator('[data-bell-list] [data-notification-row]')
 
 async function openBell(page: Page) {
@@ -464,7 +468,11 @@ test.describe('the status panel', () => {
     const page = await ctx.newPage()
     await page.goto('/settings/notifications')
     const perm = page.locator('[data-browser-checks] [data-check="permission"]')
+    // Read once while the card is still closed, then opened so the flips
+    // below are the ones a person watching the row would see.
     await expect(perm).toHaveAttribute('data-state', 'default')
+    await openTroubleshooting(page)
+    await expect(perm).toBeVisible()
     await page.evaluate(() => ((window as unknown as { __nc: number }).__nc = 1))
     const origin = new URL(BASE_URL).origin
     if (browserName === 'chromium') {
@@ -506,6 +514,8 @@ test.describe('the status panel', () => {
     await expect(rows).toHaveCount(2)
     await expect(page.locator('[data-this-browser="true"]')).toHaveAttribute('data-device', mine!.id)
     await expect(page.locator('[data-this-browser="true"]')).toContainText('This browser')
+    await openTroubleshooting(page)
+    await expect(page.locator('[data-check="server"]')).toBeVisible()
     await expect(page.locator('[data-check="server"]')).toHaveAttribute('data-state', 'yes')
 
     const thisRow = page.locator(`[data-device="${mine!.id}"]`)
@@ -535,7 +545,7 @@ test.describe('the status panel', () => {
     await expect(result).toHaveAttribute('data-device-result', 'limited')
     await expect(result).toContainText(/Try again in \d+ (min|s)/)
 
-    await page.locator('[data-notify-devices] [data-device]:not([data-this-browser])').getByRole('button', { name: 'Remove' }).click()
+    await page.locator('[data-notify-devices] [data-device]:not([data-this-browser])').getByRole('button', { name: 'Remove browser', exact: true }).click()
     await page.locator('[role="dialog"]').getByRole('button', { name: 'Remove' }).click()
     await expect(rows).toHaveCount(1)
     expect((await sql`select count(*)::int as n from push_subscriptions where user_id = ${p.id}::uuid`)[0]?.n).toBe(1)
@@ -551,6 +561,8 @@ test.describe('the status panel', () => {
     await page.goto('/settings/notifications')
     const r = await page.request.put('/api/me/presence', { data: { clientId: 'desk-nc-e2e-0001', kind: 'desktop', state: 'active', osIdleMs: 1000 } })
     expect(r.status()).toBe(200)
+    await openTroubleshooting(page)
+    await expect(page.locator('[data-status-section="live"]')).toBeVisible()
     await expect(page.locator('[data-live="clients"]')).toContainText('Talaria Desktop (active)', { timeout: 20_000 })
     // The winner rule (I-17): the client being looked at, else the active
     // one. A web runtime that heartbeats (W2-R) makes this tab the one being

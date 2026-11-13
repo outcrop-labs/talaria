@@ -114,13 +114,17 @@ async function closeDialogs(page: Page) {
   await expect(page.getByRole('dialog')).toHaveCount(0)
 }
 
-/** The tool strip and status chip of a registry card, after a discovery. */
-async function expectReadyCard(page: Page, label: string, status: string) {
-  const card = registryCard(page, label)
+/** A registry row after a discovery: its status word and its tool count on
+ *  the row, and the tool names one level down, in Manage. */
+async function expectReadyCard(page: Page, server: { title: string; slug: string }, status: string) {
+  const card = registryCard(page, server.slug)
   await expect(card).toBeVisible()
-  await expect(card.getByRole('button', { name: new RegExp(`^${STUB_TOOLS.length} tools`) })).toBeVisible()
-  for (const t of STUB_TOOLS) await expect(card.getByText(t, { exact: true })).toBeVisible()
   await expect(card.getByText(status, { exact: true })).toBeVisible()
+  await expect(card.getByText(new RegExp(`^${STUB_TOOLS.length} tools\\b`))).toBeVisible()
+  await card.getByRole('button', { name: 'Manage', exact: true }).click()
+  const manage = page.getByRole('dialog').filter({ hasText: server.title })
+  for (const t of STUB_TOOLS) await expect(manage.getByText(t, { exact: true })).toBeVisible()
+  await closeDialogs(page)
 }
 
 test('1 · the catalog syncs from the stub registry and the marketplace finds it', async ({ page }) => {
@@ -170,7 +174,7 @@ test('1 · the catalog syncs from the stub registry and the marketplace finds it
   }
   await expect(dialog.getByText('E2E Open (old)', { exact: true })).toHaveCount(0)
   // The package entry says what it is before anyone installs it.
-  await expect(marketCard(dialog, STUB.pkg.title).getByText('pkg', { exact: true })).toBeVisible()
+  await expect(marketCard(dialog, STUB.pkg.title).getByText('Package', { exact: true })).toBeVisible()
 })
 
 test('2 · installing an open server from the marketplace lands it ready, with its tools', async ({ page }) => {
@@ -182,7 +186,7 @@ test('2 · installing an open server from the marketplace lands it ready, with i
   expect(row.tools.map((t) => t.name).sort()).toEqual([...STUB_TOOLS].sort())
 
   await closeDialogs(page)
-  await expectReadyCard(page, STUB.open.title, 'ready')
+  await expectReadyCard(page, STUB.open, 'Ready')
 })
 
 test('3 · a server that answers 401 asks for its key, and connects once it has it', async ({ page }) => {
@@ -193,8 +197,8 @@ test('3 · a server that answers 401 asks for its key, and connects once it has 
   if (!MARKETPLACE) {
     // No marketplace to open the editor on its own: the card says what the
     // server needs, and its one button is the way in.
-    const card = registryCard(page, STUB.key.title)
-    await expect(card.getByText('needs credentials', { exact: true })).toBeVisible()
+    const card = registryCard(page, STUB.key.slug)
+    await expect(card.getByText('Needs credentials', { exact: true })).toBeVisible()
     await card.getByRole('button', { name: 'Set credentials' }).click()
   }
   // From the marketplace this is the drop-in moment: the editor opens itself.
@@ -210,7 +214,7 @@ test('3 · a server that answers 401 asks for its key, and connects once it has 
   expect(row.probe?.state).toBe('ok')
   expect(row.tools).toHaveLength(STUB_TOOLS.length)
   await closeDialogs(page)
-  await expectReadyCard(page, STUB.key.title, 'ready')
+  await expectReadyCard(page, STUB.key, 'Ready')
   // Header values never come back — a key name, a mask.
   expect(JSON.stringify(await api.servers())).not.toContain(STUB_KEY)
 })
@@ -227,7 +231,7 @@ test('4 · an OAuth server is detected, connects through the popup, and lists it
   // closes the popup.
   const popupOpened = page.waitForEvent('popup')
   if (card) await card.getByRole('button', { name: 'Connect org account' }).click()
-  else await registryCard(page, STUB.oauth.title).getByRole('button', { name: 'Connect', exact: true }).click()
+  else await registryCard(page, STUB.oauth.slug).getByRole('button', { name: 'Connect', exact: true }).click()
   const popup = await popupOpened
   await popup.waitForURL(/\/api\/mcp\/oauth\/callback/, { waitUntil: 'domcontentloaded' })
   // The page closes itself 1.2s after it renders; read it while it is there.
@@ -239,11 +243,15 @@ test('4 · an OAuth server is detected, connects through the popup, and lists it
   await expect.poll(async () => (await api.server(id)).orgConnected, { message: 'the callback never stored the org token' }).toBe(true)
 
   await closeDialogs(page)
-  const reg = registryCard(page, STUB.oauth.title)
-  await expect(reg.getByText('connected', { exact: true })).toBeVisible()
-  // Tools come from the server once the bearer exists — ask for them.
-  await reg.getByRole('button', { name: /Discover tools|tools/ }).first().click()
-  await expectReadyCard(page, STUB.oauth.title, 'connected')
+  const reg = registryCard(page, STUB.oauth.slug)
+  await expect(reg.getByText('Connected', { exact: true })).toBeVisible()
+  // Tools come from the server once the bearer exists — ask for them, from
+  // the row's Manage dialog.
+  await reg.getByRole('button', { name: 'Manage', exact: true }).click()
+  await page.getByRole('dialog').filter({ hasText: STUB.oauth.title }).getByRole('button', { name: 'Check now' }).click()
+  await expect.poll(async () => (await api.server(id)).tools.length, { message: 'Check now never listed the tools' }).toBe(STUB_TOOLS.length)
+  await closeDialogs(page)
+  await expectReadyCard(page, STUB.oauth, 'Connected')
   expect((await api.server(id)).tools).toHaveLength(STUB_TOOLS.length)
 })
 
@@ -276,13 +284,15 @@ test("5 · an agent's MCP tab assigns a server with a tool subset, and takes it 
   await page.goto('/agents')
   await page.getByRole('button', { name: new RegExp(AGENT.displayName) }).first().click()
   const modal = page.getByRole('dialog').filter({ hasText: AGENT.displayName })
-  await modal.getByRole('button', { name: 'MCP', exact: true }).click()
-  await expect(modal.getByText('On this agent')).toBeVisible()
+  await modal.getByRole('tab', { name: 'MCP', exact: true }).click()
+  // The heading, by role: the Available section's sentence also says "on this agent".
+  const onThisAgent = modal.getByRole('heading', { name: 'On this agent', exact: true })
+  await expect(onThisAgent).toBeVisible()
   const registryCount = async (text: RegExp) => {
     const tab = await page.context().newPage()
     try {
       await tab.goto('/mcp/external')
-      await expect(registryCard(tab, STUB.open.title).getByText(text)).toBeVisible()
+      await expect(registryCard(tab, STUB.open.slug).getByText(text)).toBeVisible()
     } finally {
       await tab.close()
     }
@@ -301,7 +311,7 @@ test("5 · an agent's MCP tab assigns a server with a tool subset, and takes it 
   await page.getByRole('option', { name: 'echo' }).click()
   // Close the picker with a click outside it, inside the modal: Escape is
   // the modal's own close once the picker has let go of focus.
-  await modal.getByText('On this agent').click()
+  await onThisAgent.click()
   await expect(page.getByRole('listbox')).toHaveCount(0)
   await expect.poll(async () => (await onAgent())?.assignedTools, { message: 'the subset never saved' }).toEqual(['echo'])
   // What the tab asked for, in order: the server with every tool, then echo.
@@ -388,13 +398,13 @@ test('6 · the gateway lets the agent call an allowed tool and refuses the rest'
 test('7 · the custom form registers a raw URL and discovery proves it', async ({ page }) => {
   await page.goto('/mcp/external')
   await page.getByRole('button', { name: 'Custom server', exact: true }).click()
-  const form = page.getByRole('dialog').filter({ hasText: 'Custom MCP server' })
+  const form = page.getByRole('dialog').filter({ hasText: 'Add custom server' })
   await form.getByLabel('Name', { exact: true }).fill(CUSTOM.label)
   await form.getByLabel(/^Server URL/).fill(STUB.open.url)
   await form.getByLabel('Description', { exact: true }).fill('Registered by the e2e suite through the custom form.')
-  await form.getByRole('button', { name: 'Register server' }).click()
+  await form.getByRole('button', { name: 'Add server' }).click()
   await expect(form).toHaveCount(0)
   const id = await track(CUSTOM.slug)
   await expect.poll(async () => (await api.server(id)).probe?.state, { message: 'discovery never ran on the custom server' }).toBe('ok')
-  await expectReadyCard(page, CUSTOM.label, 'ready')
+  await expectReadyCard(page, { title: CUSTOM.label, slug: CUSTOM.slug }, 'Ready')
 })
