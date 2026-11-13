@@ -223,6 +223,51 @@
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   The settings area's own ladder. Everything that renders in the sans voice
+   carries `data-voice="sans"` (`voiceScope` in lib/ui-voice.ts), and inside
+   it the Mercury tokens are re-derived from themselves, so no call site and
+   no screen outside the area changes. `--base-*` are the theme's own values
+   under names the scope does not redefine: a token cannot be mixed from
+   itself on the element that redefines it.
+   ════════════════════════════════════════════════════════════════════════ */
+:root {
+  --base-panel: var(--theme-panel);
+  --base-raised: var(--theme-raised);
+  --base-hover: var(--theme-hover);
+  --base-border: var(--theme-border);
+  --base-muted: var(--theme-muted);
+}
+
+[data-theme='mercury'] [data-voice='sans'] {
+  /* A card on the ground: panel and ground were 1.07:1 apart, so groups vanished. */
+  --theme-panel: color-mix(in srgb, var(--theme-text) 5%, var(--base-panel));
+  /* An input, chip or icon tile has to differ from the card it sits in. */
+  --theme-raised: color-mix(in srgb, var(--theme-text) 7%, var(--base-raised));
+  /* A hovered row or button is one step above raised, as in Mercury. */
+  --theme-hover: color-mix(in srgb, var(--theme-text) 8%, var(--base-hover));
+  /* The hairline has to show against the lighter card. */
+  --theme-border: color-mix(in srgb, var(--theme-text) 9%, var(--base-border));
+  /* Row dividers inside a card: quieter than its edge, still visible. */
+  --theme-border-subtle: color-mix(in srgb, var(--theme-text) 3%, var(--base-border));
+}
+
+[data-theme='mercury-light'] [data-voice='sans'] {
+  /* Paper, card and white field already step apart here. Only the hairline
+     that draws a card and a field on them was faint. */
+  --theme-border: color-mix(in srgb, var(--theme-text) 6%, var(--base-border));
+}
+
+/* These alias the tokens above and were resolved at the root, so they are
+   restated where the tokens change. */
+[data-voice='sans'] {
+  --theme-card: var(--theme-raised);
+  --theme-card2: var(--theme-hover);
+  --theme-input: var(--theme-raised);
+  --theme-line: var(--theme-border);
+  --theme-line-subtle: var(--theme-border-subtle);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    Tailwind semantic colours — bound to the Mercury tokens so utilities like
    `bg-surface`, `text-fg`, `border-line`, `text-accent` track the active mode
    automatically. (Tailwind v4 @theme; var() references resolve per-element.)
