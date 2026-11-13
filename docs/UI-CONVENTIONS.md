@@ -54,6 +54,46 @@ from the frame.
   column is sized by what it holds (`max-w-md` on a lone input + button row);
   that is not drift, because the panel edges still line up view to view.
 
+## Settings area
+
+Every page behind the dock's gear and the user menu's Settings and Admin
+(`/manage`, the manage views, `/settings/*`, `/admin/*`) follows seven rules.
+
+1. **One shell.** The same sidebar and the same page header on every page.
+2. **A page says what it is.** A title and one sentence, then the content.
+3. **Sans for anything a person reads.** Mono is for identifiers only, in
+   lowercase. Nothing is uppercase by CSS, and nothing is under 12px.
+4. **Rows in one card.** Related settings are rows of a single card with
+   hairline dividers. Never a card inside a card.
+5. **One control per kind of value.** A boolean is a `Toggle`. One of a few is
+   a `Segmented` or a `Select`. Destructive is a `DangerLink` or a `danger` menu
+   item. At most one gold primary button, in the page header.
+6. **Say it once, briefly.** A label of one to four words, and a hint of one
+   sentence. Longer explanations go behind the `info` tip.
+7. **The first screen carries the page.** At 1440×900 the title, the tabs and
+   the most important content show without scrolling.
+
+The components are in `components/settings/`, and a page composes them
+instead of styling its own panels:
+
+- `SettingsPage` is the page: `title`, `blurb`, `tabs`, `actions`. Every page
+  in the area renders exactly one. `fill` gives a `LibraryPane` the window
+  height left under the header.
+- `SettingsSidebar` is the area's navigation. Its rows, active row and search
+  come from the pure `lib/settings-nav.ts`. A new page adds its row there.
+- `SettingsSection` is a titled block. `SettingsGroup` is the card.
+  `SettingsRow` is one row: `label`, `hint`, an `icon` tile or a bare `lead`
+  mark, inline `meta`, and the control as children. `SettingsRowMenu` is the
+  kebab that holds a row's secondary and destructive actions.
+- `StatStrip` and `Stat` are one card of numbers. `SettingsField` is a stacked
+  field for a dialog.
+
+The area speaks sans through `lib/ui-voice`. `SettingsPage` and
+`SettingsSidebar` call `setUiVoice('sans')`, and the shared primitives (`Button`,
+`Tabs`, `Chip`, `Modal` and the rest) read it unless their own `voice` prop is
+passed. Context follows the component tree, so a dialog a page opens is sans
+too. The default is `mono`, so no other screen changes.
+
 ## Pick-one-and-edit-it — use `LibraryPane`
 
 A picker on the left, the record you picked on the right. This had FIVE
