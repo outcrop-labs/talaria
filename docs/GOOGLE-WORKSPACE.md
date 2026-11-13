@@ -184,14 +184,6 @@ review; a public/External app would (especially the Gmail scopes).
 
 ## Verified vs. trusted
 
-The connect redirect (offline + `WORKSPACE_SCOPES` + `prompt=consent`), the token
-encryption round-trip/tamper-rejection, the DB model, and the export permission
-gating are all verified live. The **actual Drive round-trip** (create Doc/Sheet)
-requires real Google client credentials + a consented account and cannot be
-exercised in a headless dev env — it's wired to Drive's documented multipart
-convert-on-upload API but is the one path proven by the API contract rather than
-a local screenshot.
-
 **What a revoke ends: documented by Google, not exercised live.** Google's
 [OAuth 2.0 for web server applications](https://developers.google.com/identity/protocols/oauth2/web-server)
 page, under "Token revocation", says: "Revocation removes all OAuth 2.0 scopes
@@ -203,3 +195,11 @@ project (a sign-in client, say) shares the grant. So the check matches stored
 connections on the Google account alone, whichever client minted them. No
 revoke of a real grant has been made here; every revoke exercised so far sent
 a token Google never issued.
+
+The connect redirect (offline + `WORKSPACE_SCOPES` + `prompt=consent`), the token
+encryption round-trip/tamper-rejection, the DB model, and the export permission
+gating are all verified live. The **actual Drive round-trip** (create Doc/Sheet)
+requires real Google client credentials + a consented account and cannot be
+exercised in a headless dev env — it's wired to Drive's documented multipart
+convert-on-upload API but is the one path proven by the API contract rather than
+a local screenshot.
