@@ -1,7 +1,5 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import Input from '@/components/ui/Input.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -9,6 +7,8 @@
   import { confirmDelete } from '@/components/ui/confirm.svelte'
   import { SKILLS_KEY, deleteSkill, renameSkill, saveSkill, skillKey, skillName, useSkill } from '@/lib/skills'
   import { draftSkillForm } from '@/lib/muse.svelte'
+  import SkillNameField from './SkillNameField.svelte'
+  import { skillTitle } from './skill-title'
 
   // ONE SKILL.md IN THE MODAL WORKSPACE — the Studio's deep-link overlay
   // (?sk=owner/name). The library views embed <RecordEditor> directly; this
@@ -88,6 +88,9 @@
     }
   }
 
+  const modalTitle = $derived(canEdit ? 'Edit skill' : 'Skill')
+  const reader = $derived(owner === 'shared' ? 'Every agent reads' : `${ownerLabel} reads`)
+
   const museContext = $derived(
     owner === 'shared'
       ? 'A shared skill every agent on the team can use. SKILL.md format: a heading, a "When to use" line, then concrete numbered steps.'
@@ -100,7 +103,7 @@
      replace the real SKILL.md with an empty file. But the click has to land
      NOW, so the same shell shows with a skeleton body meanwhile. -->
 {#if !query.data}
-  <Modal open onClose={query.isError ? onClose : () => {}} width="max-w-6xl" title={`${currentName} · SKILL.md`}>
+  <Modal open onClose={query.isError ? onClose : () => {}} width="max-w-6xl" title={modalTitle}>
     {#if query.isError}
       <QueryError variant="compact" error={query.error} title={`Could not open ${currentName}`} onRetry={() => void query.refetch()} />
     {:else}
@@ -114,13 +117,12 @@
 {:else}
   <!-- padded=false: the record surface owns its inset, so its pinned menu sits
        flush against the modal's frame like any other surface's. -->
-  <Modal open onClose={onClose} width="max-w-6xl" title={`${currentName} · SKILL.md`} padded={false}>
+  <Modal open onClose={onClose} width="max-w-6xl" title={modalTitle} padded={false}>
     <div class="h-[76vh]">
       <RecordEditor
-        kind="skill"
-        title={currentName}
-        meta={ownerLabel}
-        subtitle="Read live; agents pick up edits on their next run."
+        kind="Skill"
+        title={skillTitle(currentName)}
+        subtitle={canEdit ? `${reader} this live. Edits apply on the next run.` : `${reader} this live. You can view it but not change it.`}
         fieldsDirty={canEdit ? skillName(skillNameInput) !== currentName : false}
         onDelete={canEdit ? () => void remove() : undefined}
         doc={{
@@ -154,15 +156,7 @@
         class="h-full"
       >
         {#snippet fields(_)}
-          {#if canEdit}
-            <div class="mb-4 rounded-lg border border-line bg-card/40 p-3">
-              <div class="mb-1.5 flex items-center gap-1.5">
-                <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Skill name</span>
-                <InfoTip text="The skill's directory name: lowercase letters, digits, dots, underscores and hyphens. Renaming is part of the record's Save." />
-              </div>
-              <Input size="sm" bind:value={skillNameInput} class="max-w-sm font-mono" />
-            </div>
-          {/if}
+          {#if canEdit}<SkillNameField bind:value={skillNameInput} />{/if}
         {/snippet}
       </RecordEditor>
     </div>

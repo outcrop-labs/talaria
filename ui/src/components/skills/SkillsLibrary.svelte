@@ -1,8 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Input from '@/components/ui/Input.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -23,6 +21,9 @@
     type SkillSummary,
   } from '@/lib/skills'
   import { draftSkillForm } from '@/lib/muse.svelte'
+  import { useUiVoice } from '@/lib/ui-voice'
+  import SkillNameField from './SkillNameField.svelte'
+  import { skillTitle } from './skill-title'
 
   // ONE OWNER'S SKILLS, as a library: pick on the left, and the record's
   // surface — its name, its SKILL.md workbench, its whole-form Muse — is the
@@ -48,6 +49,10 @@
     onChanged?: () => void
     class?: string
   } = $props()
+
+  // Also the agent dialog's Skills tab, which chat opens outside the settings
+  // area: the mono branches below are that surface, unchanged.
+  const sans = useUiVoice() === 'sans'
 
   const qc = useQueryClient()
   const query = useSkills()
@@ -159,8 +164,13 @@
   {#snippet row(s: SkillSummary)}
     <!-- Name over description: the name is what you scan for, and the
          description is what tells you it is the right one. -->
-    <span class="block truncate text-fg">{s.name}</span>
-    <span class="block truncate text-[11px] text-muted">{s.description}</span>
+    {#if sans}
+      <span class="block truncate font-sans text-[13px] font-medium leading-5 text-fg">{skillTitle(s.name)}</span>
+      <span class="block truncate font-sans text-xs leading-4 text-muted">{s.description}</span>
+    {:else}
+      <span class="block truncate text-fg">{s.name}</span>
+      <span class="block truncate text-[11px] text-muted">{s.description}</span><!-- voice-ok: mono branch, for the agent dialog opened from chat -->
+    {/if}
   {/snippet}
 
   {#snippet empty()}
@@ -188,10 +198,16 @@
                previous selection leaks into the next. -->
           {#key selected}
             <RecordEditor
-              kind="skill"
-              title={selected}
-              meta={ownerLabel}
-              subtitle={canEdit ? 'Read live; agents pick up edits on their next run.' : 'Read-only here; this record is maintained elsewhere.'}
+              kind="Skill"
+              title={sans ? skillTitle(selected) : selected}
+              meta={sans ? undefined : ownerLabel}
+              subtitle={sans
+                ? canEdit
+                  ? `${ownerLabel} reads this live. Edits apply on the next run.`
+                  : 'You can view this skill but not change it here.'
+                : canEdit
+                  ? 'Read live; agents pick up edits on their next run.'
+                  : 'Read-only here; this record is maintained elsewhere.'}
               fieldsDirty={canEdit ? skillName(name) !== selected : false}
               onDelete={canEdit ? () => void remove() : undefined}
               doc={{
@@ -229,15 +245,7 @@
               class="h-full"
             >
               {#snippet fields(_)}
-                {#if canEdit}
-                  <div class="mb-4 shrink-0 rounded-lg border border-line bg-card/40 p-3">
-                    <div class="mb-1.5 flex items-center gap-1.5">
-                      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Skill name</span>
-                      <InfoTip text="The skill's directory name: lowercase letters, digits, dots, underscores and hyphens. Renaming is part of the record's Save." />
-                    </div>
-                    <Input size="sm" bind:value={name} class="max-w-sm font-mono" />
-                  </div>
-                {/if}
+                {#if canEdit}<SkillNameField bind:value={name} />{/if}
               {/snippet}
             </RecordEditor>
           {/key}
