@@ -61,6 +61,8 @@
   // The category already names the family, so "Research · Recon" reads "Recon".
   const name = $derived(slot.row.label.split(' · ').pop() ?? slot.row.label)
   const fixed = $derived(slot.kind === 'agent' && !slot.row.assignable)
+  // The catalogs spell skills and fallbacks as lowercase fragments.
+  const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
   // What a role needs, each read against the assigned model's measured facts.
   const needs = $derived(
@@ -101,7 +103,7 @@
       <div class="mt-1.5 flex flex-wrap items-center gap-1">
         <span class="mr-1 font-sans text-xs leading-4 text-muted">Brings</span>
         {#each slot.row.skills as s (s)}
-          <Chip>{s}</Chip>
+          <Chip>{sentence(s)}</Chip>
         {/each}
       </div>
     {/if}
@@ -114,7 +116,7 @@
   {#if fixed && slot.kind === 'agent'}
     <!-- Fixed by design (the person's own assistant): identity, not a slot, so
          there is no picker, and the catalog's own line says what runs it. -->
-    <span class="max-w-[280px] text-right font-sans text-[13px] leading-5 text-muted">{slot.row.auto}</span>
+    <span class="max-w-[280px] text-right font-sans text-[13px] leading-5 text-muted">{sentence(slot.row.auto)}</span>
   {:else}
     <EffortSlotPicker model={assigned} value={effort ?? ''} onChange={onEffort} class="w-[132px]" />
     <ModelIdPicker
@@ -122,7 +124,7 @@
       value={assigned ?? null}
       onChange={onModel}
       emptyLabel="Auto"
-      emptySub={slot.kind === 'agent' ? slot.row.auto : 'Its fallback chain'}
+      emptySub={slot.kind === 'agent' ? sentence(slot.row.auto) : 'Its fallback chain'}
       class="w-[280px]"
     />
   {/if}
