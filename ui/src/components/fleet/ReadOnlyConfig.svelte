@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import { formatTokens } from '@/lib/format'
   import type { AgentDef } from '@/lib/fleet-defs'
@@ -16,28 +18,33 @@
     const parts: string[] = []
     if (c?.threshold != null) parts.push(`${c.threshold} of context`)
     if (c?.thresholdTokens != null) parts.push(`${formatTokens(c.thresholdTokens)} tokens`)
-    return parts.length > 0 ? parts.join(' · ') : 'Hermes default'
+    return parts.length > 0 ? parts.join(' · ') : 'Default'
   })
 </script>
 
-{#snippet field(label: string, value: string)}
-  <div class="flex gap-3">
-    <span class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</span>
-    <span class="min-w-0 flex-1 text-fg">{value}</span>
-  </div>
+{#snippet field(label: string, value: string, mono = false)}
+  <dt class="font-sans text-[13px] leading-5 text-muted">{label}</dt>
+  <dd class={mono ? 'min-w-0 font-mono text-xs leading-5 text-fg' : 'min-w-0 font-sans text-[13px] leading-5 text-fg'}>{value}</dd>
 {/snippet}
 
-<div class="space-y-3 text-sm">
-  {@render field('Main model', cfg?.main ? `${cfg.main.endpoint} · ${cfg.main.model}` : '—')}
-  {@render field('Tiers', cfg?.aliases?.map((a) => a.name).join(', ') || '—')}
-  {@render field('Fallbacks', cfg?.fallbacks?.length ? String(cfg.fallbacks.length) : 'none')}
-  {@render field('Compaction', compaction)}
+<div class="space-y-10">
+  <SettingsSection title="Models" description="Only this agent's managers can change its configuration.">
+    <SettingsGroup>
+      <dl class="grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 px-5 py-4">
+        {@render field('Main model', cfg?.main ? `${cfg.main.endpoint} · ${cfg.main.model}` : 'Not configured yet', !!cfg?.main)}
+        {@render field('Model tiers', cfg?.aliases?.map((a) => a.name).join(', ') || 'None')}
+        {@render field('Fallbacks', cfg?.fallbacks?.length ? String(cfg.fallbacks.length) : 'None')}
+        {@render field('Compaction', compaction)}
+      </dl>
+    </SettingsGroup>
+  </SettingsSection>
   {#if def.latest?.soul}
-    <div>
-      <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Soul</div>
-      <div class="max-h-64 overflow-y-auto rounded-lg border border-line p-3 text-xs">
-        <Markdown children={def.latest.soul} />
-      </div>
-    </div>
+    <SettingsSection title="Instructions">
+      <SettingsGroup>
+        <div class="max-h-72 overflow-y-auto px-5 py-4 font-sans text-[13px] leading-5">
+          <Markdown children={def.latest.soul} />
+        </div>
+      </SettingsGroup>
+    </SettingsSection>
   {/if}
 </div>

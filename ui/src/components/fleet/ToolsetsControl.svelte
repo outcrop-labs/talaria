@@ -1,8 +1,9 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import { getList } from '@/lib/fetch-json'
   import { patchAgentMeta, useFleetDefs, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
@@ -99,34 +100,25 @@
 </script>
 
 {#if rows.length}
-  <div>
-    <div class="flex items-center gap-2">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Hermes toolsets</span>
-      <InfoTip
-        text="The tools the agent's own harness carries, before any MCP server. A box here is the toolset being ON for this agent; clearing one closes it from the agent's next turn, without a restart. Talaria's own todo and clarify tools replace Hermes' fleet-wide, so those two stay closed."
-      />
-      <span class="flex-1"></span>
+  <SettingsSection
+    title="Built-in tools"
+    description="A change reaches the running agent on its next turn, without a restart."
+    info="The Hermes toolsets the agent's own harness carries, before any MCP server. A checked box is the toolset being on for this agent. Talaria's own todo and clarify tools replace Hermes' for every agent, so those two stay closed."
+  >
+    {#snippet action()}
       {#if canManage && dirty}
         <Button size="sm" variant="ghost" disabled={saving} onclick={() => (pending = null)}>Reset</Button>
-        <Button size="sm" disabled={saving} onclick={() => void apply()}>Apply</Button>
+        <Button size="sm" variant="outline" disabled={saving} onclick={() => void apply()}>Apply</Button>
       {/if}
-    </div>
-    <div class="mt-1 font-sans text-xs text-muted">
-      A change reaches the running agent on its next turn, without a restart.
-      {#if orgClosed.length}
-        Closed org-wide by an admin, for every agent: {orgClosed.join(', ')}.
-      {/if}
-    </div>
-    {#if browser}
-      <div class="mt-1 font-sans text-xs text-muted">{browser}</div>
-    {/if}
-    <div class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
-      {#each rows as r (r.name)}
-        <Checkbox
-          checked={r.on}
-          disabled={!canManage || r.forced || saving}
-          onChange={(on) => set(r.name, on)}
-          label={r.name}
+    {/snippet}
+    <SettingsGroup>
+      <div class="grid grid-cols-2 gap-x-6 gap-y-2.5 px-5 py-4 sm:grid-cols-3 md:grid-cols-4">
+        {#each rows as r (r.name)}
+          <Checkbox
+            checked={r.on}
+            disabled={!canManage || r.forced || saving}
+            onChange={(on) => set(r.name, on)}
+            label={r.name}
           title={r.orgClosed
             ? `${r.name} is closed org-wide by an admin (Admin → Security → Agent toolsets)`
             : r.forced
@@ -136,9 +128,16 @@
               : r.on
                 ? `${r.name} is on for this agent`
                 : `${r.name} is closed for this agent`}
-          class={r.on ? 'text-fg' : undefined}
-        />
-      {/each}
-    </div>
-  </div>
+            class={r.on ? 'text-fg' : undefined}
+          />
+        {/each}
+      </div>
+      {#if orgClosed.length || browser}
+        <div class="space-y-1 px-5 py-3 font-sans text-[13px] leading-5 text-muted">
+          {#if orgClosed.length}<p>Closed for every agent by an admin: {orgClosed.join(', ')}.</p>{/if}
+          {#if browser}<p>{browser}</p>{/if}
+        </div>
+      {/if}
+    </SettingsGroup>
+  </SettingsSection>
 {/if}

@@ -13,9 +13,12 @@
   // reach by role, which the footer says once instead of pretending every
   // admin is on the roster.
   import { createRawSnippet, mount, unmount, type Component, type Snippet } from 'svelte'
-  import { X } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import type { ComboOption } from '@/components/ui/combobox'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -57,7 +60,7 @@
         value: u.id,
         label: u.name ?? u.email ?? u.id,
         sub: 'Can change this agent',
-        icon: componentIcon(Avatar, { name: u.name ?? u.email, class: 'h-5 w-5 text-[9px]' }),
+        icon: componentIcon(Avatar, { name: u.name ?? u.email, class: 'h-5 w-5' }),
       }))
   })
 
@@ -87,64 +90,64 @@
 </script>
 
 <div class="space-y-4">
-  <p class="font-sans text-[13px] text-muted">
-    Managers are the people who can change {def.displayName} — its identity, config, skills, memory, schedules, secrets and
-    lifecycle. Everyone else can see it and work with it; only these people can rewrite it.
-  </p>
-
-  {#if canManage}
-    <Combobox
-      options={addOptions}
-      selected={[]}
-      placeholder="Add a manager"
-      disabled={busy || managersQuery.data === undefined}
-      onChange={(v) => add(v[0] ?? '')}
-    />
-  {/if}
+  <div class="flex items-center gap-4">
+    <p class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
+      Managers can change {def.displayName}: its settings, skills, memory, schedules and secrets. Everyone else can only work with it.
+    </p>
+    {#if canManage}
+      <Combobox
+        options={addOptions}
+        selected={[]}
+        size="sm"
+        placeholder="Add a manager"
+        disabled={busy || managersQuery.data === undefined}
+        onChange={(v) => add(v[0] ?? '')}
+        class="w-[280px] shrink-0"
+      />
+    {/if}
+  </div>
 
   {#if usersList.notice}<QueryError {...usersList.notice} />{/if}
   {#if msg}<QueryError variant="inline" title="Could not change the managers" error={msg} />{/if}
 
   <QueryState query={managersQuery} errorTitle="Could not load this agent's managers" errorVariant="compact" isEmpty={(m) => m.length === 0}>
     {#snippet skeleton()}
-      <div class="space-y-1">
-        <Skeleton class="h-8 w-full rounded-md" />
-        <Skeleton class="h-8 w-2/3 rounded-md" />
-      </div>
+      <SettingsGroup aria-hidden="true">
+        {#each [0, 1] as i (i)}
+          <div class="flex min-h-[60px] items-center gap-3 px-5 py-4">
+            <Skeleton class="h-8 w-8 rounded-full" />
+            <Skeleton class="h-3.5 w-40 rounded-full" />
+          </div>
+        {/each}
+      </SettingsGroup>
     {/snippet}
     {#snippet empty()}
       <!-- Reachable only for an agent whose managers all left the org: the
            PUT refuses an empty set, so nobody can arrive here by clicking. -->
-      <p class="font-sans text-[13px] text-muted">
-        Nobody manages this agent. Admins can still change it, and naming a manager here hands it over.
-      </p>
+      <SettingsGroup>
+        <p class="px-5 py-4 font-sans text-[13px] leading-5 text-muted">
+          Nobody manages this agent. Admins can still change it, and naming a manager here hands it over.
+        </p>
+      </SettingsGroup>
     {/snippet}
     {#snippet children(managers)}
-      <ul class="space-y-1" use:listStagger>
-        {#each managers as m (m.userId)}
-          <li class="flex items-center gap-2 rounded-md px-2 py-1.5">
-            <Avatar name={labelOf(m)} class="h-6 w-6 text-[10px]" />
-            <span class="font-sans text-[13px] text-fg">{labelOf(m)}</span>
-            {#if m.role === 'admin'}<span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">admin</span>{/if}
-            {#if canManage}
-              <button
-                type="button"
-                title={managers.length === 1 ? 'An agent keeps at least one manager — add someone else first' : 'Remove as manager'}
-                disabled={busy || managers.length === 1}
-                onclick={() => remove(m.userId)}
-                class="ml-auto text-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <X size={13} aria-hidden="true" />
-              </button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
+      <div use:listStagger>
+        <SettingsGroup>
+          {#each managers as m (m.userId)}
+            <SettingsRow label={labelOf(m)} hint={m.name && m.email ? m.email : undefined}>
+              {#snippet lead()}<Avatar name={labelOf(m)} class="h-8 w-8" />{/snippet}
+              {#snippet meta()}{#if m.role === 'admin'}<Chip>Admin</Chip>{/if}{/snippet}
+              {#if canManage}
+                <span title={managers.length === 1 ? 'An agent keeps at least one manager. Add someone else first.' : undefined}>
+                  <DangerLink onClick={() => remove(m.userId)} disabled={busy || managers.length === 1}>Remove</DangerLink>
+                </span>
+              {/if}
+            </SettingsRow>
+          {/each}
+        </SettingsGroup>
+      </div>
     {/snippet}
   </QueryState>
 
-  <p class="font-sans text-xs text-muted">
-    Admins can change any agent, whether or not they are named here — so an agent never becomes unreachable when the person
-    who owned it leaves.
-  </p>
+  <p class="font-sans text-[13px] leading-5 text-muted">Admins can change any agent, whether or not they are named here.</p>
 </div>

@@ -113,23 +113,23 @@
 </script>
 
 <Modal open title={`Sign in to ${service.name}`} onClose={() => void cancel()}>
-  <div class="flex flex-col gap-3">
-    <p class="text-xs text-muted">{flowHint(service)}</p>
+  <div class="flex flex-col gap-4">
+    <p class="font-sans text-[13px] leading-5 text-muted">{flowHint(service)}</p>
 
     {#if failed}
-      <div class="rounded border border-danger/40 bg-danger/5 px-2.5 py-2">
-        <p class="text-xs text-danger">{failed}</p>
-        <Button class="mt-2" size="xs" variant="ghost" onclick={() => void start()}>Try again</Button>
+      <div role="alert">
+        <p class="font-sans text-[13px] leading-5 text-danger">{failed}</p>
+        <Button class="mt-2" size="sm" variant="outline" onclick={() => void start()}>Try again</Button>
       </div>
     {:else if starting}
-      <p class="text-xs text-muted">Starting…</p>
+      <p class="font-sans text-[13px] leading-5 text-muted">Starting</p>
     {/if}
 
     {#if login?.url}
-      <div class="rounded border border-line bg-surface-2 px-2.5 py-2">
+      <div class="rounded-md border border-line bg-raised px-3 py-2.5">
         <div class="flex items-center gap-2">
           <a
-            class="truncate text-xs text-accent underline"
+            class="min-w-0 flex-1 truncate font-mono text-xs text-accent underline"
             href={login.url}
             target="_blank"
             rel="noreferrer noopener"
@@ -139,19 +139,19 @@
           <CopyButton value={login.url} title="Copy the sign-in link" />
         </div>
         {#if login.instructions}
-          <p class="mt-1.5 text-xs text-fg">{login.instructions}</p>
+          <p class="mt-2 font-sans text-[13px] leading-5 text-fg">{login.instructions}</p>
         {/if}
       </div>
     {/if}
 
     {#if login?.progress && login.phase !== 'input'}
-      <p class="text-xs text-muted">{login.progress}</p>
+      <p class="font-sans text-[13px] leading-5 text-muted">{login.progress}</p>
     {/if}
 
     {#if login?.prompt}
-      <label class="flex flex-col gap-1">
-        <span class="text-xs text-fg">{login.prompt.message}</span>
-        <div class="flex items-center gap-1.5">
+      <label class="flex flex-col gap-1.5">
+        <span class="font-sans text-[13px] font-medium leading-5 text-fg">{login.prompt.message}</span>
+        <div class="flex items-center gap-2">
           <Input
             bind:value={answer}
             size="sm"
@@ -163,7 +163,8 @@
             }}
           />
           <Button
-            size="sm"
+            size="md"
+            variant="outline"
             disabled={submitting || (answer === '' && !login.prompt.allowEmpty)}
             onclick={() => void submit()}
           >
@@ -175,6 +176,6 @@
   </div>
 
   {#snippet footer()}
-    <Button variant="ghost" onclick={() => void cancel()}>Cancel</Button>
+    <div class="flex justify-end"><Button variant="ghost" size="sm" onclick={() => void cancel()}>Cancel</Button></div>
   {/snippet}
 </Modal>

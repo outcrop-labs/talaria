@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
@@ -106,118 +107,103 @@
 </script>
 
 <QueryState query={accounts} errorTitle="Could not load coding accounts" errorVariant="inline">
-  {#snippet skeleton()}<div class="mt-4"><SkeletonRows rows={2} /></div>{/snippet}
+  {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
   {#snippet children(d)}
     {#if d}
-      <div class="mt-4 space-y-1.5">
-        <div class="flex items-center gap-1.5">
-          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Coding accounts</span>
+      <div class="space-y-2">
+        <div class="flex items-center gap-2">
+          <span class="font-sans text-[13px] font-medium leading-5 text-fg">Coding accounts</span>
           <InfoTip
-            text="Sign this agent in to a coding subscription (Claude Pro/Max, ChatGPT Codex, Copilot, Gemini…) and its harness runs on that account instead of the org's Talaria gateway. One account per service. The agent itself keeps the model its settings configure — this only moves what the coding harness runs on. Spend on a subscription lands on that provider's bill, not Talaria's ledger."
+            text="Sign this agent in to a coding subscription (Claude Pro or Max, ChatGPT Codex, Copilot, Gemini) and its harness runs on that account instead of the org's Talaria gateway. One account per service. The agent itself keeps the model its settings configure. Spend on a subscription lands on that provider's bill, not Talaria's ledger."
           />
         </div>
 
-        {#each [{ accountId: null as number | null, provider: 'talaria', label: 'Talaria gateway', gateway: true, roles: d.gatewayRoles ?? {}, account: null }, ...d.accounts.map((a) => ({ accountId: a.id as number | null, provider: a.provider, label: a.email ?? a.orgName ?? a.provider, gateway: false, roles: a.roles ?? {}, account: a }))] as plan (plan.accountId ?? 'gateway')}
-          {@const isDefault = plan.gateway
-            ? !d.accounts.some((a) => a.primary)
-            : (plan.account?.primary ?? false)}
-          <div class="rounded-md border border-line-subtle bg-raised/40 px-2 py-1.5">
-            <div class="flex flex-wrap items-center gap-1.5">
-              <span class="min-w-0 flex-1 truncate text-xs text-fg">{plan.label}</span>
-              <Chip tone="neutral" class="px-2 py-0.5 normal-case">{plan.provider}</Chip>
-              {#if isDefault}<Chip tone="accent" class="px-2 py-0.5 normal-case">default</Chip>{/if}
-              {#if plan.account?.disabledAt}
-                <Chip tone="danger" class="px-2 py-0.5 normal-case">needs sign-in</Chip>
+        <div class="[&>*+*]:border-t [&>*+*]:border-line-subtle">
+          {#each [{ accountId: null as number | null, provider: 'talaria', label: 'Talaria gateway', gateway: true, roles: d.gatewayRoles ?? {}, account: null }, ...d.accounts.map((a) => ({ accountId: a.id as number | null, provider: a.provider, label: a.email ?? a.orgName ?? a.provider, gateway: false, roles: a.roles ?? {}, account: a }))] as plan (plan.accountId ?? 'gateway')}
+            {@const isDefault = plan.gateway
+              ? !d.accounts.some((a) => a.primary)
+              : (plan.account?.primary ?? false)}
+            {@const showModels = () => {
+              const k = String(plan.accountId)
+              expanded = expanded === k ? null : k
+              if (expanded) void loadModelsInto(models, plan.provider)
+            }}
+            <div class="py-2">
+              <div class="flex min-h-8 flex-wrap items-center gap-2">
+                <span class="min-w-0 truncate font-sans text-[13px] leading-5 text-fg">{plan.label}</span>
+                <Chip class="font-mono">{plan.provider}</Chip>
+                {#if isDefault}<Chip tone="accent">Default</Chip>{/if}
+                {#if plan.account?.disabledAt}<Chip tone="danger">Needs sign-in</Chip>{/if}
+                {#if plan.account && !plan.account.permitted}<Chip tone="warn">Not permitted</Chip>{/if}
+                <span class="flex-1"></span>
+                {#if !isDefault}
+                  <Button size="sm" variant="outline" disabled={busy} onclick={() => void setDefault(plan.accountId)}>Make default</Button>
+                {/if}
+                <SettingsRowMenu
+                  label={`Actions for ${plan.label}`}
+                  items={[
+                    { label: expanded === String(plan.accountId) ? 'Hide models' : 'Choose models', onSelect: showModels },
+                    ...(plan.account
+                      ? [{ label: 'Sign out', danger: true, disabled: busy, onSelect: () => void signOut(plan.account.id, plan.account.provider) }]
+                      : []),
+                  ]}
+                />
+              </div>
+
+              {#if plan.account?.disabledAt && plan.account.disabledCause}
+                <p class="font-sans text-[13px] leading-5 text-danger">{plan.account.disabledCause}</p>
               {/if}
-              {#if plan.account && !plan.account.permitted}
-                <Chip tone="warn" class="px-2 py-0.5 normal-case">not permitted</Chip>
-              {/if}
-              {#if !isDefault}
-                <Button size="xs" variant="ghost" disabled={busy} onclick={() => void setDefault(plan.accountId)}>
-                  Make default
-                </Button>
-              {/if}
-              <Button
-                size="xs"
-                variant="ghost"
-                onclick={() => {
-                  const k = String(plan.accountId)
-                  expanded = expanded === k ? null : k
-                  if (expanded) void loadModelsInto(models, plan.provider)
-                }}
-              >
-                Models
-              </Button>
-              {#if plan.account}
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  disabled={busy}
-                  onclick={() => void signOut(plan.account.id, plan.account.provider)}
-                >
-                  Sign out
-                </Button>
+
+              {#if expanded === String(plan.accountId)}
+                <div class="mt-2 space-y-2 pb-1" transition:slide={{ duration: 150 }}>
+                  <p class="font-sans text-[13px] leading-5 text-muted">
+                    The model for each harness role on this plan. Blank falls back to the plan's default, then to the org's Workbench roles.
+                  </p>
+                  {#each d.roles as role (role)}
+                    <label class="flex items-center gap-3">
+                      <span class="w-24 font-sans text-[13px] leading-5 text-muted">{roleLabel(role)}</span>
+                      <Select
+                        size="sm"
+                        class="w-[280px]"
+                        value={plan.roles[role] ?? ''}
+                        disabled={busy}
+                        onchange={(e) => {
+                          const v = (e.currentTarget as HTMLSelectElement).value
+                          void setRole(plan.accountId, { ...plan.roles, [role]: v === '' ? null : v })
+                        }}
+                      >
+                        <option value="">Falls back</option>
+                        {#each models[plan.provider] ?? [] as m (m.id)}
+                          <option value={m.id}>{m.name ?? m.id}</option>
+                        {/each}
+                      </Select>
+                    </label>
+                  {/each}
+                </div>
               {/if}
             </div>
-
-            {#if plan.account?.disabledAt && plan.account.disabledCause}
-              <p class="mt-1 text-xs text-danger">{plan.account.disabledCause}</p>
-            {/if}
-
-            {#if expanded === String(plan.accountId)}
-              <div class="mt-1.5 space-y-1" transition:slide={{ duration: 150 }}>
-                <p class="text-xs text-muted">
-                  Which model fills each harness role on this plan. Blank falls back to this plan's default, then to
-                  the org's Workbench model roles.
-                </p>
-                {#each d.roles as role (role)}
-                  <label class="flex items-center gap-1.5">
-                    <span class="w-16 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-                      {roleLabel(role)}
-                    </span>
-                    <Select
-                      size="sm"
-                      class="w-56"
-                      value={plan.roles[role] ?? ''}
-                      disabled={busy}
-                      onchange={(e) => {
-                        const v = (e.currentTarget as HTMLSelectElement).value
-                        void setRole(plan.accountId, { ...plan.roles, [role]: v === '' ? null : v })
-                      }}
-                    >
-                      <option value="">— falls back —</option>
-                      {#each models[plan.provider] ?? [] as m (m.id)}
-                        <option value={m.id}>{m.name ?? m.id}</option>
-                      {/each}
-                    </Select>
-                  </label>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/each}
+          {/each}
+        </div>
 
         {#if d.resolved}
-          <p class="text-xs text-muted">
+          <p class="font-sans text-[13px] leading-5 text-muted">
             A job with no ticket pin runs on
             <span class="text-fg">{d.resolved.gateway ? 'the Talaria gateway' : d.resolved.provider}</span>
-            {#if d.resolved.models?.default}· <span class="font-mono">{d.resolved.models.default}</span>{/if}
+            {#if d.resolved.models?.default}· <span class="font-mono text-xs">{d.resolved.models.default}</span>{/if}
           </p>
         {:else}
-          <p class="text-xs text-muted">
-            Nothing configured, so the harness runs on the org's Workbench model roles.
-          </p>
+          <p class="font-sans text-[13px] leading-5 text-muted">Nothing configured, so the harness runs on the org's Workbench model roles.</p>
         {/if}
 
         {#if offerable.length > 0}
-          <div class="flex flex-wrap items-center gap-1.5 pt-0.5">
-            <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Sign in to</span>
+          <div class="flex flex-wrap items-center gap-2 pt-1">
+            <span class="font-sans text-[13px] leading-5 text-muted">Sign in to</span>
             {#each offerable as s (s.id)}
-              <Button size="xs" variant="ghost" onclick={() => (signingIn = s)}>{s.name}</Button>
+              <Button size="sm" variant="outline" onclick={() => (signingIn = s)}>{s.name}</Button>
             {/each}
           </div>
         {:else if (services.data?.permitted?.length ?? 0) === 0}
-          <p class="text-xs text-muted">No services permitted yet — an admin allows them in Admin → Coding accounts.</p>
+          <p class="font-sans text-[13px] leading-5 text-muted">No services permitted yet. An admin allows them under Admin, Coding accounts.</p>
         {/if}
       </div>
     {/if}
