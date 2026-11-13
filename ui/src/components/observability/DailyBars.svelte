@@ -1,15 +1,26 @@
 <script lang="ts">
+  import { ChevronRight } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
   import { formatTokens, type CostTotals } from '@/lib/cost.svelte'
+  import { sectionLink } from './grammar'
   import { SERIES, SERVED_ORDER, type ServedBy } from './series'
 
   /** Tokens per day, stacked by where they were served: self-hosted at the
    *  baseline, cloud above it, anything unattributed on top. The title and
    *  the axis come from the days it is given, whatever their number. */
-  let { days }: { days: Array<CostTotals & { day: string; local: number; cloud: number }> } = $props()
+  let {
+    days,
+    href,
+  }: {
+    days: Array<CostTotals & { day: string; local: number; cloud: number }>
+    /** The chart is a summary on another tab: a shorter plot, and a link to
+     *  the Cost tab that owns it. */
+    href?: string
+  } = $props()
+  const plot = $derived(href ? 'h-24' : 'h-40')
 
   // `local` and `cloud` count cache tokens and `prompt + completion` does not,
   // so a day's height is whichever reading is larger. The stack never
@@ -54,6 +65,9 @@
 </script>
 
 <SettingsSection title="Tokens per day" description={`${range}, stacked by where the tokens were served.`}>
+  {#snippet action()}
+    {#if href}<a {href} class={sectionLink}>Cost details<ChevronRight size={14} /></a>{/if}
+  {/snippet}
   <SettingsGroup>
     <figure class="px-5 pb-4 pt-4">
       <figcaption class="flex flex-wrap items-center gap-x-5 gap-y-1 font-sans text-[13px] leading-5">
@@ -71,14 +85,14 @@
       </figcaption>
 
       <div class="mt-5 flex gap-3">
-        <div class="relative h-40 w-9 shrink-0 font-sans text-xs tabular-nums leading-4 text-muted" aria-hidden="true">
+        <div class={cn('relative w-9 shrink-0 font-sans text-xs tabular-nums leading-4 text-muted', plot)} aria-hidden="true">
           {#each [top, top / 2, 0] as tick, i (i)}
             <span class="absolute right-0 -translate-y-1/2" style:top="{i * 50}%">{formatTokens(tick)}</span>
           {/each}
         </div>
         <div class="min-w-0 flex-1">
           <div
-            class="relative h-40 border-b border-line"
+            class={cn('relative border-b border-line', plot)}
             role="img"
             aria-label={`Tokens per day, ${range}. ${formatTokens(sum('total'))} tokens in all.`}
             onpointerleave={() => (hovered = null)}
