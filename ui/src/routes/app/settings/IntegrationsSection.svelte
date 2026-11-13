@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Mail } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -15,6 +14,7 @@
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
+  import McpServerMark from '@/routes/app/McpServerMark.svelte'
 
   interface GoogleStatus {
     available: boolean
@@ -68,6 +68,9 @@
   }
 </script>
 
+<!-- Google's own mark, from the same icon proxy the tool servers use. -->
+{#snippet google()}<McpServerMark title="Google" domain="google.com" />{/snippet}
+
 <SettingsSection
   title="Accounts"
   description="Your assistant acts as you. Every send waits for your approval in the Inbox."
@@ -94,7 +97,7 @@
       {#snippet empty()}
         <!-- An unregistered client is the ADMIN's gap to close. -->
         <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin.">
-          {#snippet icon()}<Mail size={16} />{/snippet}
+          {#snippet lead()}{@render google()}{/snippet}
         </SettingsRow>
       {/snippet}
       {#snippet children(_data)}
@@ -106,7 +109,7 @@
             ? `${data.email ?? 'Connected'}${data.connectedAt ? ` · connected ${relativeTime(data.connectedAt)}` : ''}`
             : 'Mail, Calendar and Drive.'}
         >
-          {#snippet icon()}<Mail size={16} />{/snippet}
+          {#snippet lead()}{@render google()}{/snippet}
           {#snippet status()}
             <StatusDot status={data?.connected ? 'ok' : 'idle'} />{data?.connected ? 'Connected' : 'Not connected'}
           {/snippet}
@@ -116,7 +119,7 @@
               items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}
             />
           {:else}
-            <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>
+            <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans', className: 'w-24' })}>
               Connect
             </a>
           {/if}

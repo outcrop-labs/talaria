@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Plug } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -108,7 +107,6 @@
           {#each data ?? [] as s (s.id)}
             <div>
               <SettingsRow label={s.label} hint={s.description ?? undefined}>
-                {#snippet icon()}<Plug size={16} />{/snippet}
                 {#snippet status()}
                   {#if s.connected}
                     <StatusDot status="ok" />Connected
@@ -132,6 +130,7 @@
                   <Button
                     size="sm"
                     variant="outline"
+                    class="w-24"
                     title={s.needsReconnect
                       ? 'Your sign-in expired at the provider. Sign in again so your assistant can act as you here.'
                       : 'Sign in with the provider. Your assistant then acts as you on this server.'}
@@ -140,7 +139,7 @@
                     {s.needsReconnect ? 'Reconnect' : 'Connect'}
                   </Button>
                 {:else}
-                  <Button size="sm" variant="outline" onclick={() => toggle(s)}>
+                  <Button size="sm" variant="outline" class="w-24" onclick={() => toggle(s)}>
                     {connecting === s.id ? 'Cancel' : 'Connect'}
                   </Button>
                 {/if}
