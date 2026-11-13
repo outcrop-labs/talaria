@@ -4,7 +4,7 @@
   import Stat from '@/components/settings/Stat.svelte'
   import { containersOf, useFleetContainers, useFleetDefs } from '@/lib/fleet-defs'
   import { useHasPerm } from '@/lib/session'
-  import { healthOf, type Health } from '@/routes/app/agents.svelte'
+  import { HEALTH_LABEL, healthOf, type Health } from '@/routes/app/agents.svelte'
   import { p } from '@/router'
 
   // The fleet in one number: how many of the agents you can see are up, and
@@ -28,20 +28,18 @@
   })
   const live = $derived(counts ? counts.up + counts.warming + counts.degraded + counts.down : 0)
   const sub = $derived.by(() => {
-    if (!counts) return containersQuery.isError ? 'container status unavailable' : undefined
-    const parts = [
-      counts.down ? `${counts.down} down` : null,
-      counts.degraded ? `${counts.degraded} degraded` : null,
-      counts.warming ? `${counts.warming} warming` : null,
-      counts.draft ? `${counts.draft} draft` : null,
-    ].filter(Boolean)
+    if (!counts) return containersQuery.isError ? 'Container status unavailable' : undefined
+    // The words the Agents page puts beside the same states.
+    const parts = (['down', 'degraded', 'warming', 'draft'] as const)
+      .filter((h) => counts[h] > 0)
+      .map((h) => `${counts[h]} ${HEALTH_LABEL[h].toLowerCase()}`)
     if (parts.length > 0) return parts.join(' · ')
-    if (live > 0) return 'all up'
-    return wholeFleet.current ? 'no agents yet' : 'none you manage'
+    if (live > 0) return 'All running'
+    return wholeFleet.current ? 'No agents yet' : 'None you manage'
   })
 </script>
 
-<Stat label="Agents up" href={p('/agents')} {sub}>
+<Stat label="Agents running" href={p('/agents')} {sub}>
   {#snippet value()}
     {#if counts}{counts.up}<span class="text-muted">{' / '}{live}</span>
     {:else if anyError(defsQuery, containersQuery)}—

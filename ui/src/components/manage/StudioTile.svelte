@@ -16,7 +16,7 @@
 <Stat
   label="Skills"
   href={p('/studio')}
-  sub={gaps !== undefined ? (gaps > 0 ? `${gaps} open suggestion${gaps === 1 ? '' : 's'}` : 'no open suggestions') : gapsQuery.isError ? 'suggestions unavailable' : undefined}
+  sub={gaps !== undefined ? (gaps > 0 ? `${gaps} open suggestion${gaps === 1 ? '' : 's'}` : 'No open suggestions') : gapsQuery.isError ? 'Suggestions unavailable' : undefined}
 >
   {#snippet value()}
     {#if skills !== undefined}{skills}

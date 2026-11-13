@@ -21,10 +21,10 @@
       : building > 0
         ? `${building} building`
         : apps.length > 0
-          ? 'all built'
-          : 'none enabled'
+          ? 'All built'
+          : 'None enabled'
     : appsQuery.isError
-      ? 'could not read'
+      ? 'Could not read'
       : undefined}
 >
   {#snippet value()}

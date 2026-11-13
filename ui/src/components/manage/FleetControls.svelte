@@ -123,6 +123,8 @@
   })
 
   const TONE: Record<string, string> = { danger: 'text-danger', ok: 'text-fg', muted: 'text-muted' }
+  // One width for the three, so the column of buttons reads as one control.
+  const ACTION = 'w-[8.5rem]'
 </script>
 
 {#snippet result(line: { tone: string; text: string } | null, resting: string)}
@@ -137,6 +139,7 @@
         <Button
           variant="outline"
           size="sm"
+          class={ACTION}
           disabled={anyRolling || rollConfirming || rollBusy}
           onclick={() => (rollConfirming = true)}
           title={anyRolling ? 'A restart is already in progress' : undefined}
@@ -162,14 +165,14 @@
     </div>
     <SettingsRow label="Start stopped agents">
       {#snippet hint()}{@render result(startLine, 'Starts every enabled agent that is not running.')}{/snippet}
-      <Button variant="outline" size="sm" disabled={startBusy} onclick={() => void startStopped()}>
+      <Button variant="outline" size="sm" class={ACTION} disabled={startBusy} onclick={() => void startStopped()}>
         {#if startBusy}<WaitingMark site="manage/fleet-start" size={12} />{:else}<Play size={14} />{/if}
         Start agents
       </Button>
     </SettingsRow>
     <SettingsRow label="Check MCP servers">
       {#snippet hint()}{@render result(mcpLine, 'Tests every external server now instead of at the hourly check.')}{/snippet}
-      <Button variant="outline" size="sm" disabled={mcpBusy} onclick={() => void checkMcp()}>
+      <Button variant="outline" size="sm" class={ACTION} disabled={mcpBusy} onclick={() => void checkMcp()}>
         {#if mcpBusy}<WaitingMark site="manage/mcp-check" size={12} />{:else}<Activity size={14} />{/if}
         Check now
       </Button>

@@ -13,7 +13,7 @@
 <Stat
   label="Spend today"
   href={p('/observability/:tab', { params: { tab: 'cost' } })}
-  sub={t ? `${formatCost(t.month.cost ?? 0)} this month` : costQuery.isError ? 'could not read' : undefined}
+  sub={t ? `${formatCost(t.month.cost ?? 0)} this month` : costQuery.isError ? 'Could not read' : undefined}
 >
   {#snippet value()}
     {#if t}{formatCost(t.today.cost ?? 0)}

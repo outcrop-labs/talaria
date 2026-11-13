@@ -19,12 +19,12 @@
   const keyless = $derived((endpoints ?? []).filter((e) => e.class === 'cloud' && e.hasKey === false).length)
   const issues = $derived(rolesQuery.data?.issues?.length ?? 0)
   const sub = $derived.by(() => {
-    if (!endpoints) return endpointsQuery.isError ? 'could not read' : undefined
+    if (!endpoints) return endpointsQuery.isError ? 'Could not read' : undefined
     const parts = [
       keyless ? `${keyless} without a key` : null,
       issues ? `${issues} role${issues === 1 ? '' : 's'} unrouted` : null,
     ].filter(Boolean)
-    return parts.length > 0 ? parts.join(' · ') : endpoints.length > 0 ? 'every role routed' : 'add a provider'
+    return parts.length > 0 ? parts.join(' · ') : endpoints.length > 0 ? 'Every role routed' : 'Add a provider'
   })
 </script>
 

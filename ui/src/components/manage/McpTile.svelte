@@ -20,10 +20,10 @@
     ? attention > 0
       ? `${attention} need${attention === 1 ? 's' : ''} attention`
       : enabled.length > 0
-        ? 'all connected'
-        : 'none enabled'
+        ? 'All connected'
+        : 'None enabled'
     : serversQuery.isError
-      ? 'could not read'
+      ? 'Could not read'
       : undefined}
 >
   {#snippet value()}

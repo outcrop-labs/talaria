@@ -10,7 +10,8 @@
   import { getList } from '@/lib/fetch-json'
 
   // What changed lately: the audit trail's newest rows, the same read (and
-  // cache key) the Observability overview and Home use.
+  // cache key) the Observability overview and Home use. This page owns the
+  // feed: Observability shows it as one line and a link to its Audit tab.
   const auditQuery = createQuery(() => ({
     queryKey: ['home-activity', ''],
     queryFn: () =>
@@ -41,10 +42,10 @@
         <button
           type="button"
           onclick={() => a.href && void navigateHref(a.href)}
-          class="flex h-11 w-full items-center gap-6 px-5 text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+          class="flex min-h-11 w-full items-start gap-6 px-5 py-3 text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
         >
-          <span class="min-w-0 flex-1 truncate text-muted" title={a.detail}>
-            <span class="font-medium text-fg">{actorLabel(a.actor)}</span>
+          <span class="line-clamp-2 min-w-0 flex-1 break-words text-muted" title={a.detail}>
+            <span class="whitespace-nowrap font-medium text-fg">{actorLabel(a.actor)}</span>
             {a.detail}
           </span>
           <span class="shrink-0 text-[13px] tabular-nums text-muted">{relativeTime(a.at)}</span>

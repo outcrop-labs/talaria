@@ -9,6 +9,7 @@
   import Chip from '@/components/ui/Chip.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import { agentLabel } from '@/lib/cost.svelte'
   import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
   import { relativeTime, untilTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
@@ -250,7 +251,7 @@
           <ul>
             {#each s.volumes as v (v.department)}
               <li class="flex min-h-8 items-center justify-between gap-6 font-sans text-[13px] leading-5">
-                <span class="min-w-0 truncate text-fg">{v.agent ?? v.department}</span>
+                <span class="min-w-0 truncate text-fg">{agentLabel(v.agent ?? v.department).label}</span>
                 <span class="shrink-0 {v.refused || v.retryAt ? 'text-danger' : 'text-muted'}">
                   {#if v.refused}would not take omp {v.refused.omp} · bun {v.refused.bun}: {(v.error ?? '').split('\n')[0]}. Its jobs run the fallback.
                   {:else if v.retryAt}its host failed {v.hostFailures}×, tried again {until(v.retryAt)}

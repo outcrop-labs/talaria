@@ -13,7 +13,7 @@
 <Stat
   label="Teams"
   href={p('/teams')}
-  sub={teams ? `${people} member seat${people === 1 ? '' : 's'} · ${agents} agent${agents === 1 ? '' : 's'}` : teamsQuery.isError ? 'could not read' : undefined}
+  sub={teams ? `${people} member seat${people === 1 ? '' : 's'} · ${agents} agent${agents === 1 ? '' : 's'}` : teamsQuery.isError ? 'Could not read' : undefined}
 >
   {#snippet value()}
     {#if teams}{teams.length}

@@ -13,7 +13,7 @@
 <Stat
   label="Templates"
   href={p('/templates')}
-  sub={templates ? `${tickets} ticket · ${plans} plan` : templatesQuery.isError ? 'could not read' : undefined}
+  sub={templates ? `${tickets} ticket · ${plans} plan` : templatesQuery.isError ? 'Could not read' : undefined}
 >
   {#snippet value()}
     {#if templates}{templates.length}
