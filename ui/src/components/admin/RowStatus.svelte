@@ -4,7 +4,7 @@
   import type { DotStatus } from '@/components/ui/chip'
   import { cn } from '@/lib/cn'
 
-  // The state of the thing a row is about: a dot and a word.
+  // The state of the thing a row is about: a dot and a word, at the row's end.
   let {
     status,
     title,
@@ -13,6 +13,6 @@
   }: { status: DotStatus; title?: string; class?: string; children: Snippet } = $props()
 </script>
 
-<span {title} class={cn('flex shrink-0 items-center gap-2 font-sans text-[13px] leading-5 text-muted', className)}>
+<span {title} class={cn('flex shrink-0 items-center gap-2 whitespace-nowrap font-sans text-[13px] leading-5 text-muted', className)}>
   <StatusDot {status} />{@render children()}
 </span>
