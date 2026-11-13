@@ -1,14 +1,16 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
+  import { useEndpoints } from '@/lib/models'
   import { toastError } from '@/lib/toast.svelte'
   import { useModels } from '@/lib/muse.svelte'
   import { anyPending } from '@/components/ui/query-state'
@@ -21,6 +23,15 @@
   const qc = useQueryClient()
   const catalogQuery = useModels()
   const capsQuery = useModelCapabilities()
+  // The registry, for the provider column: which provider serves each model.
+  // Advisory, so a failed read leaves the column blank and nothing else.
+  const endpointsQuery = useEndpoints()
+  const providersOf = $derived.by(() => {
+    const byModel = new Map<string, string[]>()
+    for (const ep of endpointsQuery.data ?? [])
+      for (const m of ep.models) byModel.set(m, [...(byModel.get(m) ?? []), ep.name])
+    return byModel
+  })
   // `['admin-settings']` is ONE cache entry shared with Admin.svelte's Organization
   // and Settings panels. Declare the whole payload, not a private slice of it,
   // so all three readers agree on what that entry holds (Admin.svelte carries the
@@ -35,7 +46,7 @@
     queryFn: (): Promise<AdminSettings> => getJson<AdminSettings>('/api/admin/settings'),
   }))
   const settings = $derived(settingsQuery.data)
-  // One checkbox per MODEL, not per endpoint deployment: the allowlist is
+  // One switch per MODEL, not per endpoint deployment: the allowlist is
   // judged by bare model id (`modelAllowedFor` — allowing "m" allows "ep/m"
   // on every endpoint that serves it), so model granularity is what a save
   // actually has. The catalog spells each model "<endpoint>/<model>" (a bare
@@ -76,7 +87,7 @@
     try {
       await putJson<{ ok: true }>('/api/admin/settings', { memberModels: effective })
     } catch (e) {
-      // Keep the draft: a failed save must not quietly revert the checklist.
+      // Keep the draft: a failed save must not quietly revert the list.
       toastError('Could not save member access', e)
       return
     }
@@ -88,28 +99,47 @@
   const toggle = (id: string) => {
     draft = selection.includes(id) ? selection.filter((x) => x !== id) : [...selection, id]
   }
+
+  // SAVED ON THE BUTTON, not on each switch: the list goes live for every
+  // member the moment it is stored, so a half-made selection must not.
+  const summary = $derived(
+    (restricted
+      ? selection.length === 0
+        ? 'Pick at least one model members may use.'
+        : `Members can pick ${selection.length} of ${models.length} models.`
+      : 'Members can pick any registered model.') +
+      (pruned > 0 ? ` ${pruned} model${pruned === 1 ? ' that is' : 's that are'} no longer registered will drop off on save.` : ''),
+  )
 </script>
 
-<Panel>
-  <SectionHeader
-    title="Member access"
-    info="Which models non-admins may pick for AI drafting and as their preferred model. Keep the expensive ones for deliberate, admin-configured use. Agents' own brains are set per agent and unaffected."
-  />
+<SettingsSection
+  title="Member access"
+  description="The models people who are not admins may pick."
+  info="This covers a member's preferred model and AI drafting. Keep the expensive models for deliberate, admin-configured use. Each agent's own model is set on the agent and is not affected."
+>
+  {#snippet action()}
+    {#if settings}
+      {#if dirty}<span class="font-sans text-[13px] leading-5 text-muted">Unsaved changes</span>{/if}
+      <Button size="sm" onclick={() => void save()} disabled={!dirty || (restricted && selection.length === 0)}>Save</Button>
+    {/if}
+  {/snippet}
+
   {#if anyPending(catalogQuery, settingsQuery)}
-    <!-- The restrict toggle and the list both seed from these queries — hold
-         them with skeletons so the checkbox never flips after load. Both
-         flags are read every time (anyPending, query-state.ts says why). -->
-    <div class="space-y-3">
-      <div class="flex items-center gap-2">
-        <Skeleton class="h-4 w-4" />
+    <!-- The switch and the list both seed from these queries, so hold them
+         with skeletons and the switch never flips after load. Both flags are
+         read every time (anyPending, query-state.ts says why). -->
+    <SettingsGroup>
+      <div class="flex min-h-[60px] items-center gap-6 px-5 py-4">
         <Skeleton class="h-3 w-56 rounded-full" />
+        <span class="ml-auto"></span>
+        <Skeleton class="h-5 w-9 rounded-full" />
       </div>
-      <SkeletonRows rows={3} />
-    </div>
+      <div class="px-5 py-4"><SkeletonRows rows={3} /></div>
+    </SettingsGroup>
   {:else if !settings}
-    <!-- Without the saved allowlist this panel renders an unchecked "Limit
-         members" box and says "All registered models are available to
-         members" — the exact opposite of a restrictive policy it failed to read. -->
+    <!-- Without the saved allowlist this panel would show the switch off and
+         say every model is open, the exact opposite of a restrictive policy
+         it failed to read. -->
     <QueryError
       variant="compact"
       error={settingsQuery.error}
@@ -117,43 +147,60 @@
       onRetry={() => void settingsQuery.refetch()}
     />
   {:else}
-    <Checkbox
-      class="mb-3 gap-2 text-sm text-fg"
-      checked={restricted}
-      onChange={(checked) => (modeOverride = checked)}
-      label="Limit members to selected models"
-    />
-    {#if restricted}
-      <div class="space-y-1 rounded-lg border border-line p-2">
-        {#each models as m (m.id)}
-          <label class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors dither-fill">
-            <Checkbox bare checked={selection.includes(m.id)} onChange={() => toggle(m.id)} class="mt-1 shrink-0" />
-            <span class="min-w-0">
-              <span class="block truncate font-sans text-sm text-fg">{m.label ?? m.id}</span>
-              <span class="block truncate font-sans text-xs text-muted">{m.blurb || m.id}</span>
-              <!-- What is measured about each model members could be handed.
-                   A capability recorded FALSE here is the difference between a
-                   member picking a brain that works and one that quietly
-                   returns nothing on every structured surface. -->
-              <CapabilityTags class="mt-0.5" row={capsRowFor(m.id)} />
-            </span>
-          </label>
-        {/each}
-        {#if models.length === 0}<EmptyState variant="inline" class="px-2 py-1.5" title="No models registered yet." />{/if}
-      </div>
-    {/if}
-    <div class="mt-3 flex items-center gap-2">
-      <span class="text-xs text-muted">
-        {restricted
-          ? selection.length === 0
-            ? 'Pick at least one model members may use'
-            : `${selection.length} model${selection.length === 1 ? '' : 's'} available to members`
-          : 'All registered models are available to members'}{pruned > 0 ? ` · ${pruned} unregistered model${pruned === 1 ? '' : 's'} will drop off on save` : ''}
-      </span>
-      <span class="ml-auto"></span>
-      <Button size="sm" onclick={() => void save()} disabled={!dirty || (restricted && selection.length === 0)}>
-        Save
-      </Button>
+    <div class="space-y-4">
+      <SettingsGroup>
+        <SettingsRow label="Limit members to selected models" hint={summary}>
+          <Toggle checked={restricted} onChange={(checked) => (modeOverride = checked)} title="Limit members to selected models" />
+        </SettingsRow>
+      </SettingsGroup>
+
+      {#if restricted}
+        {#if models.length === 0}
+          <SettingsGroup><EmptyState variant="inline" class="px-5 py-4" title="No models registered yet." /></SettingsGroup>
+        {:else}
+          <div class="overflow-x-auto rounded-lg border border-line bg-panel">
+            <table class="w-full border-collapse text-left">
+              <thead>
+                <tr class="border-b border-line font-sans text-xs font-medium leading-4 text-muted">
+                  <th class="px-5 py-2.5 font-medium">Model</th>
+                  <th class="px-3 py-2.5 font-medium">Provider</th>
+                  <th class="px-3 py-2.5 font-medium">Capabilities</th>
+                  <th class="py-2.5 pl-3 pr-5 text-right font-medium">Members</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each models as m (m.id)}
+                  <tr class="h-11 border-b border-line-subtle transition-colors last:border-0 hover:bg-hover">
+                    <td class="px-5 py-2" title={m.blurb}>
+                      <span class="font-mono text-[13px] leading-5 text-fg">{m.id}</span>
+                      {#if m.label && m.label !== m.id}
+                        <span class="ml-2 font-sans text-[13px] leading-5 text-muted">{m.label}</span>
+                      {/if}
+                    </td>
+                    <td class="whitespace-nowrap px-3 py-2 font-sans text-[13px] leading-5 text-muted">
+                      {(providersOf.get(m.id) ?? []).join(', ')}
+                    </td>
+                    <!-- What is measured about each model members could be
+                         handed. A capability recorded FALSE here is the
+                         difference between a member picking a model that
+                         works and one that quietly returns nothing on every
+                         structured surface, so what a model lacks leads. -->
+                    <td class="px-3 py-2"><CapabilityTags row={capsRowFor(m.id)} max={3} /></td>
+                    <td class="py-2 pl-3 pr-5">
+                      <Toggle
+                        class="justify-end"
+                        checked={selection.includes(m.id)}
+                        onChange={() => toggle(m.id)}
+                        title={`Members can use ${m.id}`}
+                      />
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      {/if}
     </div>
   {/if}
-</Panel>
+</SettingsSection>
