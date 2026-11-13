@@ -11,6 +11,7 @@
   <span
     role="switch"
     aria-checked={checked}
+    aria-label={label ? undefined : title}
     tabindex={disabled ? -1 : 0}
     onkeydown={(e) => {
       if (disabled) return

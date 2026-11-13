@@ -9,6 +9,7 @@
   import { cn } from '@/lib/cn'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { popRow, popRowSelected } from '@/components/chat/chat-chrome'
   import { controlSizes, disabledControl, type ControlSize } from './control'
   import { fuzzy, type ComboOption } from './combobox'
@@ -50,6 +51,8 @@
     /** Override the trigger content (e.g. a constant "Add label" for tag inputs). */
     triggerLabel?: string | Snippet
   } = $props()
+
+  const sans = useUiVoice() === 'sans'
 
   let open = $state(false)
   let q = $state('')
@@ -263,13 +266,15 @@
             placeholder={allowCreate ? 'Search or create' : 'Search'}
             aria-controls={listId}
             aria-activedescendant={filtered[hl] ? `${listId}-${hl}` : undefined}
-            class="h-7 w-full min-w-0 bg-transparent font-mono text-[11px] tracking-[0.05em] text-fg outline-none placeholder:text-muted"
+            class={sans
+              ? 'h-7 w-full min-w-0 bg-transparent font-sans text-[13px] text-fg outline-none placeholder:text-muted'
+              : 'h-7 w-full min-w-0 bg-transparent font-mono text-[11px] tracking-[0.05em] text-fg outline-none placeholder:text-muted'}
           />
         </div>
       {/if}
       <ul id={listId} role="listbox" class="max-h-56 overflow-y-auto">
         {#if filtered.length === 0 && !canCreate}
-          <li role="presentation" class="px-2 py-2 font-mono text-[11px] text-muted">No matches</li>
+          <li role="presentation" class={sans ? 'px-2 py-2 font-sans text-xs text-muted' : 'px-2 py-2 font-mono text-[11px] text-muted'}>No matches</li>
         {/if}
         {#if canCreate}
           <li role="presentation">
@@ -293,7 +298,7 @@
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-fg">{o.label}</span>
                 {#if o.sub}
-                  <span class="block truncate font-mono text-[10px] tracking-[0.05em] text-muted">{o.sub}</span>
+                  <span class={sans ? 'block truncate font-sans text-xs leading-4 text-muted' : 'block truncate font-mono text-[10px] tracking-[0.05em] text-muted'}>{o.sub}</span>
                 {/if}
               </span>
               {#if selectedSet.has(o.value)}<span class="text-accent">✓</span>{/if}

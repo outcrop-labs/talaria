@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -51,10 +52,16 @@
   }
 </script>
 
-<div class="mt-5 border-t border-line-subtle pt-4">
-  <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Time zone</span>
+<SettingsRow label="Time zone">
+  {#snippet hint()}
+    {#if error}
+      <span class="text-danger" role="alert">{error}</span>
+    {:else}
+      Sets when your daily brief opens and your digest arrives.
+    {/if}
+  {/snippet}
   {#if loading}
-    <Skeleton class="h-11 w-full" />
+    <Skeleton class="h-9 w-[280px]" />
   {:else if prefsQuery.isError}
     <QueryError
       variant="inline"
@@ -63,9 +70,12 @@
       onRetry={() => void prefsQuery.refetch()}
     />
   {:else}
+    {#if savedFlash.saved && !error}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     <Combobox
+      size="sm"
+      class="w-[280px]"
       options={[
-        { value: '', label: 'Workspace default', sub: 'Follow the workspace time zone setting' },
+        { value: '', label: 'Workspace default', sub: 'Follow the workspace time zone' },
         ...(detected && detected !== prefs?.timezone
           ? [{ value: detected, label: detected, sub: 'Detected on this device' }]
           : []),
@@ -76,9 +86,4 @@
       placeholder="Pick a time zone"
     />
   {/if}
-  <p class="mt-1 text-xs text-muted">
-    When your daily brief opens and your digest arrives. Detected: {detected ?? 'none'}
-    {#if savedFlash.saved && !error}<span class="ml-2 text-success">Saved</span>{/if}
-    {#if error}<span class="ml-2 text-danger">{error}</span>{/if}
-  </p>
-</div>
+</SettingsRow>

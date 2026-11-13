@@ -1,12 +1,16 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import { KeyRound } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import CopyButton from '@/components/ui/CopyButton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { delJsonGone, errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
@@ -53,7 +57,7 @@
     if (k.spendCapTokens) parts.push(`${k.spendCapTokens.toLocaleString()} tok`)
     if (k.spendCapUsd) parts.push(`$${k.spendCapUsd}`)
     if (k.rateLimitPerMinute) parts.push(`${k.rateLimitPerMinute}/min`)
-    return parts.join(' · ') || 'unlimited'
+    return parts.join(' · ') || 'no limits'
   }
 
   const openLimits = (k: ApiKey) => {
@@ -111,102 +115,105 @@
   }
 </script>
 
-<Panel as="section">
-  <SectionHeader
-    class="mb-4"
-    title="API keys"
-    info={`Connect external tools to the org's model stack: base URL ${baseUrl}, any model from /models (or endpoint/model to pin a backend).`}
-  />
+{#if minted}
+  <div transition:slide={{ duration: 150 }}>
+    <SettingsGroup>
+      <SettingsRow label="Copy your new key now" hint="It will not be shown again." stacked>
+        <code class="min-w-0 flex-1 break-all rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs text-fg">{minted}</code>
+        <CopyButton value={minted} label="Copy" />
+      </SettingsRow>
+    </SettingsGroup>
+  </div>
+{/if}
 
-  <QueryState query={query} errorTitle="Could not load your API keys" errorVariant="compact">
-    {#snippet skeleton()}
-      <!-- Hold BOTH the key list and the canMint branch — flashing "API keys
-           are not enabled for your account" mid-load is actively wrong. -->
-      <div aria-hidden="true">
-        <SkeletonRows rows={2} class="mb-4" />
-        <div class="flex items-center gap-2">
-          <Skeleton class="h-9 flex-1" />
-          <Skeleton class="h-9 w-24" />
+<SettingsSection title="Your keys">
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load your API keys" errorVariant="compact">
+      {#snippet skeleton()}
+        <!-- Hold BOTH the key list and the canMint branch: flashing "API keys
+             are not enabled for your account" mid-load is actively wrong. -->
+        <div aria-hidden="true" class="px-5 py-4">
+          <SkeletonRows rows={2} class="mb-4" />
+          <div class="flex items-center justify-end gap-3">
+            <Skeleton class="h-9 w-[280px]" />
+            <Skeleton class="h-9 w-24" />
+          </div>
         </div>
-      </div>
-    {/snippet}
-    {#snippet children(_data)}
-    <!-- The comment above holds after load too: "API keys are not enabled for
-         your account" is a permission verdict, and a failed /api/keys never
-         delivered one — QueryState's error branch owns it. -->
-    {#if keys.length > 0}
-      <div class="mb-4 divide-y divide-line-subtle">
+      {/snippet}
+      {#snippet children(_data)}
+        <!-- "API keys are not enabled for your account" is a permission
+             verdict, and a failed /api/keys never delivered one. QueryState's
+             error branch owns it. -->
         {#each keys as k (k.id)}
-          <div in:fade={{ duration: 150 }} out:slide={{ duration: 150 }} class="-mx-2 rounded-md px-2 py-3 transition-colors dither-fill">
-            <div class="flex items-center gap-3 text-sm">
-              <span class="w-28 shrink-0 truncate font-medium text-fg">{k.name}</span>
-              <code class="shrink-0 font-mono text-[11px] text-muted">{k.prefix}</code>
-              <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
-                {k.lastUsedAt ? `used ${relativeTime(k.lastUsedAt)}` : 'never used'} · {limitsSummary(k)}
-              </span>
-              <Button variant="ghost" size="sm" class="shrink-0" onclick={() => openLimits(k)}>
-                Limits…
+          <div in:fade={{ duration: 150 }} out:slide={{ duration: 150 }}>
+            <SettingsRow label={k.name}>
+              {#snippet icon()}<KeyRound size={16} />{/snippet}
+              {#snippet meta()}<code class="shrink-0 font-mono text-xs text-muted">{k.prefix}</code>{/snippet}
+              {#snippet hint()}
+                {k.lastUsedAt ? `Used ${relativeTime(k.lastUsedAt)}` : 'Never used'} · {limitsSummary(k)}
+              {/snippet}
+              <Button variant="outline" size="sm" onclick={() => openLimits(k)}>
+                {limitsFor === k.id ? 'Close' : 'Limits'}
               </Button>
-              <Button variant="danger-outline" size="sm" class="shrink-0" onclick={() => void revoke(k.id)}>
-                Revoke
-              </Button>
-            </div>
+              <SettingsRowMenu
+                label={`Actions for ${k.name}`}
+                items={[{ label: 'Revoke key', danger: true, onSelect: () => void revoke(k.id) }]}
+              />
+            </SettingsRow>
             {#if limitsFor === k.id}
-              <div transition:slide={{ duration: 150 }} class="mt-3">
-                <div class="flex max-w-lg flex-wrap items-end gap-2">
-                  <label class="flex-1 min-w-28 text-xs text-muted">
-                    Token cap
-                    <Input size="sm" bind:value={draft.tokens} placeholder="∞" inputmode="numeric" class="mt-1" />
-                  </label>
-                  <label class="flex-1 min-w-24 text-xs text-muted">
-                    $ cap
-                    <Input size="sm" bind:value={draft.usd} placeholder="∞" inputmode="decimal" class="mt-1" />
-                  </label>
-                  <label class="flex-1 min-w-24 text-xs text-muted">
-                    Requests / min
-                    <Input size="sm" bind:value={draft.rpm} placeholder="∞" inputmode="numeric" class="mt-1" />
-                  </label>
-                  <Button size="sm" onclick={() => void saveLimits(k)}>Save</Button>
+              <div transition:slide={{ duration: 150 }}>
+                <div class="border-t border-line-subtle px-5 py-4">
+                  <div class="flex flex-wrap items-end gap-3">
+                    <label class="w-40 font-sans text-xs leading-4 text-muted">
+                      Token cap
+                      <Input size="sm" bind:value={draft.tokens} placeholder="No cap" inputmode="numeric" class="mt-1.5" />
+                    </label>
+                    <label class="w-40 font-sans text-xs leading-4 text-muted">
+                      Dollar cap
+                      <Input size="sm" bind:value={draft.usd} placeholder="No cap" inputmode="decimal" class="mt-1.5" />
+                    </label>
+                    <label class="w-40 font-sans text-xs leading-4 text-muted">
+                      Requests per minute
+                      <Input size="sm" bind:value={draft.rpm} placeholder="No cap" inputmode="numeric" class="mt-1.5" />
+                    </label>
+                    <Button size="md" variant="outline" onclick={() => void saveLimits(k)}>Save limits</Button>
+                  </div>
+                  <p class="mt-2 font-sans text-[13px] leading-5 text-muted">
+                    Caps can only tighten the ceiling an admin set. Blank means no cap.
+                  </p>
                 </div>
-                <p class="mt-2 max-w-lg text-[11px] leading-relaxed text-muted">
-                  Caps apply over the org budget window (Admin → Security → LLM budgets) and never raise past an admin's ceiling — they can only tighten it. Blank means unlimited.
-                </p>
               </div>
             {/if}
           </div>
         {/each}
-      </div>
-    {/if}
 
-    {#if data?.canMint}
-      <!-- A lone field + button stretched to the full page width reads as
-           broken. The page FRAME is what stays consistent between views; a
-           field inside it is sized by what it holds. -->
-      <div class="flex max-w-md items-center gap-2">
-        <Input
-          size="sm"
-          bind:value={name}
-          placeholder="key name (e.g. opencode)"
-          onkeydown={(e) => e.key === 'Enter' && void mint()}
-        />
-        <Button size="sm" onclick={() => void mint()}>
-          Create key
-        </Button>
-      </div>
-    {:else}
-      <div class="text-xs text-muted">API keys are not enabled for your account. Ask an admin.</div>
-    {/if}
-    {/snippet}
-  </QueryState>
-  {#if minted}
-    <div transition:slide={{ duration: 150 }} class="mt-3 rounded-md border border-accent/40 bg-raised p-3">
-      <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning">Copy it now: it won't be shown again</div>
-      <code class="break-all font-mono text-xs text-fg">{minted}</code>
-    </div>
-  {/if}
+        {#if data?.canMint}
+          <SettingsRow label="New key" hint="Name it after the tool that will use it." as="label">
+            <Input
+              size="sm"
+              class="w-[280px]"
+              bind:value={name}
+              placeholder="opencode"
+              onkeydown={(e) => e.key === 'Enter' && void mint()}
+            />
+            <Button size="md" variant="outline" onclick={() => void mint()}>Create key</Button>
+          </SettingsRow>
+        {:else}
+          <SettingsRow label="Keys are off for your account" hint="Ask an admin to turn them on." />
+        {/if}
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
   {#if err}
-    <div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">
-      {err}
-    </div>
+    <div transition:slide={{ duration: 150 }} class="mt-2 font-sans text-[13px] leading-5 text-danger">{err}</div>
   {/if}
-</Panel>
+</SettingsSection>
+
+<SettingsSection title="Use a key">
+  <SettingsGroup>
+    <SettingsRow label="Base URL" hint="Point any OpenAI-compatible tool here. Use a model id from Models.">
+      <code class="font-mono text-xs text-muted">{baseUrl}</code>
+      <CopyButton value={baseUrl} />
+    </SettingsRow>
+  </SettingsGroup>
+</SettingsSection>

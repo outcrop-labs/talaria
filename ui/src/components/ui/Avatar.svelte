@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
   import { initials } from '@/lib/initials'
+  import { useUiVoice } from '@/lib/ui-voice'
 
   let {
     src,
@@ -11,6 +12,8 @@
     name?: string | null
     class?: string
   } = $props()
+
+  const sans = useUiVoice() === 'sans'
 
   const cls = $derived(cn('h-7 w-7 shrink-0 rounded-full border border-line-strong', className))
 </script>
@@ -23,9 +26,11 @@
   <span
     class={cn(
       cls,
-      'grid place-items-center bg-raised font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-muted',
+      sans
+        ? 'grid place-items-center bg-raised font-sans text-xs font-medium text-muted'
+        : 'grid place-items-center bg-raised font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-muted',
     )}
   >
-    {initials(name)}
+    {sans ? initials(name).toUpperCase() : initials(name)}
   </span>
 {/if}

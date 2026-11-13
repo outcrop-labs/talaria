@@ -1,11 +1,13 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import Button from '@/components/ui/Button.svelte'
+  import { Mail } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
@@ -66,73 +68,67 @@
   }
 </script>
 
-<Panel as="section">
-  <SectionHeader
-    class="mb-4"
-    title="Connected accounts"
-    info="Connect your Google Workspace account to give your assistant mail, calendar, and Drive access. It acts as you, and outbound mail and invites wait for your approval."
-  />
-
-  <QueryState
-    query={query}
-    errorTitle="Could not load your connected accounts"
-    errorVariant="compact"
-    isEmpty={(d) => !d.available}
-  >
-    {#snippet skeleton()}
-      <!-- Never show "Not connected" + Connect while the status is unknown —
-           that's a false state. Hold the row's shape until the query resolves. -->
-      <div aria-hidden="true" class="flex items-center gap-3 rounded-md border border-line p-4">
-        <Skeleton class="h-9 w-9 shrink-0 rounded-md" />
-        <div class="min-w-0 flex-1 space-y-2">
-          <Skeleton class="h-3 w-40 rounded-full" />
-          <Skeleton class="h-2.5 w-56 rounded-full" />
+<SettingsSection
+  title="Accounts"
+  description="Your assistant acts as you. Every send waits for your approval in the Inbox."
+>
+  <SettingsGroup>
+    <QueryState
+      query={query}
+      errorTitle="Could not load your connected accounts"
+      errorVariant="compact"
+      isEmpty={(d) => !d.available}
+    >
+      {#snippet skeleton()}
+        <!-- Never show "Not connected" + Connect while the status is unknown:
+             that is a false state. Hold the row's shape until the query resolves. -->
+        <div aria-hidden="true" class="flex min-h-[72px] items-center gap-3 px-5 py-4">
+          <Skeleton class="h-8 w-8 shrink-0 rounded-md" />
+          <div class="min-w-0 flex-1 space-y-2">
+            <Skeleton class="h-3 w-40 rounded-full" />
+            <Skeleton class="h-2.5 w-56 rounded-full" />
+          </div>
+          <Skeleton class="h-8 w-24 rounded-md" />
         </div>
-        <Skeleton class="h-9 w-24 rounded-lg" />
-      </div>
-    {/snippet}
-    {#snippet empty()}
-      <!-- An unregistered client is the ADMIN's gap to close — the old copy
-           dead-ended here with no hint of whose fix it was. -->
-      <div class="text-xs text-muted">Google isn’t set up on this server yet. Ask an admin to register the Google client in Admin → Org.</div>
-    {/snippet}
-    {#snippet children(_data)}
-    <!-- "Not connected" is a claim about the account, and a failed status read
-         can't make it — QueryState's error branch owns that. -->
-    <div class="flex items-center gap-3 rounded-md border border-line p-4">
-      <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">
-        ✉️
-      </div>
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
-          Google Workspace
-          {#if data?.connected}<StatusDot status="ok" />{/if}
-        </div>
-        <div class="truncate font-mono text-[11px] text-muted">
-          {data?.connected
-            ? `Connected${data.email ? ` as ${data.email}` : ''}${data.connectedAt ? ` · ${relativeTime(data.connectedAt)}` : ''}`
-            : 'Gmail · Calendar · Drive (not connected)'}
-        </div>
-      </div>
-      {#if data?.connected}
-        <Button variant="danger-outline" size="sm" onclick={() => void disconnect()}>
-          Disconnect
-        </Button>
-      {:else}
-        <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm' })}>
-          Connect
-        </a>
-      {/if}
-    </div>
-    <p class="mt-2 max-w-prose text-xs text-muted">
-      Your assistant reads your mail and calendar live, finds Drive files, and drafts emails and events as you. Every send waits for your approval in the Inbox. Also powers doc/sheet export into your Drive.
-    </p>
-    {/snippet}
-  </QueryState>
-
+      {/snippet}
+      {#snippet empty()}
+        <!-- An unregistered client is the ADMIN's gap to close. -->
+        <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin.">
+          {#snippet icon()}<Mail size={16} />{/snippet}
+        </SettingsRow>
+      {/snippet}
+      {#snippet children(_data)}
+        <!-- "Not connected" is a claim about the account, and a failed status
+             read cannot make it. QueryState's error branch owns that. -->
+        <SettingsRow
+          label="Google Workspace"
+          hint={data?.connected
+            ? `${data.email ?? 'Connected'}${data.connectedAt ? ` · connected ${relativeTime(data.connectedAt)}` : ''}`
+            : 'Mail, Calendar and Drive.'}
+        >
+          {#snippet icon()}<Mail size={16} />{/snippet}
+          {#if data?.connected}
+            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="ok" />Connected</span>
+            <SettingsRowMenu
+              label="Actions for Google Workspace"
+              items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}
+            />
+          {:else}
+            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not connected</span>
+            <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>
+              Connect
+            </a>
+          {/if}
+        </SettingsRow>
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
   {#if flash}
-    <div transition:slide={{ duration: 150 }} class={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
+    <div
+      transition:slide={{ duration: 150 }}
+      class={cn('mt-2 font-sans text-[13px] leading-5', flash === 'connected' ? 'text-success' : 'text-danger')}
+    >
       {flashText[flash] ?? flash}
     </div>
   {/if}
-</Panel>
+</SettingsSection>

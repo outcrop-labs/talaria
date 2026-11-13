@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
-  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { anyPending, firstError } from '@/components/ui/query-state'
@@ -57,12 +57,7 @@
     prefs?.preferredEffort && efforts.includes(prefs.preferredEffort) ? prefs.preferredEffort : '',
   )
 
-  // The effort chip's shape: its rows, the rung the saved level sits on ('' is
-  // the model's own default — no rung), and the ingress row that clears the
-  // preference.
-  const effortOptions = $derived(efforts.map((level) => ({ value: level, label: level })))
-  const effortMeter = $derived({ total: efforts.length, lit: Math.max(0, efforts.indexOf(effectiveEffort) + 1) })
-  const effortAuto = { value: '', label: 'auto', sub: 'model default' }
+  const sentence = (level: string) => level.charAt(0).toUpperCase() + level.slice(1)
 
   const save = async (model: string | null) => {
     error = null
@@ -84,12 +79,18 @@
   }
 </script>
 
-<div class="mt-5 border-t border-line-subtle pt-4">
-  <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Preferred model</span>
+<SettingsRow label="Preferred model">
+  {#snippet hint()}
+    {#if error}
+      <span class="text-danger" role="alert">{error}</span>
+    {:else}
+      Used when Talaria drafts for you.
+    {/if}
+  {/snippet}
   {#if loading}
     <!-- Mounting the combobox before both queries land makes its value flip
-         from Default to the saved pick — hold with a select-shaped shimmer. -->
-    <Skeleton class="h-11 w-full" />
+         from Default to the saved pick. Hold with a select-shaped shimmer. -->
+    <Skeleton class="h-9 w-[280px]" />
   {:else if failed}
     <QueryError
       variant="inline"
@@ -101,7 +102,10 @@
       }}
     />
   {:else}
+    {#if savedFlash.saved && !error}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     <Combobox
+      size="sm"
+      class="w-[280px]"
       options={[
         {
           value: '',
@@ -115,36 +119,29 @@
       placeholder="Pick a model"
     />
   {/if}
-  <p class="mt-1 text-xs text-muted">
-    Powers AI drafting across Talaria: souls, skills, memories, schedules.
-    {#if savedFlash.saved && !error}<span class="ml-2 text-success">Saved</span>{/if}
-    {#if error}<span class="ml-2 text-danger">{error}</span>{/if}
-  </p>
+</SettingsRow>
 
-  {#if !failed && !loading && efforts.length > 0}
-    <!-- ONLY FOR MODELS THAT PUBLISH A LADDER: there is no default to set on a
-         model with no effort setting, and rendering one would promise the
-         requests something they cannot carry. -->
-    <div class="mt-4">
-      <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Default reasoning effort</span>
-      <ComposerPicker
-        chipVariant="primary"
-        value={effectiveEffort}
-        label={effectiveEffort || 'auto'}
-        options={effortOptions}
-        autoOption={effortAuto}
-        meter={effortMeter}
-        searchable={false}
-        menuClass="min-w-48"
-        title="Reasoning effort for this reply"
-        menuLabel="Reasoning effort"
-        onChange={(v) => void saveEffort(v)}
-      />
-      <p class="mt-1 text-xs text-muted">
-        Your starting pick wherever the model in play supports effort levels: agent chats and the assistant panel.
-        {#if effortFlash.saved && !effortError}<span class="ml-2 text-success">Saved</span>{/if}
-        {#if effortError}<span class="ml-2 text-danger">{effortError}</span>{/if}
-      </p>
-    </div>
-  {/if}
-</div>
+{#if !failed && !loading && efforts.length > 0}
+  <!-- ONLY FOR MODELS THAT PUBLISH A LADDER: there is no default to set on a
+       model with no effort setting, and rendering one would promise the
+       requests something they cannot carry. -->
+  <SettingsRow label="Reasoning effort">
+    {#snippet hint()}
+      {#if effortError}
+        <span class="text-danger" role="alert">{effortError}</span>
+      {:else}
+        Your starting level in agent chats and the assistant panel.
+      {/if}
+    {/snippet}
+    {#if effortFlash.saved && !effortError}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
+    <!-- '' is the model's own default: saving it clears the preference. -->
+    <Combobox
+      size="sm"
+      class="w-[280px]"
+      searchable={false}
+      options={[{ value: '', label: 'Auto', sub: 'The model decides' }, ...efforts.map((level) => ({ value: level, label: sentence(level) }))]}
+      selected={[effectiveEffort]}
+      onChange={([v]) => void saveEffort(v ?? '')}
+    />
+  </SettingsRow>
+{/if}

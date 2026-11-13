@@ -65,22 +65,22 @@
   // (under `sm`): the label on its own line across the row, the channels
   // under it in four equal columns, so a label is never squeezed to a word a
   // line.
-  const cell = 'flex flex-col items-center gap-0.5 sm:flex-row sm:justify-center'
-  const cellLabel = 'font-mono text-[9px] uppercase tracking-[0.05em] text-ink-dim sm:hidden'
+  const cell = 'flex flex-col items-center gap-1 sm:flex-row sm:justify-center'
+  const cellLabel = 'font-sans text-xs leading-4 text-muted sm:hidden'
   const grid =
-    'grid grid-cols-[repeat(4,minmax(0,1fr))_2rem] items-center gap-x-1 gap-y-1.5 sm:grid-cols-[minmax(0,1fr)_repeat(4,3.5rem)_2rem] sm:gap-y-0'
+    'grid grid-cols-[repeat(4,minmax(0,1fr))_2rem] items-center gap-x-1 gap-y-2 px-5 sm:grid-cols-[minmax(0,1fr)_repeat(4,4.5rem)_2rem] sm:gap-y-0'
+  const divided = '[&>*+*]:border-t [&>*+*]:border-line-subtle'
 </script>
 
-<div data-notify-matrix>
+<!-- Row-shaped content for a SettingsGroup: the column heads, then each
+     category as a band and its kinds as rows. -->
+<div data-notify-matrix class={divided}>
   <!-- The column heads; under `sm` each cell carries its own label instead. -->
-  <div class={cn(grid, 'hidden border-b border-line pb-2 sm:grid')}>
-    <span class="hidden font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim sm:block">Notify me about</span>
+  <div class={cn(grid, 'hidden py-2.5 sm:grid')}>
+    <span class="font-sans text-xs font-medium leading-4 text-muted">Notify me about</span>
     {#each MATRIX_COLUMNS as col (col.id)}
       <span
-        class={cn(
-          'text-center font-mono text-[10px] uppercase tracking-[0.05em]',
-          col.id === 'email' && !emailEnabled ? 'text-ink-dim' : 'text-muted',
-        )}
+        class={cn('text-center font-sans text-xs font-medium leading-4 text-muted', col.id === 'email' && !emailEnabled && 'opacity-60')}
         title={col.id === 'email' && emailNote ? emailNote : col.title}
       >
         {col.label}
@@ -89,18 +89,20 @@
     <span></span>
   </div>
   {#if emailNote}
-    <p class="mt-2 font-sans text-xs text-warning" data-matrix-email-off>{emailNote}</p>
+    <p class="px-5 py-3 font-sans text-[13px] leading-5 text-warning" data-matrix-email-off>{emailNote}</p>
   {/if}
   {#each groups as g (g.category)}
-    <div class="mt-4" data-matrix-group={g.category}>
-      <div class="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">{g.label}</div>
-      <div class="font-sans text-xs text-ink-dim">{g.blurb}</div>
-      <ul class="mt-1 divide-y divide-line-subtle">
+    <div class={divided} data-matrix-group={g.category}>
+      <div class="bg-raised/40 px-5 py-2 font-sans text-[13px] leading-5">
+        <span class="font-medium text-fg">{g.label}</span>
+        <span class="ml-2 text-muted">{g.blurb}</span>
+      </div>
+      <ul class={divided}>
         {#each g.rows as r (r.cls.id)}
-          <li class={cn(grid, 'py-2.5')} data-matrix-row={r.cls.id}>
+          <li class={cn(grid, 'min-h-[60px] py-3')} data-matrix-row={r.cls.id}>
             <div class="col-span-full min-w-0 sm:col-span-1">
-              <div class="text-sm text-fg">{r.cls.label}</div>
-              <div class="font-sans text-xs text-muted">{r.cls.blurb}</div>
+              <div class="font-sans text-sm font-medium leading-5 text-fg">{r.cls.label}</div>
+              <div class="font-sans text-[13px] leading-5 text-muted">{r.cls.blurb}</div>
             </div>
             <span class={cell} data-matrix-cell="inApp">
               <Checkbox bare checked disabled title="In-app is always on: every notification is kept in your inbox" onChange={() => {}} />
@@ -121,7 +123,7 @@
             <span class="flex justify-center">
               {#if !r.atDefault}
                 <IconButton size="sm" title="Reset {r.cls.label} to default" onclick={() => void save(resetToDefault(r.cls))}>
-                  <RotateCcw size={13} strokeWidth={1.5} />
+                  <RotateCcw size={14} strokeWidth={1.5} />
                 </IconButton>
               {/if}
             </span>

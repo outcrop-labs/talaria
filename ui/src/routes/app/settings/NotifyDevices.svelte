@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -52,35 +53,33 @@
   }
 </script>
 
-<div data-notify-devices>
+<!-- Rows for the Your devices card: one browser each. -->
+<div data-notify-devices class="[&>*+*]:border-t [&>*+*]:border-line-subtle">
   {#if query.isPending}
-    <SkeletonRows rows={2} />
+    <div class="px-5 py-4"><SkeletonRows rows={2} /></div>
   {:else if query.isError && !query.data}
-    <QueryError variant="compact" error={query.error} title="Could not load your devices" onRetry={() => void query.refetch()} />
+    <div class="px-5 py-4">
+      <QueryError variant="compact" error={query.error} title="Could not load your devices" onRetry={() => void query.refetch()} />
+    </div>
   {:else if devices.length === 0}
-    <EmptyState
-      variant="inline"
-      title="No browser is registered for push"
-      hint="Turn on desktop alerts in a browser to register it."
-    />
+    <div class="px-5 py-4">
+      <EmptyState
+        variant="inline"
+        title="No browser is registered for push"
+        hint="Turn on desktop alerts in a browser to register it."
+      />
+    </div>
   {:else}
-    <ul class="divide-y divide-line-subtle">
-      {#each devices as d (d.id)}
-        {@const last = lastDelivery(d)}
-        {@const r = results[d.id]}
-        {@const line = r && r !== 'busy' ? testLine(r) : null}
-        <li class="py-3" data-device={d.id} data-this-browser={d.id === mine ? 'true' : undefined}>
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="text-sm text-fg">{d.label}</span>
+    {#each devices as d (d.id)}
+      {@const last = lastDelivery(d)}
+      {@const r = results[d.id]}
+      {@const line = r && r !== 'busy' ? testLine(r) : null}
+      <div data-device={d.id} data-this-browser={d.id === mine ? 'true' : undefined}>
+        <SettingsRow label={d.label}>
+          {#snippet meta()}
             {#if d.id === mine}<Chip tone="accent">This browser</Chip>{/if}
-            <span class="ml-auto flex items-center gap-3">
-              <Button size="xs" variant="outline" disabled={r === 'busy'} onclick={() => void test(d.id)} data-device-test>
-                {r === 'busy' ? 'Sending' : 'Send test'}
-              </Button>
-              <DangerLink onClick={() => void remove(d.id, d.label)}>Remove</DangerLink>
-            </span>
-          </div>
-          <div class="mt-1 font-sans text-xs text-muted">
+          {/snippet}
+          {#snippet hint()}
             Registered {relativeTime(d.createdAt)} · seen {relativeTime(d.lastSeenAt)}
             {#if last.ok !== null}
               · <span class={last.ok ? 'text-success' : 'text-danger'}>{last.text}</span> {relativeTime(d.lastAttemptAt)}
@@ -88,21 +87,23 @@
               · {last.text}
             {/if}
             {#if d.failures > 0}· {d.failures} failed in a row{/if}
-          </div>
-          {#if d.lastError}
-            <div class="mt-0.5 font-sans text-xs text-danger" data-device-error>Push service said: {d.lastError}</div>
-          {/if}
-          {#if line}
-            <div
-              class="mt-1 font-sans text-xs {line.tone === 'ok' ? 'text-success' : line.tone === 'warn' ? 'text-warning' : 'text-danger'}"
-              data-device-result={r && r !== 'busy' ? r.kind : undefined}
-            >
-              {line.text}
-            </div>
-          {/if}
-        </li>
-      {/each}
-    </ul>
+            {#if d.lastError}
+              <span class="block text-danger" data-device-error>Push service said: {d.lastError}</span>
+            {/if}
+            {#if line}
+              <span
+                class="block {line.tone === 'ok' ? 'text-success' : line.tone === 'warn' ? 'text-warning' : 'text-danger'}"
+                data-device-result={r && r !== 'busy' ? r.kind : undefined}
+              >{line.text}</span>
+            {/if}
+          {/snippet}
+          <Button size="sm" variant="outline" disabled={r === 'busy'} onclick={() => void test(d.id)} data-device-test>
+            {r === 'busy' ? 'Sending' : 'Send test'}
+          </Button>
+          <DangerLink onClick={() => void remove(d.id, d.label)}>Remove browser</DangerLink>
+        </SettingsRow>
+      </div>
+    {/each}
   {/if}
-  {#if removeError}<p class="mt-2 font-sans text-xs text-danger" role="alert">{removeError}</p>{/if}
+  {#if removeError}<p class="px-5 py-3 font-sans text-[13px] leading-5 text-danger" role="alert">{removeError}</p>{/if}
 </div>

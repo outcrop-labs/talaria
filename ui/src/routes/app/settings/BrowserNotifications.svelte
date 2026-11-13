@@ -1,6 +1,7 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
-  import Segmented from '@/components/ui/Segmented.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import {
@@ -55,10 +56,6 @@
 
   const qc = useQueryClient()
   const shell = inDesktopShell()
-  const OPTIONS = [
-    { id: 'on' as const, label: 'On' },
-    { id: 'off' as const, label: 'Off' },
-  ]
   const browser = typeof navigator !== 'undefined' ? detectBrowser(navigator.userAgent, { brave: 'brave' in navigator }) : null
   const steps = browser ? blockedSteps(browser) : null
 
@@ -170,92 +167,89 @@
   })
 </script>
 
-<div data-notify-settings={shell ? 'shell' : perm}>
-  <div class="flex items-center gap-4">
-    <div class="min-w-0 flex-1">
-      <div class="text-sm text-fg">Desktop alerts in this browser</div>
-      <div class="font-sans text-xs text-muted">
-        {#if shell}
-          Desktop app notifications are set in Settings → Desktop.
-        {:else if perm === 'insecure'}
-          {insecureExplanation(location.origin)}
-        {:else if perm === 'unsupported'}
-          This browser doesn't support desktop alerts.
-        {:else if perm === 'denied'}
-          Desktop alerts are blocked in {browser?.name ?? 'this browser'}.
-        {:else if perm === 'default'}
-          Off. Turn on to get a desktop alert when someone needs you — mentions, DMs, approvals — while Talaria is in
-          another tab or window, or every Talaria tab is closed.
-        {:else if on}
-          On. An alert pops up when something lands while Talaria is in another tab or window, or every Talaria tab is
-          closed. The in-app toast shows while you're looking at Talaria.
-        {:else}
-          Off in this browser. Turn on to get desktop alerts again.
-        {/if}
-        {#if note}<div class="mt-1">{note}</div>{/if}
-      </div>
-    </div>
-    {#if !shell && perm === 'default'}
-      <Button size="sm" onclick={turnOn}>Turn on</Button>
-    {:else if !shell && perm === 'granted'}
-      <Segmented options={OPTIONS} value={on ? 'on' : 'off'} onChange={(v) => set(v === 'on')} />
-    {/if}
-  </div>
-  {#if !shell && perm === 'denied' && steps}
-    <ul class="mt-2 list-disc space-y-1 pl-4 font-sans text-xs text-muted" data-notify-steps>
-      {#each [...steps.browser, ...steps.os] as step (step)}<li>{step}</li>{/each}
-    </ul>
-    <div class="mt-1.5 font-sans text-xs text-muted">{steps.closing}</div>
-  {/if}
-  {#if !shell && perm === 'granted' && on}
-    <div class="mt-2 font-sans text-xs text-muted" data-push-status={push.state}>
-      {#if push.state === 'registered'}
-        This browser is registered for alerts with Talaria's tabs closed.
-        {#if browser}{closedTabsNote(browser)}{/if}
-      {:else if push.state === 'failed'}
-        Registration for alerts with Talaria's tabs closed failed: {push.reason}. Open-tab alerts are unaffected;
-        switching Off and On retries.
-      {:else if push.state === 'unsupported'}
-        This browser can't receive alerts with Talaria's tabs closed; open-tab alerts still work.
+<!-- Rows for the This browser card. -->
+<div data-notify-settings={shell ? 'shell' : perm} class="[&>*+*]:border-t [&>*+*]:border-line-subtle">
+  <SettingsRow label="Desktop alerts">
+    {#snippet hint()}
+      {#if shell}
+        Desktop app notifications are set in Settings, under Desktop.
+      {:else if perm === 'insecure'}
+        {insecureExplanation(location.origin)}
+      {:else if perm === 'unsupported'}
+        This browser does not support desktop alerts.
+      {:else if perm === 'denied'}
+        Blocked in {browser?.name ?? 'this browser'}.
+      {:else if perm === 'default' || !on}
+        Get an alert when someone needs you while Talaria is in another tab or closed.
+      {:else}
+        Alerts pop up while Talaria is in another tab or closed.
       {/if}
+      {#if note}<span class="block">{note}</span>{/if}
+    {/snippet}
+    {#if !shell && perm === 'default'}
+      <Button size="sm" variant="outline" onclick={turnOn}>Turn on</Button>
+    {:else if !shell && perm === 'granted'}
+      <Toggle checked={on} onChange={(v) => set(v)} title="Desktop alerts in this browser" />
+    {/if}
+  </SettingsRow>
+  {#if !shell && perm === 'denied' && steps}
+    <div class="px-5 py-4 font-sans text-[13px] leading-5 text-muted">
+      <ul class="list-disc space-y-1 pl-4" data-notify-steps>
+        {#each [...steps.browser, ...steps.os] as step (step)}<li>{step}</li>{/each}
+      </ul>
+      <div class="mt-2">{steps.closing}</div>
     </div>
   {/if}
 
   {#if !shell}
-    <dl class="mt-3 grid grid-cols-[9rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 font-sans text-xs" data-browser-checks>
-      <dt class="text-ink-dim">Permission</dt>
-      <dd class="flex items-center gap-1.5 text-fg" data-check="permission" data-state={perm}>
-        <StatusDot status={permLine.status} />{permLine.text}
-      </dd>
-      <dt class="text-ink-dim">Service worker</dt>
-      <dd class="flex items-center gap-1.5 text-fg" data-check="worker" data-state={worker}>
-        <StatusDot status={worker === 'active' ? 'ok' : worker === 'starting' ? 'warn' : 'idle'} />
-        {worker === 'active' ? 'Running' : worker === 'starting' ? 'Starting' : worker === 'unsupported' ? 'Not available here' : 'Not registered'}
-      </dd>
-      <dt class="text-ink-dim">Push subscription</dt>
-      <dd class="flex items-center gap-1.5 text-fg" data-check="subscription" data-state={subscribedTo ? 'yes' : 'no'}>
-        <StatusDot status={subscribedTo ? 'ok' : 'idle'} />
-        {subscribedTo ? `Subscribed through ${subscribedTo}` : 'None in this browser'}
-      </dd>
-      <dt class="text-ink-dim">On the server</dt>
-      <dd class="flex items-center gap-1.5 text-fg" data-check="server" data-state={serverKnows === null ? 'unknown' : serverKnows ? 'yes' : 'no'}>
-        <StatusDot status={serverKnows ? 'ok' : serverKnows === null ? 'idle' : 'warn'} />
-        {serverKnows === null
-          ? 'Checking'
-          : serverKnows
-            ? 'Talaria has this browser on file for push'
-            : subscribedTo
-              ? 'Not on file. Switching Off and On registers it again.'
-              : 'Not on file'}
-      </dd>
-    </dl>
-    {#if perm === 'granted' && on}
-      <div class="mt-3 flex flex-wrap items-center gap-3">
-        <Button size="xs" variant="outline" onclick={() => void testHere()} data-browser-test>Test this browser</Button>
-        {#if testMsg}
-          <span class="font-sans text-xs {testMsg.ok ? 'text-muted' : 'text-danger'}" data-browser-test-result>{testMsg.text}</span>
+    <div>
+      <dl class="grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 px-5 py-4 font-sans text-[13px] leading-5" data-browser-checks>
+        <dt class="text-muted">Permission</dt>
+        <dd class="flex items-center gap-2 text-fg" data-check="permission" data-state={perm}>
+          <StatusDot status={permLine.status} />{permLine.text}
+        </dd>
+        <dt class="text-muted">Service worker</dt>
+        <dd class="flex items-center gap-2 text-fg" data-check="worker" data-state={worker}>
+          <StatusDot status={worker === 'active' ? 'ok' : worker === 'starting' ? 'warn' : 'idle'} />
+          {worker === 'active' ? 'Running' : worker === 'starting' ? 'Starting' : worker === 'unsupported' ? 'Not available here' : 'Not registered'}
+        </dd>
+        <dt class="text-muted">Push subscription</dt>
+        <dd class="flex items-center gap-2 text-fg" data-check="subscription" data-state={subscribedTo ? 'yes' : 'no'}>
+          <StatusDot status={subscribedTo ? 'ok' : 'idle'} />
+          {subscribedTo ? `Subscribed through ${subscribedTo}` : 'None in this browser'}
+        </dd>
+        <dt class="text-muted">On the server</dt>
+        <dd class="flex items-center gap-2 text-fg" data-check="server" data-state={serverKnows === null ? 'unknown' : serverKnows ? 'yes' : 'no'}>
+          <StatusDot status={serverKnows ? 'ok' : serverKnows === null ? 'idle' : 'warn'} />
+          {serverKnows === null
+            ? 'Checking'
+            : serverKnows
+              ? 'Talaria has this browser on file for push'
+              : subscribedTo
+                ? 'Not on file. Switching off and on registers it again.'
+                : 'Not on file'}
+        </dd>
+        {#if perm === 'granted' && on}
+          <dt class="text-muted">With tabs closed</dt>
+          <dd class="text-fg" data-push-status={push.state}>
+            {#if push.state === 'registered'}
+              Registered. {#if browser}{closedTabsNote(browser)}{/if}
+            {:else if push.state === 'failed'}
+              Registration failed: {push.reason}. Open-tab alerts still work. Switching off and on retries.
+            {:else if push.state === 'unsupported'}
+              Not supported by this browser. Open-tab alerts still work.
+            {/if}
+          </dd>
         {/if}
-      </div>
-    {/if}
+      </dl>
+      {#if perm === 'granted' && on}
+        <div class="flex flex-wrap items-center gap-3 px-5 pb-4">
+          <Button size="sm" variant="outline" onclick={() => void testHere()} data-browser-test>Send test alert</Button>
+          {#if testMsg}
+            <span class="font-sans text-[13px] leading-5 {testMsg.ok ? 'text-muted' : 'text-danger'}" data-browser-test-result>{testMsg.text}</span>
+          {/if}
+        </div>
+      {/if}
+    </div>
   {/if}
 </div>

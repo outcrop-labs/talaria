@@ -1,7 +1,8 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { relativeTime } from '@/lib/fleet'
   import {
@@ -16,18 +17,16 @@
     featureSet,
     thisBrowserId,
     useDevices,
-    useNotifyPatch,
     useNotifySettings,
     usePresenceSnapshot,
   } from '@/lib/notify-center'
-  import { dndView, safeZone, scheduleSummary } from '@/lib/notify-dnd'
   import { notifyStatus } from '@/lib/notify-status.svelte'
   import { p } from '@/router'
   import BrowserNotifications from './BrowserNotifications.svelte'
   import NotifyDevices from './NotifyDevices.svelte'
 
   // STATUS AND TROUBLESHOOTING (D9, EB-03): the one place that answers "why
-  // didn't I get that?" without a support ticket. Five sections, each a fact
+  // didn't I get that?" without a support ticket. Four sections, each a fact
   // the person can check, not a guess:
   //
   //   1. This browser — permission (live), worker, subscription, whether the
@@ -38,7 +37,8 @@
   //      your devices alerts go to right now (the presence winner, I-17).
   //   4. Talaria Desktop — in the desktop app, its own notification service
   //      and test, through the shell bridge.
-  //   5. Pause — what Do Not Disturb is doing now.
+  //
+  // What Do Not Disturb is doing now is said in its own card, above this one.
   //
   // Each section gates on what the api serves (`features`) and on where it
   // runs (a browser or the shell), and says so rather than showing a dead row.
@@ -122,133 +122,105 @@
     }
   }
 
-  // 5. Pause.
-  const patch = useNotifyPatch()
-  const dnd = $derived(query.data?.dnd)
-  const dndNow = $derived(dndView(dnd, Date.now(), safeZone(dnd?.timeZone)))
-  let resumeMsg = $state<string | null>(null)
-  const resume = async () => {
-    resumeMsg = null
-    const r = await patch({ dnd: { pausedUntil: null } })
-    if ('error' in r) resumeMsg = r.error
-  }
-
-  const section = 'mt-5 border-t border-line-subtle pt-4 first:mt-0 first:border-t-0 first:pt-0'
-  const label = 'mb-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted'
 </script>
 
-<Panel as="section" data-notify-status-panel>
-  <SectionHeader
-    class="mb-4"
-    title="Status and troubleshooting"
-    info="Everything that decides whether a notification reaches you, checked live. Start here when something did not arrive."
-  />
-
-  <div class={section} data-status-section="browser">
-    <div class={label}>This browser</div>
-    <BrowserNotifications serverKnows={features.has('devices') ? serverKnows : null} />
+<div class="space-y-10" data-notify-status-panel>
+  <div data-status-section="browser">
+    <SettingsSection title="This browser" description="Start here when something did not arrive.">
+      <SettingsGroup>
+        <BrowserNotifications serverKnows={features.has('devices') ? serverKnows : null} />
+      </SettingsGroup>
+    </SettingsSection>
   </div>
 
   {#if features.has('devices')}
-    <div class={section} data-status-section="devices">
-      <div class={label}>Your devices</div>
-      <NotifyDevices />
+    <div data-status-section="devices">
+      <SettingsSection title="Your devices" description="Browsers that get a push with Talaria closed.">
+        <SettingsGroup><NotifyDevices /></SettingsGroup>
+      </SettingsSection>
     </div>
   {/if}
 
-  <div class={section} data-status-section="live">
-    <div class={label}>Live connection</div>
-    <dl class="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 font-sans text-xs">
-      <dt class="text-ink-dim">Event stream</dt>
-      <dd class="flex items-center gap-1.5 text-fg" data-live="stream" data-state={streamReported ? status.stream.state : 'unknown'}>
-        {#if streamReported}
-          <StatusDot status={status.stream.state === 'open' ? 'ok' : status.stream.state === 'closed' ? 'danger' : 'warn'} />
-          {STREAM_LABEL[status.stream.state] ?? status.stream.state}
-          {#if status.stream.since}<span class="text-muted">since {relativeTime(new Date(status.stream.since).toISOString())}</span>{/if}
-          {#if status.stream.lastEventAt}<span class="text-muted">· last event {relativeTime(new Date(status.stream.lastEventAt).toISOString())}</span>{/if}
-        {:else}
-          <StatusDot status="idle" />Not reported by this version of the app
-        {/if}
-      </dd>
-      {#if ROLE_LABEL[status.hubRole]}
-        <dt class="text-ink-dim">This tab</dt>
-        <dd class="text-fg" data-live="role" data-state={status.hubRole}>{ROLE_LABEL[status.hubRole]}</dd>
-      {/if}
-      {#if features.has('presence-store')}
-        <dt class="text-ink-dim">Alerts go to</dt>
-        <dd class="flex items-center gap-1.5 text-fg" data-live="target" data-state={target.target}>
-          {#if presence.isPending}
-            <StatusDot status="idle" />Checking
-          {:else if presence.isError && !presence.data}
-            <StatusDot status="warn" />Could not read where you are active
-          {:else}
-            <StatusDot status={target.target === 'none' ? 'idle' : 'ok'} />{ALERT_TARGET_LABEL[target.target]}
-          {/if}
-        </dd>
-        {#if presence.data}
-          <dt class="text-ink-dim">Clients reporting</dt>
-          <dd class="text-muted" data-live="clients">
-            {presence.data.clients.length === 0
-              ? 'None in the last two minutes'
-              : presence.data.clients.map((c) => `${c.kind === 'desktop' ? 'Talaria Desktop' : 'a browser tab'} (${c.state})`).join(', ')}
+  <div data-status-section="live">
+    <SettingsSection title="Live connection">
+      <SettingsGroup>
+        <dl class="grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 px-5 py-4 font-sans text-[13px] leading-5">
+          <dt class="text-muted">Event stream</dt>
+          <dd class="flex flex-wrap items-center gap-2 text-fg" data-live="stream" data-state={streamReported ? status.stream.state : 'unknown'}>
+            {#if streamReported}
+              <StatusDot status={status.stream.state === 'open' ? 'ok' : status.stream.state === 'closed' ? 'danger' : 'warn'} />
+              {STREAM_LABEL[status.stream.state] ?? status.stream.state}
+              {#if status.stream.since}<span class="text-muted">since {relativeTime(new Date(status.stream.since).toISOString())}</span>{/if}
+              {#if status.stream.lastEventAt}<span class="text-muted">· last event {relativeTime(new Date(status.stream.lastEventAt).toISOString())}</span>{/if}
+            {:else}
+              <StatusDot status="idle" />Not reported by this version of the app
+            {/if}
           </dd>
+          {#if ROLE_LABEL[status.hubRole]}
+            <dt class="text-muted">This tab</dt>
+            <dd class="text-fg" data-live="role" data-state={status.hubRole}>{ROLE_LABEL[status.hubRole]}</dd>
+          {/if}
+          {#if features.has('presence-store')}
+            <dt class="text-muted">Alerts go to</dt>
+            <dd class="flex items-center gap-2 text-fg" data-live="target" data-state={target.target}>
+              {#if presence.isPending}
+                <StatusDot status="idle" />Checking
+              {:else if presence.isError && !presence.data}
+                <StatusDot status="warn" />Could not read where you are active
+              {:else}
+                <StatusDot status={target.target === 'none' ? 'idle' : 'ok'} />{ALERT_TARGET_LABEL[target.target]}
+              {/if}
+            </dd>
+            {#if presence.data}
+              <dt class="text-muted">Clients reporting</dt>
+              <dd class="text-fg" data-live="clients">
+                {presence.data.clients.length === 0
+                  ? 'None in the last two minutes'
+                  : presence.data.clients.map((c) => `${c.kind === 'desktop' ? 'Talaria Desktop' : 'a browser tab'} (${c.state})`).join(', ')}
+              </dd>
+            {/if}
+          {/if}
+        </dl>
+      </SettingsGroup>
+      <!-- Each sentence is said only where this instance does it: the client
+           side by the web runtime (it reports here), the push side by the
+           delivery engine (`presence-gated-push`). -->
+      <p class="mt-2 max-w-[72ch] font-sans text-[13px] leading-5 text-muted" data-live-explain={gatedPush ? 'gated' : 'immediate'}>
+        {#if streamReported}The device you are looking at shows the banner, and your other devices stay quiet.{/if}
+        {#if gatedPush}
+          Push waits a minute while you are using one of your devices.
+        {:else}
+          This instance pushes every alert to every registered browser at once.
         {/if}
-      {/if}
-    </dl>
-    <!-- Each sentence is said only where this instance does it: the client
-         side by the web runtime (it reports here), the push side by the
-         delivery engine (`presence-gated-push`). -->
-    <p class="mt-2 max-w-xl font-sans text-xs text-muted" data-live-explain={gatedPush ? 'gated' : 'immediate'}>
-      {#if streamReported}The device you are looking at shows the banner, and your other devices stay quiet.{/if}
-      {#if gatedPush}
-        Push waits a minute while you are using one of your devices, and goes to every registered browser when you are
-        not.
-      {:else}
-        This instance pushes every alert that has Push on to every registered browser at once, whichever device you are
-        using.
-      {/if}
-    </p>
+      </p>
+    </SettingsSection>
   </div>
 
   {#if shell}
-    <div class={section} data-status-section="desktop">
-      <div class={label}>Talaria Desktop</div>
-      {#if shellLine}
-        <p class="flex items-center gap-1.5 font-sans text-sm text-fg" data-shell-status={shellNote?.permission}>
-          <StatusDot status={shellLine.status} />{shellLine.text}
-        </p>
-        {#if shellNote?.lastError}<p class="mt-1 font-sans text-xs text-danger">Last error: {shellNote.lastError}</p>{/if}
-      {:else}
-        <p class="font-sans text-sm text-muted">This version of the desktop app does not report its notification service.</p>
-      {/if}
-      <div class="mt-2 flex flex-wrap items-center gap-3">
-        {#if shellNote}
-          <Button size="xs" variant="outline" disabled={shellBusy} onclick={() => void shellTest()} data-shell-test>Send test notification</Button>
-        {/if}
-        <a class="font-sans text-xs text-accent underline-offset-2 hover:underline" href={p('/settings')}>Settings → Desktop</a>
-        {#if shellMsg}
-          <span class="font-sans text-xs {shellMsg.ok ? 'text-muted' : 'text-danger'}" data-shell-test-result>{shellMsg.text}</span>
-        {/if}
-      </div>
+    <div data-status-section="desktop">
+      <SettingsSection title="Talaria Desktop">
+        <SettingsGroup>
+          <SettingsRow label="Notification service">
+            {#snippet hint()}
+              {#if shellLine}
+                <span class="flex items-center gap-2" data-shell-status={shellNote?.permission}>
+                  <StatusDot status={shellLine.status} />{shellLine.text}
+                </span>
+                {#if shellNote?.lastError}<span class="block text-danger">Last error: {shellNote.lastError}</span>{/if}
+              {:else}
+                This version of the desktop app does not report its notification service.
+              {/if}
+              {#if shellMsg}
+                <span class="block {shellMsg.ok ? 'text-muted' : 'text-danger'}" data-shell-test-result>{shellMsg.text}</span>
+              {/if}
+            {/snippet}
+            <a class="font-sans text-[13px] text-accent underline-offset-2 hover:underline" href={p('/settings')}>Desktop settings</a>
+            {#if shellNote}
+              <Button size="sm" variant="outline" disabled={shellBusy} onclick={() => void shellTest()} data-shell-test>Send test</Button>
+            {/if}
+          </SettingsRow>
+        </SettingsGroup>
+      </SettingsSection>
     </div>
   {/if}
-
-  <div class={section} data-status-section="pause">
-    <div class={label}>Pause</div>
-    <p class="flex flex-wrap items-center gap-2 font-sans text-sm text-fg" data-status-pause={dndNow.active ? dndNow.reason : 'off'}>
-      {#if dndNow.active}
-        <StatusDot status="warn" />{dndNow.label}
-        {#if dndNow.reason === 'paused'}
-          <Button size="xs" variant="outline" onclick={() => void resume()}>Resume</Button>
-        {/if}
-      {:else}
-        <StatusDot status="ok" />Not paused
-        {#if dnd?.schedule?.enabled}<span class="text-xs text-muted">· working hours {scheduleSummary(dnd.schedule)}</span>{/if}
-      {/if}
-    </p>
-    {#if dndNow.active && dnd?.allowNeedsYou !== false}
-      <p class="mt-1 font-sans text-xs text-muted">Needs you still comes through.</p>
-    {/if}
-    {#if resumeMsg}<p class="mt-1 font-sans text-xs text-danger" role="alert">{resumeMsg}</p>{/if}
-  </div>
-</Panel>
+</div>

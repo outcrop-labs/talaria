@@ -4,15 +4,18 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import NotifyMatrix from './NotifyMatrix.svelte'
   import NotifySchedule from './NotifySchedule.svelte'
   import NotifyStatusPanel from './NotifyStatusPanel.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
-  import { cn } from '@/lib/cn'
   import {
     NOTIFY_ROUTES,
     saveNotifySettings,
@@ -22,22 +25,9 @@
     type NotifyRoute,
   } from '@/lib/notifications'
   import { featureSet, useNotifyPatch } from '@/lib/notify-center'
+  import { dndView, safeZone } from '@/lib/notify-dnd'
   import { EMAIL_FREQUENCY_OPTIONS, mailNote } from '@/lib/notify-matrix'
   import type { EmailFrequency } from '@/lib/notify-wire'
-
-  const DIGEST_OPTIONS: Array<{ id: DigestPref; label: string }> = [
-    { id: 'on', label: 'On' },
-    { id: 'off', label: 'Off' },
-  ]
-
-  // The INSTANCE-wide email master switch. Same two words as the digest control
-  // because it is the same kind of question — but it is not the same kind of
-  // setting, and the block it sits in says so: it is the only control on this
-  // page that decides something for everybody.
-  const DELIVERY_OPTIONS: Array<{ id: 'on' | 'off'; label: string }> = [
-    { id: 'on', label: 'On' },
-    { id: 'off', label: 'Off' },
-  ]
 
   // Settings → Notifications: what reaches you where (the category × channel
   // matrix, its rows the server's class registry), how often missed activity
@@ -86,6 +76,12 @@
   }
   const dndFailed = (m: string) => {
     dndError = m
+  }
+  const dndNow = $derived(dndView(data?.dnd, Date.now(), safeZone(data?.dnd?.timeZone)))
+  const resume = async () => {
+    const r = await patch({ dnd: { pausedUntil: null } })
+    if ('error' in r) dndFailed(r.error)
+    else dndSaved()
   }
 
   // The digest switch: optimistic, rolled back on refusal, and the server's
@@ -171,154 +167,137 @@
   const humanize = (id: string) => id.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
 </script>
 
-<Panel as="section">
-  <SectionHeader
-    class="mb-4"
-    title="Notifications"
-    info="Every notification is kept in your inbox. Choose where else each kind reaches you: a desktop banner, a push to your browsers with Talaria closed, or email."
+{#if isPending}
+  <SettingsGroup><div class="px-5 py-4"><SkeletonRows rows={6} /></div></SettingsGroup>
+{:else if !data || !digest || emailOn === null}
+  <!-- "Everything is in-app only" is a claim about YOUR settings, and a
+       failed read never made it. Same for "Daily digest: on", and same again
+       for "email is off for this instance", which would be a claim about the
+       whole workspace. -->
+  <QueryError
+    variant="compact"
+    error={query.error}
+    title="Could not load your notification settings"
+    onRetry={() => void query.refetch()}
   />
-  {#if isPending}
-    <SkeletonRows rows={6} />
-  {:else if !data || !digest || emailOn === null}
-    <!-- "Everything is in-app only" is a claim about YOUR settings, and a
-         failed read never made it. Same for "Daily digest — On", and same
-         again for "email is off for this instance" — which would be a claim
-         about the whole workspace. -->
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load your notification settings"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
-    <!-- The instance switch. An admin always sees it — it is the control,
-         and the state it is in is half of what the rest of this page means.
-         A MEMBER sees it only when it is OFF, because that is the case where
-         the page below would otherwise lie to them: every Email box can be
-         ticked and not one of them sends anything. When it is on, a member
-         needs no explanation and gets no clutter. -->
-    {#if data.canSetDelivery || !emailOn}
-      <div
-        class={cn(
-          'mb-4 rounded-md border p-4',
-          emailOn ? 'border-line bg-raised' : 'border-warning/40 bg-warning/5',
-        )}
-        data-email-switch={emailOn ? 'on' : 'off'}
-      >
-        <div class="flex items-start gap-4">
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2">
-              <StatusDot status={emailOn ? 'ok' : 'warn'} />
-              <span class="text-sm font-medium text-fg">
-                {emailOn ? 'Email delivery is on for this instance' : 'Email delivery is off for this instance'}
-              </span>
-            </div>
-            <p class="mt-1 font-sans text-xs text-muted">
-              {emailOn
-                ? 'Every setting below can send mail. Switching this off stops all notification and digest email for everyone in this workspace immediately, including mail already queued and the daily digest.'
-                : 'Nothing below sends mail. Notifications and the daily digest still land in the in-app inbox; none of them leave the building.'}
-            </p>
-            {#if data.canSetDelivery}
-              <p class="mt-1 font-sans text-xs text-muted">
-                This is the instance-wide switch and it overrules every personal setting on this page, for every
-                user. Turning it on starts mailing the whole workspace.
-              </p>
-            {:else}
-              <p class="mt-1 font-sans text-xs text-muted">Only an admin can turn it back on.</p>
-            {/if}
-          </div>
+{:else}
+  <!-- The instance switch. An admin always sees it: it is the control, and
+       the state it is in is half of what the rest of this page means. A
+       MEMBER sees it only when it is OFF, because that is the case where the
+       page below would otherwise lie to them: every Email box can be ticked
+       and not one of them sends anything. -->
+  {#if data.canSetDelivery || !emailOn}
+    <SettingsGroup>
+      <div data-email-switch={emailOn ? 'on' : 'off'}>
+        <SettingsRow
+          label="Email for this instance"
+          hint={data.canSetDelivery
+            ? 'Sends notification and digest email to everyone in this workspace.'
+            : 'Nothing below sends mail. Only an admin can turn it back on.'}
+          info={data.canSetDelivery
+            ? 'The instance-wide switch. It overrules every personal setting on this page, for every user. Off stops all notification and digest email at once, including mail already queued.'
+            : undefined}
+        >
+          <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+            <StatusDot status={emailOn ? 'ok' : 'warn'} />{emailOn ? 'On' : 'Off'}
+          </span>
           {#if data.canSetDelivery}
-            <Segmented
-              options={DELIVERY_OPTIONS}
-              value={emailOn ? 'on' : 'off'}
-              onChange={(v) => void setDelivery(v === 'on')}
-            />
+            <Toggle checked={emailOn} onChange={(on) => void setDelivery(on)} title="Email for this instance" />
           {/if}
-        </div>
+        </SettingsRow>
       </div>
-    {/if}
+    </SettingsGroup>
+  {/if}
 
-    {#if classes}
-      <NotifyMatrix {classes} channels={data.channels} emailEnabled={emailOn} onSaved={saved} onError={failed} />
-    {:else if legacy}
-      <ul class="divide-y divide-line-subtle">
+  {#if classes || (legacy && Object.keys(legacy).length > 0)}
+  <SettingsSection title="What reaches you" description="Everything is kept in your inbox. Choose where else each kind goes.">
+    <SettingsGroup>
+      {#if classes}
+        <NotifyMatrix {classes} channels={data.channels} emailEnabled={emailOn} onSaved={saved} onError={failed} />
+      {:else if legacy}
         {#each Object.keys(legacy) as id (id)}
-          <li class="flex items-center gap-4 py-3">
-            <div class="min-w-0 flex-1 text-sm text-fg">{humanize(id)}</div>
+          <SettingsRow label={humanize(id)}>
             <Segmented options={NOTIFY_ROUTES} value={legacy[id] ?? 'in_app'} onChange={(r) => void setRoute(id, r)} />
-          </li>
+          </SettingsRow>
         {/each}
-      </ul>
-    {/if}
+      {/if}
+    </SettingsGroup>
+  </SettingsSection>
+  {/if}
 
-    <ul class="mt-4 divide-y divide-line-subtle border-t border-line-subtle">
+  <SettingsSection title="Email">
+    <SettingsGroup>
       {#if frequency}
-        <li class="flex flex-col items-start gap-2 py-3 sm:flex-row sm:items-center sm:gap-4" data-email-frequency={frequency}>
-          <div class="min-w-0 flex-1">
-            <div class="text-sm text-fg">Missed-activity email</div>
-            <div class="font-sans text-xs text-muted">
-              How often to mail what you have not seen in the app, in one email.
+        <div data-email-frequency={frequency}>
+          <SettingsRow label="Missed-activity email">
+            {#snippet hint()}
+              One email for what you have not seen in the app.
               {#if features.has('email-batch')}
                 <!-- Said from the registry and this person's matrix: a hand-kept
                      sentence here told people Following is not mailed, while
                      Channel activity mailed by default (notify-web-4). -->
                 {#if classes}{mailNote(classes, data?.channels, frequency)}{/if}
               {:else}
-                Saved now; this instance starts batching by it with its next delivery update.
+                Saved now. Batching starts with this instance's next update.
               {/if}
-            </div>
-          </div>
-          <Segmented options={EMAIL_FREQUENCY_OPTIONS} value={frequency} onChange={(v) => void setFrequency(v)} />
-        </li>
-      {/if}
-      <!-- The digest is not a class — it is one mail that summarises the
-           queues — so it gets its own row and its own On/Off, below the
-           matrix it does not belong to. -->
-      <li class="flex flex-col items-start gap-2 py-3 sm:flex-row sm:items-center sm:gap-4">
-        <div class="min-w-0 flex-1">
-          <div class="text-sm text-fg">Daily digest</div>
-          <div class="font-sans text-xs text-muted">
-            One email a day listing what is waiting on you: approvals, tickets in review, blocked and to triage.
-            Never sent on a day when nothing is waiting.
-          </div>
+            {/snippet}
+            <Segmented options={EMAIL_FREQUENCY_OPTIONS} value={frequency} onChange={(v) => void setFrequency(v)} />
+          </SettingsRow>
         </div>
-        <Segmented options={DIGEST_OPTIONS} value={digest} onChange={(v) => void setDigest(v)} />
-      </li>
-    </ul>
-  {/if}
-  <p class="mt-3 text-xs text-muted" aria-live="polite">
-    {#if savedFlash.saved && !error}<span class="text-success">Saved</span>{/if}
-    {#if error}<span class="text-danger" role="alert">{error}</span>{/if}
-  </p>
-</Panel>
+      {/if}
+      <!-- The digest is not a class: it is one mail that summarises the
+           queues, so it gets its own row below the matrix it does not belong to. -->
+      <SettingsRow label="Daily digest" hint="One email a day listing what is waiting on you. Skipped when nothing is.">
+        <Toggle checked={digest === 'on'} onChange={(on) => void setDigest(on ? 'on' : 'off')} title="Daily digest" />
+      </SettingsRow>
+    </SettingsGroup>
+    <p class="mt-2 font-sans text-[13px] leading-5 text-muted" aria-live="polite">
+      {#if savedFlash.saved && !error}<span class="text-success">Saved</span>{/if}
+      {#if error}<span class="text-danger" role="alert">{error}</span>{/if}
+    </p>
+  </SettingsSection>
+{/if}
 
 {#if data?.dnd}
-  <Panel as="section" data-notify-dnd>
-    <SectionHeader
-      class="mb-4"
+  <div data-notify-dnd>
+    <SettingsSection
       title="Do not disturb"
-      info="Paused or outside your working hours, notifications still land in your inbox and on the bell, quietly: no banner, no push, no email."
-    />
-    {#if !features.has('dnd-enforced')}
-      <p class="-mt-2 mb-4 max-w-xl font-sans text-xs text-muted">
-        This instance saves and shows your pause and working hours, and its next delivery update enforces them for push
-        and email. Until then some alerts may still arrive.
-      </p>
-    {/if}
-    <div class="grid gap-6 md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
-      <div>
-        <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Pause</div>
-        <div class="-mx-3">
-          <PauseMenu dnd={data.dnd} onDone={dndSaved} />
+      description={features.has('dnd-enforced')
+        ? 'Paused or outside your hours, notifications still land in your inbox, quietly.'
+        : 'Saved now. This instance starts enforcing pause and working hours with its next update.'}
+    >
+      <SettingsGroup>
+        <div data-status-pause={dndNow.active ? dndNow.reason : 'off'}>
+          <SettingsRow label="Pause" hint={dndNow.active && dndNow.reason === 'paused' ? (dndNow.label ?? 'Paused') : 'Not paused'}>
+            {#if dndNow.active && dndNow.reason === 'paused'}
+              <Button size="sm" variant="ghost" onclick={() => void resume()}>Resume</Button>
+            {/if}
+            <DropdownMenu items={[]}>
+              {#snippet trigger()}
+                <Button size="sm" variant="outline">Pause notifications</Button>
+              {/snippet}
+              {#snippet content(close)}
+                <div class="w-64 font-sans">
+                  <PauseMenu
+                    dnd={data.dnd}
+                    onDone={() => {
+                      dndSaved()
+                      close()
+                    }}
+                  />
+                </div>
+              {/snippet}
+            </DropdownMenu>
+          </SettingsRow>
         </div>
-      </div>
-      <NotifySchedule dnd={data.dnd} onSaved={dndSaved} onError={dndFailed} />
-    </div>
-    <p class="mt-3 text-xs text-muted" aria-live="polite" data-dnd-status>
-      {#if dndFlash.saved && !dndError}<span class="text-success">Saved</span>{/if}
-      {#if dndError}<span class="text-danger" role="alert">{dndError}</span>{/if}
-    </p>
-  </Panel>
+        <NotifySchedule dnd={data.dnd} onSaved={dndSaved} onError={dndFailed} />
+      </SettingsGroup>
+      <p class="mt-2 font-sans text-[13px] leading-5 text-muted" aria-live="polite" data-dnd-status>
+        {#if dndFlash.saved && !dndError}<span class="text-success">Saved</span>{/if}
+        {#if dndError}<span class="text-danger" role="alert">{dndError}</span>{/if}
+      </p>
+    </SettingsSection>
+  </div>
 {/if}
 
 <NotifyStatusPanel />

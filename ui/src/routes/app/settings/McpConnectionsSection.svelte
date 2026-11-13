@@ -1,11 +1,14 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import { Plug } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
@@ -93,90 +96,90 @@
 </script>
 
 {#if !(!isPending && data?.length === 0)}
-  <Panel as="section" class="mt-4">
-    <SectionHeader
-      title="Tool accounts"
-      info="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time; the server drops off your assistant on the next config render."
-    />
-    <QueryState query={query} errorTitle="Could not load your tool accounts" errorVariant="inline">
-      {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
-      {#snippet children(data)}
-      <ul class="divide-y divide-line-subtle">
-        {#each data ?? [] as s (s.id)}
-          <li class="space-y-2 py-2.5">
-            <div class="flex items-center gap-3">
-              <div class="min-w-0 flex-1">
-                <div class="text-sm text-fg">{s.label}</div>
-                {#if s.description}<div class="truncate font-sans text-xs text-muted">{s.description}</div>{/if}
-              </div>
-              {#if s.connected}
-                <span class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
-                  <StatusDot status="ok" />
-                  connected
-                </span>
-                <Button size="sm" variant="danger-outline" onclick={() => void put(s.id, null)}>
-                  Disconnect
-                </Button>
-              {:else if s.authKind === 'oauth'}
-                {#if s.needsReconnect}
-                  <span
-                    class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning"
-                    title="The provider refused to refresh your sign-in, so your assistant can no longer use this server as you."
-                  >
-                    <StatusDot status="warn" />
-                    expired
-                  </span>
-                {/if}
-                <Button
-                  size="sm"
-                  title={s.needsReconnect
-                    ? 'Your sign-in expired at the provider. Sign in again so your assistant can act as you here.'
-                    : 'Sign in with the provider. Your assistant then acts as you on this server.'}
-                  onclick={() => void window.open(`/api/mcp/oauth/start?server=${s.id}&scope=me`, 'talaria-mcp-oauth', 'width=620,height=780')}
-                >
-                  {s.needsReconnect ? 'Reconnect' : 'Connect'}
-                </Button>
-              {:else}
-                <Button size="sm" onclick={() => toggle(s)}>
-                  Connect
-                </Button>
-              {/if}
-            </div>
-            {#if connecting === s.id}
-              <div transition:slide={{ duration: 150 }} class="space-y-2 pl-1">
-                <!-- Publisher-declared credentials drive the form — one field
-                     per template variable, composed back into its header; a
-                     server without declarations falls back to one auth
-                     header. -->
-                {#each fieldsOf(s) as f (f.key)}
-                  <div class="flex max-w-xl items-end gap-2">
-                    <span class="w-40 shrink-0 truncate pb-2 font-mono text-[11px] text-muted" title={f.header === f.label ? f.label : `${f.label} → ${f.header}`}>
-                      {f.label}{#if f.header !== f.label}<span class="text-ink-dim"> → {f.header}</span>{/if}
+  <SettingsSection
+    title="Tool accounts"
+    description="Sign in to a tool so your assistant can use it as you."
+    info="MCP servers your workspace runs in per-user mode. Your sign-in is stored encrypted. Disconnect any time, and the server drops off your assistant on its next restart."
+  >
+    <SettingsGroup>
+      <QueryState query={query} errorTitle="Could not load your tool accounts" errorVariant="inline">
+        {#snippet skeleton()}<div class="px-5 py-4"><SkeletonRows rows={2} /></div>{/snippet}
+        {#snippet children(data)}
+          {#each data ?? [] as s (s.id)}
+            <div>
+              <SettingsRow label={s.label} hint={s.description ?? undefined}>
+                {#snippet icon()}<Plug size={16} />{/snippet}
+                {#if s.connected}
+                  <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="ok" />Connected</span>
+                  <SettingsRowMenu
+                    label={`Actions for ${s.label}`}
+                    items={[{ label: `Disconnect ${s.label}`, danger: true, onSelect: () => void put(s.id, null) }]}
+                  />
+                {:else if s.authKind === 'oauth'}
+                  {#if s.needsReconnect}
+                    <span
+                      class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"
+                      title="The provider refused to refresh your sign-in, so your assistant can no longer use this server as you."
+                    >
+                      <StatusDot status="warn" />Needs sign-in
                     </span>
-                    <div class="min-w-0 flex-1">
-                      <Input
-                        size="sm"
-                        type={f.isSecret ? 'password' : 'text'}
-                        value={values[f.key] ?? ''}
-                        oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
-                        placeholder={f.placeholder ?? ''}
-                        autocomplete="off"
-                      />
-                      {#if f.description}<div class="mt-0.5 font-sans text-[11px] text-muted/80">{f.description}</div>{/if}
+                  {:else}
+                    <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not connected</span>
+                  {/if}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    title={s.needsReconnect
+                      ? 'Your sign-in expired at the provider. Sign in again so your assistant can act as you here.'
+                      : 'Sign in with the provider. Your assistant then acts as you on this server.'}
+                    onclick={() => void window.open(`/api/mcp/oauth/start?server=${s.id}&scope=me`, 'talaria-mcp-oauth', 'width=620,height=780')}
+                  >
+                    {s.needsReconnect ? 'Reconnect' : 'Connect'}
+                  </Button>
+                {:else}
+                  <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not connected</span>
+                  <Button size="sm" variant="outline" onclick={() => toggle(s)}>
+                    {connecting === s.id ? 'Cancel' : 'Connect'}
+                  </Button>
+                {/if}
+              </SettingsRow>
+              {#if connecting === s.id}
+                <div transition:slide={{ duration: 150 }}>
+                  <!-- Publisher-declared credentials drive the form: one field
+                       per template variable, composed back into its header. A
+                       server without declarations falls back to one auth header. -->
+                  <div class="space-y-3 border-t border-line-subtle px-5 py-4">
+                    {#each fieldsOf(s) as f (f.key)}
+                      <label class="flex items-center gap-6">
+                        <span class="min-w-0 flex-1">
+                          <span class="block truncate font-mono text-xs text-muted" title={f.header === f.label ? f.label : `${f.label} → ${f.header}`}>
+                            {f.label}{#if f.header !== f.label} → {f.header}{/if}
+                          </span>
+                          {#if f.description}<span class="block font-sans text-[13px] leading-5 text-muted">{f.description}</span>{/if}
+                        </span>
+                        <Input
+                          size="sm"
+                          class="w-[280px] shrink-0"
+                          type={f.isSecret ? 'password' : 'text'}
+                          value={values[f.key] ?? ''}
+                          oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
+                          placeholder={f.placeholder ?? ''}
+                          autocomplete="off"
+                        />
+                      </label>
+                    {/each}
+                    <div class="flex justify-end">
+                      <Button size="sm" variant="outline" disabled={!fieldsOf(s).some((f) => (values[f.key] ?? '').trim())} onclick={() => submit(s)}>
+                        Save and connect
+                      </Button>
                     </div>
                   </div>
-                {/each}
-                <div class="flex justify-end">
-                  <Button size="sm" disabled={!fieldsOf(s).some((f) => (values[f.key] ?? '').trim())} onclick={() => submit(s)}>
-                    Connect
-                  </Button>
                 </div>
-              </div>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-      {/snippet}
-    </QueryState>
-  </Panel>
+              {/if}
+            </div>
+          {/each}
+        {/snippet}
+      </QueryState>
+    </SettingsGroup>
+  </SettingsSection>
 {/if}

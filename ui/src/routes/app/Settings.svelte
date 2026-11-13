@@ -3,13 +3,14 @@
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { route } from '@/router'
-  import Avatar from '@/components/ui/Avatar.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import { inlineEditKeys } from '@/components/ui/control'
   import { useAppGrants, useSession } from '@/lib/session'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
@@ -106,64 +107,49 @@
 
 <SettingsPage title={page.label} blurb={page.blurb}>
     {#if appsList.notice}<QueryError {...appsList.notice} />{/if}
-    <!-- Tab-pane grammar: pane rises in on switch (no exit) and its sections
-         stagger — settings panes are section stacks. Keying is safe here: the
-         profile input's state (`name`) lives in this component, not the pane.
-         No AutoHeight — the pane is the last thing on a scrolling page, so its
-         resize has nothing below it to displace. -->
+    <!-- Pane grammar: the pane rises in on switch (no exit) and its sections
+         stagger. Keying is safe here: the profile input's state (`name`)
+         lives in this component, not the pane. -->
     {#key tab}
-    <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-6">
+    <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-10">
     {#if tab === 'profile'}
-      <Panel as="section">
-        <div class="mb-4 flex items-center gap-3">
-          {#if sessionLoading}
-            <!-- Hold the identity header until the session lands — an empty
-                 avatar/name/email that fills in later reads as a glitch. -->
-            <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
-            <div class="min-w-0 flex-1 space-y-2">
-              <Skeleton class="h-3 w-36 rounded-full" />
-              <Skeleton class="h-2.5 w-48 rounded-full" />
-            </div>
-          {:else}
-            <Avatar src={user?.picture} name={name || user?.email} class="h-10 w-10" />
-            <div class="min-w-0">
-              <div class="truncate text-sm font-medium text-fg">{name || user?.email}</div>
-              <div class="truncate text-xs text-muted">{user?.email}</div>
-            </div>
-          {/if}
-        </div>
-        <label for="settings-display-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Display name</label>
+      <SettingsGroup>
         {#if sessionLoading}
-          <div class="flex max-w-md items-center gap-2">
-            <Skeleton class="h-11 flex-1" />
-            <Skeleton class="h-11 w-20" />
-          </div>
+          <!-- Hold the rows until the session lands: an empty name that fills
+               in later reads as a glitch. -->
+          <SettingsRow label="Photo"><Skeleton class="h-9 w-9 rounded-full" /><Skeleton class="h-8 w-20" /></SettingsRow>
+          <SettingsRow label="Name"><Skeleton class="h-9 w-[280px]" /></SettingsRow>
         {:else}
-          <div class="flex max-w-md items-center gap-2">
-            <Input
-              id="settings-display-name"
-              bind:value={name}
-              onkeydown={(e) => e.key === 'Enter' && void save()}
-              placeholder="How teammates and agents see you"
-            />
-            <Button onclick={() => void save()} disabled={busy || !name.trim() || name.trim() === user?.name}>
-              Save
-            </Button>
-          </div>
-        {/if}
-        {#if savedFlash.saved}<div class="mt-2 text-xs text-success">Saved</div>{/if}
-        <TitleField />
-        {#if !sessionLoading}
           <ProfilePhotoField {user} />
+          <SettingsRow label="Name" hint="How teammates and agents see you." as="label">
+            {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
+            <Input
+              size="sm"
+              class="w-[280px]"
+              bind:value={name}
+              disabled={busy}
+              onblur={() => void save()}
+              onkeydown={inlineEditKeys(() => (name = user?.name ?? ''))}
+              placeholder="Your name"
+            />
+          </SettingsRow>
+          <SettingsRow label="Email">
+            <span class="font-sans text-sm leading-5 text-muted">{user?.email}</span>
+          </SettingsRow>
         {/if}
-        <PreferredModelPicker />
-        <TimezonePicker />
-      </Panel>
+        <TitleField />
+      </SettingsGroup>
+      <SettingsSection title="Preferences">
+        <SettingsGroup>
+          <PreferredModelPicker />
+          <TimezonePicker />
+        </SettingsGroup>
+      </SettingsSection>
       {#if inDesktopShell()}<DesktopSection />{/if}
     {/if}
 
     {#if tab === 'notifications'}<NotificationsSection />{/if}
-    {#if tab === 'assistant'}<AssistantSection />{/if}
+    {#if tab === 'assistant'}<div class="space-y-6"><AssistantSection /></div>{/if}
     {#if tab === 'connections'}
       <IntegrationsSection />
       <McpConnectionsSection />
