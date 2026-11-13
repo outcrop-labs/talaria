@@ -293,23 +293,8 @@ pub async fn disconnect_agent_google(
     sb: &SecretBox,
     agent_model: &str,
 ) -> Result<(AgentPrincipal, talaria_google_connections::RevokeOutcome), sqlx::Error> {
-    use talaria_google_connections::{GrantRow, RevokeOutcome, revoke_stored_grant};
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "select google_sub, refresh_token_enc from agent_google_connections where agent_model = $1",
-    )
-    .bind(agent_model)
-    .fetch_optional(pg)
-    .await?;
-    let outcome = match row {
-        Some((sub, enc)) => {
-            revoke_stored_grant(pg, sb, &GrantRow::Agent(agent_model.to_string()), &sub, enc).await
-        }
-        None => RevokeOutcome::NothingStored,
-    };
-    sqlx::query("delete from agent_google_connections where agent_model = $1")
-        .bind(agent_model)
-        .execute(pg)
-        .await?;
+    use talaria_google_connections::{GrantRow, forget_grant};
+    let outcome = forget_grant(pg, sb, &GrantRow::Agent(agent_model.to_string())).await?;
     let current = load_principal(pg, agent_model).await?;
     if current.kind != PrincipalKind::Agent {
         return Ok((current, outcome));

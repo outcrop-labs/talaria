@@ -302,31 +302,13 @@ pub async fn save_connection(
 }
 
 /// Forget a user's connection, and revoke its grant at Google unless another
-/// stored connection holds the same grant (`revoke_unless_shared`). A revoke
-/// that fails (network, already revoked) still drops the row: the stored
-/// state and Google's may disagree for the token's remaining lifetime, which
-/// is the safer direction of the two to disagree in. The outcome says which
-/// of those happened, so the route can tell the person.
+/// stored connection holds the same grant (`forget_grant`). A revoke that
+/// fails (network, already revoked) still drops the row: the stored state and
+/// Google's may disagree for the token's remaining lifetime, which is the
+/// safer direction of the two to disagree in. The outcome says which of those
+/// happened, so the route can tell the person.
 pub async fn disconnect(pg: &PgPool, sb: &SecretBox, user_id: &str) -> RevokeOutcome {
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "select google_sub, refresh_token_enc from google_connections where user_id = $1::uuid",
-    )
-    .bind(user_id)
-    .fetch_optional(pg)
-    .await
-    .ok()
-    .flatten();
-    let outcome = match row {
-        Some((sub, enc)) => {
-            revoke_stored_grant(pg, sb, &GrantRow::User(user_id.to_string()), &sub, enc).await
-        }
-        None => RevokeOutcome::NothingStored,
-    };
-    let _ = sqlx::query("delete from google_connections where user_id = $1::uuid")
-        .bind(user_id)
-        .execute(pg)
-        .await;
-    outcome
+    forget_grant_best_effort(pg, sb, &GrantRow::User(user_id.to_string())).await
 }
 
 // ── Revoke, and the shared-grant check before it ─────────────────────────────
@@ -338,10 +320,13 @@ pub async fn disconnect(pg: &PgPool, sb: &SecretBox, user_id: &str) -> RevokeOut
 // Every row today is minted by the one connections client, so a shared
 // `google_sub` means a shared grant, and revoking for one row would silently
 // cut off the others. Such a disconnect forgets its row and leaves the grant
-// alone; the last row holding it revokes it. (When rows record the client
-// that minted them, "same grant" narrows to same sub AND same client. Until
-// then the check errs towards not revoking, the direction that cannot break
-// a connection.)
+// alone; the last row holding it revokes it. Two disconnects of rows that
+// share a grant would each see the other and neither revoke, so the read of
+// the other rows and the delete run under one advisory lock per Google
+// account, and the revoke goes out after that commit. (When rows record the
+// client that minted them, "same grant" narrows to same sub AND same client.
+// Until then the check errs towards not revoking, the direction that cannot
+// break a connection.)
 
 /// One stored Google connection, by store and key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,6 +337,34 @@ pub enum GrantRow {
     Org,
     /// An agent's own identity (`agent_google_connections`), by agent model.
     Agent(String),
+}
+
+impl GrantRow {
+    /// This row's store: the read of its account and refresh cipher, and its
+    /// delete, both keyed by `$1` when the store has a key (`key`).
+    fn sql(&self) -> (&'static str, &'static str) {
+        match self {
+            GrantRow::User(_) => (
+                "select google_sub, refresh_token_enc from google_connections where user_id = $1::uuid",
+                "delete from google_connections where user_id = $1::uuid",
+            ),
+            GrantRow::Org => (
+                "select google_sub, refresh_token_enc from google_org_connection where id = 1",
+                "delete from google_org_connection where id = 1",
+            ),
+            GrantRow::Agent(_) => (
+                "select google_sub, refresh_token_enc from agent_google_connections where agent_model = $1",
+                "delete from agent_google_connections where agent_model = $1",
+            ),
+        }
+    }
+
+    fn key(&self) -> Option<&str> {
+        match self {
+            GrantRow::User(k) | GrantRow::Agent(k) => Some(k),
+            GrantRow::Org => None,
+        }
+    }
 }
 
 /// A stored row for the same Google account as the one being dropped.
@@ -421,7 +434,7 @@ where
 
 /// Every stored row, in all three stores, for one Google account.
 pub async fn stored_grants_for(
-    pg: &PgPool,
+    conn: &mut sqlx::PgConnection,
     google_sub: &str,
 ) -> Result<Vec<StoredGrant>, sqlx::Error> {
     let rows: Vec<(String, Option<String>, Option<String>, bool)> = sqlx::query_as(
@@ -437,7 +450,7 @@ pub async fn stored_grants_for(
            from agent_google_connections a where a.google_sub = $1",
     )
     .bind(google_sub)
-    .fetch_all(pg)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows
         .into_iter()
@@ -453,36 +466,87 @@ pub async fn stored_grants_for(
         .collect())
 }
 
-/// The one revoke every disconnect shares: read who else holds the grant,
-/// then revoke only when nobody does. A failed read revokes nothing — not
-/// knowing is not permission to cut someone else off.
-pub async fn revoke_stored_grant(
+/// The one forget-and-revoke every disconnect shares. Under a per-account
+/// advisory lock: read who else holds the grant, delete this row, commit.
+/// Then revoke at Google only when nobody else held it — after the commit, so
+/// the lock never waits on Google. A second disconnect of a row sharing the
+/// grant takes the lock after this one committed, finds no other holder, and
+/// revokes.
+pub async fn forget_grant(
     pg: &PgPool,
     sb: &SecretBox,
     dropping: &GrantRow,
-    google_sub: &str,
-    refresh_enc: Option<String>,
-) -> RevokeOutcome {
-    let Some(enc) = refresh_enc.filter(|s| !s.is_empty()) else {
-        return RevokeOutcome::NothingStored;
+) -> Result<RevokeOutcome, sqlx::Error> {
+    let (select, delete) = dropping.sql();
+    let mut tx = pg.begin().await?;
+    let read = sqlx::query_as::<_, (String, Option<String>)>(select);
+    let read = match dropping.key() {
+        Some(k) => read.bind(k),
+        None => read,
     };
-    let shared_with = match stored_grants_for(pg, google_sub).await {
-        Ok(rows) => grant_shared_with(dropping, rows),
-        Err(e) => {
-            tracing::error!("[google/revoke] shared-grant check failed: {e}");
-            return RevokeOutcome::NotRevoked(
-                "Talaria could not check whether another connection holds the same grant".into(),
-            );
-        }
+    let Some((sub, enc)) = read.fetch_optional(&mut *tx).await? else {
+        tx.commit().await?;
+        return Ok(RevokeOutcome::NothingStored);
     };
+    sqlx::query("select pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("talaria.google-grant:{sub}"))
+        .execute(&mut *tx)
+        .await?;
+    let shared_with = grant_shared_with(dropping, stored_grants_for(&mut tx, &sub).await?);
+    let del = sqlx::query(delete);
+    let del = match dropping.key() {
+        Some(k) => del.bind(k),
+        None => del,
+    };
+    // Zero rows: a concurrent disconnect of this same row already forgot it
+    // (and revoked, when it was alone) — nothing is left to do here.
+    let gone = del.execute(&mut *tx).await?.rows_affected();
+    tx.commit().await?;
+    if gone == 0 {
+        return Ok(RevokeOutcome::NothingStored);
+    }
+    let Some(enc) = enc.filter(|s| !s.is_empty()) else {
+        return Ok(RevokeOutcome::NothingStored);
+    };
+    if !shared_with.is_empty() {
+        return Ok(RevokeOutcome::Shared(shared_with));
+    }
     let token = match sb.open(&enc) {
         Ok(token) => token,
         Err(e) => {
             tracing::error!("[google/revoke] refresh token unseal failed: {e}");
-            return RevokeOutcome::NotRevoked("the stored token could not be unsealed".into());
+            return Ok(RevokeOutcome::NotRevoked(
+                "the stored token could not be unsealed".into(),
+            ));
         }
     };
-    revoke_unless_shared(Some(token), shared_with, revoke_at_google).await
+    Ok(revoke_unless_shared(Some(token), shared_with, revoke_at_google).await)
+}
+
+/// `forget_grant` for the disconnects that must always forget: a database
+/// failure revokes nothing (not knowing is not permission to cut someone else
+/// off) and still makes one plain attempt to drop the row.
+pub async fn forget_grant_best_effort(
+    pg: &PgPool,
+    sb: &SecretBox,
+    dropping: &GrantRow,
+) -> RevokeOutcome {
+    match forget_grant(pg, sb, dropping).await {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::error!("[google/revoke] forget {dropping:?} failed: {e}");
+            let (_, delete) = dropping.sql();
+            let del = sqlx::query(delete);
+            let del = match dropping.key() {
+                Some(k) => del.bind(k),
+                None => del,
+            };
+            let _ = del.execute(pg).await;
+            RevokeOutcome::NotRevoked(
+                "Talaria could not check whether another connection holds the same grant".into(),
+            )
+        }
+    }
 }
 
 /// POST the token to Google's revoke endpoint. `Err` is a clause that quotes
@@ -754,6 +818,99 @@ mod tests {
         assert!(!note.contains("someone"));
         assert!(revoke_note(&RevokeOutcome::Revoked, None).is_none());
         assert!(revoke_note(&RevokeOutcome::NothingStored, None).is_none());
+    }
+
+    /// Two disconnects of rows that share one Google grant, racing: exactly
+    /// one sees the other and keeps the grant; the other, alone by then, goes
+    /// on to revoke. Here it stops at the unseal (the default box opens
+    /// nothing), so Google is never called. Without the per-account lock both
+    /// read the other as live and neither revokes. `#[ignore]`d — it needs a
+    /// database; ci.yml's api job runs it in its live-DB steps:
+    ///
+    ///   DATABASE_URL=postgres://… cargo test -p talaria-google-connections --lib -- --ignored live_
+    #[tokio::test]
+    #[ignore = "live DB: set DATABASE_URL"]
+    async fn live_racing_disconnects_of_a_shared_grant_leave_exactly_one_to_revoke() {
+        let url = std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the live tests");
+        let pg = PgPool::connect(&url).await.expect("connect");
+        let sb = SecretBox::default();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        for round in 0..8 {
+            let tag = format!("{nanos}-{round}");
+            let sub = format!("live-shared-grant-{tag}");
+            let user_id: String = sqlx::query_scalar(
+                "insert into users (sub, email, role) values ($1, null, 'member') returning id::text",
+            )
+            .bind(format!("live-grant-user-{tag}"))
+            .fetch_one(&pg)
+            .await
+            .expect("user");
+            let model = format!("live-grant-agent-{tag}");
+            sqlx::query(
+                "insert into agent_defs (slug, department, model, display_name) values ($1, $1, $2, $1)",
+            )
+            .bind(format!("lga{tag}"))
+            .bind(&model)
+            .execute(&pg)
+            .await
+            .expect("agent def");
+            sqlx::query(
+                "insert into google_connections (user_id, google_sub, refresh_token_enc) values ($1::uuid, $2, 'not-a-cipher')",
+            )
+            .bind(&user_id)
+            .bind(&sub)
+            .execute(&pg)
+            .await
+            .expect("personal row");
+            sqlx::query(
+                "insert into agent_google_connections (agent_model, google_sub, refresh_token_enc) values ($1, $2, 'not-a-cipher')",
+            )
+            .bind(&model)
+            .bind(&sub)
+            .execute(&pg)
+            .await
+            .expect("agent row");
+
+            let (person, agent) = tokio::join!(
+                forget_grant(&pg, &sb, &GrantRow::User(user_id.clone())),
+                forget_grant(&pg, &sb, &GrantRow::Agent(model.clone())),
+            );
+            let outcomes = [person.expect("person"), agent.expect("agent")];
+            let kept = outcomes
+                .iter()
+                .filter(|o| matches!(o, RevokeOutcome::Shared(_)))
+                .count();
+            assert_eq!(kept, 1, "round {round}: {outcomes:?}");
+            assert!(
+                outcomes.iter().any(
+                    |o| matches!(o, RevokeOutcome::NotRevoked(why) if why.contains("unsealed"))
+                ),
+                "round {round}: the one left alone must go on to revoke: {outcomes:?}"
+            );
+            let left: i64 = sqlx::query_scalar(
+                "select (select count(*) from google_connections where google_sub = $1) \
+                      + (select count(*) from agent_google_connections where google_sub = $1)",
+            )
+            .bind(&sub)
+            .fetch_one(&pg)
+            .await
+            .expect("count");
+            assert_eq!(left, 0, "both rows are forgotten");
+
+            sqlx::query("delete from agent_defs where model = $1")
+                .bind(&model)
+                .execute(&pg)
+                .await
+                .expect("cleanup agent");
+            sqlx::query("delete from users where id = $1::uuid")
+                .bind(&user_id)
+                .execute(&pg)
+                .await
+                .expect("cleanup user");
+        }
     }
 
     // Captured from Google on 2026-11-12, byte for byte:

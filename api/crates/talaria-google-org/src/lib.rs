@@ -345,22 +345,8 @@ pub async fn disconnect_org(
     pg: &PgPool,
     sb: &SecretBox,
 ) -> talaria_google_connections::RevokeOutcome {
-    use talaria_google_connections::{GrantRow, RevokeOutcome, revoke_stored_grant};
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "select google_sub, refresh_token_enc from google_org_connection where id = 1",
-    )
-    .fetch_optional(pg)
-    .await
-    .ok()
-    .flatten();
-    let outcome = match row {
-        Some((sub, enc)) => revoke_stored_grant(pg, sb, &GrantRow::Org, &sub, enc).await,
-        None => RevokeOutcome::NothingStored,
-    };
-    let _ = sqlx::query("delete from google_org_connection where id = 1")
-        .execute(pg)
-        .await;
-    outcome
+    use talaria_google_connections::{GrantRow, forget_grant_best_effort};
+    forget_grant_best_effort(pg, sb, &GrantRow::Org).await
 }
 
 /// The connected org account's email alone, or null. The aliasing derivation
