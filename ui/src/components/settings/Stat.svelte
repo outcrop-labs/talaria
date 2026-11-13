@@ -23,7 +23,7 @@
   this={href ? 'a' : 'div'}
   {href}
   class={cn(
-    'block min-w-0 border-l border-t border-line-subtle px-5 py-4',
+    'block min-w-0 border-b border-r border-line-subtle px-5 py-4',
     href &&
       'transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
     className,

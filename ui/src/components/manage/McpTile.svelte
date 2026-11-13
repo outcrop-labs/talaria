@@ -1,6 +1,6 @@
 <script lang="ts">
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
   import { serverStatus } from '@/lib/mcp-status'
   import { useMcpServers } from '@/routes/app/mcp'
   import { p } from '@/router'
@@ -13,7 +13,7 @@
   const attention = $derived(enabled.filter((s) => ['warning', 'danger'].includes(serverStatus(s).tone)).length)
 </script>
 
-<StatCard
+<Stat
   label="MCP servers"
   href={p('/mcp')}
   sub={servers
@@ -29,6 +29,6 @@
   {#snippet value()}
     {#if servers}{enabled.length}
     {:else if serversQuery.isError}—
-    {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
+    {:else}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/if}
   {/snippet}
-</StatCard>
+</Stat>

@@ -10,9 +10,13 @@
     hint,
     info,
     icon,
+    lead,
     meta,
     stacked = false,
     as = 'div',
+    href,
+    onclick,
+    disabled = false,
     class: className,
     children,
   }: {
@@ -23,6 +27,8 @@
     info?: string
     /** Drawn in a 32px tile ahead of the label. */
     icon?: Snippet
+    /** A bare mark ahead of the label, with no tile: a status dot, an avatar. */
+    lead?: Snippet
     /** Inline after the label: chips, identifiers. */
     meta?: Snippet
     /** The control takes the full width under the label (textareas, editors). */
@@ -30,6 +36,12 @@
     /** `label` makes the whole row the control's label. Only for a row whose
      *  control is one native input, select or textarea. */
     as?: 'div' | 'label'
+    /** The whole row is a link to the page that owns it. */
+    href?: string
+    /** The whole row is a button. Put no other control in such a row. */
+    onclick?: () => void
+    /** With `onclick`: the row is inert and does not light on hover. */
+    disabled?: boolean
     class?: string
     /** The control. */
     children?: Snippet
@@ -37,14 +49,26 @@
 </script>
 
 <svelte:element
-  this={as}
-  class={cn('flex min-h-[60px] px-5 py-4', stacked ? 'flex-col gap-3' : 'items-center gap-6', className)}
+  this={href ? 'a' : onclick ? 'button' : as}
+  {href}
+  {onclick}
+  type={onclick ? 'button' : undefined}
+  disabled={onclick ? disabled : undefined}
+  class={cn(
+    'flex min-h-[60px] px-5 py-4',
+    stacked ? 'flex-col gap-3' : 'items-center gap-6',
+    (href || onclick) &&
+      'w-full text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent enabled:hover:bg-hover [a&]:hover:bg-hover',
+    className,
+  )}
 >
   <div class="flex min-w-0 flex-1 items-center gap-3">
     {#if icon}
       <div class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-raised text-muted">
         {@render icon()}
       </div>
+    {:else if lead}
+      <div class="grid shrink-0 place-items-center">{@render lead()}</div>
     {/if}
     <div class="min-w-0 flex-1">
       <div class="flex min-w-0 items-center gap-2">

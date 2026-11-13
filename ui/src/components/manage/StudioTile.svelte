@@ -1,6 +1,6 @@
 <script lang="ts">
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
   import { useSkills } from '@/lib/skills'
   import { useGaps } from '@/lib/workflows'
   import { p } from '@/router'
@@ -13,7 +13,7 @@
   const gaps = $derived(gapsQuery.data?.length)
 </script>
 
-<StatCard
+<Stat
   label="Skills"
   href={p('/studio')}
   sub={gaps !== undefined ? (gaps > 0 ? `${gaps} open suggestion${gaps === 1 ? '' : 's'}` : 'no open suggestions') : gapsQuery.isError ? 'suggestions unavailable' : undefined}
@@ -21,6 +21,6 @@
   {#snippet value()}
     {#if skills !== undefined}{skills}
     {:else if skillsQuery.isError}—
-    {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
+    {:else}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/if}
   {/snippet}
-</StatCard>
+</Stat>

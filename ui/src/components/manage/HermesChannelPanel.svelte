@@ -3,7 +3,11 @@
   import { RefreshCw, Rocket, Undo2, Pin, PinOff } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import Select from '@/components/ui/Select.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
@@ -236,205 +240,198 @@
   }
 </script>
 
-<Panel class="px-4 py-3">
-  <div class="mb-1 flex min-h-6 items-center gap-2">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent image</span>
-    {#if rollout?.open}<StatusDot status="accent" pulse title="A rollout is in progress" />{/if}
-  </div>
-  {#if query.isPending}
-    <p class="py-2 font-sans text-xs text-muted">Reading the agent image…</p>
-  {:else if query.isError || !s}
-    <p class="py-2 font-sans text-xs text-danger">Could not read the agent image: {errorMessage(query.error)}</p>
-    {#if unreadable}
-      <p class="pb-2 font-sans text-xs text-muted">
-        Agents keep running, and hiring, starting and editing them work; only automatic image updates are paused.
-      </p>
-      <Button variant="outline" size="sm" disabled={busy !== null} onclick={reset}>Reset the state</Button>
-      {#if line}<p class="pt-2 font-sans text-xs {TONE[line.tone]}">{line.text}</p>{/if}
+<SettingsSection title="Agent image">
+  {#snippet action()}
+    {#if rollout?.open}
+      <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="accent" pulse title="A rollout is in progress" />Rolling out</span>
     {/if}
-  {:else}
-    <div class="space-y-3 py-2">
-      <div>
-        <div class="font-sans text-sm text-fg">
-          Hermes {s.current.label}
-          <span class="text-muted">·</span>
-          {#if s.standing === 'following'}
-            Automatic: follows <span class="font-mono text-xs">stable</span>
-          {:else if s.standing === 'pinned'}
-            Pinned to {s.pinned?.label}
+  {/snippet}
+  <SettingsGroup>
+    {#if query.isPending}
+      <p class="px-5 py-4 font-sans text-sm leading-5 text-muted">Reading the agent image</p>
+    {:else if query.isError || !s}
+      <div class="space-y-2 px-5 py-4 font-sans text-[13px] leading-5">
+        <p class="text-danger">Could not read the agent image: {errorMessage(query.error)}</p>
+        {#if unreadable}
+          <p class="text-muted">Agents keep running, and you can still hire, start and edit them. Only automatic image updates are paused.</p>
+          <Button variant="outline" size="sm" disabled={busy !== null} onclick={reset}>Reset the state</Button>
+          {#if line}<p class={TONE[line.tone]}>{line.text}</p>{/if}
+        {/if}
+      </div>
+    {:else}
+      <SettingsRow label={`Hermes ${s.current.label}`}>
+        {#snippet meta()}
+          <Chip>{s.standing === 'following' ? 'Automatic' : s.standing === 'pinned' ? `Pinned to ${s.pinned?.label}` : 'Set by the operator'}</Chip>
+        {/snippet}
+        {#snippet hint()}
+          {#if s.standing === 'off'}
+            {s.offReason}
           {:else}
-            Set by the operator
-          {/if}
-        </div>
-        {#if s.standing === 'off'}
-          <div class="font-sans text-xs text-muted">{s.offReason}</div>
-        {:else}
-          <div class="font-sans text-xs text-muted">
             {#if s.lastCheck}
-              Checked {ago(s.lastCheck.at)}{#if s.lastCheck.label}: stable is {s.lastCheck.label}{/if}.
+              Checked {ago(s.lastCheck.at)}{#if s.lastCheck.label}, stable is {s.lastCheck.label}{/if}.
             {:else}
               Not checked yet.
             {/if}
             {#if until(s.nextCheckAt)}Next check {until(s.nextCheckAt)}.{/if}
-            Maintenance window {s.window.start}–{s.window.end}
-            <span class={s.window.zoneSet ? '' : 'text-danger'}>{s.window.zoneSaid}</span>{s.window.open ? ' (open now)' : ''}.
-            A new release waits {s.minStableHours} h on stable first.
-          </div>
-          {#if s.lastCheck?.error}
-            <div class="font-sans text-xs text-danger">The last check failed: {s.lastCheck.error}</div>
+            {#if s.lastCheck?.error}<span class="block text-danger">The last check failed: {s.lastCheck.error}</span>{/if}
           {/if}
+          {#if line}<span transition:slide={{ duration: 150 }} class="block {TONE[line.tone]}">{line.text}</span>{/if}
+        {/snippet}
+        {#if s.standing !== 'off'}
+          <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => act('check')}>
+            {#if busy === 'check'}<WaitingMark site="manage/hermes-check" size={12} />{:else}<RefreshCw size={14} />{/if}
+            {busy === 'check' ? 'Checking' : 'Check now'}
+          </Button>
+          <SettingsRowMenu
+            label="Actions for the agent image"
+            items={[
+              {
+                label: 'Update now',
+                icon: [Rocket, { size: 14 }],
+                disabled: busy !== null || s.standing === 'pinned' || (!stableNewer && !rollout?.open) || !!rollout?.forced,
+                onSelect: rollNow,
+              },
+              {
+                label: 'Roll back',
+                icon: [Undo2, { size: 14 }],
+                disabled:
+                  busy !== null ||
+                  (rollout?.open && rollout.kind === 'rollback') ||
+                  (!rollout?.open && !s.previous && s.current.digest === s.compiled.digest),
+                onSelect: rollBack,
+              },
+            ]}
+          />
         {/if}
-      </div>
+      </SettingsRow>
 
       {#if rollout}
-        <div class="rounded-md border border-line-subtle px-3 py-2">
-          <div class="flex items-center gap-2 font-sans text-sm text-fg">
-            {#if rollout.open}<WaitingMark site="manage/hermes-rollout" size={12} />{/if}
-            {heading(rollout)} {rollout.label}
-            {#if rollout.open}<span class="text-muted">— {PHASE[rollout.phase]}</span>{/if}
-          </div>
-          {#if rollout.detail && !held}
-            <div class="font-sans text-xs {rollout.phase === 'failed' ? 'text-danger' : 'text-muted'}">{rollout.detail}</div>
-          {/if}
-          <div class="font-sans text-xs text-muted">
-            Started {ago(rollout.startedAt)}{#if rollout.moved.length > 0}, {rollout.moved.length} of {s.agents.length} moved{/if}.
-          </div>
-          {#if held}
-            <div class="mt-2 space-y-1 border-t border-line-subtle pt-2">
-              <div class="font-sans text-xs text-danger">Held for review — a Hermes internal Talaria relies on changed:</div>
-              <ul class="list-disc pl-4">
-                {#each held.contractProblems as p, n (n)}
-                  <li class="font-sans text-xs text-muted">{p}</li>
-                {/each}
-              </ul>
+        <div>
+          <SettingsRow label={`${heading(rollout)} ${rollout.label}`}>
+            {#snippet meta()}
+              {#if rollout.open}
+                <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><WaitingMark site="manage/hermes-rollout" size={12} />{PHASE[rollout.phase]}</span>
+              {/if}
+            {/snippet}
+            {#snippet hint()}
+              Started {ago(rollout.startedAt)}{#if rollout.moved.length > 0}, {rollout.moved.length} of {s.agents.length} moved{/if}.
+              {#if rollout.detail && !held}
+                <span class={rollout.phase === 'failed' ? 'text-danger' : ''}>{rollout.detail}</span>
+              {/if}
+            {/snippet}
+            {#if held}
               <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => held && accept(held)}>
                 Accept and roll out
               </Button>
+            {/if}
+          </SettingsRow>
+          {#if held}
+            <div class="px-5 pb-4 font-sans text-[13px] leading-5">
+              <p class="text-danger">Held for review. A Hermes internal that Talaria relies on changed:</p>
+              <ul class="mt-1 list-disc pl-4 text-muted">
+                {#each held.contractProblems as p, n (n)}<li>{p}</li>{/each}
+              </ul>
             </div>
           {/if}
         </div>
       {/if}
 
-      {#if s.agents.length > 0}
-        <ul class="divide-y divide-line-subtle">
-          {#each s.agents as a (a.slug)}
-            <li class="flex items-baseline justify-between gap-3 py-1.5">
-              <span class="min-w-0 truncate font-sans text-sm text-fg">{a.displayName}</span>
-              <span class="shrink-0 font-sans text-xs text-muted">
-                {#if agentNote(a)}<span class="mr-2">{agentNote(a)}</span>{/if}
-                <span class="font-mono">{a.image?.label ?? (a.onChannel ? 'operator image' : 'workbench image')}</span>
-              </span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-
       {#if s.standing !== 'off'}
-        <div class="flex flex-wrap gap-2 border-t border-line pt-3">
-          <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => act('check')}>
-            {#if busy === 'check'}<WaitingMark site="manage/hermes-check" size={12} />{:else}<RefreshCw size={14} />{/if}
-            {busy === 'check' ? 'Checking…' : 'Check now'}
-          </Button>
+        <SettingsRow label="Update window" info={`A new release waits ${s.minStableHours} h on stable before it rolls out here.`}>
+          {#snippet hint()}
+            Updates roll out between these hours,
+            <span class={s.window.zoneSet ? '' : 'text-danger'}>{s.window.zoneSaid}</span>{s.window.open ? ' (open now)' : ''}.
+          {/snippet}
+          <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowStart} aria-label="Window start (HH:MM)" />
+          <span class="font-sans text-[13px] text-muted">to</span>
+          <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowEnd} aria-label="Window end (HH:MM)" />
           <Button
             variant="outline"
-            size="sm"
-            disabled={busy !== null || s.standing === 'pinned' || (!stableNewer && !rollout?.open) || !!rollout?.forced}
-            onclick={rollNow}
-            title={rollout?.forced ? 'Already rolling out now' : undefined}
+            size="md"
+            disabled={busy !== null || (windowStart === s.window.start && windowEnd === s.window.end)}
+            onclick={() => act('window', { start: windowStart, end: windowEnd })}
           >
-            <Rocket size={14} />
-            Roll now
+            Save
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy !== null || (rollout?.open && rollout.kind === 'rollback') || (!rollout?.open && !s.previous && s.current.digest === s.compiled.digest)}
-            onclick={rollBack}
-          >
-            <Undo2 size={14} />
-            Roll back
-          </Button>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          {#if s.standing === 'pinned'}
-            <Button variant="ghost" size="sm" disabled={busy !== null} onclick={() => act('unpin')}>
+        </SettingsRow>
+
+        {#if s.standing === 'pinned'}
+          <SettingsRow label="Pinned version" hint={`Agents stay on ${s.pinned?.label ?? 'this version'} until you unpin.`}>
+            <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => act('unpin')}>
               <PinOff size={14} />
-              Unpin: follow stable
+              Unpin
             </Button>
-          {:else}
-            <Select size="sm" bind:value={pinChoice} aria-label="Version to pin">
+          </SettingsRow>
+        {:else}
+          <SettingsRow label="Pin a version" hint="Hold every agent on one version until you unpin.">
+            <Select size="sm" class="w-28" bind:value={pinChoice} aria-label="Version to pin">
               {#each pinnable as i (i.digest)}
                 <option value={i.digest}>{i.label}</option>
               {/each}
             </Select>
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="md"
               disabled={busy !== null || !pinChoice}
               onclick={() => pinTo({ digest: pinChoice }, pinnable.find((i) => i.digest === pinChoice)?.label ?? 'that version')}
             >
               <Pin size={14} />
               Pin
             </Button>
-            <Input size="sm" class="w-24 font-[var(--font-mono)]" bind:value={pinVersion} placeholder="v0.22.5" aria-label="Or pin a version tag" />
+          </SettingsRow>
+          <SettingsRow label="Pin by tag" hint="For a version this instance has not seen yet.">
+            <Input size="sm" class="w-28 font-[var(--font-mono)]" bind:value={pinVersion} placeholder="v0.22.5" aria-label="Version tag to pin" />
             <Button
-              variant="ghost"
-              size="sm"
+              variant="outline"
+              size="md"
               disabled={busy !== null || !/^v\d+\.\d+\.\d+$/.test(pinVersion.trim())}
               onclick={() => pinTo({ version: pinVersion.trim() }, pinVersion.trim())}
             >
-              Pin version
+              <Pin size={14} />
+              Pin
             </Button>
-          {/if}
-        </div>
-        {#if banned.length > 0}
-          <div>
-            <div class="font-sans text-xs text-muted">Marked bad here — never rolled out, never pinned, until allowed again:</div>
-            <ul class="divide-y divide-line-subtle">
-              {#each banned as i (i.digest)}
-                <li class="flex items-baseline justify-between gap-3 py-1.5">
-                  <span class="min-w-0 font-sans text-xs">
-                    <span class="font-mono text-fg">{i.label}</span>
-                    <span class="text-muted"> — {i.reason ?? 'no reason recorded'}</span>
-                  </span>
-                  <Button variant="ghost" size="sm" disabled={busy !== null} onclick={() => allowAgain(i)}>Allow again</Button>
-                </li>
-              {/each}
-            </ul>
-          </div>
+          </SettingsRow>
         {/if}
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="font-sans text-xs text-muted">Window</span>
-          <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowStart} aria-label="Window start (HH:MM)" />
-          <span class="font-sans text-xs text-muted">to</span>
-          <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowEnd} aria-label="Window end (HH:MM)" />
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy !== null || (windowStart === s.window.start && windowEnd === s.window.end)}
-            onclick={() => act('window', { start: windowStart, end: windowEnd })}
-          >
-            Save
-          </Button>
+
+        {#each banned as i (i.digest)}
+          <SettingsRow label="Marked bad" hint={i.reason ?? 'No reason recorded.'}>
+            {#snippet meta()}<code class="font-mono text-xs text-muted">{i.label}</code>{/snippet}
+            <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => allowAgain(i)}>Allow again</Button>
+          </SettingsRow>
+        {/each}
+      {/if}
+
+      {#if s.agents.length > 0}
+        <div class="px-5 py-4">
+          <div class="mb-1 font-sans text-xs font-medium leading-4 text-muted">Agents on this image</div>
+          <ul>
+            {#each s.agents as a (a.slug)}
+              <li class="flex h-8 items-center justify-between gap-6 font-sans text-[13px] leading-5">
+                <span class="min-w-0 truncate text-fg">{a.displayName}</span>
+                <span class="shrink-0 text-muted">
+                  {#if agentNote(a)}<span class="mr-2">{agentNote(a)}</span>{/if}
+                  <span class="font-mono text-xs">{a.image?.label ?? (a.onChannel ? 'operator image' : 'workbench image')}</span>
+                </span>
+              </li>
+            {/each}
+          </ul>
         </div>
       {/if}
+
       {#if s.events.length > 0}
-        <div class="border-t border-line pt-2">
-          <Button variant="ghost" size="sm" onclick={() => (showHistory = !showHistory)}>
-            {showHistory ? 'Hide history' : `History (${s.events.length})`}
-          </Button>
+        <div>
+          <SettingsRow label="History" hint={`${s.events.length} recorded ${s.events.length === 1 ? 'change' : 'changes'}.`}>
+            <Button variant="outline" size="sm" onclick={() => (showHistory = !showHistory)}>{showHistory ? 'Hide' : 'Show'}</Button>
+          </SettingsRow>
           {#if showHistory}
-            <ul transition:slide={{ duration: 150 }} class="mt-1 space-y-1">
+            <ul transition:slide={{ duration: 150 }} class="space-y-1 px-5 pb-4 font-sans text-[13px] leading-5 text-muted">
               {#each s.events as ev, n (n)}
-                <li class="font-sans text-xs text-muted"><span class="text-fg">{ago(ev.at)}</span> — {ev.text}</li>
+                <li><span class="text-fg">{ago(ev.at)}</span> · {ev.text}</li>
               {/each}
             </ul>
           {/if}
         </div>
       {/if}
-      {#if line}
-        <p transition:slide={{ duration: 150 }} class="font-sans text-xs {TONE[line.tone]}">{line.text}</p>
-      {/if}
-    </div>
-  {/if}
-</Panel>
+    {/if}
+  </SettingsGroup>
+</SettingsSection>

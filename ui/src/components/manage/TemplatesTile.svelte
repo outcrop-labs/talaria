@@ -1,6 +1,6 @@
 <script lang="ts">
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
   import { useTemplates } from '@/lib/templates'
   import { p } from '@/router'
 
@@ -10,7 +10,7 @@
   const plans = $derived((templates ?? []).filter((t) => t.kind === 'plan').length)
 </script>
 
-<StatCard
+<Stat
   label="Templates"
   href={p('/templates')}
   sub={templates ? `${tickets} ticket · ${plans} plan` : templatesQuery.isError ? 'could not read' : undefined}
@@ -18,6 +18,6 @@
   {#snippet value()}
     {#if templates}{templates.length}
     {:else if templatesQuery.isError}—
-    {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
+    {:else}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/if}
   {/snippet}
-</StatCard>
+</Stat>

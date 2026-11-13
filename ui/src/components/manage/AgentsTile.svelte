@@ -1,7 +1,7 @@
 <script lang="ts">
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { anyError } from '@/components/ui/query-state'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
   import { containersOf, useFleetContainers, useFleetDefs } from '@/lib/fleet-defs'
   import { useHasPerm } from '@/lib/session'
   import { healthOf, type Health } from '@/routes/app/agents.svelte'
@@ -41,10 +41,10 @@
   })
 </script>
 
-<StatCard label="Agents up" href={p('/agents')} {sub}>
+<Stat label="Agents up" href={p('/agents')} {sub}>
   {#snippet value()}
     {#if counts}{counts.up}<span class="text-muted">{' / '}{live}</span>
     {:else if anyError(defsQuery, containersQuery)}—
-    {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
+    {:else}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/if}
   {/snippet}
-</StatCard>
+</Stat>

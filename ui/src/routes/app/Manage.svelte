@@ -1,5 +1,6 @@
 <script lang="ts">
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
+  import StatStrip from '@/components/settings/StatStrip.svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import ActivityPanel from '@/components/manage/ActivityPanel.svelte'
@@ -76,7 +77,7 @@
       {#if showAttention}<AttentionPanel />{/if}
 
       {#if anyTile}
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatStrip>
           {#if tiles.agents}<AgentsTile />{/if}
           {#if tiles.spend}<SpendTile />{/if}
           {#if tiles.models}<ModelsTile />{/if}
@@ -85,18 +86,15 @@
           {#if tiles.teams}<TeamsTile />{/if}
           {#if tiles.templates}<TemplatesTile />{/if}
           {#if tiles.studio}<StudioTile />{/if}
-        </div>
+        </StatStrip>
       {/if}
 
-      <div class="grid items-start gap-4 lg:grid-cols-2">
-        {#if isAdmin}
-          <div class="grid gap-4">
-            <FleetControls />
-            <HermesChannelPanel />
-            <WorkbenchHarnessPanel />
-          </div>
-        {/if}
-        <ActivityPanel />
-      </div>
+      <ActivityPanel />
+
+      {#if isAdmin}
+        <FleetControls />
+        <HermesChannelPanel />
+        <WorkbenchHarnessPanel />
+      {/if}
     {/if}
 </SettingsPage>

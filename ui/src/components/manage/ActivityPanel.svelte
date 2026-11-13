@@ -1,8 +1,9 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
   import { navigateHref } from '@/router'
-  import ActivityRow from '@/components/app/ActivityRow.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import { relativeTime } from '@/lib/fleet'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { getList } from '@/lib/fetch-json'
@@ -18,27 +19,36 @@
   const audit = $derived(auditQuery.data)
 </script>
 
-<Panel class="px-4 py-3">
-  <div class="mb-2 flex min-h-6 items-center">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Recent changes</span>
-  </div>
-  {#if auditQuery.isLoading}
-    <SkeletonRows rows={5} />
-  {:else if audit === undefined}
-    <!-- "Quiet so far." is a fact about the log, not about a failed request. -->
-    <QueryError
-      variant="inline"
-      error={auditQuery.error}
-      title="Could not load recent changes"
-      onRetry={() => void auditQuery.refetch()}
-    />
-  {:else if audit.length === 0}
-    <p class="font-sans text-xs text-muted">Quiet so far.</p>
-  {:else}
-    <ul>
+<SettingsSection title="Recent activity">
+  <SettingsGroup>
+    {#if auditQuery.isLoading}
+      <div class="px-5 py-4"><SkeletonRows rows={5} /></div>
+    {:else if audit === undefined}
+      <!-- "Quiet so far." is a fact about the log, not about a failed request. -->
+      <div class="px-5 py-4">
+        <QueryError
+          variant="inline"
+          error={auditQuery.error}
+          title="Could not load recent activity"
+          onRetry={() => void auditQuery.refetch()}
+        />
+      </div>
+    {:else if audit.length === 0}
+      <p class="px-5 py-4 font-sans text-sm leading-5 text-muted">Quiet so far.</p>
+    {:else}
       {#each audit.slice(0, 7) as a, i (i)}
-        <ActivityRow actor={a.actor} detail={a.detail} at={a.at} onClick={() => a.href && void navigateHref(a.href)} />
+        <button
+          type="button"
+          onclick={() => a.href && void navigateHref(a.href)}
+          class="flex h-11 w-full items-center gap-6 px-5 text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+        >
+          <span class="min-w-0 flex-1 truncate text-muted">
+            <span class="font-medium text-fg">{a.actor}</span>
+            {a.detail}
+          </span>
+          <span class="shrink-0 text-[13px] tabular-nums text-muted">{relativeTime(a.at)}</span>
+        </button>
       {/each}
-    </ul>
-  {/if}
-</Panel>
+    {/if}
+  </SettingsGroup>
+</SettingsSection>

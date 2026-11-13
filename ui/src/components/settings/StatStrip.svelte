@@ -15,9 +15,9 @@
 </script>
 
 <Panel class={cn('overflow-hidden p-0', className)}>
-  <!-- Each stat draws its own top and left hairline; the grid sits one pixel
-       up and left so the outer ones fall under the card's edge. -->
-  <div class={cn('-ml-px -mt-px grid grid-cols-1', COLUMNS[columns])}>
+  <!-- Each stat draws its own right and bottom hairline; the grid runs one
+       pixel past the card's right and bottom edge so the outer ones are cut. -->
+  <div class={cn('-mb-px -mr-px grid grid-cols-1', COLUMNS[columns])}>
     {@render children()}
   </div>
 </Panel>

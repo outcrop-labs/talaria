@@ -1,6 +1,6 @@
 <script lang="ts">
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { p } from '@/router'
 
@@ -12,7 +12,7 @@
   const building = $derived((apps ?? []).filter((a) => a.build?.status === 'building').length)
 </script>
 
-<StatCard
+<Stat
   label="Apps enabled"
   href={p('/apps')}
   sub={apps
@@ -30,6 +30,6 @@
   {#snippet value()}
     {#if apps}{apps.length}
     {:else if appsQuery.isError}—
-    {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
+    {:else}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/if}
   {/snippet}
-</StatCard>
+</Stat>

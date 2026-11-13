@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
   import { getJson } from '@/lib/fetch-json'
   import { useEndpoints } from '@/lib/models'
   import { p } from '@/router'
@@ -28,10 +28,10 @@
   })
 </script>
 
-<StatCard label="Model providers" href={p('/models')} {sub}>
+<Stat label="Model providers" href={p('/models')} {sub}>
   {#snippet value()}
     {#if endpoints}{endpoints.length}
     {:else if endpointsQuery.isError}—
-    {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
+    {:else}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/if}
   {/snippet}
-</StatCard>
+</Stat>
