@@ -9,7 +9,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { cn } from '@/lib/cn'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
@@ -47,7 +47,7 @@
     queryFn: (): Promise<Body> => getJson<Body>('/api/admin/coding-accounts'),
   }))
   const data = $derived(query.data)
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
 
   const save = async (patch: { enabled?: boolean; services?: string[] }) => {
     const body = {
@@ -61,7 +61,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['admin-coding-accounts'] })
-    savedFlash.flash()
+    autosave.flash()
   }
 
   const toggleService = (id: string, on: boolean) => {
@@ -89,9 +89,6 @@
   description="Let a developer agent's coding tool run on a signed-in subscription instead of your gateway."
   info="One account per service, per agent, signed in by whoever can edit the agent. Credentials are stored encrypted on this instance and never reach an agent's config. Spend on a subscription does not pass through the gateway, so it is not in Talaria's ledger and the provider's own dashboard is the record. Turning a service off stops its accounts at once and jobs fall back to the gateway, but the credentials are kept, so turning it back on needs no new sign-in."
 >
-  {#snippet action()}
-    {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
-  {/snippet}
   <SettingsGroup>
     <QueryState query={query} errorTitle="Could not load the coding-account policy" errorVariant="compact">
       {#snippet skeleton()}
@@ -115,31 +112,29 @@
               <colgroup>
                 <col />
                 <col class="w-48" />
-                <col class="w-48" />
                 <col class="w-[4.5rem]" />
               </colgroup>
               <thead>
                 <tr>
                   <th class={tableHead}>Service</th>
                   <th class={tableHead}>Sign-in</th>
-                  <th class={tableHead}>Status</th>
                   <th class={tableHead}><span class="sr-only">Allowed</span></th>
                 </tr>
               </thead>
               <tbody>
                 {#each d.services as s (s.id)}
                   <tr class={tableRow}>
-                    <td class={cn(tableCell, 'truncate font-medium')}>{s.name}</td>
-                    <td class={cn(tableCell, 'text-muted')}>{flowLabel(s.flow)}</td>
+                    <!-- The switch says allowed or off. Only a service the
+                         installed tool dropped needs a word of its own. -->
                     <td class={tableCell}>
-                      {#if s.unavailable}
-                        <RowStatus status="warn" title="Allowed here, but the installed coding tool no longer offers it">No longer offered</RowStatus>
-                      {:else if s.permitted}
-                        <RowStatus status="ok">Allowed</RowStatus>
-                      {:else}
-                        <RowStatus status="idle">Off</RowStatus>
-                      {/if}
+                      <span class="flex min-w-0 items-center gap-4">
+                        <span class="truncate font-medium">{s.name}</span>
+                        {#if s.unavailable}
+                          <RowStatus status="warn" title="Allowed here, but the installed coding tool no longer offers it">No longer offered</RowStatus>
+                        {/if}
+                      </span>
                     </td>
+                    <td class={cn(tableCell, 'text-muted')}>{flowLabel(s.flow)}</td>
                     <td class={tableCell}>
                       <Toggle class="justify-end" checked={s.permitted} onChange={(on) => toggleService(s.id, on)} title={`Allow ${s.name}`} />
                     </td>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { tableCell, tableHead, tableNum, tableRow } from '@/components/admin/table'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -25,6 +26,7 @@
   // Confab guardrail — a structural check on model output at the gateway. Observe
   // mode records findings out-of-band; annotate/strict act on them.
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const query = createQuery(() => ({
     queryKey: ['guardrails'],
     queryFn: (): Promise<GuardData> => getJson<GuardData>('/api/admin/guardrails'),
@@ -42,6 +44,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['guardrails'] })
+    autosave.flash()
   }
   const rules = $derived(data?.rules ?? [])
   const off = $derived(cfg?.mode === 'off')

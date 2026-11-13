@@ -8,7 +8,7 @@
   import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
 
@@ -22,7 +22,7 @@
     queryFn: (): Promise<JudgeData> => getJson<JudgeData>('/api/admin/judge'),
   }))
   const data = $derived(query.data)
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
   const enabled = $derived(data?.config.enabled ?? false)
   const model = $derived(data?.config.model ?? '')
   const mode = $derived(data?.config.mode ?? 'enforcing')
@@ -36,7 +36,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['judge-config'] })
-    savedFlash.flash()
+    autosave.flash()
   }
 </script>
 
@@ -45,9 +45,6 @@
   description="A judge model checks an agent's work when a ticket reaches quality review."
   info="The judge posts a verdict of pass, revise or escalate, with the specific issues. A strong model gives the sharpest review."
 >
-  {#snippet action()}
-    {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
-  {/snippet}
   <SettingsGroup>
     <QueryState query={query} errorTitle="Could not load the judge configuration" errorVariant="compact">
       {#snippet skeleton()}

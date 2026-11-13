@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { tableCell, tableHead, tableRow } from '@/components/admin/table'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -24,6 +25,7 @@
   // Proactive outreach (#59): opt-in periodic check-ins where agents surface
   // things through their own governed tools, plus agent-initiated DM caps.
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const query = createQuery(() => ({
     queryKey: ['admin-outreach'],
     queryFn: (): Promise<OutreachData> => getJson<OutreachData>('/api/admin/outreach'),
@@ -41,6 +43,7 @@
     }
     try {
       await putJson<{ ok: true }>('/api/admin/outreach', body)
+      autosave.flash()
     } catch (e) {
       toastError('Save failed', e)
     }

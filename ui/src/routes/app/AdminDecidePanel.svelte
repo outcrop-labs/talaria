@@ -4,9 +4,12 @@
   import NoticeRow from '@/components/admin/NoticeRow.svelte'
   import RowStatus from '@/components/admin/RowStatus.svelte'
   import type { Fact } from '@/components/admin/facts'
-  import { tableCell, tableHead, tableNum, tableRow } from '@/components/admin/table'
+  import SaveAction from '@/components/admin/SaveAction.svelte'
+  import { secretHint } from '@/components/admin/secret-hint'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -15,7 +18,6 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { submitOnEnter } from '@/components/ui/control'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { cn } from '@/lib/cn'
   import { getJson, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
@@ -75,9 +77,9 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['decide-config'] })
-    savedFlash.flash()
+    autosave.flash()
   }
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
 
   let key = $state('')
   let savingKey = $state(false)
@@ -155,7 +157,7 @@
     }
     result = null
     await qc.invalidateQueries({ queryKey: ['decide-config'] })
-    savedFlash.flash()
+    autosave.flash()
   }
   const saveKey = async () => {
     savingKey = true
@@ -187,6 +189,14 @@
   // THE CAPABILITY SHEET. Stated rather than assumed: a call site asking a
   // shape this provider does not serve falls back instead of guessing, so an
   // operator should be able to see which shapes those are.
+  // The census's captions and each row's cells share these widths, so the
+  // columns line up down the list.
+  const NUM = 'w-[5.5rem] shrink-0 text-right'
+  const STATE = 'w-[8.5rem] shrink-0 pl-3'
+  const SWITCH = 'flex w-9 shrink-0 justify-end'
+  // A reading, not a control: a click on it opens the row like the label does.
+  const cell = '!pointer-events-none font-sans text-[13px] leading-5 tabular-nums text-fg'
+
   const capabilities = $derived.by((): Fact[] =>
     meta
       ? [
@@ -204,7 +214,6 @@
   info="A decision model answers a typed question, such as yes or no, pick one, or how much, with a probability, instead of writing prose that code has to read back. Use a hosted decision API, a classifier on your own hardware, a model you already added on Models, or any endpoint of your own. Talaria ships no default and recommends no model. Changes apply at once."
 >
   {#snippet action()}
-    {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     {#if meta}
       <Button size="sm" variant="outline" onclick={() => void test()} disabled={testing || !data?.configured}>
         {testing ? 'Testing' : 'Test'}
@@ -256,7 +265,7 @@
         {/if}
 
         {#if meta?.needsKey}
-          <SettingsRow label="API key" hint={cfg?.hasKey ? 'A key is stored. Type a new one to replace it.' : 'Stored encrypted. It is never shown again.'}>
+          <SettingsRow label="API key" hint={secretHint(!!cfg?.hasKey)}>
             <Input
               size="sm"
               type="password"
@@ -267,9 +276,7 @@
               placeholder={cfg?.hasKey ? 'Paste a new key' : 'Paste the provider key'}
               class="w-[280px]"
             />
-            {#if key}
-              <Button size="md" onclick={() => void saveKey()} disabled={savingKey}>Save key</Button>
-            {/if}
+            <SaveAction size="md" dirty={!!key} busy={savingKey} onclick={() => void saveKey()}>Save key</SaveAction>
           </SettingsRow>
         {/if}
 
@@ -387,55 +394,34 @@
     info="A decision that is off keeps running its existing code, and the model is asked the same question with nobody listening. Agreement is how often the two matched, so you can turn a decision on when its own numbers say so."
   >
     <SettingsGroup>
-      <div class="overflow-x-auto">
-      <table class="w-full min-w-[760px] table-fixed">
-        <colgroup>
-          <col />
-          <col class="w-44" />
-          <col class="w-28" />
-          <col class="w-24" />
-          <col class="w-40" />
-          <col class="w-16" />
-          <col class="w-28" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th class={tableHead}>Decision</th>
-            <th class={tableHead}>Model</th>
-            <th class={cn(tableHead, 'text-right')}>Agreement</th>
-            <th class={cn(tableHead, 'text-right')}>Threshold</th>
-            <th class={tableHead}>Status</th>
-            <th class={tableHead}><span class="sr-only">On</span></th>
-            <th class={tableHead}><span class="sr-only">Details</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each allSites as s (s.id)}
-            {@const m = shadowFor(s.id)}
-            {@const st = siteStatus(s, m)}
-            <tr class={tableRow}>
-              <td class={cn(tableCell, 'truncate font-medium')}>{s.label}</td>
-              <td class={cn(tableCell, 'truncate font-mono text-xs text-muted')}>
-                {#if m && m.models.length === 1}{m.models[0]?.model}{:else if m && m.models.length > 1}{m.models.length} models{:else}—{/if}
-              </td>
-              <td class={cn(tableCell, tableNum, !(m && m.answered > 0) && 'text-muted')}>{m ? pct(m.agreed, m.answered) : '—'}</td>
-              <td class={cn(tableCell, tableNum, !(s.on && !s.switchLivesAt) && 'text-muted')}>
-                {s.on && !s.switchLivesAt ? s.floor.toFixed(2) : '—'}
-              </td>
-              <td class={tableCell}><RowStatus status={st.status} title={s.switchLivesAt ?? undefined}>{st.word}</RowStatus></td>
-              <td class={tableCell}>
-                {#if !s.switchLivesAt}
-                  <Toggle checked={s.on} onChange={(on) => void applySite(s.id, { on })} title={`Use the decision model for ${s.label}`} />
-                {/if}
-              </td>
-              <td class={cn(tableCell, 'text-right')}>
-                <Button size="sm" variant="outline" onclick={() => (openSiteId = s.id)}>Details</Button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <div class="flex h-9 items-center gap-x-6 px-5 font-sans text-xs font-medium leading-4 text-muted">
+        <span class="min-w-0 flex-1">Decision</span>
+        <div class="flex items-center gap-3">
+          <span class={NUM}>Agreement</span>
+          <span class={NUM}>Threshold</span>
+          <span class={STATE}>Status</span>
+          <span class={SWITCH}></span>
+          <span class="w-8 shrink-0"></span>
+        </div>
       </div>
+      {#each allSites as s (s.id)}
+        {@const m = shadowFor(s.id)}
+        {@const st = siteStatus(s, m)}
+        {@const acts = s.on && !s.switchLivesAt}
+        <SettingsRow onOpen={() => (openSiteId = s.id)} openLabel={`Details for ${s.label}`} class="min-h-11 py-1.5">
+          <!-- The size of a table cell, so this list reads like the tables under it. -->
+          {#snippet label()}<span class="text-[13px]">{s.label}</span>{/snippet}
+          <span class={cn(NUM, cell, !(m && m.answered > 0) && 'text-muted')} aria-label="Agreement">{m ? pct(m.agreed, m.answered) : '—'}</span>
+          <span class={cn(NUM, cell, !acts && 'text-muted')} aria-label="Threshold">{acts ? s.floor.toFixed(2) : '—'}</span>
+          <span class={STATE}><RowStatus status={st.status} title={s.switchLivesAt ?? undefined}>{st.word}</RowStatus></span>
+          <span class={SWITCH}>
+            {#if !s.switchLivesAt}
+              <Toggle checked={s.on} onChange={(on) => void applySite(s.id, { on })} title={`Use the decision model for ${s.label}`} />
+            {/if}
+          </span>
+          <SettingsRowMenu label={`Actions for ${s.label}`} items={[{ label: 'Details', onSelect: () => (openSiteId = s.id) }]} />
+        </SettingsRow>
+      {/each}
     </SettingsGroup>
   </SettingsSection>
 {/if}
