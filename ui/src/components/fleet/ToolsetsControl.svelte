@@ -108,7 +108,7 @@
     {#snippet action()}
       {#if canManage && dirty}
         <Button size="sm" variant="ghost" disabled={saving} onclick={() => (pending = null)}>Reset</Button>
-        <Button size="sm" variant="outline" disabled={saving} onclick={() => void apply()}>Apply</Button>
+        <Button size="sm" disabled={saving} onclick={() => void apply()}>Apply</Button>
       {/if}
     {/snippet}
     <SettingsGroup>

@@ -255,7 +255,7 @@
         type="password"
         class="min-w-0 flex-1"
       />
-      <Button variant="outline" size="md" class="shrink-0" onclick={() => void save()} disabled={busy || !nameOk || !value}>
+      <Button size="md" class="shrink-0" onclick={() => void save()} disabled={busy || !nameOk || !value}>
         {busy ? 'Saving' : 'Set variable'}
       </Button>
     </div>

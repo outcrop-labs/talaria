@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -13,6 +14,7 @@
   let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   // `{ data: templates = [] }` made a failed /api/templates look like "there
   // are no templates" — the Select offers only the fallback option, and the
   // read-only cells below render an em-dash, which says "nothing bound" about
@@ -23,7 +25,8 @@
   const nameOf = (id: string | null) =>
     id === null ? null : (list.rows.find((t) => t.id === id)?.name ?? (list.failed ? id : 'A template that no longer exists'))
   const bind = async (patch: { ticketTemplateId?: string | null; planTemplateId?: string | null }) => {
-    await patchAgentMeta(def.id, patch)
+    const res = await patchAgentMeta(def.id, patch)
+    if (!res.error) autosave.flash()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 </script>

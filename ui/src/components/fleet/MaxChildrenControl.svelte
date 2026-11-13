@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -28,6 +29,7 @@
   const MAX = 16
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   let saving = $state(false)
   // svelte-ignore state_referenced_locally -- reason: a draft until Apply; the refetch after a save must not clobber a number being typed
   let draft: number | null = $state(def.maxChildren)
@@ -56,6 +58,7 @@
       return
     }
     draft = n
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 </script>
@@ -68,7 +71,7 @@
   {#if canManage}
     {#if pending !== null}
       <Button size="sm" variant="ghost" disabled={saving} onclick={reset}>Reset</Button>
-      <Button size="sm" variant="outline" disabled={saving} onclick={() => void apply()}>
+      <Button size="sm" disabled={saving} onclick={() => void apply()}>
         {saving ? 'Applying' : 'Apply'}
       </Button>
     {/if}

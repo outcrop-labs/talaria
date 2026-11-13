@@ -127,6 +127,8 @@
   }
   const canToggle = (s: AgentServer) =>
     canManage && !s.workbench && !s.builtin && s.withheld !== 'owner-denied' && !(s.allAgents && !s.assigned && s.carried)
+  // A server every agent carries has no switch to show: the row says so.
+  const alwaysOn = (s: AgentServer) => s.carried && (s.builtin || (s.allAgents && !s.assigned))
   const toggleHint = (s: AgentServer) =>
     s.workbench
       ? 'Granted by the Developer Agent switch'
@@ -188,7 +190,7 @@
         {#if s.builtin}<Chip title="The Talaria toolkit, attached to every managed agent automatically">Built-in</Chip>
         {:else if s.appSlug}<Chip title={`Published by the "${s.appSlug}" app`}>App</Chip>
         {:else if s.package}<Chip title="Runs as a hardened container on this deployment">Package</Chip>{/if}
-        {#if via}<Chip tone="accent" title={via.hint}>{via.label}</Chip>{/if}
+        {#if via}<Chip title={via.hint}>{via.label}</Chip>{/if}
         {#if s.needsConnection}
           <span
             class={stateWord}
@@ -245,8 +247,13 @@
         class="w-56 shrink-0"
       />
     {/if}
-    <div class="shrink-0" title={toggleHint(s)}>
-      <Toggle checked={s.carried} disabled={busy || !canToggle(s)} onChange={(on) => toggle(s, on)} label="" />
+    <!-- One trailing column down the list: a switch, or the reason there is none. -->
+    <div class="flex w-[68px] shrink-0 justify-end" title={toggleHint(s)}>
+      {#if alwaysOn(s)}
+        <span class="whitespace-nowrap font-sans text-[13px] leading-5 text-muted">Always on</span>
+      {:else}
+        <Toggle checked={s.carried} disabled={busy || !canToggle(s)} onChange={(on) => toggle(s, on)} label="" />
+      {/if}
     </div>
   </div>
 {/snippet}

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { Check } from '@lucide/svelte'
+  import { provideAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -63,6 +65,11 @@
   // from: the roster, or an agent's row in the chat sidebar.
   setUiVoice('sans')
 
+  // The Overview tab's fields save as they change. The dialog is its own
+  // surface (it also opens from the chat sidebar, where no page header
+  // exists), so it carries the cue a settings page keeps in its header.
+  const cue = provideAutosave()
+
   let tab = $state<Tab>('summary')
   // The library tabs are editors that own their scroll; every other tab is a
   // form or a report that scrolls in the frame.
@@ -117,8 +124,13 @@
        tab strip is pinned on a full-width hairline and only the pane under
        it scrolls. -->
   <div class="flex h-full min-h-0 flex-col">
-    <div class="shrink-0 border-b border-line px-7 pt-1">
-      <Tabs items={TABS} value={tab} onChange={(t) => (tab = t)} class="-mb-px" />
+    <div class="flex shrink-0 items-center gap-6 border-b border-line px-7 pt-1">
+      <Tabs items={TABS} value={tab} onChange={(t) => (tab = t)} class="-mb-px min-w-0 flex-1" />
+      {#if tab === 'summary' && canManage && cue.active}
+        <span role="status" class="hidden shrink-0 items-center gap-1.5 whitespace-nowrap font-sans text-[13px] leading-5 text-muted lg:flex">
+          {#if cue.saved}<Check size={14} aria-hidden="true" class="text-success" />Saved{:else}Changes save automatically{/if}
+        </span>
+      {/if}
     </div>
 
     <!-- THE LIBRARY TABS FILL THE FRAME when it fits: their panes take the

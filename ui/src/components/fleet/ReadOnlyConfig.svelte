@@ -4,10 +4,13 @@
   import Markdown from '@/components/ui/Markdown.svelte'
   import { formatTokens } from '@/lib/format'
   import type { AgentDef } from '@/lib/fleet-defs'
+  import { useModelNames } from '@/components/models/model-names.svelte'
 
   let { def }: { def: AgentDef } = $props()
 
   const cfg = $derived(def.latest?.config)
+  const modelName = useModelNames()
+  const mainName = $derived(modelName(cfg?.main?.model))
 
   // Compaction, in the same one-line voice as the rows above it. Blank fields
   // are not zero: the honest reading of a def with no compression block is
@@ -31,7 +34,7 @@
   <SettingsSection title="Models" description="Only this agent's managers can change its configuration.">
     <SettingsGroup>
       <dl class="grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 px-5 py-4">
-        {@render field('Main model', cfg?.main ? `${cfg.main.endpoint} · ${cfg.main.model}` : 'Not configured yet', !!cfg?.main)}
+        {@render field('Main model', cfg?.main ? `${mainName ?? cfg.main.model} · ${cfg.main.endpoint}` : 'Not configured yet', !!cfg?.main && !mainName)}
         {@render field('Model tiers', cfg?.aliases?.map((a) => a.name).join(', ') || 'None')}
         {@render field('Fallbacks', cfg?.fallbacks?.length ? String(cfg.fallbacks.length) : 'None')}
         {@render field('Compaction', compaction)}

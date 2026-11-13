@@ -1,13 +1,16 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { stringify as stringifyYaml } from 'yaml'
+  import { Undo2 } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Generating from '@/components/ui/Generating.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import { cn } from '@/lib/cn'
   import { getList, postJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import type { AgentDef } from '@/lib/fleet-defs'
@@ -83,15 +86,20 @@
           {#each versions as v (v.version)}
             <div class="flex min-h-11 items-center gap-4 px-5 py-1.5">
               <span class="w-10 shrink-0 font-mono text-xs text-muted">v{v.version}</span>
-              <span class="min-w-0 flex-1 truncate font-sans text-[13px] leading-5 text-fg">{v.note ?? 'No note'}</span>
+              <span class="flex min-w-0 flex-1 items-center gap-2">
+                <span class={cn('min-w-0 truncate font-sans text-[13px] leading-5', v.note ? 'text-fg' : 'text-muted')} title={v.note ?? undefined}>
+                  {v.note ?? 'No note'}
+                </span>
+                {#if v.version === def.currentVersion}<Chip>Current</Chip>{/if}
+              </span>
               <span class="shrink-0 font-sans text-[13px] leading-5 text-muted">{v.createdBy ?? 'System'} · {relativeTime(v.createdAt)}</span>
-              <span class="flex w-[84px] shrink-0 justify-end">
-                {#if v.version === def.currentVersion}
-                  <Chip tone="success">Current</Chip>
-                {:else if canManage}
-                  <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => void revert(v.version)}>
-                    {busy === v.version ? 'Reverting' : 'Revert'}
-                  </Button>
+              <!-- A fixed column, so the meta beside it ends at one edge whether or not the row has a menu. -->
+              <span class="flex w-8 shrink-0 justify-end">
+                {#if v.version !== def.currentVersion && canManage}
+                  <SettingsRowMenu
+                    label={`Actions for version ${v.version}`}
+                    items={[{ label: busy === v.version ? 'Reverting' : 'Revert to this version', icon: [Undo2, { size: 14 }], disabled: busy !== null, onSelect: () => void revert(v.version) }]}
+                  />
                 {/if}
               </span>
             </div>

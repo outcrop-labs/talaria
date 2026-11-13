@@ -281,7 +281,8 @@
 
   <!-- The save bar stays at the foot of the pane while the form scrolls
        under it: saving here deploys, so it keeps its buttons. -->
-  <div class="sticky -bottom-6 z-10 -mx-7 space-y-3 border-t border-line bg-panel px-7 py-4">
+  <!-- -mb-6: at the end of the scroll the bar sits on the dialog's edge, not above the pane's padding. -->
+  <div class="sticky -bottom-6 z-10 -mx-7 -mb-6 space-y-3 border-t border-line bg-panel px-7 py-4">
     {#if err}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{err}</div>{/if}
     {#if stillApplying}
       <div transition:slide={{ duration: 150 }} class="flex items-start gap-2 font-sans text-[13px] leading-5 text-fg" data-testid="config-still-applying">

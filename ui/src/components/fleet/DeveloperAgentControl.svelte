@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { patchAgentMeta, type AgentDef } from '@/lib/fleet-defs'
@@ -15,6 +16,7 @@
   let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   let saving = $state(false)
   const set = async (on: boolean) => {
     saving = true
@@ -24,6 +26,7 @@
       toastError(on ? 'Could not make this a Developer Agent' : 'Could not turn off Developer Agent', res.error)
       return
     }
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 </script>

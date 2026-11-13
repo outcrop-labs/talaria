@@ -1,15 +1,16 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { AlertTriangle } from '@lucide/svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Chip from '@/components/ui/Chip.svelte'
+  import { useModelNames } from '@/components/models/model-names.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
@@ -23,6 +24,8 @@
   let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
+  const modelName = useModelNames()
   const cfg = $derived(def.latest?.config)
   const share = $derived(def.departmentShare ?? null)
   const sharedWith = $derived((share?.others ?? []).map((o) => o.displayName).join(', '))
@@ -33,7 +36,8 @@
   let role = $state(def.role ?? '')
   const saveRole = async () => {
     if (role.trim() === (def.role ?? '')) return
-    await patchAgentMeta(def.id, { role: role.trim() || null })
+    const res = await patchAgentMeta(def.id, { role: role.trim() || null })
+    if (!res.error) autosave.flash()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
   // Send address for ORG agents only — a personal assistant sends as its
@@ -45,7 +49,8 @@
   let alias = $state(def.emailAlias ?? '')
   const saveAlias = async () => {
     if (alias.trim() === (def.emailAlias ?? '')) return
-    await patchAgentMeta(def.id, { emailAlias: alias.trim() || null })
+    const res = await patchAgentMeta(def.id, { emailAlias: alias.trim() || null })
+    if (!res.error) autosave.flash()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 
@@ -84,7 +89,7 @@
       kind = saved.principalKind
       principalUserId = saved.principalUserId ?? ''
       await qc.invalidateQueries({ queryKey: ['agent-google', def.id] })
-      googleFlash.flash()
+      autosave.flash()
     } catch (e) {
       googleError = errorMessage(e)
     } finally {
@@ -94,7 +99,6 @@
   // This choice decides whose Google account the agent acts through, so a
   // slip on the dropdown must not apply it: the row keeps its own Save, shown
   // while the choice differs from the stored one.
-  const googleFlash = useSavedFlash()
   const googleDirty = $derived.by(() => {
     const g = googleQuery.data
     if (!g || !googleSeeded) return false
@@ -131,7 +135,12 @@
 {#snippet target(t: ModelTarget, name?: string)}
   <span class="inline-flex min-w-0 items-center gap-2">
     {#if name}<span class="font-sans text-[13px] leading-5 text-muted">{name}</span>{/if}
-    <span class="truncate font-mono text-xs text-fg">{t.model}</span>
+    {#if modelName(t.model)}
+      <span class="truncate font-sans text-[13px] leading-5 text-fg">{modelName(t.model)}</span>
+      <span class="truncate font-mono text-xs text-muted">{t.model}</span>
+    {:else}
+      <span class="truncate font-mono text-xs text-fg">{t.model}</span>
+    {/if}
     <Chip>{isLocal(t) ? 'Self-hosted' : 'Cloud'}</Chip>
   </span>
 {/snippet}
@@ -203,9 +212,6 @@
           {:else if googleQuery.isError}
             <span class="font-sans text-[13px] leading-5 text-danger">{errorMessage(googleQuery.error)}</span>
           {:else}
-            {#if googleFlash.saved && !googleError && !googleDirty}
-              <span class="font-sans text-[13px] leading-5 text-success">Saved</span>
-            {/if}
             {#if kind === 'agent' && !googleDirty}
               {#if googleQuery.data?.connected}
                 <DangerLink onClick={() => void disconnectGoogle()} disabled={googleBusy}>Disconnect Google</DangerLink>
@@ -235,7 +241,7 @@
               <option value="agent">This agent's own account</option>
             </Select>
             {#if googleDirty}
-              <Button variant="outline" size="md" disabled={googleBusy} onclick={() => void savePrincipal()}>Save</Button>
+              <Button size="md" disabled={googleBusy} onclick={() => void savePrincipal()}>Save</Button>
             {/if}
           {/if}
         </SettingsRow>
@@ -287,11 +293,13 @@
         {/if}
         {#if cfg?.fallbacks?.length}
           <dt class="font-sans text-[13px] leading-5 text-muted">Fallbacks</dt>
-          <dd class="min-w-0 font-mono text-xs leading-5 text-fg">{cfg.fallbacks.map((f) => f.model).join(', then ')}</dd>
+          <dd class="min-w-0 font-sans text-[13px] leading-5 text-fg">{cfg.fallbacks.map((f) => modelName(f.model) ?? f.model).join(', then ')}</dd>
         {/if}
         {#if cfg?.mcpServers?.length}
           <dt class="font-sans text-[13px] leading-5 text-muted">MCP servers</dt>
-          <dd class="min-w-0 font-mono text-xs leading-5 text-fg">{cfg.mcpServers.join(', ')}</dd>
+          <dd class="min-w-0 font-sans text-[13px] leading-5 text-fg" title={cfg.mcpServers.join(', ')}>
+            {cfg.mcpServers.length} server{cfg.mcpServers.length === 1 ? '' : 's'}, listed on the MCP tab
+          </dd>
         {/if}
       </dl>
     </SettingsGroup>
