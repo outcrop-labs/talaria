@@ -3,6 +3,7 @@
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { route } from '@/router'
+  import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -27,7 +28,7 @@
   import NotificationsSection from './settings/NotificationsSection.svelte'
   import McpConnectionsSection from './settings/McpConnectionsSection.svelte'
   import IntegrationsSection from './settings/IntegrationsSection.svelte'
-  import ApiKeysSection from './settings/ApiKeysSection.svelte'
+  import ApiKeysSection, { useApiKeys } from './settings/ApiKeysSection.svelte'
   import DesktopSection from './settings/DesktopSection.svelte'
   import { inDesktopShell } from '@/lib/desktop-shell'
 
@@ -88,6 +89,11 @@
     if (user) name = user.name ?? ''
   })
 
+  // API keys: the page's one create lives in its header, and only for someone
+  // who may create a key. The list's own read says so.
+  const apiKeys = useApiKeys(() => tab === 'keys')
+  let creatingKey = $state(false)
+
   const save = async () => {
     const n = name.trim()
     if (!n || n === user?.name) return
@@ -105,7 +111,17 @@
   }
 </script>
 
-<SettingsPage title={page.label} blurb={page.blurb} autosave={tab === 'profile'} saved={savedFlash.saved}>
+{#snippet keyActions()}
+  <Button size="sm" onclick={() => (creatingKey = true)}>Create key</Button>
+{/snippet}
+
+<SettingsPage
+  title={page.label}
+  blurb={page.blurb}
+  autosave={tab === 'profile'}
+  saved={savedFlash.saved}
+  actions={tab === 'keys' && apiKeys.data?.canMint ? keyActions : undefined}
+>
     {#if appsList.notice}<QueryError {...appsList.notice} />{/if}
     <!-- Pane grammar: the pane rises in on switch (no exit) and its sections
          stagger. Keying is safe here: the profile input's state (`name`)
@@ -153,7 +169,7 @@
       <IntegrationsSection />
       <McpConnectionsSection />
     {/if}
-    {#if tab === 'keys'}<ApiKeysSection />{/if}
+    {#if tab === 'keys'}<ApiKeysSection bind:creating={creatingKey} />{/if}
     <!-- Only a tab this person was granted mounts its surface: the URL alone
          (/settings/app:<slug>) is not a grant. -->
     {#if tab.startsWith('app:') && appTabs.some((t) => t.id === tab)}<AppSurface slug={tab.slice(4)} surface="settings" />{/if}

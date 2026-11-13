@@ -1,21 +1,6 @@
-<script lang="ts">
-  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { KeyRound } from '@lucide/svelte'
-  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
-  import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
-  import SettingsSection from '@/components/settings/SettingsSection.svelte'
-  import Button from '@/components/ui/Button.svelte'
-  import Input from '@/components/ui/Input.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import QueryState from '@/components/ui/QueryState.svelte'
-  import CopyButton from '@/components/ui/CopyButton.svelte'
-  import { confirm } from '@/components/ui/confirm.svelte'
-  import { delJsonGone, errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
-  import { relativeTime } from '@/lib/fleet'
-  import { fade, slide } from '@/lib/motion'
-  import { toastError } from '@/lib/toast.svelte'
+<script module lang="ts">
+  import { createQuery } from '@tanstack/svelte-query'
+  import { getJson } from '@/lib/fetch-json'
 
   interface ApiKey {
     id: string
@@ -28,6 +13,41 @@
     spendCapUsd: number | null
     rateLimitPerMinute: number | null
   }
+  interface ApiKeys {
+    keys: ApiKey[]
+    canMint: boolean
+  }
+
+  /** The person's keys, and whether they may create one. The page header reads
+   *  it too, for its Create key button: one cache entry, one request. */
+  export const useApiKeys = (enabled: () => boolean = () => true) =>
+    createQuery(() => ({
+      queryKey: ['api-keys'],
+      queryFn: (): Promise<ApiKeys> => getJson<ApiKeys>('/api/keys'),
+      enabled: enabled(),
+    }))
+</script>
+
+<script lang="ts">
+  import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Input from '@/components/ui/Input.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
+  import CopyButton from '@/components/ui/CopyButton.svelte'
+  import { confirm } from '@/components/ui/confirm.svelte'
+  import { delJsonGone, errorMessage, postJson, putJson } from '@/lib/fetch-json'
+  import { relativeTime } from '@/lib/fleet'
+  import { fade, slide } from '@/lib/motion'
+  import { toastError } from '@/lib/toast.svelte'
 
   // Personal keys for the Talaria LLM gateway — one org endpoint over the whole
   // model stack. The secret shows exactly once at mint time. Each key carries
@@ -35,13 +55,14 @@
   // per-minute request limit — self-imposed, so a leaked or runaway key burns
   // only what its owner decided it may.
 
+  /** The create dialog is open. The page header's Create key button sets it. */
+  let { creating = $bindable(false) }: { creating?: boolean } = $props()
+
   const qc = useQueryClient()
-  const query = createQuery(() => ({
-    queryKey: ['api-keys'],
-    queryFn: (): Promise<{ keys: ApiKey[]; canMint: boolean }> => getJson<{ keys: ApiKey[]; canMint: boolean }>('/api/keys'),
-  }))
+  const query = useApiKeys()
   const data = $derived(query.data)
   let name = $state('')
+  let minting = $state(false)
   let minted = $state<string | null>(null)
   let err = $state<string | null>(null)
   const keys = $derived((data?.keys ?? []).filter((k) => !k.revokedAt))
@@ -49,24 +70,34 @@
 
   // One limits editor open at a time; the draft is seeded from the row, blank
   // meaning unlimited — the same spelling the API uses (null).
+  type Limits = { tokens: string; usd: string; rpm: string }
   let limitsFor = $state<string | null>(null)
-  let draft = $state({ tokens: '', usd: '', rpm: '' })
+  let draft = $state<Limits>({ tokens: '', usd: '', rpm: '' })
+  // A key revoked from its own limits dialog leaves the list, and the dialog with it.
+  const limitsKey = $derived(keys.find((k) => k.id === limitsFor) ?? null)
+
+  const limitsOf = (k: ApiKey): Limits => ({
+    tokens: k.spendCapTokens ? String(k.spendCapTokens) : '',
+    usd: k.spendCapUsd ? String(k.spendCapUsd) : '',
+    rpm: k.rateLimitPerMinute ? String(k.rateLimitPerMinute) : '',
+  })
+  const limitsDirty = $derived.by(() => {
+    if (!limitsKey) return false
+    const saved = limitsOf(limitsKey)
+    return draft.tokens.trim() !== saved.tokens || draft.usd.trim() !== saved.usd || draft.rpm.trim() !== saved.rpm
+  })
 
   const limitsSummary = (k: ApiKey) => {
     const parts: string[] = []
-    if (k.spendCapTokens) parts.push(`${k.spendCapTokens.toLocaleString()} tok`)
-    if (k.spendCapUsd) parts.push(`$${k.spendCapUsd}`)
-    if (k.rateLimitPerMinute) parts.push(`${k.rateLimitPerMinute}/min`)
-    return parts.join(' · ') || 'no limits'
+    if (k.spendCapTokens) parts.push(`${k.spendCapTokens.toLocaleString()} token cap`)
+    if (k.spendCapUsd) parts.push(`$${k.spendCapUsd.toLocaleString()} cap`)
+    if (k.rateLimitPerMinute) parts.push(`${k.rateLimitPerMinute.toLocaleString()} requests a minute`)
+    return parts.join(' · ') || 'No limits'
   }
 
   const openLimits = (k: ApiKey) => {
-    limitsFor = limitsFor === k.id ? null : k.id
-    draft = {
-      tokens: k.spendCapTokens ? String(k.spendCapTokens) : '',
-      usd: k.spendCapUsd ? String(k.spendCapUsd) : '',
-      rpm: k.rateLimitPerMinute ? String(k.rateLimitPerMinute) : '',
-    }
+    limitsFor = k.id
+    draft = limitsOf(k)
   }
 
   const saveLimits = async (k: ApiKey) => {
@@ -90,7 +121,9 @@
   }
 
   const mint = async () => {
+    if (minting) return
     err = null
+    minting = true
     try {
       const j = await postJson<{ key: ApiKey; secret: string }>('/api/keys', { name: name.trim() || 'default' })
       minted = j.secret
@@ -98,7 +131,17 @@
       await qc.invalidateQueries({ queryKey: ['api-keys'] })
     } catch (e) {
       err = errorMessage(e)
+    } finally {
+      minting = false
     }
+  }
+
+  // The secret lives only as long as the dialog that shows it.
+  const closeCreate = () => {
+    creating = false
+    minted = null
+    name = ''
+    err = null
   }
 
   const revoke = async (id: string) => {
@@ -107,7 +150,6 @@
       // A 404 is a key that is not this person's any more: nothing to revoke.
       await delJsonGone(`/api/keys/${id}`)
     } catch (e) {
-      // Row button; the err line belongs to the mint form below.
       toastError('Revoke failed', e)
       return
     }
@@ -115,98 +157,45 @@
   }
 </script>
 
-{#if minted}
-  <div transition:slide={{ duration: 150 }}>
-    <SettingsGroup>
-      <SettingsRow label="Copy your new key now" hint="It will not be shown again." stacked>
-        <code class="min-w-0 flex-1 break-all rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs text-fg">{minted}</code>
-        <CopyButton value={minted} label="Copy" />
-      </SettingsRow>
-    </SettingsGroup>
-  </div>
-{/if}
-
 <SettingsSection title="Your keys">
   <SettingsGroup>
     <QueryState query={query} errorTitle="Could not load your API keys" errorVariant="compact">
       {#snippet skeleton()}
-        <!-- Hold BOTH the key list and the canMint branch: flashing "API keys
-             are not enabled for your account" mid-load is actively wrong. -->
-        <div aria-hidden="true" class="px-5 py-4">
-          <SkeletonRows rows={2} class="mb-4" />
-          <div class="flex items-center justify-end gap-3">
-            <Skeleton class="h-9 w-[280px]" />
-            <Skeleton class="h-9 w-24" />
-          </div>
-        </div>
+        <!-- Hold the whole card: flashing "Keys are off for your account"
+             mid-load is actively wrong. -->
+        <div aria-hidden="true" class="px-5 py-4"><SkeletonRows rows={3} /></div>
       {/snippet}
       {#snippet children(_data)}
-        <!-- "API keys are not enabled for your account" is a permission
-             verdict, and a failed /api/keys never delivered one. QueryState's
-             error branch owns it. -->
+        <!-- "Keys are off for your account" is a permission verdict, and a
+             failed /api/keys never delivered one. QueryState's error branch
+             owns it. -->
         {#each keys as k (k.id)}
           <div in:fade={{ duration: 150 }} out:slide={{ duration: 150 }}>
-            <SettingsRow label={k.name}>
-              {#snippet icon()}<KeyRound size={16} />{/snippet}
+            <SettingsRow label={k.name} onOpen={() => openLimits(k)} openLabel={`Limits for ${k.name}`}>
               {#snippet meta()}<code class="shrink-0 font-mono text-xs text-muted">{k.prefix}</code>{/snippet}
               {#snippet hint()}
                 {k.lastUsedAt ? `Used ${relativeTime(k.lastUsedAt)}` : 'Never used'} · {limitsSummary(k)}
               {/snippet}
-              <Button variant="outline" size="sm" onclick={() => openLimits(k)}>
-                {limitsFor === k.id ? 'Close' : 'Limits'}
-              </Button>
               <SettingsRowMenu
                 label={`Actions for ${k.name}`}
-                items={[{ label: 'Revoke key', danger: true, onSelect: () => void revoke(k.id) }]}
+                items={[
+                  { label: 'Limits', onSelect: () => openLimits(k) },
+                  'sep',
+                  { label: 'Revoke key', danger: true, onSelect: () => void revoke(k.id) },
+                ]}
               />
             </SettingsRow>
-            {#if limitsFor === k.id}
-              <div transition:slide={{ duration: 150 }}>
-                <div class="border-t border-line-subtle px-5 py-4">
-                  <div class="flex flex-wrap items-end gap-3">
-                    <label class="w-40 font-sans text-xs leading-4 text-muted">
-                      Token cap
-                      <Input size="sm" bind:value={draft.tokens} placeholder="No cap" inputmode="numeric" class="mt-1.5" />
-                    </label>
-                    <label class="w-40 font-sans text-xs leading-4 text-muted">
-                      Dollar cap
-                      <Input size="sm" bind:value={draft.usd} placeholder="No cap" inputmode="decimal" class="mt-1.5" />
-                    </label>
-                    <label class="w-40 font-sans text-xs leading-4 text-muted">
-                      Requests per minute
-                      <Input size="sm" bind:value={draft.rpm} placeholder="No cap" inputmode="numeric" class="mt-1.5" />
-                    </label>
-                    <Button size="md" variant="outline" onclick={() => void saveLimits(k)}>Save limits</Button>
-                  </div>
-                  <p class="mt-2 font-sans text-[13px] leading-5 text-muted">
-                    Caps can only tighten the ceiling an admin set. Blank means no cap.
-                  </p>
-                </div>
-              </div>
-            {/if}
           </div>
         {/each}
 
-        {#if data?.canMint}
-          <SettingsRow label="New key" hint="Name it after the tool that will use it." as="label">
-            <Input
-              size="sm"
-              class="w-[280px]"
-              bind:value={name}
-              placeholder="opencode"
-              onkeydown={(e) => e.key === 'Enter' && void mint()}
-            />
-            <Button size="md" variant="outline" onclick={() => void mint()}>Create key</Button>
-          </SettingsRow>
-        {:else}
+        {#if !data?.canMint}
           <SettingsRow label="Keys are off for your account" hint="Ask an admin to turn them on." />
+        {:else if keys.length === 0}
+          <EmptyState variant="compact" title="No keys yet" hint="Create one for each script or tool that calls Talaria as you." />
         {/if}
       {/snippet}
     </QueryState>
   </SettingsGroup>
-  {#if err}
-    <div transition:slide={{ duration: 150 }} class="mt-2 font-sans text-[13px] leading-5 text-danger">{err}</div>
-  {/if}
 </SettingsSection>
 
 <SettingsSection title="Use a key">
@@ -217,3 +206,67 @@
     </SettingsRow>
   </SettingsGroup>
 </SettingsSection>
+
+{#if creating}
+  <Modal open onClose={closeCreate} title={minted ? 'Copy your new key' : 'Create key'} width="max-w-md">
+    {#if minted}
+      <div class="space-y-3">
+        <p class="font-sans text-[13px] leading-5 text-muted">Copy it now. It will not be shown again.</p>
+        <div class="flex items-center gap-2">
+          <code class="min-w-0 flex-1 break-all rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs leading-5 text-fg">{minted}</code>
+          <CopyButton value={minted} label="Copy" title="Copy the key" class="shrink-0" />
+        </div>
+      </div>
+    {:else}
+      <div class="space-y-5">
+        <SettingsField label="Name" for="api-key-name" hint="Name it after the tool that will use it.">
+          <Input
+            id="api-key-name"
+            autofocus
+            size="sm"
+            bind:value={name}
+            placeholder="opencode"
+            onkeydown={(e) => e.key === 'Enter' && void mint()}
+          />
+        </SettingsField>
+        {#if err}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{err}</div>{/if}
+      </div>
+    {/if}
+    {#snippet footer()}
+      <div class="flex justify-end gap-2">
+        {#if minted}
+          <Button size="sm" variant="outline" onclick={closeCreate}>Done</Button>
+        {:else}
+          <Button size="sm" variant="ghost" onclick={closeCreate}>Cancel</Button>
+          <Button size="sm" disabled={minting} onclick={() => void mint()}>{minting ? 'Creating' : 'Create key'}</Button>
+        {/if}
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
+
+{#if limitsKey}
+  {@const k = limitsKey}
+  <Modal open onClose={() => (limitsFor = null)} title={`Limits for ${k.name}`} width="max-w-md">
+    <div class="space-y-5">
+      <p class="font-sans text-[13px] leading-5 text-muted">A limit can only tighten what an admin allows. Leave one blank for no limit.</p>
+      <SettingsField label="Token cap" for="api-key-tokens">
+        <Input id="api-key-tokens" size="sm" bind:value={draft.tokens} placeholder="No cap" inputmode="numeric" />
+      </SettingsField>
+      <SettingsField label="Dollar cap" for="api-key-usd">
+        <Input id="api-key-usd" size="sm" bind:value={draft.usd} placeholder="No cap" inputmode="decimal" />
+      </SettingsField>
+      <SettingsField label="Requests per minute" for="api-key-rpm">
+        <Input id="api-key-rpm" size="sm" bind:value={draft.rpm} placeholder="No limit" inputmode="numeric" />
+      </SettingsField>
+    </div>
+    {#snippet footer()}
+      <div class="flex items-center gap-2">
+        <DangerLink onClick={() => void revoke(k.id)}>Revoke key</DangerLink>
+        <span class="flex-1"></span>
+        <Button size="sm" variant="ghost" onclick={() => (limitsFor = null)}>Cancel</Button>
+        <Button size="sm" disabled={!limitsDirty} onclick={() => void saveLimits(k)}>Save limits</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
