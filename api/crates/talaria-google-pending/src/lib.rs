@@ -23,7 +23,7 @@ use talaria_google_docs::{create_doc_with_token, update_doc_with_token};
 use talaria_google_drive::{
     create_drive_folder_with_token, move_drive_file_with_token, rename_drive_file_with_token,
 };
-use talaria_google_errors::{REASON_MAX_CHARS, upstream_reason};
+use talaria_google_errors::{quote_raw, upstream_reason};
 use talaria_google_gmail::{SendInput, send_message_with_token};
 use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
 use talaria_google_sheets::update_sheet_with_token;
@@ -424,11 +424,28 @@ pub async fn discard_unproven(pg: &PgPool, id: &str) -> Result<(), String> {
 }
 
 /// What a decision produced. `{status, message?}` — message present only on
-/// the not-connected/failed statuses.
+/// the released statuses (`RELEASED_STATUSES`) and `failed`.
 #[derive(Debug, Clone)]
 pub struct DecideOutcome {
     pub status: String,
     pub message: Option<String>,
+}
+
+/// The statuses of an approval that ran nothing and went back to `pending`,
+/// with why on the row (`lastError`), because no token could be had:
+/// - `not_connected`: no account, or Google refused the stored grant — a
+///   reconnect is the fix.
+/// - `client_rejected`: Google refused this server's OAuth client — the
+///   admin's fix; a reconnect would not help.
+/// - `token_refused`: Google refused the refresh for another reason it gave.
+pub const RELEASED_STATUSES: [&str; 3] = ["not_connected", "client_rejected", "token_refused"];
+
+impl DecideOutcome {
+    /// Nothing ran and the row is waiting again, so the same approval can be
+    /// given once the cause is fixed.
+    pub fn released(&self) -> bool {
+        RELEASED_STATUSES.contains(&self.status.as_str())
+    }
 }
 
 /// Approve → execute (as the owner, or the org for org actions), or reject →
@@ -608,7 +625,7 @@ pub async fn decide_action(
             tracing::warn!("[google/pending] {action_id} token refused: {raw}");
             release_claim(pg, action_id, &message).await?;
             return Ok(Some(DecideOutcome {
-                status: "not_connected".into(),
+                status: token_refusal_status(&e).into(),
                 message: Some(message),
             }));
         }
@@ -616,16 +633,28 @@ pub async fn decide_action(
 
     // Org actions land on the configured shared targets (calendar / send-as
     // alias). An agent identity uses its own account — no org send-as, no
-    // org calendar — even though an admin approves it.
+    // org calendar — even though an admin approves it. Both reads come
+    // before Google is called, so a fault in either hands the row back
+    // rather than leaving it `executing` until the takeover.
     let targets = if principal_kind == "org" {
-        get_org_targets(pg).await.map_err(|e| e.to_string())?
+        match get_org_targets(pg).await {
+            Ok(targets) => targets,
+            Err(e) => {
+                release_claim(pg, action_id, NOT_PREPARED).await?;
+                return Err(format!("google org targets read: {e}"));
+            }
+        }
     } else {
         Default::default()
     };
     let agent_from = if principal_kind == "org" && kind == "gmail_send" && agent_model.is_some() {
-        org_agent_from_address(pg, agent_model.as_deref().expect("checked some"))
-            .await
-            .map_err(|e| e.to_string())?
+        match org_agent_from_address(pg, agent_model.as_deref().expect("checked some")).await {
+            Ok(from) => from,
+            Err(e) => {
+                release_claim(pg, action_id, NOT_PREPARED).await?;
+                return Err(format!("google org agent address read: {e}"));
+            }
+        }
     } else {
         None
     };
@@ -1031,6 +1060,10 @@ pub async fn decide_action(
 const TOKEN_UNAVAILABLE: &str =
     "Nothing ran: a Google token could not be had for this account. Approve again to retry.";
 
+/// What a released row says when Talaria's own read of the org's send
+/// settings failed before Google was called (the detail is the log's).
+const NOT_PREPARED: &str = "Nothing ran: Talaria could not read the org's send settings for this action. Approve again to retry.";
+
 /// Hand a claimed row back to `pending`, with why on it: the sentence the
 /// approver was answered, kept as `result.error` so the agent's next read of
 /// the queue (`lastError`) says why its approved action has not run.
@@ -1070,16 +1103,27 @@ pub fn token_refusal_message(e: &TokenError, reconnect: &str) -> Option<String> 
     })
 }
 
+/// The released status a refused token answers with (`RELEASED_STATUSES`):
+/// a refused grant is the connection's (`not_connected`, reconnect), a
+/// refused client the admin's (`client_rejected`), anything else Google
+/// said a refused refresh (`token_refused`).
+pub fn token_refusal_status(e: &TokenError) -> &'static str {
+    match e {
+        TokenError::InvalidGrant(_) => "not_connected",
+        TokenError::ClientRejected(_) => "client_rejected",
+        TokenError::Other(_) => "token_refused",
+    }
+}
+
 /// What a failed execution tells the approver: Google's words when the
-/// failure carries them, otherwise what failed — never a bare "Google
-/// rejected the action" over a fault that was not Google's.
+/// failure carries a Google error body, otherwise the failure as it stands
+/// (folded and capped) — never a bare "Google rejected the action". The
+/// second covers a local fault and a Google answer that was not its JSON
+/// error body (an HTML 5xx page) alike.
 pub fn failure_message(raw: &str) -> String {
     match upstream_reason(raw) {
         Some(reason) => format!("Google rejected the action: «{reason}»"),
-        None => {
-            let said: String = raw.chars().take(REASON_MAX_CHARS).collect();
-            format!("The action did not run: «{said}»")
-        }
+        None => format!("The action did not run: «{}»", quote_raw(raw)),
     }
 }
 
@@ -1419,6 +1463,46 @@ mod tests {
             failure_message("doc_update missing fileId"),
             "The action did not run: «doc_update missing fileId»"
         );
+        // No Google error body (a made-up HTML page: the shape under test,
+        // not Google's words) is quoted as it stands, on one line.
+        assert_eq!(
+            failure_message(
+                "gmail send failed: 502 Bad Gateway <html>\n<body>Error 502</body>\n</html>"
+            ),
+            "The action did not run: «gmail send failed: 502 Bad Gateway <html> <body>Error 502</body> </html>»"
+        );
+    }
+
+    #[test]
+    fn a_refused_token_answers_whose_fix_it_is_and_waits_again() {
+        let status = |e: TokenError| {
+            let outcome = DecideOutcome {
+                status: token_refusal_status(&e).into(),
+                message: None,
+            };
+            assert!(outcome.released(), "{} hands the row back", outcome.status);
+            outcome.status
+        };
+        assert_eq!(
+            status(TokenError::InvalidGrant(TOKEN_BAD_REFRESH.into())),
+            "not_connected"
+        );
+        assert_eq!(
+            status(TokenError::ClientRejected(TOKEN_BAD_SECRET.into())),
+            "client_rejected",
+            "a refused client is the admin's, never read as a connection state"
+        );
+        assert_eq!(
+            status(TokenError::Other("google token refresh failed: 503".into())),
+            "token_refused"
+        );
+        for done in ["executed", "failed", "rejected", "forbidden", "pending"] {
+            let outcome = DecideOutcome {
+                status: done.into(),
+                message: None,
+            };
+            assert!(!outcome.released(), "{done} is not a release");
+        }
     }
 
     #[test]

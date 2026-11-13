@@ -221,7 +221,7 @@ pub async fn post(
             {
                 Ok(Some(outcome)) => super::integrations_google_agent_queue::answer_executed(
                     &id,
-                    &outcome.status,
+                    &outcome,
                     "Sent — the earlier approval covered this one; the next needs its own.",
                     "Unlocked draft_email did not send",
                 ),

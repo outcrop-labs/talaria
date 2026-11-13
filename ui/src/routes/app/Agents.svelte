@@ -201,8 +201,9 @@
       tone: ok ? 'success' : 'danger',
     })
     if (ok) void queryClient.invalidateQueries({ queryKey: ['agent-google'] })
-    searchParams.delete('googleAgent')
-    searchParams.delete('reason')
+    // Replace, not push: Back must not land on the bounce again.
+    searchParams.delete('googleAgent', undefined, { replace: true })
+    searchParams.delete('reason', undefined, { replace: true })
   })
 
   // Defs AND containers gate the roster together: tiles built from

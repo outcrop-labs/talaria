@@ -256,7 +256,7 @@ pub async fn post(
             {
                 Ok(Some(outcome)) => super::integrations_google_agent_queue::answer_executed(
                     &id,
-                    &outcome.status,
+                    &outcome,
                     "Created — the earlier approval covered this one; the next needs its own.",
                     "Unlocked draft_calendar_event did not create the event",
                 ),

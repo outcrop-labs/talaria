@@ -133,6 +133,14 @@ fn is_oauth_code(s: &str) -> bool {
     (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
+/// A failure message quoted as it stands, for when no Google error body came
+/// back (`upstream_reason` answered None): folded and capped by the same rule,
+/// so a non-JSON page from Google (an HTML 502) or a local fault reads on one
+/// line and never runs past `REASON_MAX_CHARS`.
+pub fn quote_raw(message: &str) -> String {
+    cap(&fold_whitespace(message))
+}
+
 fn fold_whitespace(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -445,6 +453,22 @@ mod tests {
         // A brace that is not Google's error body is not mistaken for one.
         assert_eq!(upstream_reason("drive path body: {\"files\": []}"), None);
         assert_eq!(upstream_reason("unbalanced { brace"), None);
+    }
+
+    #[test]
+    fn a_raw_quote_is_one_line_under_the_cap() {
+        // A failure with no Google error body (a made-up HTML page: the
+        // shape under test, not Google's words) is folded onto one line.
+        assert_eq!(
+            quote_raw(
+                "gmail send failed: 502 Bad Gateway <html>\n  <body>\tError 502</body>\n</html>"
+            ),
+            "gmail send failed: 502 Bad Gateway <html> <body> Error 502</body> </html>"
+        );
+        let long = format!("drive rename failed: 500 {}", "x ".repeat(400));
+        let quoted = quote_raw(&long);
+        assert_eq!(quoted.chars().count(), REASON_MAX_CHARS);
+        assert!(quoted.ends_with('…'));
     }
 
     #[test]

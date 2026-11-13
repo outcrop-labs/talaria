@@ -8,13 +8,16 @@
 //                     know; the refresh reaches Google's real token endpoint
 //                     with a garbage refresh token and NO real credential, and
 //                     Google answers `invalid_client`. The decision answers
-//                     not_connected quoting Google, the row is pending again
+//                     client_rejected quoting Google, the row is pending again
 //                     with that sentence as `result.error`, and the stored
 //                     grant is untouched (a refused client never clears one).
 //                     Needs the network.
 //   local fault       no client configured anywhere: nothing reaches Google,
 //                     the decision is still the hard failure it was, and the
 //                     row is pending again instead of stranded `executing`.
+//   prepare fault     an org row whose token comes from a still-valid cache
+//                     (nothing reaches Google), then the org targets read
+//                     fails: the hard failure, with the row pending again.
 //
 // Each test builds its OWN schema with the three tables the path touches and
 // points the pool's search_path at it alone.
@@ -171,7 +174,8 @@ async fn a_refused_client_releases_the_row_and_quotes_google() {
     .await
     .expect("a refusal Google explained is an answer, not a hard failure")
     .expect("the row exists");
-    assert_eq!(outcome.status, "not_connected");
+    assert_eq!(outcome.status, "client_rejected");
+    assert!(outcome.released(), "nothing ran; the row waits again");
     let message = outcome.message.expect("a sentence");
     assert!(
         message.starts_with(
@@ -242,6 +246,65 @@ async fn a_token_fault_with_no_google_answer_still_releases_the_row() {
             "Nothing ran: a Google token could not be had for this account. Approve again to retry."
         )
     );
+
+    teardown(pg, &admin, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live Postgres (DATABASE_URL)"]
+async fn a_fault_before_google_is_called_still_releases_the_row() {
+    let sb = test_box();
+    let (pg, admin, schema, _) = scratch("prepare", &sb).await;
+    // The org connection with a cached access token still valid, so the vend
+    // answers from the cache and nothing reaches Google. The table has no
+    // target columns, so the org targets read that follows the vend is a
+    // real database fault.
+    sqlx::query(
+        "create table google_org_connection (id int primary key, refresh_token_enc text, \
+         access_token_enc text, access_expires_at timestamptz)",
+    )
+    .execute(&pg)
+    .await
+    .expect("org connection table");
+    sqlx::query(
+        "insert into google_org_connection (id, refresh_token_enc, access_token_enc, access_expires_at) \
+         values (1, $1, $2, now() + interval '1 hour')",
+    )
+    .bind(sb.seal("1//release-live-not-a-refresh-token").unwrap())
+    .bind(sb.seal("release-live-cached-access").unwrap())
+    .execute(&pg)
+    .await
+    .expect("org connection row");
+    let id: String = sqlx::query_scalar(
+        "insert into google_pending_actions (kind, payload, summary, is_org, principal_kind) \
+         values ('calendar_create', $1, 'release-live', true, 'org') returning id::text",
+    )
+    .bind(json!({ "summary": "release-live", "start": "2026-11-12", "end": "2026-11-13", "allDay": true }))
+    .fetch_one(&pg)
+    .await
+    .expect("org pending row");
+
+    let failed = talaria_google_pending::decide_action(
+        &pg,
+        &sb,
+        &id,
+        OWNER,
+        true,
+        "approve",
+        talaria_agent_auth::now_ms(),
+    )
+    .await;
+    let raw = failed.expect_err("a database fault is still the hard failure");
+    assert!(raw.starts_with("google org targets read:"), "{raw}");
+    let (status, error, decided_by) = row(&pg, &id).await;
+    assert_eq!(status, "pending", "released, not stranded executing");
+    assert_eq!(
+        error.as_deref(),
+        Some(
+            "Nothing ran: Talaria could not read the org's send settings for this action. Approve again to retry."
+        )
+    );
+    assert_eq!(decided_by, None);
 
     teardown(pg, &admin, &schema).await;
 }
