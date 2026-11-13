@@ -137,7 +137,7 @@
 
 {#snippet keyIcon()}<KeyRound size={22} />{/snippet}
 
-<div class="space-y-10">
+<div class="space-y-8">
   <!-- ── SAFE: spends without seeing ────────────────────────────────────────── -->
   <SettingsSection
     title="Credentials it can use"

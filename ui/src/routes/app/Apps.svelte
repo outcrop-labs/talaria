@@ -34,7 +34,7 @@
        cards (each tab's [data-app-cards] hook) cascade. The selector
        deliberately misses the skeleton rows. -->
   {#key tab}
-    <div in:fly={{ y: 6, duration: 200 }} class="space-y-10" data-stagger-items="[data-app-cards] > *">
+    <div in:fly={{ y: 6, duration: 200 }} class="space-y-8" data-stagger-items="[data-app-cards] > *">
       {#if tab === 'installed'}<AppsInstalledTab {isAdmin} />{:else}<AppsDiscoverTab {isAdmin} />{/if}
     </div>
   {/key}

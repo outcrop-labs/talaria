@@ -117,7 +117,7 @@
     hint="The MCP call record names which agent called which tool on which server. An admin reads it here."
   />
 {:else}
-  <div class="space-y-10">
+  <div class="space-y-8">
     <div class="space-y-4">
       <!-- The window, then the three narrowing selects, all one height. -->
       <div class="flex flex-wrap items-center gap-2">

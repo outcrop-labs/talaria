@@ -89,7 +89,7 @@
   </div>
 {/snippet}
 
-<div class="space-y-10">
+<div class="space-y-8">
   <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Sources shown">
     <span class="mr-1 font-sans text-[13px] leading-5 text-muted">Show</span>
     {#each available as k (k)}
@@ -106,7 +106,7 @@
          silhouette and the resolved sections stagger in over it (count=1: how
          many sections land depends on the data). The failed branch above keeps
          owning errors, empty stays inside. -->
-    <Materialize loading={query.isLoading} count={1} class="space-y-10">
+    <Materialize loading={query.isLoading} count={1} class="space-y-8">
       {#snippet skeleton()}
         <section aria-hidden="true">
           <div class="mb-3 space-y-2">

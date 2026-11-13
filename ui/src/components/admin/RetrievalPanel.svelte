@@ -82,7 +82,7 @@
       .join(', ')
 </script>
 
-<div class="space-y-10">
+<div class="space-y-8">
   <SettingsSection
     title="Collections"
     description="What agents and people can search, and who may search each one."

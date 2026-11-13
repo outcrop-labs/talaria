@@ -26,7 +26,7 @@
     <EmptyState icon="△" title="All clear" hint="Agents running, gateway answering, ledger priced, no stuck work." />
   {/snippet}
   {#snippet children(alerts)}
-    <div class="space-y-10">
+    <div class="space-y-8">
       <StatStrip columns={3}>
         <Stat label="Critical" value={count(alerts, 'critical')} sub="Failing now" />
         <Stat label="Warnings" value={count(alerts, 'warning')} sub="Degraded or at risk" />

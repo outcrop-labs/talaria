@@ -73,7 +73,7 @@
       <!-- Tab-pane grammar: pane rises in on switch (no exit), panels stagger —
            these are section stacks, one Panel per concern. -->
       {#key tab}
-      <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-10">
+      <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-8">
       {#if tab === 'org'}
         <!-- Two stored names under one title: what agents are told, and what a
              browser tab shows. The first card has its own Save, because saving

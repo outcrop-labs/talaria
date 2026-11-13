@@ -43,7 +43,7 @@
   claimViewTitle(title)
 </script>
 
-<PageSurface innerClass={fill ? 'h-full' : undefined}>
+<PageSurface innerClass={cn('max-w-[var(--settings-width)]', fill && 'h-full')}>
   <div use:staggerIn class={cn('font-sans', fill && 'flex h-full flex-col')}>
     <header class="flex shrink-0 flex-wrap items-start gap-x-6 gap-y-3">
       <div class="min-w-0 flex-1">
@@ -57,7 +57,7 @@
     {/if}
     <div
       data-stagger-items={staggerItems}
-      class={cn('space-y-10', tabs ? 'mt-6' : 'mt-8', fill && 'min-h-0 flex-1')}
+      class={cn('space-y-8', tabs ? 'mt-6' : 'mt-8', fill && 'min-h-0 flex-1')}
     >
       {@render children()}
     </div>

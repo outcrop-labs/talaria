@@ -215,7 +215,7 @@
           {@const who = everyone ? 'every agent' : firstName(selected)}
           {@const requests = ownerGaps(selected)}
           {@const routed = routedTo(selected)}
-          <main class="min-w-0 space-y-10">
+          <main class="min-w-0 space-y-8">
             <div class="flex items-center gap-3">
               {#if everyone}
                 <span class="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-line-strong bg-raised text-muted">

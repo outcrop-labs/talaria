@@ -62,6 +62,12 @@
      adopting it made every view wider or the same and compressed nothing. */
   --page-width: 1152px;
 
+  /* The settings area: Manage, Settings and Admin, via `SettingsPage`. Those
+     pages are rows of a label and its control, and at the page width the two
+     sat a third of a window apart. One width for the whole area, so its pages
+     still line up with each other. */
+  --settings-width: 960px;
+
   /* Chat, Plan and Research transcripts. A conversation is read in turns, so
      it wants a measure, but its rows carry chips and tool output that a prose
      column would wrap badly. */

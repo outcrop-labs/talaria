@@ -131,7 +131,7 @@
       {#key tab}
         <div in:fly={{ y: 6, duration: 200 }} class={cn(fills && 'h-full')}>
           {#if tab === 'summary'}
-            <div class="space-y-10">
+            <div class="space-y-8">
               <SummaryTab {def} {canManage} />
               {#if canManage}
                 <!-- Last on the page: a credential action is read rarely and

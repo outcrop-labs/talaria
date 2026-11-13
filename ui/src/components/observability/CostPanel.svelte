@@ -60,7 +60,7 @@
   })
 </script>
 
-<div class="space-y-10">
+<div class="space-y-8">
   {#if staleFailure}
     <div transition:slide={{ duration: 150 }}>
       <QueryError variant="inline" title="Usage may be out of date" error={costQuery.error} onRetry={() => void costQuery.refetch()} />
@@ -74,7 +74,7 @@
          one table card, and the resolved readout staggers in over it.
          `data === undefined`, not `isLoading`, so a paused first fetch also
          reads as "we don't know yet". -->
-    <Materialize loading={data === undefined} count={1} class="space-y-10">
+    <Materialize loading={data === undefined} count={1} class="space-y-8">
       {#snippet skeleton()}
         <StatStripSkeleton />
         <div aria-hidden="true" class="rounded-lg border border-line bg-panel px-5 py-4"><SkeletonRows rows={5} avatar /></div>

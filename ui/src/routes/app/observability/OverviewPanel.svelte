@@ -85,7 +85,7 @@
 
 <!-- data-obs-sections: the hook Observability's stagger selector targets, so
      this pane's blocks cascade on the page entrance. -->
-<div class="space-y-10" data-obs-sections>
+<div class="space-y-8" data-obs-sections>
   <StatStrip>
     <Stat label="Generating now" href={tabHref('compute')} sub={fleetLine}>
       {#snippet value()}

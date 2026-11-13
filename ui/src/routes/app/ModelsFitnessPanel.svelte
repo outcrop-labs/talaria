@@ -228,7 +228,7 @@
     </div>
   </SettingsGroup>
 {:else}
-  <div class="space-y-10">
+  <div class="space-y-8">
     <SettingsSection
       title="Model fitness"
       description="Which models are good at which jobs, measured by test runs."

@@ -31,6 +31,7 @@ and every tab change slid sideways.
 | Token | Width | Used by |
 |---|---|---|
 | `--page-width` | 1152px | every centred page surface, via `PageSurface` |
+| `--settings-width` | 960px | every page in the settings area (Manage, Settings, Admin), via `SettingsPage` |
 | `--converse-width` | 900px | Chat, Plan, Research transcripts |
 | `--read-width` | 46rem | long-form prose: KB docs, artifact bodies, shares |
 

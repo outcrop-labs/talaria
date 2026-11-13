@@ -141,7 +141,7 @@
   <dd class={mono ? 'min-w-0 truncate font-mono text-xs leading-5 text-fg' : 'min-w-0 truncate font-sans text-[13px] leading-5 text-fg tabular-nums'} title={value}>{value}</dd>
 {/snippet}
 
-<div class="space-y-10">
+<div class="space-y-8">
   <!-- A department another agent holds too (a pair from before a department
        became one agent's). It names one container and one memory volume, so
        the render runs the older agent there and leaves the other out — said

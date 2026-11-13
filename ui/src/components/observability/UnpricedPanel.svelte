@@ -205,7 +205,7 @@
 
 <!-- `empty:hidden`: with nothing to price this section is an empty element,
      and it must not take a gap in the tab's column. -->
-<section bind:this={anchor} id={UNPRICED_ANCHOR} class="scroll-mt-4 space-y-10 empty:hidden" data-testid="unpriced-panel">
+<section bind:this={anchor} id={UNPRICED_ANCHOR} class="scroll-mt-4 space-y-8 empty:hidden" data-testid="unpriced-panel">
   {#if query.isError && data === undefined}
     <QueryError title="Could not load unpriced models" error={query.error} onRetry={() => void query.refetch()} />
   {:else if data === undefined}

@@ -128,7 +128,7 @@
 {#if query.isLoading}
   <!-- The page's shape while we find out whether an assistant exists: the
        identity row, then the card of fields. -->
-  <div aria-hidden="true" class="space-y-10">
+  <div aria-hidden="true" class="space-y-8">
     <SettingsGroup>
       <div class="flex min-h-[60px] items-center gap-3 px-5 py-4">
         <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
@@ -159,7 +159,7 @@
   </EmptyState>
   {#if wizard}<AssistantWizard onClose={() => (wizard = false)} />{/if}
 {:else}
-  <div class="space-y-10">
+  <div class="space-y-8">
     <SettingsGroup>
       <SettingsRow label={assistant.displayName}>
         {#snippet lead()}<Avatar name={assistant.displayName} class="h-10 w-10" />{/snippet}

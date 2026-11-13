@@ -111,7 +111,7 @@
          stagger. Keying is safe here: the profile input's state (`name`)
          lives in this component, not the pane. -->
     {#key tab}
-    <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-10">
+    <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-8">
     {#if tab === 'profile'}
       <SettingsGroup>
         {#if sessionLoading}

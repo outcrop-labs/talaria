@@ -27,7 +27,7 @@
   <dd class={mono ? 'min-w-0 font-mono text-xs leading-5 text-fg' : 'min-w-0 font-sans text-[13px] leading-5 text-fg'}>{value}</dd>
 {/snippet}
 
-<div class="space-y-10">
+<div class="space-y-8">
   <SettingsSection title="Models" description="Only this agent's managers can change its configuration.">
     <SettingsGroup>
       <dl class="grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 px-5 py-4">

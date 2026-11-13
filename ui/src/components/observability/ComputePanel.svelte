@@ -31,7 +31,7 @@
   const servedTokens = $derived(perModel.reduce((n, m) => n + m.tokens, 0))
 </script>
 
-<div class="space-y-10">
+<div class="space-y-8">
   <!-- "0 generating / no errors / all healthy" over a dead endpoint is the
        same lie as an empty list, so a failed read gets its own panel. -->
   {#if failed}

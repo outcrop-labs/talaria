@@ -43,7 +43,7 @@
   <Meter {percent} {label} class="mb-1.5 mt-2" />
 {/snippet}
 
-<div class="space-y-10">
+<div class="space-y-8">
   {#if stale}
     <div transition:slide={{ duration: 150 }}>
       <QueryError variant="inline" title="Host numbers may be out of date" error={query.error} onRetry={() => void query.refetch()} />

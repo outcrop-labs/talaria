@@ -97,7 +97,7 @@
         {:else}
           <!-- data-cards: the hook the page's stagger selector targets, so
                provider rows cascade on entrance and skeletons do not. -->
-          <div class="space-y-10">
+          <div class="space-y-8">
             {#each groups as group (group.title)}
               {#if group.endpoints.length > 0}
                 <SettingsSection title={group.title}>

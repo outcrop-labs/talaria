@@ -161,7 +161,7 @@
       { label: 'Built-in bucket', count: d.stats.internal, bar: 'bg-accent' },
       { label: `Local disk (${fmtBytes(d.stats.localBytes)})`, count: d.stats.local, bar: 'bg-chart-2' },
     ]}
-    <div class="space-y-10">
+    <div class="space-y-8">
       <SettingsSection title="Stored files" description="Every uploaded file, by where it is kept.">
         <SettingsGroup>
           <div class="px-5 py-4">

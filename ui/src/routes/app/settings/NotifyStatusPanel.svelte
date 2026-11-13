@@ -129,7 +129,7 @@
 
 </script>
 
-<div class="space-y-10" data-notify-status-panel>
+<div class="space-y-8" data-notify-status-panel>
   <div data-status-section="browser">
     <SettingsSection title="This browser">
       <SettingsGroup>

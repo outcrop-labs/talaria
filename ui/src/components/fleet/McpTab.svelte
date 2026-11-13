@@ -251,14 +251,14 @@
   </div>
 {/snippet}
 
-<div class="space-y-10">
+<div class="space-y-8">
   {#if busy}
     <Generating site="fleet/mcp-apply" label={`Applying to ${def.displayName}. It reaches the running agent within a few minutes, without a restart.`} lines={2} />
   {/if}
   <QueryState {query} errorTitle="Could not load MCP servers" errorVariant="compact" isEmpty={() => false}>
     {#snippet skeleton()}<SkeletonRows rows={3} class="py-2" />{/snippet}
     {#snippet children(data)}
-      <div class="space-y-10">
+      <div class="space-y-8">
         <SettingsSection
           title="On this agent"
           info="Every server here is reached through Talaria's gateway: credentials stay on the server, and tool subsets and per-person rules are enforced on every call. The switch assigns or removes a server, and the picker narrows its tools for this agent."

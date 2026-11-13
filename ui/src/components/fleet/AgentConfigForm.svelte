@@ -142,7 +142,7 @@
   }
 </script>
 
-<div class="space-y-10">
+<div class="space-y-8">
   <SettingsSection title="Models">
     <SettingsGroup>
       <SettingsRow label="Main model" hint="What it answers with.">
