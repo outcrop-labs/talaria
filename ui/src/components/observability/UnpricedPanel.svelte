@@ -5,10 +5,14 @@
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
@@ -76,8 +80,8 @@
   // ── Set price / Included: one dialog, two modes ──────────────────────────
   // The cache placeholders say what applies when the field is left blank.
   const RATE_FIELDS = [
-    ['input', 'Input', 'e.g. 2.00'],
-    ['output', 'Output', 'e.g. 8.00'],
+    ['input', 'Input', '2.00'],
+    ['output', 'Output', '8.00'],
     ['cacheWrite', 'Cache write', 'input × 1.25'],
     ['cacheRead', 'Cache read', 'input × 0.1'],
   ] as const
@@ -171,125 +175,153 @@
       toastError('Could not remove the pricing', e)
     }
   }
+
+  const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
+  // Everything but "Set price", which is the row's one visible button.
+  const fixMenu = (m: UnpricedModel): ContextMenuEntry[] => [
+    ...(m.suggestion ? [{ label: 'Use the suggested rate', onSelect: () => void acceptSuggestion(m) }] : []),
+    { label: 'Mark as included in a plan', onSelect: () => openDialog(m, 'included') },
+    {
+      label: retrying === key(m) ? 'Looking up' : canRetry(m) ? 'Retry lookup' : 'Retry lookup (no endpoint to ask)',
+      disabled: !canRetry(m) || retrying !== null,
+      onSelect: () => void retry(m),
+    },
+  ]
 </script>
 
-<section bind:this={anchor} id={UNPRICED_ANCHOR} class="scroll-mt-4 space-y-4" data-testid="unpriced-panel">
+{#snippet identity(target: PriceTarget)}
+  {#if target.model}
+    <span class="font-mono text-xs font-normal" title={target.model}>{target.model}</span>
+  {:else}
+    No model id
+  {/if}
+{/snippet}
+
+{#snippet endpoint(target: PriceTarget)}
+  <span class="shrink-0 font-mono text-xs text-muted">{endpointLabel(target.endpoint)}</span>
+{/snippet}
+
+
+<!-- `empty:hidden`: with nothing to price this section is an empty element,
+     and it must not take a gap in the tab's column. -->
+<section bind:this={anchor} id={UNPRICED_ANCHOR} class="scroll-mt-4 space-y-10 empty:hidden" data-testid="unpriced-panel">
   {#if query.isError && data === undefined}
     <QueryError title="Could not load unpriced models" error={query.error} onRetry={() => void query.refetch()} />
   {:else if data === undefined}
-    <Panel><SkeletonRows /></Panel>
+    <SettingsGroup><div class="px-5 py-4"><SkeletonRows /></div></SettingsGroup>
   {:else if unpriced.length > 0 || prices.length > 0 || fuzzy.length > 0}
-    <Panel>
-      <SectionHeader
-        title="Unpriced models · 30 days"
-        info="Cloud usage with no provider-reported charge, no published price and no pricing of yours. Set a price, mark it included in a plan (priced at $0 and labelled), or retry the lookup. Each fix re-prices that model's past calls."
-        action={String(unpriced.length).padStart(2, '0')}
-      />
-      {#if unpriced.length === 0}
-        <p class="text-xs text-muted">Every cloud model used in the last 30 days has a price.</p>
-      {:else}
-        <ul class="divide-y divide-line">
+    <SettingsSection
+      title="Unpriced models"
+      description="Cloud models used in the last 30 days that have no price, so their spend is missing."
+      info="Cloud usage with no provider-reported charge, no published price and no pricing of yours. Set a price, mark it included in a plan (priced at $0 and labelled), or retry the lookup. Each fix re-prices that model's past calls."
+    >
+      <SettingsGroup>
+        {#if unpriced.length === 0}
+          <p class="px-5 py-4 font-sans text-sm leading-5 text-muted">Every cloud model used in the last 30 days has a price.</p>
+        {:else}
           {#each unpriced as m (key(m))}
-            {@const meta = reasonMeta(m.reason.code)}
-            <li class="space-y-2 py-3" data-testid="unpriced-row">
-              <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <span class="min-w-0 font-mono text-xs text-muted">{endpointLabel(m.endpoint)}</span>
-                <span class="min-w-0 flex-1 truncate font-mono text-sm text-fg" title={m.model}>{m.model}</span>
-                <span class="shrink-0 font-mono text-sm text-fg">{formatTokens(m.tokens)}</span>
-                <span class="shrink-0 font-mono text-[11px] text-muted">{tokensLine(m)} · {m.generations} calls</span>
-              </div>
-              <div class="flex flex-wrap items-start gap-2">
-                <Chip tone={meta.tone}>{meta.label}</Chip>
-                <p class="min-w-0 flex-1 text-xs text-muted">
-                  {m.reason.text}
-                  {#if m.reason.checkedAt}<span class="text-ink-dim"> · checked {relativeTime(m.reason.checkedAt)}</span>{/if}
-                </p>
-              </div>
-              {#if !canFix(m)}
-                <p class="text-xs text-muted">Nothing can price a call booked without a model id; these rows leave the 30-day window on their own.</p>
-              {:else}
-              <div class="flex flex-wrap items-center gap-2">
-                {#if m.suggestion}
-                  <Button size="sm" variant="accent-soft" onclick={() => void acceptSuggestion(m)}>
-                    Use {m.suggestion.matchedId}'s rate · {suggestionLabel(m.suggestion)}
-                  </Button>
+            {@const reason = reasonMeta(m.reason.code)}
+            <div data-testid="unpriced-row">
+              <SettingsRow>
+                {#snippet label()}{@render identity(m)}{/snippet}
+                {#snippet meta()}
+                  {@render endpoint(m)}
+                  <Chip tone={reason.tone}>{sentence(reason.label)}</Chip>
+                {/snippet}
+                {#snippet hint()}
+                  <p>
+                    {m.reason.text}{#if m.reason.checkedAt}, checked {relativeTime(m.reason.checkedAt)}{/if}
+                  </p>
+                  <p class="tabular-nums">{formatTokens(m.tokens)} tokens ({tokensLine(m)}) in {m.generations.toLocaleString('en-US')} calls</p>
+                  {#if m.suggestion}
+                    <p>
+                      Suggested: the rate of <span class="font-mono text-xs">{m.suggestion.matchedId}</span>, {suggestionLabel(m.suggestion)}
+                    </p>
+                  {/if}
+                  {#if !canFix(m)}
+                    <p>A call booked without a model id cannot be priced. These rows leave the 30-day window on their own.</p>
+                  {/if}
+                  {#if notes[key(m)]}
+                    <p transition:slide={{ duration: 150 }} class="text-fg">{notes[key(m)]}</p>
+                  {/if}
+                {/snippet}
+                {#if canFix(m)}
+                  <Button size="sm" variant="outline" onclick={() => openDialog(m, 'manual')}>Set price</Button>
+                  <SettingsRowMenu label={`More ways to price ${m.model}`} items={() => fixMenu(m)} />
                 {/if}
-                <Button size="sm" variant="outline" onclick={() => openDialog(m, 'manual')}>Set price</Button>
-                <Button size="sm" variant="outline" onclick={() => openDialog(m, 'included')}>Included in a plan</Button>
-                <span title={canRetry(m) ? undefined : 'No configured endpoint to ask — price it by hand instead.'}>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={!canRetry(m) || retrying !== null}
-                    onclick={() => void retry(m)}
-                  >
-                    {retrying === key(m) ? 'Looking up' : 'Retry lookup'}
-                  </Button>
-                </span>
-              </div>
-              {/if}
-              {#if notes[key(m)]}
-                <p transition:slide={{ duration: 150 }} class="text-xs text-fg">{notes[key(m)]}</p>
-              {/if}
-            </li>
+              </SettingsRow>
+            </div>
           {/each}
-        </ul>
-      {/if}
-    </Panel>
+        {/if}
+      </SettingsGroup>
+    </SettingsSection>
 
     {#if fuzzy.length > 0}
-      <Panel>
-        <SectionHeader
-          title="Priced by a fuzzy match · 30 days"
-          info="These models were priced through a catalog entry their id only resembles — a snapshot priced as its alias, a path priced by its last segment. If you know the real rate, set it: a manual rate beats a fuzzy match (never the provider's own charge or an exact published price)."
-          action={String(fuzzy.length).padStart(2, '0')}
-        />
-        <ul class="divide-y divide-line">
+      <SettingsSection
+        title="Priced by a close match"
+        description="Models priced through a catalog entry their id only resembles."
+        info="A snapshot priced as its alias, or a path priced by its last segment. If you know the real rate, set it: a manual rate beats a close match, but never the provider's own charge or an exact published price."
+      >
+        <SettingsGroup>
           {#each fuzzy as f (key(f))}
-            <li class="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3" data-testid="fuzzy-row">
-              <span class="font-mono text-xs text-muted">{endpointLabel(f.endpoint)}</span>
-              <span class="min-w-0 flex-1 truncate font-mono text-sm text-fg" title={f.model}>{f.model}</span>
-              <Chip tone="warn">{f.matchKind}</Chip>
-              <span class="font-mono text-[11px] text-fg">{pricedAsLabel(f.matchedId)}</span>
-              <span class="flex w-full flex-wrap items-center gap-2 text-xs text-muted">
-                {formatTokens(f.tokens)} tokens · {f.generations} calls in the last 30 days
+            <div data-testid="fuzzy-row">
+              <SettingsRow>
+                {#snippet label()}{@render identity(f)}{/snippet}
+                {#snippet meta()}
+                  {@render endpoint(f)}
+                  <Chip tone="warn">{sentence(f.matchKind)}</Chip>
+                {/snippet}
+                {#snippet hint()}
+                  <span class="tabular-nums">
+                    {sentence(pricedAsLabel(f.matchedId))} · {formatTokens(f.tokens)} tokens in {f.generations.toLocaleString('en-US')} calls
+                  </span>
+                {/snippet}
                 <Button size="sm" variant="outline" onclick={() => openDialog(f, 'manual')}>Set price</Button>
-                <Button size="sm" variant="outline" onclick={() => openDialog(f, 'included')}>Included in a plan</Button>
-              </span>
-            </li>
+                <SettingsRowMenu
+                  label={`More ways to price ${f.model}`}
+                  items={[{ label: 'Mark as included in a plan', onSelect: () => openDialog(f, 'included') }]}
+                />
+              </SettingsRow>
+            </div>
           {/each}
-        </ul>
-      </Panel>
+        </SettingsGroup>
+      </SettingsSection>
     {/if}
 
     {#if prices.length > 0}
-      <Panel>
-        <SectionHeader
-          title="Priced by an admin"
-          info="Your pricing for models no source publishes a price for. The provider's own charge always wins, and a published price wins over a manual rate; included-in-a-plan wins over a published price."
-          action={String(prices.length).padStart(2, '0')}
-        />
-        <ul class="divide-y divide-line">
+      <SettingsSection
+        title="Priced by an admin"
+        description="Your own pricing for models no source publishes a price for."
+        info="The provider's own charge always wins, and a published price wins over a manual rate. Included in a plan wins over a published price."
+      >
+        <SettingsGroup>
           {#each prices as s (key(s))}
-            <li class="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3" data-testid="price-setting">
-              <span class="font-mono text-xs text-muted">{endpointLabel(s.endpoint)}</span>
-              <span class="min-w-0 flex-1 truncate font-mono text-sm text-fg" title={s.model}>{s.model}</span>
-              <Chip tone={s.mode === 'included' ? 'accent' : 'neutral'}>{s.mode === 'included' ? 'included' : 'manual'}</Chip>
-              <span class="font-mono text-[11px] text-fg">{settingLabel(s)}</span>
-              <span class="w-full text-xs text-muted">
-                {#if s.shadowed}
-                  A published price or the provider's own charge now covers this model; this pricing is not used.
-                {:else}
-                  Prices {s.rowsPriced} call{s.rowsPriced === 1 ? '' : 's'} ({formatTokens(s.tokensPriced)} tokens) in the last 30 days.
-                {/if}
-                {#if s.note}<span> · {s.note}</span>{/if}
-                {#if s.setBy}<span class="text-ink-dim"> · {s.setBy}{s.updatedAt ? `, ${relativeTime(s.updatedAt)}` : ''}</span>{/if}
-                <DangerLink class="ml-2" onClick={() => void remove({ endpoint: s.endpoint, model: s.model })}>Remove</DangerLink>
-              </span>
-            </li>
+            <div data-testid="price-setting">
+              <SettingsRow>
+                {#snippet label()}{@render identity(s)}{/snippet}
+                {#snippet meta()}
+                  {@render endpoint(s)}
+                  <Chip tone={s.mode === 'included' ? 'accent' : 'neutral'}>{s.mode === 'included' ? 'Included' : 'Manual'}</Chip>
+                {/snippet}
+                {#snippet hint()}
+                  <p class="tabular-nums">{settingLabel(s)}</p>
+                  <p>
+                    {#if s.shadowed}
+                      A published price or the provider's own charge now covers this model, so this pricing is not used.
+                    {:else}
+                      Prices {s.rowsPriced.toLocaleString('en-US')} call{s.rowsPriced === 1 ? '' : 's'} ({formatTokens(s.tokensPriced)} tokens) in the last 30 days.
+                    {/if}
+                    {#if s.note}{s.note}.{/if}
+                    {#if s.setBy}Set by {s.setBy}{s.updatedAt ? `, ${relativeTime(s.updatedAt)}` : ''}.{/if}
+                  </p>
+                {/snippet}
+                <DangerLink onClick={() => void remove({ endpoint: s.endpoint, model: s.model })}>Remove pricing</DangerLink>
+              </SettingsRow>
+            </div>
           {/each}
-        </ul>
-      </Panel>
+        </SettingsGroup>
+      </SettingsSection>
     {/if}
   {/if}
 </section>
@@ -297,49 +329,53 @@
 <Modal
   open={dialog !== null}
   onClose={() => (dialog = null)}
-  title={dialog?.mode === 'included' ? 'Included in a plan' : 'Set a price'}
+  title={dialog?.mode === 'included' ? 'Mark as included in a plan' : 'Set a price'}
 >
   {#if dialog}
-    <div class="space-y-4">
-      <p class="font-mono text-xs text-muted">
-        {endpointLabel(dialog.target.endpoint)} · <span class="text-fg">{dialog.target.model}</span>
-      </p>
+    <div class="space-y-5">
+      <dl class="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-4 gap-y-1 font-sans text-[13px] leading-5">
+        <dt class="text-muted">Model</dt>
+        <dd class="min-w-0 break-all font-mono text-xs leading-5 text-fg">{dialog.target.model}</dd>
+        <dt class="text-muted">Endpoint</dt>
+        <dd class="min-w-0 break-all font-mono text-xs leading-5 text-fg">{endpointLabel(dialog.target.endpoint)}</dd>
+      </dl>
       {#if dialog.mode === 'manual'}
-        <p class="text-xs text-muted">
-          Dollars per 1M tokens. A price the provider publishes later takes over from this one; the provider's own
-          charge always wins.
+        <p class="font-sans text-[13px] leading-5 text-muted">
+          Dollars per 1M tokens. A published price or the provider's own charge takes over when one arrives.
         </p>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-2 gap-x-3 gap-y-5">
           {#each RATE_FIELDS as [field, label, placeholder] (field)}
-            <div>
-              <label for={`price-${field}`} class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</label>
-              <Input id={`price-${field}`} inputmode="decimal" bind:value={form[field]} {placeholder} class="font-[var(--font-mono)]" />
-            </div>
+            <SettingsField {label} for={`price-${field}`}>
+              <Input id={`price-${field}`} size="sm" inputmode="decimal" bind:value={form[field]} {placeholder} class="font-[var(--font-mono)]" />
+            </SettingsField>
           {/each}
         </div>
       {:else}
-        <p class="text-xs text-muted">
-          Calls to this model are priced at $0 and labelled “included”, never shown as a silent zero. Use it for a
-          flat-rate plan (a coding plan, a subscription) or a free tier. The provider's own charge, when it sends one,
-          still wins.
+        <p class="font-sans text-[13px] leading-5 text-muted">
+          Calls to this model are priced at $0 and labelled as included, for a flat-rate plan or a free tier. The
+          provider's own charge still wins when it sends one.
         </p>
       {/if}
-      <div>
-        <label for="price-note" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Note</label>
+      <SettingsField label="Note" for="price-note">
         <Input
           id="price-note"
+          size="sm"
           bind:value={form.note}
-          placeholder={dialog.mode === 'included' ? 'e.g. Z.ai Coding Plan' : 'e.g. from the provider’s pricing page'}
+          placeholder={dialog.mode === 'included' ? 'Z.ai Coding Plan' : 'From the provider’s pricing page'}
           maxlength={200}
         />
-      </div>
-      {#if formError}<div class="text-sm text-danger" data-testid="price-form-error">{formError}</div>{/if}
-      <div class="flex justify-end gap-2 border-t border-line pt-3">
-        <Button variant="ghost" size="sm" onclick={() => (dialog = null)}>Cancel</Button>
-        <Button size="sm" onclick={() => void save()} disabled={saving}>
-          {saving ? 'Saving' : dialog.mode === 'included' ? 'Mark included' : 'Save price'}
-        </Button>
-      </div>
+      </SettingsField>
+      {#if formError}
+        <div class="font-sans text-[13px] leading-5 text-danger" role="alert" data-testid="price-form-error">{formError}</div>
+      {/if}
     </div>
   {/if}
+  {#snippet footer()}
+    <div class="flex justify-end gap-2">
+      <Button variant="ghost" size="sm" onclick={() => (dialog = null)}>Cancel</Button>
+      <Button size="sm" onclick={() => void save()} disabled={saving}>
+        {saving ? 'Saving' : dialog?.mode === 'included' ? 'Mark included' : 'Save price'}
+      </Button>
+    </div>
+  {/snippet}
 </Modal>
