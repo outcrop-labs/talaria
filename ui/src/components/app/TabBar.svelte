@@ -176,7 +176,9 @@
   {/if}
 
   <div class="flex shrink-0 items-center gap-2">
-    {#if workingElsewhere}
+    <!-- Settings is where things are configured, not watched: its dock keeps
+         the way out, search, the bell and the account, and nothing live. -->
+    {#if workingElsewhere && !area.inside}
       {@const w = workingElsewhere}
       <a
         href={w.lead.href}
@@ -187,7 +189,7 @@
         out:swap={{ duration: 120 }}
       >
         <TabFace icon={w.tab.icon} size={12} site={w.site} still={tabMarkOnScreen(w.site)} />
-        <span class={area.inside ? 'font-sans text-xs leading-4' : 'font-mono text-[10px] uppercase leading-3 tracking-[0.08em]'}
+        <span class="font-mono text-[10px] uppercase leading-3 tracking-[0.08em]"
           >{w.elsewhere}<span class="hidden pl-1 @2xl:inline">working</span></span
         >
         <span class="hidden min-w-0 truncate font-sans text-[12px] leading-4 text-fg @5xl:block">{w.lead.label}</span>
@@ -205,7 +207,7 @@
         </button>
       </RailTooltip>
     {/if}
-    <SidebarAssistant collapsed />
+    {#if !area.inside}<SidebarAssistant collapsed />{/if}
     {#if hasManage && !area.inside}
       <RailTooltip label="Manage">
         <a
@@ -217,12 +219,12 @@
         </a>
       </RailTooltip>
     {/if}
-    <div class="my-2 h-6 w-px shrink-0 bg-line"></div>
+    {#if !area.inside || appsBroken}<div class="my-2 h-6 w-px shrink-0 bg-line"></div>{/if}
     {#if !boardsHasOwnSearch}
       <BoardsSearch />
     {/if}
     <NotificationBell />
-    <UserMenu {user} {onLogout} {hasManage} />
+    <UserMenu {user} {onLogout} {hasManage} voice={area.inside ? 'sans' : 'mono'} />
     <DesktopWindowControls at="right" />
   </div>
 </nav>

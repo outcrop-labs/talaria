@@ -6,6 +6,7 @@
   import Popover from '@/components/ui/Popover.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import type { SessionUser } from '@/lib/session'
+  import type { UiVoice } from '@/lib/ui-voice'
   import { cn } from '@/lib/cn'
   import { useNotifySettings } from '@/lib/notify-center'
   import { dndView, safeZone } from '@/lib/notify-dnd'
@@ -19,11 +20,14 @@
     user,
     onLogout,
     hasManage = false,
+    voice = 'mono',
   }: {
     user: SessionUser
     onLogout: () => void
     /** Whether this viewer has any manage view — the dock decides, once. */
     hasManage?: boolean
+    /** The voice of the name on the chip. The dock passes `sans` in settings mode. */
+    voice?: UiVoice
   } = $props()
 
   // PAUSE NOTIFICATIONS lives here too (Slack's place for it): the menu that
@@ -46,7 +50,11 @@
     >
       <StatusDot status="ok" />
       <!-- Display name, not email: the flyover header still shows both. -->
-      <span class="hidden max-w-[16rem] truncate font-mono text-[11px] text-muted sm:block">
+      <span
+        class={voice === 'sans'
+          ? 'hidden max-w-[16rem] truncate font-sans text-[13px] leading-5 text-muted sm:block'
+          : 'hidden max-w-[16rem] truncate font-mono text-[11px] text-muted sm:block'}
+      >
         {user.name ?? user.email ?? 'Account'}
       </span>
     </button>
