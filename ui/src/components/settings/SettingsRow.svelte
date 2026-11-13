@@ -21,6 +21,8 @@
     as = 'div',
     href,
     onclick,
+    onOpen,
+    openLabel,
     expanded,
     disabled = false,
     class: className,
@@ -51,6 +53,13 @@
     href?: string
     /** The whole row is a button. Put no other control in such a row. */
     onclick?: () => void
+    /** Clicking the row opens the thing it is about, and the row can still
+     *  hold a status, a fix button and a kebab. The row stays a `div`: the hit
+     *  area is a button laid behind its content. */
+    onOpen?: () => void
+    /** The hit area's accessible name, when the label alone would not say
+     *  what opens ("Manage GitHub"). Defaults to a string label. */
+    openLabel?: string
     /** With `onclick`: the row opens and closes what follows it. It draws the
      *  chevron and says which way it is. */
     expanded?: boolean
@@ -76,10 +85,26 @@
     stacked ? 'flex-col gap-3' : 'flex-wrap items-center gap-x-6 gap-y-3',
     (href || onclick) &&
       'w-full text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent enabled:hover:bg-hover [a&]:hover:bg-hover',
+    onOpen && 'group/row relative',
     className,
   )}
 >
-  <div class={cn('flex min-w-0 flex-1 items-center gap-3', !stacked && 'basis-48')}>
+  {#if onOpen}
+    <button
+      type="button"
+      onclick={onOpen}
+      aria-label={openLabel ?? (typeof label === 'string' ? label : undefined)}
+      class="absolute inset-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent group-hover/row:bg-hover"
+    ></button>
+  {/if}
+  <div
+    class={cn(
+      'flex min-w-0 flex-1 items-center gap-3',
+      !stacked && 'basis-48',
+      // The hit area sits behind: the label lets clicks through, and anything interactive inside it takes them back.
+      onOpen && 'pointer-events-none relative [&_a]:pointer-events-auto [&_button]:pointer-events-auto',
+    )}
+  >
     {#if icon}
       <div class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-raised text-muted">
         {@render icon()}
@@ -104,9 +129,9 @@
   </div>
   {#if children || status || expanded !== undefined}
     <!-- empty:hidden: a control only some viewers get must not hold the row's gap open for the rest. -->
-    <div data-row-controls class={cn('flex max-w-full items-center gap-3 empty:hidden', stacked ? 'w-full' : 'shrink-0 justify-end')}>
+    <div data-row-controls class={cn('flex max-w-full items-center gap-3 empty:hidden', stacked ? 'w-full' : 'shrink-0 justify-end', onOpen && 'pointer-events-none relative [&>:not([data-row-status])]:pointer-events-auto')}>
       {#if status}
-        <span class="mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">{@render status()}</span>
+        <span data-row-status class="mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">{@render status()}</span>
       {/if}
       <!-- No space before the chevron's block: a text node there would keep an empty control slot from collapsing. -->
       {@render children?.()}{#if expanded !== undefined}<ChevronRight size={16} aria-hidden="true" class={cn('text-muted transition-transform duration-150', expanded && 'rotate-90')} />{/if}
