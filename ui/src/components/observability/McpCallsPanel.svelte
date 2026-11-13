@@ -1,16 +1,18 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import { searchParams } from 'sv-router'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
+  import StatStrip from '@/components/settings/StatStrip.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Select from '@/components/ui/Select.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
   import { putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
@@ -34,9 +36,11 @@
     type McpCallCounts,
     type McpCallsWindow,
   } from './mcp-calls'
+  import StatStripSkeleton from './StatStripSkeleton.svelte'
+  import { NEUTRAL_DOT, table } from './grammar'
 
   // The MCP gateway's call record: every tools/call an agent made through the
-  // gateway — and every refusal — with who, which server and tool, how it went
+  // gateway, and every refusal, with who, which server and tool, how it went
   // and how long it took. Never the arguments or the result. THE URL IS THE
   // FILTER (?server= ?agent= ?outcome= ?w=), so a server card's line can link
   // straight to its own calls and a filtered view can be shared.
@@ -79,10 +83,10 @@
     const names = (summaryQuery.data?.agents ?? []).map((a) => a.agent)
     return agent && !names.includes(agent) ? [agent, ...names] : names
   })
-  const windowLabel = $derived(
-    win === '1h' ? 'last hour' : win === '24h' ? 'last 24 hours' : 'last 7 days',
-  )
+  const WINDOW_NAMES: Record<McpCallsWindow, string> = { '1h': 'last hour', '24h': 'last 24 hours', '7d': 'last 7 days' }
+  const windowLabel = $derived(WINDOW_NAMES[win])
   const fullTime = (iso: string) => new Date(iso).toLocaleString()
+  const number = (n: number) => n.toLocaleString('en-US')
 
   // How long rows are kept (app setting mcp_calls_retention_days). Applies
   // on change; the next six-hourly prune enforces it.
@@ -100,243 +104,201 @@
       savingRetention = false
     }
   }
+
+  // A cell that filters the page to its own value.
+  const filterLink =
+    'rounded text-left transition-colors hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 </script>
 
 {#if !isAdmin}
   <EmptyState
     icon="⛨"
     title="Admins only"
-    hint="The MCP call record names which agent called which tool on which server; an admin reads it here."
+    hint="The MCP call record names which agent called which tool on which server. An admin reads it here."
   />
 {:else}
-  <div class="space-y-6">
-    <!-- Filters: the window, then the three narrowing selects. -->
-    <div class="flex flex-wrap items-center gap-2">
-      <Segmented
-        options={WINDOWS.map((w) => ({ id: w.id, label: w.label, title: `Calls in the ${w.label === '1h' ? 'last hour' : `last ${w.label}`}` }))}
-        value={win}
-        onChange={(w) => setParam('w', w === '24h' ? null : w)}
-      />
-      <Select size="sm" class="w-44" aria-label="Server" value={server ?? ''} onchange={(e) => setParam('server', e.currentTarget.value || null)}>
-        <option value="">All servers</option>
-        {#each serverOptions as name (name)}<option value={name}>{name}</option>{/each}
-      </Select>
-      <Select size="sm" class="w-44" aria-label="Agent" value={agent ?? ''} onchange={(e) => setParam('agent', e.currentTarget.value || null)}>
-        <option value="">All agents</option>
-        {#each agentOptions as name (name)}<option value={name}>{name}</option>{/each}
-      </Select>
-      <Select size="sm" class="w-40" aria-label="Outcome" value={outcome ?? ''} onchange={(e) => setParam('outcome', e.currentTarget.value || null)}>
-        <option value="">Every outcome</option>
-        {#each OUTCOMES as o (o)}<option value={o} title={OUTCOME_META[o].blurb}>{OUTCOME_META[o].label}</option>{/each}
-      </Select>
-      {#if filtered}
-        <Button
-          variant="ghost"
-          size="xs"
-          onclick={() => {
-            setParam('server', null)
-            setParam('agent', null)
-            setParam('outcome', null)
-          }}
-        >
-          Clear filters
-        </Button>
-      {/if}
-      {#if retentionQuery.data}
-        <label class="ml-auto flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.05em] text-muted" title="Older calls are deleted every six hours">
-          Keep for
-          <Select
-            size="sm"
-            class="w-28"
-            aria-label="Keep MCP calls for"
-            value={String(retentionQuery.data.days)}
-            disabled={savingRetention}
-            onchange={(e) => void setRetention(Number(e.currentTarget.value))}
+  <div class="space-y-10">
+    <div class="space-y-4">
+      <!-- The window, then the three narrowing selects, all one height. -->
+      <div class="flex flex-wrap items-center gap-2">
+        <Segmented
+          class="h-9"
+          options={WINDOWS.map((w) => ({ id: w.id, label: w.label, title: `Calls in the ${WINDOW_NAMES[w.id]}` }))}
+          value={win}
+          onChange={(w) => setParam('w', w === '24h' ? null : w)}
+        />
+        <Select size="sm" class="w-48" aria-label="Server" value={server ?? ''} onchange={(e) => setParam('server', e.currentTarget.value || null)}>
+          <option value="">All servers</option>
+          {#each serverOptions as name (name)}<option value={name}>{name}</option>{/each}
+        </Select>
+        <Select size="sm" class="w-44" aria-label="Agent" value={agent ?? ''} onchange={(e) => setParam('agent', e.currentTarget.value || null)}>
+          <option value="">All agents</option>
+          {#each agentOptions as name (name)}<option value={name}>{name}</option>{/each}
+        </Select>
+        <Select size="sm" class="w-44" aria-label="Outcome" value={outcome ?? ''} onchange={(e) => setParam('outcome', e.currentTarget.value || null)}>
+          <option value="">All outcomes</option>
+          {#each OUTCOMES as o (o)}<option value={o} title={OUTCOME_META[o].blurb}>{OUTCOME_META[o].label}</option>{/each}
+        </Select>
+        {#if filtered}
+          <Button
+            variant="ghost"
+            size="md"
+            onclick={() => {
+              setParam('server', null)
+              setParam('agent', null)
+              setParam('outcome', null)
+            }}
           >
-            {#each retentionOptions(retentionQuery.data.days) as d (d)}<option value={String(d)}>{retentionLabel(d)}</option>{/each}
-          </Select>
-        </label>
-      {/if}
+            Clear filters
+          </Button>
+        {/if}
+      </div>
+
+      <!-- The window's counts, or one server's when the page is filtered to it. -->
+      <QueryState query={summaryQuery} errorTitle="Could not load the MCP call summary" errorVariant="compact">
+        {#snippet skeleton()}
+          <StatStripSkeleton />
+        {/snippet}
+        {#snippet children()}
+          <StatStrip>
+            <Stat label={server ? `Calls to ${server}` : 'Calls'} value={number(strip?.calls ?? 0)} sub={`In the ${windowLabel}`} />
+            <Stat label="Errors" value={number(strip?.errors ?? 0)} sub={strip ? `${errorRate(strip)} of calls` : undefined} />
+            <Stat label="Denied" value={number(strip?.denied ?? 0)} sub="Refused by the gateway" />
+            <Stat label="Not connected" value={number(strip?.notConnected ?? 0)} sub="Granted, but the account is missing" />
+          </StatStrip>
+        {/snippet}
+      </QueryState>
     </div>
 
-    <!-- The summary strip: the window's counts (or one server's), then the
-         per-server readout when more than one server was called. -->
-    <QueryState query={summaryQuery} errorTitle="Could not load the MCP call summary" errorVariant="compact">
-      {#snippet skeleton()}
-        <div aria-hidden="true" class="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {#each [0, 1, 2, 3] as i (i)}
-            <div class="rounded-lg border border-line bg-panel p-5">
-              <Skeleton class="h-2.5 w-20 rounded-full" />
-              <Skeleton class="mt-2.5 h-6 w-14 rounded" />
-              <Skeleton class="mt-2 h-2.5 w-24 rounded-full" />
-            </div>
-          {/each}
-        </div>
-      {/snippet}
-      {#snippet children(summary)}
-        <div class="space-y-6">
-          <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <StatCard label={server ? `Calls · ${server}` : 'Calls'} value={(strip?.calls ?? 0).toLocaleString('en-US')} sub={windowLabel} />
-            <StatCard
-              label="Errors"
-              value={(strip?.errors ?? 0).toLocaleString('en-US')}
-              sub={strip ? `${errorRate(strip)} of calls` : undefined}
-            />
-            <StatCard label="Denied" value={(strip?.denied ?? 0).toLocaleString('en-US')} sub="refused by the gateway" />
-            <StatCard label="Not connected" value={(strip?.notConnected ?? 0).toLocaleString('en-US')} sub="granted, account missing" />
-          </div>
-          {#if !server && summary.servers.length > 0}
-            <Panel class="p-0">
-              <div class="px-6 pt-5"><SectionHeader title="By server" action={String(summary.servers.length).padStart(2, '0')} /></div>
-              <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                  <thead class="border-b border-line font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-                    <tr>
-                      <th class="px-6 py-2 text-left font-medium">Server</th>
-                      <th class="px-3 py-2 text-right font-medium">Calls</th>
-                      <th class="px-3 py-2 text-right font-medium">Errors</th>
-                      <th class="px-3 py-2 text-right font-medium">Denied</th>
-                      <th class="px-3 py-2 text-right font-medium">Not conn.</th>
-                      <th class="px-3 py-2 text-right font-medium">p50</th>
-                      <th class="px-3 py-2 text-right font-medium">p95</th>
-                      <th class="px-6 py-2 text-left font-medium">Top tools</th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-line-subtle">
-                    {#each summary.servers as s (s.serverId)}
-                      <tr>
-                        <td class="px-6 py-2">
-                          <Button
-                            variant="link"
-                            size="xs"
-                            class="text-left font-medium text-fg"
-                            title="Show this server's calls"
-                            onclick={() => setParam('server', s.serverName)}
-                          >
-                            {s.serverName}
-                          </Button>
-                        </td>
-                        <td class="px-3 py-2 text-right font-mono text-[12px] text-fg">{s.calls.toLocaleString('en-US')}</td>
-                        <td class={cn('px-3 py-2 text-right font-mono text-[12px]', s.errors > 0 ? 'text-danger' : 'text-muted')}>{s.errors}</td>
-                        <td class={cn('px-3 py-2 text-right font-mono text-[12px]', s.denied > 0 ? 'text-warning' : 'text-muted')}>{s.denied}</td>
-                        <td class="px-3 py-2 text-right font-mono text-[12px] text-muted">{s.notConnected}</td>
-                        <td class="px-3 py-2 text-right font-mono text-[12px] text-muted">{formatLatency(s.p50Ms)}</td>
-                        <td class="px-3 py-2 text-right font-mono text-[12px] text-muted">{formatLatency(s.p95Ms)}</td>
-                        <td class="px-6 py-2">
-                          <span class="flex flex-wrap gap-1">
-                            {#each s.topTools as t (t.tool)}
-                              <span
-                                class="rounded border border-line-subtle px-1.5 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted"
-                                title={`${t.calls} calls · ${t.errors} errors`}
-                              >
-                                {t.tool} <span class="text-ink-dim">{t.calls}</span>
-                              </span>
-                            {/each}
-                          </span>
-                        </td>
-                      </tr>
-                    {/each}
-                  </tbody>
-                </table>
-              </div>
-            </Panel>
-          {/if}
-        </div>
-      {/snippet}
-    </QueryState>
-
-    <!-- The record, newest first. -->
-    <QueryState query={callsQuery} errorTitle="Could not load MCP calls">
-      {#snippet skeleton()}
-        <div aria-hidden="true" class="rounded-lg border border-line bg-panel p-6">
-          <div class="divide-y divide-line">
-            {#each [0, 1, 2, 3, 4, 5] as i (i)}
-              <div class="flex items-center gap-3 py-3">
-                <Skeleton class="h-3 w-14 rounded" />
-                <Skeleton class={`h-3 rounded-full ${['w-24', 'w-20', 'w-28'][i % 3]}`} />
-                <Skeleton class="h-3 w-20 rounded-full" />
-                <Skeleton class="h-3 w-16 rounded-full" />
-                <span class="ml-auto"><Skeleton class="h-3 w-12 rounded" /></span>
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/snippet}
-      {#snippet empty()}
-        <EmptyState
-          icon="⇄"
-          title={filtered ? 'No calls match' : 'No MCP calls yet'}
-          hint={filtered
-            ? `Nothing in the ${windowLabel} matches these filters.`
-            : `Every tool call an agent makes through the MCP gateway in the ${windowLabel} lands here — the arguments and results are never kept.`}
-        />
-      {/snippet}
-      {#snippet children(calls)}
-        <Panel class={cn('p-0 transition-opacity', callsQuery.isPlaceholderData && 'opacity-60')}>
-          <div class="px-6 pt-5">
-            <SectionHeader
-              title="Calls"
-              info="Newest first, up to 200. A row never carries the call's arguments or its result."
-              action={String(calls.length).padStart(2, '0')}
-            />
-          </div>
+    {#if !server && (summaryQuery.data?.servers.length ?? 0) > 0}
+      <SettingsSection title="By server" description={`How each server answered in the ${windowLabel}. Pick one to see its calls.`}>
+        <SettingsGroup>
           <div class="overflow-x-auto">
-            <table class="w-full text-sm">
-              <thead class="border-b border-line font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+            <table class={table.root}>
+              <thead>
                 <tr>
-                  <th class="px-6 py-2 text-left font-medium">Time</th>
-                  <th class="px-3 py-2 text-left font-medium">Agent</th>
-                  <th class="px-3 py-2 text-left font-medium">Server</th>
-                  <th class="px-3 py-2 text-left font-medium">Tool</th>
-                  <th class="px-3 py-2 text-left font-medium">Outcome</th>
-                  <th class="px-3 py-2 text-right font-medium">Latency</th>
-                  <th class="px-6 py-2 text-left font-medium">Error</th>
+                  <th class={table.th}>Server</th>
+                  <th class={cn(table.th, table.num)}>Calls</th>
+                  <th class={cn(table.th, table.num)}>Errors</th>
+                  <th class={cn(table.th, table.num)}>Denied</th>
+                  <th class={cn(table.th, table.num)}>Not connected</th>
+                  <th class={cn(table.th, table.num)}>Median</th>
+                  <th class={cn(table.th, table.num)}>p95</th>
+                  <th class={cn(table.th, 'pl-6')}>Most called tools</th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-line-subtle">
-                {#each calls as c (c.id)}
-                  <tr class="align-top">
-                    <td class="whitespace-nowrap px-6 py-2 font-mono text-[11px] text-muted" title={fullTime(c.at)}>{relativeTime(c.at)}</td>
-                    <td class="px-3 py-2">
-                      <Button
-                        variant="link"
-                        size="xs"
-                        class="text-left text-fg"
-                        title="Show this agent's calls"
-                        onclick={() => setParam('agent', c.agent)}
-                      >
-                        {c.agent}
-                      </Button>
-                      {#if c.userName}<div class="font-sans text-[11px] text-muted">for {c.userName}</div>{/if}
+              <tbody>
+                {#each summaryQuery.data!.servers as s (s.serverId)}
+                  <tr class={table.tr}>
+                    <td class={cn(table.td, 'whitespace-nowrap')}>
+                      <button type="button" class={cn(filterLink, 'font-medium')} title="Show this server's calls" onclick={() => setParam('server', s.serverName)}>
+                        {s.serverName}
+                      </button>
                     </td>
-                    <td class="px-3 py-2">
-                      <Button
-                        variant="link"
-                        size="xs"
-                        class="text-left font-mono text-[12px] text-fg"
-                        title="Show this server's calls"
-                        onclick={() => setParam('server', c.serverName)}
-                      >
-                        {c.serverName}
-                      </Button>
-                    </td>
-                    <td class="px-3 py-2 font-mono text-[12px] text-fg">{c.tool ?? '—'}</td>
-                    <td class="px-3 py-2">
-                      <Chip tone={OUTCOME_META[c.outcome]?.tone ?? 'neutral'} title={OUTCOME_META[c.outcome]?.blurb}>
-                        {OUTCOME_META[c.outcome]?.label ?? c.outcome}
-                      </Chip>
-                    </td>
-                    <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-[12px] text-muted">{formatLatency(c.latencyMs)}</td>
-                    <td class="max-w-[28rem] px-6 py-2 font-sans text-xs text-muted">
-                      {#if c.error}<span class="line-clamp-2 break-words" title={c.error}>{c.error}</span>{/if}
+                    <td class={cn(table.td, table.num)}>{number(s.calls)}</td>
+                    <td class={cn(table.td, table.num, s.errors > 0 ? 'font-medium text-danger' : 'text-muted')}>{number(s.errors)}</td>
+                    <td class={cn(table.td, table.num, s.denied > 0 ? 'font-medium text-warning' : 'text-muted')}>{number(s.denied)}</td>
+                    <td class={cn(table.td, table.num, s.notConnected > 0 ? 'text-fg' : 'text-muted')}>{number(s.notConnected)}</td>
+                    <td class={cn(table.td, table.num, 'text-muted')}>{formatLatency(s.p50Ms)}</td>
+                    <td class={cn(table.td, table.num, 'text-muted')}>{formatLatency(s.p95Ms)}</td>
+                    <td class={cn(table.td, table.id, 'w-[38%] max-w-0 truncate pl-6 text-muted')}>
+                      {#each s.topTools as t, i (t.tool)}
+                        {#if i > 0}<span class="mx-1.5">·</span>{/if}<span title={`${t.calls} calls, ${t.errors} errors`}><span class="text-fg">{t.tool}</span> {number(t.calls)}</span>
+                      {/each}
                     </td>
                   </tr>
                 {/each}
               </tbody>
             </table>
           </div>
-        </Panel>
-      {/snippet}
-    </QueryState>
+        </SettingsGroup>
+      </SettingsSection>
+    {/if}
+
+    <SettingsSection
+      title="Calls"
+      description={callsQuery.data?.length ? `${number(callsQuery.data.length)} in the ${windowLabel}, newest first.` : undefined}
+      info="Newest first, up to 200. A row never carries the call's arguments or its result."
+    >
+      <QueryState query={callsQuery} errorTitle="Could not load MCP calls">
+        {#snippet skeleton()}
+          <div aria-hidden="true" class="rounded-lg border border-line bg-panel px-5 py-4"><SkeletonRows rows={6} /></div>
+        {/snippet}
+        {#snippet empty()}
+          <EmptyState
+            icon="⇄"
+            title={filtered ? 'No calls match' : 'No MCP calls yet'}
+            hint={filtered
+              ? `Nothing in the ${windowLabel} matches these filters.`
+              : `Every tool call an agent makes through the MCP gateway in the ${windowLabel} lands here. Arguments and results are never kept.`}
+          />
+        {/snippet}
+        {#snippet children(calls)}
+          <SettingsGroup class={cn('transition-opacity', callsQuery.isPlaceholderData && 'opacity-60')}>
+            <div class="overflow-x-auto">
+              <table class={table.root}>
+                <thead>
+                  <tr>
+                    <th class={table.th}>Time</th>
+                    <th class={table.th}>Agent</th>
+                    <th class={table.th}>Server</th>
+                    <th class={table.th}>Tool</th>
+                    <th class={table.th}>Outcome</th>
+                    <th class={cn(table.th, table.num)}>Latency</th>
+                    <th class={cn(table.th, 'pl-6')}>Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each calls as c (c.id)}
+                    {@const meta = OUTCOME_META[c.outcome]}
+                    <tr class={table.tr}>
+                      <td class={cn(table.td, 'whitespace-nowrap text-[13px] tabular-nums text-muted')} title={fullTime(c.at)}>{relativeTime(c.at)}</td>
+                      <td class={cn(table.td, 'whitespace-nowrap')}>
+                        <button type="button" class={cn(filterLink, table.id)} title="Show this agent's calls" onclick={() => setParam('agent', c.agent)}>
+                          {c.agent}
+                        </button>
+                        {#if c.userName}<span class="ml-1.5 text-[13px] text-muted">for {c.userName}</span>{/if}
+                      </td>
+                      <td class={cn(table.td, 'whitespace-nowrap')}>
+                        <button type="button" class={filterLink} title="Show this server's calls" onclick={() => setParam('server', c.serverName)}>
+                          {c.serverName}
+                        </button>
+                      </td>
+                      <td class={cn(table.td, table.id, 'whitespace-nowrap')}>{c.tool ?? '—'}</td>
+                      <td class={cn(table.td, 'whitespace-nowrap text-[13px]')} title={meta?.blurb}>
+                        <span class="flex items-center gap-2">
+                          <StatusDot {...meta?.dot ?? NEUTRAL_DOT} />{meta?.label ?? c.outcome}
+                        </span>
+                      </td>
+                      <td class={cn(table.td, table.num, 'text-muted')}>{formatLatency(c.latencyMs)}</td>
+                      <td class={cn(table.td, 'w-[28%] max-w-0 truncate pl-6 text-[13px] text-muted')} title={c.error ?? undefined}>{c.error ?? ''}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </SettingsGroup>
+        {/snippet}
+      </QueryState>
+    </SettingsSection>
+
+    {#if retentionQuery.data}
+      <SettingsSection title="History">
+        <SettingsGroup>
+          <SettingsRow as="label" label="Keep calls for" hint="Older calls are deleted every six hours.">
+            <Select
+              size="sm"
+              class="w-[280px]"
+              aria-label="Keep MCP calls for"
+              value={String(retentionQuery.data.days)}
+              disabled={savingRetention}
+              onchange={(e) => void setRetention(Number(e.currentTarget.value))}
+            >
+              {#each retentionOptions(retentionQuery.data.days) as d (d)}<option value={String(d)}>{retentionLabel(d)}</option>{/each}
+            </Select>
+          </SettingsRow>
+        </SettingsGroup>
+      </SettingsSection>
+    {/if}
   </div>
 {/if}
