@@ -1,13 +1,10 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import { searchParams } from 'sv-router'
-  import { Ellipsis } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
-  import IconButton from '@/components/ui/IconButton.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -425,13 +422,7 @@
 
       {#snippet footer()}
         <div class="flex items-center gap-2">
-          <!-- Opens upward and from the left edge: the footer is the bottom of
-               the window, and `SettingsRowMenu` only opens down. -->
-          <DropdownMenu items={() => reportActions(selected)} align="left" up>
-            {#snippet trigger(open)}
-              <IconButton title={`More actions for ${selected}`} active={open}><Ellipsis size={16} /></IconButton>
-            {/snippet}
-          </DropdownMenu>
+          <SettingsRowMenu label={`More actions for ${selected}`} items={() => reportActions(selected)} align="left" up />
           <span class="ml-auto"></span>
           <Button size="sm" variant="ghost" onclick={() => closeReport()}>Close</Button>
           <Button

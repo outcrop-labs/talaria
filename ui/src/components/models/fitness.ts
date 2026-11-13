@@ -565,7 +565,7 @@ export function speedTitle(s: SpeedReading | null): string {
  *  as its own exported name because three panels and this module's test import
  *  it that way — and the flag is why it cannot be a plain alias. */
 export function usd(n: number | null): string {
-  return formatUsd(n, { unpricedAsWord: true })
+  return formatUsd(n, { unpricedAsWord: true, group: true })
 }
 
 export const TIER_META: Record<TierId, { label: string; blurb: string }> = {

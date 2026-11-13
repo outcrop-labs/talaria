@@ -37,7 +37,7 @@
     type McpCallsWindow,
   } from './mcp-calls'
   import StatStripSkeleton from './StatStripSkeleton.svelte'
-  import { NEUTRAL_DOT, table } from './grammar'
+  import { table } from './grammar'
 
   // The MCP gateway's call record: every tools/call an agent made through the
   // gateway, and every refusal, with who, which server and tool, how it went
@@ -122,7 +122,7 @@
       <!-- The window, then the three narrowing selects, all one height. -->
       <div class="flex flex-wrap items-center gap-2">
         <Segmented
-          class="h-9"
+          size="md"
           options={WINDOWS.map((w) => ({ id: w.id, label: w.label, title: `Calls in the ${WINDOW_NAMES[w.id]}` }))}
           value={win}
           onChange={(w) => setParam('w', w === '24h' ? null : w)}
@@ -267,7 +267,7 @@
                       <td class={cn(table.td, table.id, 'whitespace-nowrap')}>{c.tool ?? '—'}</td>
                       <td class={cn(table.td, 'whitespace-nowrap text-[13px]')} title={meta?.blurb}>
                         <span class="flex items-center gap-2">
-                          <StatusDot {...meta?.dot ?? NEUTRAL_DOT} />{meta?.label ?? c.outcome}
+                          <StatusDot status={meta?.dot ?? 'idle'} />{meta?.label ?? c.outcome}
                         </span>
                       </td>
                       <td class={cn(table.td, table.num, 'text-muted')}>{formatLatency(c.latencyMs)}</td>

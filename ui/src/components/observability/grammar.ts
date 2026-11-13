@@ -1,5 +1,3 @@
-import type { DotStatus } from '@/components/ui/chip'
-
 // The row and table grammar the Observability tabs share.
 
 /** The caption-style table: sentence-case headers, 44px rows, numbers
@@ -12,12 +10,6 @@ export const table = {
   num: 'whitespace-nowrap text-right tabular-nums',
   id: 'font-mono text-xs',
 } as const
-
-/** What a `StatusDot` is given. A neutral state takes a plain colour: it is
- *  not a health state, and the `idle` dot is the hairline colour, which
- *  disappears on a panel. */
-export type Dot = { status: DotStatus } | { color: string }
-export const NEUTRAL_DOT: Dot = { color: 'var(--theme-muted)' }
 
 /** A link from a section's title row to the tab or page that owns the detail. */
 export const sectionLink =

@@ -22,7 +22,6 @@
     ALL_TOOLS,
     NO_ACCESS,
     STATUS_DOT,
-    STATUS_WORD,
     checkedLine,
     healthChecked,
     patchServer,
@@ -108,7 +107,7 @@
     <dl class="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-4 gap-y-2">
       <dt class={quiet}>Status</dt>
       <dd class={fact}>
-        <span class="flex items-center gap-2"><StatusDot status={STATUS_DOT[status.tone]} />{STATUS_WORD[status.kind]}</span>
+        <span class="flex items-center gap-2"><StatusDot status={STATUS_DOT[status.tone]} />{status.label}</span>
         <!-- The server's own words, so a 401 reads as the server's 401. -->
         {#if status.kind === 'app-off'}
           <p class={cn('mt-1', quiet)}>Off because {s.appOff?.replace(/\.$/, '')}. No agent can use it until the app is back, and every access rule is kept.</p>

@@ -65,8 +65,11 @@ export function agentLabel(id: string): { label: string; role: string } {
 // `formatCost` is `formatUsd`'s DEFAULT answer: a sub-cent spend keeps four
 // decimals, so a real amount never renders as "$0.00". The model surfaces take
 // its `unpricedAsWord` variant instead (see `@/components/models/fitness`).
-export { formatTokens, formatUsd as formatCost } from '@/lib/format'
-import { formatTokens as formatTokensLabel, formatUsd as formatUsdLabel } from '@/lib/format'
+// Every caller is in the settings area, so thousands are grouped.
+export { formatTokens } from '@/lib/format'
+import { formatTokens as formatTokensLabel, formatUsd } from '@/lib/format'
+export const formatCost = (n: number | null): string => formatUsd(n, { group: true })
+const formatUsdLabel = formatCost
 
 /** A cloud model's spend as the legend says it: "unpriced", "included in a
  *  plan" when every token is, the dollars plus how much was included when

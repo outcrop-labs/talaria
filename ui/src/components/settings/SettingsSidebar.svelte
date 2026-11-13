@@ -12,6 +12,7 @@
   import { useAppGrants, useDeniedViews, type SessionUser } from '@/lib/session'
   import {
     ADMIN_HOME,
+    OWN_PAGE_TABS,
     searchSettings,
     SETTINGS_HOME,
     settingsNav,
@@ -66,22 +67,9 @@
   }
   const iconOf = (to: string, icon: NavItem['icon'] | undefined): NavItem['icon'] => icon ?? ICONS[to] ?? '·'
 
-  // Agents, MCP and Templates keep their tab labels in their own markup.
   const PAGE_TABS: SettingsPageTabs = {
-    '/agents': [
-      { id: 'agents', label: 'Agents' },
-      { id: 'templates', label: 'Role templates' },
-      { id: 'schedules', label: 'Schedules' },
-    ],
+    ...OWN_PAGE_TABS,
     '/models': MODEL_TABS,
-    '/mcp': [
-      { id: 'internal', label: 'Built-in' },
-      { id: 'external', label: 'External' },
-    ],
-    '/templates': [
-      { id: 'ticket', label: 'Tickets' },
-      { id: 'plan', label: 'Plans' },
-    ],
     '/observability': OBS_TABS,
     [ADMIN_HOME]: ADMIN_TABS,
   }

@@ -9,6 +9,7 @@
     label,
     hint,
     info,
+    required = false,
     for: htmlFor,
     class: className,
     children,
@@ -17,6 +18,8 @@
     hint?: string
     /** The longer explanation, behind an InfoTip beside the label. */
     info?: string
+    /** Marks the label. The control still carries its own `required`. */
+    required?: boolean
     /** The control's id, so the label focuses it. */
     for?: string
     class?: string
@@ -26,7 +29,9 @@
 
 <div class={cn('space-y-1.5', className)}>
   <div class="flex items-center gap-2">
-    <label for={htmlFor} class="font-sans text-[13px] font-medium leading-5 text-fg">{label}</label>
+    <label for={htmlFor} class="font-sans text-[13px] font-medium leading-5 text-fg">
+      {label}{#if required}<span class="text-muted" title="Required"> *</span>{/if}
+    </label>
     {#if info}<InfoTip text={info} />{/if}
   </div>
   {@render children()}

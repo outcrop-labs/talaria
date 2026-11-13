@@ -1,11 +1,11 @@
 <script lang="ts">
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
+  import { TEMPLATES_TABS } from '@/lib/settings-nav'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate, route } from '@/router'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import InlineCreate from '@/components/ui/InlineCreate.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -21,10 +21,11 @@
   // Templates — the skeletons work starts from, managed in one place. One tab
   // per surface that consumes them (tickets, plans); the body edits in the
   // full workspace editor (rich + Muse prompt-editing + version history).
-  const TEMPLATE_TABS: { id: TemplateKind; label: string; blurb: string }[] = [
-    { id: 'ticket', label: 'Tickets', blurb: 'New tickets start from this outline, and reviews check work against its sections.' },
-    { id: 'plan', label: 'Plans', blurb: 'New plans start from this outline, and the agent keeps to it as the plan grows.' },
-  ]
+  const BLURB: Record<TemplateKind, string> = {
+    ticket: 'New tickets start from this outline, and reviews check work against its sections.',
+    plan: 'New plans start from this outline, and the agent keeps to it as the plan grows.',
+  }
+  const TEMPLATE_TABS: { id: TemplateKind; label: string; blurb: string }[] = TEMPLATES_TABS.map((t) => ({ ...t, blurb: BLURB[t.id] }))
 
   const sessionQuery = useSession()
   const session = $derived(sessionQuery.data)
@@ -114,10 +115,6 @@
   <EmptyState icon="▣" title="Admins only" />
 {:else}
   <SettingsPage title="Templates" blurb="Starting points for tickets and plans." tabs={tabItems} {tab} onTab={setTab} fill>
-    {#snippet actions()}
-      <InlineCreate label="New template" placeholder={`Name of the ${tab} template`} onSubmit={(name) => void create(name)} />
-    {/snippet}
-
     <!-- Tab-pane grammar: the whole library pane rises in on a kind switch
          (no exit). Safe to key: the detail is already keyed by selection. -->
     {#key tab}
@@ -136,6 +133,9 @@
               'sep',
               { label: 'Delete', danger: true, onSelect: () => void remove(t) },
             ])}
+          onCreate={create}
+          createLabel="New template"
+          createPlaceholder={`Name of the ${tab} template`}
           class="h-full"
         >
           {#snippet row(t: Template)}
@@ -150,7 +150,7 @@
               <EmptyState
                 icon="▣"
                 title={failed ? 'Templates could not be loaded' : `No ${tab} templates yet`}
-                hint={failed ? 'Retry on the left.' : 'Create the first one with New template.'}
+                hint={failed ? 'Retry on the left.' : 'Create the first one with New template, under the list.'}
               />
             {/if}
           {/snippet}

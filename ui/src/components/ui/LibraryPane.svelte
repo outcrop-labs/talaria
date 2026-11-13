@@ -70,7 +70,11 @@
      *  already says what a new one would be and spelling it out tells the
      *  reader what they can see. The name is a different audience: a screen
      *  reader gets no help from placement, so this one SHOULD be specific.
-     *  Terse on screen, precise in the accessibility tree. */
+     *  Terse on screen, precise in the accessibility tree.
+     *
+     *  In the sans voice (the settings area) it IS the visible text: a quiet
+     *  "+ New role" button, because that area never asks a bare glyph to say
+     *  what it creates. */
     createLabel?: string
     createPlaceholder?: string
     /** Row body override, for rows that need more than a name. */
@@ -196,11 +200,14 @@
                     aria-current={active ? 'true' : undefined}
                     class={cn(
                       'min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left font-sans text-[13px] transition-colors',
-                      // Selected keeps the texture and GAINS the solid tile — the two states
-                      // differ by whether the surface has arrived, not by whether there
-                      // is any texture at all.
-                      'dither-bloom',
-                      active ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
+                      sans
+                        ? active
+                          ? 'bg-raised text-fg'
+                          : 'text-muted hover:bg-hover hover:text-fg'
+                        : // Selected keeps the texture and GAINS the solid tile — the two states
+                          // differ by whether the surface has arrived, not by whether there
+                          // is any texture at all.
+                          cn('dither-bloom', active ? 'bg-raised text-fg' : 'text-muted hover:text-fg'),
                     )}
                   >
                     {#if row}{@render row(item, active)}{:else}{labelOf(item)}{/if}
@@ -218,7 +225,18 @@
       {/if}
     </div>
 
-    {#if onCreate}
+    {#if onCreate && sans}
+      <!-- 53px with its border, the height of the record editor's pinned footer beside it. -->
+      <div class="shrink-0 border-t border-line px-2 py-2.5">
+        <InlineCreate
+          variant="ghost"
+          label={createLabel}
+          placeholder={createPlaceholder}
+          onSubmit={(name) => void onCreate(name)}
+          class="[&>button]:w-full [&>button]:justify-start [&>button]:px-2 [&>button]:hover:bg-hover"
+        />
+      </div>
+    {:else if onCreate}
       <div class="shrink-0 border-t border-line px-3 py-3">
         <!-- A bare `+`, left-aligned. The footer of a library already says
              what a new one would be; a button that spells it out is telling

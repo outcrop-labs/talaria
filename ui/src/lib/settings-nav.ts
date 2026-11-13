@@ -33,6 +33,32 @@ export interface SettingsNavGroup {
  *  and every other tab at `<page>/<id>`. */
 export type SettingsPageTabs = Readonly<Record<string, ReadonlyArray<{ id: string; label: string }>>>
 
+/** The tabs of the pages that keep no tab table of their own. Each page
+ *  renders its strip from here, so what search finds is what the page shows. */
+export const AGENTS_TABS = [
+  { id: 'agents', label: 'Agents' },
+  { id: 'templates', label: 'Role templates' },
+  { id: 'schedules', label: 'Schedules' },
+] as const
+export const MCP_TABS = [
+  { id: 'internal', label: 'Built-in' },
+  { id: 'external', label: 'External' },
+] as const
+export const TEMPLATES_TABS = [
+  { id: 'ticket', label: 'Tickets' },
+  { id: 'plan', label: 'Plans' },
+] as const
+export const APPS_TABS = [
+  { id: 'installed', label: 'Installed' },
+  { id: 'discover', label: 'Discover' },
+] as const
+export const OWN_PAGE_TABS: SettingsPageTabs = {
+  '/agents': AGENTS_TABS,
+  '/mcp': MCP_TABS,
+  '/templates': TEMPLATES_TABS,
+  '/apps': APPS_TABS,
+}
+
 export interface SettingsNavMatch {
   to: string
   label: string

@@ -9,14 +9,20 @@
   let {
     label,
     items,
+    align,
+    up,
   }: {
     /** Names the thing the menu acts on, e.g. "Actions for Anthropic". */
     label: string
     items: ContextMenuEntry[] | (() => ContextMenuEntry[])
+    /** Which edge of the kebab the menu hangs from. Right by default. */
+    align?: 'left' | 'right'
+    /** Open upward, for a kebab at the foot of a dialog or the window. */
+    up?: boolean
   } = $props()
 </script>
 
-<DropdownMenu {items}>
+<DropdownMenu {items} {align} {up}>
   {#snippet trigger(open)}
     <IconButton title={label} active={open}><Ellipsis size={16} /></IconButton>
   {/snippet}

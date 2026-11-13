@@ -4,7 +4,6 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate } from '@/router'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import InlineCreate from '@/components/ui/InlineCreate.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -75,9 +74,6 @@
 </script>
 
 <SettingsPage title="Teams" blurb="Group people and agents so work and access follow the team." fill>
-  {#snippet actions()}
-    <InlineCreate label="New team" placeholder="Name of the team" onSubmit={(name) => void create(name)} />
-  {/snippet}
   <div class="h-full min-h-[26rem]">
     <LibraryPane
       groups={[{ items: teams }]}
@@ -98,6 +94,9 @@
               ]
             : openCopyItems(`/teams?t=${t.id}`, () => select(t.id)),
         )}
+      onCreate={create}
+      createLabel="New team"
+      createPlaceholder="Name of the team"
       class="h-full"
     >
       {#snippet row(t: Team)}
@@ -112,7 +111,7 @@
           <EmptyState
             icon="▣"
             title={failed ? 'Teams could not be loaded' : 'No teams yet'}
-            hint={failed ? 'Retry on the left.' : 'Create the first one with New team.'}
+            hint={failed ? 'Retry on the left.' : 'Create the first one with New team, under the list.'}
           />
         {/if}
       {/snippet}

@@ -187,7 +187,7 @@
         out:swap={{ duration: 120 }}
       >
         <TabFace icon={w.tab.icon} size={12} site={w.site} still={tabMarkOnScreen(w.site)} />
-        <span class="font-mono text-[10px] uppercase leading-3 tracking-[0.08em]"
+        <span class={area.inside ? 'font-sans text-xs leading-4' : 'font-mono text-[10px] uppercase leading-3 tracking-[0.08em]'}
           >{w.elsewhere}<span class="hidden pl-1 @2xl:inline">working</span></span
         >
         <span class="hidden min-w-0 truncate font-sans text-[12px] leading-4 text-fg @5xl:block">{w.lead.label}</span>

@@ -28,10 +28,10 @@
   {#snippet lead()}
     {#if named}
       <span class="flex w-[5.5rem] items-center gap-2 font-sans text-[13px] leading-5 text-muted">
-        <StatusDot {...severity.dot} class="h-2 w-2" />{severity.label}
+        <StatusDot status={severity.dot} class="h-2 w-2" />{severity.label}
       </span>
     {:else}
-      <StatusDot {...severity.dot} class="h-2 w-2" />
+      <StatusDot status={severity.dot} class="h-2 w-2" />
     {/if}
   {/snippet}
   {#if alert.href}

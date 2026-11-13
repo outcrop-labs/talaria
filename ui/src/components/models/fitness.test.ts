@@ -285,6 +285,7 @@ describe('the estimate an admin decides on', () => {
     expect(usd(0)).toBe('$0')
     expect(usd(null)).toBe('unpriced')
     expect(usd(1.2345)).toBe('$1.23')
+    expect(usd(1453.118)).toBe('$1,453.12')
   })
 })
 

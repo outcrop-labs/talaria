@@ -339,25 +339,6 @@ export const TIER_BADGE: Record<
   },
 }
 
-/** The word the page prints for each verdict. `serverStatus` carries its own
- *  lowercase label, which its tests in `lib/` pin. */
-export const STATUS_WORD: Record<StatusKind, string> = {
-  disabled: 'Disabled',
-  'app-off': 'App is off',
-  pulling: 'Starting',
-  'image-failed': 'Could not start',
-  'needs-oauth-app': 'Needs setup',
-  reconnect: 'Signed out',
-  'needs-connect': 'Needs sign-in',
-  'needs-key': 'Needs credentials',
-  'per-user': 'Each person signs in',
-  unreachable: 'Unreachable',
-  error: 'Error',
-  connected: 'Connected',
-  ready: 'Ready',
-  untested: 'Not checked yet',
-}
-
 export const STATUS_DOT: Record<ServerStatus['tone'], DotStatus> = {
   muted: 'idle',
   warning: 'warn',

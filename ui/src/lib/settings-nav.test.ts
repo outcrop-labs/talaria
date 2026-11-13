@@ -2,7 +2,7 @@
 // Fixtures are hand-built cores shaped like NAV, as in manage-area.test.ts.
 import { describe, expect, it } from 'vitest'
 import type { NavSection } from './nav'
-import { searchSettings, settingsNav, type SettingsNavApp, type SettingsPageTabs } from './settings-nav'
+import { OWN_PAGE_TABS, searchSettings, settingsNav, type SettingsNavApp, type SettingsPageTabs } from './settings-nav'
 
 const CORE: NavSection[] = [
   { id: 'work', items: [{ to: '/work', label: 'Work', icon: 'work' }] },
@@ -158,4 +158,31 @@ describe('searchSettings', () => {
     expect(searchSettings(theirs, TABS, 'cost')).toEqual([])
     expect(searchSettings(theirs, TABS, 'people')).toEqual([])
   })
+})
+
+describe('the tabs of pages with no table of their own', () => {
+  const core: NavSection[] = [
+    {
+      id: 'manage',
+      title: 'Manage',
+      items: ['/agents', '/mcp', '/templates', '/apps'].map((to) => ({ to, label: to.slice(1), icon: to })),
+    },
+  ]
+  const groups = settingsNav(core, [], admin, '/manage').groups
+  const tabLinks = (q: string) =>
+    searchSettings(groups, OWN_PAGE_TABS, q)
+      .filter((m) => m.parent)
+      .map((m) => m.to)
+
+  it('finds every tab of Agents, MCP, Templates and Apps at its own address', () => {
+    expect(tabLinks('role templates')).toEqual(['/agents/templates'])
+    expect(tabLinks('schedules')).toEqual(['/agents/schedules'])
+    expect(tabLinks('built-in')).toEqual(['/mcp'])
+    expect(tabLinks('external')).toEqual(['/mcp/external'])
+    expect(tabLinks('tickets')).toEqual(['/templates'])
+    expect(tabLinks('plans')).toEqual(['/templates/plan'])
+    expect(tabLinks('installed')).toEqual(['/apps'])
+    expect(tabLinks('discover')).toEqual(['/apps/discover'])
+  })
+
 })

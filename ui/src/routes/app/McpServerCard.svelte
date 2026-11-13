@@ -17,7 +17,6 @@
   import McpServerMark from './McpServerMark.svelte'
   import {
     STATUS_DOT,
-    STATUS_WORD,
     connectPopup,
     healthChecked,
     isInternalServer,
@@ -206,7 +205,7 @@
         {#if checking}
           <WaitingMark site="mcp/server-refresh" size={12} />Checking
         {:else}
-          <StatusDot status={STATUS_DOT[verdict.tone]} />{STATUS_WORD[verdict.kind]}
+          <StatusDot status={STATUS_DOT[verdict.tone]} />{verdict.label}
         {/if}
       </span>
     {/snippet}

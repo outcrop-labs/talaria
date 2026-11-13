@@ -12,6 +12,7 @@
 // CronListSkeleton; the schedule model, the helpers and the mutations
 // (useCronMutations) live here.
 
+import type { DotStatus } from '@/components/ui/chip'
 import { confirm } from '@/components/ui/confirm.svelte'
 import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
 
@@ -126,10 +127,10 @@ export function describeSchedule(raw: string): string {
 export const fmtNext = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
 
-export function jobDot(j: CronJob): string {
-  if (!j.enabled || j.state === 'paused') return 'var(--theme-line)'
-  if (j.lastStatus && /error|fail/i.test(j.lastStatus)) return 'var(--theme-danger)'
-  return 'var(--theme-success)'
+export function jobDot(j: CronJob): DotStatus {
+  if (!j.enabled || j.state === 'paused') return 'idle'
+  if (j.lastStatus && /error|fail/i.test(j.lastStatus)) return 'danger'
+  return 'ok'
 }
 
 // ── Mutations: one home for what a schedule row can do ─────────────────────

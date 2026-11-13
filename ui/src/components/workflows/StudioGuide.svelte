@@ -208,7 +208,7 @@
             >
               <span
                 class={cn(
-                  'flex h-5 w-5 items-center justify-center rounded-full border font-mono text-[10px]',
+                  'flex h-5 w-5 items-center justify-center rounded-full border font-sans text-xs leading-none',
                   i === step ? 'border-accent text-fg' : i < step ? 'border-accent text-accent' : 'border-line',
                 )}
               >

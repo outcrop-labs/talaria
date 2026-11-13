@@ -79,7 +79,7 @@
      that draws the dividers. -->
 <div>
   <div class="relative flex min-h-[52px] items-center gap-4 px-5 py-3 transition-colors hover:bg-hover">
-    <StatusDot color={jobDot(job)} class="shrink-0" />
+    <StatusDot status={jobDot(job)} class="shrink-0" />
     <!-- The row opens its details: the button's ::after covers it, and the
          switch and the menu sit above that. -->
     <button

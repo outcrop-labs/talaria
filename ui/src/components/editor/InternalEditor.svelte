@@ -13,6 +13,7 @@
   import { streamMuse, type MuseKind } from '@/lib/muse.svelte'
   import { fly, listStagger, slide, GROW_X } from '@/lib/motion'
   import { cn } from '@/lib/cn'
+  import { useUiVoice } from '@/lib/ui-voice'
   import DiffView from '@/components/fleet/DiffView.svelte'
   import { diffLines, type DiffLine } from '@/components/fleet/line-diff'
 
@@ -93,10 +94,29 @@
     class?: string
   } = $props()
 
+  const sans = useUiVoice() === 'sans'
+
+  // A LEADING YAML BLOCK IS MACHINE TEXT. The rich editor reads its fences as
+  // rules and its last line as a heading, and would write it back that way. In
+  // the settings area it is lifted out into a mono well above the document and
+  // put back, untouched unless it was edited there, when the text is read.
+  // Elsewhere nothing is lifted and the document is one piece, as before.
+  const FRONTMATTER = /^(---\r?\n[\s\S]*?\r?\n---)[ \t]*((?:\r?\n)*)/
+  // svelte-ignore state_referenced_locally -- reason: `mode` is fixed for the life of an editor
+  const lifts = sans && mode === 'rich'
+  const lift = (text: string): { head: string; gap: string; body: string } => {
+    const m = lifts ? FRONTMATTER.exec(text) : null
+    return m ? { head: m[1]!, gap: m[2] || '\n', body: text.slice(m[0].length) } : { head: '', gap: '', body: text }
+  }
+
   let editorRef = $state<RichEditorHandle | null>(null)
   let seed = $state(0) // bump to remount the editor with new content
   // svelte-ignore state_referenced_locally -- reason: seeded editor content; later content arrives via the seed-remount counter, not a re-seed
   let current = $state(value)
+  const parts = $derived(lift(current))
+  // The well's own text once it is typed in; null until then, and again on every re-seed.
+  let headEdit = $state<{ seed: number; text: string } | null>(null)
+  const head = $derived(headEdit?.seed === seed ? headEdit.text : parts.head)
   let diffing = $state<{ rev: Revision; content: string; diff: DiffLine[] | null } | null>(null)
 
   // ── Muse: prompt → streamed proposal → review/accept, iteratively ───────
@@ -200,7 +220,8 @@
    *  record's Save writes; `setDoc` is how a whole-form Muse draft lands in
    *  the editor — accepted into the fields, never written, still reviewable. */
   export function getMarkdown(): string {
-    return editorRef?.getMarkdown() ?? current
+    const body = editorRef?.getMarkdown() ?? parts.body
+    return head.trim() ? `${head.trimEnd()}${parts.gap}${body}` : body
   }
 
   export function setDoc(markdown: string): void {
@@ -245,7 +266,7 @@
     }
   }}
 >
-  {#if subtitle}<p class="shrink-0 text-xs text-muted">{subtitle}</p>{/if}
+  {#if subtitle}<p class={sans ? 'shrink-0 font-sans text-[13px] leading-5 text-muted' : 'shrink-0 text-xs text-muted'}>{subtitle}</p>{/if}
   <div class="flex min-h-0 flex-1 gap-3">
     <div class="flex min-w-0 flex-1 flex-col">
       {#if proposal !== null}
@@ -327,11 +348,27 @@
           <pre class="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-lg border border-line bg-surface p-3 font-mono text-xs leading-5 text-fg">{current}</pre>
         {/if}
       {:else}
-        <div class="min-h-0 flex-1 overflow-y-auto">
+        {#if parts.head}
+          {#if editable}
+            <textarea
+              aria-label="Frontmatter"
+              value={head}
+              oninput={(e) => {
+                headEdit = { seed, text: e.currentTarget.value }
+                dirty = true
+              }}
+              rows={head.split('\n').length}
+              spellcheck="false"
+              class="mb-3 w-full shrink-0 resize-none rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs leading-5 text-muted outline-none transition-colors focus:border-accent focus:text-fg focus:ring-2 focus:ring-accent-soft"
+            ></textarea>
+          {:else}
+            <pre aria-label="Frontmatter" class="mb-3 shrink-0 overflow-x-auto rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs leading-5 text-muted">{head}</pre>
+          {/if}
+        {/if}<div class="min-h-0 flex-1 overflow-y-auto">
           {#key seed}
             <RichEditor
               bind:this={editorRef}
-              value={current}
+              value={parts.body}
               {editable}
               onSave={() => (dirty = true)}
               placeholder={editable ? 'Write in plain language. Formatting is saved as markdown.' : undefined}
@@ -351,7 +388,7 @@
            wrapper pinned to the resting width so rows clip, not rewrap. -->
       <div transition:slide|global={GROW_X} class="shrink-0 overflow-y-auto rounded-lg border border-line">
       <div class="w-64 p-1">
-        <div class="px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">History</div>
+        <div class={sans ? 'px-2 py-1.5 font-sans text-xs font-medium leading-4 text-muted' : 'px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'}>History</div><!-- voice-ok -->
         <QueryState query={historyQuery} errorTitle="Could not load history" errorVariant="inline">
           {#snippet skeleton()}<SkeletonRows rows={4} class="px-2 py-2" />{/snippet}
           {#snippet empty()}<div class="px-2 py-2 text-xs text-muted">No saved revisions yet.</div>{/snippet}
@@ -363,7 +400,7 @@
                 class={cn(
                   'group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs',
                   diffing?.rev.id === rev.id && 'bg-raised',
-                  i !== 0 && 'cursor-pointer transition-colors dither-fill',
+                  i !== 0 && (sans ? 'cursor-pointer transition-colors hover:bg-hover' : 'cursor-pointer transition-colors dither-fill'),
                 )}
                 onclick={i === 0 ? undefined : () => void openDiff(rev)}
                 title={i === 0 ? undefined : 'Show changes since this revision'}
@@ -373,10 +410,10 @@
                     {#if rev.version !== undefined}<span class="mr-1.5 font-mono text-accent">v{rev.version}</span>{/if}
                     {i === 0 ? 'Current' : relativeTime(rev.createdAt)}
                   </div>
-                  <div class="truncate font-mono text-[11px] text-muted">
+                  <div class={sans ? 'truncate font-sans text-xs leading-4 text-muted' : 'truncate font-mono text-[11px] text-muted'}><!-- voice-ok -->
                     {rev.createdBy ?? 'unknown'} · {rev.size.toLocaleString()} chars
                   </div>
-                  {#if rev.note}<div class="truncate text-[11px] italic text-muted">{rev.note}</div>{/if}
+                  {#if rev.note}<div class={sans ? 'truncate text-xs italic leading-4 text-muted' : 'truncate text-[11px] italic text-muted'}>{rev.note}</div>{/if}<!-- voice-ok -->
                 </div>
                 {#if editable && i !== 0}
                   <button
@@ -459,7 +496,7 @@
         </Button>
       {/if}
       {#if withActions}
-        <span class={cn('font-mono text-[10px] uppercase tracking-[0.05em] text-muted', !history && 'ml-auto')}>
+        <span class={cn(sans ? 'font-sans text-xs leading-4 text-muted' : 'font-mono text-[10px] uppercase tracking-[0.05em] text-muted', !history && 'ml-auto')}><!-- voice-ok -->
           {editable && dirty ? 'Unsaved changes · ⌘S to save' : ''}
         </span>
         <Button variant="ghost" size="sm" onclick={onClose}>

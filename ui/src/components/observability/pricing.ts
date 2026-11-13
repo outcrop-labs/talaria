@@ -265,7 +265,7 @@ export function repricedLine(r: Repriced): string {
   const calls = (n: number) => `${n} past call${n === 1 ? '' : 's'}`
   if (r.rows === 0) return 'No calls in the last 30 days to re-price.'
   if (r.unpricedRows === r.rows) return `${calls(r.rows)} still have no price.`
-  const how = r.basis === 'included' ? 'included in a plan, $0' : `${formatUsd(r.cost)}${r.basis ? ` (${r.basis})` : ''}`
+  const how = r.basis === 'included' ? 'included in a plan, $0' : `${formatUsd(r.cost, { group: true })}${r.basis ? ` (${r.basis})` : ''}`
   const rest = r.unpricedRows > 0 ? `; ${r.unpricedRows} still unpriced` : ''
   return `Re-priced ${calls(r.pricedRows)}: ${how}${rest}.`
 }

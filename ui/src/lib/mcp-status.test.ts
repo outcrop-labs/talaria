@@ -36,7 +36,7 @@ describe('serverStatus', () => {
   it('an app server whose app cannot serve says so, after the admin’s own switch', () => {
     const why = 'the app failed to build or load: mcp.ts: SyntaxError'
     const off = serverStatus(row({ appSlug: 'crm', appOff: why, probe: { state: 'error', detail: '1 tool; 1 left out', at: '' } }))
-    expect(off).toMatchObject({ kind: 'app-off', label: 'app off', tone: 'muted', detail: why, action: null })
+    expect(off).toMatchObject({ kind: 'app-off', label: 'App is off', tone: 'muted', detail: why, action: null })
     // The admin's disable is the admin's, and reads first.
     expect(serverStatus(row({ appSlug: 'crm', appOff: why, enabled: false })).kind).toBe('disabled')
     // Serving again: the ordinary verdict.
@@ -86,6 +86,14 @@ describe('serverStatus', () => {
     const s = serverStatus(row())
     expect(s.kind).toBe('untested')
     expect(s.tone).toBe('muted')
+  })
+
+  it('prints a sentence-case word for each verdict a row shows', () => {
+    expect(serverStatus(row({ builtin: true })).label).toBe('Ready')
+    expect(serverStatus(row({ oauthEnabled: true, orgConnected: true })).label).toBe('Connected')
+    expect(serverStatus(row({ probe: { state: 'auth-required', detail: 'x', at: '' } })).label).toBe('Needs credentials')
+    expect(serverStatus(row({ authMode: 'per-user' })).label).toBe('Each person signs in')
+    expect(serverStatus(row()).label).toBe('Not checked yet')
   })
 })
 

@@ -9,6 +9,7 @@
   import { fly } from '@/lib/motion'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
+  import { MCP_TABS } from '@/lib/settings-nav'
   import McpAddServerModal from './McpAddServerModal.svelte'
   import McpMarketplaceModal from './McpMarketplaceModal.svelte'
   import McpServerCard from './McpServerCard.svelte'
@@ -30,9 +31,8 @@
   // The second tab stays "External", not "Connected": it lists servers that
   // are registered but unreachable or waiting for a sign-in, and "Connected"
   // is also one of the words a row's status uses.
-  const TABS = ['internal', 'external'] as const
-  type McpTab = (typeof TABS)[number]
-  const tab = $derived(tabFromPath(route.pathname, '/mcp', TABS, 'internal'))
+  type McpTab = (typeof MCP_TABS)[number]['id']
+  const tab = $derived(tabFromPath(route.pathname, '/mcp', MCP_TABS.map((t) => t.id), 'internal'))
   const goTab = (id: McpTab) => {
     if (id === 'internal') void navigate('/mcp')
     else void navigate('/mcp/:tab', { params: { tab: 'external' } })
@@ -55,10 +55,7 @@
 <SettingsPage
   title="MCP"
   blurb="Tools your agents can call, and who may use them."
-  tabs={[
-    { id: 'internal', label: 'Built-in' },
-    { id: 'external', label: 'External' },
-  ]}
+  tabs={MCP_TABS}
   {tab}
   onTab={goTab}
 >

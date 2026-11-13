@@ -39,7 +39,7 @@
 </script>
 
 {#if sans}
-  <SettingsField label={required && !stored ? `${label} *` : label} for={htmlFor} hint={hint ?? undefined} info={sansInfo}>
+  <SettingsField {label} required={!!required && !stored} for={htmlFor} hint={hint ?? undefined} info={sansInfo}>
     {@render children()}
   </SettingsField>
 {:else}

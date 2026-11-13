@@ -85,7 +85,8 @@ instead of styling its own panels:
   `SettingsRow` is one row: `label`, `hint`, an `icon` tile or a bare `lead`
   mark, inline `meta`, a `status` (a `StatusDot` and a word), and the control
   as children. `SettingsRowMenu` is the kebab that holds a row's secondary and
-  destructive actions.
+  destructive actions. It takes `up` and `align` for a kebab at the foot of a
+  dialog.
 - A group lines its rows up: the right side is one column, as wide as the
   widest row needs. Put the state of a thing in `status`, not among the
   controls, and down a list every status starts at the same place and every
@@ -95,7 +96,11 @@ instead of styling its own panels:
   panel (a `LibraryPane` detail), the group is `bare`: hairlines, no card.
 - `StatStrip` and `Stat` are one card of numbers. Any count from one to eight
   fills the card: the strip sizes its rows from the count and the last stat
-  spans what is left. `SettingsField` is a stacked field for a dialog.
+  spans what is left. `SettingsField` is a stacked field for a dialog, and
+  `required` marks its label.
+- A filter row that holds a `Segmented` beside a `sm` `Select` gives the
+  `Segmented` `size="md"`, so both are one height. Money in the area groups
+  thousands: `formatUsd(n, { group: true })`, or `formatCost`.
 - Diagnostics go behind one closed `Disclosure` with `variant="card"`. Add
   `keepMounted` when the readings must stay live while it is closed.
 
@@ -141,7 +146,9 @@ nothing-selected pane. Callers bring data and snippets.
   opening an empty form), in three positions. The caller receives a trimmed,
   non-empty name and decides what a record made of it is — a saved row, or an
   unsaved draft in the editor. That difference is the caller's; the control
-  does not change shape.
+  does not change shape. In the settings area the same control is a quiet
+  labeled button ("New role"), and it is the page's one create: Teams and
+  Templates put no second one in the page header.
 - **`bare` inside a dialog.** The Modal is already a surface; a Panel within a
   Panel is a border inside a border with the padding twice. For the same reason
   a detail component rendered into the pane must not wrap itself in a `Panel`.

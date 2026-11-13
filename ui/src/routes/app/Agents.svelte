@@ -31,6 +31,7 @@
   import { containersOf, hiresToShow, rollFleet, rollRowsBySlug, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
+  import { AGENTS_TABS } from '@/lib/settings-nav'
   import AgentListRow from './AgentListRow.svelte'
   import AgentTile from './AgentTile.svelte'
 
@@ -48,9 +49,8 @@
   // and "send me the schedules screen" is a URL rather than a description of
   // where to click. An unrecognised segment falls back to the roster rather
   // than rendering nothing.
-  const TABS = ['agents', 'templates', 'schedules'] as const
-  type AgentsTab = (typeof TABS)[number]
-  const tab = $derived(tabFromPath(route.pathname, '/agents', TABS, 'agents'))
+  type AgentsTab = (typeof AGENTS_TABS)[number]['id']
+  const tab = $derived(tabFromPath(route.pathname, '/agents', AGENTS_TABS.map((t) => t.id), 'agents'))
   const goTab = (id: AgentsTab) => {
     // Two calls rather than one: the typed router wants the params object only
     // on the parameterised path, and the roster is the bare one.
@@ -241,11 +241,7 @@
 <SettingsPage
   title="Agents"
   blurb="The agents on your team, what they do, and whether they are running."
-  tabs={[
-    { id: 'agents', label: 'Agents' },
-    { id: 'templates', label: 'Role templates' },
-    { id: 'schedules', label: 'Schedules' },
-  ]}
+  tabs={AGENTS_TABS}
   {tab}
   onTab={goTab}
   fill={tab === 'templates'}

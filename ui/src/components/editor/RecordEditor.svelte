@@ -14,6 +14,7 @@
   import { fly, slide } from '@/lib/motion'
   import { cn } from '@/lib/cn'
   import type { MuseKind } from '@/lib/muse.svelte'
+  import { useUiVoice } from '@/lib/ui-voice'
 
   type ChatMsg = { role: 'user' | 'assistant'; content: string }
 
@@ -125,6 +126,10 @@
   $effect(() => () => abortCtl?.abort())
 
   const docText = () => handle?.getMarkdown() ?? doc.value
+
+  const sans = useUiVoice() === 'sans'
+  // voice-ok: the mono label, for the screens outside the settings area
+  const smallLabel = sans ? 'font-sans text-xs font-medium leading-4 text-muted' : 'font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim' // voice-ok
   const dirty = $derived(fieldsDirty || docDirty)
 
   // THE PREVIEW SURVIVES UNTIL IT IS ACCEPTED. `apply` only fills the fields;
@@ -209,8 +214,8 @@
     <div class="h-full overflow-y-auto px-4 py-4">
       <div class="mb-3 flex items-center gap-2">
         <Chip class="shrink-0">{kind}</Chip>
-        <div class="min-w-0 truncate text-sm font-semibold text-fg">{title}</div>
-        {#if meta}<span class="shrink-0 font-mono text-[11px] text-muted">{meta}</span>{/if}
+        <div class={sans ? 'min-w-0 truncate font-sans text-[15px] font-semibold leading-5 text-fg' : 'min-w-0 truncate text-sm font-semibold text-fg'}>{title}</div>
+        {#if meta}<span class={sans ? 'shrink-0 font-sans text-xs leading-4 text-muted' : 'shrink-0 font-mono text-[11px] text-muted'}>{meta}</span>{/if}<!-- voice-ok -->
         <!-- The record's icon cluster, right-aligned on its own title line —
              within the editor view, not on any sidebar. Delete is a trash icon
              (the typed challenge says exactly what is going); history opens the
@@ -232,7 +237,7 @@
           </div>
         {/if}
       </div>
-      {#if subtitle}<p class="mb-3 -mt-1.5 text-xs text-muted">{subtitle}</p>{/if}
+      {#if subtitle}<p class={sans ? 'mb-3 -mt-1 font-sans text-[13px] leading-5 text-muted' : 'mb-3 -mt-1.5 text-xs text-muted'}>{subtitle}</p>{/if}
 
       {#if fields}{@render fields({ dirty })}{/if}
 
@@ -262,14 +267,18 @@
            and cuts out hard. -->
       <div in:fly={{ y: 6, duration: 200 }} class="absolute inset-0 z-10 flex flex-col rounded-lg border border-accent/30 bg-panel p-3">
         <div class="flex flex-wrap items-center gap-1.5">
-          <span class="mr-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{formMuse.label}</span>
+          <span class="mr-1 {smallLabel}">{sans ? `Proposed ${formMuse.label}` : formMuse.label}</span>
           {#each formMuse.fields?.(proposal, formMuse.current(docText())) ?? [] as f (f.label)}
-            <span class="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-fg">
-              {f.label} → {f.value}
-            </span>
+            {#if sans}
+              <Chip tone="accent">{f.label}: {f.value}</Chip>
+            {:else}
+              <span class="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-fg"><!-- voice-ok -->
+                {f.label} → {f.value}
+              </span>
+            {/if}
           {/each}
         </div>
-        <div class="mb-1 mt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Document</div>
+        <div class="mb-1 mt-2 {smallLabel}">Document</div>
         <div class="min-h-0 flex-1 overflow-y-auto">
           <DiffView diff={proposalDiff} fallback={formMuse.docOf(proposal)} />
         </div>
@@ -346,7 +355,7 @@
         <Sparkles size={14} class="mr-1.5" /> Muse
       </Button>
     {/if}
-    <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
+    <span class={sans ? 'ml-auto font-sans text-xs leading-4 text-muted' : 'ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted'}><!-- voice-ok -->
       {(doc.editable ?? true) && dirty ? 'Unsaved changes · ⌘S to save' : ''}
     </span>
     {#if onCancel}

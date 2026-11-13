@@ -1,7 +1,10 @@
 <script lang="ts">
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { fly } from '@/lib/motion'
+  import { tabFromPath } from '@/lib/route-tabs'
   import { useSession } from '@/lib/session'
+  import { APPS_TABS } from '@/lib/settings-nav'
+  import { navigate, route } from '@/router'
   import AppsInstalledTab from './AppsInstalledTab.svelte'
   import AppsDiscoverTab from './AppsDiscoverTab.svelte'
 
@@ -10,18 +13,21 @@
   // picks it up live, prod needs a rebuild.
   const session = useSession()
   const isAdmin = $derived(session.data?.role === 'admin')
-  let tab = $state<'installed' | 'discover'>('installed')
+  // The URL is the tab: /apps (installed) and /apps/discover.
+  type AppsTab = (typeof APPS_TABS)[number]['id']
+  const tab = $derived(tabFromPath(route.pathname, '/apps', APPS_TABS.map((t) => t.id), 'installed'))
+  const goTab = (id: AppsTab) => {
+    if (id === 'installed') void navigate('/apps')
+    else void navigate('/apps/:tab', { params: { tab: id } })
+  }
 </script>
 
 <SettingsPage
   title="Apps"
   blurb="Add work and manage views built for your team."
-  tabs={[
-    { id: 'installed', label: 'Installed' },
-    { id: 'discover', label: 'Discover' },
-  ]}
+  tabs={APPS_TABS}
   {tab}
-  onTab={(id) => (tab = id)}
+  onTab={goTab}
   staggerItems="[data-app-cards] > *"
 >
   <!-- Tab-pane grammar: rise in on switch, no exit. On mount the app rows and

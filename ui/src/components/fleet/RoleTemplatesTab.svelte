@@ -151,7 +151,7 @@
   createLabel="New role"
 >
   {#snippet empty()}
-    <EmptyState title="No roles yet" hint="Add one with the plus button under the list." />
+    <EmptyState title="No roles yet" hint="Add one with New role, under the list." />
   {/snippet}
 
   {#snippet detail()}

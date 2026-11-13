@@ -9,6 +9,7 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -353,12 +354,15 @@
     {#if openWorkflow}
       <Modal open onClose={closeOverlay} width="max-w-2xl" title={openWorkflow.name}>
         {#key openWorkflow.id}
-          <WorkflowDetail
-            workflow={openWorkflow}
-            onChanged={() => void qc.invalidateQueries({ queryKey: ['workflows'] })}
-            onDelete={() => openWorkflow && void removeWorkflow(openWorkflow)}
-          />
+          <WorkflowDetail workflow={openWorkflow} onChanged={() => void qc.invalidateQueries({ queryKey: ['workflows'] })} />
         {/key}
+        {#snippet footer()}
+          <div class="flex items-center gap-2">
+            <DangerLink onClick={() => openWorkflow && void removeWorkflow(openWorkflow)}>Delete workflow</DangerLink>
+            <span class="ml-auto"></span>
+            <Button variant="outline" size="sm" onclick={closeOverlay}>Done</Button>
+          </div>
+        {/snippet}
       </Modal>
     {/if}
     {#if market && selected?.canEdit}

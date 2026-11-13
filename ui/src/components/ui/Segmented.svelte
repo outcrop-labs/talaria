@@ -22,7 +22,8 @@
     options: ReadonlyArray<SegmentedOption<T>>
     value: T
     onChange: (id: T) => void
-    size?: 'xs' | 'sm'
+    /** `md` is as tall as a `sm` Input or Select, for a filter row that holds both. */
+    size?: 'xs' | 'sm' | 'md'
     variant?: 'dither' | 'solid'
     /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
     voice?: ButtonVoice
@@ -50,9 +51,13 @@
       class={cn(
         'relative select-none rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,
-        size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : 'px-2.5 py-1 text-[10px] leading-4',
+        size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : size === 'md' ? 'px-3 py-[7px] text-[10px] leading-4' : 'px-2.5 py-1 text-[10px] leading-4',
         voice === 'sans' &&
-          cn(sansVoice, 'font-medium', size === 'xs' ? 'px-2 py-[3px] text-xs leading-4' : 'px-2.5 py-[3px] leading-5'),
+          cn(
+            sansVoice,
+            'font-medium',
+            size === 'xs' ? 'px-2 py-[3px] text-xs leading-4' : size === 'md' ? 'px-3 py-[5px] leading-5' : 'px-2.5 py-[3px] leading-5',
+          ),
         variant === 'dither' && 'dither-fill',
         value === o.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}

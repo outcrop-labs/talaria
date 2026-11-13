@@ -12,8 +12,16 @@ describe('skillTitle', () => {
     expect(skillTitle('pdf')).toBe('PDF')
   })
 
-  it('leaves words with a vowel, a y or a digit in sentence case', () => {
-    expect(skillTitle('edi-204')).toBe('Edi 204')
+  it('capitalises a known initialism that has a vowel', () => {
+    expect(skillTitle('bol-check')).toBe('BOL check')
+    expect(skillTitle('edi-204')).toBe('EDI 204')
+    expect(skillTitle('carrier-coi-review')).toBe('Carrier COI review')
+    for (const word of ['eta', 'pod', 'tms', 'pdf', 'api', 'sql', 'csv', 'coi']) expect(skillTitle(word)).toBe(word.toUpperCase())
+  })
+
+  it('leaves an ordinary word, a y or a digit in sentence case', () => {
+    expect(skillTitle('dot-inspection')).toBe('Dot inspection')
+    expect(skillTitle('podcast-notes')).toBe('Podcast notes')
     expect(skillTitle('my-notes')).toBe('My notes')
     expect(skillTitle('v2')).toBe('V2')
   })

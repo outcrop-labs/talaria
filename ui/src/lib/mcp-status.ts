@@ -55,6 +55,7 @@ export type StatusKind =
 
 export interface ServerStatus {
   kind: StatusKind
+  /** The word a row prints beside its dot. */
   label: string
   tone: 'muted' | 'warning' | 'danger' | 'success'
   /** The sentence behind the chip — the probe's own words when it has them. */
@@ -74,48 +75,48 @@ const chip = (
 /** The verdict, most blocking first: lifecycle, then the auth it cannot do
  *  without, then what the last discovery found, then the good news. */
 export function serverStatus(s: StatusInput): ServerStatus {
-  if (!s.enabled) return chip('disabled', 'disabled', 'muted')
+  if (!s.enabled) return chip('disabled', 'Disabled', 'muted')
   // The admin left it on, but its app cannot serve: no agent carries it, and
   // the grants wait for the app.
-  if (s.appOff) return chip('app-off', 'app off', 'muted', s.appOff)
-  if (s.pkgStatus === 'pulling') return chip('pulling', 'pulling image', 'muted')
-  if (s.pkgStatus === 'error') return chip('image-failed', 'image failed', 'danger', s.probe?.detail ?? null)
+  if (s.appOff) return chip('app-off', 'App is off', 'muted', s.appOff)
+  if (s.pkgStatus === 'pulling') return chip('pulling', 'Starting', 'muted')
+  if (s.pkgStatus === 'error') return chip('image-failed', 'Could not start', 'danger', s.probe?.detail ?? null)
   const internal = s.builtin || !!s.appSlug
   if (s.oauthEnabled && s.authMode === 'org' && !s.orgConnected) {
     // Connected once, refused since: the same Connect button, but the chip
     // says the grant was lost — a first-time "connect" would read as if
     // nobody had ever set it up.
     if (s.probe?.state === 'reconnect') {
-      return chip('reconnect', 'reconnect org account', 'danger', s.probe.detail, 'connect')
+      return chip('reconnect', 'Signed out', 'danger', s.probe.detail, 'connect')
     }
     const manual = !!s.oauthMeta && !s.oauthMeta.clientSet && (!s.oauthMeta.dcr || !!s.oauthMeta.dcrRejected)
     return manual
-      ? chip('needs-oauth-app', 'needs OAuth app', 'warning', 'Register an OAuth app with the provider, then connect.', 'setup-oauth-app')
-      : chip('needs-connect', 'connect org account', 'warning', 'This server uses OAuth. Connect the org account so agents can use it.', 'connect')
+      ? chip('needs-oauth-app', 'Needs setup', 'warning', 'Register an OAuth app with the provider, then connect.', 'setup-oauth-app')
+      : chip('needs-connect', 'Needs sign-in', 'warning', 'This server uses OAuth. Connect the org account so agents can use it.', 'connect')
   }
   if (s.authMode === 'per-user') {
     // The health pass proves a per-user host answers (a 401 counts); when it
     // does not, that outranks "each person connects" — nobody can.
-    if (s.probe?.state === 'unreachable') return chip('unreachable', 'unreachable', 'danger', s.probe.detail)
-    if (s.probe?.state === 'error') return chip('error', 'error', 'danger', s.probe.detail)
+    if (s.probe?.state === 'unreachable') return chip('unreachable', 'Unreachable', 'danger', s.probe.detail)
+    if (s.probe?.state === 'error') return chip('error', 'Error', 'danger', s.probe.detail)
     return chip(
       'per-user',
-      'per-user accounts',
+      'Each person signs in',
       'muted',
-      'Each person connects their own account under Settings → Connections; until they do, their assistant is told where to connect.',
+      'Each person connects their own account in Settings, under Connections. Until they do, their assistant is told where to connect.',
     )
   }
   if (s.probe?.state === 'auth-required' && !internal) {
-    return chip('needs-key', 'needs credentials', 'warning', s.probe.detail, 'set-credentials')
+    return chip('needs-key', 'Needs credentials', 'warning', s.probe.detail, 'set-credentials')
   }
-  if (s.probe?.state === 'unreachable') return chip('unreachable', 'unreachable', 'danger', s.probe.detail)
-  if (s.probe?.state === 'error') return chip('error', 'error', 'danger', s.probe.detail)
-  if (s.oauthEnabled && s.orgConnected) return chip('connected', 'connected', 'success', s.probe?.detail ?? null)
+  if (s.probe?.state === 'unreachable') return chip('unreachable', 'Unreachable', 'danger', s.probe.detail)
+  if (s.probe?.state === 'error') return chip('error', 'Error', 'danger', s.probe.detail)
+  if (s.oauthEnabled && s.orgConnected) return chip('connected', 'Connected', 'success', s.probe?.detail ?? null)
   if (s.probe?.state === 'ok' || s.tools.length > 0) {
-    return chip('ready', 'ready', 'success', s.probe?.detail ?? null)
+    return chip('ready', 'Ready', 'success', s.probe?.detail ?? null)
   }
-  if (internal || s.package) return chip('ready', 'ready', 'success')
-  return chip('untested', 'not yet discovered', 'muted', 'Ask the server for its tools to prove the connection.')
+  if (internal || s.package) return chip('ready', 'Ready', 'success')
+  return chip('untested', 'Not checked yet', 'muted', 'Check the server to list its tools and prove the connection.')
 }
 
 /** Whether the hourly health pass asks this server — what the card's
