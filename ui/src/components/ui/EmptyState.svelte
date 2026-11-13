@@ -42,8 +42,9 @@
     class?: string
   } = $props()
 
-  const wantsVignette = $derived(vignette ?? variant === 'full')
   const sans = useUiVoice() === 'sans'
+  // The settings area is matte: no dither field unless a caller asks for one.
+  const wantsVignette = $derived(vignette ?? (variant === 'full' && !sans))
   // In the settings area the one line reads as prose: "No keys yet. Create one above."
   const sentence = $derived(hint ? `${title}${/[.!?:]$/.test(title) ? '' : '.'} ${hint}` : title)
 

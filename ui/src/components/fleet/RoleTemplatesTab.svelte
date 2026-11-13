@@ -157,8 +157,11 @@
   {#snippet detail()}
     {#if draft}
       <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-6">
-        <span class="min-w-0 truncate font-sans text-[13px] font-medium leading-5 text-fg">{draft.name || 'New role'}</span>
+        <span class="min-w-0 truncate font-sans text-[15px] font-semibold leading-5 text-fg">{draft.name || 'New role'}</span>
         <Chip>{stored ? 'Your organization' : selected ? 'Common role' : 'Not saved yet'}</Chip>
+        {#if stored}
+          <DangerLink onClick={() => void remove(stored.slug)} disabled={busy} class="ml-auto shrink-0">Delete role</DangerLink>
+        {/if}
       </div>
       <div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-6">
         <div class="grid shrink-0 grid-cols-2 gap-x-4 gap-y-5">
@@ -187,9 +190,6 @@
         </div>
       </div>
       <div class="flex shrink-0 items-center gap-4 border-t border-line px-6 py-3">
-        {#if stored}
-          <DangerLink onClick={() => void remove(stored.slug)} disabled={busy}>Delete role</DangerLink>
-        {/if}
         <span class={['min-w-0 flex-1 truncate text-right font-sans text-[13px] leading-5', err ? 'text-danger' : 'text-muted']}>
           {#if err}{err}{:else if isNew && selected}Saves as your organization’s version of “{draft.name}”.{/if}
         </span>

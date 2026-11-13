@@ -3,6 +3,7 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Stat from '@/components/settings/Stat.svelte'
   import StatStrip from '@/components/settings/StatStrip.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { cn } from '@/lib/cn'
   import { agentLabel, formatTokens } from '@/lib/cost.svelte'
@@ -78,7 +79,7 @@
                       <WaitingMark site="observability/live-agent" size={12} class="text-accent" />Generating
                     </span>
                   {:else}
-                    Idle
+                    <span class="flex items-center gap-2"><StatusDot status="idle" />Idle</span>
                   {/if}
                 </td>
                 <td class={cn(table.td, table.num)}>{a.generations.toLocaleString('en-US')}</td>

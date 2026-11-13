@@ -13,6 +13,7 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { getList } from '@/lib/fetch-json'
   import { formatCost, formatTokens, useCost } from '@/lib/cost.svelte'
+  import { actorLabel } from '@/components/observability/actor'
   import { relativeTime } from '@/lib/fleet'
   import AlertRow from '@/components/observability/AlertRow.svelte'
   import { useAlerts } from '@/components/observability/alerts'
@@ -184,7 +185,7 @@
             class="flex h-11 w-full items-center gap-6 px-5 text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
           >
             <span class="min-w-0 flex-1 truncate text-muted">
-              <span class="font-medium text-fg">{a.actor}</span>
+              <span class="font-medium text-fg">{actorLabel(a.actor)}</span>
               {a.detail}
             </span>
             <span class="shrink-0 text-[13px] tabular-nums text-muted">{relativeTime(a.at)}</span>

@@ -245,7 +245,7 @@
       </SettingsGroup>
     </SettingsSection>
 
-    <SettingsSection title="Behaviour">
+    <SettingsSection title="Behavior">
       <SettingsGroup>
         {#if assistant.tiers.length > 0}
           <SettingsRow label="Model" hint="Pick the model it starts every chat on.">

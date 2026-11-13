@@ -2,7 +2,6 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
-  import { cn } from '@/lib/cn'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { anyFailed, anyPending } from '@/components/ui/query-state'
   import { toastError } from '@/lib/toast.svelte'
@@ -181,9 +180,9 @@
     listWidth="w-72"
     class="h-full"
   >
-    {#snippet row(c: (typeof categories)[number], active: boolean)}
-      <span class={cn('block truncate font-sans text-sm leading-5', active && 'font-medium')}>{c.label}</span>
-      <span class="block truncate font-mono text-xs leading-5 text-muted">{sublineOf(c)}</span>
+    {#snippet row(c: (typeof categories)[number])}
+      <span class="block truncate font-medium leading-5 text-fg">{c.label}</span>
+      <span class="block truncate font-mono text-xs leading-4 text-muted">{sublineOf(c)}</span>
     {/snippet}
 
     {#snippet empty()}

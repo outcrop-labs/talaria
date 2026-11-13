@@ -3,6 +3,7 @@
   import { Check, History, Sparkles, Trash2, X } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import SendButton from '@/components/chat/SendButton.svelte'
@@ -44,6 +45,7 @@
     onCancel,
     showHistory = $bindable(false),
     onDelete,
+    deleteLabel,
     class: className,
   }: {
     /** The record's kind, as a chip: 'skill', 'template', 'memory' … */
@@ -106,6 +108,8 @@
      *  belongs to the caller's `confirmDelete`. Omit where there is nothing to
      *  delete (a memory file). */
     onDelete?: () => void
+    /** The delete link's words in the settings area. "Delete skill" by default, from `kind`. */
+    deleteLabel?: string
     class?: string
   } = $props()
 
@@ -224,7 +228,9 @@
           <!-- Icon TILES, not padded buttons: two icon controls side by side
                read as one cluster only when their glyphs are near each other. -->
           <div class="ml-auto flex shrink-0 items-center">
-            {#if onDelete}
+            {#if onDelete && sans}
+              <DangerLink onClick={onDelete} class="mr-2">{deleteLabel ?? `Delete ${kind.toLowerCase()}`}</DangerLink>
+            {:else if onDelete}
               <IconButton title={`Delete ${title}`} danger onclick={onDelete}>
                 <Trash2 size={14} />
               </IconButton>
@@ -358,7 +364,13 @@
     <span class={sans ? 'ml-auto font-sans text-xs leading-4 text-muted' : 'ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted'}><!-- voice-ok -->
       {(doc.editable ?? true) && dirty ? 'Unsaved changes · ⌘S to save' : ''}
     </span>
-    {#if onCancel}
+    {#if onCancel && sans}
+      <!-- Only while there is something to discard, and named for what it does:
+           beside a dialog's Close, a standing "Cancel" read as a second way out. -->
+      {#if dirty}
+        <Button variant="ghost" size="sm" onclick={cancel}>Discard changes</Button>
+      {/if}
+    {:else if onCancel}
       <Button variant="ghost" size="sm" onclick={cancel}>
         Cancel
       </Button>

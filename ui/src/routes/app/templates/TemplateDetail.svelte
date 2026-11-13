@@ -1,6 +1,5 @@
 <script lang="ts">
   import SettingsField from '@/components/settings/SettingsField.svelte'
-  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import RecordEditor from '@/components/editor/RecordEditor.svelte'
@@ -65,6 +64,8 @@
     kind={template.kind === 'plan' ? 'Plan template' : 'Ticket template'}
     title={template.name}
     fieldsDirty={name.trim() !== template.name || guidance !== template.guidance}
+    {onDelete}
+    deleteLabel="Delete template"
   doc={{
     value: template.body,
     saving: busy,
@@ -97,10 +98,7 @@
 >
   {#snippet fields(_)}
     <div class="mb-1.5 space-y-5">
-      <div class="flex items-start gap-6">
-        <p class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">{blurb} Edited {relativeTime(template.updatedAt)}.</p>
-        <DangerLink onClick={onDelete} class="shrink-0">Delete template</DangerLink>
-      </div>
+      <p class="font-sans text-[13px] leading-5 text-muted">{blurb} Edited {relativeTime(template.updatedAt)}.</p>
       <SettingsField label="Name" for="template-name">
         <Input id="template-name" size="sm" bind:value={name} class="max-w-sm font-sans" />
       </SettingsField>

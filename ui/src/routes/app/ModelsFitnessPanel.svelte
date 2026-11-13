@@ -256,6 +256,7 @@
         {/if}
         <Button
           size="sm"
+          variant="outline"
           onclick={() => openRun(selected ?? data.models[0]?.id ?? '')}
           disabled={data.models.length === 0 || full}
           title={full ? `Already testing ${data.max} models. Stop one, or wait for it to finish.` : undefined}

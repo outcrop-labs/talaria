@@ -12,6 +12,7 @@
   import { cn } from '@/lib/cn'
   import { getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { actorLabel } from './actor'
   import { fade, QUICK } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { table } from './grammar'
@@ -155,8 +156,8 @@
                     )}
                   >
                     <span class="flex min-w-0 items-center gap-2.5">
-                      <Avatar name={e.actor} class="h-6 w-6 shrink-0" />
-                      <span class="min-w-0 truncate font-medium text-fg">{e.actor}</span>
+                      <Avatar name={actorLabel(e.actor)} class="h-6 w-6 shrink-0" />
+                      <span class="min-w-0 truncate font-medium text-fg" title={e.actor}>{actorLabel(e.actor)}</span>
                     </span>
                     <span class="min-w-0 truncate text-fg">{e.detail}</span>
                     <span class="flex min-w-0">

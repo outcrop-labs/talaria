@@ -69,6 +69,11 @@
 
   let selected = $state<string | null>(null)
   let createError = $state<unknown>(null)
+  // In the settings area a library opens on its first record, as Teams and
+  // Templates do, and falls back to it when the open one is deleted.
+  $effect(() => {
+    if (sans && !selected && skills.length) selected = skills[0]!.name
+  })
 
   // The selected skill's body, for the workbench. Reuses the same key the
   // editor reads, so picking a skill is a cache hit rather than a refetch.
