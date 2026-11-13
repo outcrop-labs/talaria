@@ -14,6 +14,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
+  import { agentLabel } from '@/lib/cost.svelte'
   import { putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
@@ -68,12 +69,12 @@
 
   // The strip speaks for the server filter when there is one (the summary is
   // per server); the agent and outcome filters narrow the table only.
+  const selected = $derived(server ? serverCalls(summaryQuery.data, server) : null)
   const strip = $derived.by((): McpCallCounts | null => {
     const s = summaryQuery.data
     if (!s) return null
     if (!server) return s.totals
-    const one = serverCalls(s, server)
-    return one ?? { calls: 0, errors: 0, denied: 0, notConnected: 0 }
+    return selected ?? { calls: 0, errors: 0, denied: 0, notConnected: 0 }
   })
   const serverOptions = $derived.by(() => {
     const names = (summaryQuery.data?.servers ?? []).map((s) => s.serverName)
@@ -133,7 +134,7 @@
         </Select>
         <Select size="sm" class="w-44" aria-label="Agent" value={agent ?? ''} onchange={(e) => setParam('agent', e.currentTarget.value || null)}>
           <option value="">All agents</option>
-          {#each agentOptions as name (name)}<option value={name}>{name}</option>{/each}
+          {#each agentOptions as name (name)}<option value={name}>{agentLabel(name).label}</option>{/each}
         </Select>
         <Select size="sm" class="w-44" aria-label="Outcome" value={outcome ?? ''} onchange={(e) => setParam('outcome', e.currentTarget.value || null)}>
           <option value="">All outcomes</option>
@@ -164,7 +165,7 @@
             <Stat label={server ? `Calls to ${server}` : 'Calls'} value={number(strip?.calls ?? 0)} sub={`In the ${windowLabel}`} />
             <Stat label="Errors" value={number(strip?.errors ?? 0)} sub={strip ? `${errorRate(strip)} of calls` : undefined} />
             <Stat label="Denied" value={number(strip?.denied ?? 0)} sub="Refused by the gateway" />
-            <Stat label="Not connected" value={number(strip?.notConnected ?? 0)} sub="Granted, but the account is missing" />
+            <Stat label="Not connected" value={number(strip?.notConnected ?? 0)} sub="Granted, no account linked" />
           </StatStrip>
         {/snippet}
       </QueryState>
@@ -184,7 +185,6 @@
                   <th class={cn(table.th, table.num)}>Not connected</th>
                   <th class={cn(table.th, table.num)}>Median</th>
                   <th class={cn(table.th, table.num)}>p95</th>
-                  <th class={cn(table.th, 'pl-6')}>Most called tools</th>
                 </tr>
               </thead>
               <tbody>
@@ -201,11 +201,33 @@
                     <td class={cn(table.td, table.num, s.notConnected > 0 ? 'text-fg' : 'text-muted')}>{number(s.notConnected)}</td>
                     <td class={cn(table.td, table.num, 'text-muted')}>{formatLatency(s.p50Ms)}</td>
                     <td class={cn(table.td, table.num, 'text-muted')}>{formatLatency(s.p95Ms)}</td>
-                    <td class={cn(table.td, table.id, 'w-[38%] max-w-0 truncate pl-6 text-muted')}>
-                      {#each s.topTools as t, i (t.tool)}
-                        {#if i > 0}<span class="mx-1.5">·</span>{/if}<span title={`${t.calls} calls, ${t.errors} errors`}><span class="text-fg">{t.tool}</span> {number(t.calls)}</span>
-                      {/each}
-                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </SettingsGroup>
+      </SettingsSection>
+    {/if}
+
+    {#if selected && selected.topTools.length > 0}
+      <SettingsSection title="Most called tools" description={`What agents asked ${selected.serverName} for in the ${windowLabel}.`}>
+        <SettingsGroup>
+          <div class="overflow-x-auto">
+            <table class={table.root}>
+              <thead>
+                <tr>
+                  <th class={table.th}>Tool</th>
+                  <th class={cn(table.th, table.num)}>Calls</th>
+                  <th class={cn(table.th, table.num)}>Errors</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each selected.topTools as t (t.tool)}
+                  <tr class={table.tr}>
+                    <td class={cn(table.td, table.id)}>{t.tool}</td>
+                    <td class={cn(table.td, table.num)}>{number(t.calls)}</td>
+                    <td class={cn(table.td, table.num, t.errors > 0 ? 'font-medium text-danger' : 'text-muted')}>{number(t.errors)}</td>
                   </tr>
                 {/each}
               </tbody>
@@ -241,7 +263,7 @@
                   <tr>
                     <th class={table.th}>Time</th>
                     <th class={table.th}>Agent</th>
-                    <th class={table.th}>Server</th>
+                    {#if !server}<th class={table.th}>Server</th>{/if}
                     <th class={table.th}>Tool</th>
                     <th class={table.th}>Outcome</th>
                     <th class={cn(table.th, table.num)}>Latency</th>
@@ -254,16 +276,18 @@
                     <tr class={table.tr}>
                       <td class={cn(table.td, 'whitespace-nowrap text-[13px] tabular-nums text-muted')} title={fullTime(c.at)}>{relativeTime(c.at)}</td>
                       <td class={cn(table.td, 'whitespace-nowrap')}>
-                        <button type="button" class={cn(filterLink, table.id)} title="Show this agent's calls" onclick={() => setParam('agent', c.agent)}>
-                          {c.agent}
+                        <button type="button" class={cn(filterLink, 'font-medium')} title="Show this agent's calls" onclick={() => setParam('agent', c.agent)}>
+                          {agentLabel(c.agent).label}
                         </button>
                         {#if c.userName}<span class="ml-1.5 text-[13px] text-muted">for {c.userName}</span>{/if}
                       </td>
-                      <td class={cn(table.td, 'whitespace-nowrap')}>
-                        <button type="button" class={filterLink} title="Show this server's calls" onclick={() => setParam('server', c.serverName)}>
-                          {c.serverName}
-                        </button>
-                      </td>
+                      {#if !server}
+                        <td class={cn(table.td, 'whitespace-nowrap')}>
+                          <button type="button" class={filterLink} title="Show this server's calls" onclick={() => setParam('server', c.serverName)}>
+                            {c.serverName}
+                          </button>
+                        </td>
+                      {/if}
                       <td class={cn(table.td, table.id, 'whitespace-nowrap')}>{c.tool ?? '—'}</td>
                       <td class={cn(table.td, 'whitespace-nowrap text-[13px]')} title={meta?.blurb}>
                         <span class="flex items-center gap-2">
