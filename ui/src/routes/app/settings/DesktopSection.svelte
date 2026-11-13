@@ -255,6 +255,7 @@
 </SettingsSection>
 
 {#if notify}
+  {@const n = notify}
   <SettingsSection
     title="Desktop notifications"
     description="Banners post through your operating system, for every instance you are signed in to."
@@ -270,38 +271,38 @@
               <StatusDot status={notifyLine.status} />{notifyLine.text}
             </span>
           {/if}
-          {#if notify?.muted}
+          {#if n.muted}
             <span class="block" data-testid="desktop-notify-muted">
               Muted in the launcher: no banners on this desktop, though unread still counts on the dock badge.
               Unmute it from the launcher's instance list.
             </span>
           {/if}
-          {#if notify?.lastError}
-            <span class="block text-danger">Last error: {notify.lastError}</span>
-          {:else if notify?.pending}
+          {#if n.lastError}
+            <span class="block text-danger">Last error: {n.lastError}</span>
+          {:else if n.pending}
             <span class="block">The last banner was handed over and had not been confirmed when Talaria checked.</span>
           {/if}
           {#if notifyMsg}
             <span class="block {notifyFailed ? 'text-danger' : ''}" data-testid="desktop-notify-result">{notifyMsg}</span>
           {/if}
         {/snippet}
-        {#if notify.permission === 'not-determined'}
+        {#if n.permission === 'not-determined'}
           <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void allow()}>Allow notifications</Button>
-        {:else if notify.permission === 'denied'}
+        {:else if n.permission === 'denied'}
           <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void allow()}>Open System Settings</Button>
         {/if}
         <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void test()}>Send test</Button>
       </SettingsRow>
 
-      {#if notify.background !== 'none'}
+      {#if n.background !== 'none'}
         <SettingsRow
           label="Keep running in the background"
-          hint={notify.closeToBackground
+          hint={n.closeToBackground
             ? backgroundLine
             : 'Closing the window quits Talaria, and no banners arrive until you open it again.'}
         >
           <Toggle
-            checked={notify.closeToBackground}
+            checked={n.closeToBackground}
             onChange={(on) => void chooseBackground(on)}
             title="Keep running in the background when the window closes"
           />

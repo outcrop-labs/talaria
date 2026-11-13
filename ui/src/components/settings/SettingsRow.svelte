@@ -4,7 +4,9 @@
   import { cn } from '@/lib/cn'
 
   // One row of a `SettingsGroup`: what it is on the left, its control on the
-  // right. Also the row of an entity list, with `icon` and `meta`.
+  // right. Also the row of an entity list, with `icon`, `meta` and `status`.
+  // Inside a group the right side is one shared column, so down a list every
+  // status starts at the same place and every control ends at the card edge.
   let {
     label,
     hint,
@@ -12,6 +14,7 @@
     icon,
     lead,
     meta,
+    status,
     stacked = false,
     as = 'div',
     href,
@@ -31,6 +34,8 @@
     lead?: Snippet
     /** Inline after the label: chips, identifiers. */
     meta?: Snippet
+    /** The state of the thing, ahead of the control: a `StatusDot` and a word. */
+    status?: Snippet
     /** The control takes the full width under the label (textareas, editors). */
     stacked?: boolean
     /** `label` makes the whole row the control's label. Only for a row whose
@@ -54,15 +59,17 @@
   {onclick}
   type={onclick ? 'button' : undefined}
   disabled={onclick ? disabled : undefined}
+  data-settings-row={stacked ? 'stacked' : ''}
   class={cn(
     'flex min-h-[60px] px-5 py-4',
-    stacked ? 'flex-col gap-3' : 'items-center gap-6',
+    // Not stacked still wraps: on a phone a wide control drops under its label.
+    stacked ? 'flex-col gap-3' : 'flex-wrap items-center gap-x-6 gap-y-3',
     (href || onclick) &&
       'w-full text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent enabled:hover:bg-hover [a&]:hover:bg-hover',
     className,
   )}
 >
-  <div class="flex min-w-0 flex-1 items-center gap-3">
+  <div class={cn('flex min-w-0 flex-1 items-center gap-3', !stacked && 'basis-48')}>
     {#if icon}
       <div class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-raised text-muted">
         {@render icon()}
@@ -85,7 +92,12 @@
       {/if}
     </div>
   </div>
-  {#if children}
-    <div class={cn('flex items-center gap-3', stacked ? 'w-full' : 'shrink-0')}>{@render children()}</div>
+  {#if children || status}
+    <div data-row-controls class={cn('flex max-w-full items-center gap-3', stacked ? 'w-full' : 'shrink-0 justify-end')}>
+      {#if status}
+        <span class="mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">{@render status()}</span>
+      {/if}
+      {@render children?.()}
+    </div>
   {/if}
 </svelte:element>

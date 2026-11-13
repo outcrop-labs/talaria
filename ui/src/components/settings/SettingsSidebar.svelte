@@ -50,7 +50,8 @@
   )
 
   $effect(() => {
-    if (nav.inside) return holdSansScreen()
+    if (!nav.inside) return
+    return holdSansScreen()
   })
 
   // The rows this area names itself. NAV and the app manifests carry the rest.

@@ -28,9 +28,7 @@
       {ep.models.length} model{ep.models.length === 1 ? '' : 's'}
       {#if ep.baseUrl}· <span class="font-mono text-xs">{ep.baseUrl}</span>{/if}
     {/snippet}
-    <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
-      <StatusDot status={key.status} />{key.text}
-    </span>
+    {#snippet status()}<StatusDot status={key.status} />{key.text}{/snippet}
     <Button variant="outline" size="sm" onclick={() => (managing = true)}>Manage</Button>
   </SettingsRow>
   {#if managing}

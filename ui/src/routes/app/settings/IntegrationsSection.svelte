@@ -107,14 +107,15 @@
             : 'Mail, Calendar and Drive.'}
         >
           {#snippet icon()}<Mail size={16} />{/snippet}
+          {#snippet status()}
+            <StatusDot status={data?.connected ? 'ok' : 'idle'} />{data?.connected ? 'Connected' : 'Not connected'}
+          {/snippet}
           {#if data?.connected}
-            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="ok" />Connected</span>
             <SettingsRowMenu
               label="Actions for Google Workspace"
               items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}
             />
           {:else}
-            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not connected</span>
             <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>
               Connect
             </a>

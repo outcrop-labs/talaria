@@ -1,11 +1,12 @@
 <script lang="ts">
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
+  import { focusRing } from '@/components/ui/control'
   import Input from '@/components/ui/Input.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { useNotifyPatch } from '@/lib/notify-center'
   import { DEFAULT_SCHEDULE, dndView, safeZone, scheduleSummary, toggleDay, validSchedule, WEEKDAYS } from '@/lib/notify-dnd'
   import type { DndSchedule, DndWire } from '@/lib/notify-wire'
+  import { cn } from '@/lib/cn'
   import { detectedZone } from '@/lib/timezone'
   import { p } from '@/router'
 
@@ -67,11 +68,22 @@
   </SettingsRow>
   {#if sched.enabled}
     <SettingsRow label="Days">
-      <div class="flex flex-wrap items-center gap-1.5" data-schedule-days>
+      <!-- The frame and thumb of a Segmented, with any number of days on. -->
+      <div class="inline-flex gap-0.5 rounded-md border border-line p-0.5" data-schedule-days>
         {#each WEEKDAYS as d (d.n)}
-          <Chip onSelect={() => void save({ ...sched, days: toggleDay(sched.days, d.n) })} selected={sched.days.includes(d.n)}>
+          {@const on = sched.days.includes(d.n)}
+          <button
+            type="button"
+            aria-pressed={on}
+            onclick={() => void save({ ...sched, days: toggleDay(sched.days, d.n) })}
+            class={cn(
+              'min-w-10 select-none rounded border px-2 py-[3px] font-sans text-[13px] font-medium leading-5 transition-colors',
+              focusRing,
+              on ? 'border-line-strong bg-raised text-fg shadow-[var(--theme-shadow-1)]' : 'border-transparent text-muted hover:text-fg',
+            )}
+          >
             {d.short}
-          </Chip>
+          </button>
         {/each}
       </div>
     </SettingsRow>

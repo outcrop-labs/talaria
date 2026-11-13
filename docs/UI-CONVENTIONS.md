@@ -83,16 +83,34 @@ instead of styling its own panels:
   come from the pure `lib/settings-nav.ts`. A new page adds its row there.
 - `SettingsSection` is a titled block. `SettingsGroup` is the card.
   `SettingsRow` is one row: `label`, `hint`, an `icon` tile or a bare `lead`
-  mark, inline `meta`, and the control as children. `SettingsRowMenu` is the
-  kebab that holds a row's secondary and destructive actions.
-- `StatStrip` and `Stat` are one card of numbers. `SettingsField` is a stacked
-  field for a dialog.
+  mark, inline `meta`, a `status` (a `StatusDot` and a word), and the control
+  as children. `SettingsRowMenu` is the kebab that holds a row's secondary and
+  destructive actions.
+- A group lines its rows up: the right side is one column, as wide as the
+  widest row needs. Put the state of a thing in `status`, not among the
+  controls, and down a list every status starts at the same place and every
+  control ends at the card edge. Below `sm` a row wraps, so a wide control
+  drops under its label.
+- `StatStrip` and `Stat` are one card of numbers. Any count from one to eight
+  fills the card: the strip sizes its rows from the count and the last stat
+  spans what is left. `SettingsField` is a stacked field for a dialog.
+- Diagnostics go behind one closed `Disclosure` with `variant="card"`. Add
+  `keepMounted` when the readings must stay live while it is closed.
+
+Settings is its own mode of the dock. On every route where the sidebar shows,
+the tab strip and the gear give way to one "Back to app" link, which returns
+to the last address outside the area (`lib/settings-return.ts`) or to Home.
+Outside the area the dock is unchanged.
 
 The area speaks sans through `lib/ui-voice`. `SettingsPage` and
 `SettingsSidebar` call `setUiVoice('sans')`, and the shared primitives (`Button`,
 `Tabs`, `Chip`, `Modal` and the rest) read it unless their own `voice` prop is
 passed. Context follows the component tree, so a dialog a page opens is sans
 too. The default is `mono`, so no other screen changes.
+
+`ConfirmHost` mounts at the app root, above every context. It asks
+`screenVoice()` when it opens, which is `sans` while the sidebar holds the
+screen (`holdSansScreen`), so `confirm()` from a settings page matches the page.
 
 ## Pick-one-and-edit-it — use `LibraryPane`
 

@@ -109,23 +109,26 @@
             <div>
               <SettingsRow label={s.label} hint={s.description ?? undefined}>
                 {#snippet icon()}<Plug size={16} />{/snippet}
-                {#if s.connected}
-                  <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="ok" />Connected</span>
-                  <SettingsRowMenu
-                    label={`Actions for ${s.label}`}
-                    items={[{ label: `Disconnect ${s.label}`, danger: true, onSelect: () => void put(s.id, null) }]}
-                  />
-                {:else if s.authKind === 'oauth'}
-                  {#if s.needsReconnect}
+                {#snippet status()}
+                  {#if s.connected}
+                    <StatusDot status="ok" />Connected
+                  {:else if s.authKind === 'oauth' && s.needsReconnect}
                     <span
-                      class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"
+                      class="flex items-center gap-2"
                       title="The provider refused to refresh your sign-in, so your assistant can no longer use this server as you."
                     >
                       <StatusDot status="warn" />Needs sign-in
                     </span>
                   {:else}
-                    <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not connected</span>
+                    <StatusDot status="idle" />Not connected
                   {/if}
+                {/snippet}
+                {#if s.connected}
+                  <SettingsRowMenu
+                    label={`Actions for ${s.label}`}
+                    items={[{ label: `Disconnect ${s.label}`, danger: true, onSelect: () => void put(s.id, null) }]}
+                  />
+                {:else if s.authKind === 'oauth'}
                   <Button
                     size="sm"
                     variant="outline"
@@ -137,7 +140,6 @@
                     {s.needsReconnect ? 'Reconnect' : 'Connect'}
                   </Button>
                 {:else}
-                  <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not connected</span>
                   <Button size="sm" variant="outline" onclick={() => toggle(s)}>
                     {connecting === s.id ? 'Cancel' : 'Connect'}
                   </Button>

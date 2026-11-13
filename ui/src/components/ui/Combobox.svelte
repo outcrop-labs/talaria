@@ -6,6 +6,7 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { ChevronDown } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
@@ -236,7 +237,11 @@
         </span>
       {/if}
     </span>
-    <span class="text-muted">▾</span>
+    {#if sans}
+      <ChevronDown size={16} strokeWidth={1.5} class="shrink-0 text-muted" />
+    {:else}
+      <span class="text-muted">▾</span>
+    {/if}
   </button>
 
   {#if open && pos}

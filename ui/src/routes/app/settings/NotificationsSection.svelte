@@ -189,9 +189,7 @@
     <SettingsGroup>
       <div data-email-switch="off">
         <SettingsRow label="Email is off for this workspace" hint="Nothing below sends mail. Only an admin can turn it back on.">
-          <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
-            <StatusDot status="warn" />Off
-          </span>
+          {#snippet status()}<StatusDot status="warn" />Off{/snippet}
         </SettingsRow>
       </div>
     </SettingsGroup>
@@ -217,18 +215,16 @@
     <SettingsGroup>
       {#if frequency}
         <div data-email-frequency={frequency}>
-          <SettingsRow label="Missed-activity email">
-            {#snippet hint()}
-              One email for what you have not seen in the app.
-              {#if features.has('email-batch')}
-                <!-- Said from the registry and this person's matrix: a hand-kept
-                     sentence here told people Following is not mailed, while
-                     Channel activity mailed by default (notify-web-4). -->
-                {#if classes}{mailNote(classes, data?.channels, frequency)}{/if}
-              {:else}
-                Saved now. Batching starts with this instance's next update.
-              {/if}
-            {/snippet}
+          <!-- The note is said from the registry and this person's matrix: a
+               hand-kept sentence here told people Following is not mailed,
+               while Channel activity mailed by default (notify-web-4). -->
+          <SettingsRow
+            label="Missed-activity email"
+            hint={features.has('email-batch')
+              ? 'One email for what you have not seen in the app.'
+              : 'Saved now. Batching starts with this instance’s next update.'}
+            info={features.has('email-batch') && classes ? mailNote(classes, data?.channels, frequency) : undefined}
+          >
             <Segmented options={EMAIL_FREQUENCY_OPTIONS} value={frequency} onChange={(v) => void setFrequency(v)} />
           </SettingsRow>
         </div>
@@ -257,9 +253,7 @@
             info="It overrules every personal setting on this page, for every person. Off stops all notification and digest email at once, including mail already queued."
           >
             {#snippet meta()}<Chip>Admin only</Chip>{/snippet}
-            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
-              <StatusDot status={emailOn ? 'ok' : 'warn'} />{emailOn ? 'On' : 'Off'}
-            </span>
+            {#snippet status()}<StatusDot status={emailOn ? 'ok' : 'warn'} />{emailOn ? 'On' : 'Off'}{/snippet}
             <Toggle checked={emailOn} onChange={(on) => void setDelivery(on)} title="Send email to everyone in the workspace" />
           </SettingsRow>
         </div>
