@@ -7,7 +7,6 @@
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Chip from '@/components/ui/Chip.svelte'
-  import Select from '@/components/ui/Select.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
@@ -99,7 +98,6 @@
     }
   }
 
-  let pinChoice = $state<Record<string, string>>({})
   let pinTyped = $state<Record<string, string>>({})
   const pinTo = async (t: ToolView, version: string) => {
     const ok = await confirm({
@@ -138,6 +136,11 @@
     }
   }
   const pinnable = (t: ToolView) => t.versions.filter((v) => !v.held && !v.deprecated && v.version !== t.current)
+  // One field takes both: a version picked from the known ones, or any typed.
+  const pinTarget = (t: ToolView): string | null => {
+    const typed = (pinTyped[t.tool] ?? '').trim()
+    return /^\d+\.\d+\.\d+$/.test(typed) || pinnable(t).some((v) => v.version === typed) ? typed : null
+  }
   const TONE = { ok: 'text-fg', danger: 'text-danger' } as const
   let showHistory = $state(false)
 </script>
@@ -196,6 +199,24 @@
                 <PinOff size={14} />
                 Unpin
               </Button>
+            {:else}
+              <Input
+                size="sm"
+                class="w-28 font-[var(--font-mono)]"
+                list="pin-versions-{t.tool}"
+                bind:value={pinTyped[t.tool]}
+                placeholder="Version"
+                aria-label="{t.label} version to pin"
+              />
+              <datalist id="pin-versions-{t.tool}">
+                {#each pinnable(t) as v (v.version)}
+                  <option value={v.version}></option>
+                {/each}
+              </datalist>
+              <Button variant="outline" size="md" disabled={busy !== null || !pinTarget(t)} onclick={() => pinTo(t, pinTarget(t)!)}>
+                <Pin size={14} />
+                Pin
+              </Button>
             {/if}
           </SettingsRow>
           {#each t.held as h (h.version)}
@@ -207,36 +228,6 @@
               <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => allowAgain(t, h)}>Allow again</Button>
             </div>
           {/each}
-          {#if !t.pinned}
-            <div class="flex flex-wrap items-center justify-end gap-3 px-5 pb-4">
-              <span class="mr-auto font-sans text-[13px] leading-5 text-muted">Pin {t.label} to one version</span>
-              {#if pinnable(t).length > 0}
-                <Select size="sm" class="w-28" bind:value={pinChoice[t.tool]} aria-label="{t.label} version to pin">
-                  {#each pinnable(t) as v (v.version)}
-                    <option value={v.version}>{v.version}</option>
-                  {/each}
-                </Select>
-                <Button
-                  variant="outline"
-                  size="md"
-                  disabled={busy !== null || !(pinChoice[t.tool] ?? pinnable(t)[0]?.version)}
-                  onclick={() => pinTo(t, pinChoice[t.tool] ?? pinnable(t)[0]!.version)}
-                >
-                  <Pin size={14} />
-                  Pin
-                </Button>
-              {/if}
-              <Input size="sm" class="w-28 font-[var(--font-mono)]" bind:value={pinTyped[t.tool]} placeholder={t.current} aria-label="Or pin a {t.label} version" />
-              <Button
-                variant="outline"
-                size="md"
-                disabled={busy !== null || !/^\d+\.\d+\.\d+$/.test((pinTyped[t.tool] ?? '').trim())}
-                onclick={() => pinTo(t, (pinTyped[t.tool] ?? '').trim())}
-              >
-                Pin typed
-              </Button>
-            </div>
-          {/if}
         </div>
       {/each}
 

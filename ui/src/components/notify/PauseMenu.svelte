@@ -4,6 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import { cn } from '@/lib/cn'
   import { useNotifyPatch, useNotifyZone } from '@/lib/notify-center'
+  import { useUiVoice } from '@/lib/ui-voice'
   import {
     customUntil,
     dndView,
@@ -79,7 +80,12 @@
     void save(until)
   }
 
-  const row = 'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left text-sm text-fg transition-colors duration-[120ms] dither-fill disabled:opacity-50'
+  // The dock's account menu and the bell show this in the house voice; the
+  // Notifications settings page shows it in the area's.
+  const sans = useUiVoice() === 'sans'
+  const row = sans
+    ? 'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left font-sans text-[13px] leading-5 text-fg transition-colors duration-[120ms] hover:bg-hover disabled:opacity-50'
+    : 'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left text-sm text-fg transition-colors duration-[120ms] dither-fill disabled:opacity-50'
 </script>
 
 <div data-pause-menu>
@@ -112,7 +118,7 @@
       <Button size="sm" disabled={busy} onclick={saveCustom}>Pause</Button>
     </div>
     {#if browserZone && zone !== browserZone}
-      <div class="px-3 pb-1 font-sans text-[11px] text-muted">In {zone}</div>
+      <div class={sans ? 'px-3 pb-1 font-sans text-xs text-muted' : 'px-3 pb-1 font-sans text-[11px] text-muted' /* voice-ok: the dock's menus */}>In {zone}</div>
     {/if}
   {/if}
   {#if error}<div class="px-3 pb-1.5 font-sans text-xs text-danger" role="alert">{error}</div>{/if}

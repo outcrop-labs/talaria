@@ -1,7 +1,10 @@
 <script lang="ts">
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import {
     desktopSettings,
@@ -103,19 +106,19 @@
     return s.backend
   }
 
-  const notifyLine = $derived.by((): { text: string; tone: 'ok' | 'warn' | 'bad' } | null => {
+  const notifyLine = $derived.by((): { text: string; status: 'ok' | 'warn' | 'danger' } | null => {
     if (!notify) return null
     switch (notify.permission) {
       case 'granted':
-        return { text: `On — shown by ${shownBy(notify)}`, tone: 'ok' }
+        return { text: `On, shown by ${shownBy(notify)}`, status: 'ok' }
       case 'not-determined':
-        return { text: 'Not allowed yet', tone: 'warn' }
+        return { text: 'Not allowed yet', status: 'warn' }
       case 'denied':
-        return { text: 'Blocked in System Settings', tone: 'bad' }
+        return { text: 'Blocked in System Settings', status: 'danger' }
       default:
         return {
           text: `Notification service unavailable: ${(notify.detail ?? 'no reason given').replace(/^unavailable:\s*/, '')}`,
-          tone: 'bad',
+          status: 'danger',
         }
     }
   })
@@ -127,7 +130,7 @@
       case 'menu-bar':
         return 'Closing the window keeps Talaria in the dock and the menu bar. Quit with Cmd+Q or the menu bar.'
       case 'minimize':
-        return 'Closing the window minimizes Talaria — this desktop shows no tray icons. Quit from the dock, with Ctrl+Q, or the switcher.'
+        return 'Closing the window minimizes Talaria, because this desktop shows no tray icons. Quit from the dock, with Ctrl+Q, or the switcher.'
       default:
         return 'On this platform, closing the window still quits Talaria.'
     }
@@ -155,7 +158,7 @@
       const result = await shellSendTestNotification()
       if (!result) return
       notify = result.status
-      if (result.ok) notifyMsg = `Sent — shown by ${shownBy(result.status)}`
+      if (result.ok) notifyMsg = `Sent, shown by ${shownBy(result.status)}`
       else {
         notifyMsg = `Not shown: ${result.error ?? 'the notification service refused it'}`
         notifyFailed = true
@@ -205,129 +208,107 @@
   }
 </script>
 
-<Panel as="section">
-  <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Window</div>
-  <p class="mb-3 max-w-xl font-sans text-sm text-muted">
-    Titlebar for the desktop app. Themed is the default: window controls that
-    match this UI, and a bar you can drag. OS uses the operating system
-    titlebar. None hides both.
-  </p>
-  <Segmented
-    {options}
-    value={settings.titlebar}
-    onChange={(id) => void setTitlebarMode(id)}
-  />
-</Panel>
+<SettingsSection title="Desktop app">
+  <SettingsGroup>
+    <SettingsRow label="Titlebar" hint="Themed matches this UI and drags to move. OS uses the system bar. None hides both.">
+      <Segmented {options} value={settings.titlebar} onChange={(id) => void setTitlebarMode(id)} />
+    </SettingsRow>
 
-{#if suspendValue !== null}
-  <Panel as="section">
-    <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Inactive instances</div>
-    <p class="mb-3 max-w-xl font-sans text-sm text-muted">
-      An instance you have not had on screen for this long gives back its
-      memory, and opens again at the same page the moment you return to it.
-      A page with unsent typing stays loaded. The window you are looking at
-      counts only while it is minimized.
-    </p>
-    <Segmented options={suspendOptions} value={suspendValue} onChange={(id) => void chooseSuspend(id)} />
-    {#if suspendMsg}
-      <p class="mt-2 font-sans text-sm text-danger">{suspendMsg}</p>
-    {/if}
-  </Panel>
-{/if}
-
-{#if notify}
-  <Panel as="section">
-    <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Notifications</div>
-    <p class="mb-3 max-w-xl font-sans text-sm text-muted">
-      The desktop app posts banners through your operating system, for every
-      instance you are signed in to, open or not. A banner closes by itself
-      when you read its notification anywhere else. The dock badge counts
-      what is for you — what needs you and what is addressed to you. What the
-      OS says right now:
-    </p>
-    {#if notifyLine}
-      <p
-        class="mb-1 font-sans text-sm {notifyLine.tone === 'ok'
-          ? 'text-fg'
-          : notifyLine.tone === 'warn'
-            ? 'text-muted'
-            : 'text-danger'}"
-        data-testid="desktop-notify-status"
+    {#if suspendValue !== null}
+      <SettingsRow
+        label="Suspend inactive instances"
+        info="A page with unsent typing stays loaded. The window you are looking at counts only while it is minimized."
       >
-        {notifyLine.text}
-      </p>
+        {#snippet hint()}
+          An instance off screen this long gives back its memory and reopens where you left it.
+          {#if suspendMsg}<span class="block text-danger">{suspendMsg}</span>{/if}
+        {/snippet}
+        <Segmented options={suspendOptions} value={suspendValue} onChange={(id) => void chooseSuspend(id)} />
+      </SettingsRow>
     {/if}
-    {#if notify.muted}
-      <p class="mb-1 max-w-xl font-sans text-sm text-fg" data-testid="desktop-notify-muted">
-        This instance is muted in the launcher: it posts no banners on this desktop. Its unread
-        count still counts toward the dock badge. Unmute it from the launcher's instance list.
-      </p>
-    {/if}
-    {#if notify.lastError}
-      <p class="mb-1 font-sans text-xs text-danger">Last error: {notify.lastError}</p>
-    {:else if notify.pending}
-      <p class="mb-1 font-sans text-xs text-muted">
-        The last banner was handed over and had not been confirmed when Talaria checked.
-      </p>
-    {/if}
-    <div class="mt-3 flex flex-wrap items-center gap-3">
-      {#if notify.permission === 'not-determined'}
-        <Button size="sm" disabled={notifyBusy} onclick={() => void allow()}>Allow notifications</Button>
-      {:else if notify.permission === 'denied'}
-        <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void allow()}>
-          Open System Settings
+
+    <SettingsRow label="Updates">
+      {#snippet hint()}
+        {#if update?.install === 'elsewhere'}
+          <!-- A Linux package or an .msi install: the shell says what updates it
+               (and refuses install_update), so there is no Install to offer. -->
+          <span class="text-fg" data-testid="desktop-update-elsewhere">
+            Talaria Desktop {update.version} is available. {update.how}
+          </span>
+        {:else if updateMsg}
+          {updateMsg}
+        {:else}
+          Installs the latest signed build. The app relaunches when it is done.
+        {/if}
+      {/snippet}
+      {#if !update}
+        <Button size="sm" variant="outline" disabled={updateBusy} onclick={() => void check()}>
+          {updateBusy ? 'Checking' : 'Check for updates'}
+        </Button>
+      {:else if update.install !== 'elsewhere'}
+        <Button size="sm" variant="outline" disabled={updateBusy} onclick={() => void install()}>
+          {updateBusy ? 'Installing' : `Install ${update.version}`}
         </Button>
       {/if}
-      <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void test()}>
-        Send test notification
-      </Button>
-      {#if notifyMsg}
-        <span class="font-sans text-sm {notifyFailed ? 'text-danger' : 'text-muted'}" data-testid="desktop-notify-result">
-          {notifyMsg}
-        </span>
-      {/if}
-    </div>
-    {#if notify.background !== 'none'}
-      <div class="mt-4">
-        <Toggle
-          checked={notify.closeToBackground}
-          onChange={(on) => void chooseBackground(on)}
-          label="Keep running in the background when the window closes"
-        />
-        <p class="mt-1 max-w-xl font-sans text-xs text-muted">
-          {notify.closeToBackground ? backgroundLine : 'Closing the window quits Talaria, and no banners arrive until you open it again.'}
-        </p>
-      </div>
-    {:else}
-      <p class="mt-4 max-w-xl font-sans text-xs text-muted">{backgroundLine}</p>
-    {/if}
-  </Panel>
-{/if}
+    </SettingsRow>
+  </SettingsGroup>
+</SettingsSection>
 
-<Panel as="section">
-  <div class="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Updates</div>
-  <p class="mb-3 max-w-xl font-sans text-sm text-muted">
-    Installs the latest stable desktop build from GitHub, signed, without a
-    trip to the releases page. The app relaunches when it is done.
-  </p>
-  <div class="flex flex-wrap items-center gap-3">
-    {#if update?.install === 'elsewhere'}
-      <!-- A Linux package or an .msi install: the shell says what updates it
-           (and refuses install_update), so there is no Install to offer. -->
-      <span class="max-w-xl font-sans text-sm text-fg" data-testid="desktop-update-elsewhere">
-        Talaria Desktop {update.version} is available. {update.how}
-      </span>
-    {:else if update}
-      <Button size="sm" disabled={updateBusy} onclick={() => void install()}>
-        {updateBusy ? 'Installing' : `Install ${update.version}`}
-      </Button>
-    {:else}
-      <Button size="sm" variant="outline" disabled={updateBusy} onclick={() => void check()}>
-        {updateBusy ? 'Checking' : 'Check for updates'}
-      </Button>
-    {/if}
-    {#if updateMsg}
-      <span class="font-sans text-sm text-muted">{updateMsg}</span>
-    {/if}
-  </div>
-</Panel>
+{#if notify}
+  <SettingsSection
+    title="Desktop notifications"
+    description="Banners post through your operating system, for every instance you are signed in to."
+  >
+    <SettingsGroup>
+      <SettingsRow
+        label="Banners"
+        info="A banner closes by itself when you read its notification anywhere else. The dock badge counts what needs you and what is addressed to you."
+      >
+        {#snippet hint()}
+          {#if notifyLine}
+            <span class="flex items-center gap-2" data-testid="desktop-notify-status">
+              <StatusDot status={notifyLine.status} />{notifyLine.text}
+            </span>
+          {/if}
+          {#if notify?.muted}
+            <span class="block" data-testid="desktop-notify-muted">
+              Muted in the launcher: no banners on this desktop, though unread still counts on the dock badge.
+              Unmute it from the launcher's instance list.
+            </span>
+          {/if}
+          {#if notify?.lastError}
+            <span class="block text-danger">Last error: {notify.lastError}</span>
+          {:else if notify?.pending}
+            <span class="block">The last banner was handed over and had not been confirmed when Talaria checked.</span>
+          {/if}
+          {#if notifyMsg}
+            <span class="block {notifyFailed ? 'text-danger' : ''}" data-testid="desktop-notify-result">{notifyMsg}</span>
+          {/if}
+        {/snippet}
+        {#if notify.permission === 'not-determined'}
+          <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void allow()}>Allow notifications</Button>
+        {:else if notify.permission === 'denied'}
+          <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void allow()}>Open System Settings</Button>
+        {/if}
+        <Button size="sm" variant="outline" disabled={notifyBusy} onclick={() => void test()}>Send test</Button>
+      </SettingsRow>
+
+      {#if notify.background !== 'none'}
+        <SettingsRow
+          label="Keep running in the background"
+          hint={notify.closeToBackground
+            ? backgroundLine
+            : 'Closing the window quits Talaria, and no banners arrive until you open it again.'}
+        >
+          <Toggle
+            checked={notify.closeToBackground}
+            onChange={(on) => void chooseBackground(on)}
+            title="Keep running in the background when the window closes"
+          />
+        </SettingsRow>
+      {:else}
+        <SettingsRow label="Closing the window" hint={backgroundLine} />
+      {/if}
+    </SettingsGroup>
+  </SettingsSection>
+{/if}
