@@ -29,7 +29,8 @@
   const isAdmin = $derived(session.data?.role === 'admin')
   const data = $derived(costQuery.data)
   const t = $derived(data?.totals)
-  const perAgent = $derived(data?.perAgent ?? [])
+  // By total tokens, largest first: the column the table sets in medium weight.
+  const perAgent = $derived([...(data?.perAgent ?? [])].sort((a, b) => b.prompt + b.completion - (a.prompt + a.completion)))
   const perDay = $derived(data?.perDay ?? [])
   // "~" when the window is dominated by estimates rather than reported usage.
   const approx = $derived((t?.estimatedShare ?? 0) > 0.5 ? '~' : '')

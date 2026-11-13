@@ -27,7 +27,7 @@
   const backends = $derived(data?.backends ?? [])
   const live = $derived(data?.live)
   const failed = $derived(query.isError && data === undefined)
-  const perModel = $derived(data?.usage.perModel ?? [])
+  const perModel = $derived([...(data?.usage.perModel ?? [])].sort((a, b) => b.tokens - a.tokens))
   const servedTokens = $derived(perModel.reduce((n, m) => n + m.tokens, 0))
 </script>
 

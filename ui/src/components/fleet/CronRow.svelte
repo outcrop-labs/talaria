@@ -11,7 +11,7 @@
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
-  import { MAX_CRON_PROMPT, describeSchedule, editPatch, fmtNext, jobDot, parseSchedule, schedToString, type CronJob, type CronPatch, type Sched } from './agent-crons'
+  import { MAX_CRON_PROMPT, describeSchedule, editPatch, fmtNext, isRawSchedule, jobDot, parseSchedule, schedToString, type CronJob, type CronPatch, type Sched } from './agent-crons'
   import ScheduleBuilder from './ScheduleBuilder.svelte'
 
   let {
@@ -44,7 +44,7 @@
   const paused = $derived(!job.enabled || job.state === 'paused')
   const failed = $derived(!paused && !!job.lastStatus && /error|fail/i.test(job.lastStatus))
   // A cadence the builder cannot name stays a cron string, which is an identifier.
-  const rawCron = $derived(parseSchedule(job.schedule).mode === 'custom')
+  const rawCron = $derived(isRawSchedule(job.schedule))
 
   const startEdit = () => {
     name = job.name

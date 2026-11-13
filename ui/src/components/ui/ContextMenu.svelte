@@ -285,6 +285,7 @@
             tabindex="-1"
             data-row={i}
             data-sel={idx >= 0 ? idx : undefined}
+            title={item.title}
             disabled={item.disabled}
             aria-haspopup={hasKids ? 'menu' : undefined}
             aria-expanded={hasKids ? openSub === i : undefined}
@@ -336,6 +337,7 @@
               aria-checked={kid.checked !== undefined ? kid.checked : undefined}
               tabindex="-1"
               data-sub-sel={kidx >= 0 ? kidx : undefined}
+              title={kid.title}
               disabled={kid.disabled}
               onmouseenter={(e) => {
                 if (kid.disabled) return

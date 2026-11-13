@@ -103,6 +103,49 @@ function describeInterval(every: number, unit: 'm' | 'h'): string {
   return say(minutes, 'minute', 'minutes')
 }
 
+const hhmm = (h: number, m: number) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+
+/** A cron the builder has no shape for, phrased only when the phrase is
+ *  exactly true: a step in the minute or the hour field, or a short list of
+ *  hours, every day or on weekdays. Null for everything else, which keeps its
+ *  raw string. Display only: `parseSchedule` still opens these as custom, so
+ *  the edit form round-trips what Hermes stored. */
+function describeStepCron(raw: string): string | null {
+  const fields = raw.trim().split(/\s+/)
+  if (fields.length !== 5) return null
+  const [min, hour, dom, mon, dow] = fields as [string, string, string, string, string]
+  if (dom !== '*' || mon !== '*') return null
+  if (dow !== '*' && dow !== '1-5') return null
+  const weekdays = dow === '1-5'
+
+  // A step that does not divide its span runs short where the field wraps
+  // (`*/7` minutes fires at :56 and again at :00), so "every 7" would be false.
+  const step = (field: string, span: number): number | null => {
+    if (field === '*') return 1
+    const m = /^\*\/(\d+)$/.exec(field)
+    const n = m ? Number(m[1]) : 0
+    return n >= 1 && n < span && span % n === 0 ? n : null
+  }
+  const minuteOf = /^\d{1,2}$/.test(min) && Number(min) < 60 ? Number(min) : null
+
+  const everyMinutes = step(min, 60)
+  if (everyMinutes !== null && hour === '*') return `${describeInterval(everyMinutes, 'm')}${weekdays ? ' on weekdays' : ''}`
+
+  const everyHours = step(hour, 24)
+  if (everyHours !== null && minuteOf !== null) {
+    const past = minuteOf === 0 ? '' : ` at :${String(minuteOf).padStart(2, '0')}`
+    return `${describeInterval(everyHours, 'h')}${past}${weekdays ? ' on weekdays' : ''}`
+  }
+
+  if (minuteOf !== null && /^\d{1,2}(,\d{1,2}){1,3}$/.test(hour)) {
+    const hours = hour.split(',').map(Number)
+    if (hours.some((h) => h > 23)) return null
+    const times = hours.map((h) => hhmm(h, minuteOf))
+    return `${weekdays ? 'Weekdays' : 'Every day'} at ${times.slice(0, -1).join(', ')} and ${times.at(-1)}`
+  }
+  return null
+}
+
 /** Plain-English schedule for display — the cron string stays in the tooltip. */
 export function describeSchedule(raw: string): string {
   const s = parseSchedule(raw)
@@ -119,9 +162,12 @@ export function describeSchedule(raw: string): string {
     case 'monthly':
       return `Monthly on day ${s.dom} at ${t}`
     case 'custom':
-      return raw
+      return describeStepCron(raw) ?? raw
   }
 }
+
+/** Whether a schedule has no plain phrase and shows as its raw string. */
+export const isRawSchedule = (raw: string): boolean => describeSchedule(raw) === raw
 
 /** Next-run label — absolute short form ("Wed 9:00 AM"); relativeTime is past-oriented. */
 export const fmtNext = (iso: string) =>

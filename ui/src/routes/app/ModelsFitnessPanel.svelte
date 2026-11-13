@@ -182,6 +182,7 @@
     if (unanswered > 0)
       runs.push({
         label: `Run ${unanswered} new fixture${unanswered === 1 ? '' : 's'}`,
+        title: 'Runs only the fixtures this model has never been asked, and drops any verdict for a fixture that no longer exists. Everything already answered is kept.',
         disabled: selectedBusy,
         onSelect: () => void post({ action: 'start', model, tiers: ['evals'], supplement: true }),
       })
@@ -189,6 +190,7 @@
     if (detailQuery.data?.record)
       runs.push({
         label: 'Re-run safety tests only',
+        title: "Runs the safety tests again. Everything else on this model's report is kept.",
         disabled: selectedBusy,
         onSelect: () => void post({ action: 'start', model, tiers: ['adversarial'] }),
       })
@@ -197,6 +199,7 @@
     if (retryable > 0)
       runs.push({
         label: `Re-run ${retryable} failed case${retryable === 1 ? '' : 's'}`,
+        title: 'Runs only the cases that failed, timed out or could not be measured. The passing ones are kept.',
         disabled: selectedBusy,
         onSelect: () => void post({ action: 'start', model, tiers: ['evals'], retryFailed: true }),
       })

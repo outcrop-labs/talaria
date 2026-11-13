@@ -4,10 +4,12 @@
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Chip from '@/components/ui/Chip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
@@ -82,21 +84,22 @@
       kind = saved.principalKind
       principalUserId = saved.principalUserId ?? ''
       await qc.invalidateQueries({ queryKey: ['agent-google', def.id] })
+      googleFlash.flash()
     } catch (e) {
       googleError = errorMessage(e)
     } finally {
       googleBusy = false
     }
   }
-  // The account saves as it is picked: the choice itself, and the person's id
-  // when the field is left.
-  const setKind = (next: GoogleIdentity['principalKind']) => {
-    kind = next
-    void savePrincipal()
-  }
-  const saveOwner = () => {
-    if (kind === 'owner' && principalUserId.trim() !== (googleQuery.data?.principalUserId ?? '')) void savePrincipal()
-  }
+  // This choice decides whose Google account the agent acts through, so a
+  // slip on the dropdown must not apply it: the row keeps its own Save, shown
+  // while the choice differs from the stored one.
+  const googleFlash = useSavedFlash()
+  const googleDirty = $derived.by(() => {
+    const g = googleQuery.data
+    if (!g || !googleSeeded) return false
+    return kind !== g.principalKind || (kind === 'owner' && principalUserId.trim() !== (g.principalUserId ?? ''))
+  })
   const googleStatus = $derived.by(() => {
     const g = googleQuery.data
     if (!g) return ''
@@ -193,14 +196,17 @@
       {#if canManage}
         <SettingsRow label="Google account">
           {#snippet hint()}
-            {#if googleError}<span class="text-danger">{googleError}</span>{:else}{googleStatus}{/if}
+            {#if googleError}<span class="text-danger">{googleError}</span>{:else if googleDirty}Save to apply this change.{:else}{googleStatus}{/if}
           {/snippet}
           {#if googleQuery.isLoading}
             <Skeleton class="h-8 w-[280px]" />
           {:else if googleQuery.isError}
             <span class="font-sans text-[13px] leading-5 text-danger">{errorMessage(googleQuery.error)}</span>
           {:else}
-            {#if kind === 'agent'}
+            {#if googleFlash.saved && !googleError && !googleDirty}
+              <span class="font-sans text-[13px] leading-5 text-success">Saved</span>
+            {/if}
+            {#if kind === 'agent' && !googleDirty}
               {#if googleQuery.data?.connected}
                 <DangerLink onClick={() => void disconnectGoogle()} disabled={googleBusy}>Disconnect Google</DangerLink>
               {/if}
@@ -210,8 +216,7 @@
               <Input
                 size="sm"
                 bind:value={principalUserId}
-                onblur={saveOwner}
-                onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && saveOwner()}
+                onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && googleDirty && void savePrincipal()}
                 placeholder="User id"
                 aria-label="The person's user id"
                 disabled={googleBusy}
@@ -220,16 +225,18 @@
             {/if}
             <Select
               size="sm"
-              value={kind}
+              bind:value={kind}
               disabled={googleBusy}
               aria-label="Google account"
-              onchange={(e) => setKind(e.currentTarget.value as GoogleIdentity['principalKind'])}
               class={kind === 'owner' ? 'w-[200px]' : 'w-[280px]'}
             >
               <option value="org">Shared org account</option>
               <option value="owner">A person's account</option>
               <option value="agent">This agent's own account</option>
             </Select>
+            {#if googleDirty}
+              <Button variant="outline" size="md" disabled={googleBusy} onclick={() => void savePrincipal()}>Save</Button>
+            {/if}
           {/if}
         </SettingsRow>
       {/if}

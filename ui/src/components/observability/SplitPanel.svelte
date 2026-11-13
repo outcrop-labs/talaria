@@ -24,7 +24,8 @@
   const parts = $derived(SERVED_ORDER.filter((k) => split[k] > 0))
   const percent = (n: number) => `${Math.round((n / total) * 100)}%`
 
-  const models = $derived(perModel.filter((m) => m.tokens > 0))
+  // Largest first: the bars already rank the models, so the rows do too.
+  const models = $derived(perModel.filter((m) => m.tokens > 0).sort((a, b) => b.tokens - a.tokens))
   const modelTokens = $derived(models.reduce((n, m) => n + m.tokens, 0))
 </script>
 

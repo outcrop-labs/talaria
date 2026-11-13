@@ -50,6 +50,8 @@ export interface ContextMenuItem {
   /** A keyboard shortcut, shown at the row's end (`Ctrl+R`). Display only:
    *  whatever binds the key does so itself. */
   hint?: string
+  /** What choosing the item does, when its label cannot say it all. A tooltip. */
+  title?: string
   /** Keep the menu open after selecting (multi-toggle pickers). */
   keepOpen?: boolean
   /** Submenu — hover opens a flyout of these entries. `onSelect` is ignored
