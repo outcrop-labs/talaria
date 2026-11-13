@@ -36,13 +36,17 @@
     audit: { label: 'Admin actions', blurb: 'Settings, permissions, agent config updates and deletions.' },
   }
 
-  // The event's own type, the second-level answer to "where did this come
-  // from" within a source. Warn-tinted for the ones worth a second look.
+  // The event's own type repeats what its sentence already says ("commented",
+  // "moved to review"), so only the ones worth a second look are marked.
   const WARN_TYPES = new Set(['gap', 'blocked'])
   const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
-  // Who, what, its type, where, when. One template so every source's columns line up.
-  const COLUMNS = 'grid grid-cols-[13rem_minmax(0,1fr)_7rem_10rem_5.5rem] items-center gap-x-4 px-5'
+  // Who, what, where, when. A section is one grid and each row borrows its
+  // columns: the name column is as wide as the longest name, so no name is
+  // cut, and what happened takes the rest and runs to a second line.
+  const GRID = 'grid grid-cols-[max-content_minmax(0,1fr)_fit-content(14rem)_max-content] gap-x-6'
+  const ROW = 'col-span-full grid grid-cols-subgrid items-start px-5'
+  const HEAD = cn(ROW, 'py-2.5 font-sans text-xs font-medium leading-4 text-muted')
 
   // Everything that happened across the workspace, one section per source,
   // each row labeled with its own event type. The chips narrow to the sources
@@ -80,10 +84,9 @@
 </script>
 
 {#snippet columnHeads()}
-  <div class={cn(COLUMNS, 'h-10 font-sans text-xs font-medium leading-4 text-muted')}>
+  <div class={HEAD}>
     <span>Who</span>
     <span>What</span>
-    <span>Type</span>
     <span>Where</span>
     <span class="text-right">When</span>
   </div>
@@ -113,16 +116,15 @@
             <Skeleton class="h-4 w-20 rounded-full" />
             <Skeleton class="h-3 w-64 rounded-full" />
           </div>
-          <div class="rounded-lg border border-line bg-panel">
+          <div class={cn(GRID, 'rounded-lg border border-line bg-panel')}>
             {@render columnHeads()}
             {#each [0, 1, 2, 3, 4, 5] as i (i)}
-              <div class={cn(COLUMNS, 'h-11 border-t border-line-subtle')}>
+              <div class={cn(ROW, 'h-11 items-center border-t border-line-subtle')}>
                 <span class="flex items-center gap-2.5">
                   <Skeleton class="h-6 w-6 shrink-0 rounded-full" />
                   <Skeleton class={`h-3 rounded-full ${['w-24', 'w-20', 'w-28'][i % 3]}`} />
                 </span>
                 <Skeleton class={`h-3 rounded-full ${['w-4/5', 'w-3/5', 'w-2/3'][i % 3]}`} />
-                <Skeleton class="h-3 w-12 rounded-full" />
                 <Skeleton class="h-3 w-16 rounded-full" />
                 <span class="flex justify-end"><Skeleton class="h-3 w-12 rounded-full" /></span>
               </div>
@@ -145,28 +147,30 @@
           <div in:fade={{ duration: 150 }} out:fade={QUICK}>
             <SettingsSection title={KIND_META[k].label} description={KIND_META[k].blurb}>
               <SettingsGroup>
-                {@render columnHeads()}
-                {#each byKind.get(k)! as e, i (`${e.at}-${i}`)}
-                  <button
-                    type="button"
-                    onclick={() => void navigateHref(e.href)}
-                    class={cn(
-                      COLUMNS,
-                      'h-11 w-full text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
-                    )}
-                  >
-                    <span class="flex min-w-0 items-center gap-2.5">
-                      <Avatar name={actorLabel(e.actor)} class="h-6 w-6 shrink-0" />
-                      <span class="min-w-0 truncate font-medium text-fg" title={e.actor}>{actorLabel(e.actor)}</span>
-                    </span>
-                    <span class="min-w-0 truncate text-fg" title={e.detail}>{e.detail}</span>
-                    <span class="flex min-w-0">
-                      {#if e.type}<Chip tone={WARN_TYPES.has(e.type) ? 'warn' : 'neutral'}>{sentence(e.type)}</Chip>{/if}
-                    </span>
-                    <span class="min-w-0 truncate text-[13px] text-muted" title={e.context}>{e.context}</span>
-                    <span class={cn(table.num, 'text-[13px] text-muted')}>{relativeTime(e.at)}</span>
-                  </button>
-                {/each}
+                <div class={GRID}>
+                  {@render columnHeads()}
+                  {#each byKind.get(k)! as e, i (`${e.at}-${i}`)}
+                    <button
+                      type="button"
+                      onclick={() => void navigateHref(e.href)}
+                      class={cn(
+                        ROW,
+                        'border-t border-line-subtle py-3 text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+                      )}
+                    >
+                      <!-- The avatar is taller than the line, so it hangs evenly around the first one. -->
+                      <span class="flex h-5 items-center gap-2.5 whitespace-nowrap">
+                        <Avatar name={actorLabel(e.actor)} class="h-6 w-6 shrink-0" />
+                        <span class="font-medium text-fg">{actorLabel(e.actor)}</span>
+                      </span>
+                      <span class="line-clamp-2 min-w-0 break-words text-fg" title={e.detail}>
+                        {#if WARN_TYPES.has(e.type)}<Chip tone="warn" class="mr-1.5 h-5 align-top">{sentence(e.type)}</Chip>{/if}{e.detail}
+                      </span>
+                      <span class="line-clamp-2 min-w-0 text-[13px] text-muted" title={e.context}>{e.context}</span>
+                      <span class={cn(table.num, 'text-[13px] text-muted')}>{relativeTime(e.at)}</span>
+                    </button>
+                  {/each}
+                </div>
               </SettingsGroup>
             </SettingsSection>
           </div>
