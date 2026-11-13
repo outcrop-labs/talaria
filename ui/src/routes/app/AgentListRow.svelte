@@ -2,6 +2,7 @@
   import AgentItem, { type AgentFrame } from '@/components/fleet/AgentItem.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
+  import ModelName from '@/components/models/ModelName.svelte'
   import { cn } from '@/lib/cn'
   import type { AgentBrainHealth, AgentContainers, AgentDef, FleetRollRow, LlmEndpoint } from '@/lib/fleet-defs'
   import AgentBrainChip from './AgentBrainChip.svelte'
@@ -15,6 +16,7 @@
     endpoints,
     brain,
     roll,
+    modelName,
     onDuplicate,
   }: {
     def: AgentDef
@@ -22,6 +24,8 @@
     endpoints: LlmEndpoint[]
     brain?: AgentBrainHealth
     roll?: FleetRollRow
+    /** The catalog's name for the agent's main model, when it has one. */
+    modelName?: string
     onDuplicate: () => void
   } = $props()
 
@@ -44,8 +48,8 @@
         onclick={openManage}
         class="min-w-0 flex-1 text-left after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-accent"
       >
-        <span class="block truncate font-sans text-sm font-medium leading-5 text-fg">{d.displayName}</span>
-        <span class="block truncate font-sans text-[13px] leading-5 text-muted">{d.role ?? 'No role yet'}</span>
+        <span class="block truncate font-sans text-sm font-medium leading-5 text-fg" title={d.displayName}>{d.displayName}</span>
+        <span class="block truncate font-sans text-[13px] leading-5 text-muted" title={d.role ?? undefined}>{d.role ?? 'No role yet'}</span>
       </button>
       <!-- The row has the width for the failure sentence beside the chip. -->
       <AgentRollChip {roll} sentence class="relative z-10" />
@@ -53,10 +57,10 @@
         {#if brainDown}
           <AgentBrainChip {brain} class="relative z-10" />
         {:else if model}
-          <span class="min-w-0 truncate font-mono text-xs text-muted" title={model}>{model}</span>
+          <ModelName id={model} name={modelName} quiet />
         {/if}
       </span>
-      <span class="w-24 shrink-0"><AgentStatusDot def={d} {containers} /></span>
+      <span class="w-24 shrink-0"><AgentStatusDot def={d} {containers} {brain} /></span>
       <span class="flex min-w-[104px] shrink-0 items-center justify-end gap-1">
         <AgentControls def={d} {containers} {running} {roll} {act} {pending} />
         <span class="relative z-10"><SettingsRowMenu label={`Actions for ${d.displayName}`} items={menuItems} /></span>

@@ -2,9 +2,10 @@
 // health mapping, the per-agent control logic, and the agent's menu.
 import { useQueryClient } from '@tanstack/svelte-query'
 import { Archive, Copy, Play, Repeat, RotateCw, SlidersHorizontal, Square, Trash2, UserPlus } from '@lucide/svelte'
+import type { DotStatus } from '@/components/ui/chip'
 import { confirm } from '@/components/ui/confirm.svelte'
 import { useContextMenu, type ContextMenuController, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-import { controlAgent, type AgentContainers, type AgentDef, type ControlAnswer, type FleetAction, type FleetRollRow } from '@/lib/fleet-defs'
+import { controlAgent, type AgentBrainHealth, type AgentContainers, type AgentDef, type ControlAnswer, type FleetAction, type FleetRollRow } from '@/lib/fleet-defs'
 import { pushToast, type ToastSpec } from '@/lib/toast.svelte'
 
 // ── Health: one word from container reality. 'warming' = the healthcheck's
@@ -16,13 +17,15 @@ import { pushToast, type ToastSpec } from '@/lib/toast.svelte'
 // to tell. Managed+created only: an imported def without a container was
 // never Talaria's to boot, so it stays 'down' where it belongs. ──
 export type Health = 'up' | 'warming' | 'degraded' | 'down' | 'draft' | 'retired'
-export const HEALTH_COLOR: Record<Health, string> = {
-  up: 'var(--theme-success)',
-  warming: 'var(--theme-warning)',
-  degraded: 'var(--theme-warning)',
-  down: 'var(--theme-danger)',
-  draft: 'var(--theme-ink-dim)',
-  retired: 'var(--theme-line)',
+/** One tone per state, the same on every page: running is green, starting is
+ *  gold, a fault is orange, and a state nobody has to act on is neutral. */
+export const HEALTH_TONE: Record<Health, DotStatus> = {
+  up: 'ok',
+  warming: 'warn',
+  degraded: 'danger',
+  down: 'danger',
+  draft: 'idle',
+  retired: 'idle',
 }
 /** The word beside the dot. */
 export const HEALTH_LABEL: Record<Health, string> = {
@@ -48,6 +51,14 @@ export function healthOf(d: AgentDef, c: AgentContainers | null): { health: Heal
   if (!running) return { health: 'down', running: false }
   if (state?.health === 'starting') return { health: 'warming', running: true }
   return { health: state?.health === 'unhealthy' ? 'degraded' : 'up', running: true }
+}
+
+/** The state a tile or row shows. A running agent that cannot reach its main
+ *  model is not healthy, whatever its container reports, so the dot and the
+ *  word agree with the "Model unreachable" beside them. */
+export function shownHealth(d: AgentDef, c: AgentContainers | null, brain?: AgentBrainHealth): Health {
+  const { health } = healthOf(d, c)
+  return health === 'up' && brain !== undefined && !brain.ok ? 'degraded' : health
 }
 
 const RESTART_CONFIRM = 'Restart this agent now? Any reply it is mid-way through will be dropped.'

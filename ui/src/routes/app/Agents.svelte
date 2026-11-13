@@ -2,7 +2,7 @@
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ChevronRight, CircleAlert, Import, LayoutGrid, List } from '@lucide/svelte'
+  import { ChevronRight, CircleAlert, Import, LayoutGrid, List, Repeat } from '@lucide/svelte'
   import { designHeadline, pendingDesign, useAgentDesign } from '@/lib/agent-design'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { searchParams } from 'sv-router'
@@ -32,6 +32,8 @@
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import { AGENTS_TABS } from '@/lib/settings-nav'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { useModelNames } from '@/components/models/model-names.svelte'
   import AgentListRow from './AgentListRow.svelte'
   import AgentTile from './AgentTile.svelte'
 
@@ -154,6 +156,24 @@
   const defs = $derived(defsQuery.data?.defs ?? [])
   const t = $derived(fleetQuery.data?.totals)
 
+  const modelName = useModelNames()
+
+  // The header keeps one filled button, New agent. Everything else that acts
+  // on the whole roster is in the menu beside it.
+  const headerMenu = (): ContextMenuEntry[] => [
+    {
+      label: anyRolling ? 'Restarting all agents' : 'Restart all agents',
+      icon: [Repeat, { size: 14 }],
+      // A second batch while one is in flight would only find every
+      // department already rolling.
+      disabled: anyRolling || rollConfirming,
+      onSelect: () => (rollConfirming = true),
+    },
+    ...(canHire
+      ? ([{ label: 'Federate outside agents', icon: [Import, { size: 14 }], onSelect: () => (federateOpen = true) }] as ContextMenuEntry[])
+      : []),
+  ]
+
   let view = $state<'grid' | 'list'>('grid')
   let creating = $state(false)
   let scheduling = $state(false)
@@ -183,7 +203,9 @@
   // `anyLoading`, never `||`: with `||` the roster stayed on its skeletons
   // for good whenever containers answered before defs (anyLoading says why).
   const rosterLoading = $derived(anyLoading(defsQuery, containersQuery))
-  const gridClasses = 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3'
+  // Three across only where the 960px column gives each card room for a
+  // name and a role, and every row as tall as the tallest so footers line up.
+  const gridClasses = 'grid auto-rows-fr grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3'
   const listClasses = 'overflow-hidden rounded-lg border border-line bg-panel [&>*+*]:border-t [&>*+*]:border-line-subtle'
   // The list container classes only apply while there are items (or their
   // skeletons) to frame — error/idle/empty render full-width, unframed.
@@ -247,7 +269,9 @@
   fill={tab === 'templates'}
 >
   {#snippet actions()}
-    <span class="mr-1 font-sans text-[13px] leading-5 text-muted tabular-nums">
+    <!-- h-8: the line holds the height of the buttons beside it, so it sits
+         on the same baseline on the tabs that have none. -->
+    <span class="mr-1 flex h-8 items-center font-sans text-[13px] leading-5 text-muted tabular-nums">
       {#if t}
         {t.online} of {t.agents} online · {t.activeToday} active today
       {:else if fleetQuery.isError}
@@ -270,23 +294,7 @@
         onChange={(id) => (view = id)}
       />
       {#if isAdmin}
-        <!-- Disabled while a batch is in flight: a second one would only find
-             every department already rolling. -->
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={anyRolling || rollConfirming}
-          onclick={() => (rollConfirming = true)}
-          title="Restart every running agent on a fresh container"
-        >
-          Restart all
-        </Button>
-        {#if canHire}
-          <SettingsRowMenu
-            label="More agent actions"
-            items={[{ label: 'Federate outside agents', icon: [Import, { size: 14 }], onSelect: () => (federateOpen = true) }]}
-          />
-        {/if}
+        <SettingsRowMenu label="More agent actions" items={headerMenu} />
       {/if}
       {#if canHire}
         <!-- The mark: a design generating or waiting for review keeps a dot
@@ -491,9 +499,9 @@
                   {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
                   {#each data.defs as d (d.id)}
                     {#if view === 'grid'}
-                      <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
+                      <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} modelName={modelName(d.latest?.config?.main?.model)} onDuplicate={() => (duplicateFrom = d)} />
                     {:else}
-                      <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} onDuplicate={() => (duplicateFrom = d)} />
+                      <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} modelName={modelName(d.latest?.config?.main?.model)} onDuplicate={() => (duplicateFrom = d)} />
                     {/if}
                   {/each}
                 {/snippet}
