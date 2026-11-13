@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte'
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
@@ -73,6 +74,24 @@
   {/if}
 {/snippet}
 
+{#snippet state(what: 'calendar' | 'drive', ready: boolean)}
+  {#if working === what}
+    <RowStatus status="idle">Checking</RowStatus>
+  {:else}
+    <RowStatus status={ready ? 'ok' : 'idle'}>{ready ? 'Ready' : 'Not set'}</RowStatus>
+  {/if}
+{/snippet}
+
+<!-- Setting one up is the row's one button. Checking a resource that is
+     already there is a menu item. Both run the same pass. -->
+{#snippet action(what: 'calendar' | 'drive', ready: boolean, menuLabel: string)}
+  {#if ready}
+    <SettingsRowMenu label={menuLabel} items={[{ label: 'Check again', disabled: working !== null, onSelect: () => void run(what) }]} />
+  {:else}
+    <Button variant="outline" size="sm" onclick={() => void run(what)} disabled={working !== null}>Set up</Button>
+  {/if}
+{/snippet}
+
 {#if query.isPending}
   <SettingsRow label="Team calendar"><Skeleton class="h-8 w-24" /></SettingsRow>
   <SettingsRow label="Team Drive"><Skeleton class="h-8 w-24" /></SettingsRow>
@@ -102,14 +121,8 @@
         A calendar everyone on your domain can edit.
       {/if}
     {/snippet}
-    {#snippet status()}
-      <RowStatus status={data.calendarId ? 'ok' : 'idle'}>{data.calendarId ? 'Ready' : 'Not set up'}</RowStatus>
-    {/snippet}
-    {#if data.readiness.connected}
-      <Button variant="outline" size="sm" onclick={() => void run('calendar')} disabled={working !== null}>
-        {working === 'calendar' ? 'Working' : data.calendarId ? 'Check again' : 'Set up'}
-      </Button>
-    {/if}
+    {#snippet status()}{@render state('calendar', !!data.calendarId)}{/snippet}
+    {#if data.readiness.connected}{@render action('calendar', !!data.calendarId, 'Actions for the team calendar')}{/if}
   </SettingsRow>
 
   <SettingsRow label="Team Drive">
@@ -127,14 +140,8 @@
         A shared drive the team owns, open to your whole domain.
       {/if}
     {/snippet}
-    {#snippet status()}
-      <RowStatus status={data.sharedDriveId ? 'ok' : 'idle'}>{data.sharedDriveId ? 'Ready' : 'Not set up'}</RowStatus>
-    {/snippet}
-    {#if data.readiness.connected}
-      <Button variant="outline" size="sm" onclick={() => void run('drive')} disabled={working !== null}>
-        {working === 'drive' ? 'Working' : data.sharedDriveId ? 'Check again' : 'Set up'}
-      </Button>
-    {/if}
+    {#snippet status()}{@render state('drive', !!data.sharedDriveId)}{/snippet}
+    {#if data.readiness.connected}{@render action('drive', !!data.sharedDriveId, 'Actions for the team Drive')}{/if}
   </SettingsRow>
 {/if}
 

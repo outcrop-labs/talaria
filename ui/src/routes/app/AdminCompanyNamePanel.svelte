@@ -5,7 +5,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { inlineEditKeys } from '@/components/ui/control'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
 
   /** The instance's DISPLAY name — the second half of every browser tab
@@ -25,7 +25,7 @@
   let seeded = $state(false)
   let error = $state<string | null>(null)
   let busy = $state(false)
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
   // Seed the input once the current name arrives, and only once — later
   // refetches (another admin's change) must not clobber what's being typed.
   $effect(() => {
@@ -46,7 +46,7 @@
     error = null
     try {
       await putJson<{ ok: true }>('/api/admin/instance', body)
-      savedFlash.flash()
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     }
@@ -80,7 +80,6 @@
       onRetry={() => void query.refetch()}
     />
   {:else}
-    {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     <Input
       size="sm"
       class="w-[280px]"

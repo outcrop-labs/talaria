@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import Button from '@/components/ui/Button.svelte'
+  import SaveAction from '@/components/admin/SaveAction.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -85,9 +85,10 @@
       />
     </SettingsRow>
     <div class="flex min-h-[60px] items-center gap-3 px-5 py-3">
-      <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">Saving updates every agent's identity.</span>
-      {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
-      <Button size="sm" variant="outline" onclick={() => void save()} disabled={!dirty || busy}>Save</Button>
+      <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
+        {#if savedFlash.saved}<span class="text-success">Saved.</span>{:else}Saving rewrites every agent's identity, so these two save together.{/if}
+      </span>
+      <SaveAction {dirty} {busy} onclick={() => void save()}>Save</SaveAction>
     </div>
   {/snippet}
 </QueryState>

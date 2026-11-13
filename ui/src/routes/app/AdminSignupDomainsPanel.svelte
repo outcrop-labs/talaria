@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Globe } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -88,7 +87,6 @@
         {#each data as d (d.id)}
           <div>
             <SettingsRow>
-              {#snippet icon()}<Globe size={16} />{/snippet}
               {#snippet label()}<span class="font-mono text-[13px] font-normal">{d.domain}</span>{/snippet}
               {#snippet status()}
                 {#if d.verified}

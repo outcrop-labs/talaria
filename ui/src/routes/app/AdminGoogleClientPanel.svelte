@@ -1,10 +1,12 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import SaveAction from '@/components/admin/SaveAction.svelte'
+  import { secretHint } from '@/components/admin/secret-hint'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import CopyButton from '@/components/ui/CopyButton.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
@@ -40,6 +42,7 @@
   }
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const query = createQuery(() => ({
     queryKey: ['google-client'],
     queryFn: (): Promise<Payload> => getJson<Payload>('/api/admin/google-client'),
@@ -63,6 +66,17 @@
   let loginError = $state<string | null>(null)
   let notice = $state<string | null>(null)
   let busy = $state(false)
+  // Nothing is stored here while the client comes from the server
+  // environment, so a filled form is itself something to save.
+  const dirty = $derived(
+    !!data &&
+      !!clientId.trim() &&
+      (!!secret.trim() || data.status.secretSet) &&
+      (data.status.source !== 'admin' ||
+        clientId.trim() !== data.status.clientId ||
+        !!secret.trim() ||
+        (hd.trim() || null) !== data.status.hd),
+  )
 
   const save = async () => {
     busy = true
@@ -113,7 +127,7 @@
     notice = null
     try {
       await putJson<{ ok: true }>('/api/admin/google-client/login', { enabled: next })
-      notice = next ? 'Google sign-in is on.' : 'Google sign-in is off.'
+      autosave.flash()
     } catch (e) {
       loginError = errorMessage(e)
     }
@@ -155,7 +169,7 @@
                   {data.status.source === 'admin' ? 'Set up here' : 'Set in the server environment'}
                 </RowStatus>
               {:else}
-                <RowStatus status="idle">Not set up</RowStatus>
+                <RowStatus status="idle">Not set</RowStatus>
               {/if}
             {/snippet}
           </SettingsRow>
@@ -212,7 +226,7 @@
             <SettingsField
               label="Client secret"
               for="google-client-secret"
-              hint={data.status.secretSet && data.status.source === 'admin' ? 'A secret is stored. Paste a new one to replace it.' : 'Stored encrypted. It is never shown again.'}
+              hint={secretHint(data.status.secretSet && data.status.source === 'admin', 'secret')}
             >
               <Input
                 id="google-client-secret"
@@ -259,13 +273,14 @@
               </ul>
             </SettingsField>
             {#if error}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
-            <div class="flex items-center justify-end gap-4">
+            <div class="flex items-center gap-4">
               {#if data.status.source === 'admin'}
                 <DangerLink onClick={() => void clear()} disabled={busy}>Remove client</DangerLink>
               {/if}
-              <Button size="sm" variant="outline" onclick={() => void save()} disabled={busy || !clientId.trim() || (!secret.trim() && !data.status.secretSet)}>
+              <span class="flex-1"></span>
+              <SaveAction {dirty} {busy} onclick={() => void save()}>
                 {data.status.configured ? 'Save changes' : 'Save client'}
-              </Button>
+              </SaveAction>
             </div>
           </div>
         </Disclosure>

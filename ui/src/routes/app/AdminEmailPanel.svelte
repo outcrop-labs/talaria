@@ -1,5 +1,8 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import SaveAction from '@/components/admin/SaveAction.svelte'
+  import { secretHint } from '@/components/admin/secret-hint'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -22,6 +25,7 @@
   }
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const query = createQuery(() => ({
     queryKey: ['email-config'],
     queryFn: async (): Promise<EmailCfg> => (await getJson<{ config: EmailCfg }>('/api/admin/email')).config,
@@ -39,7 +43,10 @@
       // PUT patches the config; POST sends the test email.
       const send = typeof body === 'object' && body !== null && 'test' in body ? postJson : putJson
       await send<{ ok: true }>('/api/admin/email', body)
+      // A field that saved on change flashes the header's cue. A secret and the
+      // test email answer beside their own button.
       if (okNotice) notice = okNotice
+      else autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     }
@@ -92,7 +99,7 @@
               size="sm"
               aria-label="Mail server host"
               value={data.smtp.host}
-              onblur={(e) => void post({ smtp: { host: e.currentTarget.value } })}
+              onblur={(e) => e.currentTarget.value !== data.smtp.host && void post({ smtp: { host: e.currentTarget.value } })}
               placeholder="smtp.gmail.com"
               class="w-[196px] font-mono"
             />
@@ -100,7 +107,7 @@
               size="sm"
               aria-label="Mail server port"
               value={String(data.smtp.port)}
-              onblur={(e) => void post({ smtp: { port: Number(e.currentTarget.value) || 587 } })}
+              onblur={(e) => (Number(e.currentTarget.value) || 587) !== data.smtp.port && void post({ smtp: { port: Number(e.currentTarget.value) || 587 } })}
               class="w-[72px] font-mono"
             />
           </SettingsRow>
@@ -115,14 +122,14 @@
             <Input
               size="sm"
               value={data.smtp.user}
-              onblur={(e) => void post({ smtp: { user: e.currentTarget.value } })}
+              onblur={(e) => e.currentTarget.value !== data.smtp.user && void post({ smtp: { user: e.currentTarget.value } })}
               placeholder="talaria@yourcompany.com"
               class="w-[280px]"
             />
           </SettingsRow>
           <SettingsRow
             label="Password"
-            hint={data.smtp.passSet ? 'A password is stored. Enter a new one to replace it.' : 'An app password works too.'}
+            hint={secretHint(data.smtp.passSet, 'password')}
           >
             <Input
               size="sm"
@@ -133,23 +140,23 @@
               autocomplete="off"
               class="w-[280px]"
             />
-            <Button
+            <SaveAction
               size="md"
-              variant="outline"
-              disabled={!secret.trim() || busy}
+              dirty={!!secret.trim()}
+              {busy}
               onclick={() => {
                 void post({ smtp: { pass: secret } }, 'Password saved.')
                 secret = ''
               }}
             >
               Save password
-            </Button>
+            </SaveAction>
           </SettingsRow>
         {/if}
         {#if data.provider === 'resend'}
           <SettingsRow
             label="API key"
-            hint={data.resend.apiKeySet ? 'A key is stored. Enter a new one to replace it.' : 'Stored encrypted and never shown again.'}
+            hint={secretHint(data.resend.apiKeySet)}
           >
             <Input
               size="sm"
@@ -160,17 +167,17 @@
               autocomplete="off"
               class="w-[280px]"
             />
-            <Button
+            <SaveAction
               size="md"
-              variant="outline"
-              disabled={!secret.trim() || busy}
+              dirty={!!secret.trim()}
+              {busy}
               onclick={() => {
                 void post({ resend: { apiKey: secret } }, 'Key saved.')
                 secret = ''
               }}
             >
               Save key
-            </Button>
+            </SaveAction>
           </SettingsRow>
         {/if}
         {#if data.provider}

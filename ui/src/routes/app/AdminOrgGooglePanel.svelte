@@ -1,11 +1,9 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Building2 } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -17,6 +15,7 @@
   import { toastError } from '@/lib/toast.svelte'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
   import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
+  import McpServerMark from './McpServerMark.svelte'
   import RowStatus from '@/components/admin/RowStatus.svelte'
 
   interface OrgGoogle {
@@ -89,6 +88,8 @@
   }
 </script>
 
+{#snippet mark()}<McpServerMark title="Google" domain="google.com" />{/snippet}
+
 <SettingsSection
   title="Shared Google account"
   description="One Google account that agents without an owner work in."
@@ -100,14 +101,14 @@
         <!-- Never show "Not connected" + Connect while the status is in flight —
              hold the connection row's shape until it resolves. -->
         <SettingsRow label="Shared account">
-          {#snippet icon()}<Building2 size={16} />{/snippet}
+          {#snippet lead()}{@render mark()}{/snippet}
           <Skeleton class="h-8 w-24" />
         </SettingsRow>
       {/snippet}
       {#snippet empty()}
         <SettingsRow label="Shared account" hint="Set up the Google Cloud client above first.">
-          {#snippet icon()}<Building2 size={16} />{/snippet}
-          {#snippet status()}<RowStatus status="idle">Not available</RowStatus>{/snippet}
+          {#snippet lead()}{@render mark()}{/snippet}
+          {#snippet status()}<RowStatus status="idle">Not connected</RowStatus>{/snippet}
         </SettingsRow>
       {/snippet}
       {#snippet children(_data)}
@@ -115,7 +116,7 @@
              connected" and a Connect button — reconnecting a connection that is
              already live re-consents the org. That is QueryState's error branch. -->
         <SettingsRow label="Shared account">
-          {#snippet icon()}<Building2 size={16} />{/snippet}
+          {#snippet lead()}{@render mark()}{/snippet}
           {#snippet hint()}
             {#if data?.connected && data.email}
               <span class="font-mono text-xs">{data.email}</span>
@@ -124,21 +125,20 @@
             {/if}
           {/snippet}
           {#snippet status()}
-            <RowStatus status={data?.connected ? 'ok' : 'idle'}>{data?.connected ? 'Connected' : 'Not connected'}</RowStatus>
+            {#if probing}
+              <RowStatus status="idle">Testing</RowStatus>
+            {:else}
+              <RowStatus status={data?.connected ? 'ok' : 'idle'}>{data?.connected ? 'Connected' : 'Not connected'}</RowStatus>
+            {/if}
           {/snippet}
           {#if data?.connected}
-            <Button
-              variant="outline"
-              size="sm"
-              title="Check that Drive, Calendar and Gmail can be reached"
-              onclick={() => void probeApis()}
-              disabled={probing}
-            >
-              {probing ? 'Testing' : 'Test access'}
-            </Button>
             <SettingsRowMenu
               label="Actions for the shared Google account"
-              items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}
+              items={[
+                { label: 'Test access', disabled: probing, onSelect: () => void probeApis() },
+                'sep',
+                { label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() },
+              ]}
             />
           {:else}
             <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Connect</a>
