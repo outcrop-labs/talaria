@@ -229,7 +229,7 @@
     <div
       bind:this={pane}
       onscroll={onScroll}
-      class="max-h-[38vh] min-h-[8rem] overflow-auto border-t border-line bg-black/40 p-3 font-mono text-xs leading-[1.45]"
+      class="max-h-[38vh] min-h-[8rem] overflow-auto border-t border-line bg-surface p-3 font-mono text-xs leading-[1.45]"
     >
       {#if log.length === 0}
         <!-- Not "the first fixture": tier 1 runs before any fixture does, and a
