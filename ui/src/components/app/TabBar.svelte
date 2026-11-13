@@ -25,7 +25,8 @@
 </script>
 
 <script lang="ts">
-  import { Cog, TriangleAlert } from '@lucide/svelte'
+  import { untrack } from 'svelte'
+  import { ChevronLeft, Cog, TriangleAlert } from '@lucide/svelte'
   import WingMark from '@/components/WingMark.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -42,7 +43,9 @@
   import { badgeTitle, useNavBadges } from '@/lib/nav-badges.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { useAppGrants, useDeniedViews } from '@/lib/session'
-  import { manageArea, MANAGE_HOME } from '@/lib/manage-area'
+  import { MANAGE_HOME } from '@/lib/manage-area'
+  import { settingsNav } from '@/lib/settings-nav'
+  import { backToApp, rememberOutside } from '@/lib/settings-return'
   import { edgeFade, revealCurrent } from '@/lib/tab-strip'
   import { readout, tabWorking } from '@/lib/tab-working'
   import { tabMarkOnScreen } from '@/lib/tab-mark-on-screen'
@@ -65,13 +68,22 @@
   const appsBroken = $derived(appsList.failed || appsList.stale)
 
   const boardsHasOwnSearch = $derived(isUnder(route.pathname, '/boards'))
-  const onSettingsOrAdmin = $derived(isUnder(route.pathname, '/settings') || isUnder(route.pathname, '/admin'))
 
   const grants = $derived({ denied: denied.current, appGrants: appGrants.current })
   const { row, manage: manageSection } = $derived(dockSections(user, appsList.rows, grants))
-  const manage = $derived(
-    manageArea(NAV, appsList.rows, { isAdmin: user.role === 'admin', ...grants }, route.pathname),
-  )
+  // The sidebar's own model decides what "inside the settings area" means, so
+  // the dock gives way on exactly the routes where the sidebar shows.
+  const area = $derived(settingsNav(NAV, appsList.rows, { isAdmin: user.role === 'admin', ...grants }, route.pathname))
+  const hasManage = $derived(area.groups.some((g) => g.id === 'workspace'))
+
+  let lastOutside = $state<string | null>(null)
+  $effect(() => {
+    // Read for the dependency: a query-only move is still a new address.
+    void route.search
+    const href = route.pathname + window.location.search + route.hash
+    const inside = area.inside
+    lastOutside = rememberOutside(untrack(() => lastOutside), href, inside)
+  })
   const activeCandidates = $derived([...row, ...(manageSection ? [manageSection] : [])])
   const activePath = $derived(navActiveItem(route.pathname, activeCandidates)?.to ?? null)
   const workingElsewhere = $derived(readout(row.flatMap((s) => s.items), working.current, route.pathname))
@@ -112,6 +124,20 @@
     <DesktopSwitcher collapsed />
   </div>
 
+  {#if area.inside}
+    <!-- Settings is its own mode: its sidebar is the navigation, so the tab
+         strip gives way to the one link that leaves. -->
+    <div class="flex min-w-0 flex-1 items-center px-3">
+      <a
+        href={backToApp(lastOutside)}
+        aria-label="Back to app"
+        class="flex h-8 shrink-0 items-center gap-1.5 rounded-md pl-1.5 pr-2.5 font-sans text-[13.5px] leading-5 text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg"
+      >
+        <ChevronLeft size={16} strokeWidth={1.5} class="shrink-0" />
+        <span>Back<span class="hidden @lg:inline">&nbsp;to app</span></span>
+      </a>
+    </div>
+  {:else}
   <div class="tab-strip relative flex min-w-0 flex-1 items-end gap-2 overflow-x-auto px-3" use:edgeFade use:revealCurrent use:tabLift={route.pathname}>
     {#each row as section, si (section.id)}
       {#if si > 0}<div class="mb-3 h-5 w-px shrink-0 bg-line"></div>{/if}
@@ -147,6 +173,7 @@
       <div class="mb-1.5 shrink-0 self-end"><QueryError {...appsList.notice} /></div>
     {/if}
   </div>
+  {/if}
 
   <div class="flex shrink-0 items-center gap-2">
     {#if workingElsewhere}
@@ -179,17 +206,12 @@
       </RailTooltip>
     {/if}
     <SidebarAssistant collapsed />
-    {#if manage.items.length > 0}
+    {#if hasManage && !area.inside}
       <RailTooltip label="Manage">
         <a
           href={p(MANAGE_HOME)}
           aria-label="Manage"
-          data-status={manage.inside ? 'active' : undefined}
-          aria-current={manage.inside ? 'page' : undefined}
-          class={cn(
-            'relative grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg',
-            'data-[status=active]:bg-raised data-[status=active]:text-fg',
-          )}
+          class="relative grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
         >
           <Cog size={16} strokeWidth={1.5} />
         </a>
@@ -200,7 +222,7 @@
       <BoardsSearch />
     {/if}
     <NotificationBell />
-    <UserMenu {user} {onLogout} active={onSettingsOrAdmin} hasManage={manage.items.length > 0} />
+    <UserMenu {user} {onLogout} {hasManage} />
     <DesktopWindowControls at="right" />
   </div>
 </nav>

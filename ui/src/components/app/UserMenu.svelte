@@ -15,21 +15,13 @@
   // personal nested in a flyover (profile, theme, Settings, Admin, Manage,
   // sign out). Settings/Admin live HERE, not among the tiles: they're about
   // the person and the instance, not the work.
-  //
-  // `active` lights the chip while the route is inside one of the two views
-  // this menu owns (/settings, /admin). They are the only views with no tile
-  // anywhere in the dock, and neither renders a title of its own, so without
-  // this nothing on the screen says where you are — the job the deleted
-  // strip's "System" breadcrumb used to do.
   let {
     user,
     onLogout,
-    active = false,
     hasManage = false,
   }: {
     user: SessionUser
     onLogout: () => void
-    active?: boolean
     /** Whether this viewer has any manage view — the dock decides, once. */
     hasManage?: boolean
   } = $props()
@@ -50,19 +42,11 @@
     <button
       type="button"
       aria-expanded={open}
-      class={cn(
-        'flex h-9 items-center gap-2 rounded-md px-2 transition-colors duration-[120ms] dither-fill',
-        active && 'bg-raised',
-      )}
+      class="flex h-9 items-center gap-2 rounded-md px-2 transition-colors duration-[120ms] dither-fill"
     >
       <StatusDot status="ok" />
       <!-- Display name, not email: the flyover header still shows both. -->
-      <span
-        class={cn(
-          'hidden max-w-[16rem] truncate font-mono text-[11px] sm:block',
-          active ? 'text-fg' : 'text-muted',
-        )}
-      >
+      <span class="hidden max-w-[16rem] truncate font-mono text-[11px] text-muted sm:block">
         {user.name ?? user.email ?? 'Account'}
       </span>
     </button>
