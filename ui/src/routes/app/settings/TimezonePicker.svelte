@@ -4,7 +4,7 @@
   import Combobox from '@/components/ui/Combobox.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { saveTimezone, useProfilePrefs } from '@/lib/muse.svelte'
   import { detectedZone, isValidTimeZone, supportedTimeZones, zoneNowLabel } from '@/lib/timezone'
   import { markTimezoneAdopted } from '@/lib/timezone-adopt'
@@ -27,7 +27,7 @@
   const session = useSession()
   const prefs = $derived(prefsQuery.data)
   const loading = $derived(prefsQuery.isPending)
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
   let error = $state<string | null>(null)
 
   const detected = $derived((() => {
@@ -48,7 +48,7 @@
     // An open brief page is showing times and a document computed under the
     // old zone; the next read must happen under the new one.
     await qc.invalidateQueries({ queryKey: BRIEF_KEY })
-    savedFlash.flash()
+    if (!error) autosave.flash()
   }
 </script>
 
@@ -70,7 +70,6 @@
       onRetry={() => void prefsQuery.refetch()}
     />
   {:else}
-    {#if savedFlash.saved && !error}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     <Combobox
       size="sm"
       class="w-[280px]"

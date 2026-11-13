@@ -5,7 +5,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { anyPending, firstError } from '@/components/ui/query-state'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { savePreferredEffort, savePreferredModel, useModels, useProfilePrefs } from '@/lib/muse.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
 
@@ -34,10 +34,9 @@
   // left the prefs' flag unread while the catalog loaded.
   const loading = $derived(anyPending(catalogQuery, prefsQuery))
   const failed = $derived(firstError(catalogQuery, prefsQuery))
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
   let error = $state<string | null>(null)
   let effortError = $state<string | null>(null)
-  const effortFlash = useSavedFlash()
   // The catalog as the server spells it: "<endpoint>/<model>" pins, plus bare
   // pool ids where a model is served by more than one endpoint. This was
   // filtered to bare ids once, back when the catalog emitted both spellings —
@@ -65,7 +64,7 @@
     if (r && typeof r === 'object' && 'error' in r && r.error) error = String(r.error)
     await qc.invalidateQueries({ queryKey: ['profile-prefs'] })
     await qc.invalidateQueries({ queryKey: ['gateway-models'] })
-    savedFlash.flash()
+    if (!error) autosave.flash()
   }
 
   const saveEffort = async (effort: string) => {
@@ -75,7 +74,7 @@
     const r = await savePreferredEffort(effort || null)
     if (r && typeof r === 'object' && 'error' in r && r.error) effortError = String(r.error)
     await qc.invalidateQueries({ queryKey: ['profile-prefs'] })
-    effortFlash.flash()
+    if (!effortError) autosave.flash()
   }
 </script>
 
@@ -102,7 +101,6 @@
       }}
     />
   {:else}
-    {#if savedFlash.saved && !error}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     <Combobox
       size="sm"
       class="w-[280px]"
@@ -133,7 +131,6 @@
         Your starting level in agent chats and the assistant panel.
       {/if}
     {/snippet}
-    {#if effortFlash.saved && !effortError}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     <!-- '' is the model's own default: saving it clears the preference. -->
     <Combobox
       size="sm"

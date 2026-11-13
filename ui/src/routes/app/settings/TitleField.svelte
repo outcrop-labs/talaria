@@ -4,7 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { inlineEditKeys } from '@/components/ui/control'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
@@ -15,7 +15,7 @@
   const qc = useQueryClient()
   const prefsQuery = useProfilePrefs()
   const saved = $derived(prefsQuery.data?.title ?? '')
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
   let title = $state('')
   let busy = $state(false)
 
@@ -32,7 +32,7 @@
       await putJson<{ ok: true }>('/api/me', { title: title.trim() || null })
       await qc.invalidateQueries({ queryKey: ['profile-prefs'] })
       await qc.invalidateQueries({ queryKey: ['users'] })
-      savedFlash.flash()
+      autosave.flash()
     } catch (e) {
       toastError('Could not save your title', e)
     } finally {
@@ -52,7 +52,6 @@
       onRetry={() => void prefsQuery.refetch()}
     />
   {:else}
-    {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
     <Input
       size="sm"
       class="w-[280px]"

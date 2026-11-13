@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -16,6 +17,7 @@
   let { user }: { user: SessionUser | null | undefined } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   let input = $state<HTMLInputElement | null>(null)
   let busy = $state(false)
   let error = $state<string | null>(null)
@@ -38,6 +40,7 @@
       }
       await putJson<{ ok: true }>('/api/me', { avatarUploadId: up.id })
       await refresh()
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     } finally {
@@ -53,6 +56,7 @@
     try {
       await putJson<{ ok: true }>('/api/me', { avatarUploadId: null })
       await refresh()
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     } finally {
