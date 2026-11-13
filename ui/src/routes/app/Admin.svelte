@@ -127,8 +127,8 @@
       {/if}
       {#if tab === 'security'}
         <AdminEncryptionPanel />
-        <AdminSettingsPanel />
         <AdminUpdatePanel />
+        <AdminSettingsPanel />
       {/if}
       {#if tab === 'people'}
         <AdminPeoplePanel />

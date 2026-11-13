@@ -1,13 +1,14 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import { submitOnEnter } from '@/components/ui/control'
+  import { inlineEditKeys } from '@/components/ui/control'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { sameToolsets, toggleToolset, toolsetRows } from '@/components/fleet/toolsets'
   import { putJson } from '@/lib/fetch-json'
@@ -18,6 +19,7 @@
   const query = useAdminSettings()
   const data = $derived(query.data)
   let days = $state('')
+  const auditFlash = useSavedFlash()
   const value = $derived(days !== '' ? days : String(data?.auditRetentionDays ?? ''))
   const save = async () => {
     const n = Number(value)
@@ -30,6 +32,7 @@
       return
     }
     days = ''
+    auditFlash.flash()
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }
 
@@ -65,6 +68,13 @@
         perUsdVal !== capVal(null, b.perAgent?.usd) ||
         Number(winVal) !== b.windowHours),
   )
+  // Which row says Saved: the one whose field was just left.
+  let budgetField = $state<'win' | 'org' | 'per' | null>(null)
+  const commitBudgets = async (field: 'win' | 'org' | 'per') => {
+    if (!budgetsValid || !budgetsDirty) return
+    budgetField = field
+    await saveBudgets()
+  }
   const saveBudgets = async () => {
     try {
       await putJson<{ ok: true }>('/api/admin/settings', {
@@ -113,8 +123,8 @@
   // every agent. Two kinds of row are locked and say why: the pair Talaria
   // replaces with its own tools, and names the api's environment pins.
   // Explicit Save, not autosave: this is a governance control that lands on
-  // every agent at once — saving renders the fleet (it restarts nobody), and
-  // each running agent reads the floor on its next turn.
+  // every agent at once — saving rewrites every agent's configuration (it
+  // restarts nobody), and each running agent reads the floor on its next turn.
   const vocab = $derived(data?.toolsets)
   const envClosed = $derived(vocab?.env ?? [])
   const locked = $derived([...(vocab?.builtin ?? []), ...envClosed])
@@ -153,153 +163,193 @@
   }
 </script>
 
-<Panel>
-  <SectionHeader class="mb-2" title="Settings" />
-  <QueryState query={query} errorTitle="Could not load your settings" errorVariant="compact">
-    {#snippet skeleton()}
-      <!-- Hold the retention row so the input never renders blank, then fills. -->
-      <div class="flex items-center gap-3">
-        <div class="min-w-0 flex-1 space-y-1.5">
-          <Skeleton class="h-3 w-28 rounded-full" />
-          <Skeleton class="h-2.5 w-64 rounded-full" />
-        </div>
-        <Skeleton class="h-8 w-24 shrink-0" />
-        <Skeleton class="h-7 w-16 shrink-0" />
-      </div>
-    {/snippet}
-    {#snippet children(data)}
+{#snippet saved(on: boolean)}
+  {#if on}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
+{/snippet}
+{#snippet unit(word: string, width = 'w-14')}
+  <span class="{width} shrink-0 font-sans text-[13px] leading-5 text-muted">{word}</span>
+{/snippet}
+
+<SettingsSection
+  title="Limits"
+  description="Ceilings that apply to every agent, API key and built-in feature."
+  info="A call is refused once the spend recorded in the window reaches a limit, and it resumes as older spend ages out. A dollar limit ignores models with no price set, which the Models page lists. A token limit counts everything."
+>
+  <SettingsGroup>
     <!-- An empty retention box reads as "0 = keep forever". Saving from there
          would silently change the org's audit policy, so a failed read must
          never reach the form — QueryState's error branch owns that. -->
-    <div class="flex items-center gap-3">
-      <div class="min-w-0 flex-1">
-        <div class="text-sm text-fg">Audit retention</div>
-        <div class="text-xs text-muted">How many days to keep the audit log. 0 = keep forever.</div>
-      </div>
-      <Input
-        size="sm"
-        type="number"
-        {value}
-        oninput={(e) => (days = e.currentTarget.value)}
-        onkeydown={submitOnEnter(() => days !== '' && Number(days) !== data?.auditRetentionDays && void save())}
-        class="w-24 shrink-0"
-      />
-      <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">days</span>
-      <Button size="sm" class="shrink-0" onclick={() => void save()} disabled={days === '' || Number(days) === data?.auditRetentionDays}>
-        Save
-      </Button>
-    </div>
-
-    <SectionHeader class="mt-6 mb-2" title="LLM budgets" />
-    <p class="mb-3 text-xs text-muted">
-      Rolling-window spend ceilings, checked before every gateway call — agent turns, API keys, and internal features
-      alike. Blank means unlimited, which is the default; a ceiling only refuses once the window's recorded spend has
-      reached it. A $ ceiling is never tripped by tokens with no price configured (the Models page shows those);
-      a token ceiling bounds everything.
-    </p>
-    <div class="mb-3 flex flex-wrap items-center gap-3 text-xs">
-      <label class="flex items-center gap-2">
-        <span class="text-muted">Window</span>
-        <Input size="sm" type="number" min="1" value={winVal} oninput={(e) => (win = e.currentTarget.value)} class="w-20" />
-        <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">hours</span>
-      </label>
-    </div>
-    <div class="mb-3 flex flex-wrap items-center gap-3 text-xs">
-      <span class="w-20 shrink-0 text-muted">Org-wide</span>
-      <label class="flex items-center gap-2">
-        <Input size="sm" type="number" min="0" placeholder="tokens" value={orgTokensVal} oninput={(e) => (orgTokens = e.currentTarget.value)} class="w-32" />
-        <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">tokens</span>
-      </label>
-      <span class="text-muted">or</span>
-      <label class="flex items-center gap-2">
-        <span class="text-muted">$</span>
-        <Input size="sm" type="number" min="0" placeholder="unlimited" value={orgUsdVal} oninput={(e) => (orgUsd = e.currentTarget.value)} class="w-24" />
-      </label>
-    </div>
-    <div class="mb-4 flex flex-wrap items-center gap-3 text-xs">
-      <span class="w-20 shrink-0 text-muted">Per caller</span>
-      <label class="flex items-center gap-2">
-        <Input size="sm" type="number" min="0" placeholder="tokens" value={perTokensVal} oninput={(e) => (perTokens = e.currentTarget.value)} class="w-32" />
-        <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">tokens</span>
-      </label>
-      <span class="text-muted">or</span>
-      <label class="flex items-center gap-2">
-        <span class="text-muted">$</span>
-        <Input size="sm" type="number" min="0" placeholder="unlimited" value={perUsdVal} oninput={(e) => (perUsd = e.currentTarget.value)} class="w-24" />
-      </label>
-    </div>
-    <div class="flex items-center gap-3">
-      <Button size="sm" onclick={() => void saveBudgets()} disabled={!budgetsValid || !budgetsDirty}>
-        Save
-      </Button>
-      {#if savedFlash.saved}<span class="text-xs text-success">Saved</span>{/if}
-      <span class="text-xs text-muted">Whichever ceiling is reached first refuses the call (429, spend resumes as it ages out).</span>
-    </div>
-
-    <div class="mt-6 flex items-center gap-3 border-t border-border pt-4">
-      <div class="min-w-0 flex-1">
-        <div class="text-sm text-fg">Cron minimum interval</div>
-        <div class="text-xs text-muted">
-          Fastest schedule an agent's cron may be given — a cron is an agent turn is spend. 0 = no floor.
-        </div>
-      </div>
-      <Input
-        size="sm"
-        type="number"
-        min="0"
-        value={floorVal}
-        oninput={(e) => (floor = e.currentTarget.value)}
-        onkeydown={submitOnEnter(() => floor !== null && Number(floor) !== data?.cronMinIntervalMinutes && void saveFloor())}
-        class="w-24 shrink-0"
-      />
-      <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">min</span>
-      <Button size="sm" class="shrink-0" onclick={() => void saveFloor()} disabled={floor === null || Number(floor) === data?.cronMinIntervalMinutes}>
-        Save
-      </Button>
-      {#if floorFlash.saved}<span class="shrink-0 text-xs text-success">Saved</span>{/if}
-    </div>
-
-    {#if floorRows.length}
-      <div class="mt-6 border-t border-border pt-4">
-        <SectionHeader class="mb-2" title="Agent toolsets" />
-        <p class="mb-3 text-xs text-muted">
-          The Hermes toolsets any agent may carry. A box is the toolset being available to the fleet; clearing one
-          closes it for every agent, whatever its managers opened, and a manager sees it locked in the agent's own
-          editor. Talaria's own todo and clarify tools replace Hermes' for good, so those two stay closed. Saving
-          restarts nobody: the floor reaches every running agent on its next turn.
-        </p>
-        <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3 md:grid-cols-4">
-          {#each floorRows as r (r.name)}
-            <Checkbox
-              checked={r.on}
-              disabled={r.forced || floorSaving}
-              onChange={(on) => setFloor(r.name, on)}
-              label={r.name}
-              title={r.orgClosed
-                ? `${r.name} is pinned closed by TALARIA_MANDATORY_DISABLED_TOOLSETS in the api's environment`
-                : r.forced
-                  ? `Talaria's own ${r.name} tool is the one a person sees, so Hermes' stays closed for every agent`
-                  : r.on
-                    ? `${r.name} is available to agents; clear it to close it org-wide`
-                    : `${r.name} is closed for every agent`}
-              class={r.on ? 'text-fg' : undefined}
+    <QueryState query={query} errorTitle="Could not load your settings" errorVariant="compact">
+      {#snippet skeleton()}
+        {#each ['Spending window', 'Whole organization', 'Each agent or key'] as label (label)}
+          <SettingsRow {label}><Skeleton class="h-9 w-[164px]" /></SettingsRow>
+        {/each}
+      {/snippet}
+      {#snippet children(data)}
+        <SettingsRow label="Spending window" hint="How many hours of spend each limit counts.">
+          {@render saved(savedFlash.saved && budgetField === 'win')}
+          <span class="flex items-center gap-2">
+            <Input
+              size="sm"
+              type="number"
+              min="1"
+              aria-label="Spending window in hours"
+              value={winVal}
+              oninput={(e) => (win = e.currentTarget.value)}
+              onblur={() => void commitBudgets('win')}
+              onkeydown={inlineEditKeys(() => (win = null))}
+              class="w-[100px]"
             />
-          {/each}
-        </div>
-        <div class="mt-3 flex items-center gap-3">
-          <Button size="sm" onclick={() => void saveToolsetFloor()} disabled={!floorDirty || floorSaving}>
-            Save
-          </Button>
-          {#if floorDirty}
-            <Button size="sm" variant="ghost" disabled={floorSaving} onclick={() => (floorEdit = null)}>Reset</Button>
-          {/if}
-          {#if toolsetFlash.saved}<span class="text-xs text-success">Saved. Reaches every agent on its next turn.</span>{/if}
-          {#if envClosed.length}
-            <span class="text-xs text-muted">Pinned by the api's environment: {envClosed.join(', ')}.</span>
-          {/if}
-        </div>
+            {@render unit('hours')}
+          </span>
+        </SettingsRow>
+        <SettingsRow label="Whole organization" hint="A limit in tokens, in dollars, or both. Empty means no limit.">
+          {@render saved(savedFlash.saved && budgetField === 'org')}
+          <span class="flex items-center gap-2">
+            <Input
+              size="sm"
+              type="number"
+              min="0"
+              aria-label="Organization token limit"
+              placeholder="No limit"
+              value={orgTokensVal}
+              oninput={(e) => (orgTokens = e.currentTarget.value)}
+              onblur={() => void commitBudgets('org')}
+              onkeydown={inlineEditKeys(() => (orgTokens = null))}
+              class="w-[136px]"
+            />
+            {@render unit('tokens', 'w-12')}
+          </span>
+          <span class="flex items-center gap-2">
+            <Input
+              size="sm"
+              type="number"
+              min="0"
+              aria-label="Organization dollar limit"
+              placeholder="No limit"
+              value={orgUsdVal}
+              oninput={(e) => (orgUsd = e.currentTarget.value)}
+              onblur={() => void commitBudgets('org')}
+              onkeydown={inlineEditKeys(() => (orgUsd = null))}
+              class="w-[100px]"
+            />
+            {@render unit('dollars')}
+          </span>
+        </SettingsRow>
+        <SettingsRow label="Each agent or key" hint="The same limits, counted for one agent or API key at a time.">
+          {@render saved(savedFlash.saved && budgetField === 'per')}
+          <span class="flex items-center gap-2">
+            <Input
+              size="sm"
+              type="number"
+              min="0"
+              aria-label="Token limit for each agent or key"
+              placeholder="No limit"
+              value={perTokensVal}
+              oninput={(e) => (perTokens = e.currentTarget.value)}
+              onblur={() => void commitBudgets('per')}
+              onkeydown={inlineEditKeys(() => (perTokens = null))}
+              class="w-[136px]"
+            />
+            {@render unit('tokens', 'w-12')}
+          </span>
+          <span class="flex items-center gap-2">
+            <Input
+              size="sm"
+              type="number"
+              min="0"
+              aria-label="Dollar limit for each agent or key"
+              placeholder="No limit"
+              value={perUsdVal}
+              oninput={(e) => (perUsd = e.currentTarget.value)}
+              onblur={() => void commitBudgets('per')}
+              onkeydown={inlineEditKeys(() => (perUsd = null))}
+              class="w-[100px]"
+            />
+            {@render unit('dollars')}
+          </span>
+        </SettingsRow>
+        <SettingsRow
+          label="Fastest schedule"
+          hint="The shortest gap allowed between an agent's scheduled runs. 0 means no limit."
+        >
+          {@render saved(floorFlash.saved)}
+          <span class="flex items-center gap-2">
+            <Input
+              size="sm"
+              type="number"
+              min="0"
+              aria-label="Fastest schedule in minutes"
+              value={floorVal}
+              oninput={(e) => (floor = e.currentTarget.value)}
+              onblur={() => floor !== null && Number(floor) !== data.cronMinIntervalMinutes && void saveFloor()}
+              onkeydown={inlineEditKeys(() => (floor = null))}
+              class="w-[100px]"
+            />
+            {@render unit('minutes')}
+          </span>
+        </SettingsRow>
+        <SettingsRow label="Audit log" hint="How many days of history to keep. 0 keeps it forever.">
+          {@render saved(auditFlash.saved)}
+          <span class="flex items-center gap-2">
+            <Input
+              size="sm"
+              type="number"
+              aria-label="Audit log retention in days"
+              {value}
+              oninput={(e) => (days = e.currentTarget.value)}
+              onblur={() => days !== '' && Number(days) !== data.auditRetentionDays && void save()}
+              onkeydown={inlineEditKeys(() => (days = ''))}
+              class="w-[100px]"
+            />
+            {@render unit('days')}
+          </span>
+        </SettingsRow>
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
+</SettingsSection>
+
+{#if floorRows.length}
+  <SettingsSection
+    title="Agent tools"
+    description="The tool groups any agent may use. Turn one off and no agent can use it."
+    info="A group turned off here shows as locked in each agent's own editor. Talaria's own to-do and clarify tools replace two built-in ones, so those two stay off. Saving restarts nobody: each running agent picks up the change on its next turn."
+  >
+    <SettingsGroup>
+      <div class="grid grid-cols-2 gap-x-6 gap-y-3 px-5 py-4 sm:grid-cols-3 md:grid-cols-4">
+        {#each floorRows as r (r.name)}
+          <Checkbox
+            checked={r.on}
+            disabled={r.forced || floorSaving}
+            onChange={(on) => setFloor(r.name, on)}
+            label={r.name}
+            title={r.orgClosed
+              ? `${r.name} is kept off by TALARIA_MANDATORY_DISABLED_TOOLSETS in the server environment`
+              : r.forced
+                ? `Talaria's own ${r.name} tool is the one a person sees, so the built-in one stays off for every agent`
+                : r.on
+                  ? `${r.name} is available to agents. Clear it to turn it off for all of them`
+                  : `${r.name} is off for every agent`}
+            class={r.on ? 'gap-2 font-mono text-fg' : 'gap-2 font-mono'}
+          />
+        {/each}
       </div>
-    {/if}
-    {/snippet}
-  </QueryState>
-</Panel>
+      <div class="flex items-center gap-3 px-5 py-3">
+        <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
+          {#if toolsetFlash.saved}
+            <span class="text-success">Saved. Agents pick it up on their next turn.</span>
+          {:else if envClosed.length}
+            Kept off by the server environment: <span class="font-mono text-xs">{envClosed.join(', ')}</span>
+          {/if}
+        </span>
+        {#if floorDirty}
+          <Button size="sm" variant="ghost" disabled={floorSaving} onclick={() => (floorEdit = null)}>Reset</Button>
+        {/if}
+        <Button size="sm" variant="outline" onclick={() => void saveToolsetFloor()} disabled={!floorDirty || floorSaving}>
+          Save tools
+        </Button>
+      </div>
+    </SettingsGroup>
+  </SettingsSection>
+{/if}
