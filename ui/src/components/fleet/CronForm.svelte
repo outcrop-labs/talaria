@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { Sparkles } from '@lucide/svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Generating from '@/components/ui/Generating.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
@@ -8,6 +9,7 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import { slide } from '@/lib/motion'
   import { draftCron } from '@/lib/muse.svelte'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { DEFAULT_SCHED, MAX_CRON_PROMPT, parseSchedule, schedToString, type Sched } from './agent-crons'
   import ScheduleBuilder from './ScheduleBuilder.svelte'
 
@@ -25,6 +27,9 @@
     /** Extra fields (e.g. the fleet agent picker) rendered above the buttons. */
     children?: Snippet
   } = $props()
+
+  // Also the chat's Schedule dialog (work/ScheduleButton), which keeps the mono voice.
+  const sans = useUiVoice() === 'sans'
 
   let name = $state('')
   let sched = $state<Sched>(DEFAULT_SCHED)
@@ -54,69 +59,120 @@
       drafting = false
     }
   }
+
+  const onDraftKey = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      if (!drafting && draftAsk.trim()) void draft()
+    }
+  }
+  const submit = () =>
+    void onCreate({ name: name.trim(), schedule: schedToString(sched), prompt: prompt.trim() }).then((created) => {
+      if (created) {
+        name = ''
+        sched = DEFAULT_SCHED
+        prompt = ''
+      }
+    })
 </script>
 
-<div class="space-y-5 rounded-lg border border-line p-5">
-  <div class="flex items-end gap-2.5">
-    <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
-    <Textarea
-      autoGrow
-      rows={1}
-      bind:value={draftAsk}
-      onkeydown={(e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault()
-          if (!drafting && draftAsk.trim()) void draft()
-        }
-      }}
-      placeholder="Describe it, e.g. “every weekday morning, summarize my inbox into a brief”"
-      class="max-h-32 text-sm"
-    />
-    <Button variant="outline" class="shrink-0 whitespace-nowrap" onclick={() => void draft()} disabled={drafting || !draftAsk.trim()}>
-      {drafting ? 'Drafting' : 'Draft'}
-    </Button>
-  </div>
-  {#if draftErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{draftErr}</p>{/if}
-  {#if drafting}<Generating site="fleet/cron-design" label="Designing the job: name, schedule, and the prompt it runs" lines={2} />{/if}
-
-  <div class="grid gap-4 sm:grid-cols-2">
-    <div>
-      <label for="cron-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-      <Input id="cron-name" bind:value={name} placeholder="weekly-recap" maxlength={80} />
+{#if sans}
+  <div class="space-y-5">
+    <div class="space-y-1.5">
+      <div class="flex items-start gap-2">
+        <Textarea
+          autoGrow
+          rows={1}
+          bind:value={draftAsk}
+          onkeydown={onDraftKey}
+          aria-label="Describe the schedule"
+          placeholder="Describe it, e.g. “every weekday morning, summarize my inbox”"
+          class="max-h-32 py-[7px]"
+        />
+        <Button variant="outline" size="md" class="shrink-0" onclick={() => void draft()} disabled={drafting || !draftAsk.trim()}>
+          <Sparkles size={14} />
+          {drafting ? 'Drafting' : 'Draft'}
+        </Button>
+      </div>
+      {#if draftErr}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger">{draftErr}</p>{/if}
+      {#if drafting}<Generating site="fleet/cron-design" label="Drafting the name, the timing and the instruction" lines={2} />{/if}
+    </div>
+    <SettingsField label="Name" for="cron-name">
+      <Input id="cron-name" size="sm" bind:value={name} placeholder="Weekly recap" maxlength={80} />
+    </SettingsField>
+    <SettingsField label="When">
+      <ScheduleBuilder value={sched} onChange={(s) => (sched = s)} />
+    </SettingsField>
+    <SettingsField label="What it does" for="cron-prompt">
+      <Textarea
+        id="cron-prompt"
+        autoGrow
+        rows={3}
+        bind:value={prompt}
+        placeholder="What it should do each time, as a complete instruction."
+        class="max-h-64"
+        maxlength={MAX_CRON_PROMPT}
+      />
+    </SettingsField>
+    {@render children?.()}
+    <div class="flex justify-end">
+      <Button size="sm" disabled={!ok || busy || disabled} onclick={submit}>
+        {#if busy}<WaitingMark site="fleet/cron-save" size={12} />{/if}
+        {busy ? 'Creating' : 'Create schedule'}
+      </Button>
     </div>
   </div>
-  <div>
-    <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">When</span>
-    <ScheduleBuilder value={sched} onChange={(s) => (sched = s)} />
+{:else}
+  <div class="space-y-5 rounded-lg border border-line p-5">
+    <div class="flex items-end gap-2.5">
+      <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
+      <Textarea
+        autoGrow
+        rows={1}
+        bind:value={draftAsk}
+        onkeydown={onDraftKey}
+        placeholder="Describe it, e.g. “every weekday morning, summarize my inbox into a brief”"
+        class="max-h-32 text-sm"
+      />
+      <Button variant="outline" class="shrink-0 whitespace-nowrap" onclick={() => void draft()} disabled={drafting || !draftAsk.trim()}>
+        {drafting ? 'Drafting' : 'Draft'}
+      </Button>
+    </div>
+    {#if draftErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{draftErr}</p>{/if}
+    {#if drafting}<Generating site="fleet/cron-design" label="Designing the job: name, schedule, and the prompt it runs" lines={2} />{/if}
+
+    <div class="grid gap-4 sm:grid-cols-2">
+      <div>
+        <label for="cron-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label> <!-- voice-ok: the mono voice of the chat's Schedule dialog -->
+        <Input id="cron-name" bind:value={name} placeholder="weekly-recap" maxlength={80} />
+      </div>
+    </div>
+    <div>
+      <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">When</span> <!-- voice-ok: the mono voice of the chat's Schedule dialog -->
+      <ScheduleBuilder value={sched} onChange={(s) => (sched = s)} />
+    </div>
+    <div>
+      <label for="cron-prompt" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What it does</label> <!-- voice-ok: the mono voice of the chat's Schedule dialog -->
+      <Textarea
+        id="cron-prompt"
+        autoGrow
+        rows={3}
+        bind:value={prompt}
+        placeholder="What should it do each time? Written as a self-contained instruction."
+        class="max-h-64"
+        maxlength={MAX_CRON_PROMPT}
+      />
+    </div>
+    {@render children?.()}
+    <div class="flex items-center gap-3">
+      <Button
+        class="shrink-0 whitespace-nowrap"
+        disabled={!ok || busy || disabled}
+        onclick={submit}
+      >
+        {#if busy}<WaitingMark site="fleet/cron-save" size={12} />{/if}
+        {busy ? 'Creating' : 'Create job'}
+      </Button>
+    </div>
   </div>
-  <div>
-    <label for="cron-prompt" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What it does</label>
-    <Textarea
-      id="cron-prompt"
-      autoGrow
-      rows={3}
-      bind:value={prompt}
-      placeholder="What should it do each time? Written as a self-contained instruction."
-      class="max-h-64"
-      maxlength={MAX_CRON_PROMPT}
-    />
-  </div>
-  {@render children?.()}
-  <div class="flex items-center gap-3">
-    <Button
-      class="shrink-0 whitespace-nowrap"
-      disabled={!ok || busy || disabled}
-      onclick={() =>
-        void onCreate({ name: name.trim(), schedule: schedToString(sched), prompt: prompt.trim() }).then((created) => {
-          if (created) {
-            name = ''
-            sched = DEFAULT_SCHED
-            prompt = ''
-          }
-        })}
-    >
-      {#if busy}<WaitingMark site="fleet/cron-save" size={12} />{/if}
-      {busy ? 'Creating' : 'Create job'}
-    </Button>
-  </div>
-</div>
+{/if}
