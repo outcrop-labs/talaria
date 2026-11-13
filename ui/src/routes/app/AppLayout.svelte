@@ -15,7 +15,6 @@
   import InboxFocusShell from '@/components/inbox/InboxFocusShell.svelte'
   import UnreadableSecretsBanner from '@/components/setup/UnreadableSecretsBanner.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import { useAppGrants, useDeniedViews, useLogout, useSession } from '@/lib/session'
@@ -192,17 +191,17 @@
   </div>
 {/snippet}
 
-{#snippet shellSkeleton(content: Snippet | undefined)}
+{#snippet shellSkeleton(content: Snippet)}
   <MercuryBackdrop />
   <div class="flex h-full flex-col">
-    <!-- Dock-shaped skeleton: exactly the one band the real chrome paints, so
-         loading never reflows. The right cluster is held open too — the strip
-         it used to stand in for no longer exists, so if this band did not
-         carry the cluster's width the real chrome would land wider.
-         ThemeToggle rides here in the ERROR case (where `content` is the
-         retry): the account menu that normally holds it needs a session this
-         branch does not have, and leaving a person stuck on a session error
-         unable to change theme is a small cruelty with no reason. -->
+    <!-- Dock-shaped skeleton: exactly the one band the real chrome paints.
+         Only the session-error case renders this, with the retry as
+         `content`; a loading session holds on the mark instead (sessionHold),
+         so there is no page-shaped skeleton here to keep the width of.
+         ThemeToggle rides here because the account menu that normally holds
+         it needs a session this branch does not have, and leaving a person
+         stuck on a session error unable to change theme is a small cruelty
+         with no reason. -->
     <nav
       aria-label="Primary"
       class="@container flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
@@ -220,30 +219,11 @@
         {/each}
       </div>
       <div class="min-w-0 flex-1"></div>
-      {#if content}
-        <ThemeToggle />
-      {:else}
-        <Skeleton class="h-9 w-9 rounded-md" />
-        <Skeleton class="h-9 w-9 rounded-md" />
-        <Skeleton class="h-9 w-32 rounded-md" />
-      {/if}
+      <ThemeToggle />
     </nav>
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
       <div class="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
-        {#if content}
-          {@render content()}
-        {:else}
-          <div class="mx-auto w-full max-w-[var(--page-width)]">
-            <div class="grid gap-4 xl:grid-cols-3">
-              {#each [0, 1, 2] as i (i)}
-                <div class="rounded-lg border border-line bg-panel p-6">
-                  <Skeleton class="mb-4 h-3 w-24 rounded-full" />
-                  <SkeletonRows rows={4} />
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/if}
+        {@render content()}
       </div>
     </div>
   </div>
