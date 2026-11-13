@@ -1,14 +1,30 @@
+<script lang="ts" module>
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+  /** A team's size in words, for its picker row and its title. */
+  export const teamCounts = (t: { memberCount: number; agentCount: number }): string =>
+    `${count(t.memberCount, 'person', 'people')} · ${count(t.agentCount, 'agent', 'agents')}`
+</script>
+
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import Button from '@/components/ui/Button.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import UserPicker from '@/components/app/UserPicker.svelte'
+  import Avatar from '@/components/ui/Avatar.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import Select from '@/components/ui/Select.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { listQuery } from '@/components/ui/query-state'
-  import TeamMembers from '@/components/board/TeamMembers.svelte'
   import { useAgents } from '@/lib/agents'
+  import { errorMessage } from '@/lib/fetch-json'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
   import { useEnabledApps } from '@/lib/apps'
   import { appGrantViewsOf } from '@/lib/app-grants'
@@ -16,17 +32,29 @@
   import { toastError } from '@/lib/toast.svelte'
   import {
     addTeamAgent,
+    addTeamMember,
     patchTeam,
     putTeamAccess,
     removeTeamAgent,
+    removeTeamMember,
     useTeamAccess,
     useTeamAgents,
+    useTeamMembers,
     type Team,
+    type TeamRole,
   } from '@/lib/teams'
-  import AdminPermChip from './AdminPermChip.svelte'
   import { permGroups, useAdminPermissions, type PermCatalogEntry } from './admin'
 
-  let { team, onChanged }: { team: Team; onChanged: () => void } = $props()
+  let {
+    team,
+    onChanged,
+    onDelete,
+  }: {
+    team: Team
+    onChanged: () => void
+    /** Deletes the team. The confirmation is the caller's. Owners only. */
+    onDelete: () => void
+  } = $props()
 
   const qc = useQueryClient()
   const sessionQuery = useSession()
@@ -38,6 +66,31 @@
   let name = $state(team.name)
   // svelte-ignore state_referenced_locally -- reason: per-team drafts; the view remounts per team selection
   let description = $state(team.description ?? '')
+
+  // A failed member read must not render as an empty roster next to a live
+  // "Add": the fix people reach for is re-adding people who are already there.
+  const membersList = listQuery(useTeamMembers(() => team.id), {
+    title: 'Could not load this team’s members',
+    variant: 'compact',
+  })
+  const members = $derived(membersList.rows)
+  const ownerCount = $derived(members.filter((m) => m.role === 'owner').length)
+  const canRemove = (role: TeamRole) => canManage && (role !== 'owner' || ownerCount > 1)
+  let newRole = $state<TeamRole>('member')
+  let memberError = $state<string | null>(null)
+  const refreshMembers = () => qc.invalidateQueries({ queryKey: ['team-members', team.id] })
+
+  const addMember = async (email: string) => {
+    memberError = null
+    try {
+      await addTeamMember(team.id, email, newRole)
+    } catch (e) {
+      memberError = errorMessage(e)
+      return
+    }
+    void refreshMembers()
+    void qc.invalidateQueries({ queryKey: ['teams'] })
+  }
 
   const agentsList = listQuery(useTeamAgents(() => team.id), {
     title: 'Could not load this team’s agents',
@@ -155,75 +208,203 @@
     const next = !effective
     void saveAccess({ permissions: { [p.id]: next === inherit ? null : next } })
   }
+
+  /** One switch of the Access section. */
+  interface Grant {
+    id: string
+    label: string
+    hint: string
+    on: boolean
+    /** A permission set away from the workspace default. */
+    changed: boolean
+    toggle: () => void
+  }
+  const grantGroups = $derived.by((): { label: string; grants: Grant[] }[] => {
+    const access = accessQuery.data
+    if (!access) return []
+    const granted = (to: string) => access.allowedManageViews.includes(to)
+    return [
+      {
+        label: 'Work views',
+        grants: GATEABLE_VIEWS.map((v) => ({
+          id: v.to,
+          label: v.label,
+          hint: 'Work view. On means members of this team may open it.',
+          on: !access.deniedViews.includes(v.to),
+          changed: false,
+          toggle: () => toggleWork(v.to),
+        })),
+      },
+      {
+        label: 'Manage views',
+        grants: MANAGE_VIEWS.map((v) => ({
+          id: v.to,
+          label: v.label,
+          hint: 'Manage view. On means members of this team have been granted it.',
+          on: granted(v.to),
+          changed: false,
+          toggle: () => toggleManage(v.to),
+        })),
+      },
+      {
+        label: 'Apps',
+        grants: appViews.map((v) => ({
+          id: v.to,
+          label: v.title,
+          hint: `${v.to}. On means members of this team have been granted it.`,
+          on: granted(v.to),
+          changed: false,
+          toggle: () => toggleManage(v.to),
+        })),
+      },
+      ...permGroups(catalog).map(([group, entries]) => ({
+        label: `${group} permissions`,
+        grants: entries.map((p) => {
+          const stored = access.permissions[p.id]
+          return {
+            id: p.id,
+            label: p.label,
+            hint: p.hint,
+            on: stored ?? orgDefaultOf(p),
+            changed: stored !== undefined,
+            toggle: () => togglePerm(p),
+          }
+        }),
+      })),
+    ].filter((g) => g.grants.length > 0)
+  })
+
+  // Rows straight on the pane, divided by hairlines: the pane is already a
+  // panel, and a card inside it would be a box in a box.
+  const rows = 'border-y border-line-subtle [&>*+*]:border-t [&>*+*]:border-line-subtle'
+  const ROLE_LABEL: Record<TeamRole, string> = { owner: 'Owner', member: 'Member' }
+  const subtitle = $derived(
+    team.role ? `${teamCounts(team)} · You are ${team.role === 'owner' ? 'an owner' : 'a member'}` : teamCounts(team),
+  )
+
 </script>
 
-<div class="min-h-0 flex-1 overflow-y-auto p-6">
-  <div class="space-y-6">
-    <div class="space-y-2">
-      <Input
-        bind:value={name}
-        disabled={!canManage}
-        placeholder="Name"
-        onblur={() => void saveMeta()}
-      />
-      <Textarea
-        bind:value={description}
-        disabled={!canManage}
-        rows={3}
-        placeholder="Description"
-        onblur={() => void saveMeta()}
-      />
+<div class="h-full overflow-y-auto p-5">
+  <header class="flex items-start gap-6">
+    <div class="min-w-0 flex-1">
+      <h2 class="font-sans text-lg font-semibold leading-6 text-fg">{team.name}</h2>
+      <p class="mt-1 font-sans text-[13px] leading-5 text-muted">
+        {subtitle}
+      </p>
     </div>
+    {#if canManage}<DangerLink onClick={onDelete} class="shrink-0">Delete team</DangerLink>{/if}
+  </header>
 
-    <div>
-      <SectionHeader title="People" info="Humans on this team. Owners govern the roster, name, and agents." />
-      <TeamMembers teamId={team.id} canManage={canManage} />
-    </div>
+  <div class="mt-6 space-y-8">
+    <SettingsSection title="Details">
+      <div class={rows}>
+        <SettingsRow label="Name" as="label" class="px-0">
+          <Input size="sm" class="w-[280px]" bind:value={name} disabled={!canManage} placeholder="Name" onblur={() => void saveMeta()} />
+        </SettingsRow>
+        <SettingsRow label="Description" stacked class="px-0">
+          <Textarea
+            bind:value={description}
+            disabled={!canManage}
+            rows={2}
+            placeholder="What this team is responsible for"
+            onblur={() => void saveMeta()}
+          />
+        </SettingsRow>
+      </div>
+    </SettingsSection>
 
-    <div>
-      <SectionHeader title="Agents" info="Agents on this team act as members of it. They never own a team." />
-      {#if canManage}
-        {#if fleetFailed}
-          <QueryError
-            variant="compact"
-            error={fleetQuery.error}
-            title="Could not load agents"
-            onRetry={() => void fleetQuery.refetch()}
-          />
-        {:else}
-          <Combobox
-            options={agentOptions}
-            selected={[]}
-            onChange={(vals) => {
-              const model = vals[0]
-              if (model) void addAgent(model)
-            }}
-            placeholder="Add agent"
-            size="sm"
-          />
+    <SettingsSection title="People" description="Owners manage the team's name, people and agents.">
+      {#if membersList.notice}<div class="mb-3"><QueryError {...membersList.notice} /></div>{/if}
+      <div class={rows}>
+        {#if membersList.pending}
+          <SkeletonRows rows={3} avatar class="py-4" />
         {/if}
-      {/if}
-      {#if agentsList.notice}<div class="mt-3"><QueryError {...agentsList.notice} /></div>{/if}
-      <ul class="mt-3 space-y-1.5">
-        {#each agents as a (a.agentModel)}
-          <li class="flex items-center gap-2 rounded-md px-1 py-2">
-            <span class="min-w-0 flex-1 truncate font-sans text-sm text-fg">{a.label ?? a.agentModel}</span>
-            {#if canManage}
-              <Button variant="ghost" size="xs" class="hover:text-danger" onclick={() => void dropAgent(a.agentModel)}>
-                Remove
-              </Button>
+        {#each members as m (m.userId)}
+          <SettingsRow label={m.name ?? m.email ?? m.userId} hint={m.name && m.email ? m.email : undefined} class="px-0">
+            {#snippet lead()}<Avatar name={m.name ?? m.email} />{/snippet}
+            <span class="font-sans text-[13px] leading-5 text-muted">{ROLE_LABEL[m.role]}</span>
+            {#if canRemove(m.role)}
+              <SettingsRowMenu
+                label={`Actions for ${m.name ?? m.email ?? 'this person'}`}
+                items={[
+                  {
+                    label: 'Remove from team',
+                    danger: true,
+                    onSelect: () => void removeTeamMember(team.id, m.userId).then(refreshMembers),
+                  },
+                ]}
+              />
             {/if}
-          </li>
+          </SettingsRow>
         {/each}
-      </ul>
-    </div>
+        {#if canManage}
+          <SettingsRow label="Add a person" hint="Pick who joins, and as what." class="px-0">
+            <UserPicker
+              class="w-[280px]"
+              size="sm"
+              placeholder="Pick a person"
+              exclude={members.map((m) => m.userId)}
+              onPick={(u) => {
+                if (u.email) void addMember(u.email)
+              }}
+            />
+            <Select bind:value={newRole} size="sm" class="w-32" aria-label="Role for the person you add">
+              <option value="member">Member</option>
+              <option value="owner">Owner</option>
+            </Select>
+          </SettingsRow>
+        {/if}
+      </div>
+      {#if memberError}<div class="mt-2 font-sans text-[13px] leading-5 text-danger">{memberError}</div>{/if}
+    </SettingsSection>
+
+    <SettingsSection title="Agents" description="Agents on a team act as its members. They never own it.">
+      {#if agentsList.notice}<div class="mb-3"><QueryError {...agentsList.notice} /></div>{/if}
+      <div class={rows}>
+        {#each agents as a (a.agentModel)}
+          <SettingsRow label={a.label ?? a.agentModel} class="px-0">
+            {#snippet lead()}<Avatar name={a.label ?? a.agentModel} />{/snippet}
+            {#if canManage}
+              <SettingsRowMenu
+                label={`Actions for ${a.label ?? a.agentModel}`}
+                items={[{ label: 'Remove from team', danger: true, onSelect: () => void dropAgent(a.agentModel) }]}
+              />
+            {/if}
+          </SettingsRow>
+        {/each}
+        {#if canManage}
+          {#if fleetFailed}
+            <div class="py-4">
+              <QueryError
+                variant="compact"
+                error={fleetQuery.error}
+                title="Could not load agents"
+                onRetry={() => void fleetQuery.refetch()}
+              />
+            </div>
+          {:else}
+            <SettingsRow label="Add an agent" class="px-0">
+              <Combobox
+                class="w-[280px]"
+                options={agentOptions}
+                selected={[]}
+                onChange={(vals) => {
+                  const model = vals[0]
+                  if (model) void addAgent(model)
+                }}
+                placeholder="Pick an agent"
+                size="sm"
+              />
+            </SettingsRow>
+          {/if}
+        {:else if agents.length === 0 && !agentsList.pending && !agentsList.notice}
+          <SettingsRow label="No agents on this team" class="px-0" />
+        {/if}
+      </div>
+    </SettingsSection>
 
     {#if isAdmin}
-      <div>
-        <SectionHeader
-          title="Access"
-          info="Work-view denials and manage-view grants for everyone on this team. Per-user overrides still win."
-        />
+      <SettingsSection title="Access" description="What everyone on this team can open and do. A person's own settings still win.">
         {#if accessQuery.isError && accessQuery.data === undefined}
           <QueryError
             variant="compact"
@@ -232,64 +413,30 @@
             onRetry={() => void accessQuery.refetch()}
           />
         {:else if accessQuery.data && catalog.length}
-          {@const access = accessQuery.data}
-          <div class="space-y-3">
-            <div class="flex flex-wrap items-center gap-1.5">
-              <span class="w-16 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Work</span>
-              {#each GATEABLE_VIEWS as v (v.to)}
-                {@const denied = access.deniedViews.includes(v.to)}
-                <AdminPermChip
-                  entry={{ id: v.to, label: v.label, hint: 'Work view. Filled means members of this team may open it.', group: 'Work', memberDefault: true }}
-                  effective={!denied}
-                  overridden={denied}
-                  onToggle={() => toggleWork(v.to)}
-                />
-              {/each}
-            </div>
-            <div class="flex flex-wrap items-center gap-1.5">
-              <span class="w-16 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Manage</span>
-              {#each MANAGE_VIEWS as v (v.to)}
-                {@const granted = access.allowedManageViews.includes(v.to)}
-                <AdminPermChip
-                  entry={{ id: v.to, label: v.label, hint: 'Manage view. Filled means members of this team have been granted it.', group: 'Manage', memberDefault: false }}
-                  effective={granted}
-                  overridden={granted}
-                  onToggle={() => toggleManage(v.to)}
-                />
-              {/each}
-            </div>
-            {#if appViews.length}
-              <div class="flex flex-wrap items-center gap-1.5">
-                <span class="w-16 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Apps</span>
-                {#each appViews as v (v.to)}
-                  {@const granted = access.allowedManageViews.includes(v.to)}
-                  <AdminPermChip
-                    entry={{ id: v.to, label: v.title, hint: `${v.to}. Filled means members of this team have been granted it.`, group: 'Apps', memberDefault: false }}
-                    effective={granted}
-                    overridden={granted}
-                    onToggle={() => toggleManage(v.to)}
-                  />
-                {/each}
-              </div>
-            {/if}
-            {#each permGroups(catalog) as [group, entries] (group)}
-              <div class="flex flex-wrap items-center gap-1.5">
-                <span class="w-16 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{group}</span>
-                {#each entries as p (p.id)}
-                  {@const stored = access.permissions[p.id]}
-                  {@const inherit = orgDefaultOf(p)}
-                  <AdminPermChip
-                    entry={p}
-                    effective={stored ?? inherit}
-                    overridden={stored !== undefined}
-                    onToggle={() => togglePerm(p)}
-                  />
-                {/each}
+          <div class={rows}>
+            {#each grantGroups as group (group.label)}
+              <div class="py-4">
+                <div class="font-sans text-sm font-medium leading-5 text-fg">{group.label}</div>
+                <div class="mt-3 grid grid-cols-2 gap-x-6 gap-y-3 lg:grid-cols-3">
+                  {#each group.grants as grant (grant.id)}
+                    {#snippet grantLabel()}
+                      <span class="min-w-0 truncate">{grant.label}</span>
+                      {#if grant.changed}<StatusDot status="warn" title="Changed from the workspace default" />{/if}
+                    {/snippet}
+                    <Toggle
+                      checked={grant.on}
+                      onChange={grant.toggle}
+                      title={grant.hint}
+                      label={grantLabel}
+                      class="min-w-0 gap-3 font-sans text-[13px] leading-5 text-fg"
+                    />
+                  {/each}
+                </div>
               </div>
             {/each}
           </div>
         {/if}
-      </div>
+      </SettingsSection>
     {/if}
   </div>
 </div>
