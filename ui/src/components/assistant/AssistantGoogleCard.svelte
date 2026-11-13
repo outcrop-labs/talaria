@@ -1,13 +1,16 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import Button from '@/components/ui/Button.svelte'
+  import { Mail } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import { delJson, errorMessage, getJson } from '@/lib/fetch-json'
-  import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
 
   // The assistant's Google Workspace connection — THE grant that makes
@@ -53,60 +56,51 @@
   }
 </script>
 
-<div class="mt-6 border-t border-line pt-5">
-  <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Google Workspace</div>
-
-  <QueryState query={query} errorTitle="Could not load the Google connection" errorVariant="inline" isEmpty={(d) => !d.available}>
-    {#snippet skeleton()}
-      <!-- Hold the row's shape until the status resolves — "Not connected" is a
-           claim about the account, and an in-flight read can't make it. -->
-      <div aria-hidden="true" class="flex items-center gap-3 rounded-md border border-line p-4">
-        <Skeleton class="h-9 w-9 shrink-0 rounded-md" />
-        <div class="min-w-0 flex-1 space-y-2">
-          <Skeleton class="h-3 w-36 rounded-full" />
-          <Skeleton class="h-2.5 w-52 rounded-full" />
-        </div>
-        <Skeleton class="h-9 w-24 rounded-lg" />
-      </div>
-    {/snippet}
-    {#snippet empty()}
-      <!-- An admin hasn't registered the OAuth client — the fix is theirs, and
-           the sentence says whose it is rather than dead-ending. -->
-      <div class="text-xs text-muted">
-        Google isn’t set up on this server yet. Ask an admin to register the Google client in Admin → Org.
-      </div>
-    {/snippet}
-    {#snippet children(data)}
-      <div class="flex items-center gap-3 rounded-md border border-line p-4">
-        <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">✉️</div>
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
-            Gmail · Calendar · Drive
-            {#if data.connected}<StatusDot status="ok" />{/if}
+<SettingsSection title="Google" description="Reads are live. Every email and invite it drafts waits for your approval in the Inbox.">
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load the Google connection" errorVariant="compact" isEmpty={(d) => !d.available}>
+      {#snippet skeleton()}
+        <!-- Hold the row's shape until the status resolves — "Not connected" is a
+             claim about the account, and an in-flight read can't make it. -->
+        <div aria-hidden="true" class="flex min-h-[60px] items-center gap-3 px-5 py-4">
+          <Skeleton class="h-8 w-8 shrink-0 rounded-md" />
+          <div class="min-w-0 flex-1 space-y-2">
+            <Skeleton class="h-3 w-36 rounded-full" />
+            <Skeleton class="h-2.5 w-52 rounded-full" />
           </div>
-          <div class="truncate font-mono text-[11px] text-muted">
-            {data.connected ? `Connected as ${data.email ?? 'your account'}` : 'Not connected'}
-          </div>
+          <Skeleton class="h-8 w-24 rounded-md" />
         </div>
-        {#if data.connected}
-          <Button variant="ghost" size="sm" class="shrink-0 hover:text-danger" onclick={() => void disconnect()}>
-            Disconnect
-          </Button>
-        {:else}
-          <a href="/api/integrations/google/connect" class={cn(buttonClasses({ size: 'sm' }), 'shrink-0')}>
-            Connect
-          </a>
-        {/if}
-      </div>
-      <p class="mt-2 max-w-prose text-xs text-muted">
-        {data.connected
-          ? 'Your assistant reads your mail and calendar live. Emails and invites it drafts wait in your Inbox for your approval. Nothing sends without you.'
-          : 'Connect your account and your assistant can read your mail and calendar, find Drive files, and draft emails and events for you. Every send waits for your approval in the Inbox.'}
-      </p>
-    {/snippet}
-  </QueryState>
-
+      {/snippet}
+      {#snippet empty()}
+        <!-- An admin hasn't registered the OAuth client — the fix is theirs, and
+             the sentence says whose it is rather than dead-ending. -->
+        <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin.">
+          {#snippet icon()}<Mail size={16} />{/snippet}
+        </SettingsRow>
+      {/snippet}
+      {#snippet children(data)}
+        <SettingsRow
+          label="Google Workspace"
+          hint={data.connected ? (data.email ?? 'Your account') : 'Mail, Calendar and Drive.'}
+        >
+          {#snippet icon()}<Mail size={16} />{/snippet}
+          {#if data.connected}
+            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="ok" />Connected</span>
+            <SettingsRowMenu
+              label="Actions for Google Workspace"
+              items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}
+            />
+          {:else}
+            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not connected</span>
+            <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>
+              Connect
+            </a>
+          {/if}
+        </SettingsRow>
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
   {#if error}
-    <div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">{error}</div>
+    <div transition:slide={{ duration: 150 }} class="mt-2 font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>
   {/if}
-</div>
+</SettingsSection>

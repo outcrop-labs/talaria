@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -16,6 +17,10 @@
   import { getJson } from '@/lib/fetch-json'
   import { entryTitle, joinEntries, removeEntry, replaceEntry, searchEntries, splitEntries } from './memory-entries'
   import { cn } from '@/lib/cn'
+  import { useUiVoice } from '@/lib/ui-voice'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
 
   // THE SAME FILE, SEEN AS THE THINGS IN IT.
   //
@@ -40,12 +45,22 @@
   let {
     id,
     canEdit = true,
+    flush = false,
+    lead,
     class: className,
   }: {
     id: string
     canEdit?: boolean
+    /** No inset of its own: the list sits on a page, not inside a panel. */
+    flush?: boolean
+    /** Sans voice: a control drawn at the head of the toolbar, so the caller's
+     *  view switch shares the row with the file switch and the search. */
+    lead?: Snippet
     class?: string
   } = $props()
+
+  const sans = useUiVoice() === 'sans'
+  const inset = $derived(flush ? '' : 'px-4')
 
   const FILES: SegmentedOption<MemoryFile>[] = [
     { id: 'memory', label: 'Memory', title: 'MEMORY.md — what the agent remembers about its work' },
@@ -176,6 +191,111 @@
      dead end — a profile that cannot be read would strand a person with no
      control that takes them back to the memory they can read. The failure
      belongs where the list belongs. -->
+{#if sans}
+  {#snippet editor(value: string, label: string, placeholder: string | undefined, onInput: (v: string) => void, onSave: () => void)}
+    <div class="px-5 py-4">
+      <Textarea
+        {value}
+        oninput={(e) => onInput(e.currentTarget.value)}
+        autoGrow
+        rows={3}
+        aria-label={label}
+        {placeholder}
+        class="max-h-80 font-sans text-sm"
+        disabled={busy}
+      />
+      <div class="mt-3 flex items-center justify-end gap-2">
+        <Button size="sm" variant="ghost" onclick={reset} disabled={busy}>Cancel</Button>
+        <Button size="sm" variant="outline" onclick={onSave} disabled={busy || !value.trim()}>
+          {busy ? 'Saving' : 'Save entry'}
+        </Button>
+      </div>
+    </div>
+  {/snippet}
+
+  <div class={cn('flex flex-col', className)}>
+    <div class={cn('flex items-center gap-3', inset)}>
+      {@render lead?.()}
+      <!-- Two documents, one view: the agent's record and the profile it keeps
+           about its person. A mode switch, not a tab. -->
+      <Segmented options={FILES} value={file} onChange={switchFile} />
+      <Input size="sm" bind:value={q} placeholder="Search entries" aria-label={`Search ${FILENAME[file]}`} class="flex-1" />
+      <span class="shrink-0 font-sans text-[13px] leading-5 tabular-nums text-muted">
+        <span class="font-mono text-xs">{FILENAME[file]}</span>{query.data
+          ? ` · ${q.trim() ? `${hits.length} of ${entries.length}` : entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`
+          : ''}
+      </span>
+    </div>
+
+    <!-- No etag on this document, and the agent curates it itself — say so
+         where the edits happen rather than in a tooltip nobody opens. -->
+    <p class={cn('mt-2 font-sans text-[13px] leading-5 text-muted', inset)}>
+      The agent writes this file too, so a save replaces what is on disk. Every save is snapshotted.
+    </p>
+
+    {#if failure}
+      <QueryError variant="inline" class={cn('mt-2', inset)} error={failure} title="Could not save this memory" />
+    {/if}
+
+    <!-- The list scrolls; the controls above it do not. -->
+    <div class={cn('mt-4 min-h-0 flex-1 overflow-y-auto pb-4', inset)}>
+      {#if query.isError}
+        <QueryError error={query.error} title={`Can't read ${FILENAME[file]}`} onRetry={() => void query.refetch()} />
+      {:else if !query.data}
+        <SettingsGroup><div class="px-5 py-4"><SkeletonRows rows={6} /></div></SettingsGroup>
+      {:else}
+        <SettingsGroup>
+          {#if !entries.length}
+            <EmptyState
+              variant="compact"
+              icon="◇"
+              title="Nothing remembered yet"
+              hint={canEdit
+                ? 'Add an entry, or let the agent write here as it works.'
+                : 'The agent writes here as it works.'}
+            />
+          {:else if !hits.length}
+            <EmptyState variant="compact" icon="◇" title="Nothing matches" hint={`No entry in ${FILENAME[file]} mentions “${q.trim()}”.`} />
+          {:else}
+            {#each hits as i (i)}
+              {@const entry = entries[i] ?? ''}
+              {#if editing === i}
+                {@render editor(draft, 'Entry text', undefined, (v) => (draft = v), () => void saveEdit())}
+              {:else}
+                <SettingsRow>
+                  <!-- The whole first line, wrapped: the row has the width, so
+                       the title is not cut to a character budget here. -->
+                  {#snippet label()}<span class="line-clamp-2 whitespace-normal">{entryTitle(entry, Infinity)}</span>{/snippet}
+                  {#snippet hint()}
+                    {#if entry.includes('\n')}
+                      <p class="line-clamp-2 whitespace-pre-wrap">{entry.slice(entry.indexOf('\n') + 1).trim()}</p>
+                    {/if}
+                  {/snippet}
+                  {#if canEdit}
+                    <Button variant="outline" size="sm" onclick={() => startEdit(i)} disabled={busy}>Edit</Button>
+                    <SettingsRowMenu
+                      label={`Actions for ${entryTitle(entry)}`}
+                      items={[{ label: 'Remove entry', danger: true, disabled: busy, onSelect: () => void remove(i) }]}
+                    />
+                  {/if}
+                </SettingsRow>
+              {/if}
+            {/each}
+          {/if}
+          {#if canEdit}
+            {#if adding}
+              {@render editor(fresh, 'New entry', 'One thing the agent should remember', (v) => (fresh = v), () => void add())}
+            {:else}
+              <div class="px-5 py-3">
+                <Button size="sm" variant="outline" onclick={() => (adding = true)}>Add entry</Button>
+              </div>
+            {/if}
+          {/if}
+        </SettingsGroup>
+      {/if}
+    </div>
+  </div>
+{:else}
 <div class={cn('flex flex-col', className)}>
   <div class="flex items-center gap-2 px-4">
     <!-- Two documents, one view: the agent's record and the profile it keeps
@@ -183,7 +303,7 @@
          same way, so this is a mode switch, not a tab. -->
     <Segmented options={FILES} value={file} onChange={switchFile} />
     <Input size="sm" bind:value={q} placeholder="Search" aria-label={`Search ${FILENAME[file]}`} class="flex-1" />
-    <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
+    <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted"> <!-- voice-ok: mono branch, the agent manage dialog opened from Comms -->
       {FILENAME[file]}{query.data ? ` · ${q.trim() ? `${hits.length}/${entries.length}` : entries.length}` : ''}
     </span>
   </div>
@@ -287,3 +407,4 @@
     {/if}
   </div>
 </div>
+{/if}

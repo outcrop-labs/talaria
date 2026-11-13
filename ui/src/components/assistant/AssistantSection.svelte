@@ -2,8 +2,13 @@
   import { untrack } from 'svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Sparkles } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import { buttonClasses } from '@/components/ui/button'
   import Input from '@/components/ui/Input.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -15,20 +20,19 @@
   import AssistantPanels from './AssistantPanels.svelte'
   import AssistantGoogleCard from './AssistantGoogleCard.svelte'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
-  import { cn } from '@/lib/cn'
   import { errorMessage, postJson } from '@/lib/fetch-json'
-  import { focusGold } from '@/components/chat/chat-chrome'
   import { HANDLE_RE, updateAssistant, useAssistant, type AssistantDmAccess } from '@/lib/assistant'
-  import { slide } from '@/lib/motion'
   import { p } from '@/router'
-
-  // §8 field label: 10px mono uppercase 0.08em ink-dim.
-  const fieldLabel = 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'
 
   // Settings › Assistant — the WHOLE of a member's personal agent in one place:
   // identity (name, @handle), personality, which model powers it, on/off, and
   // the working parts (schedules, skills, memory) inline below. Owner-scoped
   // APIs throughout — no admin role anywhere.
+  //
+  // TWO KINDS OF SETTING, and the cards follow them. A name, a handle or a
+  // personality is a new version of the agent and restarts it, so those three
+  // share one card and one Save. The model and the DM reach apply as they are
+  // picked.
   const qc = useQueryClient()
   const query = useAssistant()
   const assistant = $derived(query.data)
@@ -50,12 +54,22 @@
   const DM_ACCESS: ReadonlyArray<SegmentedOption<AssistantDmAccess>> = [
     { id: 'none', label: 'None', title: 'Your DMs with people are not listed, read, or posted in' },
     { id: 'read', label: 'Read', title: 'It can read your DMs with people but never post in them' },
-    { id: 'read-write', label: 'Read & post', title: 'Your own view: it can read and post in your DMs with people' },
+    { id: 'read-write', label: 'Read and post', title: 'Your own view: it can read and post in your DMs with people' },
   ]
   const setDmAccess = async (dmAccess: AssistantDmAccess) => {
     error = null
     const r = await updateAssistant({ dmAccess })
-    if (!r.assistant) error = r.error ?? 'could not save'
+    if (!r.assistant) error = r.error ?? 'Could not save'
+    await qc.invalidateQueries({ queryKey: ['my-assistant'] })
+  }
+
+  const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+  const tierOptions = $derived(
+    (assistant?.tiers ?? []).map((t): SegmentedOption => ({ id: t.name, label: sentence(t.name), title: t.model })),
+  )
+  const setTier = async (tier: string) => {
+    if (busy) return
+    await updateAssistant({ model: tier })
     await qc.invalidateQueries({ queryKey: ['my-assistant'] })
   }
 
@@ -87,7 +101,7 @@
         ...(personality.trim() !== (a.personality ?? '') ? { personality: personality.trim() } : {}),
       })
       if (!r.assistant) {
-        error = r.error ?? 'could not save'
+        error = r.error ?? 'Could not save'
         return
       }
       await qc.invalidateQueries({ queryKey: ['my-assistant'] })
@@ -112,191 +126,174 @@
 </script>
 
 {#if query.isLoading}
-  <!-- The card's shape while we find out whether an assistant exists: header
-       (avatar + name/status), the two identity inputs, model chips, the
-       personality editor block, and the tab strip below the divider. -->
-  <section aria-hidden="true" class="rounded-lg border border-line bg-panel p-6">
-    <div class="mb-4 flex items-center gap-3">
-      <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
-      <div class="min-w-0 flex-1 space-y-2">
-        <Skeleton class="h-3 w-32 rounded-full" />
-        <Skeleton class="h-2.5 w-48 rounded-full" />
-      </div>
-      <Skeleton class="h-9 w-16 rounded-lg" />
-    </div>
-    <div class="mb-4 grid gap-4 sm:grid-cols-2">
-      <div class="space-y-2">
-        <Skeleton class="h-2.5 w-12 rounded-full" />
-        <Skeleton class="h-11 w-full" />
-      </div>
-      <div class="space-y-2">
-        <Skeleton class="h-2.5 w-14 rounded-full" />
-        <Skeleton class="h-11 w-full" />
-      </div>
-    </div>
-    <div class="mb-4 flex flex-wrap gap-1.5">
-      <Skeleton class="h-6 w-16 rounded-full" />
-      <Skeleton class="h-6 w-16 rounded-full" />
-      <Skeleton class="h-6 w-16 rounded-full" />
-    </div>
-    <Skeleton class="mb-6 h-20 w-full rounded-xl" />
-    <div class="flex gap-2 border-t border-line pt-5">
-      <Skeleton class="h-8 w-24 rounded-lg" />
-      <Skeleton class="h-8 w-16 rounded-lg" />
-      <Skeleton class="h-8 w-16 rounded-lg" />
-    </div>
-  </section>
-{:else if !assistant}
-  <section class="rounded-lg border border-line bg-panel p-6">
-    <EmptyState
-      title="No assistant yet"
-      hint="A personal agent that's just yours: memory, skills, and tools of its own."
-    >
-      {#snippet icon()}<Sparkles size={24} />{/snippet}
-      {#snippet action()}
-        <Button size="sm" onclick={() => (wizard = true)}>
-          Set up your assistant
-        </Button>
-      {/snippet}
-    </EmptyState>
-    {#if wizard}<AssistantWizard onClose={() => (wizard = false)} />{/if}
-  </section>
-{:else}
-  <section class="rounded-lg border border-line bg-panel p-6">
-    <div class="mb-4 flex items-center gap-3">
-      <Avatar name={assistant.displayName} class="h-10 w-10" />
-      <div class="min-w-0 flex-1">
-        <div class="truncate text-sm font-medium text-fg">{assistant.displayName}</div>
-        <!-- Identity meta speaks mono (spec §2 metadata voice); 6px status dot
-             green=online, hairline-toned=off (spec §8 status dots). -->
-        <div class="flex items-center gap-1.5 font-mono text-[11px] text-muted">
-          <StatusDot status={assistant.running ? 'ok' : 'idle'} />
-          @{assistant.slug} · {assistant.running ? 'online' : 'offline'}
-          {#if assistant.currentModel}<span class="truncate"> · {assistant.currentModel}</span>{/if}
+  <!-- The page's shape while we find out whether an assistant exists: the
+       identity row, then the card of fields. -->
+  <div aria-hidden="true" class="space-y-10">
+    <SettingsGroup>
+      <div class="flex min-h-[60px] items-center gap-3 px-5 py-4">
+        <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
+        <div class="min-w-0 flex-1 space-y-2">
+          <Skeleton class="h-3 w-32 rounded-full" />
+          <Skeleton class="h-2.5 w-48 rounded-full" />
         </div>
+        <Skeleton class="h-8 w-24 rounded-md" />
       </div>
-      <Button variant="outline" size="sm" disabled={busy} onclick={() => void togglePower(assistant)}>
-        {power ? '…' : assistant.running ? 'Stop' : 'Start'}
+    </SettingsGroup>
+    <SettingsGroup>
+      <SettingsRow label="Name"><Skeleton class="h-9 w-[280px]" /></SettingsRow>
+      <SettingsRow label="Handle"><Skeleton class="h-9 w-[280px]" /></SettingsRow>
+      <SettingsRow label="Personality" stacked><Skeleton class="h-24 w-full rounded-md" /></SettingsRow>
+    </SettingsGroup>
+  </div>
+{:else if !assistant}
+  <EmptyState
+    title="No assistant yet"
+    hint="A personal agent that is just yours, with memory, skills and tools of its own."
+  >
+    {#snippet icon()}<Sparkles size={24} />{/snippet}
+    {#snippet action()}
+      <Button size="sm" onclick={() => (wizard = true)}>
+        Set up your assistant
       </Button>
-      <a href={p('/chat')} class="text-xs text-accent hover:underline">
-        Open chat →
-      </a>
-    </div>
+    {/snippet}
+  </EmptyState>
+  {#if wizard}<AssistantWizard onClose={() => (wizard = false)} />{/if}
+{:else}
+  <div class="space-y-10">
+    <SettingsGroup>
+      <SettingsRow label={assistant.displayName}>
+        {#snippet lead()}<Avatar name={assistant.displayName} class="h-10 w-10" />{/snippet}
+        {#snippet hint()}
+          <span class="font-mono text-xs">@{assistant.slug}</span>
+          {#if assistant.currentModel}· <span class="font-mono text-xs">{assistant.currentModel}</span>{/if}
+        {/snippet}
+        <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+          <StatusDot status={assistant.running ? 'ok' : 'idle'} />
+          {power ? (assistant.running ? 'Stopping' : 'Starting') : assistant.running ? 'Online' : 'Offline'}
+        </span>
+        <a href={p('/chat')} class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Open chat</a>
+        <SettingsRowMenu
+          label={`Actions for ${assistant.displayName}`}
+          items={[
+            {
+              label: assistant.running ? 'Stop assistant' : 'Start assistant',
+              disabled: busy || power,
+              onSelect: () => void togglePower(assistant),
+            },
+          ]}
+        />
+      </SettingsRow>
+    </SettingsGroup>
 
-    <div class="mb-4 grid gap-4 sm:grid-cols-2">
-      <div>
-        <label for="assistant-name" class={fieldLabel}>Name</label>
-        <Input id="assistant-name" bind:value={name} maxlength={60} />
-      </div>
-      <div>
-        <label for="assistant-handle" class={fieldLabel}>Handle</label>
-        <div class="flex items-center gap-2">
-          <span class="text-sm text-muted">@</span>
+    <SettingsSection title="Identity">
+      <SettingsGroup>
+        <SettingsRow label="Name" as="label">
+          <Input id="assistant-name" size="sm" class="w-[280px]" bind:value={name} maxlength={60} />
+        </SettingsRow>
+        <SettingsRow label="Handle" as="label">
+          {#snippet hint()}
+            {#if handle !== '' && !HANDLE_RE.test(handle)}
+              <span class="text-danger" role="alert">2 to 30 lowercase letters or numbers, starting with a letter.</span>
+            {:else}
+              Chats, memory and mentions move with it.
+            {/if}
+          {/snippet}
+          <span class="font-sans text-sm text-muted">@</span>
           <Input
             id="assistant-handle"
+            size="sm"
+            class="w-[280px] font-[var(--font-mono)]"
             bind:value={handle}
             oninput={() => (handle = handle.toLowerCase())}
             maxlength={30}
-            title="Chats, memory, and access move with it; mentions pick up the new handle"
           />
+        </SettingsRow>
+        <SettingsRow label="Personality" hint="How it should come across: tone, priorities, pet peeves." stacked>
+          {#snippet meta()}
+            <!-- The full editor adds Muse drafting and version history. -->
+            <Button variant="link" size="sm" class="ml-auto text-[13px]" onclick={() => (personaEditor = true)}>Open full editor</Button>
+          {/snippet}
+          <!-- Inline rich edit (autosave keeps `personality`/dirty fresh).
+               Reseeds when a save from the full editor lands. -->
+          <div class="max-h-64 w-full overflow-y-auto">
+            {#key personaRev}
+              <RichEditor
+                value={personality}
+                onSave={(md) => (personality = md)}
+                autosave
+                minHeight="5rem"
+                placeholder="Brief and direct. Lead with what needs a decision."
+              />
+            {/key}
+          </div>
+        </SettingsRow>
+        <!-- An explicit Save, not save-on-blur: each save is a new version of
+             the agent and restarts it. -->
+        <div class="flex min-h-[60px] items-center gap-3 px-5 py-3">
+          <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
+            {#if error}
+              <span class="text-danger" role="alert">{error}</span>
+            {:else}
+              Saving restarts your assistant.
+            {/if}
+          </span>
+          {#if saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
+          <Button size="sm" onclick={() => void save()} disabled={busy || !dirty || !name.trim()}>
+            {busy ? 'Saving' : 'Save'}
+          </Button>
         </div>
-        {#if handle !== '' && !HANDLE_RE.test(handle)}
-          <p transition:slide={{ duration: 150 }} class="mt-1 text-xs text-danger">2–30 lowercase letters/numbers, starting with a letter.</p>
+      </SettingsGroup>
+    </SettingsSection>
+
+    <SettingsSection title="Behaviour">
+      <SettingsGroup>
+        {#if assistant.tiers.length > 0}
+          <SettingsRow label="Model" hint="Pick the model it starts every chat on.">
+            <Segmented
+              options={tierOptions}
+              value={assistant.tiers.find((t) => t.active)?.name ?? ''}
+              onChange={(tier) => void setTier(tier)}
+            />
+          </SettingsRow>
         {/if}
-      </div>
-    </div>
+        <SettingsRow
+          label="Direct messages"
+          hint="What it may do in your direct messages with other people."
+          info="Channels follow your own membership either way."
+        >
+          <Segmented options={DM_ACCESS} value={assistant.dmAccess} onChange={(id) => void setDmAccess(id)} />
+        </SettingsRow>
+      </SettingsGroup>
+    </SettingsSection>
 
-    {#if assistant.tiers.length > 0}
-      <div class="mb-4">
-        <span class={fieldLabel}>Model</span>
-        <!-- Tier chips per §7/§8 chip anatomy: radius 6, mono 10px uppercase;
-             the active tier reads gold, inactive hairline+muted → hover. -->
-        <div class="flex flex-wrap gap-1.5">
-          {#each assistant.tiers as t (t.name)}
-            <button
-              type="button"
-              title={t.model}
-              disabled={busy}
-              onclick={() =>
-                void updateAssistant({ model: t.name }).then(() => qc.invalidateQueries({ queryKey: ['my-assistant'] }))}
-              class={cn(
-                'rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
-                focusGold,
-                t.active ? 'border-accent text-accent' : 'border-line text-muted dither-fill hover:text-fg',
-              )}
-            >
-              {t.name}
-            </button>
-          {/each}
-        </div>
-      </div>
-    {/if}
-
-    <div class="mb-4">
-      <span class={fieldLabel}>Your DMs</span>
-      <div class="flex flex-wrap items-center gap-3">
-        <Segmented options={DM_ACCESS} value={assistant.dmAccess} onChange={(id) => void setDmAccess(id)} />
-        <span class="text-xs text-muted">Direct messages between you and other people. Channels follow your membership either way.</span>
-      </div>
-    </div>
-
-    <div class="mb-1 flex items-center">
-      <span class={cn(fieldLabel, 'mb-0')}>Personality</span>
-      <button type="button" class="ml-auto text-xs text-accent hover:underline" onclick={() => (personaEditor = true)}>
-        Open editor
-      </button>
-    </div>
-    <!-- Inline rich edit (autosave keeps `personality`/dirty fresh); the
-         "Open editor" modal adds muse drafting + version history. Reseeds
-         when a modal save lands. -->
-    <div class="max-h-64 overflow-y-auto">
-      {#key personaRev}
-        <RichEditor
-          value={personality}
-          onSave={(md) => (personality = md)}
-          autosave
-          minHeight="5rem"
-          placeholder="How it should come across: tone, priorities, pet peeves."
-        />
-      {/key}
-    </div>
-    {#if personaEditor}
-      <InternalEditorModal
-        open
-        onClose={() => (personaEditor = false)}
-        title={`${assistant.displayName} · Personality`}
-        subtitle="How your assistant comes across. Every save is versioned and applies right away. Your assistant restarts with it."
-        value={assistant.personality ?? ''}
-        editable
-        saving={busy}
-        muse={{ kind: 'personality', context: `${assistant.displayName}, the user's personal AI assistant.` }}
-        onSave={async (md) => {
-          busy = true
-          try {
-            const r = await updateAssistant({ personality: md })
-            if (!r.assistant) throw new Error(r.error ?? 'could not save')
-            personality = md // the invalidation below reseeds the inline editor
-            await qc.invalidateQueries({ queryKey: ['my-assistant'] })
-          } finally {
-            busy = false
-          }
-        }}
-        history={{ kind: 'personality', id: assistant.id }}
-      />
-    {/if}
-    <div class="mt-3 flex items-center gap-3">
-      <Button size="sm" onclick={() => void save()} disabled={busy || !dirty || !name.trim()}>
-        {busy ? 'Saving' : 'Save'}
-      </Button>
-      <span class="text-xs text-muted">Changes apply right away. Your assistant restarts with them.</span>
-    </div>
-    {#if saved}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-success">Saved</div>{/if}
-    {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">{error}</div>{/if}
-    <!-- The assistant's outside reach: Google Workspace. Sits above the working
-         parts because it is the grant most owners are actually here to make. -->
+    <!-- The assistant's outside reach. Above the working parts because it is
+         the grant most owners are here to make. -->
     <AssistantGoogleCard />
-    <div class="mt-6 border-t border-line pt-5">
-      <AssistantPanels {assistant} />
-    </div>
-  </section>
+    <AssistantPanels {assistant} />
+  </div>
+
+  {#if personaEditor}
+    <InternalEditorModal
+      open
+      onClose={() => (personaEditor = false)}
+      title={`${assistant.displayName} · Personality`}
+      subtitle="How your assistant comes across. Every save is versioned and restarts your assistant."
+      value={assistant.personality ?? ''}
+      editable
+      saving={busy}
+      muse={{ kind: 'personality', context: `${assistant.displayName}, the user's personal AI assistant.` }}
+      onSave={async (md) => {
+        busy = true
+        try {
+          const r = await updateAssistant({ personality: md })
+          if (!r.assistant) throw new Error(r.error ?? 'could not save')
+          personality = md // the invalidation below reseeds the inline editor
+          await qc.invalidateQueries({ queryKey: ['my-assistant'] })
+        } finally {
+          busy = false
+        }
+      }}
+      history={{ kind: 'personality', id: assistant.id }}
+    />
+  {/if}
 {/if}

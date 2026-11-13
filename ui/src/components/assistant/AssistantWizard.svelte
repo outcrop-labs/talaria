@@ -4,20 +4,17 @@
   // but every choice that matters (name, handle, voice) is theirs to make.
   const STEPS = ['Name', 'Personality', 'Launch'] as const
 
-  // §8 field label: 10px mono uppercase 0.08em ink-dim.
-  const fieldLabel = 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'
-
   const PRESETS = [
     {
-      label: 'Warm & proactive',
+      label: 'Warm and proactive',
       text: 'Be warm and personable. Anticipate what I need, suggest next steps, and check in when something is ambiguous rather than guessing.',
     },
     {
-      label: 'Concise & professional',
+      label: 'Concise and professional',
       text: 'Be brief and businesslike. Lead with the answer, skip pleasantries, and use short bullet points for any detail.',
     },
     {
-      label: 'Playful & curious',
+      label: 'Playful and curious',
       text: 'Keep it light. A little wit is welcome. Be curious, offer ideas I did not ask for when they are good, but stay useful first.',
     },
   ] as const
@@ -28,13 +25,13 @@
   import { Sparkles } from '@lucide/svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Steps from '@/components/ui/Steps.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import { focusGold } from '@/components/chat/chat-chrome'
-  import { cn } from '@/lib/cn'
   import { slide, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { HANDLE_RE, createAssistant, suggestHandle, type Assistant } from '@/lib/assistant'
@@ -70,7 +67,7 @@
     try {
       const r = await createAssistant({ name: name.trim(), handle, personality: personality.trim() || undefined })
       if (!r.assistant) {
-        error = r.error ?? 'could not create your assistant'
+        error = r.error ?? 'Could not create your assistant'
         return
       }
       created = r.assistant
@@ -143,27 +140,24 @@
             <span class="mx-auto grid h-11 w-11 place-items-center rounded-lg bg-accent-soft text-accent">
               <Sparkles size={20} />
             </span>
-            <div class="text-sm font-medium text-fg">{created.displayName} is ready</div>
-            <p class="text-xs text-muted">
-              Its workspace is starting up. It has its own memory, skills, and private knowledge, and it only works
-              for you. Tune it any time in Settings.
+            <div class="font-sans text-[15px] font-semibold leading-5 text-fg">{created.displayName} is ready</div>
+            <p class="font-sans text-[13px] leading-5 text-muted">
+              Its workspace is starting up. It has its own memory and skills, and it only works for you.
             </p>
           </div>
         {:else if step === 0}
-          <div use:staggerIn class="space-y-4">
-            <p class="text-sm text-muted">
-              Your assistant is a real agent that's just yours: its own memory, skills, and tools. Start by naming it.
-            </p>
-            <div>
-              <label for="wizard-name" class={fieldLabel}>Name</label>
-              <Input id="wizard-name" bind:value={name} oninput={rename} placeholder="Maxie" autofocus maxlength={60} />
-            </div>
-            <div>
-              <label for="wizard-handle" class={fieldLabel}>Handle</label>
+          <div use:staggerIn class="space-y-5">
+            <p class="font-sans text-sm leading-5 text-muted">An agent that is just yours, with its own memory, skills and tools.</p>
+            <SettingsField label="Name" for="wizard-name">
+              <Input id="wizard-name" size="sm" bind:value={name} oninput={rename} placeholder="Maxie" autofocus maxlength={60} />
+            </SettingsField>
+            <SettingsField label="Handle" for="wizard-handle">
               <div class="flex items-center gap-2">
-                <span class="text-sm text-muted">@</span>
+                <span class="font-sans text-sm text-muted">@</span>
                 <Input
                   id="wizard-handle"
+                  size="sm"
+                  class="font-[var(--font-mono)]"
                   bind:value={handle}
                   oninput={() => {
                     handleTouched = true
@@ -173,35 +167,29 @@
                   maxlength={30}
                 />
               </div>
-              <p class={cn('mt-1 text-xs', handle && !handleOk ? 'text-danger' : 'text-muted')}>
-                {handle && !handleOk
-                  ? 'Lowercase letters and numbers only, starting with a letter (2–30 characters).'
-                  : "How agents and integrations refer to it. Can't be changed later."}
-              </p>
-            </div>
+              {#if handle && !handleOk}
+                <p class="font-sans text-[13px] leading-5 text-danger" role="alert">2 to 30 lowercase letters or numbers, starting with a letter.</p>
+              {:else}
+                <p class="font-sans text-[13px] leading-5 text-muted">How people and agents mention it.</p>
+              {/if}
+            </SettingsField>
           </div>
         {:else if step === 1}
-          <div use:staggerIn class="space-y-3">
-            <p class="text-sm text-muted">
-              How should {name.trim() || 'it'} come across? Pick a starting point or write your own. You can refine it
-              any time.
+          <div use:staggerIn class="space-y-4">
+            <p class="font-sans text-sm leading-5 text-muted">
+              How should {name.trim() || 'it'} come across? Pick a starting point or write your own.
             </p>
             <div class="flex flex-wrap gap-2">
               {#each PRESETS as preset (preset.label)}
-                <button
-                  type="button"
-                  onclick={() => {
+                <Chip
+                  selected={personality === preset.text}
+                  onSelect={() => {
                     personality = preset.text
                     personaRev += 1 // reseed the editor with the preset
                   }}
-                  class={cn(
-                    'rounded-md border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
-                    focusGold,
-                    personality === preset.text ? 'border-accent text-accent' : 'border-line text-muted dither-fill hover:text-fg',
-                  )}
                 >
                   {preset.label}
-                </button>
+                </Chip>
               {/each}
             </div>
             <div class="max-h-60 overflow-y-auto">
@@ -211,31 +199,25 @@
                   onSave={(md) => (personality = md)}
                   autosave
                   minHeight="5rem"
-                  placeholder="Optional, e.g. “Be direct and keep things short. Remind me about loose ends.”"
+                  placeholder="Optional. For example: be direct, keep things short, remind me about loose ends."
                 />
               {/key}
             </div>
           </div>
         {:else}
-          <div use:staggerIn class="space-y-3">
-            <p class="text-sm text-muted">Ready to go. Creating it starts a private workspace. This can take a minute.</p>
-            <dl class="space-y-2 rounded-lg border border-line bg-panel p-3 text-sm">
-              <div class="flex items-baseline gap-2">
-                <dt class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</dt>
-                <dd class="text-fg">{name.trim()}</dd>
-              </div>
-              <div class="flex items-baseline gap-2">
-                <dt class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</dt>
-                <dd class="font-mono text-[13px] text-fg">@{handle}</dd>
-              </div>
-              <div class="flex items-baseline gap-2">
-                <dt class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Personality</dt>
-                <dd class="min-w-0 text-fg">
-                  {#if personality.trim()}{personality.trim()}{:else}<span class="text-muted">Warm, direct, and useful (default)</span>{/if}
-                </dd>
-              </div>
+          <div use:staggerIn class="space-y-4">
+            <p class="font-sans text-sm leading-5 text-muted">Creating it starts a private workspace. This can take a minute.</p>
+            <dl class="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-4 gap-y-2 font-sans text-[13px] leading-5">
+              <dt class="text-muted">Name</dt>
+              <dd class="text-fg">{name.trim()}</dd>
+              <dt class="text-muted">Handle</dt>
+              <dd class="font-mono text-xs leading-5 text-fg">@{handle}</dd>
+              <dt class="text-muted">Personality</dt>
+              <dd class="min-w-0 text-fg">
+                {#if personality.trim()}{personality.trim()}{:else}<span class="text-muted">Warm, direct and useful (the default)</span>{/if}
+              </dd>
             </dl>
-            {#if error}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</p>{/if}
+            {#if error}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</p>{/if}
           </div>
         {/if}
       {/key}

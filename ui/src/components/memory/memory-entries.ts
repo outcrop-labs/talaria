@@ -107,8 +107,11 @@ export function searchEntries(entries: string[], query: string): number[] {
  * Markdown furniture is not a title: the agent writes `## Preferences`
  * headings and the quick-add line appends bare `- fact` rows, and a card
  * header reads better without the markers.
+ *
+ * `max` is the character budget. A list that wraps the line itself passes
+ * `Infinity` and gets the whole of it.
  */
-export function entryTitle(entry: string): string {
+export function entryTitle(entry: string, max: number = TITLE_MAX): string {
   const first =
     lf(entry)
       .split('\n')
@@ -118,11 +121,11 @@ export function entryTitle(entry: string): string {
     .replace(/^#{1,6}\s+/, '')
     .replace(/^[-*+]\s+/, '')
     .trim()
-  if (text.length <= TITLE_MAX) return text
+  if (text.length <= max) return text
   // The one tolerated ellipsis (UI-CONVENTIONS: a truncation marker on
   // clipped USER text). It is counted INSIDE the budget, so a title is never
   // wider than the budget by the width of its own marker.
-  return `${text.slice(0, TITLE_MAX - 1).trimEnd()}…`
+  return `${text.slice(0, max - 1).trimEnd()}…`
 }
 
 /** One entry replaced, as a new list. Editing an entry down to nothing is a
