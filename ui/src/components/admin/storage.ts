@@ -3,6 +3,7 @@
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 import { formatBytes } from '@/lib/format'
+import type { Fact } from './facts'
 
 export interface TargetConfig {
   endpoint: string
@@ -40,3 +41,15 @@ export const useStorageAdmin = () =>
  *  single upload. The spelling is shared — see `formatBytes` in `@/lib/format`;
  *  StoragePanel imports it by this name, so the name stays. */
 export const fmtBytes = (n: number) => formatBytes(n, { ceilKb: true })
+
+/** A bucket target as the facts an admin checks before trusting it. The secret
+ *  is only ever "stored" or "not set". */
+export const targetFacts = (t: TargetConfig): Fact[] => [
+  { label: 'Endpoint', value: t.endpoint || 'Not set', mono: !!t.endpoint },
+  { label: 'Bucket', value: t.bucket || 'Not set', mono: !!t.bucket },
+  { label: 'Region', value: t.region || 'Read from the endpoint', mono: !!t.region },
+  { label: 'Key prefix', value: t.prefix || 'None', mono: !!t.prefix },
+  { label: 'Access key ID', value: t.accessKeyId || 'Not set', mono: !!t.accessKeyId },
+  { label: 'Secret access key', value: t.hasSecret ? 'Stored' : 'Not set' },
+  { label: 'Requests', value: t.pathStyle ? 'Path-style' : 'Virtual-host' },
+]

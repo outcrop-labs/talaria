@@ -1,43 +1,46 @@
 <script lang="ts">
-  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import type { TargetConfig } from './storage'
 
   // Bucket credential fields, shared by the external target and the replica.
+  // `id` keeps the two sets' labels apart when both are on one page.
   let {
+    id,
     t,
     secret,
     onChange,
     onSecret,
-  }: { t: TargetConfig; secret: string; onChange: (patch: Partial<TargetConfig>) => void; onSecret: (v: string) => void } = $props()
+  }: {
+    id: string
+    t: TargetConfig
+    secret: string
+    onChange: (patch: Partial<TargetConfig>) => void
+    onSecret: (v: string) => void
+  } = $props()
 </script>
 
-<label class="text-xs text-muted">
-  <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Endpoint</span>
-  <Input value={t.endpoint} oninput={(e) => onChange({ endpoint: e.currentTarget.value })} placeholder="https://s3.us-west-004.backblazeb2.com" class="mt-1 w-full" />
-</label>
-<label class="text-xs text-muted">
-  <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Bucket</span>
-  <Input value={t.bucket} oninput={(e) => onChange({ bucket: e.currentTarget.value })} placeholder="talaria-uploads" class="mt-1 w-full" />
-</label>
-<label class="text-xs text-muted">
-  <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Region</span> <span class="opacity-70">(blank = derived from endpoint)</span>
-  <Input value={t.region} oninput={(e) => onChange({ region: e.currentTarget.value })} placeholder="auto" class="mt-1 w-full" />
-</label>
-<label class="text-xs text-muted">
-  <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key prefix</span> <span class="opacity-70">(optional, ends with /)</span>
-  <Input value={t.prefix} oninput={(e) => onChange({ prefix: e.currentTarget.value })} placeholder="talaria/" class="mt-1 w-full" />
-</label>
-<label class="text-xs text-muted">
-  <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Access key ID</span>
-  <Input value={t.accessKeyId} oninput={(e) => onChange({ accessKeyId: e.currentTarget.value })} class="mt-1 w-full" />
-</label>
-<label class="text-xs text-muted">
-  <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Secret access key</span>
-  <Input type="password" value={secret} oninput={(e) => onSecret(e.currentTarget.value)} placeholder={t.hasSecret ? '•••••••• (saved)' : ''} class="mt-1 w-full" />
-</label>
-<Checkbox checked={t.pathStyle} onChange={(checked) => onChange({ pathStyle: checked })} class="gap-2 sm:col-span-2">
-  {#snippet label()}
-    Path-style requests <span class="opacity-70">(works everywhere; uncheck only for virtual-host buckets)</span>
-  {/snippet}
-</Checkbox>
+<div class="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+  <SettingsField label="Endpoint" for="{id}-endpoint" class="sm:col-span-2">
+    <Input id="{id}-endpoint" size="sm" class="font-mono" value={t.endpoint} oninput={(e) => onChange({ endpoint: e.currentTarget.value })} placeholder="https://s3.us-west-004.backblazeb2.com" />
+  </SettingsField>
+  <SettingsField label="Bucket" for="{id}-bucket">
+    <Input id="{id}-bucket" size="sm" class="font-mono" value={t.bucket} oninput={(e) => onChange({ bucket: e.currentTarget.value })} placeholder="talaria-uploads" />
+  </SettingsField>
+  <SettingsField label="Region" for="{id}-region" hint="Blank reads it from the endpoint.">
+    <Input id="{id}-region" size="sm" class="font-mono" value={t.region} oninput={(e) => onChange({ region: e.currentTarget.value })} placeholder="auto" />
+  </SettingsField>
+  <SettingsField label="Access key ID" for="{id}-access-key">
+    <Input id="{id}-access-key" size="sm" class="font-mono" value={t.accessKeyId} oninput={(e) => onChange({ accessKeyId: e.currentTarget.value })} />
+  </SettingsField>
+  <SettingsField label="Secret access key" for="{id}-secret" hint={t.hasSecret ? 'A key is stored. Type a new one to replace it.' : 'Stored encrypted. It is never shown again.'}>
+    <Input id="{id}-secret" size="sm" type="password" autocomplete="off" value={secret} oninput={(e) => onSecret(e.currentTarget.value)} />
+  </SettingsField>
+  <SettingsField label="Key prefix" for="{id}-prefix" hint="Optional. Ends with a slash.">
+    <Input id="{id}-prefix" size="sm" class="font-mono" value={t.prefix} oninput={(e) => onChange({ prefix: e.currentTarget.value })} placeholder="talaria/" />
+  </SettingsField>
+  <SettingsField label="Path-style requests" hint="Works everywhere. Turn off only for virtual-host buckets.">
+    <Toggle checked={t.pathStyle} onChange={(checked) => onChange({ pathStyle: checked })} title="Path-style requests" />
+  </SettingsField>
+</div>
