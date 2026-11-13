@@ -5,6 +5,8 @@
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Select from '@/components/ui/Select.svelte'
+  import { useUiVoice } from '@/lib/ui-voice'
+  import McpField from './McpField.svelte'
   import McpHeaderRows from './McpHeaderRows.svelte'
   import McpServerMark from './McpServerMark.svelte'
   import {
@@ -41,6 +43,9 @@
     onInstall: (opts: InstallOpts) => void
   } = $props()
 
+  // The marketplace opens this from an agent's dialog in comms too, where the
+  // voice is mono: the second template below is that dialog as it was.
+  const sans = useUiVoice() === 'sans'
   const isPkg = $derived(!!l.package)
   const pkg = $derived(l.package)
 
@@ -94,151 +99,193 @@
   }
 </script>
 
-<Modal open onClose={onCancel} width="max-w-md">
-  <div>
-    <div class="flex items-center gap-3">
-      <McpServerMark title={l.title} domain={l.domain} icon={l.icon} size={36} />
-      <div class="min-w-0 flex-1">
-        <div class="font-sans text-sm font-semibold text-fg">Connect {l.title}</div>
-        {#if l.domain}<div class="font-mono text-[11px] text-muted">{l.domain}</div>{/if}
-      </div>
-    </div>
+<!-- The declared credentials. A package's environment variables share the
+     schema but never offered a choice list or a header name. -->
+{#snippet declared(hosted: boolean)}
+  {#each fields as f (f.key)}
+    <McpField
+      label={f.label}
+      for={`install-${f.key}`}
+      required={f.isRequired}
+      header={hosted && f.header !== f.label ? f.header : null}
+      hint={f.description}
+    >
+      {#if hosted && f.choices?.length}
+        <Select id={`install-${f.key}`} size="sm" value={values[f.key] ?? ''} onchange={(e) => (values = { ...values, [f.key]: e.currentTarget.value })} class="w-full">
+          <option value="">Pick one</option>
+          {#each f.choices as c (c)}
+            <option value={c}>
+              {c}
+            </option>
+          {/each}
+        </Select>
+      {:else}
+        <Input
+          id={`install-${f.key}`}
+          size={sans ? 'sm' : 'md'}
+          type={f.isSecret ? 'password' : 'text'}
+          value={values[f.key] ?? ''}
+          oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
+          placeholder={f.placeholder ?? (f.isSecret ? '•••' : '')}
+          autocomplete="off"
+        />
+      {/if}
+    </McpField>
+  {/each}
+{/snippet}
 
-    {#if isPkg}
-      <!-- The package path: acknowledge the runtime, fill the declared env,
-           fill the required run flags. One org-shared container — there is
-           no per-user mode for packages. -->
-      <div class="mt-3 rounded-lg border border-warning/40 bg-warning/5 p-3">
-        <label class="flex items-start gap-2.5 font-sans text-xs leading-relaxed text-fg">
-          <input type="checkbox" bind:checked={acknowledged} class="mt-0.5" />
+{#snippet runFlags()}
+  {#each argFields as f (f.index)}
+    <McpField label={f.name} for={`install-arg-${f.index}`} required hint={f.description}>
+      <Input
+        id={`install-arg-${f.index}`}
+        size={sans ? 'sm' : 'md'}
+        value={argValues[f.index] ?? ''}
+        oninput={(e) => (argValues = { ...argValues, [f.index]: e.currentTarget.value })}
+        placeholder={f.placeholder ?? ''}
+        autocomplete="off"
+      />
+    </McpField>
+  {/each}
+{/snippet}
+
+{#snippet signIn()}
+  <Combobox
+    size={sans ? 'sm' : 'md'}
+    options={sans
+      ? [
+          { value: 'org', label: 'Org account', sub: 'One shared credential for every agent' },
+          { value: 'per-user', label: 'Per-user accounts', sub: 'Each person connects their own in Settings' },
+        ]
+      : [
+          { value: 'org', label: 'Org account', sub: 'one shared credential, stored on the server row' },
+          { value: 'per-user', label: 'Per-user accounts', sub: 'each person connects their own in Settings' },
+        ]}
+    selected={[authMode]}
+    onChange={([v]) => v && (authMode = v as 'org' | 'per-user')}
+    placeholder="Auth mode"
+  />
+{/snippet}
+
+{#snippet actions()}
+  <Button size="sm" variant="ghost" onclick={onCancel}>Cancel</Button>
+  <Button size="sm" disabled={busy || blocked} onclick={submit}>
+    {busy ? 'Installing' : isPkg ? 'Install package' : 'Add to org'}
+  </Button>
+{/snippet}
+
+{#snippet footer()}
+  <div class="flex justify-end gap-2">{@render actions()}</div>
+{/snippet}
+
+{#if sans}
+  <Modal open onClose={onCancel} title={`Add ${l.title}`} {footer} width="max-w-md">
+    <div class="space-y-5">
+      {#if isPkg}
+        <!-- The package path: acknowledge the runtime, fill the declared env,
+             fill the required run flags. One org-shared container — there is
+             no per-user mode for packages. -->
+        <label class="flex items-start gap-3 rounded-md border border-warning/40 bg-warning/5 p-3 font-sans text-[13px] leading-5 text-fg">
+          <input type="checkbox" bind:checked={acknowledged} class="mt-1 accent-accent" />
           <span>
-            {l.tier === 'community'
-              ? 'This server is COMMUNITY-BUILT third-party code. Installing it runs its package in a Docker container on your deployment, with the credentials you enter below. Review who published it before continuing.'
-              : 'Installing this server runs its package in a Docker container on your deployment, with the credentials you enter below.'}
-            Talaria contains the container (unprivileged user, read-only filesystem, no host mounts, no privileges, capped CPU/memory, no fleet network) — the code inside it is still the publisher's. Only an admin can install one.
+            {#if l.tier === 'community'}This is community-built code. Check who published it first.{/if}
+            Installing runs the publisher's code in a locked-down container on your deployment, with the credentials you enter here. Only an admin can install one.
           </span>
         </label>
-      </div>
-      {#if fields.length === 0 && argFields.length === 0}
-        <p class="mt-3 font-sans text-xs text-muted">This package declares no credentials — nothing to enter.</p>
-      {/if}
-      {#if fields.length > 0}
-        <div class="mt-3 space-y-3">
-          {#each fields as f (f.key)}
-            <div>
-              <label for={`install-${f.key}`} class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-                {f.label}
-                {#if f.isRequired}<span class="text-accent">*</span>{/if}
-              </label>
-              <Input
-                id={`install-${f.key}`}
-                type={f.isSecret ? 'password' : 'text'}
-                value={values[f.key] ?? ''}
-                oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
-                placeholder={f.placeholder ?? (f.isSecret ? '•••' : '')}
-                autocomplete="off"
-              />
-              {#if f.description}<div class="mt-1 font-sans text-[11px] text-muted/90">{f.description}</div>{/if}
+        {#if fields.length === 0 && argFields.length === 0}
+          <p class="font-sans text-[13px] leading-5 text-muted">This package asks for no credentials.</p>
+        {/if}
+        {@render declared(false)}
+        {@render runFlags()}
+        <p class="font-sans text-[13px] leading-5 text-muted">Credentials are stored encrypted and given only to the container.</p>
+      {:else}
+        <McpField label="Sign-in" hint="This server asks for credentials. Choose how your org provides them.">
+          {@render signIn()}
+        </McpField>
+        {#if authMode === 'org' && fields.length === 0}
+          <p class="font-sans text-[13px] leading-5 text-muted">The publisher sets every credential this server needs. There is nothing to enter.</p>
+        {:else if authMode === 'org'}
+          {@render declared(true)}
+        {:else}
+          <p class="font-sans text-[13px] leading-5 text-muted">
+            Nobody gets access until they connect their own account under Settings, Connections. Their assistant then acts as them.
+          </p>
+        {/if}
+        {#if authMode === 'org'}
+          <!-- Registry declarations are what the publisher wrote down, which
+               is not always what the server checks. The door is folded so the
+               common case stays one field; after install, a 401 from discovery
+               asks for the rest on the row. -->
+          <Disclosure title="Other headers, if the server wants more">
+            <div class="py-1">
+              <McpHeaderRows bind:rows={extraRows} />
             </div>
-          {/each}
-        </div>
+          </Disclosure>
+          <p class="font-sans text-[13px] leading-5 text-muted">Credentials are stored encrypted and sent only by Talaria.</p>
+        {/if}
       {/if}
-      {#if argFields.length > 0}
-        <div class="mt-3 space-y-3">
-          {#each argFields as f (f.index)}
-            <div>
-              <label for={`install-arg-${f.index}`} class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-                {f.name}
-                <span class="text-accent">*</span>
-              </label>
-              <Input
-                id={`install-arg-${f.index}`}
-                value={argValues[f.index] ?? ''}
-                oninput={(e) => (argValues = { ...argValues, [f.index]: e.currentTarget.value })}
-                placeholder={f.placeholder ?? ''}
-                autocomplete="off"
-              />
-              {#if f.description}<div class="mt-1 font-sans text-[11px] text-muted/90">{f.description}</div>{/if}
-            </div>
-          {/each}
-        </div>
-      {/if}
-      <div class="mt-3 font-sans text-[11px] text-muted/80">Credentials are sealed at rest and spoken only to the container; never rendered into an agent config.</div>
-    {:else}
-      <p class="mt-2 font-sans text-xs text-muted">This server declares credentials. Choose how your org authenticates:</p>
-      <div class="mt-3">
-        <Combobox
-          options={[
-            { value: 'org', label: 'Org account', sub: 'one shared credential, stored on the server row' },
-            { value: 'per-user', label: 'Per-user accounts', sub: 'each person connects their own in Settings' },
-          ]}
-          selected={[authMode]}
-          onChange={([v]) => v && (authMode = v as 'org' | 'per-user')}
-          placeholder="Auth mode"
-        />
-      </div>
-      {#if authMode === 'org' && fields.length === 0}
-        <p class="mt-3 font-sans text-xs text-muted">
-          The publisher sets every credential this server needs — there's nothing to enter.
-        </p>
-      {:else if authMode === 'org'}
-        <div class="mt-3 space-y-3">
-          {#each fields as f (f.key)}
-            <div>
-              <label for={`install-${f.key}`} class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-                {f.label}
-                {#if f.isRequired}<span class="text-accent">*</span>{/if}
-                {#if f.header !== f.label}<span class="normal-case text-ink-dim/70">→ {f.header}</span>{/if}
-              </label>
-              {#if f.choices?.length}
-                <Select id={`install-${f.key}`} size="sm" value={values[f.key] ?? ''} onchange={(e) => (values = { ...values, [f.key]: e.currentTarget.value })} class="w-full">
-                  <option value="">Pick one</option>
-                  {#each f.choices as c (c)}
-                    <option value={c}>
-                      {c}
-                    </option>
-                  {/each}
-                </Select>
-              {:else}
-                <Input
-                  id={`install-${f.key}`}
-                  type={f.isSecret ? 'password' : 'text'}
-                  value={values[f.key] ?? ''}
-                  oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
-                  placeholder={f.placeholder ?? (f.isSecret ? '•••' : '')}
-                  autocomplete="off"
-                />
-              {/if}
-              {#if f.description}<div class="mt-1 font-sans text-[11px] text-muted/90">{f.description}</div>{/if}
-            </div>
-          {/each}
-          <div class="font-sans text-[11px] text-muted/80">Spoken only by Talaria's gateway; never rendered into an agent config.</div>
-        </div>
-      {:else if authMode === 'per-user'}
-        <p class="mt-3 font-sans text-xs text-muted">
-          Nobody gets access until they connect their own account in Settings → Connections. Their assistant then acts as them on this server.
-        </p>
-      {/if}
-      {#if authMode === 'org'}
-        <!-- Registry declarations are what the publisher wrote down, which
-             is not always what the server checks. The door is folded so the
-             common case stays one field; after install, a 401 from discovery
-             asks for the rest on the card. -->
-        <Disclosure title="Other headers (if the server wants more)" class="mt-3">
-          <div class="p-2">
-            <McpHeaderRows bind:rows={extraRows} />
-          </div>
-        </Disclosure>
-      {/if}
-    {/if}
-
-    <div class="mt-4 flex justify-end gap-2 border-t border-line pt-3">
-      <Button size="sm" variant="ghost" onclick={onCancel}>
-        Cancel
-      </Button>
-      <Button size="sm" disabled={busy || blocked} onclick={submit}>
-        {busy ? 'Installing' : isPkg ? 'Install package' : 'Add to org'}
-      </Button>
     </div>
-  </div>
-</Modal>
+  </Modal>
+{:else}
+  <Modal open onClose={onCancel} width="max-w-md">
+    <div>
+      <div class="flex items-center gap-3">
+        <McpServerMark title={l.title} domain={l.domain} icon={l.icon} size={36} />
+        <div class="min-w-0 flex-1">
+          <div class="font-sans text-sm font-semibold text-fg">Connect {l.title}</div>
+          {#if l.domain}<div class="font-mono text-[11px] text-muted">{l.domain}</div>{/if}<!-- voice-ok: mono branch -->
+        </div>
+      </div>
+
+      {#if isPkg}
+        <div class="mt-3 rounded-lg border border-warning/40 bg-warning/5 p-3">
+          <label class="flex items-start gap-2.5 font-sans text-xs leading-relaxed text-fg">
+            <input type="checkbox" bind:checked={acknowledged} class="mt-0.5" />
+            <span>
+              {l.tier === 'community'
+                ? 'This server is COMMUNITY-BUILT third-party code. Installing it runs its package in a Docker container on your deployment, with the credentials you enter below. Review who published it before continuing.'
+                : 'Installing this server runs its package in a Docker container on your deployment, with the credentials you enter below.'}
+              Talaria contains the container (unprivileged user, read-only filesystem, no host mounts, no privileges, capped CPU/memory, no fleet network) — the code inside it is still the publisher's. Only an admin can install one.
+            </span>
+          </label>
+        </div>
+        {#if fields.length === 0 && argFields.length === 0}
+          <p class="mt-3 font-sans text-xs text-muted">This package declares no credentials — nothing to enter.</p>
+        {/if}
+        {#if fields.length > 0}
+          <div class="mt-3 space-y-3">{@render declared(false)}</div>
+        {/if}
+        {#if argFields.length > 0}
+          <div class="mt-3 space-y-3">{@render runFlags()}</div>
+        {/if}
+        <div class="mt-3 font-sans text-[11px] text-muted/80">Credentials are sealed at rest and spoken only to the container; never rendered into an agent config.</div><!-- voice-ok: mono branch -->
+      {:else}
+        <p class="mt-2 font-sans text-xs text-muted">This server declares credentials. Choose how your org authenticates:</p>
+        <div class="mt-3">{@render signIn()}</div>
+        {#if authMode === 'org' && fields.length === 0}
+          <p class="mt-3 font-sans text-xs text-muted">
+            The publisher sets every credential this server needs — there's nothing to enter.
+          </p>
+        {:else if authMode === 'org'}
+          <div class="mt-3 space-y-3">
+            {@render declared(true)}
+            <div class="font-sans text-[11px] text-muted/80">Spoken only by Talaria's gateway; never rendered into an agent config.</div><!-- voice-ok: mono branch -->
+          </div>
+        {:else if authMode === 'per-user'}
+          <p class="mt-3 font-sans text-xs text-muted">
+            Nobody gets access until they connect their own account in Settings → Connections. Their assistant then acts as them on this server.
+          </p>
+        {/if}
+        {#if authMode === 'org'}
+          <Disclosure title="Other headers (if the server wants more)" class="mt-3">
+            <div class="p-2">
+              <McpHeaderRows bind:rows={extraRows} />
+            </div>
+          </Disclosure>
+        {/if}
+      {/if}
+
+      <div class="mt-4 flex justify-end gap-2 border-t border-line pt-3">{@render actions()}</div>
+    </div>
+  </Modal>
+{/if}
