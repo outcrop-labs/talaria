@@ -1,8 +1,10 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { GitBranch } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { errorMessage } from '@/lib/fetch-json'
@@ -24,6 +26,8 @@
     refetchInterval: 60_000,
   }))
   const requests = $derived(query.data ?? [])
+  /** The app's short name: the last segment of its repository path. */
+  const nameOf = (r: AppInstallRequest) => r.repo.split('/').pop() || r.repo
   let busy = $state<string | null>(null)
   let rejecting = $state<string | null>(null)
   let rejectNote = $state('')
@@ -71,64 +75,78 @@
   />
 {/if}
 {#if requests.length > 0 || outcome}
-  <div class="mb-4 space-y-2" data-install-requests>
-    <div class="flex items-baseline gap-2">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Install requests</span>
-      <span class="text-xs text-muted">agents asked for the app they built to be installed; it lands disabled</span>
-    </div>
-    {#each requests as r (r.id)}
-      {@const conflict = conflicts[r.id]}
-      <div class="space-y-2 rounded-md border border-warning/30 px-3 py-2 text-sm" data-install-request>
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="flex min-w-0 flex-1 items-center gap-1.5">
-            <GitBranch size={12} class="shrink-0 text-muted" />
-            <span class="truncate font-mono text-[13px] text-fg" title={r.url}>{r.repo}</span>
-            <span class="shrink-0 font-mono text-[11px] text-muted">@ {r.ref ?? 'default branch'} on {r.hostId}</span>
-          </span>
-          <Chip title="The Developer Agent that asked, and will maintain it">{r.agentName ?? r.agentModel}</Chip>
-          {#if r.ticketRef}<Chip title={`The ticket it was built for, on ${r.boardName ?? 'its board'}: maintenance tickets go there`}>{r.ticketRef}</Chip>{/if}
-          {#if r.ownerName}<Chip title="Who the app is for">for {r.ownerName}</Chip>{/if}
-          <Button size="sm" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
-            {busy === r.id ? 'Installing…' : 'Install'}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={busy === r.id}
-            onclick={() => {
-              rejecting = rejecting === r.id ? null : r.id
-              rejectNote = ''
-            }}>Reject</Button
-          >
+  <div data-install-requests>
+    <SettingsSection title="Install requests" description="Apps your agents built and want installed. An approved app starts disabled.">
+      {#if requests.length > 0}
+        <SettingsGroup>
+          {#each requests as r (r.id)}
+            {@const conflict = conflicts[r.id]}
+            <div data-install-request>
+              <SettingsRow label={nameOf(r)}>
+                {#snippet icon()}<GitBranch size={16} />{/snippet}
+                {#snippet meta()}
+                  <span class="min-w-0 truncate font-mono text-xs text-muted" title={r.url}>{r.repo} @ {r.ref ?? 'default branch'} on {r.hostId}</span>
+                {/snippet}
+                {#snippet hint()}
+                  {#if r.why}<div>{r.why}</div>{/if}
+                  <div>
+                    Requested by <span title="The agent that asked, and will maintain it">{r.agentName ?? r.agentModel}</span>{#if r.ownerName}{' '}for <span title="Who the app is for">{r.ownerName}</span>{/if}{#if r.ticketRef}<span
+                        class="ml-2 font-mono text-xs"
+                        title={`The ticket it was built for, on ${r.boardName ?? 'its board'}. Maintenance tickets go there.`}>{r.ticketRef}</span
+                      >{/if}
+                  </div>
+                {/snippet}
+                <Button size="sm" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
+                  {busy === r.id ? 'Installing' : 'Install'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy === r.id}
+                  onclick={() => {
+                    rejecting = rejecting === r.id ? null : r.id
+                    rejectNote = ''
+                  }}>Reject</Button
+                >
+              </SettingsRow>
+              {#if conflict}
+                <div transition:slide={{ duration: 150 }}>
+                  <div class="flex flex-wrap items-center gap-3 border-t border-line-subtle px-5 py-4" data-install-conflict>
+                    <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-warning">
+                      The name "{conflict.slug}" still holds data from {conflict.keptFrom ?? 'an earlier install that did not record its repository'}.
+                    </span>
+                    <Button size="sm" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'approve', 'adopt')}>Keep that data</Button>
+                    <Button size="sm" variant="ghost" disabled={busy === r.id} onclick={() => void decide(r, 'approve', 'wipe')}>Delete it first</Button>
+                  </div>
+                </div>
+              {/if}
+              {#if rejecting === r.id}
+                <div transition:slide={{ duration: 150 }}>
+                  <div class="flex items-center gap-3 border-t border-line-subtle px-5 py-4">
+                    <Input
+                      size="sm"
+                      bind:value={rejectNote}
+                      maxlength={500}
+                      placeholder="Reason, posted on the ticket (optional)"
+                      class="min-w-0 flex-1"
+                    />
+                    <Button size="md" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'reject')}>Reject request</Button>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </SettingsGroup>
+      {/if}
+      {#if outcome}
+        <div
+          transition:slide={{ duration: 150 }}
+          class={`font-sans text-[13px] leading-5 ${requests.length > 0 ? 'mt-2' : ''} ${outcome.ok ? 'text-muted' : 'text-danger'}`}
+          data-install-outcome
+        >
+          {outcome.text}
         </div>
-        {#if r.why}<div class="text-xs text-muted">{r.why}</div>{/if}
-        {#if conflict}
-          <div transition:slide={{ duration: 150 }} class="flex flex-wrap items-center gap-2 text-xs" data-install-conflict>
-            <span class="min-w-0 flex-1 text-warning">
-              The slug "{conflict.slug}" holds data kept from {conflict.keptFrom ?? 'an earlier install that did not record its repository'}.
-            </span>
-            <Button size="sm" variant="ghost" disabled={busy === r.id} onclick={() => void decide(r, 'approve', 'adopt')}>Adopt it</Button>
-            <Button size="sm" variant="ghost" disabled={busy === r.id} onclick={() => void decide(r, 'approve', 'wipe')}>Wipe it first</Button>
-          </div>
-        {/if}
-        {#if rejecting === r.id}
-          <div transition:slide={{ duration: 150 }} class="flex items-center gap-2">
-            <Input
-              size="sm"
-              bind:value={rejectNote}
-              maxlength={500}
-              placeholder="Why not? Posted on the requesting ticket (optional)"
-              class="min-w-0 flex-1"
-            />
-            <Button size="sm" variant="ghost" disabled={busy === r.id} onclick={() => void decide(r, 'reject')}>Reject request</Button>
-          </div>
-        {/if}
-      </div>
-    {/each}
-    {#if outcome}
-      <div transition:slide={{ duration: 150 }} class={`text-xs ${outcome.ok ? 'text-muted' : 'text-danger'}`} data-install-outcome>
-        {outcome.text}
-      </div>
-    {/if}
+      {/if}
+    </SettingsSection>
   </div>
 {/if}

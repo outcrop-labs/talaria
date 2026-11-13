@@ -1,13 +1,19 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { GitBranch } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { decideUpdateRequest, fetchUpdateRequests, shortSha, type AppUpdateRequest } from './apps'
+  import { decideUpdateRequest, fetchUpdateRequests, shortSha, type AppUpdateRequest, type InstalledApp } from './apps'
+  import AppsMark from './AppsMark.svelte'
+
+  /** The installed apps, so a request shows its app's name and mark. */
+  let { apps }: { apps: InstalledApp[] } = $props()
 
   // Plugin updates waiting for an admin (`app_update`): the maintenance pass
   // raises one when a plugin's branch moves past the commit installed — a
@@ -52,44 +58,61 @@
   <QueryError variant="inline" error={query.error} title="Could not load plugin updates" onRetry={() => void query.refetch()} />
 {/if}
 {#if requests.length > 0 || outcome}
-  <div class="mb-4 space-y-2" data-update-requests>
-    <div class="flex items-baseline gap-2">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Plugin updates</span>
-      <span class="text-xs text-muted">a merged change waits for your approval; a version that fails is rolled back</span>
-    </div>
-    {#each requests as r (r.id)}
-      <div class="space-y-2 rounded-md border border-accent/30 px-3 py-2 text-sm" data-update-request>
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="flex min-w-0 flex-1 items-center gap-1.5">
-            <GitBranch size={12} class="shrink-0 text-muted" />
-            <span class="truncate font-mono text-[13px] text-fg">{r.appSlug}</span>
-            <span class="shrink-0 font-mono text-[11px] text-muted">{shortSha(r.fromSha)} → {shortSha(r.targetSha)}</span>
-          </span>
-          {#each r.prs as n (n)}<Chip title="A merged PR that moved the branch">#{n}</Chip>{/each}
-          {#if r.maintainer}<Chip title="The Developer Agent that maintains it">{r.maintainer}</Chip>{/if}
-          <Button size="sm" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
-            {busy === r.id ? 'Updating…' : 'Update'}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={busy === r.id}
-            onclick={() => {
-              rejecting = rejecting === r.id ? null : r.id
-              rejectNote = ''
-            }}>Reject</Button
-          >
+  <div data-update-requests>
+    <SettingsSection title="Updates to approve" description="A merged change is waiting. A version that fails to load is rolled back.">
+      {#if requests.length > 0}
+        <SettingsGroup>
+          {#each requests as r (r.id)}
+            {@const app = apps.find((a) => a.slug === r.appSlug)}
+            <div data-update-request>
+              <SettingsRow label={app?.name ?? r.appSlug}>
+                {#snippet icon()}
+                  {#if app}<AppsMark icon={app.icon} />{:else}<GitBranch size={16} />{/if}
+                {/snippet}
+                {#snippet meta()}
+                  <span class="shrink-0 font-mono text-xs text-muted">{shortSha(r.fromSha)} → {shortSha(r.targetSha)}</span>
+                {/snippet}
+                {#snippet hint()}
+                  {#if r.prs.length > 0}
+                    <span title="Merged pull requests that moved the branch">Merged {r.prs.map((n) => `#${n}`).join(', ')}</span>
+                  {/if}
+                  {#if r.prs.length > 0 && r.maintainer}·{/if}
+                  {#if r.maintainer}<span title="The agent that maintains it">Maintained by {r.maintainer}</span>{/if}
+                {/snippet}
+                <Button size="sm" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
+                  {busy === r.id ? 'Updating' : 'Update'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy === r.id}
+                  onclick={() => {
+                    rejecting = rejecting === r.id ? null : r.id
+                    rejectNote = ''
+                  }}>Reject</Button
+                >
+              </SettingsRow>
+              {#if rejecting === r.id}
+                <div transition:slide={{ duration: 150 }}>
+                  <div class="flex items-center gap-3 border-t border-line-subtle px-5 py-4">
+                    <Input size="sm" bind:value={rejectNote} maxlength={500} placeholder="Reason, posted on the app's ticket (optional)" class="min-w-0 flex-1" />
+                    <Button size="md" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'reject')}>Reject update</Button>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </SettingsGroup>
+      {/if}
+      {#if outcome}
+        <div
+          transition:slide={{ duration: 150 }}
+          class={`font-sans text-[13px] leading-5 ${requests.length > 0 ? 'mt-2' : ''} ${outcome.ok ? 'text-muted' : 'text-danger'}`}
+          data-update-outcome
+        >
+          {outcome.text}
         </div>
-        {#if rejecting === r.id}
-          <div transition:slide={{ duration: 150 }} class="flex items-center gap-2">
-            <Input size="sm" bind:value={rejectNote} maxlength={500} placeholder="Why not? Posted on the plugin's ticket (optional)" class="min-w-0 flex-1" />
-            <Button size="sm" variant="ghost" disabled={busy === r.id} onclick={() => void decide(r, 'reject')}>Reject update</Button>
-          </div>
-        {/if}
-      </div>
-    {/each}
-    {#if outcome}
-      <div transition:slide={{ duration: 150 }} class={`text-xs ${outcome.ok ? 'text-muted' : 'text-danger'}`} data-update-outcome>{outcome.text}</div>
-    {/if}
+      {/if}
+    </SettingsSection>
   </div>
 {/if}
