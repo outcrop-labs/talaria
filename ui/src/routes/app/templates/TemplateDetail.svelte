@@ -1,7 +1,8 @@
 <script lang="ts">
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import RecordEditor from '@/components/editor/RecordEditor.svelte'
   import { relativeTime } from '@/lib/fleet'
   import { draftTemplateForm } from '@/lib/muse.svelte'
@@ -19,8 +20,8 @@
     template: Template | null
     blurb: string
     onChanged: () => void
-    /** Deletes the record — rendered as the trash icon on the record's title
-     *  line by `<RecordEditor>`; the double opt-in (typing the name) is here. */
+    /** Deletes the record. The double opt-in (typing the name) is the
+     *  caller's. */
     onDelete: () => void
   } = $props()
 
@@ -59,16 +60,11 @@
        panel within a panel is a border inside a border with the padding twice.
        The pane owns the frame; this owns the content — and editing is the
        content: the record's fields, its document workbench and its whole-form
-       Muse live here instead of behind an Edit button. Deletion lives in the
-       page's sidebar (trash icon beside the history toggle), so nothing
-       destructive rides on this surface. -->
+       Muse live here instead of behind an Edit button. -->
   <RecordEditor
-    kind="template"
+    kind={template.kind === 'plan' ? 'Plan template' : 'Ticket template'}
     title={template.name}
-    meta={relativeTime(template.updatedAt)}
-    subtitle={blurb}
     fieldsDirty={name.trim() !== template.name || guidance !== template.guidance}
-    onDelete={() => onDelete()}
   doc={{
     value: template.body,
     saving: busy,
@@ -100,18 +96,29 @@
   class="h-full"
 >
   {#snippet fields(_)}
-    <div class="mb-4 shrink-0 space-y-3 rounded-lg border border-line bg-card/40 p-3">
-      <div>
-        <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</div>
-        <Input size="sm" bind:value={name} class="max-w-sm font-sans" />
+    <div class="mb-1.5 space-y-5">
+      <div class="flex items-start gap-6">
+        <p class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">{blurb} Edited {relativeTime(template.updatedAt)}.</p>
+        <DangerLink onClick={onDelete} class="shrink-0">Delete template</DangerLink>
       </div>
-      <div>
-        <div class="mb-1.5 flex items-center gap-1.5">
-          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent guidance</span>
-          <InfoTip text="Prompt-only: travels with the template into the model's instructions but is never shown on the ticket or plan itself." />
-        </div>
-        <Textarea autoGrow rows={2} bind:value={guidance} class="max-h-40 text-xs" placeholder={'e.g. "Always fill acceptance criteria; keep Out of scope honest."'} />
-      </div>
+      <SettingsField label="Name" for="template-name">
+        <Input id="template-name" size="sm" bind:value={name} class="max-w-sm font-sans" />
+      </SettingsField>
+      <SettingsField
+        label="Agent guidance"
+        for="template-guidance"
+        hint="Instructions for the agent. Never shown on the ticket or plan itself."
+      >
+        <Textarea
+          id="template-guidance"
+          autoGrow
+          rows={2}
+          bind:value={guidance}
+          class="max-h-40"
+          placeholder="Always fill acceptance criteria. Keep Out of scope honest."
+        />
+      </SettingsField>
+      <div class="font-sans text-[13px] font-medium leading-5 text-fg">Outline</div>
     </div>
   {/snippet}
 </RecordEditor>

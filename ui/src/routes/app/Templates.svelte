@@ -5,11 +5,14 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate, route } from '@/router'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import InlineCreate from '@/components/ui/InlineCreate.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { confirmDelete } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { useContextMenu, openCopyItems } from '@/components/ui/context-menu.svelte'
+  import { relativeTime } from '@/lib/fleet'
   import { fly } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { createTemplate, deleteTemplate, useTemplates, type Template, type TemplateKind } from '@/lib/templates'
@@ -19,8 +22,8 @@
   // per surface that consumes them (tickets, plans); the body edits in the
   // full workspace editor (rich + Muse prompt-editing + version history).
   const TEMPLATE_TABS: { id: TemplateKind; label: string; blurb: string }[] = [
-    { id: 'ticket', label: 'Tickets', blurb: 'Seeds every ticket description: board defaults, agent bindings, and the QA judge scores against its sections.' },
-    { id: 'plan', label: 'Plans', blurb: 'Seeds a new plan’s living document and shapes how the agent rewrites it as the conversation grows.' },
+    { id: 'ticket', label: 'Tickets', blurb: 'New tickets start from this outline, and reviews check work against its sections.' },
+    { id: 'plan', label: 'Plans', blurb: 'New plans start from this outline, and the agent keeps to it as the plan grows.' },
   ]
 
   const sessionQuery = useSession()
@@ -51,16 +54,25 @@
     if (t === 'ticket') void navigate('/templates')
     else void navigate('/templates/:tab', { params: { tab: t } })
   }
-  const select = (id: string | null) => {
+  const select = (id: string | null, replace = false) => {
     const search: Record<string, string> = id ? { t: id } : {}
-    if (tab === 'ticket') void navigate('/templates', { search })
-    else void navigate('/templates/:tab', { params: { tab }, search })
+    if (tab === 'ticket') void navigate('/templates', { search, replace })
+    else void navigate('/templates/:tab', { params: { tab }, search, replace })
   }
   const menu = useContextMenu()
 
   const list = $derived(templates.filter((t) => t.kind === tab))
   const selected = $derived(templates.find((t) => t.id === selectedId && t.kind === tab) ?? null)
   const meta = $derived(TEMPLATE_TABS.find((t) => t.id === tab)!)
+
+  // The page never rests on an empty pane: with no valid selection, the first
+  // template of the kind is opened. A REPLACE, so Back does not land on the
+  // unselected URL and bounce forward again.
+  $effect(() => {
+    if (isLoading || failed || selected) return
+    const first = list[0]
+    if (first) select(first.id, true)
+  })
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['templates'] })
   // The pane hands over a trimmed, non-empty name; making the record out of it
@@ -80,8 +92,10 @@
     )
       return
     await deleteTemplate(t.id)
-    if (selectedId === t.id) select(null)
+    // Refresh first: the selection effect then moves to the next template, and
+    // the URL is only cleared when none is left.
     await refresh()
+    if (selectedId === t.id) select(null)
   }
 
   // Tab labels carry the per-kind count. No count where a number would be
@@ -100,11 +114,13 @@
   <EmptyState icon="▣" title="Admins only" />
 {:else}
   <SettingsPage title="Templates" blurb="Starting points for tickets and plans." tabs={tabItems} {tab} onTab={setTab} fill>
+    {#snippet actions()}
+      <InlineCreate label="New template" placeholder={`Name of the ${tab} template`} onSubmit={(name) => void create(name)} />
+    {/snippet}
 
-      <!-- Tab-pane grammar: the whole library pane rises in on a kind switch
-           (no exit). Safe to key: the new-template input's state lives above;
-           the detail is already keyed by selection. -->
-      {#key tab}
+    <!-- Tab-pane grammar: the whole library pane rises in on a kind switch
+         (no exit). Safe to key: the detail is already keyed by selection. -->
+    {#key tab}
       <div in:fly={{ y: 6, duration: 200 }} class="h-full min-h-[26rem]">
         <LibraryPane
           groups={[{ items: list }]}
@@ -121,20 +137,22 @@
               { label: 'Delete', danger: true, onSelect: () => void remove(t) },
             ])}
           class="h-full"
-          onCreate={create}
-          createLabel={`New ${tab} template`}
         >
+          {#snippet row(t: Template)}
+            <span class="block truncate font-medium leading-5 text-fg">{t.name}</span>
+            <span class="block truncate text-xs leading-4 text-muted">Edited {relativeTime(t.updatedAt)}</span>
+          {/snippet}
+
           {#snippet empty()}
-            <!-- "Create the first one" is the same zero-claim in prose. -->
-            <EmptyState
-              icon="▣"
-              title={`No ${tab} template selected`}
-              hint={failed
-                ? 'The template list could not be loaded. Retry on the left.'
-                : list.length
-                  ? 'Pick one on the left, or create a new one.'
-                  : 'Create the first one on the left.'}
-            />
+            {#if isLoading}
+              <div class="p-5" aria-hidden="true"><SkeletonRows rows={4} /></div>
+            {:else}
+              <EmptyState
+                icon="▣"
+                title={failed ? 'Templates could not be loaded' : `No ${tab} templates yet`}
+                hint={failed ? 'Retry on the left.' : 'Create the first one with New template.'}
+              />
+            {/if}
           {/snippet}
 
           {#snippet detail()}
@@ -151,7 +169,7 @@
           {/snippet}
         </LibraryPane>
       </div>
-      {/key}
+    {/key}
     <ContextMenu {menu} />
   </SettingsPage>
 {/if}
