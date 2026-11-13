@@ -369,9 +369,18 @@
               info="The script sends it in the x-talaria-key header. Only a hash is stored, so the key is shown once. Generate a new one if you lose it."
               status={deployKeyStatus}
             >
-              <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void mint()}>
-                {busy === 'mint' ? 'Generating' : status.machineKeySet ? 'Regenerate' : 'Generate'}
-              </Button>
+              <!-- A key that is set needs nothing, so replacing it is a menu
+                   item. One that is not set is the row's one button. -->
+              {#if status.machineKeySet}
+                <SettingsRowMenu
+                  label="Actions for the deploy key"
+                  items={[{ label: 'Regenerate key', disabled: busy !== null, onSelect: () => void mint() }]}
+                />
+              {:else}
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void mint()}>
+                  {busy === 'mint' ? 'Generating' : 'Generate'}
+                </Button>
+              {/if}
             </SettingsRow>
             {#if mintedKey}
               <SettingsRow label="Copy your deploy key now" hint="It will not be shown again." stacked>

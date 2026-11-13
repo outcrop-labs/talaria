@@ -1,5 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SaveAction from '@/components/admin/SaveAction.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -18,8 +20,8 @@
   const qc = useQueryClient()
   const query = useAdminSettings()
   const data = $derived(query.data)
+  const autosave = useAutosave()
   let days = $state('')
-  const auditFlash = useSavedFlash()
   const value = $derived(days !== '' ? days : String(data?.auditRetentionDays ?? ''))
   const save = async () => {
     const n = Number(value)
@@ -32,7 +34,7 @@
       return
     }
     days = ''
-    auditFlash.flash()
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }
 
@@ -40,7 +42,6 @@
   // Blank = unlimited for every cap, and unlimited is the default an upgraded
   // deployment keeps. Edits are string state over the loaded numbers (null =
   // "not touched yet"), the AdminOrgPanel pattern.
-  const savedFlash = useSavedFlash()
   let win = $state<string | null>(null)
   let orgTokens = $state<string | null>(null)
   let orgUsd = $state<string | null>(null)
@@ -68,11 +69,8 @@
         perUsdVal !== capVal(null, b.perAgent?.usd) ||
         Number(winVal) !== b.windowHours),
   )
-  // Which row says Saved: the one whose field was just left.
-  let budgetField = $state<'win' | 'org' | 'per' | null>(null)
-  const commitBudgets = async (field: 'win' | 'org' | 'per') => {
+  const commitBudgets = async () => {
     if (!budgetsValid || !budgetsDirty) return
-    budgetField = field
     await saveBudgets()
   }
   const saveBudgets = async () => {
@@ -92,15 +90,12 @@
       return
     }
     win = orgTokens = orgUsd = perTokens = perUsd = null
-    savedFlash.flash()
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }
 
   let floor = $state<string | null>(null)
   const floorVal = $derived(floor ?? String(data?.cronMinIntervalMinutes ?? 5))
-  // Its own flash, so saving the floor doesn't light "Saved" next to the
-  // budgets button (and vice versa).
-  const floorFlash = useSavedFlash()
   const saveFloor = async () => {
     const n = Number(floorVal)
     if (!Number.isFinite(n) || n < 0) return
@@ -111,7 +106,7 @@
       return
     }
     floor = null
-    floorFlash.flash()
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }
 
@@ -163,9 +158,6 @@
   }
 </script>
 
-{#snippet saved(on: boolean)}
-  {#if on}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
-{/snippet}
 {#snippet unit(word: string, width = 'w-14')}
   <span class="{width} shrink-0 font-sans text-[13px] leading-5 text-muted">{word}</span>
 {/snippet}
@@ -187,7 +179,6 @@
       {/snippet}
       {#snippet children(data)}
         <SettingsRow label="Spending window" hint="How many hours of spend each limit counts.">
-          {@render saved(savedFlash.saved && budgetField === 'win')}
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -196,7 +187,7 @@
               aria-label="Spending window in hours"
               value={winVal}
               oninput={(e) => (win = e.currentTarget.value)}
-              onblur={() => void commitBudgets('win')}
+              onblur={() => void commitBudgets()}
               onkeydown={inlineEditKeys(() => (win = null))}
               class="w-[100px]"
             />
@@ -204,7 +195,6 @@
           </span>
         </SettingsRow>
         <SettingsRow label="Whole organization" hint="A limit in tokens, in dollars, or both. Empty means no limit.">
-          {@render saved(savedFlash.saved && budgetField === 'org')}
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -214,7 +204,7 @@
               placeholder="No limit"
               value={orgTokensVal}
               oninput={(e) => (orgTokens = e.currentTarget.value)}
-              onblur={() => void commitBudgets('org')}
+              onblur={() => void commitBudgets()}
               onkeydown={inlineEditKeys(() => (orgTokens = null))}
               class="w-[136px]"
             />
@@ -229,7 +219,7 @@
               placeholder="No limit"
               value={orgUsdVal}
               oninput={(e) => (orgUsd = e.currentTarget.value)}
-              onblur={() => void commitBudgets('org')}
+              onblur={() => void commitBudgets()}
               onkeydown={inlineEditKeys(() => (orgUsd = null))}
               class="w-[100px]"
             />
@@ -237,7 +227,6 @@
           </span>
         </SettingsRow>
         <SettingsRow label="Each agent or key" hint="The same limits, counted for one agent or API key at a time.">
-          {@render saved(savedFlash.saved && budgetField === 'per')}
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -247,7 +236,7 @@
               placeholder="No limit"
               value={perTokensVal}
               oninput={(e) => (perTokens = e.currentTarget.value)}
-              onblur={() => void commitBudgets('per')}
+              onblur={() => void commitBudgets()}
               onkeydown={inlineEditKeys(() => (perTokens = null))}
               class="w-[136px]"
             />
@@ -262,7 +251,7 @@
               placeholder="No limit"
               value={perUsdVal}
               oninput={(e) => (perUsd = e.currentTarget.value)}
-              onblur={() => void commitBudgets('per')}
+              onblur={() => void commitBudgets()}
               onkeydown={inlineEditKeys(() => (perUsd = null))}
               class="w-[100px]"
             />
@@ -273,7 +262,6 @@
           label="Fastest schedule"
           hint="The shortest gap allowed between an agent's scheduled runs. 0 means no limit."
         >
-          {@render saved(floorFlash.saved)}
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -290,7 +278,6 @@
           </span>
         </SettingsRow>
         <SettingsRow label="Audit log" hint="How many days of history to keep. 0 keeps it forever.">
-          {@render saved(auditFlash.saved)}
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -341,14 +328,14 @@
             <span class="text-success">Saved. Agents pick it up on their next turn.</span>
           {:else if envClosed.length}
             Kept off by the server environment: <span class="font-mono text-xs">{envClosed.join(', ')}</span>
+          {:else}
+            Saving changes what every agent can use, so the boxes save together.
           {/if}
         </span>
         {#if floorDirty}
           <Button size="sm" variant="ghost" disabled={floorSaving} onclick={() => (floorEdit = null)}>Reset</Button>
         {/if}
-        <Button size="sm" variant="outline" onclick={() => void saveToolsetFloor()} disabled={!floorDirty || floorSaving}>
-          Save tools
-        </Button>
+        <SaveAction dirty={floorDirty} busy={floorSaving} onclick={() => void saveToolsetFloor()}>Save tools</SaveAction>
       </div>
     </SettingsGroup>
   </SettingsSection>
