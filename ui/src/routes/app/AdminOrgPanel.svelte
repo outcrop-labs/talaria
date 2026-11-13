@@ -1,19 +1,20 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import { inlineEditKeys } from '@/components/ui/control'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { useAdminSettings } from './admin'
 
-  // The business every agent works for: its name and what it does. Rows of the
-  // Identity card. Saving rewrites each agent's identity in place, and an agent
-  // speaks the new one from its next new conversation.
+  // The business every agent works for: its name and what it does. Saving
+  // rewrites each agent's identity in place, so the two fields share one
+  // explicit Save: a typo must not reach the whole fleet when a field loses
+  // focus.
   const qc = useQueryClient()
   const query = useAdminSettings()
   const data = $derived(query.data)
@@ -24,8 +25,11 @@
   const aboutVal = $derived(about ?? data?.org.about ?? '')
   const dirty = $derived(nameVal !== (data?.org.name ?? '') || aboutVal !== (data?.org.about ?? ''))
 
+  let busy = $state(false)
+
   const save = async () => {
-    if (!dirty) return
+    if (!dirty || busy) return
+    busy = true
     try {
       await putJson<{ ok: true }>('/api/admin/settings', { org: { name: nameVal, about: aboutVal } })
     } catch (e) {
@@ -33,6 +37,8 @@
       // PUT would pretend every agent's identity had just been rewritten.
       toastError('Save failed', e)
       return
+    } finally {
+      busy = false
     }
     name = null
     about = null
@@ -56,14 +62,11 @@
       info="Agents pick up a change from their next new conversation. A conversation already under way keeps the name it started with."
       as="label"
     >
-      {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
       <Input
         size="sm"
         class="w-[280px]"
         value={nameVal}
         oninput={(e) => (name = e.currentTarget.value)}
-        onblur={() => void save()}
-        onkeydown={inlineEditKeys(() => (name = null))}
         placeholder="Outcrop Labs"
       />
     </SettingsRow>
@@ -77,10 +80,14 @@
         rows={2}
         value={aboutVal}
         oninput={(e) => (about = e.currentTarget.value)}
-        onblur={() => void save()}
         placeholder="A ten-person freight brokerage moving truckload freight across the Mountain West."
         class="w-full text-sm"
       />
     </SettingsRow>
+    <div class="flex min-h-[60px] items-center gap-3 px-5 py-3">
+      <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">Saving updates every agent's identity.</span>
+      {#if savedFlash.saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
+      <Button size="sm" variant="outline" onclick={() => void save()} disabled={!dirty || busy}>Save</Button>
+    </div>
   {/snippet}
 </QueryState>

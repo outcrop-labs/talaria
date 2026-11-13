@@ -54,7 +54,21 @@
   }
   const rebuilding = $derived(rag?.reindex.state === 'running')
   const servicesUp = $derived(!!rag?.health.qdrant && !!rag.health.embeddings)
-  const canRebuild = $derived(servicesUp && !rebuilding)
+  // The rebuild is one heavy action over every collection, so it is offered
+  // once, and only when the server says the index needs it.
+  const needsRebuild = $derived(!!rag?.upgrade?.needsReindex && !rebuilding)
+  const rebuildReason = $derived.by(() => {
+    const indexed = rag?.upgrade?.collections ?? []
+    const names = (list: typeof indexed) => list.map((c) => c.name).join(', ')
+    const mismatched = indexed.filter((c) => c.dimMismatch)
+    if (mismatched.length)
+      return `${names(mismatched)} no longer ${mismatched.length === 1 ? 'matches' : 'match'} the embedding model, so search there is failing.`
+    const missing = indexed.filter((c) => c.missing)
+    if (missing.length)
+      return `${names(missing)} ${missing.length === 1 ? 'is' : 'are'} not in the vector store, so search there is failing.`
+    return 'A rebuild adds keyword search, so exact names and error strings rank beside meaning.'
+  })
+  const rebuildTone = $derived<'danger' | 'warn'>(rag?.upgrade?.collections.some((c) => indexState(c).broken) ? 'danger' : 'warn')
   const indexOf = (id: string) => rag?.upgrade?.collections.find((c) => c.id === id)
   const isBroken = (c: RagCollection) => {
     const index = indexOf(c.id)
@@ -62,11 +76,6 @@
   }
   // A collection search fails in is what an admin must see first.
   const brokenFirst = (list: RagCollection[]) => [...list.filter(isBroken), ...list.filter((c) => !isBroken(c))]
-  // A rebuild that only upgrades (keyword search on older collections) has no
-  // broken row to carry its button.
-  const upgradeOnly = $derived(
-    !!rag?.upgrade?.needsReindex && !rebuilding && !rag.upgrade.collections.some((c) => indexState(c).broken),
-  )
   const counts = (c: Record<string, number>) =>
     Object.entries(c)
       .map(([k, v]) => `${v.toLocaleString()} ${k}`)
@@ -87,10 +96,11 @@
       {:else if rag?.reindex.state === 'error'}
         <NoticeRow status="danger">The rebuild failed: {rag.reindex.error}</NoticeRow>
       {/if}
-      {#if upgradeOnly}
+      {#if needsRebuild}
         <div transition:slide={{ duration: 150 }}>
-          <NoticeRow status="warn">
-            A rebuild adds keyword search, so exact names and error strings rank beside meaning.
+          <NoticeRow status={rebuildTone}>
+            {rebuildReason} Rebuilding recreates every collection and refills it from your records, and knowledge search runs thin
+            until that finishes.
             {#snippet action()}
               <Button size="sm" variant="outline" onclick={() => void backfill('reindex')} disabled={!servicesUp}>Rebuild index</Button>
             {/snippet}
@@ -103,12 +113,7 @@
         {/snippet}
         {#snippet children(collections)}
           {#each brokenFirst(collections) as c (c.id)}
-            <CollectionRow
-              col={c}
-              spaces={rag?.spaces ?? []}
-              index={indexOf(c.id)}
-              rebuild={canRebuild ? () => void backfill('reindex') : undefined}
-            />
+            <CollectionRow col={c} spaces={rag?.spaces ?? []} index={indexOf(c.id)} />
           {/each}
         {/snippet}
       </QueryState>

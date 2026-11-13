@@ -76,7 +76,7 @@ export interface IndexState {
 }
 
 export function indexState(c: IndexedCollection): IndexState {
-  if (c.missing) return { status: 'danger', word: 'Not in the vector store', broken: true }
+  if (c.missing) return { status: 'danger', word: 'Missing', broken: true }
   if (c.dimMismatch) return { status: 'danger', word: 'Wrong embedding size', broken: true }
   if (!c.hybrid) return { status: 'warn', word: 'No keyword search', broken: false }
   return { status: 'ok', word: 'Indexed', broken: false }
