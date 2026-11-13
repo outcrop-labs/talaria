@@ -26,6 +26,8 @@
   import SealConfigsModal from '@/components/fleet/SealConfigsModal.svelte'
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
   import { errorMessage } from '@/lib/fetch-json'
+  import { googleSaid, readGoogleBounce } from '@/lib/google-bounce'
+  import { pushToast } from '@/lib/toast.svelte'
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
@@ -175,6 +177,33 @@
       creating = true
       searchParams.delete('design')
     }
+  })
+
+  // The per-agent Google connect lands here (`/agents?googleAgent=…`, plus
+  // Google's own `reason` code when it refused). Nothing read it, so a
+  // failed connect came back to a roster that said nothing at all. Shown
+  // once as a toast, then the parameters go.
+  const googleAgentText: Record<string, string> = {
+    connected: 'Agent Google account connected.',
+    denied: 'Connection cancelled.',
+    bad_state: 'Connection expired. Try again.',
+    exchange_failed: 'Google rejected the connection. Try again.',
+    forbidden: 'Only this agent’s managers can connect its Google account.',
+    disabled: 'Google integration is not configured.',
+  }
+  $effect(() => {
+    const bounce = readGoogleBounce(window.location.search, 'googleAgent')
+    if (!bounce) return
+    const ok = bounce.status === 'connected'
+    pushToast({
+      title: googleAgentText[bounce.status] ?? bounce.status,
+      body: googleSaid(bounce.reason) || undefined,
+      tone: ok ? 'success' : 'danger',
+    })
+    if (ok) void queryClient.invalidateQueries({ queryKey: ['agent-google'] })
+    // Replace, not push: Back must not land on the bounce again.
+    searchParams.delete('googleAgent', undefined, { replace: true })
+    searchParams.delete('reason', undefined, { replace: true })
   })
 
   // Defs AND containers gate the roster together: tiles built from

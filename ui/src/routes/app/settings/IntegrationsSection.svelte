@@ -10,6 +10,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
   import { delJson, getJson } from '@/lib/fetch-json'
+  import { googleBounceText, readGoogleBounce, type GoogleBounce } from '@/lib/google-bounce'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
@@ -32,14 +33,15 @@
     queryFn: (): Promise<GoogleStatus> => getJson<GoogleStatus>('/api/integrations/google'),
   }))
   const data = $derived(query.data)
-  // Surface the callback outcome (?google=connected|denied|) once, then clean the URL.
-  let flash = $state<string | null>(null)
+  // Surface the callback outcome (?google=connected|denied|…, plus Google's
+  // own `reason` code when it sent one) once, then clean the URL.
+  let flash = $state<GoogleBounce | null>(null)
   $effect(() => {
-    const p = new URLSearchParams(window.location.search).get('google')
-    if (!p) return
-    flash = p
+    const bounce = readGoogleBounce(window.location.search, 'google')
+    if (!bounce) return
+    flash = bounce
     window.history.replaceState({}, '', window.location.pathname)
-    if (p === 'connected') void qc.invalidateQueries({ queryKey: ['integration-google'] })
+    if (bounce.status === 'connected') void qc.invalidateQueries({ queryKey: ['integration-google'] })
     const t = setTimeout(() => (flash = null), 4000)
     return () => clearTimeout(t)
   })
@@ -131,8 +133,8 @@
   </QueryState>
 
   {#if flash}
-    <div transition:slide={{ duration: 150 }} class={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
-      {flashText[flash] ?? flash}
+    <div transition:slide={{ duration: 150 }} class={cn('mt-3 text-xs', flash.status === 'connected' ? 'text-success' : 'text-danger')}>
+      {googleBounceText(flash, flashText)}
     </div>
   {/if}
 </Panel>

@@ -19,6 +19,7 @@ use talaria_api_facades::google::connections::get_connection_status;
 use talaria_api_facades::google::drive::{
     ExportError, export_artifact_to_drive, export_artifact_with_token,
 };
+use talaria_api_facades::google::errors::google_token_fail;
 use talaria_api_facades::google::org::get_org_targets;
 use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, can_read_agent, list_editors};
 use talaria_artifacts::{get_artifact, guarded, record_google_export};
@@ -123,14 +124,24 @@ pub async fn post(
         // shared org account for general fleet agents). Pass the CALLER —
         // resolve_agent_google re-checks proof, so this route's guard is a
         // layer rather than the only one.
-        let Some(google) =
-            resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(agent), now_ms()).await
-        else {
-            return Ok(house_error_msg(
-                StatusCode::CONFLICT,
-                "not_connected",
-                "No Google account is connected for this agent (its owner, or the org account).",
-            ));
+        let google = match resolve_agent_google(
+            &state.pg,
+            &sb,
+            &AgentSubject::Caller(agent),
+            now_ms(),
+        )
+        .await
+        {
+            Ok(Some(google)) => google,
+            Ok(None) => {
+                return Ok(house_error_msg(
+                    StatusCode::CONFLICT,
+                    "not_connected",
+                    "No Google account is connected for this agent (its owner, or the org account).",
+                ));
+            }
+            // The token itself failed: Google's words, never "not connected".
+            Err(e) => return Ok(google_token_fail(e, "Drive")),
         };
         // Org files go to the configured Shared Drive/folder (team-owned).
         let folder_id = if google.principal == "org" {

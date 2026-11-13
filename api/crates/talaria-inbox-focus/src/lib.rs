@@ -1988,7 +1988,9 @@ async fn execute_action_arms(
                 )
                 .await;
             }
-            Some(r) if matches!(r.status.as_str(), "not_connected" | "failed") => {
+            // Nothing ran (released back to pending) or Google refused the
+            // action: the person reads why, and the item is not decided.
+            Some(r) if r.released() || r.status == "failed" => {
                 return Err(FocusError::Throw(r.message.unwrap_or(r.status)));
             }
             // The whole decision result is the outcome — {status:'executed'},

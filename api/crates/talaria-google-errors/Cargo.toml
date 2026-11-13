@@ -10,6 +10,10 @@ workspace = true
 
 [dependencies]
 axum = { workspace = true }
+serde_json = { workspace = true }
 talaria-error = { workspace = true }
 talaria-google-connections = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -11,7 +11,7 @@ use sqlx::PgPool;
 
 use talaria_api_facades::google::agent::AgentPrincipal;
 use talaria_api_facades::google::pending_actions::{
-    QueuedAction, discard_unproven, queue_proof_failure,
+    DecideOutcome, QueuedAction, discard_unproven, queue_proof_failure,
 };
 use talaria_error::{house_error, internal};
 
@@ -125,9 +125,11 @@ pub async fn answer_queued(
 
 /// An unlocked draft executes immediately. "Sent" is only honest when the
 /// decide path marked the row executed — a failed Google call used to ride
-/// out under the same sentence.
-pub fn answer_executed(id: &str, outcome_status: &str, sent: &str, failed: &str) -> Response {
-    if outcome_status == "executed" {
+/// out under the same sentence. Anything else answers the executor's own
+/// sentence (Google's words when it gave any), so the agent reads what the
+/// approver would have.
+pub fn answer_executed(id: &str, outcome: &DecideOutcome, sent: &str, failed: &str) -> Response {
+    if outcome.status == "executed" {
         return Json(json!({
             "pending": { "id": id, "status": "executed" },
             "message": sent,
@@ -136,8 +138,26 @@ pub fn answer_executed(id: &str, outcome_status: &str, sent: &str, failed: &str)
     }
     house_error(
         StatusCode::BAD_GATEWAY,
-        &format!("{failed} ({outcome_status})"),
+        &unexecuted_sentence(outcome, failed),
     )
+}
+
+/// What an unlocked draft that did not execute tells the agent: what failed,
+/// the decide status, the executor's sentence — and, when nothing ran and the
+/// row went back to `pending`, that it is waiting again and where the reason
+/// stays (`lastError`).
+fn unexecuted_sentence(outcome: &DecideOutcome, failed: &str) -> String {
+    let status = &outcome.status;
+    let mut sentence = match outcome.message.as_deref().filter(|m| !m.is_empty()) {
+        Some(said) => format!("{failed} ({status}): {said}"),
+        None => format!("{failed} ({status})"),
+    };
+    if outcome.released() {
+        sentence.push_str(
+            " It is back in the approval queue as pending; read_pending_send shows this as lastError. Do not report it as done.",
+        );
+    }
+    sentence
 }
 
 #[cfg(test)]
@@ -166,5 +186,56 @@ mod tests {
         assert!(conversation_owner_conflict(&personal(Some("owner-jon")), None).is_none());
         let org = AgentPrincipal::from_kind(PrincipalKind::Org, None);
         assert!(conversation_owner_conflict(&org, Some("anyone")).is_none());
+    }
+
+    fn outcome(status: &str, message: Option<&str>) -> DecideOutcome {
+        DecideOutcome {
+            status: status.into(),
+            message: message.map(str::to_string),
+        }
+    }
+
+    // The executor's sentences, as decide_action builds them from the
+    // captured bodies in talaria-google-pending's tests.
+    const REJECTED: &str = "Google rejected the action: «notFound: File not found: talariaCaptureNonexistentDoc0000000000000.»";
+    const CLIENT: &str = "Google refused this server's OAuth client: «invalid_client: The provided client secret is invalid.». Nothing ran; an admin needs to check the client under Admin → Google Workspace.";
+
+    #[test]
+    fn an_unlocked_send_google_refused_reads_googles_words() {
+        let failed = "Unlocked draft_email did not send";
+        let res = answer_executed("p1", &outcome("failed", Some(REJECTED)), "Sent", failed);
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            unexecuted_sentence(&outcome("failed", Some(REJECTED)), failed),
+            format!("{failed} (failed): {REJECTED}"),
+            "a terminal failure is not said to be waiting"
+        );
+    }
+
+    #[test]
+    fn an_unlocked_send_with_no_token_says_it_waits_again() {
+        let failed = "Unlocked draft_email did not send";
+        let said = unexecuted_sentence(&outcome("client_rejected", Some(CLIENT)), failed);
+        assert!(said.starts_with(&format!("{failed} (client_rejected): {CLIENT}")));
+        assert!(said.contains("back in the approval queue as pending"));
+        assert!(said.contains("lastError"));
+        let said = unexecuted_sentence(
+            &outcome(
+                "not_connected",
+                Some("Reconnect Google to run this action."),
+            ),
+            failed,
+        );
+        assert!(said.contains("Reconnect Google to run this action."));
+        assert!(said.contains("back in the approval queue as pending"));
+        // Decided by someone else in between: no sentence to add, nothing waiting.
+        assert_eq!(
+            unexecuted_sentence(&outcome("executing", None), failed),
+            format!("{failed} (executing)")
+        );
+        assert_eq!(
+            answer_executed("p1", &outcome("executed", None), "Sent", failed).status(),
+            StatusCode::OK
+        );
     }
 }
