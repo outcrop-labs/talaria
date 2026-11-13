@@ -61,10 +61,21 @@
         {#if blurb}<p class="mt-1 max-w-[72ch] font-sans text-sm leading-5 text-muted">{blurb}</p>{/if}
       </div>
       {#if autosave || cue.active || actions}
-        <div class="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
+        <!-- Baselines, not centres: the cue sits on the line of a button's label, and with no button on the title's. -->
+        <!-- On a phone the cue would squeeze the title to a sliver, so there the block takes its own line. -->
+        <div
+          class={cn(
+            'flex shrink-0 flex-wrap items-baseline gap-x-4 gap-y-2',
+            (autosave || cue.active) && 'max-sm:basis-full max-sm:justify-between',
+          )}
+        >
           {#if autosave || cue.active}
-            <span role="status" class="flex h-8 items-center gap-1.5 font-sans text-[13px] leading-5 text-muted">
-              {#if saved || cue.saved}<Check size={14} aria-hidden="true" class="text-success" />Saved{:else}Changes save automatically{/if}
+            <span role="status" class={cn('grid font-sans text-[13px] leading-5 text-muted', !actions && 'sm:mt-2')}>
+              <!-- Holds the width of the longer line, so the flip to Saved moves nothing. -->
+              <span aria-hidden="true" class="invisible col-start-1 row-start-1 whitespace-nowrap">Changes save automatically</span>
+              <span class="col-start-1 row-start-1 flex items-center gap-1.5 whitespace-nowrap sm:justify-end">
+                {#if saved || cue.saved}<Check size={14} aria-hidden="true" class="text-success" />Saved{:else}Changes save automatically{/if}
+              </span>
             </span>
           {/if}
           {#if actions}<div class="flex flex-wrap items-center gap-2">{@render actions()}</div>{/if}
