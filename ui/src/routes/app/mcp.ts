@@ -346,16 +346,7 @@ export const STATUS_DOT: Record<ServerStatus['tone'], DotStatus> = {
   success: 'ok',
 }
 
-/** The host of a real web address. A pseudo-scheme such as
- *  talaria-workbench://core carries a routing token, not a host. */
-export function serverDomain(url: string): string | null {
-  try {
-    const u = new URL(url)
-    return u.protocol === 'http:' || u.protocol === 'https:' ? u.hostname : null
-  } catch {
-    return null
-  }
-}
+export { addressHost as serverDomain } from '@/lib/mcp-icon'
 
 export const slugify = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
 

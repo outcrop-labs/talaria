@@ -4,6 +4,7 @@
   import Chip from '@/components/ui/Chip.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { cn } from '@/lib/cn'
+  import { iconDomains } from '@/lib/mcp-icon'
   import { relativeTime } from '@/lib/fleet'
   import { useUiVoice } from '@/lib/ui-voice'
   import McpServerMark from './McpServerMark.svelte'
@@ -54,7 +55,7 @@
 {#if sans}
   <div data-mcp-market={l.registryName} class={cn('flex flex-col rounded-lg border border-line p-4 transition-colors hover:border-line-strong', dead && 'opacity-70')}>
     <div class="flex items-center gap-3">
-      <McpServerMark title={l.title} domain={l.domain} icon={l.icon} />
+      <McpServerMark title={l.title} domain={iconDomains({ publisher: l.domain, url: l.url })} icon={l.icon} />
       <div class="min-w-0 flex-1">
         <div class="truncate font-sans text-sm font-medium leading-5 text-fg">{l.title}</div>
         {#if l.domain}<div class="truncate font-mono text-xs leading-5 text-muted">{l.domain}</div>{/if}
