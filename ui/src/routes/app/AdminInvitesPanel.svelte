@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Mail } from '@lucide/svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
@@ -104,7 +103,6 @@
         {#each data as i (i.id)}
           {@const st = inviteState(i)}
           <SettingsRow label={i.email} hint={`Sent ${relativeTime(i.createdAt)}`}>
-            {#snippet icon()}<Mail size={16} />{/snippet}
             {#snippet status()}<RowStatus status={STATUS[st].dot}>{STATUS[st].word}</RowStatus>{/snippet}
             {#if st === 'pending'}
               <SettingsRowMenu

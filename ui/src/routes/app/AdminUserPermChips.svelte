@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import AdminPermChip from './AdminPermChip.svelte'
@@ -10,6 +11,7 @@
   let { userId, perms }: { userId: string; perms: PermsData } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const overrides = $derived(perms.overrides[userId] ?? {})
   const orgDefault = (p: PermCatalogEntry) => perms.orgDefaults[p.id] ?? p.memberDefault
   const set = async (perm: string, allowed: boolean | null) => {
@@ -20,6 +22,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['admin-permissions'] })
+    autosave.flash()
   }
 </script>
 

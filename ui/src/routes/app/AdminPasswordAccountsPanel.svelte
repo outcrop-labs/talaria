@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { KeyRound } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -186,15 +185,17 @@
             <SettingsRow
               label={row.email}
               hint={`${row.name && row.name !== row.email ? `${row.name} · ` : ''}${row.lastUsedAt ? `Used ${relativeTime(row.lastUsedAt)}` : 'Never used'}`}
+              onOpen={() => openSet(row.userId)}
+              openLabel={`Set a password for ${row.email}`}
             >
-              {#snippet icon()}<KeyRound size={16} />{/snippet}
               {#snippet meta()}<Chip>{row.role === 'admin' ? 'Admin' : 'Member'}</Chip>{/snippet}
-              <Button size="sm" variant="outline" onclick={() => openSet(row.userId)} aria-expanded={open === row.userId}>
-                {open === row.userId ? 'Close' : 'Set password'}
-              </Button>
               <SettingsRowMenu
                 label={`Actions for ${row.email}`}
-                items={[{ label: 'Remove password sign-in', danger: true, disabled: busy, onSelect: () => void remove(row) }]}
+                items={[
+                  { label: open === row.userId ? 'Keep the password' : 'Set a password', onSelect: () => openSet(row.userId) },
+                  'sep',
+                  { label: 'Remove password sign-in', danger: true, disabled: busy, onSelect: () => void remove(row) },
+                ]}
               />
             </SettingsRow>
             {#if open === row.userId}{@render setForm(row.userId, row.userId)}{/if}

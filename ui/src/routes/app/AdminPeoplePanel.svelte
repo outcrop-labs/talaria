@@ -1,15 +1,17 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsField from '@/components/settings/SettingsField.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Select from '@/components/ui/Select.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { useAgents } from '@/lib/agents'
@@ -24,8 +26,9 @@
   import { useAdminPermissions, useAdminUsers, type AdminUser } from './admin'
 
   // The people of the instance as a table: who they are, their role, a one-line
-  // summary of what they can reach, and the full access controls behind Edit.
+  // summary of what they can reach, and the full access controls under the row.
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const session = useSession()
   const me = $derived(session.data)
   const usersQuery = useAdminUsers()
@@ -65,6 +68,7 @@
     error = null
     try {
       await putJson<{ ok: true }>('/api/admin/users', { userId, ...patch })
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     }
@@ -94,7 +98,15 @@
   }
   const editable = (u: AdminUser) => u.role !== 'admin' || !!u.assistantModel
 
-  const COLS = 'grid grid-cols-[minmax(0,1.2fr)_7.5rem_minmax(0,1fr)_5.5rem_4.25rem] items-center gap-4 px-5'
+  const nameOf = (u: AdminUser) => u.name ?? u.email ?? u.id
+  const toggle = (id: string) => (editing = editing === id ? null : id)
+
+  // The header's captions and each row's cells share these widths, so the
+  // columns line up without a table.
+  const ROLE = 'w-[7.5rem] shrink-0'
+  const ACCESS = 'w-[15rem] shrink-0'
+  const SEEN = 'w-[4.5rem] shrink-0'
+  const MENU = 'w-8 shrink-0'
 </script>
 
 <SettingsSection
@@ -102,32 +114,20 @@
   info="Admins can do everything. For a member, pick which agents and pages they can reach, and change any permission that should differ from the member defaults below."
 >
   <SettingsGroup>
-    <div class="{COLS} h-10 font-sans text-xs font-medium leading-4 text-muted">
-      <span>Name</span>
-      <span>Role</span>
-      <span>Access</span>
-      <span>Last seen</span>
-      <span></span>
+    <div class="flex h-10 items-center gap-x-6 px-5 font-sans text-xs font-medium leading-4 text-muted">
+      <span class="min-w-0 flex-1">Name</span>
+      <div class="flex items-center gap-3">
+        <span class={ROLE}>Role</span>
+        <span class={ACCESS}>Access</span>
+        <span class={SEEN}>Last seen</span>
+        <span class={MENU}></span>
+      </div>
     </div>
     {#if error}
       <p transition:slide={{ duration: 150 }} class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{error}</p>
     {/if}
     {#if usersQuery.isPending}
-      {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
-        <div class="{COLS} min-h-[60px] py-3">
-          <div class="flex items-center gap-3">
-            <Skeleton class="h-8 w-8 shrink-0 rounded-full" />
-            <div class="min-w-0 flex-1 space-y-1.5">
-              <Skeleton class="h-3 w-36 rounded-full" />
-              <Skeleton class="h-2.5 w-48 rounded-full" />
-            </div>
-          </div>
-          <Skeleton class="h-9 w-full" />
-          <Skeleton class="h-3 w-40 rounded-full" />
-          <Skeleton class="h-3 w-12 rounded-full" />
-          <span></span>
-        </div>
-      {/each}
+      <div class="px-5 py-4"><SkeletonRows rows={4} avatar /></div>
     {:else if !users}
       <!-- The most dangerous empty render on the whole surface: an admin
            seeing no rows concludes the org is empty (or that a person they
@@ -141,57 +141,52 @@
     {:else}
       {#each users as u (u.id)}
         {@const lastAdmin = u.role === 'admin' && adminsRemaining === 1}
+        {@const open = editing === u.id && editable(u)}
         <div>
-          <div class="{COLS} min-h-[60px] py-3">
-            <div class="flex min-w-0 items-center gap-3">
-              <Avatar name={u.name ?? u.email} class="h-8 w-8" />
-              <div class="min-w-0 flex-1">
-                <div class="flex min-w-0 items-center gap-2">
-                  <span class="min-w-0 truncate font-sans text-sm font-medium leading-5 text-fg">{u.name ?? u.email ?? u.id}</span>
-                  {#if u.id === me?.id}<Chip>You</Chip>{/if}
-                  {#if u.hasPasswordAccount}
-                    <Chip title="Can also sign in with an email and password. Manage it under Password sign-in below.">Password</Chip>
-                  {/if}
-                </div>
-                {#if u.name && u.email}
-                  <div class="truncate font-sans text-[13px] leading-5 text-muted">{u.email}</div>
-                {/if}
-              </div>
-            </div>
+          <SettingsRow
+            hint={u.name && u.email ? u.email : undefined}
+            onOpen={editable(u) ? () => toggle(u.id) : undefined}
+            openLabel={`Edit access for ${nameOf(u)}`}
+            class="py-3"
+          >
+            {#snippet lead()}<Avatar name={u.name ?? u.email} class="h-8 w-8" />{/snippet}
+            {#snippet label()}{nameOf(u)}{/snippet}
+            {#snippet meta()}
+              {#if u.id === me?.id}<Chip>You</Chip>{/if}
+              {#if u.hasPasswordAccount}
+                <Chip title="Can also sign in with an email and password. Manage it under Password sign-in below.">Password</Chip>
+              {/if}
+            {/snippet}
             <Select
               value={u.role}
               size="sm"
-              aria-label={`Role for ${u.name ?? u.email ?? u.id}`}
+              aria-label={`Role for ${nameOf(u)}`}
               disabled={lastAdmin}
               title={lastAdmin ? 'Cannot demote the last admin' : undefined}
               onchange={(e) => void update(u.id, { role: e.currentTarget.value as 'admin' | 'member' })}
-              class="w-full"
+              class={ROLE}
             >
               <option value="member">Member</option>
               <option value="admin">Admin</option>
             </Select>
-            <span class="truncate font-sans text-[13px] leading-5 text-muted">{accessSummary(u)}</span>
-            <span class="font-sans text-[13px] leading-5 tabular-nums text-muted" title={new Date(u.lastSeenAt).toLocaleString()}>
+            <span class="{ACCESS} !pointer-events-none truncate font-sans text-[13px] leading-5 text-muted" title={accessSummary(u)}>
+              {accessSummary(u)}
+            </span>
+            <span class="{SEEN} font-sans text-[13px] leading-5 tabular-nums text-muted" title={new Date(u.lastSeenAt).toLocaleString()}>
               {relativeTime(u.lastSeenAt)}
             </span>
-            <span>
-              {#if editable(u)}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  class="w-full"
-                  aria-expanded={editing === u.id}
-                  title={`Edit access for ${u.name ?? u.email ?? u.id}`}
-                  onclick={() => (editing = editing === u.id ? null : u.id)}
-                >
-                  {editing === u.id ? 'Close' : 'Edit'}
-                </Button>
-              {/if}
-            </span>
-          </div>
-          {#if editing === u.id && editable(u)}
+            {#if editable(u)}
+              <SettingsRowMenu
+                label={`Actions for ${nameOf(u)}`}
+                items={[{ label: open ? 'Close access' : 'Edit access', onSelect: () => toggle(u.id) }]}
+              />
+            {:else}
+              <span class={MENU}></span>
+            {/if}
+          </SettingsRow>
+          {#if open}
             <div transition:slide={{ duration: 150 }}>
-              <div class="space-y-5 border-t border-line-subtle py-4 pl-[4.75rem] pr-5">
+              <div class="space-y-5 border-t border-line-subtle py-4 pl-16 pr-5">
                 {#if u.role === 'admin'}
                   <div class="flex items-center gap-6">
                     <div class="min-w-0 flex-1">

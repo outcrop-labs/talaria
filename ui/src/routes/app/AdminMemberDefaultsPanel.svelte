@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -14,6 +15,7 @@
   let { perms }: { perms: PermsData } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const set = async (perm: string, enabled: boolean | null) => {
     try {
       await putJson<{ ok: true }>('/api/admin/permissions', { orgDefault: { perm, enabled } })
@@ -22,13 +24,14 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['admin-permissions'] })
+    autosave.flash()
   }
 </script>
 
 <SettingsSection
   title="Member permissions"
   description="What every member can do unless you change it for one person."
-  info="Admins can always do all of these. To make an exception for one person, use Edit on their row in People."
+  info="Admins can always do all of these. To make an exception for one person, open their row in People."
 >
   <!-- One card for all of them: a quiet row names each group, and its switches
        sit two to a row under it. -->
