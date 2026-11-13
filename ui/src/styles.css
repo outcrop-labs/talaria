@@ -249,12 +249,16 @@
   --theme-border: color-mix(in srgb, var(--theme-text) 9%, var(--base-border));
   /* Row dividers inside a card: quieter than its edge, still visible. */
   --theme-border-subtle: color-mix(in srgb, var(--theme-text) 3%, var(--base-border));
+  /* Secondary text was 5.2:1 on a card. This is about 7:1, still a clear step under the readout. */
+  --theme-muted: color-mix(in srgb, var(--theme-text) 38%, var(--base-muted));
 }
 
 [data-theme='mercury-light'] [data-voice='sans'] {
   /* Paper, card and white field already step apart here. Only the hairline
      that draws a card and a field on them was faint. */
   --theme-border: color-mix(in srgb, var(--theme-text) 6%, var(--base-border));
+  /* Secondary text was 5.3:1 on a card and 4.9:1 on paper. This is about 7:1 on both. */
+  --theme-muted: color-mix(in srgb, var(--theme-text) 30%, var(--base-muted));
 }
 
 /* These alias the tokens above and were resolved at the root, so they are
