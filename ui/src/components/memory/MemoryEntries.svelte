@@ -60,12 +60,17 @@
   } = $props()
 
   const sans = useUiVoice() === 'sans'
+  const FILES: SegmentedOption<MemoryFile>[] = sans
+    ? [
+        { id: 'memory', label: 'Memory', title: 'MEMORY.md: what the agent remembers about its work' },
+        { id: 'profile', label: 'Profile', title: 'USER.md: what the agent has learned about you' },
+      ]
+    : [
+        { id: 'memory', label: 'Memory', title: 'MEMORY.md — what the agent remembers about its work' },
+        { id: 'profile', label: 'Profile', title: 'USER.md — what the agent has learned about you' },
+      ]
   const inset = $derived(flush ? '' : 'px-4')
 
-  const FILES: SegmentedOption<MemoryFile>[] = [
-    { id: 'memory', label: 'Memory', title: 'MEMORY.md — what the agent remembers about its work' },
-    { id: 'profile', label: 'Profile', title: 'USER.md — what the agent has learned about you' },
-  ]
   const FILENAME: Record<MemoryFile, string> = { memory: 'MEMORY.md', profile: 'USER.md' }
 
   let file = $state<MemoryFile>('memory')

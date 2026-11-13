@@ -146,7 +146,7 @@
 
   const heading = 'font-sans text-[13px] font-medium leading-5 text-fg'
   const manualPrices = $derived((ep.adminPrices ?? []).filter((p) => p.mode === 'manual'))
-  const rate = (n: number | null | undefined) => (n == null ? '–' : `$${n}`)
+  const rate = (n: number | null | undefined) => (n == null ? '—' : `$${n}`)
 </script>
 
 {#snippet model(id: string)}
