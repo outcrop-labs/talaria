@@ -9,17 +9,17 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Modal from '@/components/ui/Modal.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import Select from '@/components/ui/Select.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import Toggle from '@/components/ui/Toggle.svelte'
   import { errorMessage, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import FactsList from './FactsList.svelte'
   import NoticeRow from './NoticeRow.svelte'
+  import RowStatus from './RowStatus.svelte'
   import TargetFields from './TargetFields.svelte'
-  import type { Fact } from './facts'
-  import { fmtBytes, targetFacts, useStorageAdmin, type StorageAdmin } from './storage'
+  import ToggleField from './ToggleField.svelte'
+  import { fmtBytes, useStorageAdmin, type StorageAdmin } from './storage'
 
   // Where upload blobs live: local disk, the bundled MinIO container ("built-in
   // bucket"), or any external S3-compatible service — plus an optional replica
@@ -117,19 +117,15 @@
   }
   const files = (n: number) => `${n.toLocaleString()} file${n === 1 ? '' : 's'}`
 
-  const locationFacts = (d: StorageAdmin): Fact[] => {
-    const location: Fact = { label: 'Location', value: MODE_LABEL[d.config.mode] }
-    if (d.config.mode === 's3') return [location, ...targetFacts(d.config)]
-    if (d.config.mode === 'internal')
-      return [
-        location,
-        { label: 'Endpoint', value: d.internal.endpoint, mono: true },
-        { label: 'Bucket', value: d.internal.bucket, mono: true },
-        { label: 'Credentials', value: 'Read from TALARIA_S3_* in the environment' },
-      ]
-    return [location]
-  }
+  // A bucket is named by itself and found at its endpoint. The rest of what
+  // describes it (region, prefix, keys) is in its dialog.
+  const bucketOf = (d: StorageAdmin): { bucket: string; endpoint: string } | null =>
+    d.config.mode === 's3' ? d.config : d.config.mode === 'internal' ? d.internal : null
 </script>
+
+{#snippet bucketName(bucket: string | undefined, fallback: string)}
+  {#if bucket}<span class="font-mono text-[13px] font-normal">{bucket}</span>{:else}{fallback}{/if}
+{/snippet}
 
 {#snippet result(part: Part)}
   {#if note?.part === part}
@@ -209,17 +205,26 @@
         description="New uploads go here, and switching never breaks an existing link."
         info="Local disk keeps everything on this machine. The built-in bucket is Talaria's own bundled object store, with no cloud account needed. External works with any S3-compatible service: AWS S3, Backblaze B2, Cloudflare R2, MinIO."
       >
-        {#snippet action()}
-          <Button size="sm" variant="outline" onclick={() => edit('location')}>Edit</Button>
-          {#if inBucket}
+        <SettingsGroup>
+          <SettingsRow onOpen={() => edit('location')} openLabel="Edit where files live">
+            {#snippet label()}{@render bucketName(bucketOf(d)?.bucket, MODE_LABEL.local)}{/snippet}
+            {#snippet meta()}{#if inBucket}<Chip>{external ? 'External' : 'Built-in'}</Chip>{/if}{/snippet}
+            {#snippet hint()}
+              {#if inBucket}<span class="break-all font-mono text-xs">{bucketOf(d)?.endpoint || 'No endpoint set'}</span>{:else}Files are kept on this machine.{/if}
+            {/snippet}
+            {#snippet status()}
+              {#if external && !saved.hasSecret}<RowStatus status="idle" title="The secret access key is not set">Not set</RowStatus>{/if}
+            {/snippet}
             <SettingsRowMenu
               label="Actions for file storage"
-              items={[{ label: 'Test connection', disabled: busy || (external && !saved.hasSecret), onSelect: () => void act('test') }]}
+              items={[
+                { label: 'Edit', onSelect: () => edit('location') },
+                ...(inBucket
+                  ? [{ label: 'Test connection', disabled: busy || (external && !saved.hasSecret), onSelect: () => void act('test') }]
+                  : []),
+              ]}
             />
-          {/if}
-        {/snippet}
-        <SettingsGroup>
-          <FactsList facts={locationFacts(d)} />
+          </SettingsRow>
           {@render result('location')}
         </SettingsGroup>
       </SettingsSection>
@@ -229,25 +234,27 @@
         description="A second provider that receives a copy of every file."
         info="New uploads are copied as they land, and an outage at the replica never blocks an upload. Sync all copies everything already stored, on disk or in a bucket, into the replica bucket."
       >
-        {#snippet action()}
-          {#if saved.replica.enabled}
-            <Button size="sm" variant="outline" onclick={() => edit('replica')}>Edit</Button>
-            <SettingsRowMenu
-              label="Actions for the replica"
-              items={[
-                { label: 'Test replica', disabled: busy || !saved.replica.hasSecret, onSelect: () => void act('test-replica') },
-                {
-                  label: 'Sync all to replica',
-                  disabled: busy || syncing || !saved.replica.hasSecret || total === 0,
-                  onSelect: () => void act('sync'),
-                },
-              ]}
-            />
-          {/if}
-        {/snippet}
         <SettingsGroup>
           {#if saved.replica.enabled}
-            <FactsList facts={targetFacts(saved.replica)} />
+            <SettingsRow onOpen={() => edit('replica')} openLabel="Edit the replica">
+              {#snippet label()}{@render bucketName(saved.replica.bucket, 'No bucket set')}{/snippet}
+              {#snippet hint()}<span class="break-all font-mono text-xs">{saved.replica.endpoint || 'No endpoint set'}</span>{/snippet}
+              {#snippet status()}
+                {#if !saved.replica.hasSecret}<RowStatus status="idle" title="The secret access key is not set">Not set</RowStatus>{/if}
+              {/snippet}
+              <SettingsRowMenu
+                label="Actions for the replica"
+                items={[
+                  { label: 'Edit', onSelect: () => edit('replica') },
+                  { label: 'Test replica', disabled: busy || !saved.replica.hasSecret, onSelect: () => void act('test-replica') },
+                  {
+                    label: 'Sync all to replica',
+                    disabled: busy || syncing || !saved.replica.hasSecret || total === 0,
+                    onSelect: () => void act('sync'),
+                  },
+                ]}
+              />
+            </SettingsRow>
             {#if syncing && d.sync}
               <SettingsRow label="Syncing files to the replica">
                 {#snippet lead()}<WaitingMark site="admin/storage-sync" size={14} />{/snippet}
@@ -311,9 +318,12 @@
           <TargetFields id="storage" t={cfg} {secret} onChange={set} onSecret={(v) => (secret = v)} />
         {/if}
       {:else}
-        <SettingsField label="Replicate files" hint="Copy every file to this second provider.">
-          <Toggle checked={cfg.replica.enabled} onChange={(checked) => setReplica({ enabled: checked })} title="Replicate files" />
-        </SettingsField>
+        <ToggleField
+          label="Replicate files"
+          hint="Copy every file to this second provider."
+          checked={cfg.replica.enabled}
+          onChange={(checked) => setReplica({ enabled: checked })}
+        />
         {#if cfg.replica.enabled}
           <div transition:slide={{ duration: 150 }}>
             <TargetFields id="replica" t={cfg.replica} secret={replicaSecret} onChange={setReplica} onSecret={(v) => (replicaSecret = v)} />

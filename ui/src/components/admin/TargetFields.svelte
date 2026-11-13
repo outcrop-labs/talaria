@@ -1,7 +1,8 @@
 <script lang="ts">
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Toggle from '@/components/ui/Toggle.svelte'
+  import ToggleField from './ToggleField.svelte'
+  import { secretHint } from './secret-hint'
   import type { TargetConfig } from './storage'
 
   // Bucket credential fields, shared by the external target and the replica.
@@ -34,13 +35,18 @@
   <SettingsField label="Access key ID" for="{id}-access-key">
     <Input id="{id}-access-key" size="sm" class="font-mono" value={t.accessKeyId} oninput={(e) => onChange({ accessKeyId: e.currentTarget.value })} />
   </SettingsField>
-  <SettingsField label="Secret access key" for="{id}-secret" hint={t.hasSecret ? 'A key is stored. Type a new one to replace it.' : 'Stored encrypted. It is never shown again.'}>
+  <SettingsField label="Secret access key" for="{id}-secret" hint={secretHint(t.hasSecret)}>
     <Input id="{id}-secret" size="sm" type="password" autocomplete="off" value={secret} oninput={(e) => onSecret(e.currentTarget.value)} />
   </SettingsField>
-  <SettingsField label="Key prefix" for="{id}-prefix" hint="Optional. Ends with a slash.">
+  <SettingsField label="Key prefix" for="{id}-prefix" hint="Optional. Ends with a slash." class="sm:col-span-2">
     <Input id="{id}-prefix" size="sm" class="font-mono" value={t.prefix} oninput={(e) => onChange({ prefix: e.currentTarget.value })} placeholder="talaria/" />
   </SettingsField>
-  <SettingsField label="Path-style requests" hint="Works everywhere. Turn off only for virtual-host buckets.">
-    <Toggle checked={t.pathStyle} onChange={(checked) => onChange({ pathStyle: checked })} title="Path-style requests" />
-  </SettingsField>
+  <div class="sm:col-span-2">
+    <ToggleField
+      label="Path-style requests"
+      hint="Works everywhere. Turn off only for virtual-host buckets."
+      checked={t.pathStyle}
+      onChange={(checked) => onChange({ pathStyle: checked })}
+    />
+  </div>
 </div>
