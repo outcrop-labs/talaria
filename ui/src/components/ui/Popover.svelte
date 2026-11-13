@@ -3,6 +3,7 @@
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
 
@@ -55,6 +56,8 @@
      *  action, a keyboard shortcut) rather than only by its trigger. */
     open?: boolean
   } = $props()
+
+  const voice = useUiVoice()
 
   let ref = $state<HTMLDivElement | null>(null)
   let panelEl = $state<HTMLDivElement | null>(null)
@@ -145,6 +148,7 @@
     <div
       bind:this={panelEl}
       use:portal
+      data-voice={voiceScope(voice)}
       style={pos}
       onclick={(e) => e.stopPropagation()}
       class={cn(

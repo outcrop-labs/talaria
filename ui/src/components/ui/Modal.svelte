@@ -2,7 +2,7 @@
   import type { Snippet } from 'svelte'
   import { fade, pop, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
-  import { useUiVoice, type UiVoice } from '@/lib/ui-voice'
+  import { useUiVoice, voiceScope, type UiVoice } from '@/lib/ui-voice'
   import CloseButton from './CloseButton.svelte'
 
   // The one modal. Esc + backdrop-click close. Two shapes:
@@ -109,7 +109,7 @@
 {/snippet}
 
 {#if open}
-  <div use:portal class={takeover ? 'fixed inset-0 z-50 p-6 sm:p-8' : 'fixed inset-0 z-50 grid place-items-center p-4'}>
+  <div use:portal data-voice={voiceScope(voice ?? areaVoice)} class={takeover ? 'fixed inset-0 z-50 p-6 sm:p-8' : 'fixed inset-0 z-50 grid place-items-center p-4'}>
     <!-- |global on every leg: most call sites render {#if x}<SomeModal>, so
          this {#if open} block is created while an ANCESTOR mounts — local
          transitions (the default) are suppressed in exactly that case, which

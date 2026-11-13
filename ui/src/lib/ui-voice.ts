@@ -16,6 +16,12 @@ export function useUiVoice(): UiVoice {
   return hasContext(KEY) ? getContext<UiVoice>(KEY) : 'mono'
 }
 
+/** The `data-voice` value for the root of a surface in that voice. CSS cannot
+ *  see context, so the settings area's own tokens (styles.css) hang on this
+ *  attribute. A portaled surface sets it too, because it leaves the tree the
+ *  page's attribute covers. Mono surfaces carry no attribute. */
+export const voiceScope = (voice: UiVoice): 'sans' | undefined => (voice === 'sans' ? 'sans' : undefined)
+
 let sansScreens = 0
 
 /** Declare the screen a sans area until the returned function runs. A host

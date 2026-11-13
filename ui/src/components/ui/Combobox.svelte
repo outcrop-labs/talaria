@@ -10,7 +10,7 @@
   import { cn } from '@/lib/cn'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
-  import { useUiVoice } from '@/lib/ui-voice'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { popRow, popRowSelected } from '@/components/chat/chat-chrome'
   import { controlSizes, disabledControl, type ControlSize } from './control'
   import { fuzzy, type ComboOption } from './combobox'
@@ -53,7 +53,8 @@
     triggerLabel?: string | Snippet
   } = $props()
 
-  const sans = useUiVoice() === 'sans'
+  const voice = useUiVoice()
+  const sans = voice === 'sans'
 
   let open = $state(false)
   let q = $state('')
@@ -247,6 +248,7 @@
   {#if open && pos}
     <div
       use:portal
+      data-voice={voiceScope(voice)}
       bind:this={panelRef}
       in:pop={POPOVER}
       out:fade={QUICK}

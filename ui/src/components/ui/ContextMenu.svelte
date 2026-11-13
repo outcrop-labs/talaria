@@ -2,7 +2,7 @@
   import { tick } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
-  import { useUiVoice } from '@/lib/ui-voice'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import type { ContextMenuController, ContextMenuEntry, ContextMenuItem, MenuIcon } from './context-menu.svelte'
@@ -27,7 +27,8 @@
 
   let { menu, label = 'Actions' }: { menu: ContextMenuController; label?: string } = $props()
 
-  const sans = useUiVoice() === 'sans'
+  const voice = useUiVoice()
+  const sans = voice === 'sans'
 
   let el = $state<HTMLDivElement | null>(null)
   let subEl = $state<HTMLDivElement | null>(null)
@@ -259,7 +260,7 @@
        first node was moved to <body> and whose last was not would walk on
        through <body> — and take whatever was portaled after it (a dialog an
        item just opened) with it. A single root is removed alone. -->
-  <div use:portal class="contents">
+  <div use:portal data-voice={voiceScope(voice)} class="contents">
     <div
       bind:this={el}
       role="menu"

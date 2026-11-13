@@ -2,7 +2,7 @@
   import { Info } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
-  import { useUiVoice } from '@/lib/ui-voice'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
 
   // An ⓘ that explains an area on hover — the home for the sentence that used
@@ -17,7 +17,8 @@
   // where the longest explanations sit, got cut in half.
   let { text, class: className }: { text: string; class?: string } = $props()
 
-  const sans = useUiVoice() === 'sans'
+  const voice = useUiVoice()
+  const sans = voice === 'sans'
 
   let open = $state(false)
   let ref = $state<HTMLSpanElement | null>(null)
@@ -56,6 +57,7 @@
 {#if open}
   <span
     use:portal
+    data-voice={voiceScope(voice)}
     role="tooltip"
     style={pos}
     in:pop={POPOVER}

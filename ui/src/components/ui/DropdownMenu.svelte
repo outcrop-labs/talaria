@@ -28,7 +28,7 @@
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
-  import { useUiVoice } from '@/lib/ui-voice'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import { DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle } from '@/lib/dropdown-position'
@@ -67,7 +67,8 @@
     group?: string
   } = $props()
 
-  const sans = useUiVoice() === 'sans'
+  const voice = useUiVoice()
+  const sans = voice === 'sans'
 
   let open = $state(false)
   let ref = $state<HTMLDivElement | null>(null)
@@ -145,6 +146,7 @@
     <div
       bind:this={panelEl}
       use:portal
+      data-voice={voiceScope(voice)}
       role="menu"
       tabindex="-1"
       style={pos}

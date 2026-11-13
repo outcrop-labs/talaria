@@ -120,7 +120,7 @@
 {/snippet}
 
 {#if nav.inside}
-  <aside class="hidden w-60 shrink-0 flex-col border-r border-line bg-sidebar md:flex" aria-label="Settings">
+  <aside data-voice="sans" class="hidden w-60 shrink-0 flex-col border-r border-line bg-sidebar md:flex" aria-label="Settings">
     <div class="shrink-0 p-3 pb-0">
       <label class="relative block">
         <Search size={14} class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
@@ -177,6 +177,7 @@
   <!-- Below md a 240px column would take most of a phone, so the same rows
        become a strip across the top that scrolls sideways. -->
   <nav
+    data-voice="sans"
     aria-label="Settings"
     class="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-sidebar px-2 py-1.5 md:hidden"
   >
