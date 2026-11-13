@@ -16,6 +16,7 @@
   import { useUiVoice } from '@/lib/ui-voice'
   import DiffView from '@/components/fleet/DiffView.svelte'
   import { diffLines, type DiffLine } from '@/components/fleet/line-diff'
+  import { joinFrontmatter, splitFrontmatter, type FrontmatterParts } from './frontmatter'
 
   interface Revision {
     id: string
@@ -101,13 +102,9 @@
   // the settings area it is lifted out into a mono well above the document and
   // put back, untouched unless it was edited there, when the text is read.
   // Elsewhere nothing is lifted and the document is one piece, as before.
-  const FRONTMATTER = /^(---\r?\n[\s\S]*?\r?\n---)[ \t]*((?:\r?\n)*)/
   // svelte-ignore state_referenced_locally -- reason: `mode` is fixed for the life of an editor
   const lifts = sans && mode === 'rich'
-  const lift = (text: string): { head: string; gap: string; body: string } => {
-    const m = lifts ? FRONTMATTER.exec(text) : null
-    return m ? { head: m[1]!, gap: m[2] || '\n', body: text.slice(m[0].length) } : { head: '', gap: '', body: text }
-  }
+  const lift = (text: string): FrontmatterParts => (lifts ? splitFrontmatter(text) : { head: '', gap: '', body: text })
 
   let editorRef = $state<RichEditorHandle | null>(null)
   let seed = $state(0) // bump to remount the editor with new content
@@ -221,7 +218,7 @@
    *  the editor — accepted into the fields, never written, still reviewable. */
   export function getMarkdown(): string {
     const body = editorRef?.getMarkdown() ?? parts.body
-    return head.trim() ? `${head.trimEnd()}${parts.gap}${body}` : body
+    return joinFrontmatter({ ...parts, body }, headEdit?.seed === seed ? headEdit.text : undefined)
   }
 
   export function setDoc(markdown: string): void {
