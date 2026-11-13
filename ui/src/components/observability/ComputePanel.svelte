@@ -1,20 +1,25 @@
 <script lang="ts">
+  import { ChevronRight } from '@lucide/svelte'
   import { p } from '@/router'
-  import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
+  import { cn } from '@/lib/cn'
   import { formatTokens } from '@/lib/cost.svelte'
-  import { fade, listStagger } from '@/lib/motion'
+  import { fade } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { useInference } from './inference'
   import LiveSection from './LiveSection.svelte'
+  import ShareBar from './ShareBar.svelte'
+  import StatStripSkeleton from './StatStripSkeleton.svelte'
+  import { sectionLink, table } from './grammar'
 
   // The inference plane, live: what's generating right now, the gateway's pulse,
-  // fleet container temperature — then the self-hosted backends underneath.
+  // fleet container temperature, then the self-hosted backends underneath.
   const session = useSession()
   const query = useInference()
   const data = $derived(query.data)
@@ -22,95 +27,99 @@
   const backends = $derived(data?.backends ?? [])
   const live = $derived(data?.live)
   const failed = $derived(query.isError && data === undefined)
+  const perModel = $derived(data?.usage.perModel ?? [])
+  const servedTokens = $derived(perModel.reduce((n, m) => n + m.tokens, 0))
 </script>
 
-<div>
-  <div class="space-y-8">
-    <div class="flex items-center gap-3">
-      {#if session.data?.role === 'admin'}
-        <a href={p('/models')} class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent">
-          Configure on Models →
-        </a>
+<div class="space-y-10">
+  <!-- "0 generating / no errors / all healthy" over a dead endpoint is the
+       same lie as an empty list, so a failed read gets its own panel. -->
+  {#if failed}
+    <QueryError error={query.error} title="Could not load the inference plane" onRetry={() => void query.refetch()} />
+  {:else if live}
+    <LiveSection {live} />
+  {:else}
+    <StatStripSkeleton />
+  {/if}
+
+  <!-- The failure already took the surface above, so it says nothing twice. -->
+  {#if !failed}
+    <SettingsSection
+      title="Self-hosted backends"
+      description={data && backends.length > 0
+        ? `${formatTokens(data.usage.today)} tokens today, ${formatTokens(data.usage.month)} in the last 30 days, across ${data.usage.generations.toLocaleString('en-US')} generations.`
+        : undefined}
+    >
+      {#snippet action()}
+        {#if session.data?.role === 'admin'}
+          <a href={p('/models')} class={sectionLink}>Configure in Models<ChevronRight size={14} /></a>
+        {/if}
+      {/snippet}
+      {#if isLoading}
+        <SettingsGroup><div class="px-5 py-4"><SkeletonRows rows={2} /></div></SettingsGroup>
+      {:else if backends.length === 0}
+        <div in:fade={{ duration: 150 }}>
+          <EmptyState
+            icon="▦"
+            title="No self-hosted backends"
+            hint="Add a self-hosted provider (Ollama, vLLM, a router) in Models. LAN and loopback URLs count as self-hosted."
+          />
+        </div>
+      {:else}
+        <SettingsGroup>
+          {#each backends as b (b.id)}
+            <SettingsRow label={b.name}>
+              {#snippet meta()}
+                {#if b.baseUrl}<span class="min-w-0 truncate font-mono text-xs text-muted">{b.baseUrl}</span>{/if}
+              {/snippet}
+              {#snippet hint()}
+                {#if !b.health.ok}
+                  {b.health.note}
+                {:else if b.health.servingNow.length}
+                  Serving <span class="font-mono text-xs">{b.health.servingNow.join(', ')}</span>
+                {:else}
+                  No model reported as loaded
+                {/if}
+              {/snippet}
+              <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+                <StatusDot status={b.health.ok ? 'ok' : 'danger'} />
+                {#if b.health.ok}
+                  Up{b.health.latencyMs != null ? ` · ${b.health.latencyMs} ms` : ''}
+                {:else}
+                  Unreachable
+                {/if}
+              </span>
+            </SettingsRow>
+          {/each}
+        </SettingsGroup>
       {/if}
-    </div>
+    </SettingsSection>
 
-    <!-- "0 generating / no errors / all healthy" over a dead endpoint is the
-         same lie as an empty list — a failed read gets its own panel. -->
-    {#if failed}
-      <QueryError error={query.error} title="Could not load the inference plane" onRetry={() => void query.refetch()} />
-    {:else if live}
-      <LiveSection {live} />
-    {:else}
-      <div class="grid grid-cols-4 gap-4">
-        {#each [0, 1, 2, 3] as i (i)}
-          <SkeletonCard />
-        {/each}
-      </div>
-    {/if}
-
-    <SectionHeader class="mb-0" title="Self-hosted compute" />
-
-    {#if failed}
-      <!-- The failure already took the surface above — say nothing twice. -->
-    {:else if isLoading}
-      <SkeletonCard />
-    {:else if backends.length === 0}
-      <div in:fade={{ duration: 150 }}>
-        <EmptyState
-          icon="▦"
-          title="No self-hosted backends"
-          hint="Add a self-hosted provider (Ollama, vLLM, a router) on the Models page. LAN and loopback URLs are classed self-hosted automatically."
-        />
-      </div>
-    {:else}
-      <div class="grid grid-cols-3 gap-4">
-        <StatCard label="Self-hosted tokens · today" value={formatTokens(data?.usage.today ?? 0)} />
-        <StatCard label="Self-hosted tokens · 30 days" value={formatTokens(data?.usage.month ?? 0)} />
-        <StatCard label="Generations · 30 days" value={String(data?.usage.generations ?? 0)} />
-      </div>
-
-      {#each backends as b (b.id)}
-        <Panel>
-          <div class="mb-4 flex items-center gap-3">
-            <StatusDot status={b.health.ok ? 'ok' : 'danger'} class="h-[7px] w-[7px]" />
-            <span class="font-sans text-sm font-semibold text-fg">{b.name}</span>
-            <span class="min-w-0 truncate font-mono text-[11px] text-muted">{b.baseUrl}</span>
-            <span class={`ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] ${b.health.ok ? 'text-muted' : 'text-danger'}`}>
-              {b.health.ok ? `up · ${b.health.latencyMs}ms` : 'unreachable'}
-            </span>
+    {#if backends.length > 0 && perModel.length > 0}
+      <SettingsSection title="Self-hosted models" description="Tokens each model served on your own hardware in the last 30 days.">
+        <SettingsGroup>
+          <div class="overflow-x-auto">
+            <table class={table.root}>
+              <thead>
+                <tr>
+                  <th class={table.th}>Model</th>
+                  <th class={cn(table.th, 'w-[45%]')}>Share of tokens</th>
+                  <th class={cn(table.th, table.num)}>Tokens</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each perModel as m (m.llmModel ?? '?')}
+                  <tr class={table.tr}>
+                    <td class={cn(table.td, m.llmModel ? table.id : 'text-muted')}>{m.llmModel ?? 'Unattributed'}</td>
+                    <td class={table.td}><ShareBar share={servedTokens ? m.tokens / servedTokens : 0} /></td>
+                    <td class={cn(table.td, table.num)}>{formatTokens(m.tokens)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
           </div>
-          {#if b.health.ok}
-            <div class="space-y-2.5">
-              <div>
-                <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Serving now</div>
-                <div class="flex flex-wrap gap-1.5">
-                  {#each b.health.servingNow.length ? b.health.servingNow : ['(none reported)'] as m (m)}
-                    <span class="rounded border border-line px-2.5 py-0.5 font-mono text-[11px] text-fg">
-                      {m}
-                    </span>
-                  {/each}
-                </div>
-              </div>
-            </div>
-          {:else}
-            <div class="font-sans text-xs text-muted">{b.health.note}</div>
-          {/if}
-        </Panel>
-      {/each}
-
-      {#if (data?.usage.perModel.length ?? 0) > 0}
-        <Panel>
-          <SectionHeader title="Served self-hosted · 30 days" action={String(data!.usage.perModel.length).padStart(2, '0')} />
-          <div class="divide-y divide-line" use:listStagger>
-            {#each data!.usage.perModel as m (m.llmModel ?? '?')}
-              <div class="flex items-center gap-3 py-3 text-sm transition-colors dither-fill">
-                <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{m.llmModel ?? 'unattributed'}</span>
-                <span class="shrink-0 font-mono text-[11px] text-muted">{formatTokens(m.tokens)} tokens</span>
-              </div>
-            {/each}
-          </div>
-        </Panel>
-      {/if}
+        </SettingsGroup>
+      </SettingsSection>
     {/if}
-  </div>
+  {/if}
 </div>
