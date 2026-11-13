@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bell, KeyRound, LayoutDashboard, Link2, Search, Shield, Sparkles, User, type LucideIcon } from '@lucide/svelte'
+  import { Bell, Blocks, KeyRound, LayoutDashboard, Link2, Search, Shield, Sparkles, User, type LucideIcon } from '@lucide/svelte'
   import NavIcon from '@/components/app/NavIcon.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -19,6 +19,7 @@
     type SettingsNavRow,
     type SettingsPageTabs,
   } from '@/lib/settings-nav'
+  import { revealCurrent } from '@/lib/tab-strip'
   import { holdSansScreen, setUiVoice } from '@/lib/ui-voice'
   import { ADMIN_TABS } from '@/routes/app/admin'
   import { MODEL_TABS } from '@/routes/app/models'
@@ -65,7 +66,10 @@
     [MANAGE_HOME]: LayoutDashboard,
     [ADMIN_HOME]: Shield,
   }
-  const iconOf = (to: string, icon: NavItem['icon'] | undefined): NavItem['icon'] => icon ?? ICONS[to] ?? '·'
+  // An app's manifest icon is a glyph character, which reads as a second icon
+  // set beside the drawn ones, so every app row takes the same drawn mark.
+  const iconOf = (to: string, icon: NavItem['icon'] | undefined): LucideIcon =>
+    icon === undefined || typeof icon === 'string' ? (ICONS[to] ?? Blocks) : icon
 
   const PAGE_TABS: SettingsPageTabs = {
     ...OWN_PAGE_TABS,
@@ -91,7 +95,7 @@
   const [sendMark, receiveMark] = markCrossfade()
 
   const rowClass =
-    'relative flex h-8 items-center gap-2.5 rounded-md px-2 font-sans text-[13.5px] leading-5 text-muted transition-colors duration-[120ms] hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent'
+    'relative flex h-8 items-center gap-2.5 rounded-md px-2 font-sans text-[13.5px] leading-5 text-muted transition-colors duration-[120ms] hover:bg-[var(--settings-selected)]/50 hover:text-fg focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent'
 </script>
 
 {#snippet navRow(row: SettingsNavRow)}
@@ -103,8 +107,10 @@
         aria-hidden="true"
         in:receiveMark={{ key: 'settings-mark' }}
         out:sendMark={{ key: 'settings-mark' }}
-        class="absolute inset-0 rounded-md bg-raised"
-      ></span>
+        class="absolute inset-0 rounded-md bg-[var(--settings-selected)]"
+      >
+        <span class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-accent"></span>
+      </span>
     {/if}
     <span class="relative grid h-4 w-4 shrink-0 place-items-center"><NavIcon icon={iconOf(row.to, row.icon)} /></span>
     <span class="relative min-w-0 flex-1 truncate">{row.label}</span>
@@ -178,6 +184,7 @@
        become a strip across the top that scrolls sideways. -->
   <nav
     data-voice="sans"
+    use:revealCurrent
     aria-label="Settings"
     class="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-sidebar px-2 py-1.5 md:hidden"
   >
@@ -188,10 +195,11 @@
           href={row.to}
           aria-current={active ? 'page' : undefined}
           class={cn(
-            'flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 font-sans text-[13.5px] text-muted transition-colors duration-[120ms] hover:text-fg',
-            active && 'bg-raised font-medium text-fg',
+            'relative flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 font-sans text-[13.5px] text-muted transition-colors duration-[120ms] hover:text-fg',
+            active && 'bg-[var(--settings-selected)] font-medium text-fg',
           )}
         >
+          {#if active}<span aria-hidden="true" class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-accent"></span>{/if}
           <span class="grid h-4 w-4 shrink-0 place-items-center"><NavIcon icon={iconOf(row.to, row.icon)} /></span>
           <span>{row.label}</span>
         </a>

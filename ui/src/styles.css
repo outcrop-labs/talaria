@@ -269,6 +269,9 @@
   --theme-input: var(--theme-raised);
   --theme-line: var(--theme-border);
   --theme-line-subtle: var(--theme-border-subtle);
+  /* The selected sidebar row. A raised tile is white on cream in the light
+     theme, so the fill is mixed from the readout colour and reads in both. */
+  --settings-selected: color-mix(in srgb, var(--theme-text) 12%, var(--theme-sidebar));
 }
 
 /* ════════════════════════════════════════════════════════════════════════
