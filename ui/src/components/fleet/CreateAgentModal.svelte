@@ -785,14 +785,15 @@
       {#if err || saveErr}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{err ?? `Your edits were not saved: ${saveErr}`}</div>{/if}
     </div>
     {#snippet footer()}
-      <div class="flex items-center gap-4">
-        {#if !preselect}
-          {@render quietLink('Describe instead', () => (step = 'describe'))}
-        {/if}
-        {#if design && !preselect}
-          {@render quietLink('Discard design', () => void discard(), true, 'design-discard')}
-        {/if}
-        <span class="ml-auto"></span>
+      <div class="flex items-center gap-2">
+        <span class="mr-auto flex items-center gap-4">
+          {#if !preselect}
+            {@render quietLink('Describe instead', () => (step = 'describe'))}
+          {/if}
+          {#if design && !preselect}
+            {@render quietLink('Discard design', () => void discard(), true, 'design-discard')}
+          {/if}
+        </span>
         <Button variant="ghost" size="sm" onclick={onClose}>Cancel</Button>
         <Button size="sm" onclick={() => void create()} disabled={busy || generating || !form.handle || !form.department || !form.name || !!departmentHolder}>
           {busy ? 'Hiring' : 'Create agent'}

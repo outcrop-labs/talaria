@@ -180,13 +180,13 @@
                 <Input size="sm" class="w-32 font-mono" placeholder="KEY" aria-label="Variable name" value={newEnvRow[g.repo]?.key ?? ''} oninput={(e) => (newEnvRow[g.repo] = { key: e.currentTarget.value.toUpperCase(), value: newEnvRow[g.repo]?.value ?? '' })} />
                 <Input size="sm" class="w-44 font-mono" type="password" placeholder="value" aria-label="Variable value" value={newEnvRow[g.repo]?.value ?? ''} oninput={(e) => (newEnvRow[g.repo] = { key: newEnvRow[g.repo]?.key ?? '', value: e.currentTarget.value })} />
                 {#if pendingEnv}
-                  <Button size="sm" variant="outline" onclick={() => void saveEnv(g.repo)}>Save variables</Button>
+                  <Button size="sm" onclick={() => void saveEnv(g.repo)}>Save variables</Button>
                 {/if}
               </div>
             </div>
           {/each}
           {#if Object.keys(edits).length > 0}
-            <Button size="sm" variant="outline" onclick={() => void save(d.granted)}>Save branch rules</Button>
+            <Button size="sm" onclick={() => void save(d.granted)}>Save branch rules</Button>
           {/if}
         </div>
       {/if}

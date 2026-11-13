@@ -28,7 +28,7 @@
       <Button variant="ghost" size="sm" onclick={onClose}>Cancel</Button>
       <Button
         size="sm"
-        variant="danger"
+        variant="danger-outline"
         disabled={!match}
         onclick={() => {
           onConfirm()

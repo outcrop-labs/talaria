@@ -14,6 +14,7 @@
   import CodingLoginModal from './CodingLoginModal.svelte'
   import type { CodingAccountsBody, CodingModel, CodingService } from './coding-accounts'
   import { loadModelsInto, roleLabel } from './coding-accounts'
+  import { useModelNames } from '@/components/models/model-names.svelte'
 
   // This agent's coding accounts: the subscriptions its harness may run on,
   // which plan runs a job by default, and which model fills each of omp's
@@ -31,6 +32,7 @@
   let { agentId }: { agentId: string } = $props()
 
   const qc = useQueryClient()
+  const modelName = useModelNames()
   const accounts = createQuery(() => ({
     queryKey: ['coding-accounts', agentId],
     queryFn: (): Promise<CodingAccountsBody | null> =>
@@ -132,16 +134,14 @@
               <div class="flex min-h-8 flex-wrap items-center gap-2">
                 <span class="min-w-0 truncate font-sans text-[13px] leading-5 text-fg">{plan.label}</span>
                 <Chip class="font-mono">{plan.provider}</Chip>
-                {#if isDefault}<Chip tone="accent">Default</Chip>{/if}
+                {#if isDefault}<Chip>Default</Chip>{/if}
                 {#if plan.account?.disabledAt}<Chip tone="danger">Needs sign-in</Chip>{/if}
                 {#if plan.account && !plan.account.permitted}<Chip tone="warn">Not permitted</Chip>{/if}
                 <span class="flex-1"></span>
-                {#if !isDefault}
-                  <Button size="sm" variant="outline" disabled={busy} onclick={() => void setDefault(plan.accountId)}>Make default</Button>
-                {/if}
                 <SettingsRowMenu
                   label={`Actions for ${plan.label}`}
                   items={[
+                    ...(isDefault ? [] : [{ label: 'Make default', disabled: busy, onSelect: () => void setDefault(plan.accountId) }]),
                     { label: expanded === String(plan.accountId) ? 'Hide models' : 'Choose models', onSelect: showModels },
                     ...(plan.account
                       ? [{ label: 'Sign out', danger: true, disabled: busy, onSelect: () => void signOut(plan.account.id, plan.account.provider) }]
@@ -187,9 +187,11 @@
 
         {#if d.resolved}
           <p class="font-sans text-[13px] leading-5 text-muted">
-            A job with no ticket pin runs on
+            Unless a ticket picks another account, coding jobs run on
             <span class="text-fg">{d.resolved.gateway ? 'the Talaria gateway' : d.resolved.provider}</span>
-            {#if d.resolved.models?.default}· <span class="font-mono text-xs">{d.resolved.models.default}</span>{/if}
+            {#if d.resolved.models?.default}
+              · {#if modelName(d.resolved.models.default)}{modelName(d.resolved.models.default)}{:else}<span class="font-mono text-xs">{d.resolved.models.default}</span>{/if}
+            {/if}
           </p>
         {:else}
           <p class="font-sans text-[13px] leading-5 text-muted">Nothing configured, so the harness runs on the org's Workbench model roles.</p>
