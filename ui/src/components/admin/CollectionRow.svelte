@@ -1,18 +1,18 @@
 <script lang="ts">
-  import { Activity, BookOpen, Library } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { firstNotice, listQuery } from '@/components/ui/query-state'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import Toggle from '@/components/ui/Toggle.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { slide } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
@@ -21,6 +21,7 @@
   import { delJsonGone, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import RowStatus from './RowStatus.svelte'
+  import ToggleField from './ToggleField.svelte'
   import { indexState, type Binding, type IndexedCollection, type RagCollection } from './retrieval'
 
   let {
@@ -36,6 +37,7 @@
   } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const agentsQuery = useAgents()
   const fleet = $derived(agentsQuery.data)
   // These two feed the pickers that decide WHO CAN RETRIEVE this collection.
@@ -68,6 +70,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
+    autosave.flash()
   }
   const del = async () => {
     if (!(await confirm({ title: 'Delete collection', message: `Delete the "${col.name}" collection and its index?`, confirmLabel: 'Delete', danger: true }))) return
@@ -96,6 +99,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
+    autosave.flash()
   }
 
   const applyBindings = (opts: { all?: boolean; users?: string[]; agents?: string[]; teams?: string[] }) => {
@@ -113,31 +117,33 @@
   const entries = $derived(
     index && !index.missing ? `${index.pointsCount.toLocaleString()} ${index.pointsCount === 1 ? 'entry' : 'entries'}` : null,
   )
-  const Icon = $derived(col.kind === 'activity' ? Activity : col.kind === 'org-kb' ? BookOpen : Library)
   // Auto collections have fixed access (activity = your own scope; org-kb =
   // everyone). Custom collections are bound and curated in the dialog.
-  const menu: ContextMenuEntry[] = [{ label: 'Delete collection', danger: true, onSelect: () => void del() }]
+  const menu: ContextMenuEntry[] = [
+    { label: 'Manage', onSelect: () => (managing = true) },
+    'sep',
+    { label: 'Delete collection', danger: true, onSelect: () => void del() },
+  ]
 </script>
 
 <div>
-  <SettingsRow label={col.name}>
-    {#snippet icon()}<Icon size={16} />{/snippet}
+  <SettingsRow label={col.name} onOpen={col.auto ? undefined : () => (managing = true)} openLabel={`Manage ${col.name}`}>
     {#snippet meta()}{#if col.auto}<Chip>Built-in</Chip>{/if}{/snippet}
     {#snippet hint()}
       {#if entries}<span class="tabular-nums">{entries}</span>{#if col.description}{' · '}{/if}{/if}{col.description ?? ''}
     {/snippet}
     {#snippet status()}{#if idx}<RowStatus status={idx.status}>{idx.word}</RowStatus>{/if}{/snippet}
-    {#if !col.auto}
-      <Button variant="outline" size="sm" onclick={() => (managing = true)}>Manage</Button>
-      <SettingsRowMenu label={`Actions for ${col.name}`} items={menu} />
-    {/if}
+    {#if !col.auto}<SettingsRowMenu label={`Actions for ${col.name}`} items={menu} />{/if}
   </SettingsRow>
 {#if !col.auto}
   <Modal open={managing} onClose={() => (managing = false)} title={col.name} width="max-w-lg">
     <div class="space-y-5">
-      <SettingsField label="Everyone can search" hint="Turn off to choose the teams, people and agents who can.">
-        <Toggle checked={bindingsAll} onChange={(checked) => applyBindings({ all: checked })} title="Everyone can search" />
-      </SettingsField>
+      <ToggleField
+        label="Everyone can search"
+        hint="Turn off to choose the teams, people and agents who can."
+        checked={bindingsAll}
+        onChange={(checked) => applyBindings({ all: checked })}
+      />
       {#if !bindingsAll && pickersPending}
         <div class="space-y-5">
           {#each [0, 1, 2] as i (i)}<Skeleton class="h-9 w-full" />{/each}
@@ -195,7 +201,16 @@
       </SettingsField>
     </div>
     {#snippet footer()}
-      <div class="flex justify-end">
+      <div class="flex items-center gap-2">
+        <DangerLink
+          onClick={() => {
+            managing = false
+            void del()
+          }}
+        >
+          Delete collection
+        </DangerLink>
+        <span class="flex-1"></span>
         <Button size="sm" variant="outline" onclick={() => (managing = false)}>Done</Button>
       </div>
     {/snippet}

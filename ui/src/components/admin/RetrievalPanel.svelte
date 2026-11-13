@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -174,9 +175,16 @@
               <RowStatus status="danger">Failed</RowStatus>
             {/if}
           {/snippet}
-          <Button size="sm" variant="outline" onclick={() => void backfill()} disabled={rebuilding || rag.backfill.state === 'running' || !servicesUp}>
-            Run backfill
-          </Button>
+          <!-- A failed run is the one state the row needs fixed. Any other
+               time, running it again is a menu item. -->
+          {#if rag.backfill.state === 'error'}
+            <Button size="sm" variant="outline" onclick={() => void backfill()} disabled={rebuilding || !servicesUp}>Run again</Button>
+          {:else}
+            <SettingsRowMenu
+              label="Actions for the backfill"
+              items={[{ label: 'Run backfill', disabled: rebuilding || rag.backfill.state === 'running' || !servicesUp, onSelect: () => void backfill() }]}
+            />
+          {/if}
         </SettingsRow>
       {/if}
     </SettingsGroup>

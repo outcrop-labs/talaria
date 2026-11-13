@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -22,6 +23,7 @@
   // would run both probes (an agent exec among them) a second time.
   // SEARXNG_URL in the api's environment wins.
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const query = useSearchEndpoint()
   let busy = $state(false)
 
@@ -29,6 +31,7 @@
     busy = true
     try {
       qc.setQueryData<SearchEndpoint>(['admin-search'], await putJson<SearchEndpoint>('/api/admin/search', { url }))
+      autosave.flash()
     } catch (e) {
       toastError('Search URL not saved', e)
       // The field still holds what was typed; read back what is stored.
@@ -80,7 +83,7 @@
         {#if s.url}
           <SettingsRow
             label="From the app"
-            hint={!s.reachable && s.error ? s.error : 'What Research dials.'}
+            hint={!s.reachable && s.error ? s.error : 'The address Research searches.'}
           >
             {#snippet status()}
               <RowStatus status={s.reachable ? 'ok' : 'danger'}>{s.reachable ? 'Reachable' : 'Unreachable'}</RowStatus>
@@ -91,7 +94,7 @@
               {#if note}
                 {note.text}
               {:else if s.probedFrom}
-                Checked inside {s.probedFrom}{#if s.agentUrl}, dialing <span class="font-mono text-xs">{s.agentUrl}</span>{/if}.
+                Checked inside {s.probedFrom}{#if s.agentUrl}, at <span class="font-mono text-xs">{s.agentUrl}</span>{/if}.
               {:else}
                 The same check, run inside a running agent.
               {/if}

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -10,12 +11,15 @@
   import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
   import { postJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
+  import SaveAction from './SaveAction.svelte'
   import type { RagAdmin } from './retrieval'
+  import { secretHint } from './secret-hint'
 
   // ── Reranker provider (the precision stage after vector recall) ─────────────
   let { rag }: { rag: RagAdmin } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   const cfg = $derived(rag.rerank.config)
   let key = $state('')
   let models = $state<string[] | null>(null)
@@ -32,6 +36,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
+    if (!('apiKey' in patch)) autosave.flash()
   }
   const loadModels = async () => {
     // The candidate key goes in the body — never a query string (logs).
@@ -92,7 +97,7 @@
     {#if meta?.needsKey}
       <SettingsRow
         label="API key"
-        hint={cfg.hasKey ? 'A key is stored. Type a new one to replace it.' : 'Stored encrypted. It is never shown again.'}
+        hint={secretHint(cfg.hasKey)}
       >
         <Input
           size="sm"
@@ -104,9 +109,7 @@
           placeholder={cfg.hasKey ? 'Paste a new key' : 'Paste the provider key'}
           class="w-[280px]"
         />
-        {#if key}
-          <Button size="md" onclick={() => void saveKey()} disabled={savingKey}>Save key</Button>
-        {/if}
+        <SaveAction size="md" dirty={!!key} busy={savingKey} onclick={() => void saveKey()}>Save key</SaveAction>
       </SettingsRow>
     {/if}
     <!-- A model control only where there IS a model to pick. Derived from the
