@@ -7,8 +7,6 @@
   import Segmented from '@/components/ui/Segmented.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
-  import Button from '@/components/ui/Button.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
@@ -16,7 +14,9 @@
   import NotifyMatrix from './NotifyMatrix.svelte'
   import NotifySchedule from './NotifySchedule.svelte'
   import NotifyStatusPanel from './NotifyStatusPanel.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import MenuValueButton from '@/components/notify/MenuValueButton.svelte'
+  import { CHANNEL_INFO } from '@/components/notify/delivery'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import {
     NOTIFY_ROUTES,
     saveNotifySettings,
@@ -25,18 +25,19 @@
     type NotifyPrefs,
     type NotifyRoute,
   } from '@/lib/notifications'
-  import { featureSet, useNotifyPatch } from '@/lib/notify-center'
+  import { featureSet, useDevices, useNotifyPatch } from '@/lib/notify-center'
   import { dndView, safeZone } from '@/lib/notify-dnd'
   import { EMAIL_FREQUENCY_OPTIONS, mailNote } from '@/lib/notify-matrix'
   import type { EmailFrequency } from '@/lib/notify-wire'
 
-  // Settings → Notifications: what reaches you where (the category × channel
-  // matrix, its rows the server's class registry), how often missed activity
-  // is mailed, the daily digest, Do Not Disturb (pause and working hours), and
-  // the status panel that says why something did or did not arrive. Every
-  // control autosaves on change (UI-CONVENTIONS: pickers apply immediately)
-  // and shows the server's effective answer, so a rejected save can never look
-  // like it landed — and neither can a control that governs nothing.
+  // Settings → Notifications: how often missed activity is mailed and the
+  // daily digest, where each kind of notification goes (its rows the server's
+  // class registry), Do Not Disturb (pause and working hours), and the status
+  // panel that says why something did or did not arrive. Every control
+  // autosaves on change (UI-CONVENTIONS: pickers apply immediately), the page
+  // header says so and flashes Saved, and each control shows the server's
+  // effective answer, so a rejected save can never look like it landed, and
+  // neither can a control that governs nothing.
 
   const qc = useQueryClient()
   const query = useNotifications()
@@ -48,7 +49,7 @@
   let pendingFrequency = $state<EmailFrequency | null>(null)
   let pendingRoutes = $state<Partial<NotifyPrefs>>({})
   let error = $state<string | null>(null)
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
   const digest: DigestPref | null = $derived(data ? (pendingDigest ?? data.digest) : null)
   const emailOn: boolean | null = $derived(data ? (pendingDelivery ?? data.delivery.emailEnabled) : null)
   const frequency = $derived(pendingFrequency ?? data?.emailFrequency ?? null)
@@ -62,28 +63,27 @@
 
   const saved = () => {
     error = null
-    savedFlash.flash()
+    autosave.flash()
   }
-  const failed = (m: string) => {
-    error = m
+  // A refusal is said in the section the person clicked in, so the list and
+  // Do Not Disturb each keep their own.
+  let matrixError = $state<string | null>(null)
+  const matrixSaved = () => {
+    matrixError = null
+    autosave.flash()
   }
-  // Do Not Disturb is its own panel, further down the page: its saves and
-  // refusals are said there, where the person clicked, not in the panel above.
+  let deliveryError = $state<string | null>(null)
   let dndError = $state<string | null>(null)
-  const dndFlash = useSavedFlash()
   const dndSaved = () => {
     dndError = null
-    dndFlash.flash()
-  }
-  const dndFailed = (m: string) => {
-    dndError = m
+    autosave.flash()
   }
   const dndNow = $derived(dndView(data?.dnd, Date.now(), safeZone(data?.dnd?.timeZone)))
-  const resume = async () => {
-    const r = await patch({ dnd: { pausedUntil: null } })
-    if ('error' in r) dndFailed(r.error)
-    else dndSaved()
-  }
+  const paused = $derived(dndNow.active && dndNow.reason === 'paused')
+  // Push reaches the browsers on file. With none, the Push choice is stored
+  // and has nowhere to go, and the list says so.
+  const devices = useDevices(() => features.has('devices'))
+  const pushRegistered = $derived(!devices.data || devices.data.devices.length > 0)
 
   // The digest switch: optimistic, rolled back on refusal, and the server's
   // effective answer is what stays on screen — turning email off for every
@@ -114,18 +114,18 @@
 
   // The legacy route control, for an api with no registry.
   const setRoute = async (id: string, route: NotifyRoute) => {
-    error = null
+    matrixError = null
     pendingRoutes = { ...pendingRoutes, [id]: route }
     const r = await saveNotifySettings({ prefs: { [id]: route } })
     const next = { ...pendingRoutes }
     delete next[id]
     pendingRoutes = next
     if ('error' in r) {
-      error = r.error
+      matrixError = r.error
       return
     }
     await qc.invalidateQueries({ queryKey: ['notifications'] })
-    saved()
+    matrixSaved()
   }
 
   // THE MASTER SWITCH. Admin-only, and until this control existed it was
@@ -137,7 +137,7 @@
   // when something is already going wrong, and a confirmation dialog in front
   // of a kill switch is a delay measured in mails.
   const setDelivery = async (next: boolean) => {
-    error = null
+    deliveryError = null
     if (
       next &&
       !(await confirm({
@@ -157,16 +157,24 @@
       // Rolled back to the server's answer. A master switch that looks flipped
       // and is not is the worst possible version of this control.
       pendingDelivery = null
-      error = r.error
+      deliveryError = r.error
       return
     }
     await qc.invalidateQueries({ queryKey: ['notifications'] })
     pendingDelivery = null
-    saved()
+    autosave.flash()
   }
 
   const humanize = (id: string) => id.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
 </script>
+
+{#snippet refusal(message: string | null)}
+  {#if message}<p class="mt-2 font-sans text-[13px] leading-5 text-danger" role="alert">{message}</p>{/if}
+{/snippet}
+
+{#snippet notice(text: string)}
+  <StatusDot status="warn" class="mt-1.5 shrink-0" /><span>{text}</span>
+{/snippet}
 
 {#if isPending}
   <SettingsGroup><div class="px-5 py-4"><SkeletonRows rows={6} /></div></SettingsGroup>
@@ -182,36 +190,20 @@
     onRetry={() => void query.refetch()}
   />
 {:else}
-  <!-- A MEMBER is told only when workspace email is OFF, and first, because
-       that is the case where the page below would otherwise lie to them:
-       every Email box can be ticked and not one of them sends anything. -->
-  {#if !data.canSetDelivery && !emailOn}
-    <SettingsGroup>
-      <div data-email-switch="off">
-        <SettingsRow label="Email is off for this workspace" hint="Nothing below sends mail. Only an admin can turn it back on.">
-          {#snippet status()}<StatusDot status="warn" />Off{/snippet}
-        </SettingsRow>
-      </div>
-    </SettingsGroup>
-  {/if}
-
-  {#if classes || (legacy && Object.keys(legacy).length > 0)}
-  <SettingsSection title="What reaches you" description="Everything is kept in your inbox. Choose where else each kind goes.">
-    <SettingsGroup>
-      {#if classes}
-        <NotifyMatrix {classes} channels={data.channels} emailEnabled={emailOn} onSaved={saved} onError={failed} />
-      {:else if legacy}
-        {#each Object.keys(legacy) as id (id)}
-          <SettingsRow label={humanize(id)}>
-            <Segmented options={NOTIFY_ROUTES} value={legacy[id] ?? 'in_app'} onChange={(r) => void setRoute(id, r)} />
-          </SettingsRow>
-        {/each}
-      {/if}
-    </SettingsGroup>
-  </SettingsSection>
-  {/if}
-
   <SettingsSection title="Email">
+    <!-- Said once, where email starts: with the workspace switch off, every
+         Email choice below can be made and not one of them sends anything. -->
+    {#if !emailOn}
+      <p
+        class="mb-3 flex items-start gap-2 font-sans text-[13px] leading-5 text-muted"
+        data-matrix-email-off
+        data-email-switch={data.canSetDelivery ? undefined : 'off'}
+      >
+        {@render notice(
+          `Email is off for this workspace, so nothing is mailed. ${data.canSetDelivery ? 'Turn it on under Workspace email.' : 'Only an admin can turn it on.'}`,
+        )}
+      </p>
+    {/if}
     <SettingsGroup>
       {#if frequency}
         <div data-email-frequency={frequency}>
@@ -230,34 +222,44 @@
         </div>
       {/if}
       <!-- The digest is not a class: it is one mail that summarises the
-           queues, so it gets its own row below the matrix it does not belong to. -->
-      <SettingsRow label="Daily digest" hint="One email a day listing what is waiting on you. Skipped when nothing is.">
+           queues, so it sits with the email choices and not in the list. -->
+      <SettingsRow label="Daily digest" hint="One email a day with what is waiting on you.">
         <Toggle checked={digest === 'on'} onChange={(on) => void setDigest(on ? 'on' : 'off')} title="Daily digest" />
       </SettingsRow>
     </SettingsGroup>
-    <p class="mt-2 font-sans text-[13px] leading-5 text-muted" aria-live="polite">
-      {#if savedFlash.saved && !error}<span class="text-success">Saved</span>{/if}
-      {#if error}<span class="text-danger" role="alert">{error}</span>{/if}
-    </p>
+    {@render refusal(error)}
   </SettingsSection>
 
-  <!-- The workspace switch sits under the personal Email settings it
-       overrules, in a section of its own that says whose it is. -->
-  {#if data.canSetDelivery}
-    <SettingsSection title="Workspace email" description="Only admins see this. It applies to everyone in the workspace.">
+  {#if classes || (legacy && Object.keys(legacy).length > 0)}
+    <SettingsSection
+      title="What reaches you"
+      description="Everything is kept in your inbox. Choose where else each kind reaches you."
+      info={classes ? CHANNEL_INFO : undefined}
+    >
+      {#if classes && !pushRegistered}
+        <p class="mb-3 flex items-start gap-2 font-sans text-[13px] leading-5 text-muted" data-matrix-push-off>
+          {@render notice('No browser is registered for push yet, so Push reaches nothing.')}
+        </p>
+      {/if}
       <SettingsGroup>
-        <div data-email-switch={emailOn ? 'on' : 'off'}>
-          <SettingsRow
-            label="Send email to everyone"
-            hint="Notification and digest email for every person, following their own settings."
-            info="It overrules every personal setting on this page, for every person. Off stops all notification and digest email at once, including mail already queued."
-          >
-            {#snippet meta()}<Chip>Admin only</Chip>{/snippet}
-            {#snippet status()}<StatusDot status={emailOn ? 'ok' : 'warn'} />{emailOn ? 'On' : 'Off'}{/snippet}
-            <Toggle checked={emailOn} onChange={(on) => void setDelivery(on)} title="Send email to everyone in the workspace" />
-          </SettingsRow>
-        </div>
+        {#if classes}
+          <NotifyMatrix
+            {classes}
+            channels={data.channels}
+            emailEnabled={emailOn}
+            {pushRegistered}
+            onSaved={matrixSaved}
+            onError={(m) => (matrixError = m)}
+          />
+        {:else if legacy}
+          {#each Object.keys(legacy) as id (id)}
+            <SettingsRow label={humanize(id)}>
+              <Segmented options={NOTIFY_ROUTES} value={legacy[id] ?? 'in_app'} onChange={(r) => void setRoute(id, r)} />
+            </SettingsRow>
+          {/each}
+        {/if}
       </SettingsGroup>
+      {@render refusal(matrixError)}
     </SettingsSection>
   {/if}
 {/if}
@@ -272,16 +274,17 @@
     >
       <SettingsGroup>
         <div data-status-pause={dndNow.active ? dndNow.reason : 'off'}>
-          <SettingsRow label="Pause" hint={dndNow.active && dndNow.reason === 'paused' ? (dndNow.label ?? 'Paused') : 'Not paused'}>
-            {#if dndNow.active && dndNow.reason === 'paused'}
-              <Button size="sm" variant="ghost" onclick={() => void resume()}>Resume</Button>
-            {/if}
+          <SettingsRow label="Pause">
             <DropdownMenu items={[]}>
-              {#snippet trigger()}
-                <Button size="sm" variant="outline">Pause notifications</Button>
+              {#snippet trigger(open)}
+                <MenuValueButton
+                  {open}
+                  label={paused ? (dndNow.label ?? 'Paused') : 'Not paused'}
+                  aria-label={paused ? `Pause: ${dndNow.label ?? 'paused'}` : 'Pause notifications'}
+                />
               {/snippet}
               {#snippet content(close)}
-                <div class="w-64 font-sans">
+                <div class="w-[270px] max-w-full font-sans">
                   <PauseMenu
                     dnd={data.dnd}
                     onDone={() => {
@@ -294,14 +297,31 @@
             </DropdownMenu>
           </SettingsRow>
         </div>
-        <NotifySchedule dnd={data.dnd} onSaved={dndSaved} onError={dndFailed} />
+        <NotifySchedule dnd={data.dnd} onSaved={dndSaved} onError={(m) => (dndError = m)} />
       </SettingsGroup>
-      <p class="mt-2 font-sans text-[13px] leading-5 text-muted" aria-live="polite" data-dnd-status>
-        {#if dndFlash.saved && !dndError}<span class="text-success">Saved</span>{/if}
-        {#if dndError}<span class="text-danger" role="alert">{dndError}</span>{/if}
-      </p>
+      <div data-dnd-status>{@render refusal(dndError)}</div>
     </SettingsSection>
   </div>
 {/if}
 
-<NotifyStatusPanel />
+<NotifyStatusPanel>
+  <!-- The workspace switch overrules the personal Email choices at the top of
+       the page. It is an admin's and applies to everyone, so it sits apart
+       from them, after everything that is this person's own. -->
+  {#if data?.canSetDelivery && emailOn !== null}
+    <SettingsSection title="Workspace email" description="Only admins see this. It applies to everyone in the workspace.">
+      <SettingsGroup>
+        <div data-email-switch={emailOn ? 'on' : 'off'}>
+          <SettingsRow
+            label="Send email to everyone"
+            hint="Notification and digest email for every person, following their own settings."
+            info="It overrules every personal setting on this page, for every person. Off stops all notification and digest email at once, including mail already queued."
+          >
+            <Toggle checked={emailOn} onChange={(on) => void setDelivery(on)} title="Send email to everyone in the workspace" />
+          </SettingsRow>
+        </div>
+      </SettingsGroup>
+      {@render refusal(deliveryError)}
+    </SettingsSection>
+  {/if}
+</NotifyStatusPanel>

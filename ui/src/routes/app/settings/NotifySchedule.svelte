@@ -4,7 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { useNotifyPatch } from '@/lib/notify-center'
-  import { DEFAULT_SCHEDULE, dndView, safeZone, scheduleSummary, toggleDay, validSchedule, WEEKDAYS } from '@/lib/notify-dnd'
+  import { DEFAULT_SCHEDULE, dndView, safeZone, toggleDay, validSchedule, WEEKDAYS } from '@/lib/notify-dnd'
   import type { DndSchedule, DndWire } from '@/lib/notify-wire'
   import { cn } from '@/lib/cn'
   import { detectedZone } from '@/lib/timezone'
@@ -63,7 +63,7 @@
 
 <!-- Rows for the Do not disturb card. -->
 <div data-notify-schedule class="[&>*+*]:border-t [&>*+*]:border-line-subtle">
-  <SettingsRow label="Working hours" hint="Outside these hours, notifications arrive quietly in your inbox.">
+  <SettingsRow label="Working hours" hint="Outside these hours, notifications arrive quietly.">
     <Toggle checked={sched.enabled} onChange={(on) => void save({ ...sched, enabled: on })} title="Working hours" />
   </SettingsRow>
   {#if sched.enabled}
@@ -89,7 +89,7 @@
     </SettingsRow>
     <SettingsRow label="Hours">
       {#snippet hint()}
-        {scheduleSummary(sched)}, {zone}.
+        {zone} time{sched.start > sched.end ? ', ending the next day' : ''}.
         <span data-schedule-now>
           {#if draft}
             <!-- an edit in flight: the server has not evaluated it yet -->

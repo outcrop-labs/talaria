@@ -1,13 +1,14 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import DangerLink from '@/components/ui/DangerLink.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { lastDelivery, removeDevice, testDevice, testLine, thisBrowserId, useDevices, type TestOutcome } from '@/lib/notify-center'
@@ -19,6 +20,9 @@
   // push through the same path a notification takes; 5 per 10 minutes, O-20)
   // and Remove. The question this answers: "I got nothing on my laptop — is it
   // even registered, and what did the push service say?"
+  //
+  // Both actions are in the row's menu. Send test also shows on the row when
+  // the last push to that browser failed, since it is how a person rechecks it.
   const qc = useQueryClient()
   const query = useDevices()
   const devices = $derived(query.data?.devices ?? [])
@@ -74,17 +78,15 @@
       {@const last = lastDelivery(d)}
       {@const r = results[d.id]}
       {@const line = r && r !== 'busy' ? testLine(r) : null}
-      <div data-device={d.id} data-this-browser={d.id === mine ? 'true' : undefined}>
+      <div data-device={d.id} data-this-browser={d.id === mine ? 'true' : undefined} data-device-busy={r === 'busy' ? 'true' : undefined}>
         <SettingsRow label={d.label}>
           {#snippet meta()}
             {#if d.id === mine}<Chip tone="accent">This browser</Chip>{/if}
           {/snippet}
           {#snippet hint()}
-            Registered {relativeTime(d.createdAt)} · seen {relativeTime(d.lastSeenAt)}
+            Seen {relativeTime(d.lastSeenAt)}
             {#if last.ok !== null}
-              · <span class={last.ok ? 'text-success' : 'text-danger'}>{last.text}</span> {relativeTime(d.lastAttemptAt)}
-            {:else}
-              · {last.text}
+              · last push {last.ok ? '' : 'failed '}{relativeTime(d.lastAttemptAt)}{last.ok ? '' : ` (HTTP ${d.lastStatus})`}
             {/if}
             {#if d.failures > 0}· {d.failures} failed in a row{/if}
             {#if d.lastError}
@@ -97,10 +99,26 @@
               >{line.text}</span>
             {/if}
           {/snippet}
-          <Button size="sm" variant="outline" disabled={r === 'busy'} onclick={() => void test(d.id)} data-device-test>
-            {r === 'busy' ? 'Sending' : 'Send test'}
-          </Button>
-          <DangerLink onClick={() => void remove(d.id, d.label)}>Remove browser</DangerLink>
+          {#snippet status()}
+            {#if last.ok === null}
+              <StatusDot status="idle" />No pushes yet
+            {:else}
+              <StatusDot status={last.ok ? 'ok' : 'danger'} />{last.ok ? 'Reachable' : 'Unreachable'}
+            {/if}
+          {/snippet}
+          {#if last.ok === false}
+            <Button size="sm" variant="outline" disabled={r === 'busy'} onclick={() => void test(d.id)} data-device-test>
+              {r === 'busy' ? 'Sending' : 'Send test'}
+            </Button>
+          {/if}
+          <SettingsRowMenu
+            label={`Actions for ${d.label}`}
+            items={[
+              { label: 'Send test', disabled: r === 'busy', onSelect: () => void test(d.id) },
+              'sep',
+              { label: 'Remove browser', danger: true, onSelect: () => void remove(d.id, d.label) },
+            ]}
+          />
         </SettingsRow>
       </div>
     {/each}

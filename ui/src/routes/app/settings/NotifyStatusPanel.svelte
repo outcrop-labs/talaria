@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import Button from '@/components/ui/Button.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
@@ -46,6 +47,13 @@
   //
   // Each section gates on what the api serves (`features`) and on where it
   // runs (a browser or the shell), and says so rather than showing a dead row.
+  let {
+    children,
+  }: {
+    /** Sections that follow the person's own, ahead of Troubleshooting. */
+    children?: Snippet
+  } = $props()
+
   const query = useNotifySettings()
   const features = $derived(featureSet(query.data))
   const shell = inDesktopShell()
@@ -173,6 +181,8 @@
       </SettingsSection>
     </div>
   {/if}
+
+  {@render children?.()}
 
   <!-- Kept mounted while closed: the readings stay live, so opening it shows
        the state as it is now rather than as it was when the page loaded. -->

@@ -81,7 +81,8 @@
   }
 
   // The dock's account menu and the bell show this in the house voice; the
-  // Notifications settings page shows it in the area's.
+  // Notifications settings page shows it in the area's, where a menu's rows
+  // carry no icon.
   const sans = useUiVoice() === 'sans'
   const row = sans
     ? 'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left font-sans text-[13px] leading-5 text-fg transition-colors duration-[120ms] hover:bg-hover disabled:opacity-50'
@@ -92,18 +93,18 @@
   {#if view.active && view.reason === 'paused'}
     <div class="px-3 pb-1 pt-1.5 font-sans text-xs text-muted" data-pause-state>{view.label}</div>
     <button type="button" class={row} disabled={busy} onclick={() => void save(null)} data-pause-resume>
-      <BellRing size={15} class="shrink-0 text-accent" />
+      {#if !sans}<BellRing size={15} class="shrink-0 text-accent" />{/if}
       <span>Resume notifications</span>
     </button>
   {/if}
   {#each PAUSE_PRESETS as p (p.id)}
     <button type="button" class={row} disabled={busy} onclick={() => pick(p.id)} data-pause-preset={p.id}>
-      <BellOff size={15} class="shrink-0 text-muted" />
+      {#if !sans}<BellOff size={15} class="shrink-0 text-muted" />{/if}
       <span>{p.id === 'tomorrow' ? tomorrowLabel : p.label}</span>
     </button>
   {/each}
   <button type="button" class={cn(row, customOpen && 'bg-raised')} disabled={busy} onclick={openCustom} aria-expanded={customOpen} data-pause-custom>
-    <CalendarClock size={15} class="shrink-0 text-muted" />
+    {#if !sans}<CalendarClock size={15} class="shrink-0 text-muted" />{/if}
     <span>Until a time</span>
   </button>
   {#if customOpen}

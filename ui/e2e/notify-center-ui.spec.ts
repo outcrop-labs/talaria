@@ -242,7 +242,7 @@ test.describe('the bell', () => {
 })
 
 test.describe('narrow windows', () => {
-  test('the bell stays on screen and the matrix keeps its labels readable at 390 px', async ({ browser }) => {
+  test('the bell stays on screen and each kind keeps its label and its control readable at 390 px', async ({ browser }) => {
     const other = await person('other')
     const me = await person('narrow')
     await seed(me, bellRows(other))
@@ -258,11 +258,15 @@ test.describe('narrow windows', () => {
     await page.keyboard.press('Escape')
 
     await page.goto('/settings/notifications')
-    const label = page.locator('[data-matrix-row="dm"] > div').first()
+    const label = page.locator('[data-matrix-row="dm"] [data-settings-row] > div').first()
     await expect(label).toBeVisible()
-    // The label spans the row; the four channels sit under it with their names.
+    // The label spans the row; the control sits under it, on screen, and names the channels in words.
     expect((await label.boundingBox())!.width).toBeGreaterThan(240)
-    await expect(page.locator('[data-matrix-row="dm"] [data-matrix-cell="push"]')).toContainText('Push')
+    const control = page.locator('[data-matrix-row="dm"] [data-matrix-menu]')
+    await expect(control).toContainText(/push/i)
+    const box = (await control.boundingBox())!
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.width).toBeLessThanOrEqual(390)
     await ctx.close()
   })
 })
@@ -292,10 +296,13 @@ test.describe('the matrix', () => {
         ...known.flatMap((cat) => classes.filter((c) => c.category === cat).map((c) => c.id)),
         ...classes.filter((c) => !known.includes(c.category)).map((c) => c.id),
       ])
-      // In-app cannot be unchecked.
-      const inApp = page.locator('[data-matrix-row="dm"] [data-matrix-cell="inApp"] input')
-      await expect(inApp).toBeChecked()
-      await expect(inApp).toBeDisabled()
+      // In-app cannot be turned off: the page says the inbox keeps everything,
+      // and a kind's menu offers only the three channels beyond it.
+      await expect(page.getByText('Everything is kept in your inbox')).toBeVisible()
+      await page.locator('[data-matrix-row="dm"] [data-matrix-menu]').click()
+      await expect(page.getByRole('menuitem')).toHaveText([/Desktop/, /Push/, /Email/])
+      await page.keyboard.press('Escape')
+      await expect(page.getByRole('menu')).toHaveCount(0)
       await ctx.close()
     }
     expect(adminOnly).toBeGreaterThan(0)
@@ -308,15 +315,19 @@ test.describe('the matrix', () => {
     const ctx = await contextFor(browser, p)
     const page = await ctx.newPage()
     await page.goto('/settings/notifications')
-    const push = page.locator('[data-matrix-row="dm"] [data-matrix-cell="push"] input')
-    await expect(push).toBeChecked()
+    // The row carries its saved channels; the menu button says them in words.
+    const dm = page.locator('[data-matrix-row="dm"]')
+    await expect(dm).toHaveAttribute('data-push', 'true')
+    await expect(dm.locator('[data-matrix-menu]')).toContainText(/push/i)
     const saved = page.waitForResponse((r) => r.url().endsWith('/api/notifications') && r.request().method() === 'PATCH')
-    await push.uncheck()
+    await dm.locator('[data-matrix-menu]').click()
+    await page.getByRole('menuitem', { name: 'Push' }).click()
     const res = await saved
     expect(res.status()).toBe(200)
     expect(JSON.parse(res.request().postData() ?? '{}')).toEqual({ channels: { dm: { push: false } } })
     await page.reload()
-    await expect(page.locator('[data-matrix-row="dm"] [data-matrix-cell="push"] input')).not.toBeChecked()
+    await expect(dm).toHaveAttribute('data-push', 'false')
+    await expect(dm.locator('[data-matrix-menu]')).not.toContainText(/push/i)
     const payload = await getPayload(page)
     const dm = payload.channels!.dm!
     expect(dm.push).toBe(false)
@@ -326,24 +337,33 @@ test.describe('the matrix', () => {
     expect(payload.prefs.dm).toBe(legacy)
     const [stored] = await sql<Array<{ push: string | null }>>`select notify_prefs->'channels'->'dm'->>'push' as push from users where id = ${p.id}::uuid`
     expect(stored?.push).toBe('false')
-    // Reset to default puts it back.
-    await page.locator('[data-matrix-row="dm"] button[title^="Reset"]').click()
-    await expect(page.locator('[data-matrix-row="dm"] [data-matrix-cell="push"] input')).toBeChecked()
+    // Reset to default, in the same menu, puts it back.
+    await dm.locator('[data-matrix-menu]').click()
+    await page.getByRole('menuitem', { name: 'Reset to default' }).click()
+    await expect(dm).toHaveAttribute('data-push', 'true')
+    await expect(dm).toHaveAttribute('data-at-default', 'true')
     await ctx.close()
   })
 
-  test('instance email off disables the Email column with the explanation; the frequency round-trips', async ({ browser }) => {
+  test('instance email off disables every Email choice with the explanation; the frequency round-trips', async ({ browser }) => {
     const p = await person('matrix-email')
     const ctx = await contextFor(browser, p)
     const page = await ctx.newPage()
     await page.goto('/settings/notifications')
     const payload = await getPayload(page)
     if (payload.delivery.emailEnabled) test.skip(true, 'instance email is on in this stack; the off state is the one under test')
-    await expect(page.locator('[data-matrix-email-off]')).toContainText('Email delivery is off for this instance')
-    const cells = page.locator('[data-matrix-cell="email"] input')
-    expect(await cells.count()).toBe(payload.classes!.length)
-    for (const c of await cells.all()) await expect(c).toBeDisabled()
-    await expect(page.locator('[data-matrix-cell="push"] input').first()).toBeEnabled()
+    await expect(page.locator('[data-matrix-email-off]')).toContainText('Email is off for this workspace')
+    const rows = page.locator('[data-matrix-row]')
+    expect(await rows.count()).toBe(payload.classes!.length)
+    for (const row of await rows.all()) {
+      await row.locator('[data-matrix-menu]').click()
+      const email = page.getByRole('menuitem', { name: 'Email' })
+      await expect(email).toBeDisabled()
+      await expect(email).toContainText('Off for this workspace')
+      await expect(page.getByRole('menuitem', { name: 'Push' })).toBeEnabled()
+      await page.keyboard.press('Escape')
+      await expect(page.getByRole('menu')).toHaveCount(0)
+    }
 
     expect(payload.emailFrequency).toBe('1h')
     const saved = page.waitForResponse((r) => r.url().endsWith('/api/notifications') && r.request().method() === 'PATCH')
@@ -424,8 +444,8 @@ test.describe('pause and working hours', () => {
     const box = page.locator('[data-notify-schedule]')
     await box.getByRole('switch').first().click()
     await expect(box.locator('[data-schedule-days]')).toBeVisible()
-    // The save is confirmed in the Do Not Disturb panel itself.
-    await expect(page.locator('[data-notify-dnd] [data-dnd-status]')).toContainText('Saved')
+    // The save is confirmed in the page header, where the page says it autosaves.
+    await expect(page.getByRole('status').filter({ hasText: 'Saved' })).toBeVisible()
     // Every day, and hours that exclude now (the person has no zone: UTC).
     for (const d of ['Sat', 'Sun']) await box.locator('[data-schedule-days]').getByRole('button', { name: d }).click()
     const hh = (n: number) => String(((new Date().getUTCHours() + n) % 24 + 24) % 24).padStart(2, '0')
@@ -518,9 +538,14 @@ test.describe('the status panel', () => {
     await expect(page.locator('[data-check="server"]')).toBeVisible()
     await expect(page.locator('[data-check="server"]')).toHaveAttribute('data-state', 'yes')
 
+    // Send test and Remove browser are in each row's menu.
     const thisRow = page.locator(`[data-device="${mine!.id}"]`)
+    const sendTest = async () => {
+      await thisRow.getByRole('button', { name: /^Actions for / }).click()
+      await page.getByRole('menuitem', { name: 'Send test' }).click()
+    }
     const answered = page.waitForResponse((r) => r.url().endsWith('/api/notifications/test'))
-    await thisRow.locator('[data-device-test]').click()
+    await sendTest()
     const res = await answered
     const result = thisRow.locator('[data-device-result]')
     if (res.status() === 501) {
@@ -536,16 +561,17 @@ test.describe('the status panel', () => {
     }
     for (let i = 2; i <= 6; i++) {
       const r = page.waitForResponse((x) => x.url().endsWith('/api/notifications/test'))
-      await thisRow.locator('[data-device-test]').click()
+      await sendTest()
       const got = await r
       if (i < 6) expect(got.status()).not.toBe(429)
       else expect(got.status()).toBe(429)
-      await expect(thisRow.locator('[data-device-test]')).toBeEnabled()
+      await expect(thisRow).not.toHaveAttribute('data-device-busy', 'true')
     }
     await expect(result).toHaveAttribute('data-device-result', 'limited')
     await expect(result).toContainText(/Try again in \d+ (min|s)/)
 
-    await page.locator('[data-notify-devices] [data-device]:not([data-this-browser])').getByRole('button', { name: 'Remove browser', exact: true }).click()
+    await page.locator('[data-notify-devices] [data-device]:not([data-this-browser])').getByRole('button', { name: /^Actions for / }).click()
+    await page.getByRole('menuitem', { name: 'Remove browser', exact: true }).click()
     await page.locator('[role="dialog"]').getByRole('button', { name: 'Remove' }).click()
     await expect(rows).toHaveCount(1)
     expect((await sql`select count(*)::int as n from push_subscriptions where user_id = ${p.id}::uuid`)[0]?.n).toBe(1)
