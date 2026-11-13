@@ -23,8 +23,7 @@
   }
 </script>
 
-<div class="flex flex-wrap items-center gap-1.5 pl-10">
-  <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">can</span>
+<div class="flex flex-wrap items-center gap-1.5">
   {#each perms.catalog as p (p.id)}
     {@const effective = overrides[p.id] ?? orgDefault(p)}
     <AdminPermChip
