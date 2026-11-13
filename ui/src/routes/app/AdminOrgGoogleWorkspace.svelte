@@ -144,13 +144,10 @@
   <div>
     <SettingsRow
       label="Agent email addresses"
-      hint={`Each agent sends from its own address${data.orgEmail ? `, based on ${data.orgEmail}` : ''}.`}
-      info="Change one agent's address on that agent's summary tab."
-    >
-      <Button variant="outline" size="sm" aria-expanded={showAddresses} onclick={() => (showAddresses = !showAddresses)}>
-        {showAddresses ? 'Hide' : `Show ${data.agents.length}`}
-      </Button>
-    </SettingsRow>
+      hint={`${data.agents.length} ${data.agents.length === 1 ? 'address' : 'addresses'}${data.orgEmail ? `, based on ${data.orgEmail}` : ''}.`}
+      onclick={() => (showAddresses = !showAddresses)}
+      expanded={showAddresses}
+    />
     {#if showAddresses}
       <div transition:slide={{ duration: 150 }}>
         <dl class="grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 border-t border-line-subtle px-5 py-4 font-sans text-[13px] leading-5">
@@ -162,6 +159,7 @@
             </dd>
           {/each}
         </dl>
+        <p class="px-5 pb-4 font-sans text-[13px] leading-5 text-muted">Change one agent's address on that agent's summary tab.</p>
       </div>
     {/if}
   </div>

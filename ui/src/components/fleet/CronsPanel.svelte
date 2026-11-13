@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { CalendarClock, Plus } from '@lucide/svelte'
+  import { CalendarClock } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -8,7 +8,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import { getList } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { type CronJob, type CronMutationState, useCronMutations } from './agent-crons'
+  import { type CronFormHandle, type CronJob, type CronMutationState, useCronMutations } from './agent-crons'
   import CronForm from './CronForm.svelte'
   import CronListSkeleton from './CronListSkeleton.svelte'
   import CronRow from './CronRow.svelte'
@@ -30,6 +30,7 @@
   }))
 
   let composing = $state(false)
+  let form = $state<CronFormHandle | null>(null)
 
   // What this panel renders about a mutation: the error inline under the rows,
   // and `busy` on every control. The hook drives both.
@@ -55,7 +56,6 @@
     </p>
     {#if canManage}
       <Button variant="outline" size="sm" class="shrink-0" onclick={() => (composing = true)}>
-        <Plus size={16} />
         New schedule
       </Button>
     {/if}
@@ -80,9 +80,18 @@
   {#if ui.err && !composing}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{ui.err}</p>{/if}
 </div>
 
+{#snippet composeFooter()}
+  <div class="flex justify-end gap-2">
+    <Button variant="ghost" size="sm" onclick={() => (composing = false)}>Cancel</Button>
+    <Button size="sm" disabled={!form?.canSubmit()} onclick={() => form?.submit()}>{ui.busy ? 'Creating' : 'Create schedule'}</Button>
+  </div>
+{/snippet}
+
 {#if composing}
-  <Modal open onClose={() => (composing = false)} title="New schedule" width="max-w-xl">
+  <Modal open onClose={() => (composing = false)} title="New schedule" width="max-w-xl" footer={composeFooter}>
     <CronForm
+      bind:this={form}
+      withActions={false}
       onCreate={async (input) => {
         const created = await create(agentId, input)
         if (created) composing = false

@@ -157,7 +157,7 @@
                 <Input
                   id="wizard-handle"
                   size="sm"
-                  class="font-[var(--font-mono)]"
+                  class="font-mono"
                   bind:value={handle}
                   oninput={() => {
                     handleTouched = true

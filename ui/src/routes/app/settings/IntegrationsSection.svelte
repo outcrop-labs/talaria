@@ -61,7 +61,7 @@
 
   const flashText: Record<string, string> = {
     connected: 'Google account connected.',
-    denied: 'Connection cancelled.',
+    denied: 'Connection canceled.',
     bad_state: 'Connection expired. Please try again.',
     exchange_failed: 'Google rejected the connection. Please try again.',
     disabled: 'Google integration is not configured.',

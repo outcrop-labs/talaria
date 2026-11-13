@@ -103,6 +103,16 @@ instead of styling its own panels:
   thousands: `formatUsd(n, { group: true })`, or `formatCost`.
 - Diagnostics go behind one closed `Disclosure` with `variant="card"`. Add
   `keepMounted` when the readings must stay live while it is closed.
+- A row that opens what follows it (a history, a list of addresses, a group
+  of an inventory) takes `onclick` and `expanded`. The row draws the chevron.
+  No Show and Hide buttons.
+- A state is a `StatusDot` and a word, never a chip, and the same state has
+  the same word on every page: Connected, Not connected, Needs sign-in,
+  Reachable, Unreachable, Running, Stopped, Idle, Not set.
+- A dialog's footer holds its buttons: Cancel then the one primary on the
+  right, a `DangerLink` on the left. A dialog that only shows or saves as it
+  goes ends in an outline Done. A page's primary is a label with no icon.
+- A value that is an identifier renders mono with `font-mono` on the `Input`.
 
 Settings is its own mode of the dock. On every route where the sidebar shows,
 the tab strip and the gear give way to one "Back to app" link, which returns

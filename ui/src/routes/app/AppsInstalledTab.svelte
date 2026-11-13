@@ -41,7 +41,7 @@
   /** A trigger's hover: when it fires next, and its newest runs. */
   function triggerTitle(t: AppTriggerInfo): string {
     const head = t.cron ? `Runs on the schedule ${t.cron} (UTC)${t.nextAt ? `; next ${new Date(t.nextAt).toLocaleString()}` : ''}` : `Runs on every ${t.event}`
-    const runs = t.runs.map((r) => `${new Date(r.queuedAt).toLocaleString()} — ${r.state}${r.error ? `: ${r.error}` : r.detail ? `: ${r.detail}` : ''}`)
+    const runs = t.runs.map((r) => `${new Date(r.queuedAt).toLocaleString()}: ${r.state}${r.error ? `: ${r.error}` : r.detail ? `: ${r.detail}` : ''}`)
     return [head, ...runs].join('\n')
   }
   let busy = $state<string | null>(null)

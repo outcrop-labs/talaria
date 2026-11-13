@@ -43,7 +43,7 @@
           onclick={() => a.href && void navigateHref(a.href)}
           class="flex h-11 w-full items-center gap-6 px-5 text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
         >
-          <span class="min-w-0 flex-1 truncate text-muted">
+          <span class="min-w-0 flex-1 truncate text-muted" title={a.detail}>
             <span class="font-medium text-fg">{actorLabel(a.actor)}</span>
             {a.detail}
           </span>

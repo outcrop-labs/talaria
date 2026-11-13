@@ -141,7 +141,7 @@
                       {/if}
                     </td>
                     <td class={tableCell}>
-                      <Toggle checked={s.permitted} onChange={(on) => toggleService(s.id, on)} title={`Allow ${s.name}`} />
+                      <Toggle class="justify-end" checked={s.permitted} onChange={(on) => toggleService(s.id, on)} title={`Allow ${s.name}`} />
                     </td>
                   </tr>
                 {/each}

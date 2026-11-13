@@ -23,6 +23,7 @@
     Paperclip,
   } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { focusGold } from '@/components/chat/chat-chrome'
   import Modal from './Modal.svelte'
   import Input from './Input.svelte'
@@ -118,6 +119,12 @@
     // AttachButton.svelte's hidden-input pattern.
     if (attachRef) attachRef.value = ''
   }
+
+  // The link and image dialogs follow the voice of the page the editor sits on.
+  const sans = useUiVoice() === 'sans'
+  const fieldLabel = sans
+    ? 'mb-1.5 block font-sans text-[13px] font-medium leading-5 text-fg'
+    : 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim' // voice-ok: the mono branch, as it was
 </script>
 
 {#snippet btn(icon: IconType, title: string, active: boolean, action: () => void)}
@@ -167,14 +174,14 @@
           applyLink()
         }}
       >
-        <label for="et-link-url" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">URL</label>
+        <label for="et-link-url" class={fieldLabel}>URL</label>
         <!-- svelte-ignore a11y_autofocus -->
         <Input id="et-link-url" autofocus bind:value={linkUrl} placeholder="https://example.com" class="w-full" />
-        <p class="mt-2 text-xs text-muted">Leave empty and apply to remove the link.</p>
+        <p class={sans ? 'mt-1.5 font-sans text-[13px] leading-5 text-muted' : 'mt-2 text-xs text-muted'}>Leave empty and apply to remove the link.</p>
       </form>
       {#snippet footer()}
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" onclick={() => (linkOpen = false)}>Cancel</Button>
+          <Button variant={sans ? 'ghost' : 'outline'} size="sm" onclick={() => (linkOpen = false)}>Cancel</Button>
           <Button size="sm" onclick={applyLink}>{linkUrl.trim() ? 'Apply' : 'Remove'}</Button>
         </div>
       {/snippet}
@@ -186,13 +193,13 @@
           applyImage()
         }}
       >
-        <label for="et-img-url" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Image URL</label>
+        <label for="et-img-url" class={fieldLabel}>Image URL</label>
         <!-- svelte-ignore a11y_autofocus -->
         <Input id="et-img-url" autofocus bind:value={imgUrl} placeholder="https:///image.png" class="w-full" />
       </form>
       {#snippet footer()}
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" onclick={() => (imgOpen = false)}>Cancel</Button>
+          <Button variant={sans ? 'ghost' : 'outline'} size="sm" onclick={() => (imgOpen = false)}>Cancel</Button>
           <Button size="sm" onclick={applyImage} disabled={!imgUrl.trim()}>Insert</Button>
         </div>
       {/snippet}

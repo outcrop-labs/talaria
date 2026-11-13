@@ -164,7 +164,7 @@
     const ok = await confirm({
       title: 'Finish the handover?',
       message:
-        'The old container stops and the handover lands. Traffic is already arriving through the edge — this page loaded through it.',
+        'The old version stops and the handover is complete. Traffic already arrives through the new front door, which is how this page loaded.',
       confirmLabel: 'Finish',
     })
     if (!ok) return

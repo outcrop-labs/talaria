@@ -210,10 +210,10 @@
   >
     <SettingsGroup>
       <SettingsRow label="Repository" hint="The https address of the repository." as="label">
-        <Input size="sm" class="w-[360px] font-[var(--font-mono)]" bind:value={gitUrl} placeholder="https://github.com/you/your-app" />
+        <Input size="sm" class="w-[360px] font-mono" bind:value={gitUrl} placeholder="https://github.com/you/your-app" />
       </SettingsRow>
       <SettingsRow label="Branch or tag" hint="Leave empty to use the default branch." as="label">
-        <Input size="sm" class="w-[360px] font-[var(--font-mono)]" bind:value={gitRef} placeholder="main" />
+        <Input size="sm" class="w-[360px] font-mono" bind:value={gitRef} placeholder="main" />
       </SettingsRow>
       <SettingsRow label="Access secret" hint="Only for a private repository this instance has no login for." as="label">
         <Input size="sm" class="w-[360px]" bind:value={gitSecret} placeholder="Name of a workspace secret" />

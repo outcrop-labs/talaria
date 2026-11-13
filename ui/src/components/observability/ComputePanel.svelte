@@ -84,7 +84,7 @@
               {#snippet status()}
                 <StatusDot status={b.health.ok ? 'ok' : 'danger'} />
                 {#if b.health.ok}
-                  Up{b.health.latencyMs != null ? ` · ${b.health.latencyMs} ms` : ''}
+                  Reachable{b.health.latencyMs != null ? ` · ${b.health.latencyMs} ms` : ''}
                 {:else}
                   Unreachable
                 {/if}

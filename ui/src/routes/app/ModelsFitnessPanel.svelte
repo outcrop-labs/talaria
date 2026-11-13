@@ -232,7 +232,7 @@
     <SettingsSection
       title="Model fitness"
       description="Which models are good at which jobs, measured by test runs."
-      info={`One run fills every view here. The matrix says whether a model holds a job, and cost says what holding it would cost you on the work your agents actually do. Grey means nothing has measured it, which is not a pass. This install has ${data.registry.harnesses} harnesses, ${data.registry.fixtures} fixtures and ${data.registry.provocations} safety provocations.`}
+      info={`One run fills every view here. The matrix says whether a model holds a job, and cost says what holding it would cost you on the work your agents actually do. Gray means nothing has measured it, which is not a pass. This install has ${data.registry.harnesses} harnesses, ${data.registry.fixtures} fixtures and ${data.registry.provocations} safety provocations.`}
     >
       {#snippet action()}
         <span class="font-sans text-[13px] leading-5 text-muted">

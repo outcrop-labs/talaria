@@ -114,7 +114,7 @@
         title: 'Remove this password account?',
         // The person stays — say so, or the button reads as "delete user".
         message: own
-          ? 'Password sign-in for YOUR account stops working immediately. You stay signed in, and the person row stays — but unless you sign in with Google, there will be no way back in as you.'
+          ? 'Password sign-in for your own account stops working immediately. You stay signed in and your person row stays, but unless you sign in with Google there is no way back in as you.'
           : `${row.email} keeps their account and any Google sign-in, but can no longer sign in with email + password.`,
         confirmLabel: 'Remove account',
         danger: true,

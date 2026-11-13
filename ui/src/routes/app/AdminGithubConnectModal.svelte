@@ -83,14 +83,17 @@
 
 <Modal open={open && !guideOpen} {onClose} title="Connect {host.name}" width="max-w-lg">
   <div class="space-y-5">
-    <Segmented
-      options={[
-        { id: 'app', label: 'GitHub App' },
-        { id: 'pat', label: 'Access token' },
-      ] as const}
-      value={effMode === 'pat' ? 'pat' : 'app'}
-      onChange={(m) => (mode = m)}
-    />
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <Segmented
+        options={[
+          { id: 'app', label: 'GitHub App' },
+          { id: 'pat', label: 'Access token' },
+        ] as const}
+        value={effMode === 'pat' ? 'pat' : 'app'}
+        onChange={(m) => (mode = m)}
+      />
+      <Button size="sm" variant="link" class="text-[13px]" onclick={() => (guideOpen = true)}>Setup guide</Button>
+    </div>
 
     <!-- Method switch = a tab pane: fields rise in and the rows below glide as
          the region's height changes. Keying is safe — the drafts live above. -->
@@ -158,7 +161,7 @@
     <div class="flex items-center gap-2">
       {#if gh.mode}<DangerLink onClick={() => void disconnect()}>Disconnect {host.name}</DangerLink>{/if}
       <span class="flex-1"></span>
-      <Button size="sm" variant="ghost" onclick={() => (guideOpen = true)}>Setup guide</Button>
+      <Button size="sm" variant="ghost" onclick={onClose}>Cancel</Button>
       {#if effMode !== 'pat'}
         <Button size="sm" disabled={busy || (!appId.trim() && !privateKey.trim())} onclick={() => void saveApp()}>Save</Button>
       {:else}

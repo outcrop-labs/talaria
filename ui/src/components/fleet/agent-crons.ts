@@ -186,6 +186,13 @@ export function jobDot(j: CronJob): DotStatus {
 // arrives as options: the panel's own invalidation, its in-flight flag, and
 // one of the two error channels below.
 
+/** What a dialog's footer drives on `<CronForm>`, grabbed with `bind:this`. */
+export interface CronFormHandle {
+  submit: () => void
+  /** The form is complete and nothing is in flight. */
+  canSubmit: () => boolean
+}
+
 export type CronAction = 'pause' | 'resume' | 'run' | 'remove'
 /** A mutation the hook can be asked for — the fan-out names what failed. */
 export type CronVerb = CronAction | 'create' | 'edit'

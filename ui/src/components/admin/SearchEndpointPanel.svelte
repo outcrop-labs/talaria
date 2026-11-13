@@ -91,7 +91,7 @@
               {#if note}
                 {note.text}
               {:else if s.probedFrom}
-                Checked inside {s.probedFrom}{#if s.agentUrl}, dialling <span class="font-mono text-xs">{s.agentUrl}</span>{/if}.
+                Checked inside {s.probedFrom}{#if s.agentUrl}, dialing <span class="font-mono text-xs">{s.agentUrl}</span>{/if}.
               {:else}
                 The same check, run inside a running agent.
               {/if}

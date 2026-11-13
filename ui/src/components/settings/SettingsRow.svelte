@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { ChevronRight } from '@lucide/svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import { cn } from '@/lib/cn'
 
@@ -20,6 +21,7 @@
     as = 'div',
     href,
     onclick,
+    expanded,
     disabled = false,
     class: className,
     children,
@@ -49,6 +51,9 @@
     href?: string
     /** The whole row is a button. Put no other control in such a row. */
     onclick?: () => void
+    /** With `onclick`: the row opens and closes what follows it. It draws the
+     *  chevron and says which way it is. */
+    expanded?: boolean
     /** With `onclick`: the row is inert and does not light on hover. */
     disabled?: boolean
     class?: string
@@ -63,6 +68,7 @@
   {onclick}
   type={onclick ? 'button' : undefined}
   disabled={onclick ? disabled : undefined}
+  aria-expanded={onclick ? expanded : undefined}
   data-settings-row={stacked ? 'stacked' : apart ? 'apart' : ''}
   class={cn(
     'flex min-h-[60px] px-5 py-4',
@@ -96,13 +102,14 @@
       {/if}
     </div>
   </div>
-  {#if children || status}
+  {#if children || status || expanded !== undefined}
     <!-- empty:hidden: a control only some viewers get must not hold the row's gap open for the rest. -->
     <div data-row-controls class={cn('flex max-w-full items-center gap-3 empty:hidden', stacked ? 'w-full' : 'shrink-0 justify-end')}>
       {#if status}
         <span class="mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">{@render status()}</span>
       {/if}
-      {@render children?.()}
+      <!-- No space before the chevron's block: a text node there would keep an empty control slot from collapsing. -->
+      {@render children?.()}{#if expanded !== undefined}<ChevronRight size={16} aria-hidden="true" class={cn('text-muted transition-transform duration-150', expanded && 'rotate-90')} />{/if}
     </div>
   {/if}
 </svelte:element>

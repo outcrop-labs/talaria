@@ -192,7 +192,7 @@
               <th class={cn(th, 'text-right')} title="What the provider charges per million tokens, in and out. Sticker price; it is not comparable across models on its own, which is what the next column is for.">Per 1M tokens</th>
               <th class={cn(th, 'text-right')} title="Your measured workload: the runs your agents actually did, priced on this model.">Your day</th>
               <th class={cn(th, 'text-right')} title="Cost divided by the runs this model is Ready for. The price-to-performance number: a cheap model that can only carry a tenth of your day is not cheap.">Per ready run</th>
-              <th class="py-2.5 pl-3 pr-5 font-medium" title="Share of your daily runs by verdict. Grey is never-measured, which is not a pass.">Coverage of your day</th>
+              <th class="py-2.5 pl-3 pr-5 font-medium" title="Share of your daily runs by verdict. Gray is never-measured, which is not a pass.">Coverage of your day</th>
             </tr>
           </thead>
           <tbody>

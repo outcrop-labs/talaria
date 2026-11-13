@@ -133,7 +133,7 @@
     try {
       const next = mutate(await freshEntries(target))
       if (next === null) {
-        failure = new Error('That entry is no longer in the file — the agent changed it. Read it again and redo the edit.')
+        failure = new Error('That entry is no longer in the file because the agent changed it. Read it again and redo the edit.')
         return false
       }
       await saveMemory(id, joinEntries(next, trailingNewline), target)

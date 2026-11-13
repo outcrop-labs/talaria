@@ -95,7 +95,7 @@
   </div>
   {#snippet footer()}
     <div class="flex justify-end">
-      <Button size="sm" onclick={onClose}>Done</Button>
+      <Button size="sm" variant="outline" onclick={onClose}>Done</Button>
     </div>
   {/snippet}
 </Modal>

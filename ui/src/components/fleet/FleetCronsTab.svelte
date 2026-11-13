@@ -12,7 +12,8 @@
   import { errorMessage, getList, postJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { listStagger, slide } from '@/lib/motion'
-  import { type CronJob, useCronMutations } from './agent-crons'
+  import Button from '@/components/ui/Button.svelte'
+  import { type CronFormHandle, type CronJob, useCronMutations } from './agent-crons'
   import CronForm from './CronForm.svelte'
   import CronListSkeleton from './CronListSkeleton.svelte'
   import CronRow from './CronRow.svelte'
@@ -41,6 +42,7 @@
   const agents = $derived(query.data ?? [])
   let selected = $state<Set<string> | null>(null) // null = all
   let busy = $state(false)
+  let form = $state<CronFormHandle | null>(null)
   let summary = $state<string | null>(null)
   const chosen = $derived(selected ?? new Set(agents.map((a) => a.id)))
 
@@ -126,7 +128,7 @@
     <!-- While the roster is unknown — still loading OR failed — `chosen`
          would be an empty set and a schedule created now would target NOBODY.
          `isLoading` alone went false on a failure and re-armed the button. -->
-    <CronForm onCreate={create} {busy} disabled={query.data === undefined}>
+    <CronForm bind:this={form} withActions={false} onCreate={create} {busy} disabled={query.data === undefined}>
       <SettingsField
         label="Agents"
         hint="Fixed times are staggered two minutes per agent."
@@ -146,5 +148,11 @@
       </SettingsField>
     </CronForm>
     {#if summary}<p transition:slide={{ duration: 150 }} class="mt-3 font-sans text-[13px] leading-5 text-muted">{summary}</p>{/if}
+    {#snippet footer()}
+      <div class="flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onclick={() => (composing = false)}>Cancel</Button>
+        <Button size="sm" disabled={!form?.canSubmit()} onclick={() => form?.submit()}>{busy ? 'Creating' : 'Create schedule'}</Button>
+      </div>
+    {/snippet}
   </Modal>
 {/if}

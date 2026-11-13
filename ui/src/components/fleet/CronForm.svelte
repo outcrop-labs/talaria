@@ -17,6 +17,7 @@
     onCreate,
     busy,
     disabled = false,
+    withActions = true,
     children,
   }: {
     onCreate: (input: { name: string; schedule: string; prompt: string }) => Promise<boolean>
@@ -24,6 +25,10 @@
     /** Hold the create button (e.g. while the fleet agent list is still loading,
      *  when the target set would silently be empty). */
     disabled?: boolean
+    /** Draw the create button under the fields. A dialog that puts it in its
+     *  own footer passes false and drives `submit` and `canSubmit`. Only the
+     *  settings voice reads it. */
+    withActions?: boolean
     /** Extra fields (e.g. the fleet agent picker) rendered above the buttons. */
     children?: Snippet
   } = $props()
@@ -66,7 +71,10 @@
       if (!drafting && draftAsk.trim()) void draft()
     }
   }
-  const submit = () =>
+  export function canSubmit(): boolean {
+    return !!ok && !busy && !disabled
+  }
+  export function submit(): void {
     void onCreate({ name: name.trim(), schedule: schedToString(sched), prompt: prompt.trim() }).then((created) => {
       if (created) {
         name = ''
@@ -74,6 +82,7 @@
         prompt = ''
       }
     })
+  }
 </script>
 
 {#if sans}
@@ -115,12 +124,14 @@
       />
     </SettingsField>
     {@render children?.()}
-    <div class="flex justify-end">
-      <Button size="sm" disabled={!ok || busy || disabled} onclick={submit}>
-        {#if busy}<WaitingMark site="fleet/cron-save" size={12} />{/if}
-        {busy ? 'Creating' : 'Create schedule'}
-      </Button>
-    </div>
+    {#if withActions}
+      <div class="flex justify-end">
+        <Button size="sm" disabled={!ok || busy || disabled} onclick={submit}>
+          {#if busy}<WaitingMark site="fleet/cron-save" size={12} />{/if}
+          {busy ? 'Creating' : 'Create schedule'}
+        </Button>
+      </div>
+    {/if}
   </div>
 {:else}
   <div class="space-y-5 rounded-lg border border-line p-5">

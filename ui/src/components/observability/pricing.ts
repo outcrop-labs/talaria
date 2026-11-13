@@ -224,7 +224,7 @@ export function manualBody(
     return { ok: false, error: 'Input and output rates are both required.' }
   }
   if (values.input === 0 && values.output === 0) {
-    return { ok: false, error: 'A $0 rate is “Included in a plan” — mark the model included instead.' }
+    return { ok: false, error: 'A $0 rate is “Included in a plan”. Mark the model included instead.' }
   }
   return {
     ok: true,

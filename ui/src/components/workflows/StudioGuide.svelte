@@ -260,11 +260,11 @@
               </div>
               <div class="space-y-1.5">
                 <span class="text-xs font-medium text-fg">With these labels</span>
-                <Tokens value={labels} onChange={(v) => (labels = v)} placeholder="Add a label…" />
+                <Tokens value={labels} onChange={(v) => (labels = v)} placeholder="Add a label" />
               </div>
               <div class="space-y-1.5">
                 <span class="text-xs font-medium text-fg">Or mentioning</span>
-                <Tokens value={keywords} onChange={(v) => (keywords = v)} placeholder="Add a phrase…" />
+                <Tokens value={keywords} onChange={(v) => (keywords = v)} placeholder="Add a phrase" />
               </div>
               <p class="rounded-lg border border-line bg-card/40 px-3 py-2 font-sans text-xs text-muted">{sentence()}</p>
             </div>
@@ -280,7 +280,7 @@
                 autoGrow
                 rows={3}
                 bind:value={describe}
-                placeholder={'e.g. "Pull last week\'s numbers first, compare to the previous 4 weeks, lead with the one change that matters, keep it under a page…"'}
+                placeholder={'e.g. "Pull last week\'s numbers first, compare to the previous 4 weeks, lead with the one change that matters, keep it under a page."'}
                 class="max-h-40 text-sm"
               />
               <div class="flex items-center gap-2">
@@ -350,7 +350,7 @@
             </Button>
           {:else}
             <Button size="sm" onclick={() => void create()} disabled={!canNext || creating || !skillMd.trim()}>
-              {creating ? 'Creating…' : hasRules ? 'Create workflow + skill' : 'Add to the library'}
+              {creating ? 'Creating' : hasRules ? 'Create workflow + skill' : 'Add to the library'}
             </Button>
           {/if}
         </div>

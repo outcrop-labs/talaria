@@ -4,7 +4,7 @@
  *  right-aligned in tabular figures, identifiers in mono. */
 export const table = {
   root: 'w-full border-collapse font-sans text-sm leading-5 text-fg',
-  th: 'h-10 whitespace-nowrap px-3 text-left font-sans text-xs font-medium leading-4 text-muted first:pl-5 last:pr-5',
+  th: 'h-9 whitespace-nowrap px-3 text-left font-sans text-xs font-medium leading-4 text-muted first:pl-5 last:pr-5',
   tr: 'h-11 border-t border-line-subtle',
   td: 'px-3 first:pl-5 last:pr-5',
   num: 'whitespace-nowrap text-right tabular-nums',

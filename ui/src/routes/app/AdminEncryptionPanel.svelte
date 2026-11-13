@@ -95,7 +95,7 @@
         autocomplete="off"
         class="w-[280px]"
       />
-      <Button size="md" variant="danger-outline" onclick={() => void rotate()} disabled={busy}>
+      <Button size="md" variant="outline" onclick={() => void rotate()} disabled={busy}>
         {busy ? 'Rotating' : 'Rotate key'}
       </Button>
     </SettingsRow>

@@ -67,7 +67,7 @@
     busy = true
     try {
       const r = await reconcileFleet()
-      started = r.error ?? (r.pending ? 'Still starting — the roster shows each agent as it comes up' : `Started ${r.started?.length ?? 0} · already running ${r.alreadyRunning?.length ?? 0}`)
+      started = r.error ?? (r.pending ? 'Still starting. The roster shows each agent as it comes up.' : `Started ${r.started?.length ?? 0} · already running ${r.alreadyRunning?.length ?? 0}`)
       await qc.invalidateQueries({ queryKey: ['fleet-containers'] })
       step = 2
     } finally {

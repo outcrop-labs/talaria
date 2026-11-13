@@ -120,7 +120,7 @@
         bind:value={scopes}
         autocomplete="off"
         placeholder={meta.scopes.join(' ') || 'provider default'}
-        class="font-[var(--font-mono)]"
+        class="font-mono"
       />
     </SettingsField>
     {#if error}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}

@@ -202,7 +202,7 @@
             {:else}
               <Input
                 size="sm"
-                class="w-28 font-[var(--font-mono)]"
+                class="w-28 font-mono placeholder:font-sans"
                 list="pin-versions-{t.tool}"
                 bind:value={pinTyped[t.tool]}
                 placeholder="Version"
@@ -264,9 +264,12 @@
 
       {#if s.events.length > 0}
         <div>
-          <SettingsRow label="History" hint={`${s.events.length} recorded ${s.events.length === 1 ? 'change' : 'changes'}.`}>
-            <Button variant="outline" size="sm" onclick={() => (showHistory = !showHistory)}>{showHistory ? 'Hide' : 'Show'}</Button>
-          </SettingsRow>
+          <SettingsRow
+            label="History"
+            hint={`${s.events.length} recorded ${s.events.length === 1 ? 'change' : 'changes'}.`}
+            onclick={() => (showHistory = !showHistory)}
+            expanded={showHistory}
+          />
           {#if showHistory}
             <ul transition:slide={{ duration: 150 }} class="space-y-1 px-5 pb-4 font-sans text-[13px] leading-5 text-muted">
               {#each s.events as ev, n (n)}

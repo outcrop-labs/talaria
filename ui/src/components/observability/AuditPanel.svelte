@@ -33,7 +33,7 @@
     ticket: { label: 'Tickets', blurb: 'Status moves, dispatches, comments and gaps on the boards.' },
     channel: { label: 'Channels', blurb: 'Messages in channels you belong to.' },
     fleet: { label: 'Agents', blurb: 'Changes to agent configuration.' },
-    audit: { label: 'Admin actions', blurb: 'Settings, permissions, renders and deletions.' },
+    audit: { label: 'Admin actions', blurb: 'Settings, permissions, agent config updates and deletions.' },
   }
 
   // The event's own type, the second-level answer to "where did this come
@@ -159,11 +159,11 @@
                       <Avatar name={actorLabel(e.actor)} class="h-6 w-6 shrink-0" />
                       <span class="min-w-0 truncate font-medium text-fg" title={e.actor}>{actorLabel(e.actor)}</span>
                     </span>
-                    <span class="min-w-0 truncate text-fg">{e.detail}</span>
+                    <span class="min-w-0 truncate text-fg" title={e.detail}>{e.detail}</span>
                     <span class="flex min-w-0">
                       {#if e.type}<Chip tone={WARN_TYPES.has(e.type) ? 'warn' : 'neutral'}>{sentence(e.type)}</Chip>{/if}
                     </span>
-                    <span class="min-w-0 truncate text-[13px] text-muted">{e.context}</span>
+                    <span class="min-w-0 truncate text-[13px] text-muted" title={e.context}>{e.context}</span>
                     <span class={cn(table.num, 'text-[13px] text-muted')}>{relativeTime(e.at)}</span>
                   </button>
                 {/each}

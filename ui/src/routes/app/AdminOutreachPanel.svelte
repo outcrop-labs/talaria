@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { ChevronRight } from '@lucide/svelte'
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { tableCell, tableHead, tableRow } from '@/components/admin/table'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
@@ -138,9 +137,12 @@
           </table>
         {/if}
         {#if d.events.length > 0}
-          <SettingsRow label="Recent outreach" hint="What agents did at their last check-ins." onclick={() => (showEvents = !showEvents)}>
-            <ChevronRight size={16} class={cn('text-muted transition-transform duration-150', showEvents && 'rotate-90')} />
-          </SettingsRow>
+          <SettingsRow
+            label="Recent outreach"
+            hint="What agents did at their last check-ins."
+            onclick={() => (showEvents = !showEvents)}
+            expanded={showEvents}
+          />
           {#if showEvents}
             <div transition:slide={{ duration: 150 }} class="max-h-[352px] overflow-y-auto">
               <table class="w-full table-fixed">

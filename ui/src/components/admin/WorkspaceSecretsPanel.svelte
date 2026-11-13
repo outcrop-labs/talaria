@@ -160,7 +160,7 @@
               : 'Add one to let an agent sign in, push or publish without seeing the value.'}
           />
         {:else}
-          <div class="{COLS} h-10 items-center font-sans text-xs font-medium leading-4 text-muted">
+          <div class="{COLS} h-9 items-center font-sans text-xs font-medium leading-4 text-muted">
             <span>Credential</span>
             <span>Can be used at</span>
             <span>Agents</span>

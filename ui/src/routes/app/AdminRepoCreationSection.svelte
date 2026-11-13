@@ -148,7 +148,7 @@
               rejectNote = ''
             }}>{rejecting === r.id ? 'Keep request' : 'Reject'}</Button
           >
-          <Button size="sm" onclick={() => void decide(r, 'approve')}>Create repository</Button>
+          <Button size="sm" variant="outline" onclick={() => void decide(r, 'approve')}>Create repository</Button>
         </div>
       </SettingsGroup>
     {/each}

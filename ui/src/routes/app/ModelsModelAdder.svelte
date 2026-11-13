@@ -29,7 +29,7 @@
       onkeydown={(e) => e.key === 'Enter' && q.trim() && add(q.trim())}
       aria-label="Add a model"
       placeholder={catalog.length ? `Search ${catalog.length} models in the catalog, or type an id` : 'Type a model id'}
-      class="flex-1 font-[var(--font-mono)] placeholder:font-sans"
+      class="flex-1 font-mono placeholder:font-sans"
     />
     <Button size="md" variant="outline" onclick={() => q.trim() && add(q.trim())} disabled={!q.trim()}>
       Add model

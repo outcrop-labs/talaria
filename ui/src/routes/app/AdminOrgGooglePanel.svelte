@@ -81,7 +81,7 @@
 
   const msg: Record<string, string> = {
     connected: 'Shared Google account connected.',
-    denied: 'Connection cancelled.',
+    denied: 'Connection canceled.',
     bad_state: 'Connection expired. Try again.',
     exchange_failed: 'Google rejected the connection. Try again.',
     forbidden: 'Admins only.',

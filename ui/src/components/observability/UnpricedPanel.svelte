@@ -214,7 +214,7 @@
     <SettingsSection
       title="Unpriced models"
       description="Cloud models used in the last 30 days that have no price, so their spend is missing."
-      info="Cloud usage with no provider-reported charge, no published price and no pricing of yours. Set a price, mark it included in a plan (priced at $0 and labelled), or retry the lookup. Each fix re-prices that model's past calls."
+      info="Cloud usage with no provider-reported charge, no published price and no pricing of yours. Set a price, mark it included in a plan (priced at $0 and labeled), or retry the lookup. Each fix re-prices that model's past calls."
     >
       <SettingsGroup>
         {#if unpriced.length === 0}
@@ -346,13 +346,13 @@
         <div class="grid grid-cols-2 gap-x-3 gap-y-5">
           {#each RATE_FIELDS as [field, label, placeholder] (field)}
             <SettingsField {label} for={`price-${field}`}>
-              <Input id={`price-${field}`} size="sm" inputmode="decimal" bind:value={form[field]} {placeholder} class="font-[var(--font-mono)]" />
+              <Input id={`price-${field}`} size="sm" inputmode="decimal" bind:value={form[field]} {placeholder} class="tabular-nums" />
             </SettingsField>
           {/each}
         </div>
       {:else}
         <p class="font-sans text-[13px] leading-5 text-muted">
-          Calls to this model are priced at $0 and labelled as included, for a flat-rate plan or a free tier. The
+          Calls to this model are priced at $0 and labeled as included, for a flat-rate plan or a free tier. The
           provider's own charge still wins when it sends one.
         </p>
       {/if}

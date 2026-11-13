@@ -34,7 +34,7 @@
   /** A server registered before it carried declarations: one auth header is
    *  what such servers have always wanted in practice. */
   const GUESSED: HeaderDecl[] = [
-    { name: 'Authorization', description: null, isRequired: true, isSecret: true, placeholder: 'Bearer …', default: null, choices: null, value: null, variables: null },
+    { name: 'Authorization', description: null, isRequired: true, isSecret: true, placeholder: 'Bearer your-token', default: null, choices: null, value: null, variables: null },
   ]
 
   const fieldsOf = (s: McpConnection): HeaderField[] =>

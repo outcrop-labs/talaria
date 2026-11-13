@@ -63,7 +63,7 @@
         <!-- Adding only ever means adding an EXTERNAL server: the internal ones
              arrive with the deployment and cannot be registered by hand. -->
         {#if tab === 'external'}
-          <Button size="sm" variant="ghost" onclick={() => (adding = 'custom')}>Custom server</Button>
+          <Button size="sm" variant="outline" onclick={() => (adding = 'custom')}>Custom server</Button>
           <Button size="sm" onclick={() => (adding = 'marketplace')}>Browse marketplace</Button>
         {/if}
       {/snippet}

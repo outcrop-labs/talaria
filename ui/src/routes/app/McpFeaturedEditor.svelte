@@ -173,9 +173,9 @@
               {@const problem = standInProblem(s)}
               <div class={sans ? 'flex flex-col gap-2 rounded-md border border-line-subtle p-3' : 'flex flex-col gap-1.5 rounded-md border border-line-subtle p-2.5'}>
                 <div class={sans ? 'grid gap-2 sm:grid-cols-[1fr_1fr_2fr]' : 'grid gap-1.5 sm:grid-cols-[1fr_1fr_2fr]'}>
-                  <Input size="sm" bind:value={s.domain} placeholder="deepwiki.com" class="font-[var(--font-mono)]" aria-label="Domain" />
+                  <Input size="sm" bind:value={s.domain} placeholder="deepwiki.com" class={sans ? 'font-mono' : 'font-[var(--font-mono)]'} aria-label="Domain" />
                   <Input size="sm" bind:value={s.title} placeholder="DeepWiki" aria-label="Title" />
-                  <Input size="sm" bind:value={s.url} placeholder="https://mcp.deepwiki.com/mcp" class="font-[var(--font-mono)]" aria-label="Endpoint URL" />
+                  <Input size="sm" bind:value={s.url} placeholder="https://mcp.deepwiki.com/mcp" class={sans ? 'font-mono' : 'font-[var(--font-mono)]'} aria-label="Endpoint URL" />
                 </div>
                 <div class="flex items-center gap-2">
                   <Input size="sm" bind:value={s.description} placeholder="Description (optional)" class="flex-1" aria-label="Description" />

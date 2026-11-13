@@ -2,7 +2,7 @@
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ChevronRight, CircleAlert, Import, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { ChevronRight, CircleAlert, Import, LayoutGrid, List } from '@lucide/svelte'
   import { designHeadline, pendingDesign, useAgentDesign } from '@/lib/agent-design'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { searchParams } from 'sv-router'
@@ -297,7 +297,6 @@
             onclick={() => (creating = true)}
             title={designRow ? (designRow.status === 'generating' ? 'A design is generating' : designRow.status === 'ready' ? 'A design is waiting for review' : 'The design failed') : undefined}
           >
-            <Plus size={16} />
             New agent
           </Button>
           {#if designRow}
@@ -309,7 +308,6 @@
       {/if}
     {:else if tab === 'schedules'}
       <Button size="sm" onclick={() => (scheduling = true)}>
-        <Plus size={16} />
         New schedule
       </Button>
     {/if}

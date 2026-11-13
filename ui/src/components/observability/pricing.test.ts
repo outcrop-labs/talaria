@@ -136,7 +136,7 @@ describe('the review follow-ups', () => {
     expect(canFix({ model: 'gpt-5' })).toBe(true)
     expect(body({ endpoint: 'e', model: 'm' }, { ...form(), input: '0', output: '0' })).toEqual({
       ok: false,
-      error: 'A $0 rate is “Included in a plan” — mark the model included instead.',
+      error: 'A $0 rate is “Included in a plan”. Mark the model included instead.',
     })
   })
 

@@ -179,7 +179,7 @@
         : (s?.previous?.label ?? s?.compiled.label)
     const ok = await confirm({
       title: 'Roll back the agent image?',
-      message: `Every agent on the version you are leaving moves to ${to ?? 'the previous version'} within a minute, one at a time — now, even mid-conversation — each offline for its restart. An agent someone stopped stays stopped and starts on ${to ?? 'it'} next time. A version that came from stable is marked bad so it is not rolled forward again (Allow again lifts that); a pinned version is not.`,
+      message: `Every agent on the version you are leaving moves to ${to ?? 'the previous version'} within a minute, one at a time, even mid-conversation, and each is offline for its restart. An agent someone stopped stays stopped and starts on ${to ?? 'it'} next time. A version that came from stable is marked bad so it is not rolled forward again (Allow again lifts that); a pinned version is not.`,
       confirmLabel: 'Roll back',
     })
     if (ok) await act('rollback')
@@ -342,9 +342,9 @@
             Updates roll out between these hours,
             <span class={s.window.zoneSet ? '' : 'text-danger'}>{s.window.zoneSaid}</span>{s.window.open ? ' (open now)' : ''}.
           {/snippet}
-          <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowStart} aria-label="Window start (HH:MM)" />
+          <Input size="sm" class="w-20 tabular-nums" bind:value={windowStart} aria-label="Window start (HH:MM)" />
           <span class="font-sans text-[13px] text-muted">to</span>
-          <Input size="sm" class="w-20 font-[var(--font-mono)]" bind:value={windowEnd} aria-label="Window end (HH:MM)" />
+          <Input size="sm" class="w-20 tabular-nums" bind:value={windowEnd} aria-label="Window end (HH:MM)" />
           <Button
             variant="outline"
             size="md"
@@ -380,7 +380,7 @@
             </Button>
           </SettingsRow>
           <SettingsRow label="Pin by tag" hint="For a version this instance has not seen yet.">
-            <Input size="sm" class="w-28 font-[var(--font-mono)]" bind:value={pinVersion} placeholder="v0.22.5" aria-label="Version tag to pin" />
+            <Input size="sm" class="w-28 font-mono" bind:value={pinVersion} placeholder="v0.22.5" aria-label="Version tag to pin" />
             <Button
               variant="outline"
               size="md"
@@ -420,9 +420,12 @@
 
       {#if s.events.length > 0}
         <div>
-          <SettingsRow label="History" hint={`${s.events.length} recorded ${s.events.length === 1 ? 'change' : 'changes'}.`}>
-            <Button variant="outline" size="sm" onclick={() => (showHistory = !showHistory)}>{showHistory ? 'Hide' : 'Show'}</Button>
-          </SettingsRow>
+          <SettingsRow
+            label="History"
+            hint={`${s.events.length} recorded ${s.events.length === 1 ? 'change' : 'changes'}.`}
+            onclick={() => (showHistory = !showHistory)}
+            expanded={showHistory}
+          />
           {#if showHistory}
             <ul transition:slide={{ duration: 150 }} class="space-y-1 px-5 pb-4 font-sans text-[13px] leading-5 text-muted">
               {#each s.events as ev, n (n)}

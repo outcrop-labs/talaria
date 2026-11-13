@@ -34,8 +34,8 @@ describe('needsKeyFirst', () => {
 })
 
 describe('renderSummary', () => {
-  it('says plainly when nothing is rendered', () => {
-    expect(renderSummary(cfg())).toBe('nothing rendered: Hermes resolves its own default')
+  it('says plainly when nothing is sent', () => {
+    expect(renderSummary(cfg())).toBe('nothing sent: each agent uses its own default')
   })
   it("reads the server's render: backend, sealed key, keyless switch", () => {
     const r = rendered({ web: { search_backend: 'tavily', ...off }, env: ['TAVILY_API_KEY'] })
@@ -53,7 +53,7 @@ describe('renderSummary', () => {
   })
   it('does not count a search URL the render withholds from the agents', () => {
     // A loopback URL in a containerized stack: set, but not rendered.
-    expect(renderSummary(cfg({ searchUrl: 'http://127.0.0.1:8888' }))).toBe('nothing rendered: Hermes resolves its own default')
+    expect(renderSummary(cfg({ searchUrl: 'http://127.0.0.1:8888' }))).toBe('nothing sent: each agent uses its own default')
   })
 })
 
@@ -77,7 +77,7 @@ describe('agentProbeNote: the from-agents line under the dots', () => {
   it('names where the probe ran and what it dialled when the agents cannot reach it', () => {
     expect(agentProbeNote(ep({ agentReachable: false, agentError: 'the search service at http://host.docker.internal:8888 did not answer ([Errno 111] Connection refused).' }))).toEqual({
       tone: 'danger',
-      text: 'From the agents (probed in Ada Ops, dialling http://host.docker.internal:8888): the search service at http://host.docker.internal:8888 did not answer ([Errno 111] Connection refused).',
+      text: 'From the agents (probed in Ada Ops, dialing http://host.docker.internal:8888): the search service at http://host.docker.internal:8888 did not answer ([Errno 111] Connection refused).',
     })
   })
   it('says why nothing was probed, quietly', () => {

@@ -327,4 +327,9 @@
     {/if}
     {#if error}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
   </div>
+  {#snippet footer()}
+    <div class="flex justify-end">
+      <Button size="sm" variant="outline" onclick={onClose}>Done</Button>
+    </div>
+  {/snippet}
 </Modal>

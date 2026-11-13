@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { ChevronRight } from '@lucide/svelte'
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { tableCell, tableHead, tableNum, tableRow } from '@/components/admin/table'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
@@ -135,6 +134,7 @@
                 <td class={cn(tableCell, tableNum, !d.stats.byCheck[c.id] && 'text-muted')}>{(d.stats.byCheck[c.id] ?? 0).toLocaleString()}</td>
                 <td class={tableCell}>
                   <Toggle
+                    class="justify-end"
                     checked={cfg?.checks[c.id] ?? c.defaultOn}
                     disabled={off}
                     onChange={(checked) => cfg && void save({ checks: { ...cfg.checks, [c.id]: checked } })}
@@ -150,9 +150,8 @@
             label="Recent findings"
             hint="{d.stats.total.toLocaleString()} recorded in all."
             onclick={() => (showFindings = !showFindings)}
-          >
-            <ChevronRight size={16} class={cn('text-muted transition-transform duration-150', showFindings && 'rotate-90')} />
-          </SettingsRow>
+            expanded={showFindings}
+          />
           {#if showFindings}
             <div transition:slide={{ duration: 150 }} class="max-h-[352px] overflow-y-auto">
               <table class="w-full table-fixed">

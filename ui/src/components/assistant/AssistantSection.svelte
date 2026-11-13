@@ -169,7 +169,7 @@
         {/snippet}
         {#snippet status()}
           <StatusDot status={assistant.running ? 'ok' : 'idle'} />
-          {power ? (assistant.running ? 'Stopping' : 'Starting') : assistant.running ? 'Online' : 'Offline'}
+          {power ? (assistant.running ? 'Stopping' : 'Starting') : assistant.running ? 'Running' : 'Stopped'}
         {/snippet}
         <a href={p('/chat')} class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Open chat</a>
         <SettingsRowMenu
@@ -202,7 +202,7 @@
           <Input
             id="assistant-handle"
             size="sm"
-            class="w-[280px] font-[var(--font-mono)]"
+            class="w-[280px] font-mono"
             bind:value={handle}
             oninput={() => (handle = handle.toLowerCase())}
             maxlength={30}

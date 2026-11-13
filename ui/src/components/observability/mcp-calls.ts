@@ -20,7 +20,7 @@ export const OUTCOME_META: Record<McpCallOutcome, { label: string; dot: DotStatu
   not_connected: { label: 'Not connected', dot: 'idle', tone: 'neutral', blurb: 'Granted, but the account it would speak as is not connected.' },
   upstream_error: { label: 'Upstream error', dot: 'danger', tone: 'danger', blurb: 'The server could not be reached, or failed at HTTP level.' },
   spend_error: { label: 'Spend error', dot: 'danger', tone: 'danger', blurb: 'The credential spend boundary failed; nothing was sent.' },
-  cancelled: { label: 'Cancelled', dot: 'idle', tone: 'neutral', blurb: 'The caller hung up before the answer finished.' },
+  cancelled: { label: 'Canceled', dot: 'idle', tone: 'neutral', blurb: 'The caller hung up before the answer finished.' },
 }
 
 export const isOutcome = (v: string | null | undefined): v is McpCallOutcome =>

@@ -219,7 +219,7 @@
       {#snippet children(_d)}
         <SettingsRow
           label="Provider"
-          hint={meta && meta.id !== 'off' ? `Where it runs: ${meta.country}.` : 'Every decision keeps the behaviour it has today.'}
+          hint={meta && meta.id !== 'off' ? `Where it runs: ${meta.country}.` : 'Every decision keeps the behavior it has today.'}
           as="label"
         >
           <Select

@@ -5,6 +5,7 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -134,7 +135,7 @@
         : s.withheld === 'owner-denied'
           ? "This assistant's owner is denied this server (Manage → MCP → access), so the agent does not carry it"
           : s.withheld === 'per-user-org-agent'
-            ? 'A per-user server reaches an org agent only by a direct assignment — turn it on to carry it here'
+            ? 'A per-user server reaches an org agent only by a direct assignment. Turn it on to carry it here.'
             : s.allAgents && !s.assigned
               ? 'Org-wide: every agent carries it'
               : s.via === 'team' && !s.assigned
@@ -161,6 +162,8 @@
   const onThisAgent = $derived((query.data?.servers ?? []).filter((s) => s.carried))
   const available = $derived((query.data?.servers ?? []).filter((s) => !s.carried && !s.workbench))
 
+  // A state is a dot and a word. Chips on these rows are kinds.
+  const stateWord = 'flex items-center gap-1.5 whitespace-nowrap font-sans text-[13px] leading-5 text-muted'
   const connectionLabel = (s: AgentServer) =>
     s.authMode === 'per-user' ? 'Owner must connect' : s.probe?.state === 'reconnect' ? 'Reconnect needed' : 'Not connected'
   const probeLabel = (state: string) =>
@@ -187,18 +190,18 @@
         {:else if s.package}<Chip title="Runs as a hardened container on this deployment">Package</Chip>{/if}
         {#if via}<Chip tone="accent" title={via.hint}>{via.label}</Chip>{/if}
         {#if s.needsConnection}
-          <Chip
-            tone="warn"
+          <span
+            class={stateWord}
             title={s.authMode === 'per-user'
               ? 'A per-user server: the agent carries it now, and its calls work once its owner connects their account under Settings → Connections. Until then the agent is told where to connect.'
               : s.probe?.state === 'reconnect'
                 ? 'The provider refused to refresh the org account, so the grant is gone. Reconnect on the MCP page; until then the agent is told an admin must connect it.'
-                : 'The org account is not connected yet — Connect on the MCP page. Until then the agent is told an admin must connect it.'}
+                : 'The org account is not connected yet. Connect it on the MCP page. Until then the agent is told an admin must connect it.'}
           >
-            {connectionLabel(s)}
-          </Chip>
+            <StatusDot status="warn" />{connectionLabel(s)}
+          </span>
         {:else if s.probe && s.probe.state !== 'ok'}
-          <Chip tone="danger" title={s.probe.detail}>{probeLabel(s.probe.state)}</Chip>
+          <span class={stateWord} title={s.probe.detail}><StatusDot status="danger" />{probeLabel(s.probe.state)}</span>
         {/if}
         {#if s.assignedToolsMissing.length}
           <Chip

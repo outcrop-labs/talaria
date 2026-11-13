@@ -119,7 +119,7 @@
         {#if editing?.id === c.id}
           <div class="flex min-h-[60px] flex-wrap items-center gap-3 px-5 py-3">
             <Input size="sm" bind:value={editing.name} placeholder="Name" class="w-48" />
-            <Input size="sm" bind:value={editing.url} placeholder="https://example.com/index.json" class="min-w-0 flex-1 basis-64 font-[var(--font-mono)]" />
+            <Input size="sm" bind:value={editing.url} placeholder="https://example.com/index.json" class="min-w-0 flex-1 basis-64 font-mono" />
             <Button size="md" variant="outline" disabled={busy || !editing.name.trim() || !editing.url.trim()} onclick={() => void save()}>Save</Button>
             <Button size="md" variant="ghost" disabled={busy} onclick={() => (editing = null)}>Cancel</Button>
           </div>
@@ -165,7 +165,7 @@
           bind:value={url}
           placeholder="https://example.com/index.json"
           onkeydown={(e) => e.key === 'Enter' && void add()}
-          class="w-[280px] font-[var(--font-mono)]"
+          class="w-[280px] font-mono"
         />
         <Button size="md" variant="outline" disabled={busy || !name.trim() || !url.trim()} onclick={() => void add()}>Add source</Button>
       </SettingsRow>

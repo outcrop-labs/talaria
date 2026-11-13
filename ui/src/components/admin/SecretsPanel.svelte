@@ -13,7 +13,7 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Stat from '@/components/settings/Stat.svelte'
   import StatStrip from '@/components/settings/StatStrip.svelte'
-  import Button from '@/components/ui/Button.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -30,6 +30,18 @@
   const clear = useClearSecret()
   let busy = $state(false)
   let msg = $state<string | null>(null)
+
+  // The readable inventory is reference, so each group opens on request. A
+  // group holding a secret with an expiry opens by itself: that one has a date
+  // an admin must see.
+  const stored = (rows: SecretRow[]) => rows.filter((r) => r.state !== 'unreadable' && r.state !== 'missing')
+  let open = $state<Partial<Record<SecretGroup, boolean>>>({})
+  const isOpen = (group: SecretGroup, rows: SecretRow[]) => open[group] ?? rows.some((r) => !!r.expiresAt)
+  const groupLine = (rows: SecretRow[]) => {
+    const env = rows.filter((r) => r.state === 'env').length
+    const readable = rows.length - env
+    return [readable ? `${readable} readable` : null, env ? `${env} from the environment` : null].filter(Boolean).join(', ')
+  }
 
   const clearOne = async (row: SecretRow) => {
     const ok = await confirm({
@@ -108,9 +120,7 @@
           description="Locked with a key this instance no longer has. Restore the original root key, or clear them and enter the values again."
         >
           {#snippet action()}
-            <Button size="sm" variant="danger-outline" onclick={() => void clearAllUnreadable()} disabled={busy}>
-              Clear all unreadable
-            </Button>
+            <DangerLink onClick={() => void clearAllUnreadable()} disabled={busy}>Clear all unreadable</DangerLink>
           {/snippet}
           <SettingsGroup>
             {#each unreadable as r (r.id)}
@@ -131,18 +141,32 @@
       </SettingsSection>
     {/if}
 
-    {#each GROUP_ORDER as group (group)}
-      {@const rows = data.rows.filter((r) => r.group === group && r.state !== 'unreadable' && r.state !== 'missing')}
-      {#if rows.length}
-        <SettingsSection title={GROUP_LABELS[group]}>
-          <SettingsGroup>
-            {#each rows as r (r.id)}
-              <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} />
-            {/each}
-          </SettingsGroup>
-        </SettingsSection>
-      {/if}
-    {/each}
+    {#if stored(data.rows).length}
+      <SettingsSection title="Stored" description="Every secret this instance can read, by what uses it.">
+        <SettingsGroup>
+          {#each GROUP_ORDER as group (group)}
+            {@const rows = stored(data.rows).filter((r) => r.group === group)}
+            {#if rows.length}
+              <div>
+                <SettingsRow
+                  label={GROUP_LABELS[group]}
+                  hint={groupLine(rows)}
+                  onclick={() => (open = { ...open, [group]: !isOpen(group, rows) })}
+                  expanded={isOpen(group, rows)}
+                />
+                {#if isOpen(group, rows)}
+                  <div transition:slide={{ duration: 150 }} class="border-t border-line-subtle [&>*+*]:border-t [&>*+*]:border-line-subtle">
+                    {#each rows as r (r.id)}
+                      <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} />
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          {/each}
+        </SettingsGroup>
+      </SettingsSection>
+    {/if}
 
     {#if !data.rows.length}
       <SettingsGroup>

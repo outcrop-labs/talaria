@@ -311,7 +311,7 @@
             <div data-testid="endpoint-plan-models">
               <div class="mb-2 flex items-center gap-2">
                 <h4 class="font-sans text-[13px] leading-5 text-muted">Included in a plan</h4>
-                <InfoTip text="For a flat-rate plan or a free tier: calls to a model switched on here are priced at $0 and labelled included, even where a pay-as-you-go price is published. The provider's own charge, when it sends one, still wins." />
+                <InfoTip text="For a flat-rate plan or a free tier: calls to a model switched on here are priced at $0 and labeled included, even where a pay-as-you-go price is published. The provider's own charge, when it sends one, still wins." />
               </div>
               <SettingsGroup>
                 {#each ep.models as m (m)}
