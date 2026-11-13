@@ -3,6 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -39,7 +40,16 @@
   // tools, the day's calls, and WHO MAY USE IT. Access is a table that grows
   // with the org (a row per agent, per person, per team, each with a tool
   // subset), which is why it never sat open in the list.
-  let { server: s, onClose }: { server: McpServerRow; onClose: () => void } = $props()
+  let {
+    server: s,
+    onClose,
+    onRemove,
+  }: {
+    server: McpServerRow
+    onClose: () => void
+    /** Remove the server, for one that can be removed. The row owns the confirmation. */
+    onRemove?: () => void
+  } = $props()
 
   const qc = useQueryClient()
   const fleetQuery = useAgents()
@@ -328,7 +338,9 @@
     {#if error}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
   </div>
   {#snippet footer()}
-    <div class="flex justify-end">
+    <div class="flex items-center gap-2">
+      {#if onRemove}<DangerLink onClick={onRemove}>Remove server</DangerLink>{/if}
+      <span class="flex-1"></span>
       <Button size="sm" variant="outline" onclick={onClose}>Done</Button>
     </div>
   {/snippet}

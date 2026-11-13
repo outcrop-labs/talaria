@@ -10,6 +10,7 @@
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage } from '@/lib/fetch-json'
+  import { iconDomains } from '@/lib/mcp-icon'
   import { useSession } from '@/lib/session'
   import McpServerModal from './McpServerModal.svelte'
   import McpCredentialsModal from './McpCredentialsModal.svelte'
@@ -28,12 +29,12 @@
   } from './mcp'
 
   /** One registered server as a row of the list: what it is, what it is for,
-   *  how much it is used, its status, and ONE button. That button is the fix
-   *  when the status names something to fix (sign in, set credentials, check
-   *  again) and "Manage" otherwise. The tool list, the last check, the calls
-   *  and the access table are one level down, in the dialog Manage opens. The
-   *  status is `serverStatus`'s verdict over the row: lifecycle, then auth,
-   *  then what the last discovery found. */
+   *  how much it is used and its status. Clicking the row opens Manage: the
+   *  tool list, the last check, the calls and the access table are one level
+   *  down, in that dialog. A button shows only when the status names something
+   *  to fix (sign in, set credentials, check again). The status is
+   *  `serverStatus`'s verdict over the row: lifecycle, then auth, then what
+   *  the last discovery found. */
   let { server: s }: { server: McpServerRow } = $props()
 
   const qc = useQueryClient()
@@ -57,6 +58,9 @@
   }
 
   const domain = $derived(serverDomain(s.url))
+  // The provider an OAuth server signs in with is the one publisher domain a
+  // registry row carries (the marketplace entry's own is not stored).
+  const markDomains = $derived(iconDomains({ publisher: s.oauthMeta?.guide?.domain, url: s.url }))
   // The Workbench is granted by each agent's Developer Agent switch, not from
   // here. The api refuses assignment and access rows for it.
   const isWorkbench = $derived(s.name === 'workbench')
@@ -148,8 +152,13 @@
   }
 
   const external = $derived(!isInternalServer(s))
+  // The deployment's own servers are governed, never edited: Manage is all
+  // their menu holds.
   const menu = (): ContextMenuEntry[] => [
-    ...(fix ? [{ label: 'Manage', onSelect: () => (manageOpen = true) }] : []),
+    { label: 'Manage', onSelect: () => (manageOpen = true) },
+    ...(s.builtin ? [] : settingsMenu()),
+  ]
+  const settingsMenu = (): ContextMenuEntry[] => [
     ...(external && !s.package && s.authMode === 'org'
       ? [{ label: s.headerKeys?.length ? 'Edit credentials' : 'Set credentials', onSelect: () => (credentialsOpen = true) }]
       : []),
@@ -180,8 +189,14 @@
 {/snippet}
 
 <div data-mcp-server={s.name}>
-  <SettingsRow label={s.label} hint={s.description || domain ? purpose : undefined} class={cn((!s.enabled || s.appOff) && 'opacity-60')}>
-    {#snippet lead()}<McpServerMark title={s.label} domain={domain?.replace(/^mcp\./, '')} />{/snippet}
+  <SettingsRow
+    label={s.label}
+    hint={s.description || domain ? purpose : undefined}
+    onOpen={() => (manageOpen = true)}
+    openLabel={`Manage ${s.label}`}
+    class={cn((!s.enabled || s.appOff) && 'opacity-60')}
+  >
+    {#snippet lead()}<McpServerMark title={s.label} domain={markDomains} />{/snippet}
     {#snippet meta()}
       <!-- -my-px: a 22px chip must not make its row 2px taller than a row without one. -->
       {#if s.appSlug}
@@ -210,16 +225,13 @@
       </span>
     {/snippet}
 
-    {#if fix}
-      <Button variant="outline" size="sm" title={fix.title} disabled={checking} onclick={fix.run}>{fix.label}</Button>
-    {:else}
-      <Button variant="outline" size="sm" onclick={() => (manageOpen = true)}>Manage</Button>
-    {/if}
-    {#if !s.builtin}<SettingsRowMenu label={`Actions for ${s.label}`} items={menu} />{/if}
+    <!-- One width for every fix, so the buttons and the kebabs after them end on one line down the list. -->
+    {#if fix}<Button variant="outline" size="sm" class="w-32" title={fix.title} disabled={checking} onclick={fix.run}>{fix.label}</Button>{/if}
+    <SettingsRowMenu label={`Actions for ${s.label}`} items={menu} />
   </SettingsRow>
   {#if error}<div class="px-5 pb-4 font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
 
-  {#if manageOpen}<McpServerModal server={s} onClose={() => (manageOpen = false)} />{/if}
+  {#if manageOpen}<McpServerModal server={s} onClose={() => (manageOpen = false)} onRemove={s.builtin ? undefined : () => void remove()} />{/if}
   {#if credentialsOpen}<McpCredentialsModal server={s} onClose={() => (credentialsOpen = false)} />{/if}
   {#if oauthOpen && s.oauthMeta}
     <McpOauthAppSetup

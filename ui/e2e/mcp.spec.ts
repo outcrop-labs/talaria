@@ -115,13 +115,14 @@ async function closeDialogs(page: Page) {
 }
 
 /** A registry row after a discovery: its status word and its tool count on
- *  the row, and the tool names one level down, in Manage. */
+ *  the row, and the tool names one level down, in Manage. Clicking the row
+ *  opens Manage: its hit area is the button named "Manage <label>". */
 async function expectReadyCard(page: Page, server: { title: string; slug: string }, status: string) {
   const card = registryCard(page, server.slug)
   await expect(card).toBeVisible()
   await expect(card.getByText(status, { exact: true })).toBeVisible()
   await expect(card.getByText(new RegExp(`^${STUB_TOOLS.length} tools\\b`))).toBeVisible()
-  await card.getByRole('button', { name: 'Manage', exact: true }).click()
+  await card.getByRole('button', { name: `Manage ${server.title}`, exact: true }).click()
   const manage = page.getByRole('dialog').filter({ hasText: server.title })
   for (const t of STUB_TOOLS) await expect(manage.getByText(t, { exact: true })).toBeVisible()
   await closeDialogs(page)
@@ -247,7 +248,7 @@ test('4 · an OAuth server is detected, connects through the popup, and lists it
   await expect(reg.getByText('Connected', { exact: true })).toBeVisible()
   // Tools come from the server once the bearer exists — ask for them, from
   // the row's Manage dialog.
-  await reg.getByRole('button', { name: 'Manage', exact: true }).click()
+  await reg.getByRole('button', { name: `Manage ${STUB.oauth.title}`, exact: true }).click()
   await page.getByRole('dialog').filter({ hasText: STUB.oauth.title }).getByRole('button', { name: 'Check now' }).click()
   await expect.poll(async () => (await api.server(id)).tools.length, { message: 'Check now never listed the tools' }).toBe(STUB_TOOLS.length)
   await closeDialogs(page)

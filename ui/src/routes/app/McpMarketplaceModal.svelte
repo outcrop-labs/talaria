@@ -233,7 +233,8 @@
         {#if catalog}
           {@const live = livenessLine(catalog.liveness)}
           <!-- `catalogLine` is shared with the mono voice and joins with a long dash. -->
-          <span class="font-sans text-xs leading-4 text-muted" title={catalog.error ?? undefined}>{catalogLine(catalog, relativeTime).replace(' — ', ': ')}{live ? ` · ${live}` : ''}</span>
+          <!-- The reachability counts are a diagnostic: one hover down. -->
+          <span class="font-sans text-xs leading-4 text-muted" title={catalog.error ?? (live || undefined)}>{catalogLine(catalog, relativeTime).replace(' — ', ': ')}</span>
           {@render syncButton()}
         {/if}
         <InfoTip text="The official MCP registry, copied into this instance and refreshed every half hour. Hosted servers are checked every few hours, and the ones that do not answer are hidden until you ask for them." />

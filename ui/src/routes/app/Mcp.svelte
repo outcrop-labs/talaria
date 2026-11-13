@@ -54,7 +54,7 @@
 
 <SettingsPage
   title="MCP"
-  blurb="Tools your agents can call, and who may use them."
+  blurb="Tools your agents can call, served by Model Context Protocol (MCP) servers."
   tabs={MCP_TABS}
   {tab}
   onTab={goTab}
@@ -63,7 +63,7 @@
         <!-- Adding only ever means adding an EXTERNAL server: the internal ones
              arrive with the deployment and cannot be registered by hand. -->
         {#if tab === 'external'}
-          <Button size="sm" variant="outline" onclick={() => (adding = 'custom')}>Custom server</Button>
+          <Button size="sm" variant="ghost" onclick={() => (adding = 'custom')}>Custom server</Button>
           <Button size="sm" onclick={() => (adding = 'marketplace')}>Browse marketplace</Button>
         {/if}
       {/snippet}
@@ -107,11 +107,18 @@
           {/if}
         {/snippet}
         {#snippet children(servers)}
-          <SettingsGroup>
-            {#each servers.filter((s) => isInternalServer(s) === (tab === 'internal')) as s (s.id)}
-              <McpServerCard server={s} />
-            {/each}
-          </SettingsGroup>
+          <div class="space-y-3">
+            <p class="font-sans text-[13px] leading-5 text-muted">
+              {tab === 'internal'
+                ? 'Tools that come with Talaria. Every agent has them, and you choose who may use each one.'
+                : 'Tool servers from other companies, or your own. Open one to choose which agents and people use it.'}
+            </p>
+            <SettingsGroup>
+              {#each servers.filter((s) => isInternalServer(s) === (tab === 'internal')) as s (s.id)}
+                <McpServerCard server={s} />
+              {/each}
+            </SettingsGroup>
+          </div>
         {/snippet}
       </QueryState>
     </div>
