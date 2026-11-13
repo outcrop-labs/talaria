@@ -3,6 +3,8 @@
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
+  import Disclosure from '@/components/ui/Disclosure.svelte'
+  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -50,6 +52,10 @@
   // labelled), or a retried lookup. Pricing is read-time, so each fix
   // re-prices that model's past calls at once — the line under the row says
   // how many and at what.
+  //
+  // Unpriced models need someone, so they show whenever there are any. The
+  // pricing an admin already set, and the close matches, are administration:
+  // they wait behind "Manage pricing".
   const query = useUnpriced(true)
   const qc = useQueryClient()
   const data = $derived(query.data)
@@ -177,6 +183,14 @@
   }
 
   const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+  const managed = $derived(
+    [
+      prices.length > 0 ? `${prices.length} set by an admin` : null,
+      fuzzy.length > 0 ? `${fuzzy.length} priced by a close match` : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  )
 
   // Everything but "Set price", which is the row's one visible button.
   const fixMenu = (m: UnpricedModel): ContextMenuEntry[] => [
@@ -202,6 +216,9 @@
   <span class="shrink-0 font-mono text-xs text-muted">{endpointLabel(target.endpoint)}</span>
 {/snippet}
 
+{#snippet heading(text: string, info: string)}
+  <h3 class="mb-2 flex items-center gap-2 font-sans text-xs font-medium leading-4 text-muted">{text}<InfoTip text={info} /></h3>
+{/snippet}
 
 <!-- `empty:hidden`: with nothing to price this section is an empty element,
      and it must not take a gap in the tab's column. -->
@@ -210,16 +227,14 @@
     <QueryError title="Could not load unpriced models" error={query.error} onRetry={() => void query.refetch()} />
   {:else if data === undefined}
     <SettingsGroup><div class="px-5 py-4"><SkeletonRows /></div></SettingsGroup>
-  {:else if unpriced.length > 0 || prices.length > 0 || fuzzy.length > 0}
-    <SettingsSection
-      title="Unpriced models"
-      description="Cloud models used in the last 30 days that have no price, so their spend is missing."
-      info="Cloud usage with no provider-reported charge, no published price and no pricing of yours. Set a price, mark it included in a plan (priced at $0 and labeled), or retry the lookup. Each fix re-prices that model's past calls."
-    >
-      <SettingsGroup>
-        {#if unpriced.length === 0}
-          <p class="px-5 py-4 font-sans text-sm leading-5 text-muted">Every cloud model used in the last 30 days has a price.</p>
-        {:else}
+  {:else}
+    {#if unpriced.length > 0}
+      <SettingsSection
+        title="Unpriced models"
+        description="Cloud models used in the last 30 days that have no price, so their spend is missing."
+        info="Cloud usage with no provider-reported charge, no published price and no pricing of yours. Set a price, mark it included in a plan (priced at $0 and labeled), or retry the lookup. Each fix re-prices that model's past calls."
+      >
+        <SettingsGroup>
           {#each unpriced as m (key(m))}
             {@const reason = reasonMeta(m.reason.code)}
             <div data-testid="unpriced-row">
@@ -253,75 +268,83 @@
               </SettingsRow>
             </div>
           {/each}
-        {/if}
-      </SettingsGroup>
-    </SettingsSection>
-
-    {#if fuzzy.length > 0}
-      <SettingsSection
-        title="Priced by a close match"
-        description="Models priced through a catalog entry their id only resembles."
-        info="A snapshot priced as its alias, or a path priced by its last segment. If you know the real rate, set it: a manual rate beats a close match, but never the provider's own charge or an exact published price."
-      >
-        <SettingsGroup>
-          {#each fuzzy as f (key(f))}
-            <div data-testid="fuzzy-row">
-              <SettingsRow>
-                {#snippet label()}{@render identity(f)}{/snippet}
-                {#snippet meta()}
-                  {@render endpoint(f)}
-                  <Chip tone="warn">{sentence(f.matchKind)}</Chip>
-                {/snippet}
-                {#snippet hint()}
-                  <span class="tabular-nums">
-                    {sentence(pricedAsLabel(f.matchedId))} · {formatTokens(f.tokens)} tokens in {f.generations.toLocaleString('en-US')} calls
-                  </span>
-                {/snippet}
-                <Button size="sm" variant="outline" onclick={() => openDialog(f, 'manual')}>Set price</Button>
-                <SettingsRowMenu
-                  label={`More ways to price ${f.model}`}
-                  items={[{ label: 'Mark as included in a plan', onSelect: () => openDialog(f, 'included') }]}
-                />
-              </SettingsRow>
-            </div>
-          {/each}
         </SettingsGroup>
       </SettingsSection>
     {/if}
 
-    {#if prices.length > 0}
-      <SettingsSection
-        title="Priced by an admin"
-        description="Your own pricing for models no source publishes a price for."
-        info="The provider's own charge always wins, and a published price wins over a manual rate. Included in a plan wins over a published price."
-      >
-        <SettingsGroup>
-          {#each prices as s (key(s))}
-            <div data-testid="price-setting">
-              <SettingsRow>
-                {#snippet label()}{@render identity(s)}{/snippet}
-                {#snippet meta()}
-                  {@render endpoint(s)}
-                  <Chip tone={s.mode === 'included' ? 'accent' : 'neutral'}>{s.mode === 'included' ? 'Included' : 'Manual'}</Chip>
-                {/snippet}
-                {#snippet hint()}
-                  <p class="tabular-nums">{settingLabel(s)}</p>
-                  <p>
-                    {#if s.shadowed}
-                      A published price or the provider's own charge now covers this model, so this pricing is not used.
-                    {:else}
-                      Prices {s.rowsPriced.toLocaleString('en-US')} call{s.rowsPriced === 1 ? '' : 's'} ({formatTokens(s.tokensPriced)} tokens) in the last 30 days.
-                    {/if}
-                    {#if s.note}{s.note}.{/if}
-                    {#if s.setBy}Set by {s.setBy}{s.updatedAt ? `, ${relativeTime(s.updatedAt)}` : ''}.{/if}
-                  </p>
-                {/snippet}
-                <DangerLink onClick={() => void remove({ endpoint: s.endpoint, model: s.model })}>Remove pricing</DangerLink>
-              </SettingsRow>
-            </div>
-          {/each}
-        </SettingsGroup>
-      </SettingsSection>
+    {#if fuzzy.length > 0 || prices.length > 0}
+      <Disclosure variant="card">
+        {#snippet title()}Manage pricing<span class="ml-2 font-normal text-muted">{managed}</span>{/snippet}
+        <!-- The last row brings its own padding to the foot of the card. -->
+        <div class="-mb-4 space-y-2">
+          {#if fuzzy.length > 0}
+            <section>
+              {@render heading(
+                'Priced by a close match',
+                'A snapshot priced as its alias, or a path priced by its last segment. If you know the real rate, set it: a manual rate beats a close match, but never the provider\'s own charge or an exact published price.',
+              )}
+              <SettingsGroup bare class="border-b-0">
+                {#each fuzzy as f (key(f))}
+                  <div data-testid="fuzzy-row">
+                    <SettingsRow>
+                      {#snippet label()}{@render identity(f)}{/snippet}
+                      {#snippet meta()}
+                        {@render endpoint(f)}
+                        <Chip tone="warn">{sentence(f.matchKind)}</Chip>
+                      {/snippet}
+                      {#snippet hint()}
+                        <span class="tabular-nums">
+                          {sentence(pricedAsLabel(f.matchedId))} · {formatTokens(f.tokens)} tokens in {f.generations.toLocaleString('en-US')} calls
+                        </span>
+                      {/snippet}
+                      <Button size="sm" variant="outline" onclick={() => openDialog(f, 'manual')}>Set price</Button>
+                      <SettingsRowMenu
+                        label={`More ways to price ${f.model}`}
+                        items={[{ label: 'Mark as included in a plan', onSelect: () => openDialog(f, 'included') }]}
+                      />
+                    </SettingsRow>
+                  </div>
+                {/each}
+              </SettingsGroup>
+            </section>
+          {/if}
+
+          {#if prices.length > 0}
+            <section>
+              {@render heading(
+                'Priced by an admin',
+                'Your own pricing for models no source publishes a price for. The provider\'s own charge always wins, and a published price wins over a manual rate. Included in a plan wins over a published price.',
+              )}
+              <SettingsGroup bare class="border-b-0">
+                {#each prices as s (key(s))}
+                  <div data-testid="price-setting">
+                    <SettingsRow>
+                      {#snippet label()}{@render identity(s)}{/snippet}
+                      {#snippet meta()}
+                        {@render endpoint(s)}
+                        <Chip tone={s.mode === 'included' ? 'accent' : 'neutral'}>{s.mode === 'included' ? 'Included' : 'Manual'}</Chip>
+                      {/snippet}
+                      {#snippet hint()}
+                        <p class="tabular-nums">{settingLabel(s)}</p>
+                        <p>
+                          {#if s.shadowed}
+                            A published price or the provider's own charge now covers this model, so this pricing is not used.
+                          {:else}
+                            Prices {s.rowsPriced.toLocaleString('en-US')} call{s.rowsPriced === 1 ? '' : 's'} ({formatTokens(s.tokensPriced)} tokens) in the last 30 days.
+                          {/if}
+                          {#if s.note}{s.note}.{/if}
+                          {#if s.setBy}Set by {s.setBy}{s.updatedAt ? `, ${relativeTime(s.updatedAt)}` : ''}.{/if}
+                        </p>
+                      {/snippet}
+                      <DangerLink onClick={() => void remove({ endpoint: s.endpoint, model: s.model })}>Remove pricing</DangerLink>
+                    </SettingsRow>
+                  </div>
+                {/each}
+              </SettingsGroup>
+            </section>
+          {/if}
+        </div>
+      </Disclosure>
     {/if}
   {/if}
 </section>

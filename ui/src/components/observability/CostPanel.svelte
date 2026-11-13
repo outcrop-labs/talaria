@@ -3,12 +3,12 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Stat from '@/components/settings/Stat.svelte'
   import StatStrip from '@/components/settings/StatStrip.svelte'
-  import Avatar from '@/components/ui/Avatar.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
+  import { UNPRICED_ANCHOR } from './pricing'
   import { cn } from '@/lib/cn'
   import { relativeTime } from '@/lib/fleet'
   import { fade, slide } from '@/lib/motion'
@@ -29,7 +29,7 @@
   const isAdmin = $derived(session.data?.role === 'admin')
   const data = $derived(costQuery.data)
   const t = $derived(data?.totals)
-  // By total tokens, largest first: the column the table sets in medium weight.
+  // By total tokens, largest first.
   const perAgent = $derived([...(data?.perAgent ?? [])].sort((a, b) => b.prompt + b.completion - (a.prompt + a.completion)))
   const perDay = $derived(data?.perDay ?? [])
   // "~" when the window is dominated by estimates rather than reported usage.
@@ -77,7 +77,7 @@
     <Materialize loading={data === undefined} count={1} class="space-y-8">
       {#snippet skeleton()}
         <StatStripSkeleton />
-        <div aria-hidden="true" class="rounded-lg border border-line bg-panel px-5 py-4"><SkeletonRows rows={5} avatar /></div>
+        <div aria-hidden="true" class="rounded-lg border border-line bg-panel px-5 py-4"><SkeletonRows rows={5} /></div>
       {/snippet}
       {#if total(t?.month) === 0}
         <div in:fade={{ duration: 150 }}>
@@ -94,7 +94,7 @@
             value={formatCost(t?.month.cost ?? 0)}
             sub={t?.providerReported
               ? `${t.providerReported.source}${t.providerReported.stale ? ' (stale)' : ''}${t.providerReported.fetchedAt ? ` · ${t.providerReported.fetchedAt}` : ''}`
-              : `${formatCost(t?.today.cost ?? 0)} today · ${(t?.month.generations ?? 0).toLocaleString('en-US')} generations`}
+              : `${formatCost(t?.today.cost ?? 0)} today`}
           />
           <Stat label="Tokens today" value={approx + formatTokens(total(t?.today))} sub={inOut(t?.today)} />
           <Stat label="Tokens, 7 days" value={approx + formatTokens(total(t?.week))} sub={inOut(t?.week)} />
@@ -102,14 +102,26 @@
         </StatStrip>
 
         <!-- Missing pricing is attention (gold), not failure. Orange stays
-             reserved for real failures. -->
-        {#if isAdmin}
-          <UnpricedPanel />
-        {:else if (t?.unpricedCloudTokens ?? 0) > 0}
-          <p transition:slide={{ duration: 150 }} class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+             reserved for real failures. The fix is an admin's, at the foot
+             of the tab. -->
+        {#if (t?.unpricedCloudTokens ?? 0) > 0}
+          <p transition:slide={{ duration: 150 }} class="flex flex-wrap items-center gap-2 font-sans text-[13px] leading-5 text-muted">
             <StatusDot status="warn" />
             {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no price yet, so they are missing from the spend.
+            {#if isAdmin}
+              <button
+                type="button"
+                class="rounded font-medium text-accent transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                onclick={() => document.getElementById(UNPRICED_ANCHOR)?.scrollIntoView({ block: 'start', behavior: 'smooth' })}
+              >
+                Set prices
+              </button>
+            {/if}
           </p>
+        {/if}
+
+        {#if perDay.length > 1}
+          <DailyBars days={perDay} />
         {/if}
 
         {#if t && t.split.local + t.split.cloud + t.split.other > 0}
@@ -118,24 +130,21 @@
           <SplitPanel split={t.split} perModel={data!.perModel} />
         {/if}
 
-        {#if perDay.length > 1}
-          <DailyBars days={perDay} />
-        {/if}
-
-        <SettingsSection title="By agent" description="Tokens and spend per agent in the last 30 days.">
+        <SettingsSection
+          title="Cost by agent"
+          description={`Tokens and spend per agent in the last 30 days, across ${(t?.month.generations ?? 0).toLocaleString('en-US')} generations.`}
+        >
           <SettingsGroup>
             <div class="overflow-x-auto">
               <table class={table.root}>
                 <thead>
                   <tr>
                     <th class={table.th}>Agent</th>
-                    <th class={cn(table.th, table.num)}>Input</th>
-                    <th class={cn(table.th, table.num)}>Output</th>
-                    <th class={cn(table.th, table.num)}>Total</th>
+                    <th class={cn(table.th, table.num)}>Last used</th>
+                    <th class={cn(table.th, table.num)}>Generations</th>
+                    <th class={cn(table.th, table.num)}>Tokens</th>
                     <th class={cn(table.th, table.num)}>Self-hosted</th>
                     <th class={cn(table.th, table.num)}>Cost</th>
-                    <th class={cn(table.th, table.num)}>Generations</th>
-                    <th class={cn(table.th, table.num)}>Last used</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -144,25 +153,22 @@
                     <tr class={table.tr}>
                       <td class={table.td}>
                         <span class="flex min-w-0 items-center gap-2.5">
-                          <Avatar name={d.label} class="h-6 w-6 shrink-0" />
                           <span class="font-medium">{d.label}</span>
                           {#if d.role}<span class="min-w-0 truncate text-[13px] text-muted">{d.role}</span>{/if}
                         </span>
                       </td>
-                      <td class={cn(table.td, table.num, 'text-muted')}>{formatTokens(a.prompt)}</td>
-                      <td class={cn(table.td, table.num, 'text-muted')}>{formatTokens(a.completion)}</td>
-                      <td class={cn(table.td, table.num, 'font-medium')}>{formatTokens(a.prompt + a.completion)}</td>
+                      <td class={cn(table.td, table.num, 'text-muted')}>{relativeTime(a.lastUsed)}</td>
+                      <td class={cn(table.td, table.num, 'text-muted')}>{a.generations.toLocaleString('en-US')}</td>
+                      <td class={cn(table.td, table.num)} title={inOut(a)}>{formatTokens(a.prompt + a.completion)}</td>
                       <td class={cn(table.td, table.num, 'text-muted')}>
                         {a.localShare === null ? '—' : `${Math.round(a.localShare * 100)}%`}
                       </td>
                       <td
-                        class={cn(table.td, table.num)}
+                        class={cn(table.td, table.num, 'font-medium')}
                         title={(a.includedTokens ?? 0) > 0 ? `${formatTokens(a.includedTokens ?? 0)} tokens included in a plan` : undefined}
                       >
                         {agentCostLabel(a)}
                       </td>
-                      <td class={cn(table.td, table.num, 'text-muted')}>{a.generations.toLocaleString('en-US')}</td>
-                      <td class={cn(table.td, table.num, 'text-muted')}>{relativeTime(a.lastUsed)}</td>
                     </tr>
                   {/each}
                 </tbody>
@@ -175,6 +181,8 @@
             </ul>
           {/if}
         </SettingsSection>
+
+        {#if isAdmin}<UnpricedPanel />{/if}
       {/if}
     </Materialize>
   {/if}

@@ -30,7 +30,7 @@
 </script>
 
 <SettingsSection
-  title="Self-hosted and cloud"
+  title="Cost by model"
   description="Where the last 30 days of tokens were served, and what each model cost."
   info="Dollars are the provider's reported charge when it sends one. Otherwise they come from the provider's published price (the serving endpoint's own on OpenRouter when the call names it). Where nothing is published, they come from a price an admin set, or their note that the model is included in a plan ($0, labelled)."
 >
