@@ -47,8 +47,8 @@
       <Chip tone="danger">{lostVersions} {lostVersions === 1 ? 'version' : 'versions'} unreadable</Chip>
     {/if}
   {/snippet}
+  {#snippet status()}<RowStatus status={tone}>{word}</RowStatus>{/snippet}
   <span class="font-sans text-[13px] leading-5 tabular-nums text-muted">
     {root.activeVersion ? `Key version ${root.activeVersion}` : 'No key'}
   </span>
-  <RowStatus status={tone}>{word}</RowStatus>
 </SettingsRow>

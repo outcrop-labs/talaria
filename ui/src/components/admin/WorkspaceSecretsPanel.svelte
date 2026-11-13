@@ -248,11 +248,7 @@
       <Input id="ws-secret-note" size="sm" bind:value={note} placeholder="Pushing to the release repo" />
     </SettingsField>
     <SettingsField label="Values" hint="A key, a label and the value. Add a row for each part, such as a username and a password.">
-      <!-- The shared editor still draws its own small mono caption; the field
-           label above replaces it here. -->
-      <div class="[&>p:first-child]:hidden">
-        <SecretEntriesEditor bind:entries keyPlaceholder="github_pat" labelPlaceholder="GitHub token" valuePlaceholder="Value, stored and never shown again" />
-      </div>
+      <SecretEntriesEditor bind:entries keyPlaceholder="github_pat" labelPlaceholder="GitHub token" valuePlaceholder="Value, stored and never shown again" />
     </SettingsField>
     <SettingsField
       label="Where it can be used"

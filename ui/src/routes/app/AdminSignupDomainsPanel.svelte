@@ -90,10 +90,14 @@
             <SettingsRow>
               {#snippet icon()}<Globe size={16} />{/snippet}
               {#snippet label()}<span class="font-mono text-[13px] font-normal">{d.domain}</span>{/snippet}
-              {#if d.verified}
-                <RowStatus status="ok" title="People on this domain can join on their own">Verified</RowStatus>
-              {:else}
-                <RowStatus status="warn">Waiting for DNS</RowStatus>
+              {#snippet status()}
+                {#if d.verified}
+                  <RowStatus status="ok" title="People on this domain can join on their own">Verified</RowStatus>
+                {:else}
+                  <RowStatus status="warn">Waiting for DNS</RowStatus>
+                {/if}
+              {/snippet}
+              {#if !d.verified}
                 <Button size="sm" variant="outline" disabled={verifying === d.id} onclick={() => void verify(d.id)}>
                   {verifying === d.id ? 'Checking' : 'Verify'}
                 </Button>
@@ -119,6 +123,7 @@
           label={data.length === 0 ? 'No domains yet' : 'Add a domain'}
           hint="The part after the @ in your team's email addresses."
           as="label"
+          apart
         >
           <Input
             size="sm"

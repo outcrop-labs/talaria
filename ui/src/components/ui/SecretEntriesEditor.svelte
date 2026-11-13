@@ -15,6 +15,7 @@
 
 <script lang="ts">
   import { Plus, X } from '@lucide/svelte'
+  import { useUiVoice } from '@/lib/ui-voice'
   import Button from './Button.svelte'
   import Input from './Input.svelte'
 
@@ -46,8 +47,45 @@
     labelPlaceholder?: string
     valuePlaceholder?: string
   } = $props()
+
+  // In the settings voice the caller's field label names the rows, so the
+  // caption is not drawn.
+  const sans = useUiVoice() === 'sans'
 </script>
 
+{#if sans}
+  <div class="space-y-2">
+    {#each entries as e, i (i)}
+      <div class="grid gap-2 sm:grid-cols-[1fr_1fr_2fr_auto]">
+        <Input bind:value={e.key} placeholder={keyPlaceholder} aria-label="Handle" size="sm" class="font-mono" />
+        <Input bind:value={e.label} placeholder={labelPlaceholder} aria-label="Label" size="sm" />
+        <Input
+          bind:value={e.value}
+          type="password"
+          autocomplete="off"
+          placeholder={valuePlaceholder}
+          aria-label="Value"
+          size="sm"
+        />
+        <Button
+          size="sm"
+          variant="ghost"
+          class="px-2"
+          disabled={entries.length === 1}
+          onclick={() => (entries = entries.filter((_, n) => n !== i))}
+          title="Remove this entry"
+          aria-label="Remove this entry"
+        >
+          <X size={16} aria-hidden="true" />
+        </Button>
+      </div>
+    {/each}
+    <Button size="sm" variant="ghost" class="-ml-3" onclick={() => (entries = [...entries, emptySecretEntry()])}>
+      <Plus size={16} aria-hidden="true" />
+      Add entry
+    </Button>
+  </div>
+{:else}
 <p class="mt-3 font-mono text-[10px] text-ink-dim">entries</p>
 {#each entries as e, i (i)}
   <div class="mt-1 grid gap-1 sm:grid-cols-[1fr_1fr_2fr_auto]">
@@ -78,3 +116,4 @@
   <Plus size={13} aria-hidden="true" />
   Another entry
 </Button>
+{/if}

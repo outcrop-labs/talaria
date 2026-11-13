@@ -82,7 +82,7 @@
     </SettingsField>
     {#if preset.configurableUrl}
       <SettingsField label="Base URL" for="models-base-url" hint="A host on your own network counts as self-hosted.">
-        <Input id="models-base-url" size="sm" class="font-[var(--font-mono)]" bind:value={baseUrl} placeholder={preset.baseUrl ?? 'https://host/v1'} />
+        <Input id="models-base-url" size="sm" class="font-mono" bind:value={baseUrl} placeholder={preset.baseUrl ?? 'https://host/v1'} />
       </SettingsField>
     {/if}
     <SettingsField label="API key" for="models-api-key" hint="Stored encrypted. It is never shown again.">
@@ -93,7 +93,7 @@
         <span class="mr-1 inline-block transition-transform group-open:rotate-90">›</span>Read the key from an environment variable
       </summary>
       <SettingsField class="mt-3" label="Variable name" for="models-api-key-env" hint="Used only when no key is stored above.">
-        <Input id="models-api-key-env" size="sm" class="font-[var(--font-mono)]" bind:value={apiKeyEnv} placeholder={preset.apiKeyEnv ?? 'MY_PROVIDER_KEY'} />
+        <Input id="models-api-key-env" size="sm" class="font-mono" bind:value={apiKeyEnv} placeholder={preset.apiKeyEnv ?? 'MY_PROVIDER_KEY'} />
       </SettingsField>
     </details>
     {#if err}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{err}</div>{/if}

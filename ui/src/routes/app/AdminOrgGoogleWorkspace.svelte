@@ -102,7 +102,9 @@
         A calendar everyone on your domain can edit.
       {/if}
     {/snippet}
-    <RowStatus status={data.calendarId ? 'ok' : 'idle'}>{data.calendarId ? 'Ready' : 'Not set up'}</RowStatus>
+    {#snippet status()}
+      <RowStatus status={data.calendarId ? 'ok' : 'idle'}>{data.calendarId ? 'Ready' : 'Not set up'}</RowStatus>
+    {/snippet}
     {#if data.readiness.connected}
       <Button variant="outline" size="sm" onclick={() => void run('calendar')} disabled={working !== null}>
         {working === 'calendar' ? 'Working' : data.calendarId ? 'Check again' : 'Set up'}
@@ -125,7 +127,9 @@
         A shared drive the team owns, open to your whole domain.
       {/if}
     {/snippet}
-    <RowStatus status={data.sharedDriveId ? 'ok' : 'idle'}>{data.sharedDriveId ? 'Ready' : 'Not set up'}</RowStatus>
+    {#snippet status()}
+      <RowStatus status={data.sharedDriveId ? 'ok' : 'idle'}>{data.sharedDriveId ? 'Ready' : 'Not set up'}</RowStatus>
+    {/snippet}
     {#if data.readiness.connected}
       <Button variant="outline" size="sm" onclick={() => void run('drive')} disabled={working !== null}>
         {working === 'drive' ? 'Working' : data.sharedDriveId ? 'Check again' : 'Set up'}

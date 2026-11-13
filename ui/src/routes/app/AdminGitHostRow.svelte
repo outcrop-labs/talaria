@@ -164,7 +164,7 @@
     {#snippet hint()}
       <span class="font-mono text-xs">{current.baseUrl}</span>{#if detail}{' · '}{detail}{/if}
     {/snippet}
-    <RowStatus status={testing ? 'idle' : conn.status}>{testing ? 'Testing' : conn.word}</RowStatus>
+    {#snippet status()}<RowStatus status={testing ? 'idle' : conn.status}>{testing ? 'Testing' : conn.word}</RowStatus>{/snippet}
     {#if fix}
       <Button variant="outline" size="sm" onclick={openFix}>{fix}</Button>
     {:else}

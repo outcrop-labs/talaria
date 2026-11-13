@@ -82,7 +82,9 @@
             label="From the app"
             hint={!s.reachable && s.error ? s.error : 'What Research dials.'}
           >
-            <RowStatus status={s.reachable ? 'ok' : 'danger'}>{s.reachable ? 'Reachable' : 'Unreachable'}</RowStatus>
+            {#snippet status()}
+              <RowStatus status={s.reachable ? 'ok' : 'danger'}>{s.reachable ? 'Reachable' : 'Unreachable'}</RowStatus>
+            {/snippet}
           </SettingsRow>
           <SettingsRow label="From agents">
             {#snippet hint()}
@@ -94,9 +96,11 @@
                 The same check, run inside a running agent.
               {/if}
             {/snippet}
-            <RowStatus status={s.agentReachable === null ? 'idle' : s.agentReachable ? 'ok' : 'danger'}>
-              {s.agentReachable === null ? 'Not checked' : s.agentReachable ? 'Reachable' : 'Unreachable'}
-            </RowStatus>
+            {#snippet status()}
+              <RowStatus status={s.agentReachable === null ? 'idle' : s.agentReachable ? 'ok' : 'danger'}>
+                {s.agentReachable === null ? 'Not checked' : s.agentReachable ? 'Reachable' : 'Unreachable'}
+              </RowStatus>
+            {/snippet}
           </SettingsRow>
         {/if}
       {/snippet}

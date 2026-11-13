@@ -113,6 +113,9 @@
 
   let managing = $state(false)
   const idx = $derived(index ? indexState(index) : null)
+  const entries = $derived(
+    index && !index.missing ? `${index.pointsCount.toLocaleString()} ${index.pointsCount === 1 ? 'entry' : 'entries'}` : null,
+  )
   const fixing = $derived(!!idx?.broken && !!rebuild)
   const Icon = $derived(col.kind === 'activity' ? Activity : col.kind === 'org-kb' ? BookOpen : Library)
   // Auto collections have fixed access (activity = your own scope; org-kb =
@@ -124,23 +127,19 @@
 </script>
 
 <div>
-  <SettingsRow label={col.name} hint={col.description ?? undefined}>
+  <SettingsRow label={col.name}>
     {#snippet icon()}<Icon size={16} />{/snippet}
     {#snippet meta()}{#if col.auto}<Chip>Built-in</Chip>{/if}{/snippet}
-    <div class="grid grid-cols-[6rem_11.5rem_9.5rem] items-center gap-4">
-      <span class="text-right font-sans text-[13px] leading-5 tabular-nums text-muted">
-        {#if index && !index.missing}{index.pointsCount.toLocaleString()} entries{/if}
-      </span>
-      <span>{#if idx}<RowStatus status={idx.status}>{idx.word}</RowStatus>{/if}</span>
-      <span class="flex items-center justify-end gap-3">
-        {#if fixing}
-          <Button variant="outline" size="sm" onclick={() => rebuild?.()}>Rebuild index</Button>
-        {:else if !col.auto}
-          <Button variant="outline" size="sm" onclick={() => (managing = true)}>Manage</Button>
-        {/if}
-        {#if !col.auto}<SettingsRowMenu label={`Actions for ${col.name}`} items={menu} />{/if}
-      </span>
-    </div>
+    {#snippet hint()}
+      {#if entries}<span class="tabular-nums">{entries}</span>{#if col.description}{' · '}{/if}{/if}{col.description ?? ''}
+    {/snippet}
+    {#snippet status()}{#if idx}<RowStatus status={idx.status}>{idx.word}</RowStatus>{/if}{/snippet}
+    {#if fixing}
+      <Button variant="outline" size="sm" onclick={() => rebuild?.()}>Rebuild index</Button>
+    {:else if !col.auto}
+      <Button variant="outline" size="sm" onclick={() => (managing = true)}>Manage</Button>
+    {/if}
+    {#if !col.auto}<SettingsRowMenu label={`Actions for ${col.name}`} items={menu} />{/if}
   </SettingsRow>
 {#if !col.auto}
   <Modal open={managing} onClose={() => (managing = false)} title={col.name} width="max-w-lg">

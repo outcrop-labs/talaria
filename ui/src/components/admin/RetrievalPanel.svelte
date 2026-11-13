@@ -114,7 +114,7 @@
       </QueryState>
       <!-- Creating a collection while the list is unknown risks a duplicate of
            one that is already there — hold the button until we know what exists. -->
-      <SettingsRow label="New collection" hint="Name it after what it holds." as="label">
+      <SettingsRow label="New collection" hint="Name it after what it holds." as="label" apart>
         <Input size="sm" class="w-[280px]" bind:value={name} placeholder="Sales playbook" onkeydown={(e) => e.key === 'Enter' && void create()} />
         <Button size="md" variant="outline" onclick={() => void create()} disabled={busy || !name.trim() || collectionsQuery.data === undefined}>
           Create collection
@@ -135,7 +135,7 @@
       {/if}
       {#if rag}
         <SettingsRow label="Vector store" hint="Where the index is kept.">
-          <RowStatus status={rag.health.qdrant ? 'ok' : 'danger'}>{rag.health.qdrant ? 'Running' : 'Down'}</RowStatus>
+          {#snippet status()}<RowStatus status={rag.health.qdrant ? 'ok' : 'danger'}>{rag.health.qdrant ? 'Running' : 'Unreachable'}</RowStatus>{/snippet}
         </SettingsRow>
         <SettingsRow
           label="Embeddings"
@@ -148,7 +148,7 @@
               Turns text into the vectors search compares.
             {/if}
           {/snippet}
-          <RowStatus status={rag.health.embeddings ? 'ok' : 'danger'}>{rag.health.embeddings ? 'Running' : 'Down'}</RowStatus>
+          {#snippet status()}<RowStatus status={rag.health.embeddings ? 'ok' : 'danger'}>{rag.health.embeddings ? 'Running' : 'Unreachable'}</RowStatus>{/snippet}
         </SettingsRow>
         <SettingsRow label="Backfill">
           {#snippet hint()}
@@ -162,13 +162,13 @@
               Indexes the records that existed before retrieval was on.
             {/if}
           {/snippet}
-          {#if rag.backfill.state === 'running'}
-            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+          {#snippet status()}
+            {#if rag.backfill.state === 'running'}
               <WaitingMark site="admin/retrieval-backfill" size={14} />Running
-            </span>
-          {:else if rag.backfill.state === 'error'}
-            <RowStatus status="danger">Failed</RowStatus>
-          {/if}
+            {:else if rag.backfill.state === 'error'}
+              <RowStatus status="danger">Failed</RowStatus>
+            {/if}
+          {/snippet}
           <Button size="sm" variant="outline" onclick={() => void backfill()} disabled={rebuilding || rag.backfill.state === 'running' || !servicesUp}>
             Run backfill
           </Button>

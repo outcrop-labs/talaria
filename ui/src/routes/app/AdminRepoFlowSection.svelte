@@ -79,7 +79,7 @@
         {@const unreachable = !data.repos.some((x) => x.host === r.host && x.repo === r.repo)}
         <SettingsRow hint={manyHosts ? hostName(r.host) : undefined} as="label">
           {#snippet label()}<span class="font-mono text-[13px] font-normal">{r.repo}</span>{/snippet}
-          {#if unreachable}<RowStatus status="warn">No longer reachable</RowStatus>{/if}
+          {#snippet status()}{#if unreachable}<RowStatus status="warn">Unreachable</RowStatus>{/if}{/snippet}
           <Input
             size="sm"
             class="w-[280px] font-mono"

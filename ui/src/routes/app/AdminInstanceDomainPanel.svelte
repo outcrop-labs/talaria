@@ -82,10 +82,14 @@
           <SettingsRow>
             {#snippet icon()}<Globe size={16} />{/snippet}
             {#snippet label()}<span class="font-mono text-[13px] font-normal">{data.domain}</span>{/snippet}
-            {#if data.verified}
-              <RowStatus status="ok" title="Requests to this address reach this instance">Verified</RowStatus>
-            {:else}
-              <RowStatus status="warn">Not verified</RowStatus>
+            {#snippet status()}
+              {#if data.verified}
+                <RowStatus status="ok" title="Requests to this address reach this instance">Verified</RowStatus>
+              {:else}
+                <RowStatus status="warn">Not verified</RowStatus>
+              {/if}
+            {/snippet}
+            {#if !data.verified}
               <Button size="sm" variant="outline" disabled={busy} onclick={() => void post({ verify: true })}>
                 {busy ? 'Checking' : 'Verify'}
               </Button>

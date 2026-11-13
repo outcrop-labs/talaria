@@ -139,7 +139,7 @@
     const ok = await confirm({
       title: 'Take over updates?',
       message:
-        'Talaria becomes its own deployer: it pulls its image, brings itself up beside this container, and an edge takes this port the moment the old container releases it — a one-time cut of a few seconds while traffic moves. Every update after this rolls with no interruption at all.',
+        'Talaria starts installing its own updates. The first handover interrupts traffic once, for a few seconds. Every update after that installs with no interruption.',
       confirmLabel: 'Take over',
     })
     if (!ok) return
@@ -212,7 +212,7 @@
     const ok = await confirm({
       title: 'Generate a deploy key?',
       message:
-        'The key authorizes the deploy script (check, apply, roll back) without a session. It is shown once and stored as a hash — copy it now or mint a new one later.',
+        'The key lets a deploy script check, update and roll back without signing in. It is shown once and only a hash is stored, so copy it now or generate a new one later.',
       confirmLabel: 'Generate',
     })
     if (!ok) return
@@ -263,6 +263,19 @@
   </SettingsRow>
 {/snippet}
 
+<!-- Declared out here because the rows below sit where `status` is the update
+     state, and a `status` snippet inside them would shadow it. -->
+{#snippet versionStatus()}
+  {#if status?.migrated && status.available && !upToDate}
+    <RowStatus status="warn">Update available</RowStatus>
+  {:else if status?.migrated && upToDate}
+    <RowStatus status="ok">Up to date</RowStatus>
+  {/if}
+{/snippet}
+{#snippet deployKeyStatus()}
+  <RowStatus status={status?.machineKeySet ? 'ok' : 'idle'}>{status?.machineKeySet ? 'Set' : 'Not set'}</RowStatus>
+{/snippet}
+
 <SettingsSection
   title="Updates"
   description="Keep this Talaria current without touching the server."
@@ -306,7 +319,7 @@
                  is the cutover, not an error card. -->
             {@render working('Moving traffic to the new version', 'This page follows along on its own.')}
           {:else}
-            <SettingsRow label="Version">
+            <SettingsRow label="Version" status={versionStatus}>
               {#snippet meta()}
                 <code class="shrink-0 font-mono text-xs text-muted">{status.running.version ?? 'local build'}</code>
               {/snippet}
@@ -330,13 +343,11 @@
                 </Button>
                 <SettingsRowMenu label="More update actions" items={[checkItem('Check for updates')]} />
               {:else if status.available && !upToDate}
-                <RowStatus status="warn">Update available</RowStatus>
                 <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void apply()}>
                   {busy === 'apply' ? 'Starting' : 'Update now'}
                 </Button>
                 <SettingsRowMenu label="More update actions" items={[checkItem('Check again'), ...rollbackItems]} />
               {:else}
-                {#if upToDate}<RowStatus status="ok">Up to date</RowStatus>{/if}
                 <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void check()}>
                   {busy === 'check' ? 'Checking' : upToDate ? 'Check again' : 'Check for updates'}
                 </Button>
@@ -356,8 +367,8 @@
               label="Deploy key"
               hint="Lets a deploy script check, update and roll back without signing in."
               info="The script sends it in the x-talaria-key header. Only a hash is stored, so the key is shown once. Generate a new one if you lose it."
+              status={deployKeyStatus}
             >
-              <RowStatus status={status.machineKeySet ? 'ok' : 'idle'}>{status.machineKeySet ? 'Set' : 'Not set'}</RowStatus>
               <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void mint()}>
                 {busy === 'mint' ? 'Generating' : status.machineKeySet ? 'Regenerate' : 'Generate'}
               </Button>

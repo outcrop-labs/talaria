@@ -67,16 +67,17 @@
       </Chip>
     {/if}
   {/snippet}
-  <RowStatus status={DOT[row.state]} title={STATE_COPY[row.state].hint} class="w-36">{STATE_COPY[row.state].label}</RowStatus>
-  <span class="w-24 shrink-0 text-right font-sans text-[13px] leading-5 tabular-nums text-muted" title={times || undefined}>
-    {row.setAt ? `Set ${relativeTime(row.setAt)}` : ''}
-  </span>
-  <!-- One slot for the action, so the status and date columns line up. -->
-  <span class="flex w-[4.5rem] shrink-0 justify-end">
-    {#if setUp}
-      <a href={row.href} class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Set up</a>
-    {:else if items.length}
-      <SettingsRowMenu label={`Actions for ${row.label}`} {items} />
-    {/if}
-  </span>
+  {#snippet status()}
+    <RowStatus status={DOT[row.state]} title={STATE_COPY[row.state].hint}>{STATE_COPY[row.state].label}</RowStatus>
+  {/snippet}
+  {#if row.setAt}
+    <span class="shrink-0 pl-6 font-sans text-[13px] leading-5 tabular-nums text-muted" title={times || undefined}>
+      Set {relativeTime(row.setAt)}
+    </span>
+  {/if}
+  {#if setUp}
+    <a href={row.href} class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Set up</a>
+  {:else if items.length}
+    <SettingsRowMenu label={`Actions for ${row.label}`} {items} />
+  {/if}
 </SettingsRow>

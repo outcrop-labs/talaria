@@ -6,7 +6,6 @@
   import { tabFromPath } from '@/lib/route-tabs'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import RetrievalPanel from '@/components/admin/RetrievalPanel.svelte'
   import AgentWebSearchPanel from '@/components/admin/AgentWebSearchPanel.svelte'
@@ -104,10 +103,8 @@
       {#if tab === 'git'}
         <!-- The hosts first: requests and PR bases are about repos on them. -->
         <AdminGitHostsPanel />
-        <Panel class="mt-4 space-y-5 p-3 sm:p-4">
-          <AdminRepoCreationSection />
-          <AdminRepoFlowSection />
-        </Panel>
+        <AdminRepoCreationSection />
+        <AdminRepoFlowSection />
       {/if}
       {#if tab === 'search'}
         <!-- The workspace search URL first: research reads it, and the agent

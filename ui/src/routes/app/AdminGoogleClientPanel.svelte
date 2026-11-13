@@ -149,13 +149,15 @@
                 Not set up yet. Open Client setup below.
               {/if}
             {/snippet}
-            {#if data.status.configured}
-              <RowStatus status="ok">
-                {data.status.source === 'admin' ? 'Set up here' : 'Set in the server environment'}
-              </RowStatus>
-            {:else}
-              <RowStatus status="idle">Not set up</RowStatus>
-            {/if}
+            {#snippet status()}
+              {#if data.status.configured}
+                <RowStatus status="ok">
+                  {data.status.source === 'admin' ? 'Set up here' : 'Set in the server environment'}
+                </RowStatus>
+              {:else}
+                <RowStatus status="idle">Not set up</RowStatus>
+              {/if}
+            {/snippet}
           </SettingsRow>
           <!-- Policy, not credential: offering "Continue with Google" on the
                sign-in screen is a deliberate admin act, so it is a toggle saved
@@ -186,9 +188,10 @@
               hint={data.personalConnected ? 'Manage it in Settings, under Connections.' : 'Lets your assistant use Drive, Calendar and Mail as you.'}
               info="This is your own connection, the same one as Settings, Connections. The shared account agents use is separate and is set up in the next section."
             >
-              {#if data.personalConnected}
-                <RowStatus status="ok">Connected</RowStatus>
-              {:else}
+              {#snippet status()}
+                <RowStatus status={data.personalConnected ? 'ok' : 'idle'}>{data.personalConnected ? 'Connected' : 'Not connected'}</RowStatus>
+              {/snippet}
+              {#if !data.personalConnected}
                 <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Connect</a>
               {/if}
             </SettingsRow>

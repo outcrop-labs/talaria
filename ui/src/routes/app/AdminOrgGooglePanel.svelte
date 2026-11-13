@@ -107,7 +107,7 @@
       {#snippet empty()}
         <SettingsRow label="Shared account" hint="Set up the Google Cloud client above first.">
           {#snippet icon()}<Building2 size={16} />{/snippet}
-          <RowStatus status="idle">Not available</RowStatus>
+          {#snippet status()}<RowStatus status="idle">Not available</RowStatus>{/snippet}
         </SettingsRow>
       {/snippet}
       {#snippet children(_data)}
@@ -123,8 +123,10 @@
               Agents cannot use Drive or Docs until an account is connected.
             {/if}
           {/snippet}
+          {#snippet status()}
+            <RowStatus status={data?.connected ? 'ok' : 'idle'}>{data?.connected ? 'Connected' : 'Not connected'}</RowStatus>
+          {/snippet}
           {#if data?.connected}
-            <RowStatus status="ok">Connected</RowStatus>
             <Button
               variant="outline"
               size="sm"
@@ -139,7 +141,6 @@
               items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}
             />
           {:else}
-            <RowStatus status="idle">Not connected</RowStatus>
             <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Connect</a>
           {/if}
         </SettingsRow>

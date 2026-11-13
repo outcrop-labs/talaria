@@ -105,16 +105,13 @@
           {@const st = inviteState(i)}
           <SettingsRow label={i.email} hint={`Sent ${relativeTime(i.createdAt)}`}>
             {#snippet icon()}<Mail size={16} />{/snippet}
-            <RowStatus status={STATUS[st].dot}>{STATUS[st].word}</RowStatus>
-            <!-- Every row keeps the kebab's width, so the states line up. -->
-            <span class="flex w-7 justify-end">
-              {#if st === 'pending'}
-                <SettingsRowMenu
-                  label={`Actions for the invite to ${i.email}`}
-                  items={[{ label: 'Revoke invite', danger: true, onSelect: () => void revoke(i.id) }]}
-                />
-              {/if}
-            </span>
+            {#snippet status()}<RowStatus status={STATUS[st].dot}>{STATUS[st].word}</RowStatus>{/snippet}
+            {#if st === 'pending'}
+              <SettingsRowMenu
+                label={`Actions for the invite to ${i.email}`}
+                items={[{ label: 'Revoke invite', danger: true, onSelect: () => void revoke(i.id) }]}
+              />
+            {/if}
           </SettingsRow>
         {/each}
       {/snippet}
