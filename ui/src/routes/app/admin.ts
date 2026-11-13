@@ -11,8 +11,10 @@ export const ADMIN_TABS: { id: AdminTab; label: string }[] = [
   // Forgejo / Gitea), the repo requests waiting on a human, and each repo's
   // PR base.
   { id: 'git', label: 'Git hosts' },
-  { id: 'search', label: 'Search' },
-  { id: 'retrieval', label: 'Retrieval' },
+  // Two kinds of search, named for what is searched: the web, and the
+  // workspace's own knowledge.
+  { id: 'search', label: 'Web search' },
+  { id: 'retrieval', label: 'Knowledge search' },
   { id: 'storage', label: 'Storage' },
   // Its own tab rather than a section under Security: an operator whose
   // secrets are unreadable is not thinking about security policy, and this is
