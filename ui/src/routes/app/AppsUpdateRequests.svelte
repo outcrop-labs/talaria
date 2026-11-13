@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { GitBranch } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -65,10 +64,8 @@
           {#each requests as r (r.id)}
             {@const app = apps.find((a) => a.slug === r.appSlug)}
             <div data-update-request>
-              <SettingsRow label={app?.name ?? r.appSlug}>
-                {#snippet icon()}
-                  {#if app}<AppsMark icon={app.icon} />{:else}<GitBranch size={16} />{/if}
-                {/snippet}
+              {#snippet mark()}{#if app}<AppsMark icon={app.icon} tile />{/if}{/snippet}
+              <SettingsRow label={app?.name ?? r.appSlug} lead={app ? mark : undefined}>
                 {#snippet meta()}
                   <span class="shrink-0 font-mono text-xs text-muted">{shortSha(r.fromSha)} → {shortSha(r.targetSha)}</span>
                 {/snippet}
@@ -79,7 +76,7 @@
                   {#if r.prs.length > 0 && r.maintainer}·{/if}
                   {#if r.maintainer}<span title="The agent that maintains it">Maintained by {r.maintainer}</span>{/if}
                 {/snippet}
-                <Button size="sm" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
+                <Button size="sm" variant="outline" class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
                   {busy === r.id ? 'Updating' : 'Update'}
                 </Button>
                 <Button

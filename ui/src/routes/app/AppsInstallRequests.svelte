@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { GitBranch } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -83,7 +82,6 @@
             {@const conflict = conflicts[r.id]}
             <div data-install-request>
               <SettingsRow label={nameOf(r)}>
-                {#snippet icon()}<GitBranch size={16} />{/snippet}
                 {#snippet meta()}
                   <span class="min-w-0 truncate font-mono text-xs text-muted" title={r.url}>{r.repo} @ {r.ref ?? 'default branch'} on {r.hostId}</span>
                 {/snippet}
@@ -96,7 +94,7 @@
                       >{/if}
                   </div>
                 {/snippet}
-                <Button size="sm" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
+                <Button size="sm" variant="outline" class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
                   {busy === r.id ? 'Installing' : 'Install'}
                 </Button>
                 <Button

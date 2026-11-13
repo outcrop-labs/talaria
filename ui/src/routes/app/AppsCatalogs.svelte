@@ -1,6 +1,5 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Library } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -125,7 +124,6 @@
           </div>
         {:else}
           <SettingsRow label={c.name}>
-            {#snippet icon()}<Library size={16} />{/snippet}
             {#snippet hint()}
               <div class="break-all font-mono text-xs leading-5">{c.url}</div>
               {#if c.enabled && c.error}<div class="wrap-anywhere text-warning">{c.error}</div>{/if}

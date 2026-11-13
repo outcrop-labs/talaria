@@ -5,7 +5,6 @@
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import { buttonClasses } from '@/components/ui/button'
   import Chip from '@/components/ui/Chip.svelte'
   import type { DotStatus } from '@/components/ui/chip'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
@@ -14,7 +13,7 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { navigate, p } from '@/router'
+  import { navigate } from '@/router'
   import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
@@ -197,18 +196,21 @@
     return a.enabled ? { dot: 'ok', text: 'Enabled' } : { dot: 'idle', text: 'Disabled' }
   }
 
-  /** The one action a row shows. Everything else is in its menu. */
-  const primaryOf = (a: InstalledApp): 'rebuild' | 'enable' | 'open' | null => {
+  const open = (a: InstalledApp) => void navigate('/x/:app', { params: { app: a.slug } })
+
+  /** The button a row shows: only the action that fixes its state. Open is
+   *  the row's click, and everything else is in its menu. */
+  const fixOf = (a: InstalledApp): 'rebuild' | 'enable' | null => {
     if (isAdmin && !a.broken && a.build?.status === 'failed') return 'rebuild'
     if (isAdmin && !a.broken && !a.enabled) return 'enable'
-    return canOpen(a) ? 'open' : null
+    return null
   }
 
   const menuOf = (a: InstalledApp): ContextMenuEntry[] => {
-    const primary = primaryOf(a)
+    const fix = fixOf(a)
     const working = busy === a.slug
     const items: ContextMenuEntry[] = []
-    if (canOpen(a) && primary !== 'open') items.push({ label: 'Open', onSelect: () => void navigate('/x/:app', { params: { app: a.slug } }) })
+    if (canOpen(a)) items.push({ label: 'Open', onSelect: () => open(a) })
     if (hasDetails(a))
       items.push({
         label: detailsOpen[a.slug] ? 'Hide details' : 'Show details',
@@ -234,7 +236,7 @@
           onSelect: () => void setPolicy(a, policy),
         })),
       })
-    if (!a.broken && primary !== 'enable') items.push({ label: a.enabled ? 'Disable' : 'Enable', disabled: working, onSelect: () => void toggle(a) })
+    if (!a.broken && fix !== 'enable') items.push({ label: a.enabled ? 'Disable' : 'Enable', disabled: working, onSelect: () => void toggle(a) })
     if (items.length) items.push('sep')
     items.push({ label: 'Uninstall', danger: true, disabled: working, onSelect: () => void uninstall(a) })
     return items
@@ -250,7 +252,7 @@
   {#if a.surfaces.work}<Chip title={`Work view: ${a.surfaces.work}`}>Work view</Chip>{/if}
   {#if a.surfaces.manage}<Chip title={`Manage view: ${a.surfaces.manage}`}>Manage view</Chip>{/if}
   {#if a.surfaces.settings}<Chip title={`Settings panel: ${a.surfaces.settings}`}>Settings</Chip>{/if}
-  {#if a.mcp}<Chip title="Publishes MCP tools for agents. Govern access under MCP.">MCP</Chip>{/if}
+  {#if a.mcp}<Chip title="Gives agents tools through its own MCP server. Choose who may use them under MCP.">Agent tools</Chip>{/if}
 {/snippet}
 
 <!-- The activity harnesses the app ships (harnesses/*.ts), as the host last
@@ -378,10 +380,10 @@
     <SettingsGroup data-app-cards>
       {#each apps as a (a.slug)}
         {@const standing = statusOf(a)}
-        {@const primary = primaryOf(a)}
+        {@const fix = fixOf(a)}
         {@const menu = menuOf(a)}
         <div>
-          <SettingsRow label={a.name}>
+          <SettingsRow label={a.name} onOpen={canOpen(a) ? () => open(a) : undefined} openLabel={`Open ${a.name}`}>
             {#snippet icon()}<AppsMark icon={a.icon} />{/snippet}
             {#snippet meta()}
               {#if a.version}<span class={`shrink-0 ${identifier}`}>v{a.version}</span>{/if}
@@ -412,12 +414,10 @@
                 <StatusDot status={standing.dot} pulse={standing.pulse} />{standing.text}
               </span>
             {/snippet}
-            {#if primary === 'rebuild'}
-              <Button size="sm" variant="outline" disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</Button>
-            {:else if primary === 'enable'}
-              <Button size="sm" variant="outline" disabled={busy === a.slug} onclick={() => void toggle(a)}>Enable</Button>
-            {:else if primary === 'open'}
-              <a href={p('/x/:app', { params: { app: a.slug } })} class={buttonClasses({ variant: 'outline', size: 'sm', voice: 'sans' })}>Open</a>
+            {#if fix === 'rebuild'}
+              <Button size="sm" variant="outline" class="w-24" disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</Button>
+            {:else if fix === 'enable'}
+              <Button size="sm" variant="outline" class="w-24" disabled={busy === a.slug} onclick={() => void toggle(a)}>Enable</Button>
             {/if}
             {#if menu.length}<SettingsRowMenu label={`Actions for ${a.name}`} items={menu} />{/if}
           </SettingsRow>
