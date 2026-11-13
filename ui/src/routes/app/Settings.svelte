@@ -1,5 +1,5 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { route } from '@/router'
@@ -18,7 +18,6 @@
   import { useEnabledApps } from '@/lib/apps'
   import { appAccess } from '@/lib/app-grants'
   import { fly, staggerIn } from '@/lib/motion'
-  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import PreferredModelPicker from './settings/PreferredModelPicker.svelte'
   import TimezonePicker from './settings/TimezonePicker.svelte'
@@ -31,19 +30,17 @@
   import DesktopSection from './settings/DesktopSection.svelte'
   import { inDesktopShell } from '@/lib/desktop-shell'
 
-  // Personal settings, tabbed by concern: Profile (identity + drafting model),
-  // Assistant (the member's whole personal agent), Connections, API keys —
-  // plus one tab per enabled app that ships a settings surface. The title
-  // claim is unread (lib/view-title); the body opens on its tabs.
-  claimViewTitle('Settings')
-
+  // Personal settings, one page per concern: Profile (identity + drafting
+  // model), Notifications, Assistant (the member's whole personal agent),
+  // Connections, API keys — plus one per enabled app that ships a settings
+  // surface. The sidebar's Personal group is the way between them.
   type SettingsTab = 'profile' | 'notifications' | 'assistant' | 'connections' | 'keys' | `app:${string}`
-  const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-    { id: 'profile', label: 'Profile' },
-    { id: 'notifications', label: 'Notifications' },
-    { id: 'assistant', label: 'Assistant' },
-    { id: 'connections', label: 'Connections' },
-    { id: 'keys', label: 'API keys' },
+  const SETTINGS_TABS: { id: SettingsTab; label: string; blurb: string }[] = [
+    { id: 'profile', label: 'Profile', blurb: 'How you appear to teammates and agents.' },
+    { id: 'notifications', label: 'Notifications', blurb: 'Choose what reaches you, and where.' },
+    { id: 'assistant', label: 'Assistant', blurb: 'Your personal agent, its voice, and what it can reach.' },
+    { id: 'connections', label: 'Connections', blurb: 'Accounts your assistant can act through.' },
+    { id: 'keys', label: 'API keys', blurb: 'Keys for scripts and tools that call Talaria as you.' },
   ]
 
   const qc = useQueryClient()
@@ -78,7 +75,12 @@
   const appTabs = $derived(
     appsList.rows
       .filter((a) => appAccess(a, { isAdmin: user?.role === 'admin', appGrants: appGrants.current }).settings)
-      .map((a) => ({ id: `app:${a.slug}` as SettingsTab, label: a.surfaces.settings! })),
+      .map((a) => ({ id: `app:${a.slug}` as SettingsTab, label: a.surfaces.settings!, blurb: undefined })),
+  )
+  // An app tab this person was not granted has no page: the URL alone
+  // (/settings/app:<slug>) is not a grant, so it titles as Settings.
+  const page = $derived(
+    [...SETTINGS_TABS, ...appTabs].find((t) => t.id === tab) ?? { id: tab, label: 'Settings', blurb: undefined },
   )
 
   $effect(() => {
@@ -102,9 +104,8 @@
   }
 </script>
 
-<PageSurface>
-  <div>
-    {#if appsList.notice}<div class="mb-6"><QueryError {...appsList.notice} /></div>{/if}
+<SettingsPage title={page.label} blurb={page.blurb}>
+    {#if appsList.notice}<QueryError {...appsList.notice} />{/if}
     <!-- Tab-pane grammar: pane rises in on switch (no exit) and its sections
          stagger — settings panes are section stacks. Keying is safe here: the
          profile input's state (`name`) lives in this component, not the pane.
@@ -173,5 +174,4 @@
     {#if tab.startsWith('app:') && appTabs.some((t) => t.id === tab)}<AppSurface slug={tab.slice(4)} surface="settings" />{/if}
     </div>
     {/key}
-  </div>
-</PageSurface>
+</SettingsPage>

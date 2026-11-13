@@ -1,5 +1,5 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
@@ -12,7 +12,6 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import Tabs from '@/components/ui/Tabs.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import RetrievalPanel from '@/components/admin/RetrievalPanel.svelte'
   import AgentWebSearchPanel from '@/components/admin/AgentWebSearchPanel.svelte'
@@ -25,7 +24,6 @@
   import { useSession } from '@/lib/session'
   import { relativeTime } from '@/lib/fleet'
   import { fly, slide, staggerIn } from '@/lib/motion'
-  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
   import { useEnabledApps } from '@/lib/apps'
   import { appGrantViewsOf } from '@/lib/app-grants'
@@ -54,8 +52,6 @@
   import { ADMIN_TABS, useAdminPermissions, useAdminUsers, type AdminTab } from './admin'
 
   // The admin console: people, their roles, and which agents each may use.
-  // The claim is unread (lib/view-title); the body opens on its tabs.
-  claimViewTitle('Admin')
   const qc = useQueryClient()
   const session = useSession()
   const me = $derived(session.data)
@@ -112,10 +108,8 @@
 {#if me && me.role !== 'admin'}
   <EmptyState icon="⛨" title="Admins only" hint="Ask an admin if you need access here." />
 {:else}
-  <PageSurface>
-    <div class="space-y-6">
-      <!-- One concern per tab; every panel keeps its own component. -->
-      <Tabs items={ADMIN_TABS} value={tab} onChange={setTab} />
+  <!-- One concern per tab; every panel keeps its own component. -->
+  <SettingsPage title="Admin" blurb="Settings for the whole instance." tabs={ADMIN_TABS} {tab} onTab={setTab}>
 
       <!-- Tab-pane grammar: pane rises in on switch (no exit), panels stagger —
            these are section stacks, one Panel per concern. -->
@@ -312,6 +306,5 @@
       {/if}
       </div>
       {/key}
-    </div>
-  </PageSurface>
+  </SettingsPage>
 {/if}

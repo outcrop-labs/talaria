@@ -1,28 +1,19 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
-  import { createRawSnippet, type Snippet } from 'svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate, route } from '@/router'
-  import Tabs from '@/components/ui/Tabs.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { confirmDelete } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { useContextMenu, openCopyItems } from '@/components/ui/context-menu.svelte'
-  import { fly, staggerIn } from '@/lib/motion'
+  import { fly } from '@/lib/motion'
   import { useSession } from '@/lib/session'
-  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { createTemplate, deleteTemplate, useTemplates, type Template, type TemplateKind } from '@/lib/templates'
   import TemplateDetail from './templates/TemplateDetail.svelte'
-
-  // The view's title and its InfoTip live in the top strip (lib/view-title) —
-  // the body opens straight onto its tabs.
-  claimViewTitle('Templates', {
-    info: 'The markdown skeletons work starts from. Resolution order everywhere: explicit pick → agent binding → board default → freeform.',
-  })
 
   // Templates — the skeletons work starts from, managed in one place. One tab
   // per surface that consumes them (tickets, plans); the body edits in the
@@ -93,19 +84,14 @@
     await refresh()
   }
 
-  // Tab labels carry the per-kind count — bridged into the zero-arg snippet
-  // Tabs.svelte expects (the React version passed a <span> inline).
-  // An em dash where a number would be: unknown, not zero. A
-  // count is an assertion — never print one from a read that
-  // hasn't landed or has failed.
-  const tabLabel = (label: string, count: string): Snippet =>
-    createRawSnippet(() => ({
-      render: () => `<span>${label}<span class="ml-1.5 text-ink-dim">${count}</span></span>`,
-    }))
+  // Tab labels carry the per-kind count. No count where a number would be
+  // unknown: a count is an assertion, never printed from a read that has not
+  // landed or has failed.
   const tabItems = $derived(
     TEMPLATE_TABS.map((t) => ({
       id: t.id,
-      label: tabLabel(t.label, isLoading || failed ? '…' : String(templates.filter((x) => x.kind === t.id).length)),
+      label: t.label,
+      count: isLoading || failed ? undefined : templates.filter((x) => x.kind === t.id).length,
     })),
   )
 </script>
@@ -113,18 +99,13 @@
 {#if session && session.role !== 'admin'}
   <EmptyState icon="▣" title="Admins only" />
 {:else}
-  <PageSurface>
-    <!-- Page content entrance: tab strip → list+detail pane rise in sequence
-         (ANIMATIONS.md). The keyed pane keeps its own fly on kind switch and
-         stays unstaggered inside — one level only. -->
-    <div use:staggerIn class="space-y-6">
-      <Tabs items={tabItems} value={tab} onChange={setTab} />
+  <SettingsPage title="Templates" blurb="Starting points for tickets and plans." tabs={tabItems} {tab} onTab={setTab} fill>
 
       <!-- Tab-pane grammar: the whole library pane rises in on a kind switch
            (no exit). Safe to key: the new-template input's state lives above;
            the detail is already keyed by selection. -->
       {#key tab}
-      <div in:fly={{ y: 6, duration: 200 }} class="h-[calc(100vh-19rem)] min-h-[26rem]">
+      <div in:fly={{ y: 6, duration: 200 }} class="h-full min-h-[26rem]">
         <LibraryPane
           groups={[{ items: list }]}
           idOf={(t: Template) => t.id}
@@ -171,7 +152,6 @@
         </LibraryPane>
       </div>
       {/key}
-    </div>
     <ContextMenu {menu} />
-  </PageSurface>
+  </SettingsPage>
 {/if}

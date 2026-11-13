@@ -1,5 +1,5 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import Button from '@/components/ui/Button.svelte'
@@ -7,9 +7,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
-  import Tabs from '@/components/ui/Tabs.svelte'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
-  import { fly, staggerIn } from '@/lib/motion'
+  import { fly } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { useEndpoints } from '@/lib/models'
   import type { LlmEndpoint } from '@/lib/fleet-defs'
@@ -62,12 +60,14 @@
 {#if session.data && !isAdmin}
   <EmptyState icon="▤" title="Admins only" />
 {:else}
-  <PageSurface>
-    <!-- Page content entrance: header row → tab strip → pane rise in sequence
-         (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
-         stays unstaggered inside — one level only. -->
-    <div use:staggerIn class="space-y-6">
-      <ViewHeader title="Models">
+  <SettingsPage
+    title="Models"
+    blurb="The model providers your agents can use."
+    tabs={MODEL_TABS}
+    {tab}
+    onTab={setTab}
+    staggerItems="[data-cards] > *"
+  >
         {#snippet actions()}
           {#if tab === 'models'}
             <Button size="sm" onclick={() => (adding = true)}>
@@ -75,9 +75,6 @@
             </Button>
           {/if}
         {/snippet}
-      </ViewHeader>
-
-      <Tabs items={MODEL_TABS} value={tab} onChange={setTab} />
 
       <!-- Tab-pane grammar: rise in on switch, no exit. On MOUNT the pane is a
            section whose items cascade: endpoint cards (the [data-cards] hook)
@@ -125,6 +122,5 @@
 
       {#if adding}<ModelsAddProviderModal open={adding} onClose={() => (adding = false)} onAdded={(id) => (manageId = id)} />{/if}
       {#if managing}<ModelsEndpointModal ep={managing} onClose={() => (manageId = null)} />{/if}
-    </div>
-  </PageSurface>
+  </SettingsPage>
 {/if}

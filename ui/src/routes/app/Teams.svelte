@@ -1,5 +1,5 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { navigate } from '@/router'
@@ -9,16 +9,11 @@
   import { confirmDelete } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { useContextMenu, openCopyItems } from '@/components/ui/context-menu.svelte'
-  import { staggerIn } from '@/lib/motion'
-  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { toastError } from '@/lib/toast.svelte'
   import { createTeam, deleteTeam, useTeamsAll, type Team } from '@/lib/teams'
   import TeamDetail from './TeamDetail.svelte'
 
   // View grant is the door — no admin-only gate here.
-  claimViewTitle('Teams', {
-    info: 'People and agents as an organization principal. Membership expands at auth time onto shared work, views, and tools.',
-  })
 
   const qc = useQueryClient()
   const read = listQuery(useTeamsAll(), { title: 'Could not load teams', variant: 'compact' })
@@ -67,9 +62,8 @@
   }
 </script>
 
-<PageSurface>
-  <div use:staggerIn>
-    <div class="h-[calc(100vh-8rem)] min-h-[26rem]">
+<SettingsPage title="Teams" blurb="Group people and agents so work and access follow the team." fill>
+    <div class="h-full min-h-[26rem]">
       <LibraryPane
         groups={[{ items: teams }]}
         idOf={(t: Team) => t.id}
@@ -126,5 +120,4 @@
       </LibraryPane>
     </div>
     <ContextMenu {menu} />
-  </div>
-</PageSurface>
+</SettingsPage>

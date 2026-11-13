@@ -1,5 +1,5 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -7,9 +7,7 @@
   import Materialize from '@/components/ui/Materialize.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import Tabs from '@/components/ui/Tabs.svelte'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
-  import { fly, staggerIn } from '@/lib/motion'
+  import { fly } from '@/lib/motion'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import McpAddServerModal from './McpAddServerModal.svelte'
@@ -93,15 +91,18 @@
   }}
 />
 
-<PageSurface>
-  <!-- Page content entrance: header row, then the registry region, rise in
-       sequence (ANIMATIONS.md). The registry region rises as one child here;
-       the card cascade inside it belongs to Materialize's content branch. -->
-  <div use:staggerIn class="space-y-6">
-    <ViewHeader
-      title="MCP"
-      info="Model Context Protocol servers, managed org-wide. Register once; choose which agents carry each server and which people may use it, down to individual tools. Agents reach servers only through Talaria's gateway, so the limits here are enforced, not advisory."
-    >
+<!-- The registry region rises as one child of the page; the card cascade
+     inside it belongs to Materialize's content branch. -->
+<SettingsPage
+  title="MCP"
+  blurb="Tools your agents can call, and who may use them."
+  tabs={[
+    { id: 'internal', label: 'Built-in' },
+    { id: 'external', label: 'External' },
+  ]}
+  {tab}
+  onTab={goTab}
+>
       {#snippet actions()}
         <!-- Adding only ever means adding an EXTERNAL server: the internal ones
              arrive with the deployment and cannot be registered by hand. -->
@@ -114,16 +115,6 @@
           </Button>
         {/if}
       {/snippet}
-    </ViewHeader>
-
-    <Tabs
-      items={[
-        { id: 'internal', label: 'Built-in' },
-        { id: 'external', label: 'External' },
-      ]}
-      value={tab}
-      onChange={goTab}
-    />
 
     <!-- Skeleton → content as one motion: card-shaped skeletons materialize
          into the real cards (Materialize grid-stacks the branches, so no
@@ -180,5 +171,4 @@
 
     {#if adding === 'marketplace'}<McpMarketplaceModal onClose={() => (adding = null)} onCustom={() => (adding = 'custom')} />{/if}
     {#if adding === 'custom'}<McpAddServerModal onClose={() => (adding = null)} />{/if}
-  </div>
-</PageSurface>
+</SettingsPage>

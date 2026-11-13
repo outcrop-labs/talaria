@@ -1,5 +1,5 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { CircleAlert, Import, LayoutGrid, List, Plus, Repeat } from '@lucide/svelte'
   import { designHeadline, pendingDesign, useAgentDesign } from '@/lib/agent-design'
@@ -17,8 +17,6 @@
   import { anyLoading } from '@/components/ui/query-state'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import Tabs from '@/components/ui/Tabs.svelte'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import CreateAgentModal from '@/components/fleet/CreateAgentModal.svelte'
   import HiringStrip from '@/components/fleet/HiringStrip.svelte'
   import RoleTemplatesTab from '@/components/fleet/RoleTemplatesTab.svelte'
@@ -28,7 +26,7 @@
   import { errorMessage } from '@/lib/fetch-json'
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
-  import { fly, slide, staggerIn } from '@/lib/motion'
+  import { fly, slide } from '@/lib/motion'
   import { containersOf, hiresToShow, rollFleet, rollRowsBySlug, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
@@ -237,26 +235,31 @@
 {#snippet gridIcon()}<LayoutGrid size={14} />{/snippet}
 {#snippet listIcon()}<List size={14} />{/snippet}
 
-<PageSurface>
-  <!-- Page content entrance: toolbar row, then the roster region, rise in
-       sequence (ANIMATIONS.md). The roster region is ONE child at this level;
-       the tile cascade lives on the loaded branch's own stagger below. -->
-  <div use:staggerIn class="space-y-6">
-    <ViewHeader title="Agents">
-      {#snippet status()}
-        {#if t}
-          <span>{t.online}/{t.agents} online · {t.activeToday} active today</span>
-        {:else if fleetQuery.isError}
-          <!-- Missing totals with no explanation read as "nothing is running". -->
-          <span class="text-danger" title={errorMessage(fleetQuery.error)}>
-            Agent status unavailable
-          </span>
-        {:else if fleetQuery.isLoading}
-          <!-- Hold the slot so the toolbar doesn't jog when the totals land. -->
-          <Skeleton class="h-3 w-40" />
-        {/if}
-      {/snippet}
+<!-- The roster region is ONE child of the page; the tile cascade lives on
+     the loaded branch's own stagger below. -->
+<SettingsPage
+  title="Agents"
+  blurb="The agents on your team, what they do, and whether they are running."
+  tabs={[
+    { id: 'agents', label: 'Agents' },
+    { id: 'templates', label: 'Role templates' },
+    { id: 'schedules', label: 'Schedules' },
+  ]}
+  {tab}
+  onTab={goTab}
+>
       {#snippet actions()}
+        <span class="mr-1 font-sans text-[13px] leading-5 text-muted tabular-nums">
+          {#if t}
+            {t.online}/{t.agents} online · {t.activeToday} active today
+          {:else if fleetQuery.isError}
+            <!-- Missing totals with no explanation read as "nothing is running". -->
+            <span class="text-danger" title={errorMessage(fleetQuery.error)}>Agent status unavailable</span>
+          {:else if fleetQuery.isLoading}
+            <!-- Hold the slot so the toolbar doesn't jog when the totals land. -->
+            <Skeleton class="h-3 w-40" />
+          {/if}
+        </span>
         <!-- Roster controls, and only on the roster: a grid/list toggle means
              nothing next to a template library or a schedule list. -->
         {#if tab === 'agents'}
@@ -318,17 +321,6 @@
         {/if}
         {/if}
       {/snippet}
-    </ViewHeader>
-
-    <Tabs
-      items={[
-        { id: 'agents', label: 'Agents' },
-        { id: 'templates', label: 'Role templates' },
-        { id: 'schedules', label: 'Schedules' },
-      ]}
-      value={tab}
-      onChange={goTab}
-    />
 
     <!-- Tab-pane grammar: rise in on switch, no exit (ANIMATIONS.md). -->
     {#key tab}
@@ -547,5 +539,4 @@
     {#if duplicateFrom}
       <CreateAgentModal open onClose={() => (duplicateFrom = null)} templates={defs} templateId={duplicateFrom.id} />
     {/if}
-  </div>
-</PageSurface>
+</SettingsPage>

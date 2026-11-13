@@ -1,8 +1,7 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
   import ActivityPanel from '@/components/manage/ActivityPanel.svelte'
   import AgentsTile from '@/components/manage/AgentsTile.svelte'
   import AppsTile from '@/components/manage/AppsTile.svelte'
@@ -18,7 +17,6 @@
   import WorkbenchHarnessPanel from '@/components/manage/WorkbenchHarnessPanel.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { manageArea } from '@/lib/manage-area'
-  import { staggerIn } from '@/lib/motion'
   import { NAV } from '@/lib/nav'
   import { useAppGrants, useDeniedViews, useHasPerm, useSession } from '@/lib/session'
   import { navigate, route } from '@/router'
@@ -62,9 +60,7 @@
   const showAttention = $derived(isAdmin || has('/observability'))
 </script>
 
-<PageSurface>
-  <div use:staggerIn class="space-y-6">
-    <ViewHeader title="Manage" blurb="The control plane at a glance. Every number opens the page that owns it." />
+<SettingsPage title="Overview" blurb="What needs attention across your workspace, and where to fix it.">
 
     {#if session.data && area.items.length === 0}
       <EmptyState
@@ -103,5 +99,4 @@
         <ActivityPanel />
       </div>
     {/if}
-  </div>
-</PageSurface>
+</SettingsPage>
