@@ -124,6 +124,7 @@ export async function runReset(ctx: Ctx, mode: ResetMode): Promise<number> {
     ctx.log.raw(row('agent_keys (per-agent credentials)', await psql('select count(*) from agent_keys')))
     ctx.log.raw(row('google_connections (per-user OAuth)', await psql('select count(*) from google_connections')))
     ctx.log.raw(row('google_org_connection (org OAuth)', await psql('select count(*) from google_org_connection')))
+    ctx.log.raw(row('agent_google_connections (agent OAuth)', await psql('select count(*) from agent_google_connections')))
     ctx.log.raw(row('mcp_oauth_tokens (connected accounts)', await psql('select count(*) from mcp_oauth_tokens')))
     ctx.log.raw(row('mcp_user_credentials (headers)', await psql('select count(*) from mcp_user_credentials')))
     ctx.log.raw(row('app_settings: email/storage/github', await psql("select count(*) from app_settings where key in ('email_config','storage_config','github_config')")))
@@ -149,6 +150,7 @@ delete from agent_secrets;
 delete from agent_keys;
 delete from google_connections;
 delete from google_org_connection;
+delete from agent_google_connections;
 delete from mcp_oauth_tokens;
 delete from mcp_user_credentials;
 delete from app_settings where key in ('email_config','storage_config','github_config');

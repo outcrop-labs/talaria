@@ -9,14 +9,8 @@
 //                              (password accounts are admitted by an admin at
 //                              creation — these doors do not re-gate them)
 //
-//   Google OAuth — credentials from EITHER the Admin UI record (Admin → Org →
-//   Google Workspace, stored in app_settings; the Rust client-config twin is
-//   api/src/google/client.rs) OR:
-//   AUTH_GOOGLE_CLIENT_ID / AUTH_GOOGLE_CLIENT_SECRET
-//   AUTH_GOOGLE_ENABLED=1     login bootstrap — the Admin UI toggle beside the
-//                             client is the primary switch; env pins login ON
-//                             (see googleLoginEnabled)
-//   AUTH_GOOGLE_HD             optional Google Workspace hosted-domain restriction
+//   Google OAuth is not read here: the client (the Admin UI record, else
+//   AUTH_GOOGLE_*) is resolved by the Rust api, talaria-google-client.
 //
 // Password accounts live in the database (user_password_credentials — Admin →
 // People), not the environment. The first admin is minted by the first-run
@@ -32,7 +26,6 @@ export interface ProviderMeta {
   kind: 'oauth' | 'password'
 }
 
-const flag = (v: string | undefined) => v === '1' || v === 'true'
 const list = (v: string | undefined) =>
   (v ?? '')
     .split(',')
@@ -44,26 +37,15 @@ export interface AuthConfig {
   publicUrl: string | null
   allowedDomains: string[]
   allowedEmails: string[]
-  google: { enabled: boolean; clientId: string; clientSecret: string; hd: string | null }
 }
 
 export function getAuthConfig(): AuthConfig {
   const env = process.env
-
-  const googleEnabled =
-    flag(env.AUTH_GOOGLE_ENABLED) && !!env.AUTH_GOOGLE_CLIENT_ID && !!env.AUTH_GOOGLE_CLIENT_SECRET
-
   return {
     secret: env.AUTH_SECRET ?? '',
     publicUrl: env.AUTH_PUBLIC_URL?.replace(/\/$/, '') || null,
     allowedDomains: list(env.AUTH_ALLOWED_DOMAINS),
     allowedEmails: list(env.AUTH_ALLOWED_EMAILS),
-    google: {
-      enabled: googleEnabled,
-      clientId: env.AUTH_GOOGLE_CLIENT_ID ?? '',
-      clientSecret: env.AUTH_GOOGLE_CLIENT_SECRET ?? '',
-      hd: env.AUTH_GOOGLE_HD?.trim() || null,
-    },
   }
 }
 

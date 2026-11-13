@@ -41,10 +41,16 @@
     return () => clearTimeout(t)
   })
 
+  // As on the personal disconnect: the server's sentence when the grant was
+  // kept at Google (an admin's own connection shares it) or Google refused.
+  let revokeNote = $state('')
+
   const disconnect = async () => {
+    revokeNote = ''
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect the org Google account? General agents lose Drive/Docs access.', confirmLabel: 'Disconnect', danger: true }))) return
     try {
-      await delJson<{ ok: true }>('/api/integrations/google/org')
+      const r = await delJson<{ ok: true; revoked: boolean; revokeNote: string | null }>('/api/integrations/google/org')
+      revokeNote = r.revokeNote ?? ''
     } catch (e) {
       toastError('Disconnect failed', e)
       return
@@ -52,10 +58,10 @@
     await qc.invalidateQueries({ queryKey: ['org-google'] })
   }
 
-  // Live probe of Drive / Calendar / Gmail — consent succeeds even with the
-  // APIs disabled in Google Cloud Console, so "connected" alone proves nothing
-  // about calls actually working. On demand, never on load (three real Google
-  // requests per click).
+  // Live probe of Drive / Calendar / Gmail / Sheets / Slides — consent
+  // succeeds even with the APIs disabled in Google Cloud Console, so
+  // "connected" alone proves nothing about calls actually working. On demand,
+  // never on load (five real Google requests per click).
   let apiResults = $state<GoogleApiHealth[] | null>(null)
   let probing = $state(false)
   let probeError = $state<string | null>(null)
@@ -131,6 +137,7 @@
         <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm' })}>Connect</a>
       {/if}
     </div>
+    {#if revokeNote}<p class="mt-2 max-w-prose text-xs text-muted">{revokeNote}</p>{/if}
     {#if data?.connected}
       <!-- The "can we actually call Google" check — see probeApis above. -->
       <div class="mt-3 space-y-1.5">
@@ -139,7 +146,7 @@
           <Button variant="ghost" size="sm" onclick={() => void probeApis()} disabled={probing}>
             {probing ? 'Testing…' : 'Test'}
           </Button>
-          <span class="font-sans text-[10px] text-muted">Drive · Calendar · Gmail reachability</span>
+          <span class="font-sans text-[10px] text-muted">Drive · Calendar · Gmail · Sheets · Slides reachability</span>
         </div>
         {#if probeError}<div class="text-xs text-danger">{probeError}</div>{/if}
         {#if apiResults}

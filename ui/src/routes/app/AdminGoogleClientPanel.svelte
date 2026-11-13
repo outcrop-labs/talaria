@@ -216,7 +216,7 @@
       <div>
         <div class="mb-1.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
           <span>Enabled APIs</span>
-          <InfoTip text="Google Cloud Console → APIs &amp; Services → Library → enable each of these on the project that owns the OAuth client. Connecting works without them; using Drive, Calendar, or Mail does not." />
+          <InfoTip text="Google Cloud Console → APIs &amp; Services → Library → enable each of these on the project that owns the OAuth client. Connecting works without them; using Drive, Calendar, Mail, Sheets, or Slides does not." />
         </div>
         <div class="space-y-1">
           {#each GOOGLE_APIS as a (a.service)}

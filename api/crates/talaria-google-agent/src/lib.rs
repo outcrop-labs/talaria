@@ -282,20 +282,22 @@ pub async fn upsert_principal(
     Ok(())
 }
 
-/// Drop the agent's own Google connection. If the principal was that
+/// Drop the agent's own Google connection, revoking its grant at Google
+/// unless another stored connection holds the same grant — an identity
+/// connected with its manager's own account shares the manager's grant, and
+/// revoking it would cut the manager off. If the principal was that
 /// connection, restore the seeded default (owner column, else org) — an
 /// explicit admin action, not a silent fallback on a write.
 pub async fn disconnect_agent_google(
     pg: &PgPool,
+    sb: &SecretBox,
     agent_model: &str,
-) -> Result<AgentPrincipal, sqlx::Error> {
-    sqlx::query("delete from agent_google_connections where agent_model = $1")
-        .bind(agent_model)
-        .execute(pg)
-        .await?;
+) -> Result<(AgentPrincipal, talaria_google_connections::RevokeOutcome), sqlx::Error> {
+    use talaria_google_connections::{GrantRow, forget_grant};
+    let outcome = forget_grant(pg, sb, &GrantRow::Agent(agent_model.to_string())).await?;
     let current = load_principal(pg, agent_model).await?;
     if current.kind != PrincipalKind::Agent {
-        return Ok(current);
+        return Ok((current, outcome));
     }
     let restored = principal_from_legacy(legacy_owner(pg, agent_model).await?);
     upsert_principal(
@@ -305,7 +307,7 @@ pub async fn disconnect_agent_google(
         restored.owner_user_id.as_deref(),
     )
     .await?;
-    Ok(restored)
+    Ok((restored, outcome))
 }
 
 pub async fn remember_agent_oauth_state(

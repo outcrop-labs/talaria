@@ -107,9 +107,13 @@ multi-account setup path.
 
 ## Security
 
-- Refresh tokens are **encrypted at rest** (AES-256-GCM, `server/secretbox.ts`,
-  key derived from `AUTH_SECRET`). They are the one runtime credential we must
-  store — unlike API keys, where we persist only the env-var *name*.
+- Refresh tokens are **encrypted at rest** (AES-256-GCM envelope encryption,
+  `api/crates/talaria-secretbox`: a data key per version, wrapped by a key
+  derived from the root secret `TALARIA_SECRET_KEY`, falling back to
+  `AUTH_SECRET` — [ENCRYPTION.md](./ENCRYPTION.md)). They are the one runtime
+  credential we must store. A `talaria reset secrets` clears every Google token
+  store: per-user (`google_connections`), org (`google_org_connection`) and
+  per-agent (`agent_google_connections`).
 - Access tokens are cached (also encrypted) and refreshed transparently; an
   `invalid_grant` clears the connection so the UI prompts a reconnect.
 - Scopes actually requested (`WORKSPACE_SCOPES` in `talaria-google-oauth`):
@@ -127,7 +131,17 @@ multi-account setup path.
   **restricted** scopes and full `drive` is **sensitive** — fine for an
   internal/Workspace-only app, but public/external distribution would need
   Google's security assessment.
-- Disconnect best-effort **revokes** the token at Google, then forgets it.
+- Disconnect — personal, org, or an agent's own identity — **revokes** the
+  grant at Google, then forgets the connection. A revoke ends more than the
+  token sent — Google: "Revocation removes all OAuth 2.0 scopes previously
+  granted to a project, invalidating any issued access or refresh tokens for
+  all clients registered under that project" (see below) — so a disconnect
+  first checks the other stored connections: when another one holds a live token
+  for the same Google account (an admin who connected the org with their own
+  account; an agent identity connected with its manager's account), it
+  forgets its own row **without revoking** and says so — the last connection
+  to go revokes the grant. A revoke Google refuses still forgets the row, and
+  the answer quotes Google's words.
 
 ## Operator setup
 
@@ -155,10 +169,13 @@ redirect URIs (login + per-user connect + org connect + per-agent identity):
 The Admin → Google Workspace · OAuth client panel lists these with the actual
 origin — copy them from there rather than by hand.
 
-and enable the **Google Drive API**, **Google Calendar API**, and **Gmail API**
-(listed with console links under Admin → Google Workspace · OAuth client;
-**Test** next to the connected org account probes all three live — consent
-succeeds even with the APIs off, so the probe is how you find out). Add the
+and enable the **Google Drive API**, **Google Calendar API**, **Gmail API**,
+**Google Sheets API** and **Google Slides API** — the agents' sheet and slides
+tools call the last two (listed with console links under Admin → Google
+Workspace · OAuth client; **Test** next to the connected org account probes
+all five live — consent succeeds even with the APIs off, so the probe is how
+you find out, and a disabled API shows Google's own sentence and its
+activation page for your project). Add the
 `drive`, `calendar`, `calendar.events`, `gmail.modify`, and `gmail.send`
 scopes to the consent screen. `drive` / `calendar` / `calendar.events` are
 sensitive; `gmail.*` are restricted.
@@ -167,7 +184,19 @@ review; a public/External app would (especially the Gmail scopes).
 
 ## Verified vs. trusted
 
-The connect redirect (offline + `drive.file` + `prompt=consent`), the token
+**What a revoke ends: documented by Google, not exercised live.** Google's
+[OAuth 2.0 for web server applications](https://developers.google.com/identity/protocols/oauth2/web-server)
+page, under "Token revocation", says: "Revocation removes all OAuth 2.0 scopes
+previously granted to a project, invalidating any issued access or refresh
+tokens for all clients registered under that project." The shared-grant check
+before a disconnect's revoke rests on that sentence. The scope it names is the
+Google Cloud **project**, not one OAuth client: a second client in the same
+project (a sign-in client, say) shares the grant. So the check matches stored
+connections on the Google account alone, whichever client minted them. No
+revoke of a real grant has been made here; every revoke exercised so far sent
+a token Google never issued.
+
+The connect redirect (offline + `WORKSPACE_SCOPES` + `prompt=consent`), the token
 encryption round-trip/tamper-rejection, the DB model, and the export permission
 gating are all verified live. The **actual Drive round-trip** (create Doc/Sheet)
 requires real Google client credentials + a consented account and cannot be

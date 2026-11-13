@@ -338,38 +338,15 @@ pub async fn save_org_connection(
     Ok(())
 }
 
-/// Forget the org connection and best-effort revoke its token at Google.
-pub async fn disconnect_org(pg: &PgPool, sb: &SecretBox) {
-    let row: Option<(Option<String>,)> =
-        sqlx::query_as("select refresh_token_enc from google_org_connection where id = 1")
-            .fetch_optional(pg)
-            .await
-            .ok()
-            .flatten();
-    if let Some((Some(enc),)) = row
-        && let Ok(token) = sb.open(&enc)
-    {
-        // Dropped before the await — the Serializer's encoder fn-pointer is
-        // not Send (same note as request_refresh).
-        let body = {
-            let mut form = url::form_urlencoded::Serializer::new(String::new());
-            form.append_pair("token", &token);
-            form.finish()
-        };
-        let _ = talaria_gateway::provider::http()
-            .post("https://oauth2.googleapis.com/revoke")
-            .header(
-                axum::http::header::CONTENT_TYPE,
-                "application/x-www-form-urlencoded",
-            )
-            .timeout(talaria_google_connections::GOOGLE_REQUEST_TIMEOUT)
-            .body(body)
-            .send()
-            .await;
-    }
-    let _ = sqlx::query("delete from google_org_connection where id = 1")
-        .execute(pg)
-        .await;
+/// Forget the org connection, and revoke its grant at Google unless another
+/// stored connection holds the same grant — an admin who connected the org
+/// with their own account keeps their personal connection.
+pub async fn disconnect_org(
+    pg: &PgPool,
+    sb: &SecretBox,
+) -> talaria_google_connections::RevokeOutcome {
+    use talaria_google_connections::{GrantRow, forget_grant_best_effort};
+    forget_grant_best_effort(pg, sb, &GrantRow::Org).await
 }
 
 /// The connected org account's email alone, or null. The aliasing derivation
