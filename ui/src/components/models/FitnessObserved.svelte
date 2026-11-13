@@ -45,12 +45,14 @@
   const liveOf = $derived(new Map(observed.map((o) => [o.harness, o])))
   const label = (id: string): string => harnessLabels[id] ?? labelOf.get(id) ?? id
   const dash = '—'
+
+  const num = 'px-3 text-right font-sans text-[13px] tabular-nums text-muted'
 </script>
 
 {#if divergences.length > 0}
-  <ul class="mb-3 space-y-1">
+  <ul class="mb-4 space-y-1">
     {#each divergences as d (`${d.harness}:${d.metric}`)}
-      <li class={cn('max-w-prose font-sans text-xs', d.worse ? 'text-warning' : 'text-muted')}>{d.note}</li>
+      <li class={cn('max-w-[72ch] font-sans text-[13px] leading-5', d.worse ? 'text-warning' : 'text-muted')}>{d.note}</li>
     {/each}
   </ul>
 {/if}
@@ -63,41 +65,46 @@
     hint="Harness runs from the last {thresholds.observedWindowDays} days appear here next to the benched numbers. An install that has not run these harnesses yet shows nothing, which is correct."
   />
 {:else}
-  <div class="overflow-x-auto">
+  <div class="overflow-x-auto rounded-lg border border-line bg-panel">
     <table class="w-full border-collapse text-left">
       <thead>
-        <tr class="border-b border-line font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          <th class="py-1.5 pr-3 font-normal">Harness</th>
-          <th class="px-2 py-1.5 text-right font-normal" title="Contract held on the first attempt, on the fixtures.">Bench 1st</th>
-          <th class="px-2 py-1.5 text-right font-normal" title="Contract held at all, including after a repair turn.">Bench held</th>
-          <th class="px-2 py-1.5 text-right font-normal" title="Guard findings per fixture run.">Bench guard</th>
-          <th class="border-l border-line px-2 py-1.5 text-right font-normal">Live 1st</th>
-          <th class="px-2 py-1.5 text-right font-normal" title="Share of production runs a repair turn had to rescue.">Live repaired</th>
-          <th class="px-2 py-1.5 text-right font-normal">Live guard</th>
-          <th class="px-2 py-1.5 text-right font-normal" title="Runs in the window. Below {thresholds.minObservedRuns} runs a gap is sampling noise and is not reported as a divergence.">Runs</th>
+        <tr class="font-sans text-xs leading-4 text-muted">
+          <th class="px-5 pt-2.5 font-medium"></th>
+          <th colspan="3" class="px-3 pt-2.5 text-center font-medium">Tested</th>
+          <th colspan="4" class="border-l border-line-subtle pl-3 pr-5 pt-2.5 text-center font-medium">In production</th>
+        </tr>
+        <tr class="border-b border-line font-sans text-xs leading-4 text-muted">
+          <th class="px-5 py-2.5 font-medium">Harness</th>
+          <th class="px-3 py-2.5 text-right font-medium" title="Contract held on the first attempt, on the fixtures.">First try</th>
+          <th class="px-3 py-2.5 text-right font-medium" title="Contract held at all, including after a repair turn.">Held</th>
+          <th class="px-3 py-2.5 text-right font-medium" title="Guard findings per fixture run.">Guard</th>
+          <th class="border-l border-line-subtle px-3 py-2.5 text-right font-medium">First try</th>
+          <th class="px-3 py-2.5 text-right font-medium" title="Share of production runs a repair turn had to rescue.">Repaired</th>
+          <th class="px-3 py-2.5 text-right font-medium">Guard</th>
+          <th class="py-2.5 pl-3 pr-5 text-right font-medium" title="Runs in the window. Below {thresholds.minObservedRuns} runs a gap is sampling noise and is not reported as a divergence.">Runs</th>
         </tr>
       </thead>
       <tbody>
         {#each rows as id (id)}
           {@const t = testedOf.get(id)}
           {@const o = liveOf.get(id)}
-          <tr class="border-b border-line-subtle last:border-0">
-            <td class="py-1.5 pr-3 font-mono text-[11px] text-fg">
+          <tr class="h-11 border-b border-line-subtle last:border-0">
+            <td class="px-5 font-sans text-[13px] text-fg">
               {label(id)}
               {#if !t}<Chip
-                  class="ml-1.5"
+                  class="ml-2"
                   title={skipOf.get(id) ??
                     'Production runs this harness and the last bench did not cover it; either it declares no fixtures, or the sweep did not reach it.'}
-                >{skipOf.has(id) ? 'not testable here' : 'unbenched'}</Chip
+                >{skipOf.has(id) ? 'Not testable here' : 'Not tested'}</Chip
                 >{/if}
             </td>
-            <td class="px-2 py-1.5 text-right font-mono text-[11px] text-muted">{t ? pct(t.contractRate) : dash}</td>
-            <td class="px-2 py-1.5 text-right font-mono text-[11px] text-muted">{t ? pct(t.repairRate) : dash}</td>
-            <td class="px-2 py-1.5 text-right font-mono text-[11px] text-muted">{t ? t.guardRate.toFixed(2) : dash}</td>
-            <td class="border-l border-line px-2 py-1.5 text-right font-mono text-[11px] text-muted">{o ? pct(o.contractRate) : dash}</td>
-            <td class="px-2 py-1.5 text-right font-mono text-[11px] text-muted">{o ? pct(o.repairedShare) : dash}</td>
-            <td class="px-2 py-1.5 text-right font-mono text-[11px] text-muted">{o ? o.findingsPerRun.toFixed(2) : dash}</td>
-            <td class="px-2 py-1.5 text-right font-mono text-[11px] text-muted">{o ? o.runs : dash}</td>
+            <td class={num}>{t ? pct(t.contractRate) : dash}</td>
+            <td class={num}>{t ? pct(t.repairRate) : dash}</td>
+            <td class={num}>{t ? t.guardRate.toFixed(2) : dash}</td>
+            <td class={cn(num, 'border-l border-line-subtle')}>{o ? pct(o.contractRate) : dash}</td>
+            <td class={num}>{o ? pct(o.repairedShare) : dash}</td>
+            <td class={num}>{o ? o.findingsPerRun.toFixed(2) : dash}</td>
+            <td class={cn(num, 'pr-5')}>{o ? o.runs : dash}</td>
           </tr>
         {/each}
       </tbody>
@@ -108,10 +115,10 @@
     <!-- The two findings figures are kept apart deliberately: one has a run
          denominator and one does not, and adding them would produce a rate
          with no population. -->
-    <p class="mt-2 max-w-prose font-sans text-xs text-muted">
-      Across all harnesses in the last {thresholds.observedWindowDays} days this model ran {observedModel.harnessRuns} time(s) at
-      {observedModel.harnessFindingsPerRun.toFixed(2)} findings per run, and the guard filed {observedModel.guardFindings} finding(s) against it
-      overall; {observedModel.confabulation} of which were the model inventing something rather than repeating something it should not have.
+    <p class="mt-3 max-w-[72ch] font-sans text-[13px] leading-5 text-muted">
+      Across all harnesses in the last {thresholds.observedWindowDays} days this model ran {observedModel.harnessRuns} time{observedModel.harnessRuns === 1 ? '' : 's'} at
+      {observedModel.harnessFindingsPerRun.toFixed(2)} findings per run. The guard filed {observedModel.guardFindings} finding{observedModel.guardFindings === 1 ? '' : 's'} against it,
+      {observedModel.confabulation} of them the model inventing something rather than repeating something it should not have.
     </p>
   {/if}
 {/if}

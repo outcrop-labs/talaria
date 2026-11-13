@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { ChevronRight } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
-  import type { EvalLogLine, LiveRun } from './fitness'
+  import { TIER_META, type EvalLogLine, type LiveRun } from './fitness'
 
   // THE SWEEP AS IT HAPPENS, as a log.
   //
@@ -57,7 +58,7 @@
     gap: { mark: '⚑', tone: 'text-warning', word: 'GAP ' },
     error: { mark: '!', tone: 'text-danger', word: 'err ' },
     timeout: { mark: '⏱', tone: 'text-warning', word: 'time' },
-    skip: { mark: '–', tone: 'text-ink-dim', word: 'skip' },
+    skip: { mark: '–', tone: 'text-muted', word: 'skip' },
   }
 
   /** Slow is relative to what this sweep has been doing, not to a number
@@ -118,7 +119,7 @@
   const keyOf = (c: { harness: string; case: string }): string => `${c.harness}::${c.case}`
 
   const ROLE_TONE: Record<string, string> = {
-    system: 'text-ink-dim',
+    system: 'text-muted',
     user: 'text-muted',
     assistant: 'text-success',
     tool: 'text-accent',
@@ -137,25 +138,25 @@
      carries its own max height. Height that depended on a parent chain is what
      made the collapsed console fold to nothing and the open one overflow into
      the list beneath it. -->
-<div class="flex flex-col overflow-hidden rounded-md border border-line bg-card">
-  <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.05em]">
+<div class="flex flex-col overflow-hidden rounded-lg border border-line bg-card">
+  <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 font-sans text-[13px] leading-5 tabular-nums">
     <button
       type="button"
       onclick={() => (open = !open)}
-      class="-ml-1 flex items-center gap-1.5 rounded px-1 py-0.5 text-muted transition-colors dither-fill hover:text-fg"
+      class="-ml-1 flex items-center gap-1.5 rounded px-1 font-medium text-fg transition-colors hover:bg-hover"
       aria-expanded={open}
     >
-      <span class={cn('text-[9px] transition-transform duration-150', open && 'rotate-90')}>▶</span>
-      console
+      <ChevronRight size={14} class={cn('text-muted transition-transform duration-150', open && 'rotate-90')} aria-hidden="true" />
+      Console
     </button>
-    <span class="text-muted">{live ? (live.phase === 'scoring' ? 'scoring' : (live.phase ?? 'running')) : 'finished'}</span>
-    <span class="text-muted">{live ? `${live.done}/${live.total || '?'}` : `${log.length} lines`}</span>
-    {#if counts.pass}<span class="text-success">{counts.pass} pass</span>{/if}
-    {#if counts.fail}<span class="text-danger">{counts.fail} fail</span>{/if}
-    {#if counts.error}<span class="text-danger">{counts.error} err</span>{/if}
-    {#if counts.timeout}<span class="text-warning">{counts.timeout} timeout</span>{/if}
+    <span class="text-muted">{live ? (live.phase === 'scoring' ? 'Scoring' : live.phase ? TIER_META[live.phase].label : 'Running') : 'Finished'}</span>
+    <span class="text-muted">{live ? `${live.done} of ${live.total || '?'}` : `${log.length} lines`}</span>
+    {#if counts.pass}<span class="text-success">{counts.pass} passed</span>{/if}
+    {#if counts.fail}<span class="text-danger">{counts.fail} failed</span>{/if}
+    {#if counts.error}<span class="text-danger">{counts.error} errored</span>{/if}
+    {#if counts.timeout}<span class="text-warning">{counts.timeout} timed out</span>{/if}
     {#if counts.gap}<span class="text-warning">{counts.gap} our gap</span>{/if}
-    {#if counts.skip}<span class="text-ink-dim">{counts.skip} skipped</span>{/if}
+    {#if counts.skip}<span class="text-muted">{counts.skip} skipped</span>{/if}
     {#if open}
       <span class="ml-auto">
         <button
@@ -164,9 +165,9 @@
             follow = true
             if (pane) pane.scrollTop = pane.scrollHeight
           }}
-          class={cn('rounded px-1.5 py-0.5 transition-colors', follow ? 'text-ink-dim' : 'text-accent dither-fill')}
+          class={cn('rounded px-1.5 transition-colors', follow ? 'text-muted' : 'text-accent hover:bg-hover')}
         >
-          {follow ? 'following' : 'jump to end'}
+          {follow ? 'Following' : 'Jump to end'}
         </button>
       </span>
     {/if}
@@ -191,14 +192,14 @@
             onclick={() => (openTurns = { ...openTurns, [keyOf(c)]: !turnsOpen })}
             disabled={c.turns.length === 0}
             aria-expanded={turnsOpen}
-            class="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 rounded px-1 py-0.5 text-left font-mono text-[11px] transition-colors enabled:dither-fill"
+            class="flex w-full flex-wrap items-baseline gap-x-2 gap-y-1 rounded px-1 py-0.5 text-left font-mono text-xs transition-colors enabled:hover:bg-hover"
           >
             <span class={cn('text-accent transition-transform duration-150', turnsOpen && 'rotate-90')}>▶</span>
             <span class="text-muted">{c.harness}</span>
             <span class="min-w-0 flex-1 truncate text-fg">{c.case}</span>
-            {#if c.maxTurns > 1}<span class="text-ink-dim">turn {c.turn}/{c.maxTurns}</span>{/if}
+            {#if c.maxTurns > 1}<span class="text-muted">turn {c.turn}/{c.maxTurns}</span>{/if}
             {#if c.open > 0}<span class="text-warning">waiting on the model</span>{/if}
-            <span class={elapsed > 60 ? 'text-warning' : 'text-ink-dim'}>{elapsed}s</span>
+            <span class={elapsed > 60 ? 'text-warning' : 'text-muted'}>{elapsed}s</span>
           </button>
           {#if turnsOpen && c.turns.length > 0}
             <!-- THE TURNS AS THEY HAPPEN. On a tool loop this is the only place
@@ -207,13 +208,13 @@
                  want. -->
             <ol class="mt-1 max-h-40 space-y-1 overflow-auto rounded border border-line-subtle bg-raised/40 p-1.5">
               {#each c.turns as t, i (i)}
-                <li class="font-mono text-[10px] leading-4">
-                  <span class={cn('uppercase tracking-[0.08em]', ROLE_TONE[t.role] ?? 'text-muted')}>{t.role}</span>
+                <li class="font-mono text-xs leading-4">
+                  <span class={cn('font-medium', ROLE_TONE[t.role] ?? 'text-muted')}>{t.role}</span>
                   {#if t.toolCalls?.length}<span class="text-accent"> → {t.toolCalls.join(', ')}</span>{/if}
                   {#if t.content.trim()}
                     <div class="whitespace-pre-wrap break-words text-muted">{t.content}</div>
                   {:else}
-                    <div class="text-ink-dim">(no prose; the turn was tool calls)</div>
+                    <div class="text-muted">(no prose; the turn was tool calls)</div>
                   {/if}
                 </li>
               {/each}
@@ -228,37 +229,37 @@
     <div
       bind:this={pane}
       onscroll={onScroll}
-      class="max-h-[38vh] min-h-[8rem] overflow-auto border-t border-line bg-black/40 p-3 font-mono text-[11px] leading-[1.45]"
+      class="max-h-[38vh] min-h-[8rem] overflow-auto border-t border-line bg-black/40 p-3 font-mono text-xs leading-[1.45]"
     >
       {#if log.length === 0}
         <!-- Not "the first fixture": tier 1 runs before any fixture does, and a
              console that says it is waiting for something that is not next is
              the kind of small lie that makes a watcher distrust the rest. -->
-        <div class="text-ink-dim">waiting for the first result to land…</div>
+        <div class="text-muted">Waiting for the first result to land</div>
       {:else}
         {#each log as l, i (`${l.harness}::${l.case}::${i}`)}
           {@const v = VERDICT[l.verdict]}
           <div class="whitespace-pre-wrap break-words">
-            <span class="text-ink-dim">{String(i + 1).padStart(3, ' ')}</span>
+            <span class="text-muted">{String(i + 1).padStart(3, ' ')}</span>
             <span class={v.tone}> {v.mark} {v.word}</span>
             <span class={sourceTone(l.harness)}> {pad(l.harness, 20)}</span>
             <span class="text-fg">{l.case}</span>
-            <span class={l.ms > slowAbove ? 'text-warning' : 'text-ink-dim'}> {l.ms}ms</span>
-            {#if l.tokens > 0}<span class="text-ink-dim"> {l.tokens}tok</span>{/if}
+            <span class={l.ms > slowAbove ? 'text-warning' : 'text-muted'}> {l.ms}ms</span>
+            {#if l.tokens > 0}<span class="text-muted"> {l.tokens}tok</span>{/if}
             {#if l.calls > 0}<span class="text-accent"> {l.calls} tools</span>{/if}
             <!-- THE EVIDENCE BEHIND A TIMEOUT, on the line itself. "1 up, 1 open"
                  is a request that never came back; "4 up" is a case that spent
                  its budget retrying; nothing at all is time that went somewhere
                  before the provider was ever reached. -->
             {#if l.up}
-              <span class={l.up.open > 0 ? 'text-warning' : 'text-ink-dim'}> {l.up.calls} up{l.up.open > 0 ? `, ${l.up.open} open` : ''}</span>
+              <span class={l.up.open > 0 ? 'text-warning' : 'text-muted'}> {l.up.calls} up{l.up.open > 0 ? `, ${l.up.open} open` : ''}</span>
             {/if}
             {#if l.note}
-              <div class={cn('pl-8', l.verdict === 'gap' ? 'text-warning' : l.verdict === 'skip' ? 'text-ink-dim' : 'text-danger')}>↳ {l.note}</div>
+              <div class={cn('pl-8', l.verdict === 'gap' ? 'text-warning' : l.verdict === 'skip' ? 'text-muted' : 'text-danger')}>↳ {l.note}</div>
             {/if}
           </div>
         {/each}
-        <div class="mt-1 text-ink-dim">
+        <div class="mt-1 text-muted">
           {#if live?.state === 'running'}<span class="animate-pulse">▊</span>{:else}(run {live?.state ?? 'finished'}){/if}
         </div>
       {/if}

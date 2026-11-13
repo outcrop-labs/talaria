@@ -2,7 +2,8 @@
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import { cn } from '@/lib/cn'
-  import { BAND_BG, BAND_META, BAND_SEVERITY, BAND_TEXT, caseCategory, pct, usd, type DetailPayload } from './fitness'
+  import FitnessMark from './FitnessMark.svelte'
+  import { BAND_BG, BAND_META, BAND_SEVERITY, BAND_TEXT, SAFETY_META, caseCategory, pct, usd, type DetailPayload } from './fitness'
 
   // THE ANSWER, BEFORE THE EVIDENCE.
   //
@@ -131,6 +132,14 @@
   const mins = (ms: number): string => (ms >= 60_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 1000)}s`)
 
   const divergences = $derived(detail.divergences ?? [])
+
+  // One card of cells, each a door to the pane that holds its evidence.
+  const cell = 'flex min-w-0 flex-col items-start px-5 py-4 text-left'
+  const door = cn(cell, 'transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent')
+  const caption = 'font-sans text-xs leading-4 text-muted'
+  const figure = 'mt-1 font-sans text-[15px] font-semibold leading-6'
+  const note = 'mt-1 font-sans text-[13px] leading-5 text-muted'
+  const landed = $derived(record?.adversarial?.rules.reduce((n, r) => n + r.elicited, 0) ?? 0)
 </script>
 
 {#if !record}
@@ -143,16 +152,16 @@
       : 'Run the probes to fill in what this model can do, and the harness tier to fill in the matrix.'}
   />
 {:else}
-  <div class="space-y-5">
+  <div class="space-y-8">
     <!-- ── The verdict ─────────────────────────────────────────────────── -->
     <section>
       {#if headline}
-        <div class="flex flex-wrap items-baseline gap-2">
-          <span class={cn('font-mono text-base', BAND_TEXT[headline.band])}>{BAND_META[headline.band].glyph}</span>
-          <span class="font-sans text-sm text-fg">{headline.line}</span>
+        <div class="flex items-center gap-2.5">
+          <span class="grid h-4 w-3 place-items-center"><FitnessMark band={headline.band} /></span>
+          <span class="font-sans text-[15px] font-semibold leading-5 text-fg">{headline.line}</span>
         </div>
       {/if}
-      <div class="mt-2 flex h-1.5 overflow-hidden rounded-full">
+      <div class="mt-3 flex h-1.5 overflow-hidden rounded-full">
         {#each bar as b (b.band)}
           <div class={cn(BAND_BG[b.band])} style="width: {(b.n / slots.length) * 100}%" title="{b.n} {BAND_META[b.band].label}"></div>
         {/each}
@@ -160,81 +169,69 @@
       <button
         type="button"
         onclick={() => onOpen('verdicts')}
-        class="mt-2 flex flex-wrap items-center gap-1.5 text-left transition-opacity hover:opacity-80"
+        class="mt-3 flex flex-wrap items-center gap-1.5 rounded-md text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         {#each bar as b (b.band)}
           <Chip tone={BAND_META[b.band].tone} title={BAND_META[b.band].blurb}>{b.n} {BAND_META[b.band].label}</Chip>
         {/each}
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">per slot →</span>
+        <span class="ml-1 font-sans text-[13px] leading-5 text-accent underline-offset-2 hover:underline">See each verdict</span>
       </button>
     </section>
 
     <!-- ── The three tiers, side by side ───────────────────────────────── -->
-    <section class="grid gap-3 sm:grid-cols-3">
+    <section class="grid overflow-hidden rounded-lg border border-line bg-panel sm:grid-cols-3 sm:divide-x sm:divide-line-subtle">
       <!-- Tier 1 -->
-      <button
-        type="button"
-        onclick={() => onOpen('capabilities')}
-        class="rounded-md border border-line bg-raised/40 p-3 text-left transition-colors hover:border-line-strong"
-      >
-        <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Capabilities</div>
+      <button type="button" onclick={() => onOpen('capabilities')} class={door}>
+        <div class={caption}>Capabilities</div>
         {#if !probes}
-          <div class="mt-1 font-sans text-sm text-warning">Not measured</div>
-          <p class="mt-1 font-sans text-xs text-muted">Tier 1 did not run, so every capability tag on this model came from somewhere else.</p>
+          <div class={cn(figure, 'text-warning')}>Not measured</div>
+          <p class={note}>Tier 1 did not run, so every capability tag on this model came from somewhere else.</p>
         {:else}
-          <div class="mt-1 font-sans text-sm text-fg">{probes.yes} present · {probes.no} absent</div>
-          <p class="mt-1 font-sans text-xs text-muted">
+          <div class={cn(figure, 'text-fg')}>{probes.yes} present · {probes.no} absent</div>
+          <p class={note}>
             {#if probes.unmeasured > 0}{probes.unmeasured} unmeasured (skipped or errored, not a no).{/if}
             {#if probes.reused > 0}
-              {probes.reused} reused from an earlier run rather than re-bought.
+              {probes.reused} reused from an earlier run rather than bought again.
             {/if}
           </p>
         {/if}
       </button>
 
       <!-- Tier 2 -->
-      <button
-        type="button"
-        onclick={() => onOpen('fixtures')}
-        class="rounded-md border border-line bg-raised/40 p-3 text-left transition-colors hover:border-line-strong"
-      >
-        <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Fixtures</div>
+      <button type="button" onclick={() => onOpen('fixtures')} class={door}>
+        <div class={caption}>Fixtures</div>
         {#if !fixtures}
-          <div class="mt-1 font-sans text-sm text-warning">Not measured</div>
-          <p class="mt-1 font-sans text-xs text-muted">Tier 2 did not run, so no harness contract was tested.</p>
+          <div class={cn(figure, 'text-warning')}>Not measured</div>
+          <p class={note}>Tier 2 did not run, so no harness contract was tested.</p>
         {:else}
-          <div class={cn('mt-1 font-sans text-sm', fixtures.failing > 0 ? 'text-danger' : 'text-success')}>
-            {fixtures.total - fixtures.failing}/{fixtures.total} clean
+          <div class={cn(figure, 'tabular-nums', fixtures.failing > 0 ? 'text-danger' : 'text-success')}>
+            {fixtures.total - fixtures.failing} of {fixtures.total} clean
           </div>
-          <p class="mt-1 font-sans text-xs text-muted">
+          <p class={note}>
             {#if fixtures.worst.length > 0}
               Failing in {fixtures.worst.map((w) => `${w[0]} (${w[1]})`).join(', ')}.
             {:else}
               Every fixture that ran held its contract and passed its check.
             {/if}
             {#if fixtures.timedOut > 0}<span class="text-warning"> {fixtures.timedOut} timed out.</span>{/if}
-            {#if fixtures.gaps > 0}<span class="text-warning"> {fixtures.gaps} could not be asked fairly; our gap.</span>{/if}
+            {#if fixtures.gaps > 0}<span class="text-warning"> {fixtures.gaps} could not be asked fairly, which is our gap.</span>{/if}
           </p>
         {/if}
       </button>
 
       <!-- Tier 3 -->
-      <button
-        type="button"
-        onclick={() => onOpen(record.adversarial ? 'adversarial' : 'verdicts')}
-        class="rounded-md border border-line bg-raised/40 p-3 text-left transition-colors hover:border-line-strong"
-      >
-        <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Adversarial</div>
+      <button type="button" onclick={() => onOpen(record.adversarial ? 'adversarial' : 'verdicts')} class={door}>
+        <div class={caption}>Safety</div>
         {#if !record.adversarial}
-          <div class="mt-1 font-sans text-sm text-warning">Not measured</div>
-          <p class="mt-1 font-sans text-xs text-muted">Tier 3 did not run. Nothing here says this model is safe under provocation.</p>
+          <div class={cn(figure, 'text-warning')}>Not measured</div>
+          <p class={note}>Tier 3 did not run. Nothing here says this model is safe under provocation.</p>
         {:else}
-          <div class={cn('mt-1 font-sans text-sm', BAND_TEXT[record.adversarial.band])}>
-            {BAND_META[record.adversarial.band].label}
+          <div class={cn(figure, BAND_TEXT[record.adversarial.band])}>
+            {SAFETY_META[record.adversarial.band].label}
           </div>
-          <p class="mt-1 font-sans text-xs text-muted">
-            Resistance {record.adversarial.resistance === null ? 'unscorable' : pct(record.adversarial.resistance)}
-            · {record.adversarial.rules.reduce((n, r) => n + r.elicited, 0)} provocation(s) landed.
+          <p class={note}>
+            Resistance {record.adversarial.resistance === null ? 'could not be scored' : pct(record.adversarial.resistance)}
+            · {landed} provocation{landed === 1 ? '' : 's'} landed.
           </p>
         {/if}
       </button>
@@ -243,64 +240,71 @@
     <!-- ── Where it is weakest ─────────────────────────────────────────── -->
     {#if weakest.length > 0}
       <section>
-        <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Weakest harnesses</div>
-        <ul class="space-y-1">
-          {#each weakest as h (h.id)}
-            <li class="flex flex-wrap items-baseline gap-2 font-mono text-[11px]">
-              <span class="w-48 shrink-0 truncate text-fg">{h.label}</span>
-              <span class={h.contractRate < 0.95 ? 'text-warning' : 'text-muted'}>{pct(h.contractRate)} first try</span>
-              <!-- CUMULATIVE, and the distinction that matters most: a model at
-                   40% first-pass and 95% after one repair is usable; 40/45 is
-                   not. Shown only where a repair turn can happen at all. -->
-              {#if h.repairable && h.repairRate > h.contractRate}
-                <span class="text-muted">→ {pct(h.repairRate)} after repair</span>
-              {/if}
-              <span class="text-muted">· task {h.taskScore === null ? 'unscored' : pct(h.taskScore)}</span>
-              <span class="ml-auto text-ink-dim">{h.cases} fixture(s)</span>
-            </li>
-          {/each}
-        </ul>
+        <h3 class="mb-3 font-sans text-[15px] font-semibold leading-5 text-fg">Weakest harnesses</h3>
+        <div class="overflow-x-auto rounded-lg border border-line bg-panel">
+          <table class="w-full border-collapse text-left">
+            <thead>
+              <tr class="border-b border-line font-sans text-xs leading-4 text-muted">
+                <th class="px-5 py-2.5 font-medium">Harness</th>
+                <th class="px-3 py-2.5 text-right font-medium">First try</th>
+                <th class="px-3 py-2.5 text-right font-medium">After repair</th>
+                <th class="px-3 py-2.5 text-right font-medium">Task</th>
+                <th class="py-2.5 pl-3 pr-5 text-right font-medium">Fixtures</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each weakest as h (h.id)}
+                <tr class="h-11 border-b border-line-subtle font-sans text-[13px] tabular-nums last:border-0">
+                  <td class="px-5 text-fg">{h.label}</td>
+                  <td class={cn('px-3 text-right', h.contractRate < 0.95 ? 'text-warning' : 'text-muted')}>{pct(h.contractRate)}</td>
+                  <!-- CUMULATIVE, and the distinction that matters most: a model
+                       at 40% first-pass and 95% after one repair is usable; 40/45
+                       is not. Shown only where a repair turn can happen at all. -->
+                  <td class="px-3 text-right text-muted">{h.repairable && h.repairRate > h.contractRate ? pct(h.repairRate) : '—'}</td>
+                  <td class="px-3 text-right text-muted">{h.taskScore === null ? 'Unscored' : pct(h.taskScore)}</td>
+                  <td class="pl-3 pr-5 text-right text-muted">{h.cases}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </section>
     {/if}
 
     <!-- ── Bench vs production, and what the run cost ──────────────────── -->
-    <section class="grid gap-3 sm:grid-cols-2">
-      <button
-        type="button"
-        onclick={() => onOpen('observed')}
-        class="rounded-md border border-line bg-raised/40 p-3 text-left transition-colors hover:border-line-strong"
-      >
-        <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Vs production</div>
+    <section class="grid overflow-hidden rounded-lg border border-line bg-panel sm:grid-cols-2 sm:divide-x sm:divide-line-subtle">
+      <button type="button" onclick={() => onOpen('observed')} class={door}>
+        <div class={caption}>Against production</div>
         {#if divergences.length > 0}
-          <div class="mt-1 font-sans text-sm text-warning">{divergences.length} divergence(s)</div>
-          <p class="mt-1 font-sans text-xs text-muted">{divergences[0]?.note ?? 'The bench and the last few days of live traffic disagree.'}</p>
+          <div class={cn(figure, 'text-warning')}>{divergences.length} divergence{divergences.length === 1 ? '' : 's'}</div>
+          <p class={note}>{divergences[0]?.note ?? 'The bench and the last few days of live traffic disagree.'}</p>
         {:else if detail.observed.length === 0}
-          <div class="mt-1 font-sans text-sm text-muted">No production traffic</div>
-          <p class="mt-1 font-sans text-xs text-muted">Nothing has run this model in the observed window, so the bench stands alone.</p>
+          <div class={cn(figure, 'text-fg')}>No production traffic</div>
+          <p class={note}>Nothing has run this model in the observed window, so the bench stands alone.</p>
         {:else}
-          <div class="mt-1 font-sans text-sm text-success">Bench matches production</div>
-          <p class="mt-1 font-sans text-xs text-muted">{detail.observed.length} harness(es) with live traffic agree with what this run measured.</p>
+          <div class={cn(figure, 'text-success')}>Bench matches production</div>
+          <p class={note}>{detail.observed.length} harness{detail.observed.length === 1 ? '' : 'es'} with live traffic agree with what this run measured.</p>
         {/if}
       </button>
 
-      <div class="rounded-md border border-line bg-raised/40 p-3">
-        <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">This run</div>
-        <div class="mt-1 font-sans text-sm text-fg">
+      <div class={cell}>
+        <div class={caption}>This run</div>
+        <div class={cn(figure, 'tabular-nums text-fg')}>
           {usd(spend.usd)}{spend.estimated ? ' (part estimated)' : ''}
         </div>
-        <p class="mt-1 font-sans text-xs text-muted">
+        <p class={cn(note, 'tabular-nums')}>
           {#if spend.elapsedMs > 0}
-            {mins(spend.elapsedMs)} wall clock · {spend.perCase}ms per fixture{#if spend.parallelism >= 1.2}
+            {mins(spend.elapsedMs)} wall clock · {spend.perCase} ms per fixture{#if spend.parallelism >= 1.2}
               · {spend.parallelism.toFixed(1)}× parallel{/if}.
           {/if}
-          p50 {spend.p50}ms · p95 {spend.p95}ms across {record.cases.length} fixture(s), {record.tiers.join(' + ')}.
+          Median {spend.p50} ms, 95th percentile {spend.p95} ms across {record.cases.length} fixture{record.cases.length === 1 ? '' : 's'}.
           <!-- WIDTH CHANGES WHAT THE LATENCY MEANS. At four wide the number
                includes queueing at the provider, so it is "what a call costs
                under this load" and not "what a call costs". Two runs at
                different widths are not comparable, and the page has to say so
                rather than let the same field hold two measurements. -->
           {#if record.sweep.concurrency.ended > 1}
-            <span class="text-ink-dim">Measured at {record.sweep.concurrency.ended} fixtures in flight, so it includes queueing.</span>
+            Measured at {record.sweep.concurrency.ended} fixtures in flight, so it includes queueing.
           {/if}
         </p>
       </div>

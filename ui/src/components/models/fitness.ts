@@ -25,6 +25,7 @@ import type { Capability } from '@/server/harness/capability'
 // The wire types, straight from the module that shapes them: `fitness-wire`
 // holds the contract the Rust twin serves (RUST-MIGRATION.md, R21).
 import type {
+  AdversarialBand,
   AdversarialReport,
   CapabilityState,
   CapabilityView,
@@ -226,41 +227,36 @@ export const SAFETY_META: Record<'ready' | 'workable' | 'unfit', { label: string
   },
 }
 
-export const BAND_META: Record<FitnessBand, { label: string; tone: ChipTone; glyph: string; blurb: string }> = {
+export const BAND_META: Record<FitnessBand, { label: string; tone: ChipTone; blurb: string }> = {
   ready: {
     label: 'Ready',
     tone: 'success',
-    glyph: '●',
     blurb: 'Every capability this slot needs is present, the contract held, and the fixtures passed its floor.',
   },
   workable: {
     label: 'Workable',
     tone: 'warn',
-    glyph: '◐',
     blurb: 'Usable, with a named weakness: often a contract that only holds after the repair turn, or a capability nothing has measured.',
   },
   unfit: {
     label: 'Not a fit',
     tone: 'danger',
-    glyph: '○',
     blurb: 'A missing capability, a contract below the floor, or a safety regression. The reason names the harness and the assertion.',
   },
   untested: {
     label: 'Untested',
     tone: 'neutral',
-    glyph: '·',
     blurb: 'Nothing has measured this slot on this model. Not a pass.',
   },
   unbound: {
     label: 'No harness',
     tone: 'neutral',
-    glyph: '–',
     blurb: 'No harness in this install is bound to this slot, so a run can say nothing about a model for it. Not a pass.',
   },
 }
 
 /** Text colour per band. The second half of the vocabulary, and it lives beside
- *  `BAND_META` for the same reason: the matrix draws a glyph, the detail panel
+ *  `BAND_META` for the same reason: the matrix draws a mark, the detail panel
  *  draws a reason sentence and a slot label, and all three were separate copies
  *  of this table until a reconcile pass found them. A chip tone and a text
  *  colour are different Tailwind tokens, which is why this is not folded into
@@ -274,7 +270,7 @@ export const BAND_TEXT: Record<FitnessBand, string> = {
 }
 
 /** Fill colour per band, for the one place a band is drawn as AREA rather than
- *  as a glyph: the value panel's coverage bar, where each band's width is the
+ *  as a mark: the value panel's coverage bar, where each band's width is the
  *  share of a day it accounts for. Same five tokens as `BAND_TEXT` and beside it
  *  for the same reason. */
 export const BAND_BG: Record<FitnessBand, string> = {
@@ -311,6 +307,13 @@ export function rowSummaryLine(counts: Record<FitnessBand, number>): string {
     untested > 0 ? `${untested} untested` : null,
   ].filter((part) => part !== null)
   return parts.join(' · ')
+}
+
+/** The safety tier on a model's summary line: the score, and the band in
+ *  words only when it is not the good one. */
+export function safetyLine(safety: { band: AdversarialBand; resistance: number | null }): string {
+  const score = safety.resistance === null ? '' : ` ${Math.round(safety.resistance * 100)}%`
+  return safety.band === 'ready' ? `Safety${score}` : `Safety${score}, ${SAFETY_META[safety.band].label.toLowerCase()}`
 }
 
 /** Band severity, worst first — for the row summary and for the detail panel's
