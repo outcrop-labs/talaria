@@ -28,7 +28,7 @@ export {
   type HeaderField,
 } from '@/lib/mcp-headers'
 import type { DotStatus } from '@/components/ui/chip'
-import type { CatalogStatus, ProbeRow, ServerStatus, StatusKind } from '@/lib/mcp-status'
+import type { CatalogStatus, ProbeRow, ServerStatus } from '@/lib/mcp-status'
 import type { CatalogLiveness, FeaturedConfigRow, FeaturedResponse, LibraryLive } from '@/lib/mcp-catalog'
 export {
   addDomain,
