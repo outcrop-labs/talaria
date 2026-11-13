@@ -313,20 +313,24 @@ pub async fn disconnect(pg: &PgPool, sb: &SecretBox, user_id: &str) -> RevokeOut
 
 // ── Revoke, and the shared-grant check before it ─────────────────────────────
 //
-// Google's revoke ends the whole grant one Google account gave one OAuth
-// client — every refresh token minted for that pair, not only the one sent.
-// The same account can be stored more than once: a person's own connection,
-// the org account, an agent identity connected with its manager's account.
-// Every row today is minted by the one connections client, so a shared
-// `google_sub` means a shared grant, and revoking for one row would silently
-// cut off the others. Such a disconnect forgets its row and leaves the grant
-// alone; the last row holding it revokes it. Two disconnects of rows that
-// share a grant would each see the other and neither revoke, so the read of
-// the other rows and the delete run under one advisory lock per Google
-// account, and the revoke goes out after that commit. (When rows record the
-// client that minted them, "same grant" narrows to same sub AND same client.
-// Until then the check errs towards not revoking, the direction that cannot
-// break a connection.)
+// A revoke ends more than the token sent. Google, "Token revocation" on
+// https://developers.google.com/identity/protocols/oauth2/web-server:
+// "Revocation removes all OAuth 2.0 scopes previously granted to a project,
+// invalidating any issued access or refresh tokens for all clients registered
+// under that project." (Documented, not yet observed: no real grant has been
+// revoked here.) The same account can be stored more than once: a person's
+// own connection, the org account, an agent identity connected with its
+// manager's account. A shared `google_sub` therefore means a shared grant,
+// whichever of the project's clients minted each row, and revoking for one
+// row would silently cut off the others. Such a disconnect forgets its row
+// and leaves the grant alone; the last row holding it revokes it. Two
+// disconnects of rows that share a grant would each see the other and
+// neither revoke, so the read of the other rows and the delete run under one
+// advisory lock per Google account, and the revoke goes out after that
+// commit. (Narrowing "same grant" to the minting client would be wrong for
+// two clients in one project, which that sentence covers. Until rows record
+// their client and its project, the check errs towards not revoking, the
+// direction that cannot break a connection.)
 
 /// One stored Google connection, by store and key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,8 +554,7 @@ pub async fn forget_grant_best_effort(
 }
 
 /// POST the token to Google's revoke endpoint. `Err` is a clause that quotes
-/// Google's own words (`error_description`, else `error`, else the body), or
-/// names the transport failure.
+/// Google's own words (`oauth_error_text`), or names the transport failure.
 pub async fn revoke_at_google(token: String) -> Result<(), String> {
     // Built — and dropped — before the await: the Serializer's encoder
     // fn-pointer is not Send, and a binding still in scope at the await
@@ -574,33 +577,58 @@ pub async fn revoke_at_google(token: String) -> Result<(), String> {
     }
     let status = res.status().as_u16();
     let text = res.text().await.unwrap_or_default();
-    Err(format!(
-        "Google answered {status}: {}",
-        oauth_error_text(status, &text)
-    ))
+    Err(oauth_error_text(status, &text))
 }
 
-/// Google's OAuth endpoints answer `{"error", "error_description"}`. Quote
-/// the description (Google's sentence), else the code, else the raw body —
-/// capped, never reworded.
-pub fn oauth_error_text(status: u16, body: &str) -> String {
-    let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
-    let field = |k: &str| {
-        parsed
-            .get(k)
-            .and_then(|v| v.as_str())
+/// The longest quote of Google's words a note carries: the same 300 as
+/// `talaria_google_errors::REASON_MAX_CHARS`.
+pub const OAUTH_REASON_MAX_CHARS: usize = 300;
+
+/// Google's words from an OAuth endpoint's error body,
+/// `{"error": "<code>", "error_description": "<sentence>"}` (RFC 6749 §5.2):
+/// `code: sentence`, or whichever of the two Google sent. Whitespace is
+/// folded and the whole is capped at `OAUTH_REASON_MAX_CHARS`, with an
+/// ellipsis when cut; the code leads, so a cut never loses it. None when the
+/// body is not that shape. This is the one parser for the OAuth shape, in the
+/// format `talaria_google_errors::upstream_reason` quotes a refused refresh
+/// in, so a refused revoke and a refused refresh read alike.
+pub fn oauth_reason(body: &serde_json::Value) -> Option<String> {
+    let text = |v: Option<&serde_json::Value>| {
+        v.and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(String::from)
     };
-    let text = match (field("error_description"), field("error")) {
-        (Some(desc), Some(code)) => format!("{desc} ({code})"),
-        (Some(desc), None) => desc,
-        (None, Some(code)) => code,
-        (None, None) if !body.trim().is_empty() => body.trim().to_string(),
-        (None, None) => return format!("Google answered {status} with no body."),
+    let joined = match (text(body.get("error")), text(body.get("error_description"))) {
+        (Some(code), Some(said)) => format!("{code}: {said}"),
+        (Some(only), None) | (None, Some(only)) => only,
+        (None, None) => return None,
     };
-    text.chars().take(300).collect()
+    Some(fold_and_cap(&joined))
+}
+
+/// The clause a refused OAuth call answers with: `Google answered <status>:`
+/// and Google's words (`oauth_reason`), else the body itself folded and
+/// capped (a non-JSON page), never reworded.
+pub fn oauth_error_text(status: u16, body: &str) -> String {
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    match oauth_reason(&parsed) {
+        Some(said) => format!("Google answered {status}: {said}"),
+        None if !body.trim().is_empty() => {
+            format!("Google answered {status}: {}", fold_and_cap(body))
+        }
+        None => format!("Google answered {status} with no body"),
+    }
+}
+
+fn fold_and_cap(s: &str) -> String {
+    let folded = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if folded.chars().count() <= OAUTH_REASON_MAX_CHARS {
+        return folded;
+    }
+    let mut out: String = folded.chars().take(OAUTH_REASON_MAX_CHARS - 1).collect();
+    out.push('…');
+    out
 }
 
 /// The sentence a disconnect answers with when the grant was NOT revoked;
@@ -625,13 +653,21 @@ pub fn revoke_note(outcome: &RevokeOutcome, viewer_user_id: Option<&str>) -> Opt
                 })
                 .collect();
             Some(format!(
-                "Disconnected here, but not revoked at Google: the same Google account is also connected as {}, through the same OAuth client, and revoking would cut that off too. The grant is revoked when the last of them disconnects.",
+                "Disconnected here, but not revoked at Google: the same Google account is also connected as {}, and revoking would cut that off too. The grant is revoked when the last of them disconnects.",
                 join_names(&names)
             ))
         }
-        RevokeOutcome::NotRevoked(why) => Some(format!(
-            "Disconnected here, but not revoked at Google: {why}."
-        )),
+        RevokeOutcome::NotRevoked(why) => {
+            // Google's sentence usually brings its own full stop.
+            let stop = if why.ends_with(['.', '!', '?', '…']) {
+                ""
+            } else {
+                "."
+            };
+            Some(format!(
+                "Disconnected here, but not revoked at Google: {why}{stop}"
+            ))
+        }
     }
 }
 
@@ -784,16 +820,24 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         let outcome = revoke_unless_shared(Some("t".into()), vec![], |_t| async {
-            Err(format!(
-                "Google answered 400: {}",
-                oauth_error_text(400, REVOKE_GARBAGE_TOKEN)
-            ))
+            Err(oauth_error_text(400, REVOKE_GARBAGE_TOKEN))
         })
         .await;
         assert_eq!(
             revoke_note(&outcome, None).as_deref(),
             Some(
                 "Disconnected here, but not revoked at Google: Google answered 400: invalid_token."
+            )
+        );
+        // Google's sentence keeps its own full stop; the note adds none.
+        let outcome = revoke_unless_shared(Some("t".into()), vec![], |_t| async {
+            Err(oauth_error_text(401, NOT_FOUND_CLIENT))
+        })
+        .await;
+        assert_eq!(
+            revoke_note(&outcome, None).as_deref(),
+            Some(
+                "Disconnected here, but not revoked at Google: Google answered 401: invalid_client: The OAuth client was not found."
             )
         );
     }
@@ -915,27 +959,201 @@ mod tests {
         }
     }
 
+    /// The lookup the decision reads, through the real SQL, for every pair of
+    /// the three stores in both orders: the first disconnect finds the other
+    /// row (so each store's branch of `stored_grants_for` is read, the org
+    /// one included) and keeps the grant; the second, alone by then, goes on
+    /// to revoke and stops at the unseal, so Google is never called. The org
+    /// store is a singleton: a row already there is saved first and put back
+    /// after, even when an assertion fails. `#[ignore]`d like the race above.
+    #[tokio::test]
+    #[ignore = "live DB: set DATABASE_URL"]
+    async fn live_every_pair_of_stores_is_found_by_the_real_lookup() {
+        let url = std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the live tests");
+        let pg = PgPool::connect(&url).await.expect("connect");
+        let saved: Option<String> = sqlx::query_scalar(
+            "select to_jsonb(o)::text from google_org_connection o where id = 1",
+        )
+        .fetch_optional(&pg)
+        .await
+        .expect("read the org row");
+        sqlx::query("delete from google_org_connection where id = 1")
+            .execute(&pg)
+            .await
+            .expect("set the org row aside");
+        let result = tokio::spawn(every_pair_through_the_lookup(pg.clone())).await;
+        sqlx::query("delete from google_org_connection where id = 1")
+            .execute(&pg)
+            .await
+            .expect("clear the test's org row");
+        if let Some(row) = saved {
+            sqlx::query(
+                "insert into google_org_connection \
+                 select * from jsonb_populate_record(null::google_org_connection, $1::jsonb)",
+            )
+            .bind(row)
+            .execute(&pg)
+            .await
+            .expect("put the org row back");
+        }
+        if let Err(e) = result {
+            std::panic::resume_unwind(e.into_panic());
+        }
+    }
+
+    async fn every_pair_through_the_lookup(pg: PgPool) {
+        #[derive(Clone, Copy, Debug)]
+        enum Store {
+            User,
+            Org,
+            Agent,
+        }
+        let sb = SecretBox::default();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let pairs = [
+            (Store::User, Store::Org),
+            (Store::Org, Store::User),
+            (Store::Agent, Store::Org),
+            (Store::Org, Store::Agent),
+            (Store::User, Store::Agent),
+            (Store::Agent, Store::User),
+        ];
+        for (i, (first, second)) in pairs.into_iter().enumerate() {
+            let tag = format!("{nanos}-{i}");
+            let sub = format!("live-pair-grant-{tag}");
+            let user_id: String = sqlx::query_scalar(
+                "insert into users (sub, email, role) values ($1, null, 'member') returning id::text",
+            )
+            .bind(format!("live-pair-user-{tag}"))
+            .fetch_one(&pg)
+            .await
+            .expect("user");
+            let model = format!("live-pair-agent-{tag}");
+            let label = format!("Pair agent {i}");
+            sqlx::query(
+                "insert into agent_defs (slug, department, model, display_name) values ($1, $1, $2, $3)",
+            )
+            .bind(format!("lpa{tag}"))
+            .bind(&model)
+            .bind(&label)
+            .execute(&pg)
+            .await
+            .expect("agent def");
+            let row_of = |store: Store| match store {
+                Store::User => GrantRow::User(user_id.clone()),
+                Store::Org => GrantRow::Org,
+                Store::Agent => GrantRow::Agent(model.clone()),
+            };
+            for store in [first, second] {
+                let seed = match store {
+                    Store::User => sqlx::query(
+                        "insert into google_connections (user_id, google_sub, refresh_token_enc) values ($1::uuid, $2, 'not-a-cipher')",
+                    )
+                    .bind(&user_id),
+                    Store::Org => sqlx::query(
+                        "insert into google_org_connection (id, google_sub, refresh_token_enc) values (1, $1, 'not-a-cipher')",
+                    ),
+                    Store::Agent => sqlx::query(
+                        "insert into agent_google_connections (agent_model, google_sub, refresh_token_enc) values ($1, $2, 'not-a-cipher')",
+                    )
+                    .bind(&model),
+                };
+                seed.bind(&sub)
+                    .execute(&pg)
+                    .await
+                    .unwrap_or_else(|e| panic!("seed {store:?}: {e}"));
+            }
+
+            let kept = forget_grant(&pg, &sb, &row_of(first))
+                .await
+                .expect("first disconnect");
+            let RevokeOutcome::Shared(holders) = &kept else {
+                panic!("{first:?} then {second:?}: the first must keep the grant: {kept:?}");
+            };
+            let found: Vec<GrantRow> = holders.iter().map(|g| g.row.clone()).collect();
+            assert_eq!(found, vec![row_of(second)], "{first:?} then {second:?}");
+            if let Store::Agent = second {
+                assert_eq!(holders[0].label.as_deref(), Some(label.as_str()));
+            }
+            let alone = forget_grant(&pg, &sb, &row_of(second))
+                .await
+                .expect("second disconnect");
+            assert!(
+                matches!(&alone, RevokeOutcome::NotRevoked(why) if why.contains("unsealed")),
+                "{first:?} then {second:?}: the one left alone must go on to revoke: {alone:?}"
+            );
+            let left: i64 = sqlx::query_scalar(
+                "select (select count(*) from google_connections where google_sub = $1) \
+                      + (select count(*) from google_org_connection where google_sub = $1) \
+                      + (select count(*) from agent_google_connections where google_sub = $1)",
+            )
+            .bind(&sub)
+            .fetch_one(&pg)
+            .await
+            .expect("count");
+            assert_eq!(
+                left, 0,
+                "{first:?} then {second:?}: both rows are forgotten"
+            );
+
+            sqlx::query("delete from agent_defs where model = $1")
+                .bind(&model)
+                .execute(&pg)
+                .await
+                .expect("cleanup agent");
+            sqlx::query("delete from users where id = $1::uuid")
+                .bind(&user_id)
+                .execute(&pg)
+                .await
+                .expect("cleanup user");
+        }
+    }
+
     // Captured from Google on 2026-11-12, byte for byte:
     // POST https://oauth2.googleapis.com/revoke with a token that was never
     // issued → HTTP 400.
     const REVOKE_GARBAGE_TOKEN: &str = "{\n  \"error\": \"invalid_token\"\n}";
     // POST https://oauth2.googleapis.com/token, grant_type=refresh_token, with
-    // a client id Google never issued → HTTP 401.
-    const TOKEN_UNKNOWN_CLIENT: &str = "{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The OAuth client was not found.\"\n}";
+    // a client id Google never issued → HTTP 401. (The same bytes, under the
+    // same name, as the refresh classifier's fixture.)
+    const NOT_FOUND_CLIENT: &str = "{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The OAuth client was not found.\"\n}";
 
     #[test]
     fn oauth_errors_are_quoted_in_googles_words() {
+        // The shape talaria_google_errors::upstream_reason quotes a refused
+        // refresh in: the code, then Google's sentence.
         assert_eq!(
-            oauth_error_text(401, TOKEN_UNKNOWN_CLIENT),
-            "The OAuth client was not found. (invalid_client)"
+            oauth_error_text(401, NOT_FOUND_CLIENT),
+            "Google answered 401: invalid_client: The OAuth client was not found."
         );
-        assert_eq!(oauth_error_text(400, REVOKE_GARBAGE_TOKEN), "invalid_token");
-        // Not JSON: the body itself, trimmed and capped — never reworded.
-        assert_eq!(oauth_error_text(502, " Bad Gateway \n"), "Bad Gateway");
+        assert_eq!(
+            oauth_error_text(400, REVOKE_GARBAGE_TOKEN),
+            "Google answered 400: invalid_token"
+        );
+        // Not JSON: the body itself, folded and capped — never reworded.
+        assert_eq!(
+            oauth_error_text(502, " Bad \n Gateway \n"),
+            "Google answered 502: Bad Gateway"
+        );
         assert_eq!(
             oauth_error_text(503, "  "),
-            "Google answered 503 with no body."
+            "Google answered 503 with no body"
         );
-        assert_eq!(oauth_error_text(500, &"x".repeat(400)).len(), 300);
+        let long = oauth_reason(&serde_json::json!({
+            "error": "invalid_request",
+            "error_description": "x".repeat(400),
+        }))
+        .expect("an OAuth body");
+        assert_eq!(long.chars().count(), OAUTH_REASON_MAX_CHARS);
+        assert!(long.starts_with("invalid_request: xxx"), "the code leads");
+        assert!(long.ends_with('…'));
+        // A REST-shaped error is not the OAuth shape.
+        assert_eq!(
+            oauth_reason(&serde_json::json!({"error": {"code": 403, "message": "no"}})),
+            None
+        );
     }
 }

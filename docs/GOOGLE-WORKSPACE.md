@@ -132,14 +132,16 @@ multi-account setup path.
   internal/Workspace-only app, but public/external distribution would need
   Google's security assessment.
 - Disconnect — personal, org, or an agent's own identity — **revokes** the
-  grant at Google, then forgets the connection. Google's revoke ends the whole
-  grant one Google account gave the OAuth client, not only the token sent, so
-  a disconnect first checks the other stored connections: when another one
-  holds a live token for the same Google account (an admin who connected the
-  org with their own account; an agent identity connected with its manager's
-  account), it forgets its own row **without revoking** and says so — the
-  last connection to go revokes the grant. A revoke Google refuses still
-  forgets the row, and the answer quotes Google's words.
+  grant at Google, then forgets the connection. A revoke ends more than the
+  token sent — Google: "Revocation removes all OAuth 2.0 scopes previously
+  granted to a project, invalidating any issued access or refresh tokens for
+  all clients registered under that project" (see below) — so a disconnect
+  first checks the other stored connections: when another one holds a live token
+  for the same Google account (an admin who connected the org with their own
+  account; an agent identity connected with its manager's account), it
+  forgets its own row **without revoking** and says so — the last connection
+  to go revokes the grant. A revoke Google refuses still forgets the row, and
+  the answer quotes Google's words.
 
 ## Operator setup
 
@@ -189,3 +191,15 @@ requires real Google client credentials + a consented account and cannot be
 exercised in a headless dev env — it's wired to Drive's documented multipart
 convert-on-upload API but is the one path proven by the API contract rather than
 a local screenshot.
+
+**What a revoke ends: documented by Google, not exercised live.** Google's
+[OAuth 2.0 for web server applications](https://developers.google.com/identity/protocols/oauth2/web-server)
+page, under "Token revocation", says: "Revocation removes all OAuth 2.0 scopes
+previously granted to a project, invalidating any issued access or refresh
+tokens for all clients registered under that project." The shared-grant check
+before a disconnect's revoke rests on that sentence. The scope it names is the
+Google Cloud **project**, not one OAuth client: a second client in the same
+project (a sign-in client, say) shares the grant. So the check matches stored
+connections on the Google account alone, whichever client minted them. No
+revoke of a real grant has been made here; every revoke exercised so far sent
+a token Google never issued.
