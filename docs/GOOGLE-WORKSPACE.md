@@ -149,6 +149,12 @@ has a card for each, and each has an env twin:
 - **The domain restriction (`hd`) belongs to the connections client.** Login
   sends and enforces the connections client's domain whichever client runs it,
   so setting a sign-in client can never open login to every Google account.
+  Login admits any Google account only when a connections client is configured
+  with no domain, the same configuration that did before the split. With no
+  connections client at all, the sign-in client runs login only if a domain is
+  still written down (`AUTH_GOOGLE_HD`, or a connections record saved without
+  its secret). So removing the connections client stops login, as it always
+  did, and the panel says why.
 - Moving login to a sign-in client changes no stored connection: every
   grant keeps refreshing with the connections client, which minted it.
 
@@ -191,6 +197,8 @@ installs pin it in env: `AUTH_GOOGLE_CLIENT_AGENTIC` and
 only the client its own `*_CLIENT_ID` names. A declaration refuses nothing.
 The panel warns when the sign-in client is declared agentic, and when login
 is on, runs on the connections client, and that client is declared agentic.
+It also warns when a sign-in client is set but there is no connections client
+and no domain for login to take.
 
 ### Credentials and redirect URIs
 

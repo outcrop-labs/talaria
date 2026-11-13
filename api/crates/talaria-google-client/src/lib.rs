@@ -14,6 +14,11 @@
 // The Workspace domain restriction (`hd`) belongs to the CONNECTIONS side
 // alone: login reads it from there even when a sign-in client is set, so
 // configuring the sign-in slot can never open login to every Google account.
+// Login on the sign-in client admits any Google account only when a
+// connections client is configured with no domain — the same configuration
+// that admitted any account before the split. With no connections client and
+// no domain written down anywhere, the sign-in client does not run login at
+// all: removing the connections client turns login off, as it always did.
 //
 // Each client also carries what is known about its agentic mark, keyed by
 // client id in `google_client_evidence` (env pins for headless installs).
@@ -170,26 +175,34 @@ fn pick_connections(
     })
 }
 
-/// The domain restriction login enforces: the connections client's, whatever
-/// the sign-in slot holds. With no connections client at all it is still never
-/// looser than what an operator wrote down — a half-saved record's domain,
-/// else AUTH_GOOGLE_HD.
+/// The domain restriction login enforces, read from the CONNECTIONS side
+/// whatever the sign-in slot holds:
+///   - a connections client resolves → `Some(its hd)`, where `Some(None)` is
+///     that client's own "any Google account", as before the split;
+///   - no connections client, but a domain written down (a half-saved
+///     record's, else AUTH_GOOGLE_HD) → `Some(Some(that domain))`;
+///   - neither → `None`: the connections side says nothing, and login on the
+///     sign-in client does not run. Before the split, removing the connections
+///     client turned login off; it still does, rather than leave login on
+///     with no domain at all.
 fn connections_hd(
     conn_stored: &Value,
     open: &dyn Fn(&str) -> Option<String>,
     env: &dyn Fn(&str) -> Option<String>,
-) -> Option<String> {
+) -> Option<Option<String>> {
     match pick_connections(conn_stored, open, env) {
-        Some(client) => client.hd,
+        Some(client) => Some(client.hd),
         None => str_field(conn_stored, "hd")
             .filter(|s| !s.trim().is_empty())
             .map(String::from)
-            .or_else(|| env_hd(env)),
+            .or_else(|| env_hd(env))
+            .map(Some),
     }
 }
 
 /// The client login runs on: the sign-in slot's own client when it has one
-/// (carrying the connections side's domain), else the connections client.
+/// (carrying the connections side's domain, and only while that side has a
+/// client or a written-down domain), else the connections client.
 fn pick_signin(
     signin_stored: &Value,
     conn_stored: &Value,
@@ -200,7 +213,7 @@ fn pick_signin(
         Some((client_id, client_secret, source)) => Some(GoogleClient {
             client_id,
             client_secret,
-            hd: connections_hd(conn_stored, open, env),
+            hd: connections_hd(conn_stored, open, env)?,
             source,
             role: ClientRole::SignIn,
         }),
@@ -222,7 +235,9 @@ pub async fn resolve_google_client(pg: &PgPool, sb: &SecretBox) -> Option<Google
 
 /// The client Google LOGIN runs on (start, code exchange and the login gate):
 /// the sign-in record if complete, then the sign-in env pair, then the
-/// connections client. `hd` always comes from the connections side.
+/// connections client. `hd` always comes from the connections side, and with
+/// no connections client and no domain written down there is no login client
+/// (None), whatever the sign-in slot holds.
 pub async fn resolve_google_signin_client(pg: &PgPool, sb: &SecretBox) -> Option<GoogleClient> {
     let signin = stored_record(pg, ClientRole::SignIn).await;
     let conn = stored_record(pg, ClientRole::Connections).await;
@@ -354,7 +369,7 @@ fn status_with(
 ) -> GoogleClientStatus {
     let own = own_client(role, stored, open, env);
     let hd = match role {
-        ClientRole::SignIn => connections_hd(conn_stored, open, env),
+        ClientRole::SignIn => connections_hd(conn_stored, open, env).flatten(),
         ClientRole::Connections if own.is_some() => {
             pick_connections(stored, open, env).and_then(|c| c.hd)
         }
@@ -427,6 +442,17 @@ pub fn client_warnings(
             message: format!(
                 "The sign-in client is declared as marked for AI agents. Signing in is a person, not an agent: use a client without \u{201c}Use this client for an AI-powered agent\u{201d} ticked. {GOOGLE_SPLIT_ADVICE}"
             ),
+        });
+    }
+    // The sign-in slot's own client, and nothing on the connections side to
+    // take a domain from: `signin.hd` is the connections side's domain, so
+    // None here with no connections client is exactly the case the sign-in
+    // resolver refuses. Said whatever the switch says — it is why the switch
+    // cannot turn login on.
+    if signin.configured && !connections.configured && signin.hd.is_none() {
+        out.push(ClientWarning {
+            code: "signin_without_connections",
+            message: "Google login cannot run on the sign-in client yet. Login takes its Workspace domain from the connections client, and there is no connections client and no AUTH_GOOGLE_HD, so login stays off rather than admit every Google account. Add the connections client (login then enforces its domain, or none), or set AUTH_GOOGLE_HD in ui/.env.".into(),
         });
     }
     if login_enabled
@@ -522,7 +548,9 @@ pub async fn set_google_client_config(
 
 /// Drop one role's stored record. Env credentials (if any) take over again —
 /// clearing the Admin record never disables a working env deployment; an
-/// empty sign-in slot hands login back to the connections client.
+/// empty sign-in slot hands login back to the connections client. Dropping
+/// the connections record drops its domain with it, so with no env client
+/// and no AUTH_GOOGLE_HD login stops, sign-in client or not.
 pub async fn clear_google_client_config(pg: &PgPool, role: ClientRole) -> Result<(), sqlx::Error> {
     sqlx::query("delete from app_settings where key = $1")
         .bind(role.settings_key())
@@ -554,7 +582,8 @@ pub fn google_login_pinned_by_env() -> bool {
 /// the client) with the env pin winning towards ON — and either way a client
 /// login can run on (the sign-in client, else the connections client) is
 /// still required: a toggle with no credential behind it must never render a
-/// login button that cannot work.
+/// login button that cannot work. A sign-in client with no connections side
+/// to take a domain from is no such client (`pick_signin`).
 pub async fn google_login_enabled(pg: &PgPool, sb: &SecretBox) -> bool {
     let toggled = get_setting(pg, LOGIN_KEY, Value::Bool(false))
         .await
@@ -733,6 +762,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.hd.as_deref(), Some("radhires.com"));
+        // No connections client and no domain written down anywhere — the
+        // state DELETE /api/admin/google-client leaves behind — is no login
+        // client at all, never the sign-in client with no domain: removing
+        // the connections client turns login off, as before the split. That
+        // holds for an env sign-in client too, and for a half-saved
+        // connections record whose domain is blank or null.
+        assert!(signin(&b, &empty_object(), &env_of(&[])).is_none());
+        let signin_env = env_of(&[
+            ("AUTH_GOOGLE_SIGNIN_CLIENT_ID", "signin-env"),
+            ("AUTH_GOOGLE_SIGNIN_CLIENT_SECRET", "se"),
+        ]);
+        assert!(signin(&empty_object(), &empty_object(), &signin_env).is_none());
+        for no_domain in [
+            record("conn-a", None, None),
+            record("conn-a", None, Some("  ")),
+            json!({ "clientId": "conn-a", "clientSecretEnc": "v1:lost" }),
+        ] {
+            assert!(signin(&b, &no_domain, &env_of(&[])).is_none());
+        }
         // A domain only in the sign-in record is not a domain: that slot has none.
         let with_hd =
             json!({ "clientId": "signin-b", "clientSecretEnc": "sealed:sb", "hd": "other.io" });
@@ -951,6 +999,19 @@ mod tests {
             serde_json::to_string(&s).unwrap(),
             r#"{"configured":true,"source":"admin","clientId":"signin-b","secretSet":true,"hd":"radhires.com","agentic":{"declared":false,"pinnedBy":null}}"#
         );
+
+        // The connections record removed: the sign-in client is still its
+        // slot's own (configured), and there is no domain to show.
+        let s = status_with(
+            ClientRole::SignIn,
+            &signin_record("signin-b", Some("sb")),
+            &empty_object(),
+            &evidence,
+            &open,
+            &none,
+        );
+        assert!(s.configured);
+        assert_eq!(s.hd, None);
     }
 
     fn st(configured: bool, declared: Option<bool>) -> GoogleClientStatus {
@@ -972,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn warnings_name_an_agentic_client_on_sign_in_and_never_anything_else() {
+    fn warnings_name_an_agentic_sign_in_and_a_sign_in_with_no_domain_to_take() {
         let codes = |conn: &GoogleClientStatus, signin: &GoogleClientStatus, login: bool| {
             client_warnings(conn, signin, login)
                 .into_iter()
@@ -1007,6 +1068,25 @@ mod tests {
             codes(&st(true, Some(true)), &st(true, Some(true)), true),
             ["signin_client_agentic"]
         );
+        // A sign-in client with no connections client and no domain to take:
+        // named whether the switch is on or off (it is why the switch cannot
+        // turn login on)...
+        for login in [true, false] {
+            assert_eq!(
+                codes(&st(false, None), &st(true, Some(false)), login),
+                ["signin_without_connections"]
+            );
+        }
+        // ...not once a domain is written down (AUTH_GOOGLE_HD, a half-saved
+        // record's), not while a connections client stands, and not for an
+        // empty sign-in slot.
+        let with_hd = GoogleClientStatus {
+            hd: Some("radhires.com".into()),
+            ..st(true, None)
+        };
+        assert!(codes(&st(false, None), &with_hd, true).is_empty());
+        assert!(codes(&st(true, None), &st(true, None), true).is_empty());
+        assert!(codes(&st(false, None), &st(false, None), true).is_empty());
         // Every message quotes Google's checkbox or guidance, not a paraphrase.
         for w in client_warnings(&st(true, Some(true)), &st(true, Some(true)), true)
             .into_iter()
@@ -1032,5 +1112,224 @@ mod tests {
         assert_eq!(parse_pin(Some("TRUE".into())), None);
         assert_eq!(parse_pin(Some("".into())), None);
         assert_eq!(parse_pin(None), None);
+    }
+}
+
+/// LIVE: the resolvers and the login gate read the real `app_settings` rows
+/// the admin route's PUT and DELETE write, and agree — login runs on the
+/// sign-in client with the connections domain, and removing the connections
+/// client stops login instead of leaving the sign-in client on with no
+/// domain. `#[ignore]`d; ci.yml's api job runs it with the ignored lib tests
+/// in its live-DB steps. It builds its own schema with only `app_settings`
+/// and points the pool's search_path at it, so a dev database's Google
+/// records are never read or written.
+///
+///   DATABASE_URL=postgres://… cargo test -p talaria-google-client --lib -- --ignored live
+#[cfg(test)]
+mod live {
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+
+    /// The env the resolvers read past the records; any of it set would make
+    /// this a test of the shell, not of the stored records.
+    const GOOGLE_ENV: [&str; 7] = [
+        "AUTH_GOOGLE_CLIENT_ID",
+        "AUTH_GOOGLE_CLIENT_SECRET",
+        "AUTH_GOOGLE_HD",
+        "AUTH_GOOGLE_SIGNIN_CLIENT_ID",
+        "AUTH_GOOGLE_SIGNIN_CLIENT_SECRET",
+        "AUTH_GOOGLE_ENABLED",
+        "AUTH_GOOGLE_CLIENT_AGENTIC",
+    ];
+
+    fn test_box() -> SecretBox {
+        let kek = talaria_secretbox::derive_kek("google-client-live-test");
+        let dek = talaria_secretbox::new_dek().expect("entropy");
+        SecretBox::from_parts(kek, HashMap::from([(1u32, dek)]), Some(1))
+    }
+
+    fn patch(id: &str, secret: Option<&str>, hd: Option<Option<&str>>) -> ClientConfigPatch {
+        ClientConfigPatch {
+            client_id: Some(id.into()),
+            client_secret: Some(secret.map(String::from)),
+            hd: hd.map(|h| h.map(String::from)),
+        }
+    }
+
+    /// What login resolves to, as (client id, slot, domain).
+    async fn login_client(
+        pg: &PgPool,
+        sb: &SecretBox,
+    ) -> Option<(String, ClientRole, Option<String>)> {
+        resolve_google_signin_client(pg, sb)
+            .await
+            .map(|c| (c.client_id, c.role, c.hd))
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a Postgres (DATABASE_URL)"]
+    async fn login_follows_the_stored_records_and_stops_when_the_connections_client_goes() {
+        for var in GOOGLE_ENV {
+            assert!(
+                std::env::var(var).is_err(),
+                "unset {var}: this test pins the Admin-record paths"
+            );
+        }
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        let admin = PgPool::connect(&url).await.expect("connect");
+        let schema = format!("google_client_live_{}", std::process::id());
+        // AssertSqlSafe: the schema name is this test's own tag and a pid.
+        for sql in [
+            format!("drop schema if exists {schema} cascade"),
+            format!("create schema {schema}"),
+            format!(
+                "create table {schema}.app_settings (key text primary key, value jsonb not null, \
+                 updated_at timestamptz not null default now())"
+            ),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .execute(&admin)
+                .await
+                .expect(&sql);
+        }
+        let opts = PgConnectOptions::from_str(&url)
+            .expect("DATABASE_URL parses")
+            .options([("search_path", schema.as_str())]);
+        let pg = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(opts)
+            .await
+            .expect("scratch pool");
+        let sb = test_box();
+
+        // Nothing stored: no client, and the switch alone opens nothing.
+        set_google_login_enabled(&pg, true).await.unwrap();
+        assert!(login_client(&pg, &sb).await.is_none());
+        assert!(!google_login_enabled(&pg, &sb).await);
+
+        // Connections client A with a domain: login rides it.
+        set_google_client_config(
+            &pg,
+            &sb,
+            ClientRole::Connections,
+            &patch("conn-a", Some("sa"), Some(Some("radhires.com"))),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            login_client(&pg, &sb).await,
+            Some((
+                "conn-a".into(),
+                ClientRole::Connections,
+                Some("radhires.com".into())
+            ))
+        );
+        assert!(google_login_enabled(&pg, &sb).await);
+
+        // Sign-in client B: login moves to it, keeping A's domain; connect
+        // flows stay on A. The record carries no hd key at all.
+        set_google_client_config(
+            &pg,
+            &sb,
+            ClientRole::SignIn,
+            &patch("signin-b", Some("sb"), None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            login_client(&pg, &sb).await,
+            Some((
+                "signin-b".into(),
+                ClientRole::SignIn,
+                Some("radhires.com".into())
+            ))
+        );
+        assert!(google_login_enabled(&pg, &sb).await);
+        assert_eq!(
+            resolve_google_client(&pg, &sb)
+                .await
+                .map(|c| c.client_id)
+                .as_deref(),
+            Some("conn-a")
+        );
+        let stored = get_setting(&pg, SIGNIN_KEY, Value::Null).await;
+        assert!(stored.get("hd").is_none(), "{stored}");
+
+        // The connections secret cleared (a half-saved record): its domain
+        // is still written down, so login stays on B with it.
+        set_google_client_config(
+            &pg,
+            &sb,
+            ClientRole::Connections,
+            &patch("conn-a", None, None),
+        )
+        .await
+        .unwrap();
+        assert!(resolve_google_client(&pg, &sb).await.is_none());
+        assert_eq!(
+            login_client(&pg, &sb).await,
+            Some((
+                "signin-b".into(),
+                ClientRole::SignIn,
+                Some("radhires.com".into())
+            ))
+        );
+        assert!(google_login_enabled(&pg, &sb).await);
+
+        // The connections record removed (DELETE /api/admin/google-client):
+        // no domain anywhere, so no login client and the gate says off —
+        // never B with no domain. The panel names why.
+        clear_google_client_config(&pg, ClientRole::Connections)
+            .await
+            .unwrap();
+        assert!(login_client(&pg, &sb).await.is_none());
+        assert!(!google_login_enabled(&pg, &sb).await);
+        let conn = google_client_status(&pg, &sb, ClientRole::Connections).await;
+        let signin = google_client_status(&pg, &sb, ClientRole::SignIn).await;
+        assert!(signin.configured && signin.hd.is_none());
+        assert_eq!(
+            client_warnings(&conn, &signin, false)
+                .into_iter()
+                .map(|w| w.code)
+                .collect::<Vec<_>>(),
+            ["signin_without_connections"]
+        );
+
+        // A connections client that says "any Google account" is the one way
+        // login on B admits every account — as A alone did before the split.
+        set_google_client_config(
+            &pg,
+            &sb,
+            ClientRole::Connections,
+            &patch("conn-a", Some("sa"), Some(None)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            login_client(&pg, &sb).await,
+            Some(("signin-b".into(), ClientRole::SignIn, None))
+        );
+        assert!(google_login_enabled(&pg, &sb).await);
+
+        // The sign-in record removed: login back on A.
+        clear_google_client_config(&pg, ClientRole::SignIn)
+            .await
+            .unwrap();
+        assert_eq!(
+            login_client(&pg, &sb).await,
+            Some(("conn-a".into(), ClientRole::Connections, None))
+        );
+
+        pg.close().await;
+        let sql = format!("drop schema if exists {schema} cascade");
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&admin)
+            .await
+            .expect("drop the scratch schema");
     }
 }

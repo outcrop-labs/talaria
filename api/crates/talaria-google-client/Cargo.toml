@@ -17,3 +17,7 @@ talaria-gateway = { workspace = true }
 talaria-secretbox = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+# The live resolver test (#[ignore]d, CI's live-DB step) is async.
+tokio = { workspace = true }

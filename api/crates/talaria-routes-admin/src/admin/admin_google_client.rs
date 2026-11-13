@@ -9,7 +9,9 @@
 //   panel's warnings, and the redirect URIs each client needs in Google Cloud
 //   Console · PUT `?role=connections|signin` (default connections) → save
 //   that client · DELETE `?role=…` → drop that record (env fallback resumes;
-//   an empty sign-in slot hands login back to the connections client).
+//   an empty sign-in slot hands login back to the connections client, and
+//   with no connections client and no AUTH_GOOGLE_HD login stops, sign-in
+//   client or not — login never runs without the connections side's domain).
 
 use std::collections::HashMap;
 
@@ -22,7 +24,7 @@ use talaria_api_facades::google::client::{
     ClientConfigPatch, ClientRole, GoogleClientStatus, agentic_declaration,
     clear_google_client_config, client_evidence, client_warnings, declare_agentic,
     google_client_status, google_login_enabled, google_login_pinned_by_env,
-    set_google_client_config,
+    resolve_google_signin_client, set_google_client_config,
 };
 use talaria_api_facades::google::connections::get_connection_status;
 use talaria_audit::{AuditEntry, log_audit};
@@ -39,32 +41,33 @@ use talaria_state::AppState;
 struct Clients {
     connections: GoogleClientStatus,
     signin: GoogleClientStatus,
+    /// The slot login's client came from, as the login resolver itself
+    /// answers — None when login has no client to run on.
+    login_role: Option<ClientRole>,
     login_enabled: bool,
 }
 
 async fn read_clients(state: &AppState, sb: &SecretBox) -> Clients {
-    let (connections, signin, login_enabled) = tokio::join!(
+    let (connections, signin, login_client, login_enabled) = tokio::join!(
         google_client_status(&state.pg, sb, ClientRole::Connections),
         google_client_status(&state.pg, sb, ClientRole::SignIn),
+        resolve_google_signin_client(&state.pg, sb),
         google_login_enabled(&state.pg, sb)
     );
     Clients {
         connections,
         signin,
+        login_role: login_client.map(|c| c.role),
         login_enabled,
     }
 }
 
 /// The role login runs on now: the sign-in slot's own client, else the
-/// connections client, else nothing (login cannot be offered).
+/// connections client, else nothing (login cannot be offered — which
+/// includes a sign-in client with no connections client and no domain
+/// written down to take its domain from).
 fn login_role(clients: &Clients) -> Option<&'static str> {
-    if clients.signin.configured {
-        Some(ClientRole::SignIn.as_str())
-    } else if clients.connections.configured {
-        Some(ClientRole::Connections.as_str())
-    } else {
-        None
-    }
+    clients.login_role.map(ClientRole::as_str)
 }
 
 /// Every write's answer: the clients as they now stand.

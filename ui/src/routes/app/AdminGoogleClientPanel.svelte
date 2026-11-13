@@ -127,7 +127,13 @@
   }
 
   const clear = async () => {
-    if (!(await confirm({ title: 'Remove the Google client', message: 'Remove the Google client credentials stored in the Admin UI? Connected accounts stop working until a client is configured again.', confirmLabel: 'Remove', danger: true }))) return
+    // Login takes its domain from this client even when a sign-in client runs
+    // it, so removing this one stops login too (the server refuses to run the
+    // sign-in client with no domain to take) — say so before, not after.
+    const loginToo = data?.signin.configured
+      ? ' Google login stops too: the sign-in client takes its domain from this client, so login stays off until a connections client is configured again, unless AUTH_GOOGLE_HD in ui/.env names a domain.'
+      : ''
+    if (!(await confirm({ title: 'Remove the Google client', message: `Remove the Google client credentials stored in the Admin UI? Connected accounts stop working until a client is configured again.${loginToo}`, confirmLabel: 'Remove', danger: true }))) return
     busy = true
     error = null
     notice = null
@@ -294,7 +300,9 @@
           label="Google login"
         />
         <span class="font-sans text-[10px] text-muted">
-          {#if !data.loginRole}
+          {#if !data.loginRole && data.signin.configured}
+            off until the connections client (or AUTH_GOOGLE_HD) gives login its domain
+          {:else if !data.loginRole}
             configure a client first
           {:else if data.loginEnabled && data.loginPinnedByEnv}
             on, pinned by <code>AUTH_GOOGLE_ENABLED</code> in ui/.env
@@ -440,8 +448,8 @@
 
       <div class="flex items-center gap-2 text-xs">
         <span class="text-fg">Domain</span>
-        <span class="font-mono text-[11px] text-muted">{data.signin.hd ?? 'any Google account'}</span>
-        <InfoTip text="Login always enforces the connections client's domain, whichever client runs it. Change it on the connections client above." />
+        <span class="font-mono text-[11px] text-muted">{data.signin.hd ?? (data.status.configured ? 'any Google account' : 'none yet: login waits for the connections client')}</span>
+        <InfoTip text="Login always enforces the connections client's domain, whichever client runs it. Change it on the connections client above. With no connections client and no AUTH_GOOGLE_HD, login does not run at all rather than admit every Google account." />
       </div>
 
       {#if data.signin.clientId}
