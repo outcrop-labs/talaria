@@ -1,5 +1,7 @@
 <script lang="ts">
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
@@ -114,10 +116,16 @@
       <!-- Tab-pane grammar: pane rises in on switch (no exit), panels stagger —
            these are section stacks, one Panel per concern. -->
       {#key tab}
-      <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-6">
+      <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-10">
       {#if tab === 'org'}
-        <AdminOrgPanel />
-        <AdminCompanyNamePanel />
+        <!-- Two stored names, one card: what agents are told, and what a
+             browser tab shows. Side by side they stop reading as a duplicate. -->
+        <SettingsSection title="Identity">
+          <SettingsGroup>
+            <AdminOrgPanel />
+            <AdminCompanyNamePanel />
+          </SettingsGroup>
+        </SettingsSection>
         <AdminInstanceDomainPanel />
         <AdminSignupDomainsPanel />
         <AdminEmailPanel />

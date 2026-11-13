@@ -1,20 +1,23 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import { buttonClasses } from '@/components/ui/button'
   import CopyButton from '@/components/ui/CopyButton.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
+  import Disclosure from '@/components/ui/Disclosure.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import StatusDot from '@/components/ui/StatusDot.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { GOOGLE_API_LIBRARY as GOOGLE_APIS } from '@/lib/google-apis'
+  import RowStatus from '@/components/admin/RowStatus.svelte'
 
   // The Google OAuth CLIENT — the credential every Google flow (workspace
   // connect, calendar/mail/drive, login when enabled) runs on. Registered
@@ -56,6 +59,8 @@
     seeded = true
   })
   let error = $state<string | null>(null)
+  // The sign-in switch sits outside the setup form, so its failure shows beside it.
+  let loginError = $state<string | null>(null)
   let notice = $state<string | null>(null)
   let busy = $state(false)
 
@@ -71,7 +76,7 @@
         ...(secret.trim() ? { clientSecret: secret.trim() } : {}),
         hd: hd.trim() || null,
       })
-      notice = 'Client saved. Connect the org account below.'
+      notice = 'Client saved. Connect the shared account below.'
       secret = ''
     } catch (e) {
       error = errorMessage(e)
@@ -104,13 +109,13 @@
   // field, and the login screen follows it immediately.
   const toggleLogin = async (next: boolean) => {
     busy = true
-    error = null
+    loginError = null
     notice = null
     try {
       await putJson<{ ok: true }>('/api/admin/google-client/login', { enabled: next })
-      notice = next ? 'Google login enabled — the sign-in button is live on /login.' : 'Google login disabled.'
+      notice = next ? 'Google sign-in is on.' : 'Google sign-in is off.'
     } catch (e) {
-      error = errorMessage(e)
+      loginError = errorMessage(e)
     }
     busy = false
     await qc.invalidateQueries({ queryKey: ['google-client'] })
@@ -118,160 +123,150 @@
   }
 </script>
 
-<Panel class="mt-4">
+<SettingsSection
+  title="Google"
+  description="One Google Cloud client runs Google sign-in and every Google connection."
+  info="Create an OAuth client in Google Cloud Console, add the redirect addresses listed under Client setup, and paste its ID and secret there. The secret is stored encrypted and never shown again."
+>
+  <!-- A failed read must not render as "not set up" — that verdict sends an
+       admin to re-enter a client that is already stored. QueryState's error
+       branch holds it. -->
   <QueryState query={query} errorTitle="Could not load the Google client" errorVariant="compact">
     {#snippet skeleton()}
-      <Skeleton class="mb-3 h-4 w-32 rounded-full" />
-      <SkeletonRows rows={2} />
+      <SettingsGroup>
+        <SettingsRow label="Google Cloud client"><Skeleton class="h-5 w-28" /></SettingsRow>
+        <SettingsRow label="Sign in with Google"><Skeleton class="h-5 w-9 rounded-full" /></SettingsRow>
+      </SettingsGroup>
     {/snippet}
     {#snippet children(data)}
-    <!-- A failed read must not render as "not configured" — that verdict sends
-         an admin to re-enter a client that is already stored. QueryState's
-         error branch holds it. -->
-    <SectionHeader
-      title="Google Workspace · OAuth client"
-      info="The one credential every Google surface runs on: workspace connect (Drive, Docs, Calendar, Gmail) and, when enabled, Google login. Register it here instead of editing ui/.env; the secret is stored encrypted and never shown again."
-    />
-    <div class="space-y-4">
-      <!-- Status -->
-      {#if data.status.configured}
-        <div class="flex items-center gap-2 text-sm">
-          <StatusDot status="ok" />
-          <span class="text-fg">Client configured</span>
-          <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
-            via {data.status.source === 'admin' ? 'Admin UI' : 'ui/.env'}
-          </span>
-          <span class="ml-auto font-mono text-[11px] text-muted">{data.status.clientId}</span>
-        </div>
-      {:else}
-        <div class="text-xs text-muted">
-          No Google client configured. Create one in Google Cloud Console, add the redirect URIs below, and paste the credentials here.
-        </div>
-      {/if}
-
-      <!-- The login switch — policy, not credential: offering "Continue with
-           Google" on the login screen is a deliberate admin act, so it is a
-           toggle here (saved on flip), never a side effect of saving a client. -->
-      <div class="flex items-center gap-2 border-t border-line pt-3">
-        <Toggle
-          checked={data.loginEnabled}
-          onChange={(next) => void toggleLogin(next)}
-          disabled={busy || !data.status.configured}
-          label="Google login"
-        />
-        <span class="font-sans text-[10px] text-muted">
-          {#if !data.status.configured}
-            configure a client first
-          {:else if data.loginEnabled && data.loginPinnedByEnv}
-            on — pinned by <code>AUTH_GOOGLE_ENABLED</code> in ui/.env
-          {:else if data.loginEnabled}
-            on — the sign-in button is live on /login
-          {:else}
-            off — the login screen stays password-only
+      <div class="space-y-3">
+        <SettingsGroup>
+          <SettingsRow label="Google Cloud client">
+            {#snippet hint()}
+              {#if data.status.configured}
+                <span class="break-all font-mono text-xs">{data.status.clientId}</span>
+              {:else}
+                Not set up yet. Open Client setup below.
+              {/if}
+            {/snippet}
+            {#if data.status.configured}
+              <RowStatus status="ok">
+                {data.status.source === 'admin' ? 'Set up here' : 'Set in the server environment'}
+              </RowStatus>
+            {:else}
+              <RowStatus status="idle">Not set up</RowStatus>
+            {/if}
+          </SettingsRow>
+          <!-- Policy, not credential: offering "Continue with Google" on the
+               sign-in screen is a deliberate admin act, so it is a toggle saved
+               on flip, never a side effect of saving a client. -->
+          <SettingsRow label="Sign in with Google">
+            {#snippet hint()}
+              {#if !data.status.configured}
+                Set up a client first.
+              {:else if data.loginEnabled && data.loginPinnedByEnv}
+                Kept on by <code class="font-mono text-xs">AUTH_GOOGLE_ENABLED</code> in the server environment.
+              {:else}
+                Shows Continue with Google on the sign-in page.
+              {/if}
+            {/snippet}
+            <Toggle
+              title="Sign in with Google"
+              checked={data.loginEnabled}
+              onChange={(next) => void toggleLogin(next)}
+              disabled={busy || !data.status.configured}
+            />
+          </SettingsRow>
+          <!-- Offered only once a client exists, because the connect flow
+               cannot start without one. This is the PERSONAL connection; the
+               shared account is the section below. -->
+          {#if data.status.configured}
+            <SettingsRow
+              label="Your Google account"
+              hint={data.personalConnected ? 'Manage it in Settings, under Connections.' : 'Lets your assistant use Drive, Calendar and Mail as you.'}
+              info="This is your own connection, the same one as Settings, Connections. The shared account agents use is separate and is set up in the next section."
+            >
+              {#if data.personalConnected}
+                <RowStatus status="ok">Connected</RowStatus>
+              {:else}
+                <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Connect</a>
+              {/if}
+            </SettingsRow>
           {/if}
-        </span>
-      </div>
-
-      <!-- Your own account — offered only once a client exists, because the
-           connect flow cannot even start without one. This is the PERSONAL
-           connection (Drive/Calendar/Mail as you, lands on Settings →
-           Connections); the ORG connection is the panel below and is what
-           gates Google login domains. -->
-      {#if data.status.configured}
-        <div class="flex items-center gap-2 border-t border-line pt-3 text-sm">
-          {#if data.personalConnected}
-            <StatusDot status="ok" />
-            <span class="text-fg">Your Google account is connected</span>
-            <span class="font-sans text-[10px] text-muted">manage it in Settings → Connections</span>
-          {:else}
-            <span class="text-fg">Your Google account</span>
-            <a
-              href="/api/integrations/google/connect"
-              class="text-xs text-accent underline-offset-2 hover:underline"
-            >Connect your account</a>
-            <InfoTip text="Runs the same personal connect as Settings → Connections and lands there when it finishes (it needs the redirect URI listed below). The org connection — the one Google login and the workspace surfaces run on — is separate: Admin → Org → Google Workspace." />
+          {#if loginError}
+            <p transition:slide={{ duration: 150 }} class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{loginError}</p>
+          {:else if notice}
+            <p transition:slide={{ duration: 150 }} class="px-5 py-3 font-sans text-[13px] leading-5 text-success">{notice}</p>
           {/if}
-        </div>
-      {/if}
+        </SettingsGroup>
 
-      <!-- The redirect URIs — the one thing every Google setup asks for first. -->
-      <div>
-        <div class="mb-1.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          <span>Redirect URIs</span>
-          <InfoTip text="Google Cloud Console → APIs &amp; Services → Credentials → your OAuth client → Authorized redirect URIs. Add each line exactly as shown." />
-        </div>
-        <div class="space-y-1">
-          {#each data.redirectUris as r (r.uri)}
-            <div class="flex items-center gap-2">
-              <span class="min-w-0 flex-1 truncate font-mono text-xs text-fg">{r.uri}</span>
-              <span class="shrink-0 font-sans text-[10px] text-muted">{r.what}</span>
-              <CopyButton value={r.uri} class="shrink-0" />
+        <!-- Kept mounted while closed, so a half-typed secret survives. -->
+        <Disclosure title="Client setup" variant="card" keepMounted defaultOpen={!data.status.configured}>
+          <div class="space-y-5">
+            <SettingsField label="Client ID" for="google-client-id">
+              <Input id="google-client-id" size="sm" class="font-mono" bind:value={clientId} placeholder="1234567890-abc.apps.googleusercontent.com" />
+            </SettingsField>
+            <SettingsField
+              label="Client secret"
+              for="google-client-secret"
+              hint={data.status.secretSet && data.status.source === 'admin' ? 'A secret is stored. Paste a new one to replace it.' : 'Stored encrypted. It is never shown again.'}
+            >
+              <Input
+                id="google-client-secret"
+                size="sm"
+                type="password"
+                bind:value={secret}
+                placeholder="GOCSPX-"
+                autocomplete="off"
+              />
+            </SettingsField>
+            <SettingsField
+              label="Workspace domain"
+              for="google-client-domain"
+              hint="Optional. Limits sign-in and connections to Google accounts on this domain."
+            >
+              <Input id="google-client-domain" size="sm" class="font-mono" bind:value={hd} placeholder="yourcompany.com" />
+            </SettingsField>
+            <SettingsField
+              label="Redirect addresses"
+              hint="Add each one to the client's authorized redirect URIs in Google Cloud Console."
+            >
+              <ul class="divide-y divide-line-subtle rounded-md border border-line">
+                {#each data.redirectUris as r (r.uri)}
+                  <li class="flex items-center gap-3 px-3 py-2">
+                    <code class="min-w-0 flex-1 break-all font-mono text-xs text-fg">{r.uri}</code>
+                    <span class="shrink-0 font-sans text-xs leading-4 text-muted">{r.what}</span>
+                    <CopyButton value={r.uri} title="Copy address" class="shrink-0" />
+                  </li>
+                {/each}
+              </ul>
+            </SettingsField>
+            <!-- Consent succeeds with these off — Google only checks at call
+                 time — so they are easy to miss until a call is refused. -->
+            <SettingsField
+              label="APIs to turn on"
+              hint="Turn each one on for the Google Cloud project that owns the client."
+            >
+              <ul class="flex flex-wrap gap-x-5 gap-y-1">
+                {#each GOOGLE_APIS as a (a.service)}
+                  <li>
+                    <a href={a.consoleUrl} target="_blank" rel="noreferrer" class="font-sans text-[13px] leading-5 text-accent underline-offset-2 hover:underline">{a.name} ↗</a>
+                  </li>
+                {/each}
+              </ul>
+            </SettingsField>
+            {#if error}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
+            <div class="flex items-center justify-end gap-4">
+              {#if data.status.source === 'admin'}
+                <DangerLink onClick={() => void clear()} disabled={busy}>Remove client</DangerLink>
+              {/if}
+              <Button size="sm" variant="outline" onclick={() => void save()} disabled={busy || !clientId.trim() || (!secret.trim() && !data.status.secretSet)}>
+                {data.status.configured ? 'Save changes' : 'Save client'}
+              </Button>
             </div>
-          {/each}
-        </div>
+          </div>
+        </Disclosure>
       </div>
-
-      <!-- The library switches. Consent succeeds with these off — Google only
-           checks at call time — so they're easy to miss until a surface 403s. -->
-      <div>
-        <div class="mb-1.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          <span>Enabled APIs</span>
-          <InfoTip text="Google Cloud Console → APIs &amp; Services → Library → enable each of these on the project that owns the OAuth client. Connecting works without them; using Drive, Calendar, or Mail does not." />
-        </div>
-        <div class="space-y-1">
-          {#each GOOGLE_APIS as a (a.service)}
-            <div class="flex items-center gap-2">
-              <a
-                href={a.consoleUrl}
-                target="_blank"
-                rel="noreferrer"
-                class="min-w-0 flex-1 truncate text-xs text-accent hover:underline"
-              >{a.name}</a>
-              <span class="shrink-0 font-sans text-[10px] text-muted">enable ↗</span>
-            </div>
-          {/each}
-        </div>
-      </div>
-
-      <!-- Credentials -->
-      <div class="space-y-2">
-        <div class="flex items-center gap-3">
-          <label for="google-client-id" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
-          <Input id="google-client-id" size="sm" bind:value={clientId} placeholder="1234567890-abc.apps.googleusercontent.com" class="w-full" />
-        </div>
-        <div class="flex items-center gap-3">
-          <label for="google-client-secret" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
-          <Input
-            id="google-client-secret"
-            size="sm"
-            type="password"
-            bind:value={secret}
-            placeholder={data.status.secretSet && data.status.source === 'admin' ? 'stored (paste to rotate)' : 'GOCSPX-…'}
-            autocomplete="off"
-            class="w-full"
-          />
-        </div>
-        <div class="flex items-center gap-3">
-          <label for="google-client-domain" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Domain</label>
-          <Input id="google-client-domain" size="sm" bind:value={hd} placeholder="yourcompany.com (optional)" class="w-full" />
-          <InfoTip text="Restricts connect + login to Google accounts on this Workspace domain. Leave blank to allow any Google account." />
-        </div>
-      </div>
-
-      {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
-      {#if notice}<div transition:slide={{ duration: 150 }} class="text-xs text-success">{notice}</div>{/if}
-
-      <div class="flex items-center gap-2">
-        <Button size="sm" onclick={() => void save()} disabled={busy || !clientId.trim() || (!secret.trim() && !data.status.secretSet)}>
-          {data.status.configured ? 'Save changes' : 'Save client'}
-        </Button>
-        {#if data.status.source === 'admin'}
-          <Button variant="ghost" size="sm" class="hover:text-danger" onclick={() => void clear()} disabled={busy}>
-            Remove
-          </Button>
-        {/if}
-      </div>
-    </div>
     {/snippet}
   </QueryState>
-</Panel>
+</SettingsSection>
