@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Mail } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -12,6 +11,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import { delJson, errorMessage, getJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
+  import McpServerMark from '@/routes/app/McpServerMark.svelte'
 
   // The assistant's Google Workspace connection — THE grant that makes
   // "manage my mail and calendar" real. Rendered inside Settings › Assistant
@@ -75,7 +75,7 @@
         <!-- An admin hasn't registered the OAuth client — the fix is theirs, and
              the sentence says whose it is rather than dead-ending. -->
         <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin.">
-          {#snippet icon()}<Mail size={16} />{/snippet}
+          {#snippet lead()}<McpServerMark title="Google" domain="google.com" />{/snippet}
         </SettingsRow>
       {/snippet}
       {#snippet children(data)}
@@ -83,7 +83,7 @@
           label="Google Workspace"
           hint={data.connected ? (data.email ?? 'Your account') : 'Mail, Calendar and Drive.'}
         >
-          {#snippet icon()}<Mail size={16} />{/snippet}
+          {#snippet lead()}<McpServerMark title="Google" domain="google.com" />{/snippet}
           {#snippet status()}
             <StatusDot status={data.connected ? 'ok' : 'idle'} />{data.connected ? 'Connected' : 'Not connected'}
           {/snippet}

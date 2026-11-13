@@ -46,16 +46,17 @@
     id,
     canEdit = true,
     flush = false,
-    lead,
+    action,
     class: className,
   }: {
     id: string
     canEdit?: boolean
     /** No inset of its own: the list sits on a page, not inside a panel. */
     flush?: boolean
-    /** Sans voice: a control drawn at the head of the toolbar, so the caller's
-     *  view switch shares the row with the file switch and the search. */
-    lead?: Snippet
+    /** Sans voice: a quiet control at the end of the toolbar, shown while the
+     *  memory file is the one in view. The caller's way into the whole file,
+     *  which is MEMORY.md only. */
+    action?: Snippet
     class?: string
   } = $props()
 
@@ -220,16 +221,16 @@
 
   <div class={cn('flex flex-col', className)}>
     <div class={cn('flex items-center gap-3', inset)}>
-      {@render lead?.()}
       <!-- Two documents, one view: the agent's record and the profile it keeps
            about its person. A mode switch, not a tab. -->
-      <Segmented options={FILES} value={file} onChange={switchFile} />
+      <Segmented options={FILES} value={file} onChange={switchFile} size="md" />
       <Input size="sm" bind:value={q} placeholder="Search entries" aria-label={`Search ${FILENAME[file]}`} class="flex-1" />
-      <span class="shrink-0 font-sans text-[13px] leading-5 tabular-nums text-muted">
-        <span class="font-mono text-xs">{FILENAME[file]}</span>{query.data
-          ? ` · ${q.trim() ? `${hits.length} of ${entries.length}` : entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`
-          : ''}
-      </span>
+      {#if query.data}
+        <span class="shrink-0 font-sans text-[13px] leading-5 tabular-nums text-muted">
+          {q.trim() ? `${hits.length} of ${entries.length}` : entries.length} {entries.length === 1 ? 'entry' : 'entries'}
+        </span>
+      {/if}
+      {#if file === 'memory'}{@render action?.()}{/if}
     </div>
 
     <!-- No etag on this document, and the agent curates it itself — say so
@@ -267,7 +268,10 @@
               {#if editing === i}
                 {@render editor(draft, 'Entry text', undefined, (v) => (draft = v), () => void saveEdit())}
               {:else}
-                <SettingsRow>
+                <SettingsRow
+                  onOpen={canEdit ? () => !busy && startEdit(i) : undefined}
+                  openLabel={`Edit ${entryTitle(entry)}`}
+                >
                   <!-- The whole first line, wrapped: the row has the width, so
                        the title is not cut to a character budget here. -->
                   {#snippet label()}<span class="line-clamp-2 whitespace-normal">{entryTitle(entry, Infinity)}</span>{/snippet}
@@ -277,10 +281,13 @@
                     {/if}
                   {/snippet}
                   {#if canEdit}
-                    <Button variant="outline" size="sm" onclick={() => startEdit(i)} disabled={busy}>Edit</Button>
                     <SettingsRowMenu
                       label={`Actions for ${entryTitle(entry)}`}
-                      items={[{ label: 'Remove entry', danger: true, disabled: busy, onSelect: () => void remove(i) }]}
+                      items={[
+                        { label: 'Edit entry', disabled: busy, onSelect: () => startEdit(i) },
+                        'sep',
+                        { label: 'Remove entry', danger: true, disabled: busy, onSelect: () => void remove(i) },
+                      ]}
                     />
                   {/if}
                 </SettingsRow>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { History, Plus } from '@lucide/svelte'
+  import { ChevronLeft, History, Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
@@ -140,9 +140,11 @@
   )
 </script>
 
-<!-- A mode switch, not a tab: the same document, read two ways. -->
-{#snippet viewSwitch()}
-  <Segmented options={VIEWS} value={view} onChange={(v) => (view = v)} />
+<!-- Sans: the whole file is the way out of the list, so it is a quiet button
+     at the end of the list's toolbar and not a second switch beside the file
+     switch. -->
+{#snippet openFile()}
+  <Button variant="ghost" size="sm" class="-mr-3 shrink-0" onclick={() => (view = 'file')}>Open as one file</Button>
 {/snippet}
 
 {#if query.isError && offline}
@@ -155,11 +157,13 @@
        shrink the editor, which scrolls internally. -->
   <div class={cn('flex h-full flex-col', className)}>
     {#if sans}
-      <!-- The entries view draws the switch at the head of its own toolbar, so
-           this row is the whole-file view's alone. -->
+      <!-- The entries view has its own toolbar, so this row is the whole-file
+           view's alone. -->
       {#if view === 'file'}
         <div class={cn('mb-3 flex items-center gap-2', inset, !flush && 'pt-4')}>
-          {@render viewSwitch()}
+          <Button variant="ghost" size="sm" class="-ml-2 gap-1 px-2" onclick={() => (view = 'entries')}>
+            <ChevronLeft size={16} aria-hidden="true" />Entries
+          </Button>
           <InfoTip text={tip} />
           <span class="ml-auto shrink-0 font-mono text-xs text-muted">MEMORY.md</span>
           <IconButton title="Version history" active={historyOpen} onclick={() => (historyOpen = !historyOpen)}>
@@ -192,7 +196,7 @@
       <!-- The list owns its scroll and its own read (one query key per file,
            so the Memory side is the very read this header is already waiting
            on — not a second request). -->
-      <MemoryEntries {id} {canEdit} {flush} lead={sans ? viewSwitch : undefined} class={cn('min-h-0 flex-1', sans && !flush && 'pt-4')} />
+      <MemoryEntries {id} {canEdit} {flush} action={sans ? openFile : undefined} class={cn('min-h-0 flex-1', sans && !flush && 'pt-4')} />
       <!-- Never seed the editor from a read that has not landed: saving from an
            empty seed would replace the real memory with an empty file. The click
            is already answered — the header is here, the body is a skeleton. -->

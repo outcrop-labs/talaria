@@ -8,7 +8,6 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import { buttonClasses } from '@/components/ui/button'
   import Input from '@/components/ui/Input.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -21,8 +20,10 @@
   import AssistantGoogleCard from './AssistantGoogleCard.svelte'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
   import { errorMessage, postJson } from '@/lib/fetch-json'
+  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { HANDLE_RE, updateAssistant, useAssistant, type AssistantDmAccess } from '@/lib/assistant'
-  import { p } from '@/router'
+  import { useModels } from '@/lib/muse.svelte'
+  import { navigate } from '@/router'
 
   // Settings › Assistant — the WHOLE of a member's personal agent in one place:
   // identity (name, @handle), personality, which model powers it, on/off, and
@@ -44,8 +45,14 @@
   let personality = $state('')
   let personaRev = $state(0)
   let busy = $state(false)
-  let saved = $state(false)
+  const savedFlash = useSavedFlash()
   let error = $state<string | null>(null)
+
+  // The assistant names its models by id. The catalog has the name a person
+  // knows for most of them, under the bare id or an "<endpoint>/<id>" pin.
+  const catalog = useModels()
+  const modelName = (id: string): string | null =>
+    catalog.data?.models.find((m) => m.id === id || m.id.endsWith(`/${id}`))?.label ?? null
 
   // The owner's DM reach: whether the assistant sees the owner's direct
   // messages with people at all, reads them, or reads and posts in them.
@@ -65,7 +72,11 @@
 
   const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
   const tierOptions = $derived(
-    (assistant?.tiers ?? []).map((t): SegmentedOption => ({ id: t.name, label: sentence(t.name), title: t.model })),
+    (assistant?.tiers ?? []).map((t): SegmentedOption => ({ id: t.name, label: sentence(t.name), title: modelName(t.model) ?? t.model })),
+  )
+  // "Fast" and "Deep" are the product's words: the row says which model each is.
+  const tierHint = $derived(
+    (assistant?.tiers ?? []).map((t) => `${sentence(t.name)} is ${modelName(t.model) ?? t.model}.`).join(' '),
   )
   const setTier = async (tier: string) => {
     if (busy) return
@@ -105,8 +116,7 @@
         return
       }
       await qc.invalidateQueries({ queryKey: ['my-assistant'] })
-      saved = true
-      setTimeout(() => (saved = false), 1500)
+      savedFlash.flash()
     } finally {
       busy = false
     }
@@ -161,20 +171,30 @@
 {:else}
   <div class="space-y-8">
     <SettingsGroup>
-      <SettingsRow label={assistant.displayName}>
+      <SettingsRow
+        label={assistant.displayName}
+        onOpen={() => void navigate('/chat')}
+        openLabel={`Open chat with ${assistant.displayName}`}
+      >
         {#snippet lead()}<Avatar name={assistant.displayName} class="h-10 w-10" />{/snippet}
         {#snippet hint()}
+          {@const model = assistant.currentModel}
           <span class="font-mono text-xs">@{assistant.slug}</span>
-          {#if assistant.currentModel}· <span class="font-mono text-xs">{assistant.currentModel}</span>{/if}
+          {#if model}
+            · {#if modelName(model)}{modelName(model)}{:else}<span class="font-mono text-xs">{model}</span>{/if}
+          {/if}
         {/snippet}
         {#snippet status()}
-          <StatusDot status={assistant.running ? 'ok' : 'idle'} />
+          <StatusDot status={power ? 'warn' : assistant.running ? 'ok' : 'idle'} />
           {power ? (assistant.running ? 'Stopping' : 'Starting') : assistant.running ? 'Running' : 'Stopped'}
         {/snippet}
-        <a href={p('/chat')} class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Open chat</a>
+        {#if !assistant.running}
+          <Button size="sm" variant="outline" disabled={busy || power} onclick={() => void togglePower(assistant)}>Start</Button>
+        {/if}
         <SettingsRowMenu
           label={`Actions for ${assistant.displayName}`}
           items={[
+            { label: 'Open chat', onSelect: () => void navigate('/chat') },
             {
               label: assistant.running ? 'Stop assistant' : 'Start assistant',
               disabled: busy || power,
@@ -211,7 +231,7 @@
         <SettingsRow label="Personality" hint="How it should come across: tone, priorities, pet peeves." stacked>
           {#snippet meta()}
             <!-- The full editor adds Muse drafting and version history. -->
-            <Button variant="link" size="sm" class="ml-auto text-[13px]" onclick={() => (personaEditor = true)}>Open full editor</Button>
+            <Button variant="ghost" size="sm" class="-mr-3 ml-auto" onclick={() => (personaEditor = true)}>Open full editor</Button>
           {/snippet}
           <!-- Inline rich edit (autosave keeps `personality`/dirty fresh).
                Reseeds when a save from the full editor lands. -->
@@ -233,12 +253,18 @@
           <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
             {#if error}
               <span class="text-danger" role="alert">{error}</span>
+            {:else if savedFlash.saved}
+              Saved. Your assistant is restarting.
             {:else}
               Saving restarts your assistant.
             {/if}
           </span>
-          {#if saved}<span class="font-sans text-[13px] leading-5 text-success">Saved</span>{/if}
-          <Button size="sm" onclick={() => void save()} disabled={busy || !dirty || !name.trim()}>
+          <Button
+            size="sm"
+            variant={dirty && name.trim() ? 'primary' : 'outline'}
+            onclick={() => void save()}
+            disabled={busy || !dirty || !name.trim()}
+          >
             {busy ? 'Saving' : 'Save'}
           </Button>
         </div>
@@ -248,7 +274,7 @@
     <SettingsSection title="Behavior">
       <SettingsGroup>
         {#if assistant.tiers.length > 0}
-          <SettingsRow label="Model" hint="Pick the model it starts every chat on.">
+          <SettingsRow label="Model" hint={tierHint}>
             <Segmented
               options={tierOptions}
               value={assistant.tiers.find((t) => t.active)?.name ?? ''}
