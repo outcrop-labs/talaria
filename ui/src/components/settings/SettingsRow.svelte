@@ -83,8 +83,10 @@
     'flex min-h-[60px] px-5 py-4',
     // Not stacked still wraps: on a phone a wide control drops under its label.
     stacked ? 'flex-col gap-3' : 'flex-wrap items-center gap-x-6 gap-y-3',
+    // The ring is forced inside: the app's global focus rule is unlayered, so it beats a plain utility, and a ring
+    // outside the row is cut off by the card.
     (href || onclick) &&
-      'w-full text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent enabled:hover:bg-hover [a&]:hover:bg-hover',
+      'w-full text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent enabled:hover:bg-hover [a&]:hover:bg-hover',
     onOpen && 'group/row relative',
     className,
   )}
@@ -94,7 +96,7 @@
       type="button"
       onclick={onOpen}
       aria-label={openLabel ?? (typeof label === 'string' ? label : undefined)}
-      class="absolute inset-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent group-hover/row:bg-hover"
+      class="absolute inset-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent group-hover/row:bg-hover"
     ></button>
   {/if}
   <div
@@ -129,7 +131,15 @@
   </div>
   {#if children || status || expanded !== undefined}
     <!-- empty:hidden: a control only some viewers get must not hold the row's gap open for the rest. -->
-    <div data-row-controls class={cn('flex max-w-full items-center gap-3 empty:hidden', stacked ? 'w-full' : 'shrink-0 justify-end', onOpen && 'pointer-events-none relative [&>:not([data-row-status])]:pointer-events-auto')}>
+    <!-- A trailing kebab is pulled out by its own inset, so its dots end where a button in the next row ends. -->
+    <div
+      data-row-controls
+      class={cn(
+        'flex max-w-full items-center gap-3 empty:hidden [&>[data-row-menu]:last-child]:-mr-2',
+        stacked ? 'w-full' : 'shrink-0 justify-end',
+        onOpen && 'pointer-events-none relative [&>:not([data-row-status])]:pointer-events-auto',
+      )}
+    >
       {#if status}
         <span data-row-status class="mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">{@render status()}</span>
       {/if}

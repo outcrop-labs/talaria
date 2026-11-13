@@ -26,7 +26,7 @@
   class={cn(
     'block min-w-0 border-b border-r border-line-subtle px-5 py-4',
     href &&
-      'group/stat transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+      'group/stat transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent',
     className,
   )}
 >
