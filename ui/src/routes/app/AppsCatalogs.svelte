@@ -1,11 +1,13 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ArrowDown, ArrowUp, Pencil, Trash2 } from '@lucide/svelte'
+  import { Library } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import IconButton from '@/components/ui/IconButton.svelte'
+  import type { DotStatus } from '@/components/ui/chip'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -56,7 +58,7 @@
       const r = await addCatalog(n, u)
       said = r.error
         ? `Added ${r.catalog.name}, but it could not be read: ${r.error}.`
-        : `Added ${r.catalog.name}: it lists ${r.apps ?? 0} app${r.apps === 1 ? '' : 's'}.`
+        : `Added ${r.catalog.name}. It lists ${r.apps ?? 0} app${r.apps === 1 ? '' : 's'}.`
     })
     if (ok) {
       name = ''
@@ -85,88 +87,92 @@
     const ok = await confirm({
       title: `Remove ${c.name}?`,
       message: last
-        ? `Discover stops listing its apps, and it is the last catalog: Discover will be empty until you add one. Installed apps stay installed, and install from Git keeps working.`
+        ? `Discover stops listing its apps, and it is the last source: Discover will be empty until you add one. Installed apps stay installed, and install from Git keeps working.`
         : `Discover stops listing its apps. Installed apps stay installed.`,
-      confirmLabel: 'Remove catalog',
+      confirmLabel: 'Remove source',
       danger: true,
     })
     if (ok) void run(() => removeCatalog(c.id))
   }
 
-  /** What reading the catalog gave, in a few words. */
-  const statusOf = (c: AppCatalogStatus): { dot: 'ok' | 'warn' | 'idle'; text: string } => {
-    if (!c.enabled) return { dot: 'idle', text: 'off' }
-    if (c.error) return { dot: 'warn', text: c.error }
+  /** What reading the catalog gave, in a few words. The reason a read failed
+   *  is the row's second line. */
+  const statusOf = (c: AppCatalogStatus): { dot: DotStatus; text: string } => {
+    if (!c.enabled) return { dot: 'idle', text: 'Off' }
+    if (c.error) return { dot: 'warn', text: 'Unreachable' }
     const n = c.apps ?? 0
     return { dot: 'ok', text: `${n} app${n === 1 ? '' : 's'}` }
   }
 </script>
 
-<Panel data-app-catalogs>
-  <SectionHeader
-    title="Catalogs"
-    info="The indexes Discover lists apps from. Each is an https URL serving JSON: an apps list of slug, name, repo and description. When two catalogs list the same app, Discover shows it from the one higher in this list. Removing a catalog never uninstalls anything."
-    action={`${catalogs.length} listed`}
-  />
-  <div class="space-y-2">
+<SettingsSection
+  title="Catalog sources"
+  info="The lists Discover shows apps from. Each is an https address serving JSON: an apps list of slug, name, repo and description. When two sources list the same app, Discover shows it from the one higher in this list. Removing a source never uninstalls anything."
+>
+  <SettingsGroup data-app-catalogs>
     {#if catalogs.length === 0}
-      <div class="rounded-md border border-dashed border-line px-3 py-2.5 font-sans text-xs text-muted">
-        No catalog is configured, so Discover lists nothing.{isAdmin ? ' Add one below, or install any app from its git URL.' : ''}
-      </div>
+      <SettingsRow label="No catalog source yet" hint={isAdmin ? 'Discover lists nothing until you add one.' : 'Discover lists nothing until an admin adds one.'} />
     {/if}
     {#each catalogs as c, i (c.id)}
       {@const status = statusOf(c)}
-      <div class="space-y-1.5 rounded-md border border-line p-2.5" data-catalog-row>
+      <div data-catalog-row>
         {#if editing?.id === c.id}
-          <div class="flex flex-wrap gap-2">
-            <Input size="sm" bind:value={editing.name} placeholder="Name" class="min-w-0 flex-1 basis-40" />
-            <Input size="sm" bind:value={editing.url} placeholder="https://…/index.json" class="min-w-0 flex-[2] basis-64 font-[var(--font-mono)]" />
-          </div>
-          <div class="flex gap-2">
-            <Button size="sm" disabled={busy || !editing.name.trim() || !editing.url.trim()} onclick={() => void save()}>Save</Button>
-            <Button size="sm" variant="ghost" disabled={busy} onclick={() => (editing = null)}>Cancel</Button>
+          <div class="flex min-h-[60px] flex-wrap items-center gap-3 px-5 py-3">
+            <Input size="sm" bind:value={editing.name} placeholder="Name" class="w-48" />
+            <Input size="sm" bind:value={editing.url} placeholder="https://example.com/index.json" class="min-w-0 flex-1 basis-64 font-[var(--font-mono)]" />
+            <Button size="md" variant="outline" disabled={busy || !editing.name.trim() || !editing.url.trim()} onclick={() => void save()}>Save</Button>
+            <Button size="md" variant="ghost" disabled={busy} onclick={() => (editing = null)}>Cancel</Button>
           </div>
         {:else}
-          <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span class="min-w-0 font-sans text-sm text-fg">{c.name}</span>
-            <span class="flex min-w-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted" title={status.text}>
-              <StatusDot status={status.dot} />
-              <span class={status.dot === 'warn' ? 'normal-case tracking-normal text-warning' : ''}>{status.text}</span>
+          <SettingsRow label={c.name}>
+            {#snippet icon()}<Library size={16} />{/snippet}
+            {#snippet hint()}
+              <div class="break-all font-mono text-xs leading-5">{c.url}</div>
+              {#if c.enabled && c.error}<div class="wrap-anywhere text-warning">{c.error}</div>{/if}
+              {#if c.shadowed.length > 0}
+                <div>Also lists {c.shadowed.join(', ')}, shown from a source higher in the list.</div>
+              {/if}
+            {/snippet}
+            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+              <StatusDot status={status.dot} />{status.text}
             </span>
             {#if isAdmin}
-              <span class="ml-auto flex shrink-0 items-center gap-1">
-                <Toggle checked={c.enabled} disabled={busy} title={c.enabled ? 'Turn off: Discover stops reading it' : 'Turn on'} onChange={(on) => void run(() => editCatalog(c.id, { enabled: on }))} />
-                <IconButton size="sm" title="Move up" disabled={busy || i === 0} onclick={() => move(i, -1)}><ArrowUp size={13} /></IconButton>
-                <IconButton size="sm" title="Move down" disabled={busy || i === catalogs.length - 1} onclick={() => move(i, 1)}><ArrowDown size={13} /></IconButton>
-                <IconButton size="sm" title="Edit" disabled={busy} onclick={() => (editing = { id: c.id, name: c.name, url: c.url })}><Pencil size={13} /></IconButton>
-                <IconButton size="sm" title="Remove" danger disabled={busy} onclick={() => void remove(c)}><Trash2 size={13} /></IconButton>
-              </span>
+              <Toggle
+                checked={c.enabled}
+                disabled={busy}
+                title={c.enabled ? `Stop reading ${c.name}` : `Read ${c.name}`}
+                onChange={(on) => void run(() => editCatalog(c.id, { enabled: on }))}
+              />
+              <SettingsRowMenu
+                label={`Actions for ${c.name}`}
+                items={[
+                  { label: 'Move up', disabled: busy || i === 0, onSelect: () => move(i, -1) },
+                  { label: 'Move down', disabled: busy || i === catalogs.length - 1, onSelect: () => move(i, 1) },
+                  { label: 'Edit', disabled: busy, onSelect: () => (editing = { id: c.id, name: c.name, url: c.url }) },
+                  'sep',
+                  { label: 'Remove source', danger: true, disabled: busy, onSelect: () => void remove(c) },
+                ]}
+              />
             {/if}
-          </div>
-          <div class="break-all font-mono text-[11px] text-muted">{c.url}</div>
-          {#if c.shadowed.length > 0}
-            <div class="font-sans text-[11px] text-muted">
-              Also lists {c.shadowed.join(', ')}, shown from a catalog higher in the list.
-            </div>
-          {/if}
+          </SettingsRow>
         {/if}
       </div>
     {/each}
 
     {#if isAdmin}
-      <div class="flex flex-wrap gap-2 pt-1">
-        <Input size="sm" bind:value={name} placeholder="Name" class="min-w-0 flex-1 basis-40" />
+      <SettingsRow label="Add a source" hint="An address that serves a JSON list of apps.">
+        <Input size="sm" bind:value={name} placeholder="Name" class="w-40" />
         <Input
           size="sm"
           bind:value={url}
-          placeholder="https://…/index.json"
+          placeholder="https://example.com/index.json"
           onkeydown={(e) => e.key === 'Enter' && void add()}
-          class="min-w-0 flex-[2] basis-64 font-[var(--font-mono)]"
+          class="w-[280px] font-[var(--font-mono)]"
         />
-        <Button size="sm" disabled={busy || !name.trim() || !url.trim()} onclick={() => void add()}>Add catalog</Button>
-      </div>
+        <Button size="md" variant="outline" disabled={busy || !name.trim() || !url.trim()} onclick={() => void add()}>Add source</Button>
+      </SettingsRow>
     {/if}
-    {#if notice}<div class="font-sans text-xs text-fg">{notice}</div>{/if}
-    {#if error}<div class="font-sans text-xs text-danger">{error}</div>{/if}
-  </div>
-</Panel>
+  </SettingsGroup>
+  {#if notice}<div class="mt-2 font-sans text-[13px] leading-5 text-fg">{notice}</div>{/if}
+  {#if error}<div class="mt-2 font-sans text-[13px] leading-5 text-danger">{error}</div>{/if}
+</SettingsSection>
