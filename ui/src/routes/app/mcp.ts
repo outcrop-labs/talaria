@@ -27,7 +27,8 @@ export {
   type HeaderDecl,
   type HeaderField,
 } from '@/lib/mcp-headers'
-import type { CatalogStatus, ProbeRow } from '@/lib/mcp-status'
+import type { DotStatus } from '@/components/ui/chip'
+import type { CatalogStatus, ProbeRow, ServerStatus, StatusKind } from '@/lib/mcp-status'
 import type { CatalogLiveness, FeaturedConfigRow, FeaturedResponse, LibraryLive } from '@/lib/mcp-catalog'
 export {
   addDomain,
@@ -269,6 +270,14 @@ export interface InstallOutcome {
   needsCredentials: boolean
 }
 
+/** What the marketplace knows about an entry it installed in this sitting:
+ *  the registry row it became, and what that row still needs. */
+export interface MarketplaceAdded {
+  serverId: string
+  state: 'ok' | 'needs-key' | 'connect' | 'needs-app' | 'failed'
+  detail?: string
+}
+
 export const needsOauthApp = (m: OauthMeta | null) => !!m && !m.clientSet && (!m.dcr || !!m.dcrRejected)
 
 /** Register a marketplace entry in the org registry and run discovery, so
@@ -307,15 +316,64 @@ export async function installLibraryServer(l: LibraryServerRow, opts: InstallOpt
   }
 }
 
-// Outline chips in the mono chrome voice — gold reserved for the official tier.
-export const TIER_BADGE: Record<LibraryServerRow['tier'], { label: string; cls: string; hint: string }> = {
+/** A catalog tier's chip. `word` and `tone` are the settings area's; `label`
+ *  and `cls` are the mono chip the agent dialog still draws in comms. */
+export const TIER_BADGE: Record<
+  LibraryServerRow['tier'],
+  { label: string; cls: string; word: string; tone: 'accent' | 'neutral'; hint: string }
+> = {
   'first-party': {
     label: 'official',
     cls: 'border-accent/50 text-accent',
+    word: 'Official',
+    tone: 'accent',
     hint: 'Published by the company itself, hosted on its own verified domain',
   },
-  verified: { label: 'verified', cls: 'border-line text-muted', hint: 'Domain-verified publisher, hosted elsewhere' },
-  community: { label: 'community', cls: 'border-line-subtle text-ink-dim', hint: 'Community-built (io.github namespace)' },
+  verified: { label: 'verified', cls: 'border-line text-muted', word: 'Verified', tone: 'neutral', hint: 'Domain-verified publisher, hosted elsewhere' },
+  community: {
+    label: 'community',
+    cls: 'border-line-subtle text-ink-dim', // voice-ok: the mono chip, for the agent dialog in comms
+    word: 'Community',
+    tone: 'neutral',
+    hint: 'Community-built (io.github namespace)',
+  },
+}
+
+/** The word the page prints for each verdict. `serverStatus` carries its own
+ *  lowercase label, which its tests in `lib/` pin. */
+export const STATUS_WORD: Record<StatusKind, string> = {
+  disabled: 'Disabled',
+  'app-off': 'App is off',
+  pulling: 'Starting',
+  'image-failed': 'Could not start',
+  'needs-oauth-app': 'Needs setup',
+  reconnect: 'Signed out',
+  'needs-connect': 'Needs sign-in',
+  'needs-key': 'Needs credentials',
+  'per-user': 'Each person signs in',
+  unreachable: 'Unreachable',
+  error: 'Error',
+  connected: 'Connected',
+  ready: 'Ready',
+  untested: 'Not checked yet',
+}
+
+export const STATUS_DOT: Record<ServerStatus['tone'], DotStatus> = {
+  muted: 'idle',
+  warning: 'warn',
+  danger: 'danger',
+  success: 'ok',
+}
+
+/** The host of a real web address. A pseudo-scheme such as
+ *  talaria-workbench://core carries a routing token, not a host. */
+export function serverDomain(url: string): string | null {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.hostname : null
+  } catch {
+    return null
+  }
 }
 
 export const slugify = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)

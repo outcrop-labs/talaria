@@ -1,9 +1,9 @@
 <script lang="ts">
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'
   import CopyButton from '@/components/ui/CopyButton.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import { slide } from '@/lib/motion'
+  import Modal from '@/components/ui/Modal.svelte'
   import { parseScopes, patchServer, type OauthMeta } from './mcp'
 
   /** Credentials form for providers a dashboard OAuth app is the way into:
@@ -15,42 +15,35 @@
    *  client id/secret plus an optional explicit scope list. */
   let {
     serverId,
+    serverLabel,
     meta,
-    rejected = false,
-    editing = false,
     onSaved,
-    onCancel,
+    onClose,
   }: {
     serverId: string
+    serverLabel: string
     meta: OauthMeta
-    rejected?: boolean
-    /** A client is already set; this is a change, not a first setup. */
-    editing?: boolean
     onSaved: () => void
-    onCancel?: () => void
+    onClose: () => void
   } = $props()
 
-  // svelte-ignore state_referenced_locally -- reason: the form opens straight into editing when it is a change; a first setup starts folded
-  let openForm = $state(editing)
+  // A client is already set: this is a change, not a first setup.
+  // svelte-ignore state_referenced_locally -- reason: read once when the dialog mounts; saving closes it
+  const editing = meta.clientSet
   let clientId = $state('')
   let clientSecret = $state('')
-  // svelte-ignore state_referenced_locally -- reason: seeded once from the stored override (or the advertised set) when the panel mounts
+  // svelte-ignore state_referenced_locally -- reason: seeded once from the stored override (or the advertised set) when the dialog mounts
   let scopes = $state((meta.scopesOverride ?? meta.scopes).join(' '))
   let error = $state<string | null>(null)
   let busy = $state(false)
 
   const guide = $derived(meta.guide)
-  const headline = $derived(
+  const why = $derived(
     editing
-      ? 'OAuth app credentials'
-      : rejected
-        ? 'This provider refused automatic registration for this callback URL'
-        : 'This provider needs a pre-registered OAuth app',
-  )
-  const tip = $derived(
-    rejected
-      ? 'It supports automatic client registration, but only for redirect URLs it has approved (localhost apps and a few known clients) — a hosted Talaria callback is not on that list. Create an OAuth app in the provider\'s developer settings with the callback URL below, then paste the app\'s client id and secret here. They\'re stored encrypted and spoken only during the OAuth flow.'
-      : 'It doesn\'t support automatic client registration. Create an OAuth app in the provider\'s developer settings with the callback URL below, then paste the app\'s client id and secret here. They\'re stored encrypted and spoken only during the OAuth flow.',
+      ? 'Change the OAuth app this server signs in through.'
+      : meta.dcrRejected
+        ? 'The provider only registers apps for sign-in addresses it has approved, and this one is not on its list. Create an OAuth app with the provider, then paste its details here.'
+        : 'The provider does not register apps automatically. Create an OAuth app with the provider, then paste its details here.',
   )
 
   const save = async () => {
@@ -64,82 +57,78 @@
       error = e
       return
     }
-    openForm = false
     onSaved()
   }
 </script>
 
-<div class="mt-3 rounded-lg border border-accent/40 bg-accent/5 p-3">
-  <div class="flex items-center gap-3">
-    <div class="min-w-0 flex-1">
-      <div class="flex items-center gap-2">
-        <span class="text-xs font-medium text-fg">{headline}</span>
-        <InfoTip text={tip} />
-      </div>
-      <div class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
-        {#if guide}
-          <a href={guide.portal} target="_blank" rel="noreferrer" class="text-accent hover:underline">
-            Create the {guide.appName} ↗
-          </a>
-        {/if}
-        {#if meta.documentation}
-          <a href={meta.documentation} target="_blank" rel="noreferrer" class="text-accent hover:underline">
-            Provider docs ↗
-          </a>
-        {/if}
-      </div>
-    </div>
-    {#if !openForm}
-      <Button size="sm" class="shrink-0" onclick={() => (openForm = true)}>
-        {editing ? 'Change' : 'Set up'}
-      </Button>
-    {/if}
-  </div>
-  {#if openForm}
-    <div transition:slide={{ duration: 150 }} class="mt-3 space-y-3">
+<Modal open {onClose} title={editing ? `OAuth app for ${serverLabel}` : `Set up sign-in for ${serverLabel}`} width="max-w-lg">
+  <div class="space-y-5">
+    <div class="space-y-2">
+      <p class="font-sans text-[13px] leading-5 text-muted">{why}</p>
+      {#if guide || meta.documentation}
+        <div class="flex flex-wrap gap-x-4 gap-y-1 font-sans text-[13px] leading-5">
+          {#if guide}
+            <a href={guide.portal} target="_blank" rel="noreferrer" class="text-accent hover:underline">Create the {guide.appName} ↗</a>
+          {/if}
+          {#if meta.documentation}
+            <a href={meta.documentation} target="_blank" rel="noreferrer" class="text-accent hover:underline">Provider docs ↗</a>
+          {/if}
+        </div>
+      {/if}
       {#if guide?.notes.length}
-        <ol class="list-decimal space-y-0.5 pl-4 font-sans text-[11px] leading-relaxed text-muted">
+        <ol class="list-decimal space-y-1 pl-5 font-sans text-[13px] leading-5 text-muted">
           {#each guide.notes as n, i (i)}<li>{n}</li>{/each}
         </ol>
       {/if}
-      <div>
-        <span class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Callback URL (register this with the provider, exactly)</span>
-        <div class="flex items-center gap-2">
-          <code class="min-w-0 flex-1 truncate rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-xs text-fg">{meta.callbackUrl}</code>
-          <CopyButton value={meta.callbackUrl} label="Copy" class="shrink-0 text-xs" />
-        </div>
-        {#if !/^https:/.test(meta.callbackUrl)}
-          <div class="mt-1 font-sans text-[11px] text-warning">
-            This is a plain-http callback. Many providers accept only https — set a verified hosting domain under Admin → Org and the callback becomes stable and https.
-          </div>
-        {/if}
-      </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label for={`oauth-client-id-${serverId}`} class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
-          <Input id={`oauth-client-id-${serverId}`} bind:value={clientId} autocomplete="off" />
-        </div>
-        <div>
-          <label for={`oauth-client-secret-${serverId}`} class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
-          <Input id={`oauth-client-secret-${serverId}`} type="password" bind:value={clientSecret} autocomplete="off" placeholder={editing ? '(unchanged if blank)' : ''} />
-        </div>
-      </div>
-      <div>
-        <label for={`oauth-scopes-${serverId}`} class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          Scopes
-          <InfoTip text="What the authorize request asks for. Pre-filled with what the server advertised; some providers' apps need the scopes spelled out here (space- or comma-separated). Blank = whatever the provider advertises." />
-        </label>
-        <Input id={`oauth-scopes-${serverId}`} bind:value={scopes} autocomplete="off" placeholder={meta.scopes.join(' ') || 'provider default'} class="font-[var(--font-mono)]" />
-      </div>
-      {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
-      <div class="flex justify-end gap-2">
-        <Button size="sm" variant="ghost" onclick={() => { openForm = false; onCancel?.() }}>
-          Cancel
-        </Button>
-        <Button size="sm" disabled={busy || !clientId.trim()} onclick={() => void save()}>
-          {busy ? 'Saving' : 'Save credentials'}
-        </Button>
-      </div>
     </div>
-  {/if}
-</div>
+
+    <SettingsField label="Callback URL" hint="Register this with the provider, exactly as written.">
+      <div class="flex items-center gap-2">
+        <code class="min-w-0 flex-1 truncate rounded-md border border-line bg-surface px-2.5 py-1.5 font-mono text-xs leading-5 text-fg">{meta.callbackUrl}</code>
+        <CopyButton value={meta.callbackUrl} title="Copy the callback URL" class="shrink-0" />
+      </div>
+      {#if !/^https:/.test(meta.callbackUrl)}
+        <p class="font-sans text-[13px] leading-5 text-warning">
+          This callback is plain http, and many providers accept only https. Set a verified hosting domain under Admin to get an https one.
+        </p>
+      {/if}
+    </SettingsField>
+    <div class="grid gap-4 sm:grid-cols-2">
+      <SettingsField label="Client ID" for={`oauth-client-id-${serverId}`}>
+        <Input id={`oauth-client-id-${serverId}`} size="sm" bind:value={clientId} autocomplete="off" />
+      </SettingsField>
+      <SettingsField label="Client secret" for={`oauth-client-secret-${serverId}`}>
+        <Input
+          id={`oauth-client-secret-${serverId}`}
+          size="sm"
+          type="password"
+          bind:value={clientSecret}
+          autocomplete="off"
+          placeholder={editing ? 'Leave blank to keep it' : ''}
+        />
+      </SettingsField>
+    </div>
+    <SettingsField
+      label="Scopes"
+      for={`oauth-scopes-${serverId}`}
+      hint="Leave blank to ask for what the provider advertises."
+      info="What the sign-in asks for, separated by spaces or commas. Filled in with what the server advertised. Some providers need the scopes spelled out here."
+    >
+      <Input
+        id={`oauth-scopes-${serverId}`}
+        size="sm"
+        bind:value={scopes}
+        autocomplete="off"
+        placeholder={meta.scopes.join(' ') || 'provider default'}
+        class="font-[var(--font-mono)]"
+      />
+    </SettingsField>
+    {#if error}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
+  </div>
+  {#snippet footer()}
+    <div class="flex justify-end gap-2">
+      <Button size="sm" variant="ghost" onclick={onClose}>Cancel</Button>
+      <Button size="sm" disabled={busy || !clientId.trim()} onclick={() => void save()}>{busy ? 'Saving' : 'Save'}</Button>
+    </div>
+  {/snippet}
+</Modal>

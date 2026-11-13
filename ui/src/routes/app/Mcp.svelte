@@ -1,12 +1,11 @@
 <script lang="ts">
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Materialize from '@/components/ui/Materialize.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { fly } from '@/lib/motion'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
@@ -27,6 +26,10 @@
   // endpoints someone registered, and only those can be added or removed.
   //
   // THE URL IS THE TAB: /mcp (built-in) and /mcp/external.
+  //
+  // The second tab stays "External", not "Connected": it lists servers that
+  // are registered but unreachable or waiting for a sign-in, and "Connected"
+  // is also one of the words a row's status uses.
   const TABS = ['internal', 'external'] as const
   type McpTab = (typeof TABS)[number]
   const tab = $derived(tabFromPath(route.pathname, '/mcp', TABS, 'internal'))
@@ -38,49 +41,7 @@
   const qc = useQueryClient()
   const serversQuery = useMcpServers()
   let adding = $state<null | 'marketplace' | 'custom'>(null)
-
-  // Silhouette widths vary per index so the sketch doesn't look stamped.
-  const titleW = ['w-36', 'w-28', 'w-44']
-  const descW = ['w-3/5', 'w-2/5', 'w-1/2']
-  const pillW = ['w-16', 'w-14', 'w-20', 'w-12', 'w-16']
 </script>
-
-<!-- One server card's silhouette (see McpServerCard: header with 36px mark,
-     tools pill strip, then the access table) — same Panel frame and spacing,
-     so the real card materializes over it without a jump. -->
-{#snippet serverSkeleton(i: number)}
-  <div aria-hidden="true" class="rounded-lg border border-line bg-panel p-6">
-    <div class="flex items-center gap-3">
-      <Skeleton class="h-9 w-9 shrink-0 rounded-md" />
-      <div class="min-w-0 flex-1 space-y-2">
-        <div class="flex items-baseline gap-2">
-          <Skeleton class={`h-3.5 rounded-full ${titleW[i % titleW.length]}`} />
-          <Skeleton class="h-2.5 w-24 rounded-full" />
-        </div>
-        <Skeleton class={`h-2.5 rounded-full ${descW[i % descW.length]}`} />
-      </div>
-      <Skeleton class="h-5 w-20 shrink-0 rounded" />
-    </div>
-    <div class="mt-3 flex items-center gap-1.5">
-      {#each pillW as w, j (j)}
-        <Skeleton class={`h-[22px] rounded ${w}`} />
-      {/each}
-    </div>
-    <div class="mt-4 border-t border-line pt-3">
-      <Skeleton class="h-2.5 w-12 rounded-full" />
-      <div class="mt-3 space-y-2.5">
-        <div class="flex items-center gap-3">
-          <Skeleton class="h-2.5 w-14 rounded-full" />
-          <Skeleton class="h-3 w-40 rounded-full" />
-        </div>
-        <div class="flex items-center gap-3">
-          <Skeleton class="h-2.5 w-14 rounded-full" />
-          <Skeleton class="h-3 w-32 rounded-full" />
-        </div>
-      </div>
-    </div>
-  </div>
-{/snippet}
 
 <!-- The OAuth popup announces completion — refresh connection states live. -->
 <svelte:window
@@ -91,8 +52,6 @@
   }}
 />
 
-<!-- The registry region rises as one child of the page; the card cascade
-     inside it belongs to Materialize's content branch. -->
 <SettingsPage
   title="MCP"
   blurb="Tools your agents can call, and who may use them."
@@ -107,45 +66,36 @@
         <!-- Adding only ever means adding an EXTERNAL server: the internal ones
              arrive with the deployment and cannot be registered by hand. -->
         {#if tab === 'external'}
-          <Button size="sm" variant="ghost" onclick={() => (adding = 'custom')}>
-            Custom server
-          </Button>
-          <Button size="sm" onclick={() => (adding = 'marketplace')}>
-            <Plus size={14} /> Browse marketplace
-          </Button>
+          <Button size="sm" variant="ghost" onclick={() => (adding = 'custom')}>Custom server</Button>
+          <Button size="sm" onclick={() => (adding = 'marketplace')}>Browse marketplace</Button>
         {/if}
       {/snippet}
 
-    <!-- Skeleton → content as one motion: card-shaped skeletons materialize
-         into the real cards (Materialize grid-stacks the branches, so no
-         layout jump). QueryState keeps owning ERROR and EMPTY — its loading
-         branch is bypassed in practice because Materialize intercepts the
-         in-flight window; the item-shaped snippet it holds only covers the
-         paused-fetch edge (offline before first byte).
-
-         EMPTY is asked per TAB rather than of the registry: a deployment with
+    <!-- EMPTY is asked per TAB rather than of the registry: a deployment with
          only its own toolkit is not an empty registry, but the external tab is
          genuinely empty and should say so — and say the useful thing, which is
          how to add one. -->
     {#key tab}
     <div in:fly={{ y: 6, duration: 200 }}>
-    <Materialize loading={serversQuery.isLoading} count={3} class="space-y-6">
-      {#snippet skeleton(i)}{@render serverSkeleton(i)}{/snippet}
       <QueryState
         query={serversQuery}
-        errorTitle="Could not load the MCP registry"
+        errorTitle="Could not load your tool servers"
         isEmpty={(rows) => rows.filter((s) => isInternalServer(s) === (tab === 'internal')).length === 0}
       >
-        {#snippet skeleton()}{@render serverSkeleton(0)}{/snippet}
+        {#snippet skeleton()}
+          <SettingsGroup>
+            <div class="px-5 py-4"><SkeletonRows rows={4} /></div>
+          </SettingsGroup>
+        {/snippet}
         {#snippet empty()}
           {#if tab === 'external'}
             <EmptyState
               icon="⌁"
-              title="No external servers yet"
-              hint="Browse the marketplace, or register a custom endpoint your agents should reach. Talaria's own tools are on the Built-in tab and are already available."
+              title="No servers added yet"
+              hint="Add a tool server from the marketplace, or your own by its address."
             >
               {#snippet action()}
-                <Button size="sm" onclick={() => (adding = 'marketplace')}>Browse marketplace</Button>
+                <Button size="sm" variant="outline" onclick={() => (adding = 'marketplace')}>Browse marketplace</Button>
               {/snippet}
             </EmptyState>
           {:else}
@@ -154,18 +104,19 @@
                  action it cannot deliver. -->
             <EmptyState
               icon="⌁"
-              title="Built-in tools unavailable"
-              hint="Talaria's own toolkit should always be registered here. If this persists, check the app logs. The MCP service may not have started."
+              title="Built-in tools are unavailable"
+              hint="Talaria's own tools should always be listed here. If this lasts, check the app logs."
             />
           {/if}
         {/snippet}
         {#snippet children(servers)}
-          {#each servers.filter((s) => isInternalServer(s) === (tab === 'internal')) as s (s.id)}
-            <McpServerCard server={s} />
-          {/each}
+          <SettingsGroup>
+            {#each servers.filter((s) => isInternalServer(s) === (tab === 'internal')) as s (s.id)}
+              <McpServerCard server={s} />
+            {/each}
+          </SettingsGroup>
         {/snippet}
       </QueryState>
-    </Materialize>
     </div>
     {/key}
 
