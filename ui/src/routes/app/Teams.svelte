@@ -97,6 +97,7 @@
       onCreate={create}
       createLabel="New team"
       createPlaceholder="Name of the team"
+      listWidth="w-56"
       class="h-full"
     >
       {#snippet row(t: Team)}

@@ -171,7 +171,7 @@
          description is what tells you it is the right one. -->
     {#if sans}
       <span class="block truncate font-sans text-[13px] font-medium leading-5 text-fg">{skillTitle(s.name)}</span>
-      <span class="block truncate font-sans text-xs leading-4 text-muted">{s.description}</span>
+      <span class="line-clamp-2 whitespace-normal font-sans text-xs leading-4 text-muted" title={s.description}>{s.description}</span>
     {:else}
       <span class="block truncate text-fg">{s.name}</span>
       <span class="block truncate text-[11px] text-muted">{s.description}</span><!-- voice-ok: mono branch, for the agent dialog opened from chat -->

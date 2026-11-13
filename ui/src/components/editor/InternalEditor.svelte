@@ -407,7 +407,9 @@
            |global keeps the rail's first entrance animated there too. Inner
            wrapper pinned to the resting width so rows clip, not rewrap. -->
       <div transition:slide|global={GROW_X} class="shrink-0 overflow-y-auto rounded-lg border border-line">
-      <div class="w-64 p-1">
+      <!-- Narrower in the settings area: beside a 960px page's detail pane the
+           wider rail folds the formatting toolbar onto a second row. -->
+      <div class={sans ? 'w-48 p-1' : 'w-64 p-1'}>
         <div class={sans ? 'px-2 py-1.5 font-sans text-xs font-medium leading-4 text-muted' : 'px-2 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'}>History</div><!-- voice-ok -->
         <QueryState query={historyQuery} errorTitle="Could not load history" errorVariant="inline">
           {#snippet skeleton()}<SkeletonRows rows={4} class="px-2 py-2" />{/snippet}
@@ -426,19 +428,31 @@
                 title={i === 0 ? undefined : 'Show changes since this revision'}
               >
                 <div class="min-w-0 flex-1">
-                  <div class="truncate text-fg">
-                    {#if rev.version !== undefined}<span class="mr-1.5 font-mono text-accent">v{rev.version}</span>{/if}
-                    {i === 0 ? 'Current' : relativeTime(rev.createdAt)}
-                  </div>
-                  <div class={sans ? 'truncate font-sans text-xs leading-4 text-muted' : 'truncate font-mono text-[11px] text-muted'}><!-- voice-ok -->
-                    {rev.createdBy ?? 'unknown'} · {rev.size.toLocaleString()} chars
-                  </div>
+                  {#if sans}
+                    <div class="flex items-baseline gap-2">
+                      <span class="min-w-0 truncate text-fg">
+                        {#if rev.version !== undefined}<span class="mr-1.5 font-mono text-accent">v{rev.version}</span>{/if}
+                        {i === 0 ? 'Current' : relativeTime(rev.createdAt)}
+                      </span>
+                      <span class="ml-auto shrink-0 font-sans text-xs leading-4 tabular-nums text-muted">{rev.size.toLocaleString()} chars</span>
+                    </div>
+                    <div class="truncate font-sans text-xs leading-4 text-muted" title={rev.createdBy ?? undefined}>{rev.createdBy ?? 'Unknown'}</div>
+                  {:else}
+                    <div class="truncate text-fg">
+                      {#if rev.version !== undefined}<span class="mr-1.5 font-mono text-accent">v{rev.version}</span>{/if}
+                      {i === 0 ? 'Current' : relativeTime(rev.createdAt)}
+                    </div>
+                    <div class="truncate font-mono text-[11px] text-muted"><!-- voice-ok: the mono rail, as it was -->
+                      {rev.createdBy ?? 'unknown'} · {rev.size.toLocaleString()} chars
+                    </div>
+                  {/if}
                   {#if rev.note}<div class={sans ? 'truncate text-xs italic leading-4 text-muted' : 'truncate text-[11px] italic text-muted'}>{rev.note}</div>{/if}<!-- voice-ok -->
                 </div>
                 {#if editable && i !== 0}
                   <button
                     type="button"
                     title="Load this revision into the editor"
+                    aria-label="Load this revision into the editor"
                     onclick={(e) => {
                       e.stopPropagation()
                       void loadRevision(rev.id)

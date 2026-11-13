@@ -433,6 +433,11 @@
               </div>
             {/each}
           </SettingsGroup>
+          {#if grantGroups.some((g) => g.grants.some((grant) => grant.changed))}
+            <p class="mt-3 flex items-center gap-2 font-sans text-xs leading-4 text-muted">
+              <StatusDot status="warn" /> Changed from the workspace default
+            </p>
+          {/if}
         {/if}
       </SettingsSection>
     {/if}
