@@ -16,6 +16,7 @@
   import { useUiVoice } from '@/lib/ui-voice'
   import DiffView from '@/components/fleet/DiffView.svelte'
   import { diffLines, type DiffLine } from '@/components/fleet/line-diff'
+  import { bodyWatch } from './body-watch'
   import { joinFrontmatter, splitFrontmatter, type FrontmatterParts } from './frontmatter'
 
   interface Revision {
@@ -115,6 +116,19 @@
   let headEdit = $state<{ seed: number; text: string } | null>(null)
   const head = $derived(headEdit?.seed === seed ? headEdit.text : parts.head)
   let diffing = $state<{ rev: Revision; content: string; diff: DiffLine[] | null } | null>(null)
+
+  // The rich editor reports an edit when it loses focus. This marks the
+  // document dirty as it is typed, so Save is live before the caret leaves.
+  const typed = bodyWatch(() => editorRef?.getMarkdown() ?? '')
+  const noteEdit = () => {
+    if (editable && !dirty && typed.changed()) dirty = true
+  }
+  // Whoever clears `dirty` (this editor's save, the record's, a discard) has
+  // made the live text the clean one. A re-seed does the same.
+  $effect(() => {
+    void seed
+    if (!dirty) typed.reset()
+  })
 
   // ── Muse: prompt → streamed proposal → review/accept, iteratively ───────
   let museOpen = $state(false)
@@ -361,7 +375,16 @@
           {:else}
             <pre aria-label="Frontmatter" class="mb-3 shrink-0 overflow-x-auto rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs leading-5 text-muted">{head}</pre>
           {/if}
-        {/if}<div class="min-h-0 flex-1 overflow-y-auto">
+        {/if}<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -- reason: listens for edits made in the editor inside; it is not itself a control -->
+        <div
+          class="min-h-0 flex-1 overflow-y-auto"
+          onfocusincapture={typed.arm}
+          onkeydowncapture={typed.arm}
+          onpointerdowncapture={typed.arm}
+          oninput={noteEdit}
+          onkeyup={noteEdit}
+          onclick={noteEdit}
+        >
           {#key seed}
             <RichEditor
               bind:this={editorRef}
@@ -468,14 +491,26 @@
          takes the border there. -->
     <div class={cn('flex shrink-0 items-center gap-2 pt-3', withActions && 'border-t border-line')}>
       {#if muse && editable}
-        <Button
-          variant={museOpen ? 'outline' : 'ghost'}
-          size="sm"
-          onclick={() => (museOpen = !museOpen)}
-          title="Draft with AI. Uses your preferred model (Settings)"
-        >
-          <Sparkles size={14} class="mr-1.5" /> Muse
-        </Button>
+        {#if sans}
+          <Button
+            variant={museOpen ? 'outline' : 'ghost'}
+            size="sm"
+            aria-expanded={museOpen}
+            onclick={() => (museOpen = !museOpen)}
+            title="Describe what you want and Muse, the writing assistant, drafts it from the current text. Nothing is saved until you save."
+          >
+            <Sparkles size={14} /> Draft with Muse
+          </Button>
+        {:else}
+          <Button
+            variant={museOpen ? 'outline' : 'ghost'}
+            size="sm"
+            onclick={() => (museOpen = !museOpen)}
+            title="Draft with AI. Uses your preferred model (Settings)"
+          >
+            <Sparkles size={14} class="mr-1.5" /> Muse
+          </Button>
+        {/if}
       {/if}
       {@render footerExtra?.()}
       {#if history && withActions}
@@ -500,7 +535,7 @@
           Close
         </Button>
         {#if editable}
-          <Button size="sm" onclick={() => void save()} disabled={saving || !dirty}>
+          <Button size="sm" variant={sans && !dirty ? 'outline' : 'primary'} onclick={() => void save()} disabled={saving || !dirty}>
             {saving ? 'Saving' : 'Save'}
           </Button>
         {/if}
