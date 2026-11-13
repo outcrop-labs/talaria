@@ -15,7 +15,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use talaria_error::internal;
 use talaria_gateway::provider::http;
-use talaria_google_client::{GoogleClient, resolve_google_client};
+use talaria_google_client::{GoogleClient, resolve_google_client, resolve_google_signin_client};
 use talaria_google_connections::{GOOGLE_REQUEST_TIMEOUT, SaveConnection, save_connection};
 use talaria_google_org::{SaveOrgConnection, save_org_connection};
 use talaria_secretbox::SecretBox;
@@ -169,13 +169,16 @@ struct GoogleUserInfo {
 /// Exchange the auth code for tokens + the Google identity. Errors are
 /// strings — the callback maps every one to the same `exchange_failed`
 /// bounce, so the only place the detail is allowed to live is the log.
+/// Login's client: the sign-in client when one is set (the start route sent
+/// the person to Google with it), else the connections client — and the
+/// connections side's domain either way.
 pub async fn exchange_google_code(
     pg: &PgPool,
     sb: &SecretBox,
     code: &str,
     redirect_uri: &str,
 ) -> Result<Identity, String> {
-    let cfg = resolve_google_client(pg, sb)
+    let cfg = resolve_google_signin_client(pg, sb)
         .await
         .ok_or_else(|| "no google client configured".to_string())?;
 
@@ -250,7 +253,13 @@ pub async fn exchange_google_code(
         picture: str_field("picture"),
         hd: str_field("hd"),
     };
+    admit_login_identity(info, &cfg)
+}
 
+/// The checks a login runs on Google's userinfo answer, and the Identity they
+/// admit. `cfg` is the client login resolved — its `hd` is the connections
+/// side's domain even when a sign-in client ran the dance.
+fn admit_login_identity(info: GoogleUserInfo, cfg: &GoogleClient) -> Result<Identity, String> {
     // An email claim is only an identity when Google has verified it. Google's
     // userinfo always carries the claim alongside the email, so an absent
     // claim is treated as unverified too — an IdP (or client config) handing
@@ -416,8 +425,9 @@ pub fn google_agent_connect_redirect_uri(
     )
 }
 
-/// Whether the Google integration can run at all — an OAuth client exists,
-/// from the Admin UI record or the env fallback (same client as login).
+/// Whether the Google integration can run at all — a CONNECTIONS client
+/// exists, from the Admin UI record or the env fallback. A sign-in client
+/// alone opens login, never a connect.
 pub async fn google_integration_enabled(pg: &PgPool, sb: &SecretBox) -> bool {
     resolve_google_client(pg, sb).await.is_some()
 }
@@ -813,6 +823,7 @@ mod tests {
             client_secret: "sec".into(),
             hd: None,
             source: "env",
+            role: talaria_google_client::ClientRole::SignIn,
         };
         assert_eq!(
             google_auth_url(
@@ -827,6 +838,53 @@ mod tests {
             google_auth_url(&cfg, "http://x/cb", "s")
                 .ends_with("&prompt=select_account&hd=getboxie.com")
         );
+    }
+
+    #[test]
+    fn a_signin_client_carries_the_connections_domain_to_google_and_back() {
+        // What resolve_google_signin_client hands login once a sign-in client
+        // is set: the sign-in client's id with the CONNECTIONS side's domain
+        // (the resolver's own tests pin that pairing).
+        let cfg = GoogleClient {
+            client_id: "signin-b".into(),
+            client_secret: "sec".into(),
+            hd: Some("radhires.com".into()),
+            source: "admin",
+            role: talaria_google_client::ClientRole::SignIn,
+        };
+        let url = google_auth_url(&cfg, "http://x/api/auth/google/callback", "s");
+        assert!(url.contains("client_id=signin-b&"));
+        assert!(url.ends_with("&hd=radhires.com"));
+
+        let who = |email: &str, hd: Option<&str>| GoogleUserInfo {
+            sub: "123".into(),
+            email: Some(email.into()),
+            email_verified: true,
+            name: None,
+            picture: None,
+            hd: hd.map(String::from),
+        };
+        // The hint is not the guarantee: an out-of-domain identity is refused.
+        assert_eq!(
+            admit_login_identity(who("jon@gmail.com", None), &cfg).err(),
+            Some("google account not in required domain radhires.com".into())
+        );
+        assert!(admit_login_identity(who("jon@other.io", Some("other.io")), &cfg).is_err());
+        let ok = admit_login_identity(who("jon@radhires.com", Some("radhires.com")), &cfg).unwrap();
+        assert_eq!(ok.sub, "google:123");
+        assert_eq!(ok.name.as_deref(), Some("jon@radhires.com"));
+        // An unverified address is refused before the domain is even read.
+        let mut unverified = who("jon@radhires.com", Some("radhires.com"));
+        unverified.email_verified = false;
+        assert!(
+            admit_login_identity(unverified, &cfg)
+                .unwrap_err()
+                .starts_with("google email not verified")
+        );
+        // No domain anywhere: any verified identity passes this check (the
+        // org gate and the doors in the callback still apply).
+        let open_cfg = GoogleClient { hd: None, ..cfg };
+        assert!(admit_login_identity(who("jon@gmail.com", None), &open_cfg).is_ok());
     }
 
     /// A request as the handlers see one: forwarded headers plus a path-only

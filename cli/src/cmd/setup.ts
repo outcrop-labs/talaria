@@ -181,6 +181,11 @@ TALARIA_RUST_API_URL=http://127.0.0.1:5274
 AUTH_GOOGLE_ENABLED=0
 AUTH_GOOGLE_CLIENT_ID=
 AUTH_GOOGLE_CLIENT_SECRET=
+# Optional — a separate client for Google login only. Unset, login uses the
+# client above. Use one when that client is marked for AI agents in Google
+# Cloud ("Use this client for an AI-powered agent"); login keeps its domain.
+# AUTH_GOOGLE_SIGNIN_CLIENT_ID=
+# AUTH_GOOGLE_SIGNIN_CLIENT_SECRET=
 
 # Agents authenticate to Talaria's APIs with their OWN tak_ credential, minted per
 # agent and written to fleet/.env by the fleet renderer. This org-wide key is the

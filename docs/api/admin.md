@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-32 routes.
+33 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -42,6 +42,7 @@
 | [`/api/admin/google-client`](#apiadmingoogle-client) | GET | `admin` |
 | [`/api/admin/google-client`](#apiadmingoogle-client) | PUT | `admin` |
 | [`/api/admin/google-client`](#apiadmingoogle-client) | DELETE | `admin` |
+| [`/api/admin/google-client/agentic`](#apiadmingoogle-clientagentic) | PUT | `admin` |
 | [`/api/admin/google-client/login`](#apiadmingoogle-clientlogin) | PUT | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | GET | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | PUT | `admin` |
@@ -417,17 +418,17 @@ source.
 
 Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_client.rs)
 
-> /api/admin/google-client. The Google OAuth client — the credential the
-> whole Google integration (login + workspace connect) runs on. Admins
-> register it here instead of editing env; the secret is SEALED and never
-> read back. Deliberately requireAdmin: this is an org credential, not a
+> /api/admin/google-client. The Google OAuth clients, by role — the
+> CONNECTIONS client every Google connection (personal, org, per-agent) runs
+> on, and the optional SIGN-IN client Google login runs on (login uses the
+> connections client while that slot is empty). Admins register them here
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{status, loginEnabled, loginPinnedByEnv, personalConnected, redirectUris}` | 200 | — |
-| PUT | `admin` | [body](#put-apiadmingoogle-client-body) | `{status, loginEnabled, loginPinnedByEnv}` | 200, 400 | audit |
-| DELETE | `admin` | — | `{status, loginEnabled, loginPinnedByEnv}` | 200 | audit |
+| GET | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings, personalConnected, redirectUris}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadmingoogle-client-body) | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings}` | 200, 400 | audit |
+| DELETE | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings}` | 200, 400 | audit |
 
 ### PUT `/api/admin/google-client` body
 
@@ -437,14 +438,35 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../
 | `clientSecret` | `string? nullish` |  |
 | `hd` | `string? nullish` |  |
 
+## `/api/admin/google-client/agentic`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_client.rs)
+
+> /api/admin/google-client. The Google OAuth clients, by role — the
+> CONNECTIONS client every Google connection (personal, org, per-agent) runs
+> on, and the optional SIGN-IN client Google login runs on (login uses the
+> connections client while that slot is empty). Admins register them here
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `admin` | [body](#put-apiadmingoogle-clientagentic-body) | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings}` | 200, 400, 409 | audit |
+
+### PUT `/api/admin/google-client/agentic` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `clientId` | `string(1, 200)` |  |
+| `agentic` | `bool? nullable` |  |
+
 ## `/api/admin/google-client/login`
 
 Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_client.rs)
 
-> /api/admin/google-client. The Google OAuth client — the credential the
-> whole Google integration (login + workspace connect) runs on. Admins
-> register it here instead of editing env; the secret is SEALED and never
-> read back. Deliberately requireAdmin: this is an org credential, not a
+> /api/admin/google-client. The Google OAuth clients, by role — the
+> CONNECTIONS client every Google connection (personal, org, per-agent) runs
+> on, and the optional SIGN-IN client Google login runs on (login uses the
+> connections client while that slot is empty). Admins register them here
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

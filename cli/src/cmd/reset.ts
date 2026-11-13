@@ -126,7 +126,7 @@ export async function runReset(ctx: Ctx, mode: ResetMode): Promise<number> {
     ctx.log.raw(row('google_org_connection (org OAuth)', await psql('select count(*) from google_org_connection')))
     ctx.log.raw(row('mcp_oauth_tokens (connected accounts)', await psql('select count(*) from mcp_oauth_tokens')))
     ctx.log.raw(row('mcp_user_credentials (headers)', await psql('select count(*) from mcp_user_credentials')))
-    ctx.log.raw(row('app_settings: email/storage/github', await psql("select count(*) from app_settings where key in ('email_config','storage_config','github_config')")))
+    ctx.log.raw(row('app_settings: email/storage/github/google', await psql("select count(*) from app_settings where key in ('email_config','storage_config','github_config','google_oauth_client','google_signin_oauth_client')")))
     ctx.log.raw(row('git_hosts (GitHub connections)', await psql("select count(*) from git_hosts where kind = 'github' and auth <> '{}'::jsonb")))
     ctx.log.raw(row('secret_keys (the data keys themselves)', await psql('select count(*) from secret_keys')) + '\n')
     ctx.log.say('What this will KEEP')
@@ -134,7 +134,8 @@ export async function runReset(ctx: Ctx, mode: ResetMode): Promise<number> {
       ctx.log.raw(row(t, await psql(`select count(*) from ${t}`)))
     }
     ctx.log.warn('Agents keep their identities and configuration; they lose their CREDENTIALS.')
-    ctx.log.warn('After this: re-add provider keys on /models, reconnect Google and MCP accounts,')
+    ctx.log.warn('After this: re-add provider keys on /models, re-enter the Google OAuth clients (Admin),')
+    ctx.log.warn('reconnect Google and MCP accounts,')
     ctx.log.warn('then re-render the fleet so agents get fresh keys (Admin → Agents, or /api/fleet/render).')
     await confirm('secrets')
 
@@ -151,7 +152,7 @@ delete from google_connections;
 delete from google_org_connection;
 delete from mcp_oauth_tokens;
 delete from mcp_user_credentials;
-delete from app_settings where key in ('email_config','storage_config','github_config');
+delete from app_settings where key in ('email_config','storage_config','github_config','google_oauth_client','google_signin_oauth_client');
 update git_hosts set auth = '{}'::jsonb where kind = 'github';
 delete from secret_keys;
 commit;`,
