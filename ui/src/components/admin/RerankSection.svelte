@@ -1,13 +1,14 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Select from '@/components/ui/Select.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
   import { postJson, putJson } from '@/lib/fetch-json'
-  import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
   import type { RagAdmin } from './retrieval'
 
@@ -51,38 +52,62 @@
   }
 </script>
 
-<div class="mt-5 border-t border-line-subtle pt-4">
-  <SectionHeader class="mb-1" title="Reranker" />
-  <p class="mb-3 text-xs text-muted">
-    The precision stage after vector recall: a cross-encoder rescores the merged candidates so the best
-    sources win. Off = plain vector order. Self-host it, or hook up a provider and set your default.
-    Changes apply immediately.
-  </p>
-  <div class="flex flex-wrap items-center gap-2">
-    <Select size="sm" value={cfg.provider} onchange={(e) => { models = null; void apply({ provider: e.currentTarget.value, model: null }) }} class="w-52">
-      <option value="off">Off (vector order)</option>
-      {#each rag.rerank.providers as p (p.id)}
-        <option value={p.id}>
-          {p.label} ({p.country})
-        </option>
-      {/each}
-    </Select>
-    {#if meta?.needsUrl}
-      <Input
+<SettingsSection
+  title="Reranker"
+  description="A second pass that rescores search results so the best sources come first."
+  info="The precision stage after vector recall: a cross-encoder rescores the merged candidates. Off keeps plain vector order. Run one yourself, or connect a provider. Changes apply immediately."
+>
+  <SettingsGroup>
+    <SettingsRow
+      label="Provider"
+      hint={cfg.provider === 'off' ? 'Results stay in vector order.' : `Rescores the top ${cfg.candidates ?? 30} results.`}
+      as="label"
+    >
+      <Select
         size="sm"
-        value={cfg.url ?? ''}
-        onblur={(e) => e.currentTarget.value !== (cfg.url ?? '') && void apply({ url: e.currentTarget.value || null })}
-        placeholder="http://localhost:8056 (TEI /rerank)"
-        class="w-64"
-      />
+        value={cfg.provider}
+        onchange={(e) => {
+          models = null
+          void apply({ provider: e.currentTarget.value, model: null })
+        }}
+        class="w-[280px]"
+      >
+        <option value="off">Off</option>
+        {#each rag.rerank.providers as p (p.id)}
+          <option value={p.id}>{p.label} ({p.country})</option>
+        {/each}
+      </Select>
+    </SettingsRow>
+    {#if meta?.needsUrl}
+      <SettingsRow label="Endpoint URL" hint="A TEI server's rerank endpoint." as="label">
+        <Input
+          size="sm"
+          value={cfg.url ?? ''}
+          onblur={(e) => e.currentTarget.value !== (cfg.url ?? '') && void apply({ url: e.currentTarget.value || null })}
+          placeholder="http://localhost:8056"
+          class="w-[280px] font-mono"
+        />
+      </SettingsRow>
     {/if}
     {#if meta?.needsKey}
-      <Input size="sm" type="password" bind:value={key} onkeydown={submitOnEnter(() => key && !savingKey && void saveKey())} placeholder={cfg.hasKey ? 'replace saved key' : 'API key'} class="w-52" />
-      {#if key}
-        <Button size="sm" onclick={() => void saveKey()} disabled={savingKey}>
-          Save key
-        </Button>
-      {/if}
+      <SettingsRow
+        label="API key"
+        hint={cfg.hasKey ? 'A key is stored. Type a new one to replace it.' : 'Stored encrypted. It is never shown again.'}
+      >
+        <Input
+          size="sm"
+          type="password"
+          autocomplete="off"
+          aria-label="Reranker API key"
+          bind:value={key}
+          onkeydown={submitOnEnter(() => key && !savingKey && void saveKey())}
+          placeholder={cfg.hasKey ? 'Paste a new key' : 'Paste the provider key'}
+          class="w-[280px]"
+        />
+        {#if key}
+          <Button size="md" onclick={() => void saveKey()} disabled={savingKey}>Save key</Button>
+        {/if}
+      </SettingsRow>
     {/if}
     <!-- A model control only where there IS a model to pick. Derived from the
          provider's own catalogue rather than an id blocklist: the self-hosted
@@ -90,18 +115,16 @@
          provider delegates to talaria-decide's own config, so neither has a
          model of its own to choose here. -->
     {#if meta && (meta.liveCatalog || meta.fallbackModels.length > 0)}
-      {#if models}
-        <ModelIdPicker models={models} value={cfg.model ?? null} onChange={(model) => void apply({ model })} emptyLabel="default model" class="w-64" />
-      {:else}
-        <Button size="sm" variant="outline" onclick={() => void loadModels()}>
-          Load models
-        </Button>
-      {/if}
+      <SettingsRow label="Model">
+        {#snippet hint()}
+          {#if cfg.model}<span class="font-mono text-xs">{cfg.model}</span>{:else}The provider's default model.{/if}
+        {/snippet}
+        {#if models}
+          <ModelIdPicker {models} value={cfg.model ?? null} onChange={(model) => void apply({ model })} emptyLabel="Default model" class="w-[280px]" />
+        {:else}
+          <Button size="sm" variant="outline" onclick={() => void loadModels()}>Change model</Button>
+        {/if}
+      </SettingsRow>
     {/if}
-  </div>
-  {#if cfg.provider !== 'off'}
-    <div transition:slide={{ duration: 150 }} class="mt-1.5 font-mono text-[10px] tracking-[0.05em] text-muted">
-      Active: {cfg.provider}{cfg.model ? ` · ${cfg.model}` : ''}{cfg.hasKey ? ' · key sealed' : ''} · rescoring top {cfg.candidates ?? 30}
-    </div>
-  {/if}
-</div>
+  </SettingsGroup>
+</SettingsSection>

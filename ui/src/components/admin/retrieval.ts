@@ -24,12 +24,22 @@ export interface RerankProviderMeta {
   liveCatalog: boolean
   fallbackModels: string[]
 }
+/** One collection as the vector store holds it. */
+export interface IndexedCollection {
+  id: string
+  name: string
+  pointsCount: number
+  denseDim: number | null
+  hybrid: boolean
+  dimMismatch: boolean
+  missing: boolean
+}
 export interface RagAdmin {
   health: { qdrant: boolean; embeddings: boolean }
   backfill: { state: 'idle' | 'running' | 'done' | 'error'; counts?: Record<string, number>; error?: string; finishedAt?: string }
   upgrade: {
     embed: { modelId: string; dim: number } | null
-    collections: Array<{ id: string; name: string; pointsCount: number; denseDim: number | null; hybrid: boolean; dimMismatch: boolean; missing: boolean }>
+    collections: IndexedCollection[]
     dimMismatch: boolean
     legacySchema: boolean
     needsReindex: boolean
@@ -56,3 +66,18 @@ export const useRagAdmin = () =>
     refetchInterval: (q) =>
       q.state.data?.backfill.state === 'running' || q.state.data?.reindex.state === 'running' ? 3_000 : false,
   }))
+
+/** What a collection's row says about its index. `broken` is a state search
+ *  fails in, and a rebuild is the one fix for all of them. */
+export interface IndexState {
+  status: 'ok' | 'warn' | 'danger'
+  word: string
+  broken: boolean
+}
+
+export function indexState(c: IndexedCollection): IndexState {
+  if (c.missing) return { status: 'danger', word: 'Not in the vector store', broken: true }
+  if (c.dimMismatch) return { status: 'danger', word: 'Wrong embedding size', broken: true }
+  if (!c.hybrid) return { status: 'warn', word: 'No keyword search', broken: false }
+  return { status: 'ok', word: 'Indexed', broken: false }
+}

@@ -1,26 +1,26 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
-  import { cn } from '@/lib/cn'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { postJson } from '@/lib/fetch-json'
-  import { listStagger, slide } from '@/lib/motion'
+  import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
   import CollectionRow from './CollectionRow.svelte'
-  import HealthDot from './HealthDot.svelte'
+  import NoticeRow from './NoticeRow.svelte'
   import RerankSection from './RerankSection.svelte'
-  import { useCollections, useRagAdmin } from './retrieval'
+  import RowStatus from './RowStatus.svelte'
+  import { indexState, useCollections, useRagAdmin, type RagCollection } from './retrieval'
 
-  // Admin governance of the RAG plane: service health + backfill, the brains
-  // (auto + custom collections with who-can-search bindings), which KB spaces
-  // feed which brain, and the reranker provider.
+  // Admin governance of the RAG plane: the collections (auto + custom, with
+  // who-can-search bindings and the KB spaces that feed each), service health
+  // and backfill, and the reranker provider.
   const qc = useQueryClient()
   const collectionsQuery = useCollections()
   const ragQuery = useRagAdmin()
@@ -53,118 +53,129 @@
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
   }
   const rebuilding = $derived(rag?.reindex.state === 'running')
+  const servicesUp = $derived(!!rag?.health.qdrant && !!rag.health.embeddings)
+  const canRebuild = $derived(servicesUp && !rebuilding)
+  const indexOf = (id: string) => rag?.upgrade?.collections.find((c) => c.id === id)
+  const isBroken = (c: RagCollection) => {
+    const index = indexOf(c.id)
+    return !!index && indexState(index).broken
+  }
+  // A collection search fails in is what an admin must see first.
+  const brokenFirst = (list: RagCollection[]) => [...list.filter(isBroken), ...list.filter((c) => !isBroken(c))]
+  // A rebuild that only upgrades (keyword search on older collections) has no
+  // broken row to carry its button.
+  const upgradeOnly = $derived(
+    !!rag?.upgrade?.needsReindex && !rebuilding && !rag.upgrade.collections.some((c) => indexState(c).broken),
+  )
+  const counts = (c: Record<string, number>) =>
+    Object.entries(c)
+      .map(([k, v]) => `${v.toLocaleString()} ${k}`)
+      .join(', ')
 </script>
 
-<Panel>
-  <SectionHeader
-    class="mb-4"
-    title="Retrieval"
-    info="The org's RAG brains. Workspace activity and Organization knowledge are automatic. Spin up more for a domain or team, bind who can search each, and point KB spaces at them to curate what they contain."
-  />
-
-  <!-- Services + backfill. A failure here must NOT paint the health dots
-       red — "we could not ask" is not "the vector store is down". -->
-  {#if ragPending}<Skeleton class="mb-4 h-10 w-full rounded-md" />{/if}
-  {#if ragFailed}
-    <div transition:slide={{ duration: 150 }}>
-      <QueryError
-        class="mb-4"
-        variant="compact"
-        error={ragQuery.error}
-        title="Could not load retrieval status"
-        onRetry={() => void ragQuery.refetch()}
-      />
-    </div>
-  {/if}
-  {#if rag}
-    <div class="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-line p-3">
-      <HealthDot ok={rag.health.qdrant} label="Vector store" />
-      <HealthDot ok={rag.health.embeddings} label="Embeddings" />
-      {#if rag.upgrade?.embed}
-        <span class="text-xs text-muted" title="Change it via TALARIA_EMBED_MODEL (docker/dev-compose.yml), restart the embeddings container, then rebuild here.">
-          model <span class="font-mono text-[11px] text-fg">{rag.upgrade.embed.modelId}</span> · <span class="font-mono text-[11px]">{rag.upgrade.embed.dim}d</span>
-        </span>
+<div class="space-y-10">
+  <SettingsSection
+    title="Collections"
+    description="What agents and people can search, and who may search each one."
+    info="Workspace activity and the knowledge base are built in. Add a collection for a domain or a team, choose who can search it, and point knowledge spaces at it to decide what it holds."
+  >
+    <SettingsGroup>
+      {#if rebuilding}
+        <SettingsRow label={rag?.reindex.phase === 'backfilling' ? 'Refilling collections from your records' : 'Rebuilding collections'} hint="Search is thin until this finishes.">
+          {#snippet lead()}<WaitingMark site="admin/retrieval-reindex" size={14} />{/snippet}
+        </SettingsRow>
+      {:else if rag?.reindex.state === 'error'}
+        <NoticeRow status="danger">The rebuild failed: {rag.reindex.error}</NoticeRow>
       {/if}
-      <span class="ml-auto font-mono text-[10px] tracking-[0.05em] text-muted">
-        {#if rebuilding}
-          <span class="flex items-center gap-1.5"><WaitingMark site="admin/retrieval-reindex" size={11} /> {rag.reindex.phase === 'backfilling' ? 'refilling from sources' : 'rebuilding collections'}</span>
-        {:else if rag.backfill.state === 'running'}
-          <span class="flex items-center gap-1.5"><WaitingMark site="admin/retrieval-backfill" size={11} /> backfilling</span>
-        {:else if rag.reindex.state === 'error'}
-          <span class="text-danger">rebuild failed: {rag.reindex.error}</span>
-        {:else if rag.backfill.state === 'done' && rag.backfill.counts}
-          {`last backfill: ${Object.entries(rag.backfill.counts).map(([k, v]) => `${v} ${k}`).join(' · ')}`}
-        {:else if rag.backfill.state === 'error'}
-          <span class="text-danger">backfill failed: {rag.backfill.error}</span>
-        {/if}
-      </span>
-      <Button size="sm" variant="outline" onclick={() => void backfill()} disabled={rebuilding || rag.backfill.state === 'running' || !rag.health.qdrant || !rag.health.embeddings}>
-        Backfill
-      </Button>
-    </div>
-  {/if}
-
-  <!-- Rebuild banner: the embedding model changed (dims no longer match) or
-       a brain predates hybrid keyword search. One button repairs both. -->
-  {#if rag?.upgrade?.needsReindex && !rebuilding}
-    <div
-      transition:slide={{ duration: 150 }}
-      class={cn(
-        'mb-4 flex flex-wrap items-center gap-3 rounded-md border p-3',
-        rag.upgrade.dimMismatch ? 'border-danger' : 'border-warning',
-      )}
-    >
-      <div class="min-w-0 flex-1 text-xs">
-        <div class="font-semibold text-fg">
-          {rag.upgrade.dimMismatch ? 'Embedding model changed; brains need a rebuild' : 'Hybrid keyword search available'}
+      {#if upgradeOnly}
+        <div transition:slide={{ duration: 150 }}>
+          <NoticeRow status="warn">
+            A rebuild adds keyword search, so exact names and error strings rank beside meaning.
+            {#snippet action()}
+              <Button size="sm" variant="outline" onclick={() => void backfill('reindex')} disabled={!servicesUp}>Rebuild index</Button>
+            {/snippet}
+          </NoticeRow>
         </div>
-        <div class="mt-0.5 text-muted">
-          {rag.upgrade.dimMismatch
-            ? `${rag.upgrade.collections.filter((c) => c.dimMismatch).map((c) => c.name).join(', ')} no longer match the ${rag.upgrade.embed?.dim}d model, so indexing and search against them are failing.`
-            : 'These brains predate keyword+semantic search; a rebuild upgrades them so exact names, env vars, and error strings rank alongside meaning.'}
-          Rebuilding recreates each brain and refills it from the workspace's own records; knowledge search runs thin until the refill finishes.
-        </div>
-      </div>
-      <Button size="sm" onclick={() => void backfill('reindex')} disabled={!rag.health.qdrant || !rag.health.embeddings}>
-        Rebuild index
-      </Button>
-    </div>
-  {/if}
+      {/if}
+      <QueryState query={collectionsQuery} errorTitle="Could not load the collections" errorVariant="compact">
+        {#snippet skeleton()}
+          <div class="px-5 py-4"><SkeletonRows rows={3} avatar /></div>
+        {/snippet}
+        {#snippet children(collections)}
+          {#each brokenFirst(collections) as c (c.id)}
+            <CollectionRow
+              col={c}
+              spaces={rag?.spaces ?? []}
+              index={indexOf(c.id)}
+              rebuild={canRebuild ? () => void backfill('reindex') : undefined}
+            />
+          {/each}
+        {/snippet}
+      </QueryState>
+      <!-- Creating a collection while the list is unknown risks a duplicate of
+           one that is already there — hold the button until we know what exists. -->
+      <SettingsRow label="New collection" hint="Name it after what it holds." as="label">
+        <Input size="sm" class="w-[280px]" bind:value={name} placeholder="Sales playbook" onkeydown={(e) => e.key === 'Enter' && void create()} />
+        <Button size="md" variant="outline" onclick={() => void create()} disabled={busy || !name.trim() || collectionsQuery.data === undefined}>
+          Create collection
+        </Button>
+      </SettingsRow>
+    </SettingsGroup>
+  </SettingsSection>
 
-  <div class="space-y-3">
-    <QueryState
-      query={collectionsQuery}
-      errorTitle="Could not load the org's brains"
-      errorVariant="compact"
-    >
-      {#snippet skeleton()}
-        {#each [0, 1, 2] as i (i)}<SkeletonCard />{/each}
-      {/snippet}
-      {#snippet children(collections)}
-        <div class="space-y-3" use:listStagger>
-          {#each collections as c (c.id)}<CollectionRow col={c} spaces={rag?.spaces ?? []} />{/each}
+  <SettingsSection title="Index" description="The services that build and search the index.">
+    <SettingsGroup>
+      <!-- A failure here must NOT paint the status rows red — "we could not
+           ask" is not "the vector store is down". -->
+      {#if ragPending}<div class="px-5 py-4"><SkeletonRows rows={3} /></div>{/if}
+      {#if ragFailed}
+        <div transition:slide={{ duration: 150 }}>
+          <QueryError variant="compact" error={ragQuery.error} title="Could not load retrieval status" onRetry={() => void ragQuery.refetch()} />
         </div>
-      {/snippet}
-    </QueryState>
-  </div>
-  <!-- Creating a brain while the list is unknown risks a duplicate of one
-       that is already there — hold the box until we know what exists. -->
-  <div class="mt-4 flex items-center gap-2 border-t border-line-subtle pt-3">
-    <Input size="sm" bind:value={name} placeholder="New brain (e.g. Sales playbook)" class="flex-1" onkeydown={(e) => e.key === 'Enter' && void create()} />
-    <Button size="sm" onclick={() => void create()} disabled={busy || !name.trim() || collectionsQuery.data === undefined}>
-      Create
-    </Button>
-  </div>
+      {/if}
+      {#if rag}
+        <SettingsRow label="Vector store" hint="Where the index is kept.">
+          <RowStatus status={rag.health.qdrant ? 'ok' : 'danger'}>{rag.health.qdrant ? 'Running' : 'Down'}</RowStatus>
+        </SettingsRow>
+        <SettingsRow
+          label="Embeddings"
+          info="To change the model, set TALARIA_EMBED_MODEL, restart the embeddings container, then rebuild the index."
+        >
+          {#snippet hint()}
+            {#if rag.upgrade?.embed}
+              <span class="font-mono text-xs">{rag.upgrade.embed.modelId}</span> · <span class="tabular-nums">{rag.upgrade.embed.dim.toLocaleString()}</span> dimensions
+            {:else}
+              Turns text into the vectors search compares.
+            {/if}
+          {/snippet}
+          <RowStatus status={rag.health.embeddings ? 'ok' : 'danger'}>{rag.health.embeddings ? 'Running' : 'Down'}</RowStatus>
+        </SettingsRow>
+        <SettingsRow label="Backfill">
+          {#snippet hint()}
+            {#if rag.backfill.state === 'running'}
+              Indexing the records that already exist.
+            {:else if rag.backfill.state === 'error'}
+              The last run failed: {rag.backfill.error}
+            {:else if rag.backfill.state === 'done' && rag.backfill.counts}
+              The last run indexed {counts(rag.backfill.counts)}.
+            {:else}
+              Indexes the records that existed before retrieval was on.
+            {/if}
+          {/snippet}
+          {#if rag.backfill.state === 'running'}
+            <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+              <WaitingMark site="admin/retrieval-backfill" size={14} />Running
+            </span>
+          {:else if rag.backfill.state === 'error'}
+            <RowStatus status="danger">Failed</RowStatus>
+          {/if}
+          <Button size="sm" variant="outline" onclick={() => void backfill()} disabled={rebuilding || rag.backfill.state === 'running' || !servicesUp}>
+            Run backfill
+          </Button>
+        </SettingsRow>
+      {/if}
+    </SettingsGroup>
+  </SettingsSection>
 
-  {#if ragPending}
-    <!-- Reranker placeholder: label bar + control row, same footprint. -->
-    <div class="mt-5 border-t border-line-subtle pt-4">
-      <Skeleton class="mb-3 h-3 w-24 rounded-full" />
-      <div class="flex flex-wrap items-center gap-2">
-        <Skeleton class="h-8 w-52" />
-        <Skeleton class="h-8 w-64" />
-      </div>
-    </div>
-  {/if}
   {#if rag}<RerankSection {rag} />{/if}
-</Panel>
+</div>
