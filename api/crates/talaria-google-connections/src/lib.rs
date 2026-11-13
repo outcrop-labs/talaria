@@ -874,9 +874,11 @@ mod tests {
             .await
             .expect("agent row");
 
+            let person_row = GrantRow::User(user_id.clone());
+            let agent_row = GrantRow::Agent(model.clone());
             let (person, agent) = tokio::join!(
-                forget_grant(&pg, &sb, &GrantRow::User(user_id.clone())),
-                forget_grant(&pg, &sb, &GrantRow::Agent(model.clone())),
+                forget_grant(&pg, &sb, &person_row),
+                forget_grant(&pg, &sb, &agent_row),
             );
             let outcomes = [person.expect("person"), agent.expect("agent")];
             let kept = outcomes
