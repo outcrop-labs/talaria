@@ -47,7 +47,7 @@
 <SettingsSection
   title="Search endpoint"
   description="Your own SearXNG-compatible search service, used by Research and by every agent."
-  info="A SearXNG-compatible JSON endpoint you run (its settings.yml must allow format: json). Research searches here when no search MCP server is registered, and every agent receives it as SEARXNG_URL. Empty means this workspace has no endpoint of that shape."
+  info="A SearXNG-compatible JSON endpoint you run (its settings.yml must allow format: json). Research searches here when no search server is registered on Tools, and every agent receives it as SEARXNG_URL. Empty means this workspace has no endpoint of that shape."
 >
   <SettingsGroup>
     <QueryState {query} errorTitle="Could not load the search URL" errorVariant="compact">
@@ -56,7 +56,7 @@
       {/snippet}
       {#snippet children(s)}
         {@const note = agentProbeNote(s)}
-        <SettingsRow label="URL" as="label">
+        <SettingsRow label="URL" as="label" saved={autosave.saved()}>
           {#snippet hint()}
             {#if s.fromEnv}
               Set by <span class="font-mono text-xs">SEARXNG_URL</span> in the API's environment, which wins over this field.
@@ -83,7 +83,7 @@
         {#if s.url}
           <SettingsRow
             label="From the app"
-            hint={!s.reachable && s.error ? s.error : 'The address Research searches.'}
+            hint={!s.reachable && s.error ? s.error : undefined}
           >
             {#snippet status()}
               <RowStatus status={s.reachable ? 'ok' : 'danger'}>{s.reachable ? 'Reachable' : 'Unreachable'}</RowStatus>
