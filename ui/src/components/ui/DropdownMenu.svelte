@@ -31,7 +31,7 @@
   import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
-  import { anchorMoved, DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle, type AnchorSpot } from '@/lib/dropdown-position'
+  import { anchorMoved, DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle, opensUpward, type AnchorSpot } from '@/lib/dropdown-position'
   import type { ContextMenuEntry, MenuIcon } from './context-menu.svelte'
 
   // Anchored dropdown menu — the SAME shell and item grammar as the context
@@ -78,7 +78,12 @@
   // context), so an absolutely-positioned sibling could never stack above
   // neighboring cards, no z-index would save it.
   let pos = $state<string | null>(null)
+  // Flipped upward because opening down would run past the bottom of the
+  // viewport: the kebab of a page's last row. Reset on every open.
+  let flipped = $state(false)
+  const upward = $derived(up || flipped)
   let openedAt: AnchorSpot | null = null
+  const OFFSET = 4
 
   const close = () => {
     open = false
@@ -95,12 +100,26 @@
     await onWillOpen?.()
     const r = ref?.getBoundingClientRect()
     if (!r) return
-    const vert = up ? `bottom: ${window.innerHeight - r.top + 4}px` : `top: ${r.bottom + 4}px`
-    const horiz = dropdownHorizStyle(align, r, window.innerWidth, DROPDOWN_PANEL_MAX_WIDTH_PX)
-    pos = `position: fixed; z-index: 80; ${vert}; ${horiz}`
+    flipped = false
+    pos = place(r)
     openedAt = { top: r.top, left: r.left }
     open = true
   }
+
+  function place(r: DOMRect): string {
+    const vert = upward ? `bottom: ${window.innerHeight - r.top + OFFSET}px` : `top: ${r.bottom + OFFSET}px`
+    const horiz = dropdownHorizStyle(align, r, window.innerWidth, DROPDOWN_PANEL_MAX_WIDTH_PX)
+    return `position: fixed; z-index: 80; ${vert}; ${horiz}`
+  }
+
+  // The panel's height is only known once it exists, so it is measured then.
+  $effect(() => {
+    if (!open || !panelEl || up || flipped) return
+    const r = ref?.getBoundingClientRect()
+    if (!r || !opensUpward(r, panelEl.offsetHeight, window.innerHeight, OFFSET)) return
+    flipped = true
+    pos = place(r)
+  })
 
   function onDocMousedown(e: MouseEvent) {
     if (!open) return
@@ -160,7 +179,7 @@
       class={cn(
         popPanel,
         'min-w-44 max-w-72 max-w-[min(18rem,calc(100vw-16px))]',
-        up
+        upward
           ? align === 'right' ? 'origin-bottom-right' : 'origin-bottom-left'
           : align === 'right' ? 'origin-top-right' : 'origin-top-left',
       )}

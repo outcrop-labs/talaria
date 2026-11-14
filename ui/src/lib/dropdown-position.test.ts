@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { anchorMoved, dropdownHorizStyle } from './dropdown-position'
+import { anchorMoved, dropdownHorizStyle, opensUpward } from './dropdown-position'
 
 describe('dropdownHorizStyle', () => {
   const panel = 288
@@ -50,5 +50,23 @@ describe('anchorMoved', () => {
   it('is true when either spot is unknown, so the panel still closes', () => {
     expect(anchorMoved(undefined, atOpen)).toBe(true)
     expect(anchorMoved({ top: 410, left: 939 }, null)).toBe(true)
+  })
+})
+
+describe('opensUpward', () => {
+  const view = 900
+
+  it('stays below a trigger with room under it', () => {
+    expect(opensUpward({ top: 300, bottom: 332 }, 160, view, 4)).toBe(false)
+    expect(opensUpward({ top: 696, bottom: 728 }, 160, view, 4)).toBe(false)
+  })
+
+  it('opens above a trigger on the last row of the window', () => {
+    expect(opensUpward({ top: 840, bottom: 872 }, 160, view, 4)).toBe(true)
+    expect(opensUpward({ top: 700, bottom: 732 }, 160, view, 4)).toBe(true)
+  })
+
+  it('stays below when there is even less room above', () => {
+    expect(opensUpward({ top: 40, bottom: 72 }, 880, view, 4)).toBe(false)
   })
 })

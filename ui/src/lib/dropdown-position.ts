@@ -43,3 +43,18 @@ export function anchorMoved(now: AnchorSpot | undefined, atOpen: AnchorSpot | nu
   if (!now || !atOpen) return true
   return Math.abs(now.top - atOpen.top) >= 1 || Math.abs(now.left - atOpen.left) >= 1
 }
+
+/** Whether a panel that opens under its trigger should open above it instead:
+ *  it would run past the bottom of the viewport, and there is more room above
+ *  the trigger than below it. `panelHeight` is the panel's laid-out height,
+ *  which an opening transition's scale does not change. */
+export function opensUpward(
+  trigger: { top: number; bottom: number },
+  panelHeight: number,
+  viewportHeight: number,
+  offset: number,
+  margin = 8,
+): boolean {
+  const overflows = trigger.bottom + offset + panelHeight > viewportHeight - margin
+  return overflows && trigger.top > viewportHeight - trigger.bottom
+}
