@@ -9,10 +9,10 @@
   // or "three things broke at once" (recovering). So what needs a decision
   // leads: unreadable secrets, then the ones never set, then the rest by group.
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Stat from '@/components/settings/Stat.svelte'
-  import StatStrip from '@/components/settings/StatStrip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
@@ -22,6 +22,7 @@
   import { GROUP_LABELS, useClearSecret, useSecretHealth, type SecretGroup, type SecretRow } from '@/lib/secrets'
   import RootCard from './RootCard.svelte'
   import SecretsRow from './SecretsRow.svelte'
+  import { SECRET_COLS } from './secret-hint'
 
   const GROUP_ORDER: SecretGroup[] = ['models', 'integrations', 'agents', 'platform']
 
@@ -89,26 +90,39 @@
   }
 </script>
 
+{#snippet columns()}
+  <SettingsHeaderRow label="Secret" menu class="h-9">
+    <span class={SECRET_COLS.state}>Status</span>
+    <span class={SECRET_COLS.set}>Set</span>
+  </SettingsHeaderRow>
+{/snippet}
+
 <!-- An empty inventory over a failed read would read as "this instance holds
      nothing" — the most reassuring possible way to be wrong, so QueryState's
      error branch owns that. -->
 <QueryState query={query} errorTitle="Could not load the secrets inventory" errorVariant="compact">
   {#snippet skeleton()}
-    <Skeleton class="h-[104px] w-full rounded-lg" />
+    <SettingsSection title="Instance secrets">
+      <Skeleton class="h-[160px] w-full rounded-lg" />
+    </SettingsSection>
     <SettingsGroup><div class="px-5 py-4"><SkeletonRows rows={5} /></div></SettingsGroup>
   {/snippet}
   {#snippet children(data)}
     {@const unreadable = data.rows.filter((r) => r.state === 'unreadable')}
     {@const missing = data.rows.filter((r) => r.state === 'missing')}
-    <StatStrip>
-      <Stat label="Stored" value={data.counts.ok} sub="Readable with the current key" />
-      <Stat label="Not set" value={data.counts.missing} sub="Nothing entered yet" />
-      <Stat label="From environment" value={data.counts.env} sub="Set where the server runs" />
-      <Stat label="Unreadable" value={data.counts.unreadable} sub="Locked with a key that is gone" />
-    </StatStrip>
-
-    <SettingsSection title="Encryption" description="One value protects every secret on this page.">
-      <SettingsGroup><RootCard root={data.root} /></SettingsGroup>
+    <!-- One card: how many there are, then the one key that protects them.
+         Each stat draws its own right and bottom hairline, so the block runs a
+         pixel past the card's edge and the row under it. -->
+    <SettingsSection title="Instance secrets" description="Every key and token this instance stores, and the one key that protects them.">
+      <SettingsGroup>
+        <div class="-mb-px -mr-px grid grid-cols-2 lg:grid-cols-4">
+          <Stat label="Stored" value={data.counts.ok} sub="Readable with the current key" />
+          <Stat label="Not set" value={data.counts.missing} sub="Nothing entered yet" />
+          <Stat label="From environment" value={data.counts.env} sub="Set where the server runs" />
+          <Stat label="Unreadable" value={data.counts.unreadable} sub="Locked with a key that is gone" />
+        </div>
+        <RootCard root={data.root} />
+      </SettingsGroup>
     </SettingsSection>
 
     {#if msg}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-muted">{msg}</p>{/if}
@@ -123,8 +137,9 @@
             <DangerLink onClick={() => void clearAllUnreadable()} disabled={busy}>Clear all unreadable</DangerLink>
           {/snippet}
           <SettingsGroup>
+            {@render columns()}
             {#each unreadable as r (r.id)}
-              <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} showGroup />
+              <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} showGroup showSet />
             {/each}
           </SettingsGroup>
         </SettingsSection>
@@ -132,7 +147,7 @@
     {/if}
 
     {#if missing.length}
-      <SettingsSection title="Not set" description="Nothing is stored for these yet, and whatever depends on one stays off until it is set.">
+      <SettingsSection title="Not set" info="Nothing is stored for these yet, and whatever depends on one stays off until it is set.">
         <SettingsGroup>
           {#each missing as r (r.id)}
             <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} showGroup />
@@ -142,8 +157,9 @@
     {/if}
 
     {#if stored(data.rows).length}
-      <SettingsSection title="Stored" description="Every secret this instance can read, by what uses it.">
+      <SettingsSection title="Stored">
         <SettingsGroup>
+          {@render columns()}
           {#each GROUP_ORDER as group (group)}
             {@const rows = stored(data.rows).filter((r) => r.group === group)}
             {#if rows.length}
@@ -157,7 +173,7 @@
                 {#if isOpen(group, rows)}
                   <div transition:slide={{ duration: 150 }} class="border-t border-line-subtle [&>*+*]:border-t [&>*+*]:border-line-subtle">
                     {#each rows as r (r.id)}
-                      <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} />
+                      <SecretsRow row={r} onClear={(row) => void clearOne(row)} {busy} showSet />
                     {/each}
                   </div>
                 {/if}

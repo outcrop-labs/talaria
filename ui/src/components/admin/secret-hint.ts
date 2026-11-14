@@ -5,3 +5,6 @@ export const secretHint = (stored: boolean, noun = 'key'): string =>
   stored
     ? `A ${noun} is stored, and saving a new one replaces it.`
     : `Stored encrypted when you save, and never shown again.`
+
+/** The widths the secret inventory's header captions and each row's cells share. */
+export const SECRET_COLS = { state: 'w-[9rem] shrink-0', set: 'w-[4.5rem] shrink-0' } as const

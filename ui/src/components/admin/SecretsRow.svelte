@@ -1,7 +1,7 @@
 <script lang="ts">
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
-  import { buttonClasses } from '@/components/ui/button'
   import Chip from '@/components/ui/Chip.svelte'
   import type { DotStatus } from '@/components/ui/chip'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
@@ -9,6 +9,7 @@
   import { GROUP_LABELS, STATE_COPY, type SecretRow, type SecretState } from '@/lib/secrets'
   import { navigateHref } from '@/router'
   import RowStatus from './RowStatus.svelte'
+  import { SECRET_COLS } from './secret-hint'
 
   // One secret of the inventory. Never a value: what it is, what stops working
   // without it, whether this instance can still read it, and when it was set.
@@ -17,12 +18,15 @@
     onClear,
     busy,
     showGroup = false,
+    showSet = false,
   }: {
     row: SecretRow
     onClear: (row: SecretRow) => void
     busy: boolean
     /** Name the row's group beside it, for a list that mixes groups. */
     showGroup?: boolean
+    /** The list has a "Set" column, under a header row that names it. */
+    showSet?: boolean
   } = $props()
 
   const DOT: Record<SecretState, DotStatus> = { ok: 'ok', unreadable: 'danger', missing: 'idle', env: 'idle' }
@@ -42,7 +46,7 @@
   const items = $derived.by((): ContextMenuEntry[] => {
     const list: ContextMenuEntry[] = []
     const href = row.href
-    if (href && !setUp) list.push({ label: `Replace in ${row.surface}`, onSelect: () => void navigateHref(href) })
+    if (href) list.push({ label: `${setUp ? 'Set up' : 'Replace'} in ${row.surface}`, onSelect: () => void navigateHref(href) })
     // No link when the value belongs to a person: they replace it in their own
     // Settings, and a link would land an admin on their own page.
     if (!href) list.push({ label: `Replaced by ${row.owner ?? 'its owner'} in ${row.surface}`, disabled: true })
@@ -67,17 +71,14 @@
       </Chip>
     {/if}
   {/snippet}
-  {#snippet status()}
+  <span class={SECRET_COLS.state}>
     <RowStatus status={DOT[row.state]} title={STATE_COPY[row.state].hint}>{STATE_COPY[row.state].label}</RowStatus>
-  {/snippet}
-  {#if row.setAt}
-    <span class="shrink-0 pl-6 font-sans text-[13px] leading-5 tabular-nums text-muted" title={times || undefined}>
-      Set {relativeTime(row.setAt)}
+  </span>
+  {#if showSet}
+    <span class="{SECRET_COLS.set} font-sans text-[13px] leading-5 tabular-nums text-muted" title={times || undefined}>
+      {row.setAt ? relativeTime(row.setAt) : '—'}
     </span>
   {/if}
-  {#if setUp}
-    <a href={row.href} class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Set up</a>
-  {:else if items.length}
-    <SettingsRowMenu label={`Actions for ${row.label}`} {items} />
-  {/if}
+  {#if setUp}<SettingsRowFix href={row.href} label={`Fix ${row.label}: set it up in ${row.surface}`} />{/if}
+  <SettingsRowMenu label={`Actions for ${row.label}`} {items} />
 </SettingsRow>
