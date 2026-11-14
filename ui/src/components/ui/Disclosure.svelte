@@ -43,7 +43,8 @@
   const areaVoice = useUiVoice()
   const sans = $derived((voice ?? areaVoice) === 'sans')
   const card = $derived(sans && variant === 'card')
-  const foot = $derived(card ? 'border-t border-line-subtle' : 'border-t border-line')
+  // empty:hidden: a save bar that is not there yet must not leave its hairline behind.
+  const foot = $derived(card ? 'border-t border-line-subtle empty:hidden' : 'border-t border-line')
 </script>
 
 <div
