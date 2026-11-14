@@ -42,8 +42,9 @@
         !d.enabled && 'opacity-60',
       )}
     >
-      <div class="flex items-start gap-3">
-        <Avatar name={d.displayName} class="h-10 w-10" />
+      <div class="flex items-start gap-2.5">
+        <!-- 32px, centred on a one-line name and role: the width goes to the name. -->
+        <Avatar name={d.displayName} class="mt-1 h-8 w-8" />
         <!-- The whole card opens the agent: the button's ::after covers it,
              and the menu and Start sit above that. The global focus rule is
              unlayered, so the button's own ring is forced off and the card's
@@ -54,10 +55,11 @@
           onclick={openManage}
           class="min-w-0 flex-1 cursor-pointer text-left after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none! focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-accent"
         >
-          <span class="line-clamp-3 font-sans text-sm font-medium leading-5 text-fg" title={d.displayName}>{d.displayName}</span>
+          <span class="line-clamp-2 font-sans text-sm font-medium leading-5 text-fg" title={d.displayName}>{d.displayName}</span>
           <span class="line-clamp-2 font-sans text-[13px] leading-5 text-muted" title={d.role ?? undefined}>{d.role ?? 'No role yet'}</span>
         </button>
-        <div class="relative z-10 -mt-1.5 shrink-0">
+        <!-- No gap ahead of the cell: its own inset is the space between the name and the dots. -->
+        <div class="relative z-10 -ml-2.5 -mt-1.5 shrink-0">
           <SettingsRowMenu label={`Actions for ${d.displayName}`} items={menuItems} />
         </div>
       </div>

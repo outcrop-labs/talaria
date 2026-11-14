@@ -244,8 +244,8 @@
      line) in the same frame, so the real tile materializes over it. -->
 {#snippet tileSkeleton(i: number)}
   <div aria-hidden="true" class="flex flex-col gap-4 rounded-lg border border-line bg-panel p-5">
-    <div class="flex items-start gap-3">
-      <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
+    <div class="flex items-start gap-2.5">
+      <Skeleton class="mt-1 h-8 w-8 shrink-0 rounded-full" />
       <div class="min-w-0 flex-1 space-y-2 py-1">
         <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} />
         <Skeleton class={`h-3 rounded-full ${roleW[i % roleW.length]}`} />
