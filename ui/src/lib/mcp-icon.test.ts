@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { iconDomains, registrableDomain } from './mcp-icon'
+import { iconDomains, registrableDomain, serverMonogram } from './mcp-icon'
 
 describe('iconDomains', () => {
   it('asks for the publisher before anything the address says', () => {
@@ -46,5 +46,29 @@ describe('registrableDomain', () => {
     expect(registrableDomain('linear.app')).toBe('linear.app')
     expect(registrableDomain('a.b.example.co.uk')).toBe('example.co.uk')
     expect(registrableDomain('API.GitHubCopilot.com.')).toBe('githubcopilot.com')
+  })
+})
+
+describe('serverMonogram', () => {
+  it('takes the first letters of the first two words', () => {
+    expect(serverMonogram('QuickBooks Online')).toBe('QO')
+    expect(serverMonogram('Samsara telematics')).toBe('ST')
+    expect(serverMonogram('DAT load board')).toBe('DL')
+    expect(serverMonogram('Postgres warehouse')).toBe('PW')
+  })
+
+  it('takes two letters of a one-word name', () => {
+    expect(serverMonogram('forgejo')).toBe('FO')
+    expect(serverMonogram('X')).toBe('X')
+  })
+
+  it('skips punctuation ahead of a word', () => {
+    expect(serverMonogram('GitHub (your account)')).toBe('GY')
+    expect(serverMonogram('  "Rate desk" tools ')).toBe('RD')
+  })
+
+  it('has a mark for a name with no letters', () => {
+    expect(serverMonogram('')).toBe('?')
+    expect(serverMonogram(' — ')).toBe('?')
   })
 })

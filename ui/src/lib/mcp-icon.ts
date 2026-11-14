@@ -51,3 +51,17 @@ export function iconDomains(source: IconSource): string[] {
   const publisher = publicIconDomain(source.publisher) ?? (parent ? (BRAND_HOME[parent] ?? null) : null)
   return [...new Set([publisher, host, parent].filter((d): d is string => !!d))]
 }
+
+/** Two letters for a server that has no mark of its own: the first letters
+ *  of the first two words of its name, or the first two of a one-word name.
+ *  Punctuation ahead of a word is not a letter ("(your account)"). */
+export function serverMonogram(name: string): string {
+  const words = name
+    .split(/\s+/)
+    .map((w) => w.replace(/^[^\p{L}\p{N}]+/u, ''))
+    .filter(Boolean)
+  const [first, second] = words
+  if (!first) return '?'
+  const letters = second ? `${[...first][0] ?? ''}${[...second][0] ?? ''}` : [...first].slice(0, 2).join('')
+  return letters.toUpperCase()
+}

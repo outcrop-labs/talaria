@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { Server } from '@lucide/svelte'
   import { publicIconDomain } from '@/lib/icon-domain'
+  import { serverMonogram } from '@/lib/mcp-icon'
   import { useUiVoice } from '@/lib/ui-voice'
 
   /** A server's mark. The registry-declared icon hotlinks DIRECTLY (fast, no
    *  middleman); the cached favicon proxy is the fallback, one host at a time
-   *  (`iconDomains` orders them). The floor is one neutral glyph in the
+   *  (`iconDomains` orders them). The floor is a two-letter monogram in the
    *  settings voice and a letter tile in the other. */
   let {
     title,
@@ -47,20 +47,22 @@
   // branch is the mark as it was.
   const sans = useUiVoice() === 'sans'
   const monogram = $derived((title[0] ?? '?').toUpperCase())
+  const initials = $derived(serverMonogram(title))
 </script>
 
 {#if sans}
   <!-- The settings area's entity tile, the one `SettingsRow` draws for an icon.
-       A brand mark and the glyph for a server with none share it, so a list
-       that has both reads as one set. The glyph is the same for every such
-       server: an initial read as a logo that was never finished. -->
+       A brand mark and the monogram of a server with none share it, so a
+       list that has both reads as one set. Two letters, set as an avatar's
+       initials are: one letter read as a logo that was never finished, and
+       one glyph for every such server told none of them apart. -->
   <span class="plate grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-raised text-fg">
     {#if children}
       {@render children()}
     {:else if src}
       <img {src} alt="" width="20" height="20" loading="lazy" onerror={miss} class="h-5 w-5 object-contain" />
     {:else}
-      <Server size={16} aria-hidden="true" />
+      <span aria-hidden="true" class="font-sans text-xs font-medium">{initials}</span>
     {/if}
   </span>
 {:else if !src}
@@ -89,7 +91,7 @@
 <style>
   /* Service marks are drawn for a light page: GitHub's is black on nothing.
      In the dark theme the tile is a light plate so a mark can be seen, and
-     the glyph takes the same plate in the ground's ink. */
+     the monogram takes the same plate in the ground's ink. */
   :global([data-theme='mercury']) .plate {
     border-color: transparent;
     background: color-mix(in srgb, var(--theme-text) 90%, var(--theme-panel));
