@@ -172,7 +172,8 @@
               </thead>
               <tbody>
                 {#each models as m (m.id)}
-                  <tr class="h-11 border-b border-line-subtle transition-colors last:border-0 hover:bg-hover">
+                  <!-- h-10: at this height a catalog of eleven ends with its Save on the first screen. -->
+                  <tr class="h-10 border-b border-line-subtle transition-colors last:border-0 hover:bg-hover">
                     <td class="max-w-0 px-5 py-2" title={m.blurb}><ModelName id={m.id} name={m.label} /></td>
                     <td class="whitespace-nowrap px-3 py-2 font-sans text-[13px] leading-5 text-muted">
                       {(providersOf.get(m.id) ?? []).join(', ')}

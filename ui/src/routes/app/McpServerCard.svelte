@@ -201,12 +201,13 @@
 {/snippet}
 
 <div data-mcp-server={s.name}>
+  <!-- py-3: at this height ten servers end on the first screen, as the roster's list does. -->
   <SettingsRow
     label={s.label}
     hint={s.description || domain ? purpose : undefined}
     onOpen={() => (manageOpen = true)}
     openLabel={`Manage ${s.label}`}
-    class={cn((!s.enabled || s.appOff) && 'opacity-60')}
+    class={cn('py-3', (!s.enabled || s.appOff) && 'opacity-60')}
   >
     {#snippet lead()}
       {#if OwnMark}

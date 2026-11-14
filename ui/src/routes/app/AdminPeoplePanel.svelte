@@ -145,7 +145,7 @@
             onOpen={editable(u) ? () => toggle(u.id) : undefined}
             openLabel={`Edit access for ${nameOf(u)}`}
             saved={autosave.saved(u.id)}
-            class="min-h-[52px] py-2"
+            class="min-h-[58px] py-2"
           >
             {#snippet lead()}<Avatar name={u.name ?? u.email} class="h-8 w-8" />{/snippet}
             {#snippet label()}{nameOf(u)}{/snippet}

@@ -120,7 +120,7 @@
               type="button"
               onclick={() => onSelect(m.id)}
               title="Open {m.id} for per-slot verdicts, capabilities and every failing fixture"
-              class={cn('flex w-full min-w-[18rem] cursor-pointer flex-col items-start gap-0.5 px-5 py-3 text-left', focus)}
+              class={cn('flex w-full min-w-[18rem] cursor-pointer flex-col items-start gap-0.5 px-5 py-2.5 text-left', focus)}
             >
               <span class="flex min-w-0 max-w-full items-center gap-2">
                 <!-- The name leads and the id is left to the report this row opens. -->
@@ -152,7 +152,7 @@
                is right for both a frontier API and a 7B on one GPU, and a made-up
                one would be the page asserting a judgement nobody made. Every row
                ran the same fixtures, so the COLUMN is the comparison. -->
-          <td class="whitespace-nowrap px-3 py-3 text-right align-middle">
+          <td class="whitespace-nowrap px-3 py-2.5 text-right align-middle">
             {#if entry?.speed}
               <span class="block font-sans text-[13px] leading-5 tabular-nums text-fg" title={speedTitle(entry.speed)}>
                 {entry.speed.tokensPerSecond === null ? ms(entry.speed.p50) : `${entry.speed.tokensPerSecond} t/s`}
@@ -171,7 +171,7 @@
           </td>
           {#each ordered as slot (slot.key)}
             {@const band = bandOf(entry, slot.key)}
-            <td class="px-2 py-3 text-center align-middle">
+            <td class="px-2 py-2.5 text-center align-middle">
               <button
                 type="button"
                 onclick={() => onSelect(m.id)}
