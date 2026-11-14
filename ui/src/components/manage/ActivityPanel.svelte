@@ -88,17 +88,20 @@
         style:max-height={height === null ? undefined : `${height}px`}
       >
         {#each audit.slice(0, MOST) as a, i (i)}
+          {@const actor = actorLabel(a.actor)}
+          <!-- One line an entry: the sentence is cut where the time's column starts, and the title holds all of it. -->
           <button
             type="button"
             inert={i >= shown}
             onclick={() => a.href && void navigateHref(a.href)}
-            class="flex min-h-11 w-full items-start gap-6 px-5 py-3 text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+            title={`${actor} ${a.detail}`}
+            class="flex h-11 w-full items-center gap-6 px-5 text-left font-sans text-sm leading-5 transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
           >
-            <span class="line-clamp-2 min-w-0 flex-1 break-words text-muted" title={a.detail}>
-              <span class="whitespace-nowrap font-medium text-fg">{actorLabel(a.actor)}</span>
+            <span class="min-w-0 flex-1 truncate text-muted">
+              <span class="font-medium text-fg">{actor}</span>
               {a.detail}
             </span>
-            <span class="shrink-0 text-[13px] tabular-nums text-muted">{relativeTime(a.at)}</span>
+            <span class="w-[4.5rem] shrink-0 text-right text-[13px] tabular-nums text-muted">{relativeTime(a.at)}</span>
           </button>
         {/each}
       </div>
