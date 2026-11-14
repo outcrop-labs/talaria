@@ -30,8 +30,14 @@ describe('deliverySummary', () => {
 })
 
 describe('kindHint', () => {
-  it('uses the short line for a kind this app knows', () => {
-    expect(kindHint({ id: 'dm', blurb: 'A teammate or an agent messaged you directly.' })).toBe('From a teammate or an agent.')
+  it('uses the short line for a kind whose label leaves a question open', () => {
+    expect(kindHint({ id: 'mention', blurb: 'Someone mentioned you, assigned you a ticket or shared a doc with you.' })).toBe(
+      'Mentions, assigned tickets and shared docs.',
+    )
+  })
+
+  it('says nothing under a kind whose label is enough', () => {
+    expect(kindHint({ id: 'dm', blurb: 'A teammate or an agent messaged you directly.' })).toBeUndefined()
   })
 
   it('falls back to the registry sentence for a kind added later', () => {

@@ -1,8 +1,8 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -21,8 +21,8 @@
   // and Remove. The question this answers: "I got nothing on my laptop — is it
   // even registered, and what did the push service say?"
   //
-  // Both actions are in the row's menu. Send test also shows on the row when
-  // the last push to that browser failed, since it is how a person rechecks it.
+  // Both actions are in the row's menu. A browser whose last push failed also
+  // shows Fix, which sends the test: it is how a person rechecks it.
   const qc = useQueryClient()
   const query = useDevices()
   const devices = $derived(query.data?.devices ?? [])
@@ -57,16 +57,16 @@
   }
 </script>
 
-<!-- Rows for the Your devices card: one browser each. -->
+<!-- Rows for the Your devices card: one registered browser each. -->
 <div data-notify-devices class="[&>*+*]:border-t [&>*+*]:border-line-subtle">
   {#if query.isPending}
-    <div class="px-5 py-4"><SkeletonRows rows={2} /></div>
+    <div class="px-5 py-3.5"><SkeletonRows rows={2} /></div>
   {:else if query.isError && !query.data}
-    <div class="px-5 py-4">
+    <div class="px-5 py-3.5">
       <QueryError variant="compact" error={query.error} title="Could not load your devices" onRetry={() => void query.refetch()} />
     </div>
   {:else if devices.length === 0}
-    <div class="px-5 py-4">
+    <div class="px-5 py-3.5">
       <EmptyState
         variant="inline"
         title="No browser is registered for push"
@@ -107,9 +107,7 @@
             {/if}
           {/snippet}
           {#if last.ok === false}
-            <Button size="sm" variant="outline" disabled={r === 'busy'} onclick={() => void test(d.id)} data-device-test>
-              {r === 'busy' ? 'Sending' : 'Send test'}
-            </Button>
+            <SettingsRowFix label={`Fix ${d.label}: send a test push`} disabled={r === 'busy'} onclick={() => void test(d.id)} />
           {/if}
           <SettingsRowMenu
             label={`Actions for ${d.label}`}

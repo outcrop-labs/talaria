@@ -33,12 +33,12 @@
   // didn't I get that?" without a support ticket. What a person CHOOSES is on
   // the page; what only explains a miss is behind Troubleshooting, closed:
   //
-  //   1. This browser — the desktop alerts switch and a local test banner.
-  //   2. Your devices — every browser registered for push, with what the push
-  //      service last said, a per-device test and Remove.
-  //   3. Talaria Desktop — in the desktop app, its own notification service
-  //      and test, through the shell bridge.
-  //   4. Troubleshooting — this browser's permission (live), worker,
+  //   1. Your devices, one card: this browser's desktop alerts switch and a
+  //      local test banner; in the desktop app, its own notification service
+  //      and test, through the shell bridge; then every browser registered
+  //      for push, with what the push service last said, a per-device test
+  //      and Remove.
+  //   2. Troubleshooting — this browser's permission (live), worker,
   //      subscription and whether the server has it on file; then the event
   //      stream, this tab's role, and which of your devices alerts go to
   //      right now (the presence winner, I-17).
@@ -83,7 +83,7 @@
     unknown: '',
   }
 
-  // 4. The shell's notification service, read when the panel mounts and when
+  // The shell's notification service, read when the panel mounts and when
   // the window comes back into view (a change in System Settings).
   let shellNote = $state<ShellNotificationStatus | null>(null)
   let shellMsg = $state<{ text: string; ok: boolean } | null>(null)
@@ -138,26 +138,17 @@
 </script>
 
 <div class="space-y-8" data-notify-status-panel>
-  <div data-status-section="browser">
-    <SettingsSection title="This browser">
-      <SettingsGroup>
-        <BrowserNotifications {alerts} />
-      </SettingsGroup>
-    </SettingsSection>
-  </div>
-
-  {#if features.has('devices')}
-    <div data-status-section="devices">
-      <SettingsSection title="Your devices" description="Browsers that get a push with Talaria closed.">
-        <SettingsGroup><NotifyDevices /></SettingsGroup>
-      </SettingsSection>
-    </div>
-  {/if}
-
-  {#if shell}
-    <div data-status-section="desktop">
-      <SettingsSection title="Talaria Desktop">
-        <SettingsGroup>
+  <!-- One card for where alerts land: this browser's switch, the desktop
+       app's service, then every browser registered for push. Each keeps its
+       own hook. -->
+  <SettingsSection
+    title={features.has('devices') ? 'Your devices' : 'This browser'}
+    description={features.has('devices') ? 'Desktop alerts here, and the browsers that get a push with Talaria closed.' : undefined}
+  >
+    <SettingsGroup>
+      <div data-status-section="browser"><BrowserNotifications {alerts} /></div>
+      {#if shell}
+        <div data-status-section="desktop">
           <SettingsRow label="Notification service">
             {#snippet hint()}
               {#if shellLine}
@@ -177,10 +168,13 @@
               <Button size="sm" variant="outline" disabled={shellBusy} onclick={() => void shellTest()} data-shell-test>Send test</Button>
             {/if}
           </SettingsRow>
-        </SettingsGroup>
-      </SettingsSection>
-    </div>
-  {/if}
+        </div>
+      {/if}
+      {#if features.has('devices')}
+        <div data-status-section="devices"><NotifyDevices /></div>
+      {/if}
+    </SettingsGroup>
+  </SettingsSection>
 
   {@render children?.()}
 

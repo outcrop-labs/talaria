@@ -35,23 +35,26 @@ export function deliverySummary(on: readonly MatrixChannel[]): string {
 }
 
 // The registry's blurbs are full sentences. A row has room for a few words,
-// so the kinds this app knows get a short line. A kind the server adds later
-// is not in this table and shows the registry's own sentence.
+// so a kind whose label leaves a question open gets a short line, and a kind
+// whose label says it all gets none. A kind the server adds later is in
+// neither table and shows the registry's own sentence.
 const KIND_HINT: Readonly<Record<string, string>> = {
-  approval_pending: 'Work waits for your yes or no.',
   judge_escalation: 'The quality gate handed work to a person.',
-  agent_blocked: 'An agent hit a problem and stopped.',
-  workchain_turn: 'The next step is yours.',
   mention: 'Mentions, assigned tickets and shared docs.',
-  dm: 'From a teammate or an agent.',
-  participating: 'Replies where you took part.',
   account: 'Changes to what can act as you.',
   work_complete: 'Tickets, research and designs you asked for.',
-  workchain_paused: 'A workchain you run is waiting.',
   channel_activity: 'Channels set to notify on every message.',
   gap_reported: 'An agent could not do something.',
 }
+const LABEL_IS_ENOUGH: ReadonlySet<string> = new Set([
+  'approval_pending',
+  'agent_blocked',
+  'workchain_turn',
+  'dm',
+  'participating',
+  'workchain_paused',
+])
 
-export function kindHint(cls: Pick<ClassInfo, 'id' | 'blurb'>): string {
-  return KIND_HINT[cls.id] ?? cls.blurb
+export function kindHint(cls: Pick<ClassInfo, 'id' | 'blurb'>): string | undefined {
+  return LABEL_IS_ENOUGH.has(cls.id) ? undefined : (KIND_HINT[cls.id] ?? cls.blurb)
 }

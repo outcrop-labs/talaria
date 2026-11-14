@@ -63,7 +63,7 @@
 
 <!-- Rows for the Do not disturb card. -->
 <div data-notify-schedule class="[&>*+*]:border-t [&>*+*]:border-line-subtle">
-  <SettingsRow label="Working hours" hint="Outside these hours, notifications arrive quietly.">
+  <SettingsRow label="Working hours">
     <Toggle checked={sched.enabled} onChange={(on) => void save({ ...sched, enabled: on })} title="Working hours" />
   </SettingsRow>
   {#if sched.enabled}
