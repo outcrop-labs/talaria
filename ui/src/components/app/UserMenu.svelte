@@ -88,7 +88,7 @@
         class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] dither-fill"
       >
         <Shield size={15} class="shrink-0 text-muted" />
-        <span>Admin</span>
+        <span>Instance settings</span>
       </a>
     {/if}
 

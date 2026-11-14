@@ -89,7 +89,7 @@
       </div>
       {#if !/^https:/.test(meta.callbackUrl)}
         <p class="font-sans text-[13px] leading-5 text-warning">
-          This callback is plain http, and many providers accept only https. Set a verified hosting domain under Admin to get an https one.
+          This callback is plain http, and many providers accept only https. Set a verified hosting domain under Organization, General to get an https one.
         </p>
       {/if}
     </SettingsField>

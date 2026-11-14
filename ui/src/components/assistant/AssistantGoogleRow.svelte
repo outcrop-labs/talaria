@@ -62,7 +62,7 @@
   {#snippet empty()}
     <!-- An admin hasn't registered the OAuth client. The fix is theirs, and the
          sentence says whose it is. -->
-    <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin." />
+    <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client under Organization, General." />
   {/snippet}
   {#snippet children(data)}
     <SettingsRow

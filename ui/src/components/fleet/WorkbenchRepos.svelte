@@ -116,7 +116,7 @@
   {#snippet skeleton()}<SkeletonRows rows={1} />{/snippet}
   {#snippet empty()}
     <p class="font-sans text-[13px] leading-5 text-muted">
-      No repositories reachable. Connect a git host under <a href={p('/admin/:tab', { params: { tab: 'git' } })} class="text-accent hover:underline">Admin, Git hosts</a> to grant some.
+      No repositories reachable. Connect a git host under <a href={p('/admin/:tab', { params: { tab: 'git' } })} class="text-accent hover:underline">Agent policy, Git hosts</a> to grant some.
     </p>
   {/snippet}
   {#snippet children(d)}

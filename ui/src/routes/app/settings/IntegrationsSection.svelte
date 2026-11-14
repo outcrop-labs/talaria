@@ -103,7 +103,7 @@
       {/snippet}
       {#snippet empty()}
         <!-- An unregistered client is the ADMIN's gap to close. -->
-        <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin.">
+        <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client under Organization, General.">
           {#snippet lead()}{@render googleMark()}{/snippet}
         </SettingsRow>
       {/snippet}

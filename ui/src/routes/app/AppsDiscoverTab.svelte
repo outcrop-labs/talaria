@@ -67,7 +67,7 @@
         // another repository, or for none on record, are gone.
         const n = r.grantsRemoved ?? 0
         const grants = n
-          ? ` ${n === 1 ? 'One person or team' : `${n} people and teams`} lost the access they held under this name, which belonged to another repository. Grant it again in Admin or Teams.`
+          ? ` ${n === 1 ? 'One person or team' : `${n} people and teams`} lost the access they held under this name, which belonged to another repository. Grant it again in Organization, People or in Teams.`
           : ''
         notice = `Installed ${r.slug} at ${shortSha(r.sha)}. ${built}${kept}${grants}`
         gitUrl = ''
@@ -206,7 +206,7 @@
   <SettingsSection
     title="Install from Git"
     description="Any repository with a talaria.json file at its root, whose code runs fully trusted."
-    info="A private repository on one of this instance's Git hosts (Admin, Git hosts) is read with that host's login, read-only where the host can scope one. A private repository anywhere else needs a workspace secret that holds a token and lists that host."
+    info="A private repository on one of this instance's Git hosts (Agent policy, Git hosts) is read with that host's login, read-only where the host can scope one. A private repository anywhere else needs a workspace secret that holds a token and lists that host."
   >
     <SettingsGroup>
       <SettingsRow label="Repository" hint="The https address of the repository." as="label">

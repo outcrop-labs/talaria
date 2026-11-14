@@ -211,7 +211,7 @@
             {/each}
           </div>
         {:else if (services.data?.permitted?.length ?? 0) === 0}
-          <p class="font-sans text-[13px] leading-5 text-muted">No services permitted yet. An admin allows them under Admin, Coding accounts.</p>
+          <p class="font-sans text-[13px] leading-5 text-muted">No services permitted yet. An admin allows them under Agent policy, Oversight.</p>
         {/if}
       </div>
     {/if}

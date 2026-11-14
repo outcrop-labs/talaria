@@ -145,7 +145,7 @@
         message:
           'Talaria will start sending notification and digest email to every user in this workspace, ' +
           'following each person’s own settings, including people who have never opened this page. ' +
-          'Check the provider, the From address and the sending domain under Admin → Org → Email first.',
+          'Check the provider, the From address and the sending domain under Organization → General → Email first.',
         confirmLabel: 'Turn email on',
       }))
     ) {

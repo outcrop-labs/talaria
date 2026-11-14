@@ -120,7 +120,7 @@
             onChange={(on) => set(r.name, on)}
             label={r.name}
           title={r.orgClosed
-            ? `${r.name} is closed org-wide by an admin (Admin → Security → Agent toolsets)`
+            ? `${r.name} is closed org-wide by an admin (Data & security → Security → Agent tools)`
             : r.forced
               ? r.name === 'todo'
                 ? "Talaria's own todo tool is the one a person sees, and Hermes' would forget its list every turn of an ordinary chat, so it stays closed for every agent"

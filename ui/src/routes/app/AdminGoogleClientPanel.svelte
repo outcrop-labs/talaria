@@ -112,7 +112,7 @@
   }
 
   const clear = async () => {
-    if (!(await confirm({ title: 'Remove the Google client', message: 'Remove the Google client credentials stored in the Admin UI? Connected accounts stop working until a client is configured again.', confirmLabel: 'Remove', danger: true }))) return
+    if (!(await confirm({ title: 'Remove the Google client', message: 'Remove the Google client credentials stored here? Connected accounts stop working until a client is configured again.', confirmLabel: 'Remove', danger: true }))) return
     busy = true
     error = null
     notice = null
