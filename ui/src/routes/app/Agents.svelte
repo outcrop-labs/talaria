@@ -28,6 +28,7 @@
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
   import { rosterCount, rosterLine } from '@/components/fleet/roster-count'
   import { useFleet } from '@/lib/fleet'
+  import { errorMessage } from '@/lib/fetch-json'
   import { useSession } from '@/lib/session'
   import { fly, slide } from '@/lib/motion'
   import { containersOf, hiresToShow, rollFleet, rollRowsBySlug, useFleetContainers, useFleetDefs, useFleetHires, useFleetRoll, type AgentDef, type FleetRollStart } from '@/lib/fleet-defs'
@@ -158,7 +159,7 @@
   const defs = $derived(defsQuery.data?.defs ?? [])
   // The roster's own line: the overview's count of the same agents, from the
   // same two reads, so the two pages say one thing. Who was active today is
-  // the fleet's, and is left off when that read has not landed.
+  // the fleet's: when that read fails the line says so beside the count.
   const countLine = $derived.by(() => {
     const all = defsQuery.data?.defs
     if (!all || !containersQuery.data) return null
@@ -322,11 +323,18 @@
         <!-- The roster's own line: how much of it is up, and how to look at it.
              min-h-8 holds the line while the totals load. -->
         <div class="flex min-h-8 flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <span class="font-sans text-[13px] leading-5 text-muted tabular-nums">
+          <span class="flex flex-wrap items-center gap-x-4 gap-y-1 font-sans text-[13px] leading-5 text-muted tabular-nums">
             {#if countLine !== null}
               {countLine}
             {:else if rosterLoading}
               <Skeleton class="h-3 w-40" />
+            {/if}
+            {#if fleetQuery.isError && fleetQuery.data === undefined}
+              <span role="status" class="flex items-center gap-1.5" title={errorMessage(fleetQuery.error)}>
+                <CircleAlert size={14} aria-hidden="true" class="shrink-0 text-danger" />
+                Could not read today's activity
+                <Button variant="link" size="sm" onclick={() => void fleetQuery.refetch()}>Retry</Button>
+              </span>
             {/if}
           </span>
           <Segmented
