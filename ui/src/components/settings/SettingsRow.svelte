@@ -22,7 +22,9 @@
     href,
     onclick,
     onOpen,
+    openHref,
     openLabel,
+    openTitle,
     expanded,
     disabled = false,
     class: className,
@@ -57,9 +59,14 @@
      *  hold a status, a fix button and a kebab. The row stays a `div`: the hit
      *  area is a button laid behind its content. */
     onOpen?: () => void
+    /** The same, when opening is going somewhere: the hit area is a link, so
+     *  it opens in a new tab like any other. */
+    openHref?: string
     /** The hit area's accessible name, when the label alone would not say
      *  what opens ("Manage GitHub"). Defaults to a string label. */
     openLabel?: string
+    /** A tooltip on the hit area (an id the row no longer shows). */
+    openTitle?: string
     /** With `onclick`: the row opens and closes what follows it. It draws the
      *  chevron and says which way it is. */
     expanded?: boolean
@@ -69,6 +76,13 @@
     /** The control. */
     children?: Snippet
   } = $props()
+
+  const opens = $derived(Boolean(onOpen || openHref))
+  const openName = $derived(openLabel ?? (typeof label === 'string' ? label : undefined))
+  const hitArea =
+    'absolute inset-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent group-hover/row:bg-hover'
+  const controlsTakeClicks =
+    '[&_a]:pointer-events-auto [&_button]:pointer-events-auto [&_input]:pointer-events-auto [&_select]:pointer-events-auto [&_textarea]:pointer-events-auto [&_label]:pointer-events-auto [&_[role=switch]]:pointer-events-auto'
 </script>
 
 <svelte:element
@@ -87,24 +101,21 @@
     // outside the row is cut off by the card.
     (href || onclick) &&
       'w-full text-left transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent enabled:hover:bg-hover [a&]:hover:bg-hover',
-    onOpen && 'group/row relative',
+    opens && 'group/row relative',
     className,
   )}
 >
-  {#if onOpen}
-    <button
-      type="button"
-      onclick={onOpen}
-      aria-label={openLabel ?? (typeof label === 'string' ? label : undefined)}
-      class="absolute inset-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent group-hover/row:bg-hover"
-    ></button>
+  {#if openHref}
+    <a href={openHref} title={openTitle} aria-label={openName} class={hitArea}></a>
+  {:else if onOpen}
+    <button type="button" onclick={onOpen} title={openTitle} aria-label={openName} aria-expanded={expanded} class={hitArea}></button>
   {/if}
   <div
     class={cn(
       'flex min-w-0 flex-1 items-center gap-3',
       !stacked && 'basis-48',
       // The hit area sits behind: the label lets clicks through, and anything interactive inside it takes them back.
-      onOpen && 'pointer-events-none relative [&_a]:pointer-events-auto [&_button]:pointer-events-auto',
+      opens && 'pointer-events-none relative [&_a]:pointer-events-auto [&_button]:pointer-events-auto',
     )}
   >
     {#if icon}
@@ -137,7 +148,8 @@
       class={cn(
         'flex max-w-full items-center gap-3 empty:hidden [&>[data-row-menu]:last-child]:-mr-2',
         stacked ? 'w-full' : 'shrink-0 justify-end',
-        onOpen && 'pointer-events-none relative [&>:not([data-row-status])]:pointer-events-auto',
+        // Only real controls take the click back: a read-only value in this slot still opens the row.
+        opens && cn('pointer-events-none relative', controlsTakeClicks),
       )}
     >
       {#if status}

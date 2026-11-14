@@ -207,7 +207,8 @@
         </button>
       </RailTooltip>
     {/if}
-    {#if !area.inside}<SidebarAssistant collapsed />{/if}
+    <!-- Kept inside settings: this button is the assistant drawer's only opener. -->
+    <SidebarAssistant collapsed />
     {#if hasManage && !area.inside}
       <RailTooltip label="Manage">
         <a
@@ -219,7 +220,7 @@
         </a>
       </RailTooltip>
     {/if}
-    {#if !area.inside || appsBroken}<div class="my-2 h-6 w-px shrink-0 bg-line"></div>{/if}
+    <div class="my-2 h-6 w-px shrink-0 bg-line"></div>
     {#if !boardsHasOwnSearch}
       <BoardsSearch />
     {/if}

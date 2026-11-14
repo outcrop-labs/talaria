@@ -8,12 +8,15 @@ const KEY = Symbol('settings-autosave')
 
 interface AutosaveChannel {
   register: () => void
+  release: () => void
   flash: () => void
 }
 
 /** Call in `SettingsPage`. Read `active` and `saved` off the returned object. */
 export function provideAutosave(ms = 1800): { readonly active: boolean; readonly saved: boolean } {
-  let active = $state(false)
+  // A count, not a flag: a tabbed page mounts and unmounts autosaving fields
+  // under one header, and the cue must go when the last of them does.
+  let fields = $state(0)
   let saved = $state(false)
   let timer: ReturnType<typeof setTimeout> | null = null
   onDestroy(() => {
@@ -21,7 +24,10 @@ export function provideAutosave(ms = 1800): { readonly active: boolean; readonly
   })
   setContext<AutosaveChannel>(KEY, {
     register: () => {
-      active = true
+      fields += 1
+    },
+    release: () => {
+      fields -= 1
     },
     flash: () => {
       saved = true
@@ -31,7 +37,7 @@ export function provideAutosave(ms = 1800): { readonly active: boolean; readonly
   })
   return {
     get active() {
-      return active
+      return fields > 0
     },
     get saved() {
       return saved
@@ -44,5 +50,6 @@ export function provideAutosave(ms = 1800): { readonly active: boolean; readonly
 export function useAutosave(): { flash: () => void } {
   const channel = getContext<AutosaveChannel | undefined>(KEY)
   channel?.register()
+  onDestroy(() => channel?.release())
   return { flash: () => channel?.flash() }
 }
