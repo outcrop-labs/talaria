@@ -203,7 +203,8 @@
   {@render tableBtn('header', 'Header row', 'Toggle header row', () => c().toggleHeaderRow().run())}
 {/snippet}
 
-<!-- A menu on the settings strip: a word and a chevron, quiet until a format inside it is on. -->
+<!-- A menu on the settings strip: a word and a chevron. With a format inside it on, the word takes the primary ink:
+     gold is for the toggles, and a gold word reads as a link. -->
 {#snippet menuBtn(label: string, title: string, open: boolean, active: boolean)}
   <button
     type="button"
@@ -216,7 +217,7 @@
       // relative: the menu wraps its trigger in an inline span, and a button that is not positioned sits under that
       // span in the hit order a test's click checks.
       'relative flex h-7 items-center gap-1 rounded-md px-2 font-sans text-xs font-medium transition-colors hover:bg-hover hover:text-fg',
-      open ? 'bg-hover text-fg' : active ? 'text-accent' : 'text-muted',
+      open ? 'bg-hover text-fg' : active ? 'text-fg' : 'text-muted',
       focusGold,
     )}
   >
