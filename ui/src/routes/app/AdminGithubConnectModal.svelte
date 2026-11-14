@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
+  import SavedMark from '@/components/admin/SavedMark.svelte'
   import { secretHint } from '@/components/admin/secret-hint'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
@@ -12,6 +13,7 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { fly, slide } from '@/lib/motion'
   import AdminGithubGuideModal from './AdminGithubGuideModal.svelte'
@@ -36,7 +38,7 @@
   const effMode = $derived(mode || gh.mode || '')
   const url = $derived(`/api/workbench/git-hosts/${encodeURIComponent(host.id)}`)
 
-  const save = async (github: unknown) => {
+  const save = async (github: unknown): Promise<boolean> => {
     busy = true
     error = null
     try {
@@ -47,6 +49,17 @@
     busy = false
     await refresh(host.id)
     await installsQuery.refetch()
+    return !error
+  }
+  // An installation's switch saves on change, in a dialog whose App ID and
+  // key save with a button, so the switch that saved says so itself.
+  const installSaved = useSavedFlash()
+  let savedInstall = $state<number | null>(null)
+  const setInstallation = async (id: number, on: boolean) => {
+    const ids = on ? [...gh.app.installationIds, String(id)] : gh.app.installationIds.filter((x) => x !== String(id))
+    if (!(await save({ mode: 'app', app: { installationIds: ids } }))) return
+    savedInstall = id
+    installSaved.flash()
   }
   const disconnect = async () => {
     if (!(await confirm({ title: `Disconnect ${host.name}`, message: 'Agents lose workbench access to its repos until it is reconnected.', confirmLabel: 'Disconnect', danger: true }))) return
@@ -123,17 +136,12 @@
                     <li class="flex items-center gap-3 px-3 py-2">
                       <span class="min-w-0 flex-1 truncate font-sans text-[13px] leading-5 text-fg">{i.account}</span>
                       <span class="font-mono text-xs text-muted">{i.id}</span>
+                      <SavedMark on={installSaved.saved && savedInstall === i.id} />
                       <Toggle
                         checked={selected}
                         disabled={!gh.app.keySet}
                         title="Use the installation on {i.account}"
-                        onChange={() =>
-                          void save({
-                            mode: 'app',
-                            app: {
-                              installationIds: selected ? gh.app.installationIds.filter((x) => x !== String(i.id)) : [...gh.app.installationIds, String(i.id)],
-                            },
-                          })}
+                        onChange={() => void setInstallation(i.id, !selected)}
                       />
                     </li>
                   {/each}
@@ -164,7 +172,7 @@
       <span class="flex-1"></span>
       <Button size="sm" variant="ghost" onclick={onClose}>Cancel</Button>
       {#if effMode !== 'pat'}
-        <Button size="sm" disabled={busy || (!appId.trim() && !privateKey.trim())} onclick={() => void saveApp()}>Save</Button>
+        <Button size="sm" disabled={busy || (!appId.trim() && !privateKey.trim())} onclick={() => void saveApp()}>Save app</Button>
       {:else}
         <Button size="sm" disabled={!pat.trim() || busy} onclick={() => void savePat()}>Connect</Button>
       {/if}
