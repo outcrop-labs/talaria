@@ -87,7 +87,13 @@ instead of styling its own panels:
   mark, inline `meta`, a `status` (a `StatusDot` and a word), and the control
   as children. `SettingsRowMenu` is the kebab that holds a row's secondary and
   destructive actions. It takes `up` and `align` for a kebab at the foot of a
-  dialog.
+  dialog. It is a fixed 32px cell, and as the last control of a row its dots
+  end on the card's content edge, where a button in the next row ends. A row
+  with nothing in its menu passes `items={[]}` and keeps the cell, so the
+  column holds down the list.
+- A row that opens the thing it is about takes `onOpen`. The whole row lights
+  on hover and takes the click, and it can still hold a status, one fix button
+  and the kebab. Tab reaches the row first, then its controls.
 - A group lines its rows up: the right side is one column, as wide as the
   widest row needs. Put the state of a thing in `status`, not among the
   controls, and down a list every status starts at the same place and every
@@ -97,8 +103,17 @@ instead of styling its own panels:
   panel (a `LibraryPane` detail), the group is `bare`: hairlines, no card.
 - `StatStrip` and `Stat` are one card of numbers. Any count from one to eight
   fills the card: the strip sizes its rows from the count and the last stat
-  spans what is left. `SettingsField` is a stacked field for a dialog, and
+  spans what is left. A `Stat` with `href` draws an arrow at its top right that
+  brightens on hover. `SettingsField` is a stacked field for a dialog, and
   `required` marks its label.
+- A page whose fields save on change passes `autosave` to `SettingsPage`, or
+  calls `useAutosave()` inside it. The header says "Changes save
+  automatically" on the title's baseline and flashes "Saved" in the same box.
+  On a phone the cue takes its own line under the blurb.
+- A focus ring on something that fills a card (a row, a stat) is drawn inside
+  it with `focus-visible:-outline-offset-2!`. The `!` is needed: the global
+  `:focus-visible` rule in `styles.css` is unlayered, so it beats a plain
+  utility, and a ring outside the row is cut off by the card.
 - A filter row that holds a `Segmented` beside a `sm` `Select` gives the
   `Segmented` `size="md"`, so both are one height. Money in the area groups
   thousands: `formatUsd(n, { group: true })`, or `formatCost`.
@@ -118,13 +133,32 @@ instead of styling its own panels:
 Settings is its own mode of the dock. On every route where the sidebar shows,
 the tab strip and the gear give way to one "Back to app" link, which returns
 to the last address outside the area (`lib/settings-return.ts`) or to Home.
-Outside the area the dock is unchanged.
+The working readout and the assistant button are left out there too, and the
+account name is sans: the settings dock is the wordmark, the way back, search,
+the bell and the account. Outside the area the dock is unchanged.
 
 The area speaks sans through `lib/ui-voice`. `SettingsPage` and
 `SettingsSidebar` call `setUiVoice('sans')`, and the shared primitives (`Button`,
 `Tabs`, `Chip`, `Modal` and the rest) read it unless their own `voice` prop is
 passed. Context follows the component tree, so a dialog a page opens is sans
 too. The default is `mono`, so no other screen changes.
+
+CSS cannot see context, so everything in the sans voice also carries
+`data-voice="sans"` on its root: the page (`PageSurface`), the sidebar, and
+each portaled surface (`Modal`, `DropdownMenu`, `ContextMenu`, `Popover`, the
+`Combobox` panel, `InfoTip`). `voiceScope(voice)` gives the value. Under that
+attribute `styles.css` re-derives Mercury's tokens with `color-mix`, per
+theme: a lighter card and field and a brighter hairline in dark, a stronger
+hairline in light, and `text-muted` at about 7:1 in both. A new portaled
+primitive that is voice-aware sets the attribute, or it renders with the
+app's tokens inside a settings page. Two fills exist only in the scope:
+`--settings-selected` for the sidebar's selected row, and `--settings-fill`
+(the `sansFill` class) for a thing with no border of its own, such as a
+neutral chip or the picked row of a `LibraryPane`. `bg-raised` is white on
+cream in the light theme, so it is not a selected state there.
+
+In the sans voice a `Toggle` that is on is a solid gold track with a ground
+knob. Off is a neutral track with a muted knob.
 
 `ConfirmHost` mounts at the app root, above every context. It asks
 `screenVoice()` when it opens, which is `sans` while the sidebar holds the
