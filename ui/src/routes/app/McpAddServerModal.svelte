@@ -5,7 +5,8 @@
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import { slide } from '@/lib/motion'
-  import { useUiVoice } from '@/lib/ui-voice'
+  import { cn } from '@/lib/cn'
+  import { sansFill, useUiVoice } from '@/lib/ui-voice'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import McpField from './McpField.svelte'
   import McpHeaderRows from './McpHeaderRows.svelte'
@@ -111,7 +112,7 @@
               name = slugify(e.currentTarget.value)
             }}
             class={sans
-              ? 'rounded-md bg-raised px-1.5 py-0.5 font-mono text-xs text-fg outline-none focus-visible:outline-2 focus-visible:outline-accent'
+              ? cn(sansFill, 'rounded-md px-1.5 py-0.5 font-mono text-xs text-fg outline-none focus-visible:outline-2 focus-visible:outline-accent')
               : 'rounded bg-raised px-1.5 py-0.5 font-mono font-medium text-fg outline-none'}
             size={Math.max(name.length, 4)}
           />

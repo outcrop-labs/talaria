@@ -176,6 +176,7 @@
               <Button size="sm" variant="outline" onclick={() => openSet('me')} disabled={busy} aria-expanded={open === 'me'}>
                 {open === 'me' ? 'Close' : 'Set a password'}
               </Button>
+              <SettingsRowMenu label="Actions for your account" items={[]} />
             </SettingsRow>
             {#if open === 'me' && me}{@render setForm(me.id, 'me')}{/if}
           </div>

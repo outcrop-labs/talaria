@@ -24,8 +24,10 @@
 </script>
 
 <!-- A fixed cell, so down a list the kebabs share one column. A row with
-     nothing in its menu passes an empty list and still holds the cell. -->
-<div data-row-menu class="grid w-8 shrink-0 place-items-center">
+     nothing in its menu passes an empty list and still holds the cell. As the
+     last thing in its row the cell is pulled out by its own inset, so the dots
+     end where a button in the next row ends, in a `SettingsRow` or out of one. -->
+<div data-row-menu class="grid w-8 shrink-0 place-items-center last:-mr-2">
   {#if typeof items === 'function' || items.length > 0}
     <DropdownMenu {items} {align} {up}>
       {#snippet trigger(open)}

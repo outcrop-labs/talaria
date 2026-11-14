@@ -142,11 +142,10 @@
   </div>
   {#if children || status || expanded !== undefined}
     <!-- empty:hidden: a control only some viewers get must not hold the row's gap open for the rest. -->
-    <!-- A trailing kebab is pulled out by its own inset, so its dots end where a button in the next row ends. -->
     <div
       data-row-controls
       class={cn(
-        'flex max-w-full items-center gap-3 empty:hidden [&>[data-row-menu]:last-child]:-mr-2',
+        'flex max-w-full items-center gap-3 empty:hidden',
         stacked ? 'w-full' : 'shrink-0 justify-end',
         // Only real controls take the click back: a read-only value in this slot still opens the row.
         opens && cn('pointer-events-none relative', controlsTakeClicks),

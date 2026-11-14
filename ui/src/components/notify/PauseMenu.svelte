@@ -4,7 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import { cn } from '@/lib/cn'
   import { useNotifyPatch, useNotifyZone } from '@/lib/notify-center'
-  import { useUiVoice } from '@/lib/ui-voice'
+  import { sansFill, useUiVoice } from '@/lib/ui-voice'
   import {
     customUntil,
     dndView,
@@ -103,7 +103,7 @@
       <span>{p.id === 'tomorrow' ? tomorrowLabel : p.label}</span>
     </button>
   {/each}
-  <button type="button" class={cn(row, customOpen && 'bg-raised')} disabled={busy} onclick={openCustom} aria-expanded={customOpen} data-pause-custom>
+  <button type="button" class={cn(row, customOpen && sansFill)} disabled={busy} onclick={openCustom} aria-expanded={customOpen} data-pause-custom>
     {#if !sans}<CalendarClock size={15} class="shrink-0 text-muted" />{/if}
     <span>Until a time</span>
   </button>

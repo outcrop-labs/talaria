@@ -35,6 +35,6 @@
     {/if}
   {/snippet}
   {#if alert.href}
-    <span class="flex items-center gap-1 font-sans text-[13px] font-medium leading-5 text-muted">Fix<ChevronRight size={14} /></span>
+    <span class="flex items-center gap-1 font-sans text-[13px] font-medium leading-5 text-muted">{severity.action}<ChevronRight size={14} /></span>
   {/if}
 </SettingsRow>

@@ -13,6 +13,7 @@
   import { delJson, errorMessage, getList, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import RowStatus from '@/components/admin/RowStatus.svelte'
+  import { sansFill } from '@/lib/ui-voice'
 
   interface OrgDomainRow {
     id: string
@@ -110,7 +111,7 @@
                 <span>Add a TXT record on</span>
                 <code class="font-mono text-xs text-fg">_talaria-verify.{d.domain}</code>
                 <span>with the value</span>
-                <code class="min-w-0 truncate rounded bg-raised px-1.5 py-0.5 font-mono text-xs text-fg">{d.verificationToken}</code>
+                <code class="min-w-0 truncate rounded {sansFill} px-1.5 py-0.5 font-mono text-xs text-fg">{d.verificationToken}</code>
                 <CopyButton value={d.verificationToken} title="Copy the TXT value" />
                 <span>then press Verify.</span>
               </div>

@@ -65,7 +65,7 @@
           <span bind:this={nameEl} class="line-clamp-2 font-sans text-sm font-medium leading-5 text-fg" title={d.displayName}>{d.displayName}</span>
           <span class={cn('font-sans text-[13px] leading-5 text-muted', nameWraps ? 'line-clamp-1' : 'line-clamp-2')} title={d.role ?? undefined}>{d.role ?? 'No role yet'}</span>
         </button>
-        <div class="relative z-10 -mr-2 -mt-1.5 shrink-0">
+        <div class="relative z-10 -mt-1.5 shrink-0">
           <SettingsRowMenu label={`Actions for ${d.displayName}`} items={menuItems} />
         </div>
       </div>

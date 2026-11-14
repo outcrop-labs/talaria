@@ -269,30 +269,7 @@
   fill={tab === 'templates'}
 >
   {#snippet actions()}
-    <!-- h-8: the line holds the height of the buttons beside it, so it sits
-         on the same baseline on the tabs that have none. -->
-    <span class="mr-1 flex h-8 items-center font-sans text-[13px] leading-5 text-muted tabular-nums">
-      {#if t}
-        {t.online} of {t.agents} online · {t.activeToday} active today
-      {:else if fleetQuery.isError}
-        <!-- Missing totals with no explanation read as "nothing is running". -->
-        <span class="text-danger" title={errorMessage(fleetQuery.error)}>Agent status unavailable</span>
-      {:else if fleetQuery.isLoading}
-        <!-- Hold the slot so the toolbar doesn't jog when the totals land. -->
-        <Skeleton class="h-3 w-40" />
-      {/if}
-    </span>
-    <!-- Roster controls, and only on the roster: a grid/list switch means
-         nothing next to a template library or a schedule list. -->
     {#if tab === 'agents'}
-      <Segmented
-        options={[
-          { id: 'grid', label: gridIcon, title: 'Grid' },
-          { id: 'list', label: listIcon, title: 'List' },
-        ]}
-        value={view}
-        onChange={(id) => (view = id)}
-      />
       {#if isAdmin}
         <SettingsRowMenu label="More agent actions" items={headerMenu} />
       {/if}
@@ -329,6 +306,29 @@
       {:else if tab === 'schedules'}
         <FleetCronsTab bind:composing={scheduling} />
       {:else}
+        <!-- The roster's own line: how much of it is up, and how to look at it.
+             min-h-8 holds the line while the totals load. -->
+        <div class="flex min-h-8 flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <span class="font-sans text-[13px] leading-5 text-muted tabular-nums">
+            {#if t}
+              {t.online} of {t.agents} online · {t.activeToday} active today
+            {:else if fleetQuery.isError}
+              <!-- Missing totals with no explanation read as "nothing is running". -->
+              <span class="text-danger" title={errorMessage(fleetQuery.error)}>Agent status unavailable</span>
+            {:else if fleetQuery.isLoading}
+              <Skeleton class="h-3 w-40" />
+            {/if}
+          </span>
+          <Segmented
+            options={[
+              { id: 'grid', label: gridIcon, title: 'Grid' },
+              { id: 'list', label: listIcon, title: 'List' },
+            ]}
+            value={view}
+            onChange={(id) => (view = id)}
+          />
+        </div>
+
         <!-- Docker unreachable ≠ every agent stopped. Without this the dots all
              go red and the roster quietly libels the fleet. -->
         {#if containersQuery.isError && defsQuery.data !== undefined}

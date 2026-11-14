@@ -122,6 +122,7 @@
             <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans', className: 'w-24' })}>
               Connect
             </a>
+            <SettingsRowMenu label="Actions for Google Workspace" items={[]} />
           {/if}
         </SettingsRow>
       {/snippet}

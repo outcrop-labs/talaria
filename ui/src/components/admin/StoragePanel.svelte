@@ -20,6 +20,7 @@
   import TargetFields from './TargetFields.svelte'
   import ToggleField from './ToggleField.svelte'
   import { fmtBytes, useStorageAdmin, type StorageAdmin } from './storage'
+  import { sansFill } from '@/lib/ui-voice'
 
   // Where upload blobs live: local disk, the bundled MinIO container ("built-in
   // bucket"), or any external S3-compatible service — plus an optional replica
@@ -165,7 +166,7 @@
               <span class="font-sans text-sm font-medium leading-5 text-fg">Files</span>
               <span class="font-sans text-sm leading-5 tabular-nums text-fg">{total.toLocaleString()}</span>
             </div>
-            <div class="mt-3 flex h-1.5 overflow-hidden rounded-full bg-raised" role="img" aria-label="Share of files by location">
+            <div class="mt-3 flex h-1.5 overflow-hidden rounded-full {sansFill}" role="img" aria-label="Share of files by location">
               {#each places as p (p.label)}
                 {#if p.count > 0}<div class={p.bar} style:width="{(p.count / total) * 100}%"></div>{/if}
               {/each}

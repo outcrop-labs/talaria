@@ -106,7 +106,8 @@
   const ROLE = 'w-[7.5rem] shrink-0'
   const ACCESS = 'w-[15rem] shrink-0'
   const SEEN = 'w-[4.5rem] shrink-0'
-  const MENU = 'w-8 shrink-0'
+  // The kebab cell under it is pulled out by its own inset, so the caption row's spacer is too.
+  const MENU = '-mr-2 w-8 shrink-0'
 </script>
 
 <SettingsSection
@@ -175,14 +176,10 @@
             <span class="{SEEN} font-sans text-[13px] leading-5 tabular-nums text-muted" title={new Date(u.lastSeenAt).toLocaleString()}>
               {relativeTime(u.lastSeenAt)}
             </span>
-            {#if editable(u)}
-              <SettingsRowMenu
-                label={`Actions for ${nameOf(u)}`}
-                items={[{ label: open ? 'Close access' : 'Edit access', onSelect: () => toggle(u.id) }]}
-              />
-            {:else}
-              <span class={MENU}></span>
-            {/if}
+            <SettingsRowMenu
+              label={`Actions for ${nameOf(u)}`}
+              items={editable(u) ? [{ label: open ? 'Close access' : 'Edit access', onSelect: () => toggle(u.id) }] : []}
+            />
           </SettingsRow>
           {#if open}
             <div transition:slide={{ duration: 150 }}>

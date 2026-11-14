@@ -5,6 +5,7 @@
   import Popover from '@/components/ui/Popover.svelte'
   import { popRow } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
+  import { sansFill } from '@/lib/ui-voice'
 
   /** A labeled add button that opens a search popover anchored to itself —
    *  pick to commit. The attach-menu pattern: outside click or Esc dismisses. */
@@ -34,7 +35,7 @@
   {#snippet trigger(open)}
     <!-- The click itself is the popover's (the shell toggles); this handler
          only clears the search so every open starts fresh. -->
-    <Button variant="ghost" size="xs" class={cn('gap-1', open && 'bg-raised text-fg')} {title} onclick={() => (q = '')}>
+    <Button variant="ghost" size="xs" class={cn('gap-1', open && cn(sansFill, 'text-fg'))} {title} onclick={() => (q = '')}>
       <Plus size={14} />{label}
     </Button>
   {/snippet}

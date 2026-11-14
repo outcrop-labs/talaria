@@ -321,18 +321,12 @@
           <SettingsRow label={m.name ?? m.email ?? m.userId} hint={m.name && m.email ? m.email : undefined}>
             {#snippet lead()}<Avatar name={m.name ?? m.email} />{/snippet}
             {#snippet status()}{ROLE_LABEL[m.role]}{/snippet}
-            {#if canRemove(m.role)}
-              <SettingsRowMenu
-                label={`Actions for ${m.name ?? m.email ?? 'this person'}`}
-                items={[
-                  {
-                    label: 'Remove from team',
-                    danger: true,
-                    onSelect: () => void removeTeamMember(team.id, m.userId).then(refreshMembers),
-                  },
-                ]}
-              />
-            {/if}
+            <SettingsRowMenu
+              label={`Actions for ${m.name ?? m.email ?? 'this person'}`}
+              items={canRemove(m.role)
+                ? [{ label: 'Remove from team', danger: true, onSelect: () => void removeTeamMember(team.id, m.userId).then(refreshMembers) }]
+                : []}
+            />
           </SettingsRow>
         {/each}
         {#if canManage}

@@ -13,10 +13,12 @@ export interface Alert {
   href?: string
 }
 
-export const SEVERITY: Record<AlertSeverity, { label: string; dot: DotStatus }> = {
-  critical: { label: 'Critical', dot: 'danger' },
-  warning: { label: 'Warning', dot: 'warn' },
-  info: { label: 'Info', dot: 'idle' },
+/** `action` names the way out of the row: something broken is fixed, something
+ *  worth knowing is reviewed. */
+export const SEVERITY: Record<AlertSeverity, { label: string; dot: DotStatus; action: string }> = {
+  critical: { label: 'Critical', dot: 'danger', action: 'Fix' },
+  warning: { label: 'Warning', dot: 'warn', action: 'Fix' },
+  info: { label: 'Info', dot: 'idle', action: 'Review' },
 }
 
 export const useAlerts = () =>

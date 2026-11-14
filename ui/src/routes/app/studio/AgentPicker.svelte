@@ -3,6 +3,7 @@
   import Avatar from '@/components/ui/Avatar.svelte'
   import { focusRing } from '@/components/ui/control'
   import { cn } from '@/lib/cn'
+  import { sansFill } from '@/lib/ui-voice'
   import type { SkillOwner } from '@/lib/skills'
 
   // Who the Studio is building for: one agent, or every agent at once.
@@ -33,7 +34,7 @@
     class={cn(
       'flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors',
       focusRing,
-      active ? 'bg-raised' : 'hover:bg-hover',
+      active ? sansFill : 'hover:bg-hover',
     )}
   >
     {#if owner === 'shared'}

@@ -143,6 +143,7 @@
                     {connecting === s.id ? 'Cancel' : 'Connect'}
                   </Button>
                 {/if}
+                {#if !s.connected}<SettingsRowMenu label={`Actions for ${s.label}`} items={[]} />{/if}
               </SettingsRow>
               {#if connecting === s.id}
                 <div transition:slide={{ duration: 150 }}>

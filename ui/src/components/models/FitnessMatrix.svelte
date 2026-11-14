@@ -176,7 +176,7 @@
                 onclick={() => onSelect(m.id)}
                 title={cellTitle(entry, slot)}
                 aria-label="{m.id}, {slot.label}: {BAND_META[band].label}"
-                class={cn('mx-auto grid h-7 w-7 place-items-center rounded-md transition-colors hover:bg-raised', focus)}
+                class={cn('mx-auto grid h-7 w-7 place-items-center rounded-md transition-colors hover:bg-hover', focus)}
               >
                 <FitnessMark {band} />
               </button>

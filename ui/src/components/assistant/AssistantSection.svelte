@@ -14,6 +14,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
+  import Select from '@/components/ui/Select.svelte'
   import type { SegmentedOption } from '@/components/ui/segmented'
   import AssistantWizard from './AssistantWizard.svelte'
   import AssistantPanels from './AssistantPanels.svelte'
@@ -71,13 +72,8 @@
   }
 
   const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
-  const tierOptions = $derived(
-    (assistant?.tiers ?? []).map((t): SegmentedOption => ({ id: t.name, label: sentence(t.name), title: modelName(t.model) ?? t.model })),
-  )
-  // "Fast" and "Deep" are the product's words: the row says which model each is.
-  const tierHint = $derived(
-    (assistant?.tiers ?? []).map((t) => `${sentence(t.name)} is ${modelName(t.model) ?? t.model}.`).join(' '),
-  )
+  // "Fast" and "Deep" are the product's words, so each choice says which model it is.
+  const activeTier = $derived(assistant?.tiers.find((t) => t.active)?.name ?? '')
   const setTier = async (tier: string) => {
     if (busy) return
     await updateAssistant({ model: tier })
@@ -274,12 +270,17 @@
     <SettingsSection title="Behavior">
       <SettingsGroup>
         {#if assistant.tiers.length > 0}
-          <SettingsRow label="Model" hint={tierHint}>
-            <Segmented
-              options={tierOptions}
-              value={assistant.tiers.find((t) => t.active)?.name ?? ''}
-              onChange={(tier) => void setTier(tier)}
-            />
+          <!-- An assistant can run a model that is neither tier. The select names it and offers the two. -->
+          <SettingsRow label="Model" hint={activeTier ? undefined : 'Not one of the two tiers. Pick one to switch.'} as="label">
+            <Select size="sm" class="w-[280px]" value={activeTier} disabled={busy} onchange={(e) => void setTier(e.currentTarget.value)}>
+              {#if !activeTier}
+                {@const model = assistant.currentModel}
+                <option value="" disabled>{model ? (modelName(model) ?? model) : 'No model set'}</option>
+              {/if}
+              {#each assistant.tiers as t (t.name)}
+                <option value={t.name}>{sentence(t.name)} · {modelName(t.model) ?? t.model}</option>
+              {/each}
+            </Select>
           </SettingsRow>
         {/if}
         <SettingsRow

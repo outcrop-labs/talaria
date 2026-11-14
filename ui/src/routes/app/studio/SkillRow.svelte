@@ -4,6 +4,7 @@
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { skillTitle } from '@/components/skills/skill-title'
   import { SKILLS_KEY, deleteSkill, renameSkill, type SkillOwner } from '@/lib/skills'
   import { copySkillTo, moveSkillTo } from '@/lib/workflows'
@@ -42,6 +43,30 @@
     if (!(await confirm({ title: 'Delete skill', message: `Delete "${skill.name}"? Workflows bound to it will flag it as missing.`, confirmLabel: 'Delete', danger: true }))) return
     await deleteSkill(owner, skill.name).then(refresh).catch(fail)
   }
+  // A skill this person cannot edit has an empty menu and keeps its cell, so the column holds down the list.
+  const menu = $derived.by((): ContextMenuEntry[] => {
+    if (!canEdit) return []
+    return [
+      { label: 'Edit', onSelect: () => void navigateHref(href) },
+      { label: 'Rename', onSelect: () => void doRename() },
+      ...(editableTargets.length
+        ? [
+            {
+              label: 'Copy to',
+              children: editableTargets.map((o) => ({
+                label: o.owner === 'shared' ? 'Every agent' : o.label,
+                onSelect: () => void copySkillTo(owner, skill.name, o.owner).then(refresh).catch(fail),
+              })),
+            },
+          ]
+        : []),
+      ...(owner !== 'shared' && editableTargets.some((o) => o.owner === 'shared')
+        ? [{ label: 'Move to every agent', onSelect: () => void moveSkillTo(owner, skill.name, 'shared').then(refresh).catch(fail) }]
+        : []),
+      'sep',
+      { label: 'Delete skill', danger: true, onSelect: () => void doDelete() },
+    ]
+  })
 </script>
 
 <!-- The tooltip is the name agents load the skill by, which the row no longer shows. -->
@@ -50,29 +75,5 @@
     {#if sharedBadge}<Chip class="-my-px">Shared</Chip>{/if}
     {#if skill.platform}<Chip class="-my-px">Built-in</Chip>{/if}
   {/snippet}
-  {#if canEdit}
-    <SettingsRowMenu
-      label={`Actions for ${title}`}
-      items={[
-        { label: 'Edit', onSelect: () => void navigateHref(href) },
-        { label: 'Rename', onSelect: () => void doRename() },
-        ...(editableTargets.length
-          ? [
-              {
-                label: 'Copy to',
-                children: editableTargets.map((o) => ({
-                  label: o.owner === 'shared' ? 'Every agent' : o.label,
-                  onSelect: () => void copySkillTo(owner, skill.name, o.owner).then(refresh).catch(fail),
-                })),
-              },
-            ]
-          : []),
-        ...(owner !== 'shared' && editableTargets.some((o) => o.owner === 'shared')
-          ? [{ label: 'Move to every agent', onSelect: () => void moveSkillTo(owner, skill.name, 'shared').then(refresh).catch(fail) }]
-          : []),
-        'sep' as const,
-        { label: 'Delete skill', danger: true, onSelect: () => void doDelete() },
-      ]}
-    />
-  {/if}
+  <SettingsRowMenu label={`Actions for ${title}`} items={menu} />
 </SettingsRow>

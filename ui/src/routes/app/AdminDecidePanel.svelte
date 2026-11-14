@@ -400,7 +400,8 @@
           <span class={NUM}>Threshold</span>
           <span class={STATE}>Status</span>
           <span class={SWITCH}></span>
-          <span class="w-8 shrink-0"></span>
+          <!-- The kebab cell under it is pulled out by its own inset, so this spacer is too. -->
+          <span class="-mr-2 w-8 shrink-0"></span>
         </div>
       </div>
       {#each allSites as s (s.id)}

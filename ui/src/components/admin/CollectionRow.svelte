@@ -133,7 +133,7 @@
       {#if entries}<span class="tabular-nums">{entries}</span>{#if col.description}{' · '}{/if}{/if}{col.description ?? ''}
     {/snippet}
     {#snippet status()}{#if idx}<RowStatus status={idx.status}>{idx.word}</RowStatus>{/if}{/snippet}
-    {#if !col.auto}<SettingsRowMenu label={`Actions for ${col.name}`} items={menu} />{/if}
+    <SettingsRowMenu label={`Actions for ${col.name}`} items={col.auto ? [] : menu} />
   </SettingsRow>
 {#if !col.auto}
   <Modal open={managing} onClose={() => (managing = false)} title={col.name} width="max-w-lg">

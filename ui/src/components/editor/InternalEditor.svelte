@@ -13,7 +13,7 @@
   import { streamMuse, type MuseKind } from '@/lib/muse.svelte'
   import { fly, listStagger, slide, GROW_X } from '@/lib/motion'
   import { cn } from '@/lib/cn'
-  import { useUiVoice } from '@/lib/ui-voice'
+  import { sansFill, useUiVoice } from '@/lib/ui-voice'
   import DiffView from '@/components/fleet/DiffView.svelte'
   import { diffLines, type DiffLine } from '@/components/fleet/line-diff'
   import { bodyWatch } from './body-watch'
@@ -421,7 +421,7 @@
               <div
                 class={cn(
                   'group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs',
-                  diffing?.rev.id === rev.id && 'bg-raised',
+                  diffing?.rev.id === rev.id && sansFill,
                   i !== 0 && (sans ? 'cursor-pointer transition-colors hover:bg-hover' : 'cursor-pointer transition-colors dither-fill'),
                 )}
                 onclick={i === 0 ? undefined : () => void openDiff(rev)}

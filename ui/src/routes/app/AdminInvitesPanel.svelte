@@ -104,12 +104,10 @@
           {@const st = inviteState(i)}
           <SettingsRow label={i.email} hint={`Sent ${relativeTime(i.createdAt)}`}>
             {#snippet status()}<RowStatus status={STATUS[st].dot}>{STATUS[st].word}</RowStatus>{/snippet}
-            {#if st === 'pending'}
-              <SettingsRowMenu
-                label={`Actions for the invite to ${i.email}`}
-                items={[{ label: 'Revoke invite', danger: true, onSelect: () => void revoke(i.id) }]}
-              />
-            {/if}
+            <SettingsRowMenu
+              label={`Actions for the invite to ${i.email}`}
+              items={st === 'pending' ? [{ label: 'Revoke invite', danger: true, onSelect: () => void revoke(i.id) }] : []}
+            />
           </SettingsRow>
         {/each}
       {/snippet}
