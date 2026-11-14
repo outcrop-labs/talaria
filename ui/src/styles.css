@@ -272,6 +272,8 @@
   /* The selected sidebar row. A raised tile is white on cream in the light
      theme, so the fill is mixed from the readout colour and reads in both. */
   --settings-selected: color-mix(in srgb, var(--theme-text) 12%, var(--theme-sidebar));
+  /* The same for a borderless fill on a card: a neutral chip, a picked row. */
+  --settings-fill: color-mix(in srgb, var(--theme-text) 9%, var(--theme-panel));
 }
 
 /* ════════════════════════════════════════════════════════════════════════

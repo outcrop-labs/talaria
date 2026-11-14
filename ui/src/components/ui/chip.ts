@@ -3,7 +3,7 @@
 // instead of a button. Components: Chip/StatusDot/DangerLink.svelte; the
 // shared tone/status tables and prop types live here.
 import type { Snippet } from 'svelte'
-import type { UiVoice } from '@/lib/ui-voice'
+import { sansFill, type UiVoice } from '@/lib/ui-voice'
 
 export type ChipTone = 'neutral' | 'accent' | 'success' | 'warn' | 'danger'
 
@@ -17,7 +17,7 @@ export const TONES: Record<ChipTone, string> = {
 
 /** The sans voice's chips: a soft fill per tone, no border. */
 export const SANS_TONES: Record<ChipTone, string> = {
-  neutral: 'bg-raised text-muted',
+  neutral: `${sansFill} text-muted`,
   accent: 'bg-accent/12 text-accent',
   success: 'bg-success/12 text-success',
   warn: 'bg-warning/12 text-warning',

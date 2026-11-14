@@ -262,9 +262,15 @@
       style:width={`${pos.width}px`}
     >
       <!-- Spec §7 popover pattern: panel bg, hairline, radius 10,
-           search field on top, hover card2, selected = dashed gold. -->
+           search field on top, hover card2, selected = dashed gold.
+           Sans marks the selected option with its check alone: a dashed
+           outline reads there as a focus ring. -->
       {#if searchable || allowCreate}
-        <div class="mb-1 flex items-center gap-1.5 rounded-md border border-line px-2">
+        <!-- Sans: the field's border carries the focus. The app's own ring is
+             square and pokes out of this rounded wrapper. -->
+        <div class={sans
+          ? 'mb-1 flex items-center gap-1.5 rounded-md border border-line px-2 focus-within:border-accent'
+          : 'mb-1 flex items-center gap-1.5 rounded-md border border-line px-2'}>
           <!-- svelte-ignore a11y_autofocus -->
           <input
             autofocus
@@ -274,7 +280,7 @@
             aria-controls={listId}
             aria-activedescendant={filtered[hl] ? `${listId}-${hl}` : undefined}
             class={sans
-              ? 'h-7 w-full min-w-0 bg-transparent font-sans text-[13px] text-fg outline-none placeholder:text-muted'
+              ? 'h-7 w-full min-w-0 bg-transparent font-sans text-[13px] text-fg outline-none! placeholder:text-muted'
               : 'h-7 w-full min-w-0 bg-transparent font-mono text-[11px] tracking-[0.05em] text-fg outline-none placeholder:text-muted'}
           />
         </div>
@@ -299,7 +305,7 @@
               id={`${listId}-${i}`}
               data-hl={hl === i || undefined}
               onclick={() => toggle(o.value)}
-              class={cn(popRow, hl === i && 'bg-hover', selectedSet.has(o.value) && popRowSelected)}
+              class={cn(popRow, hl === i && 'bg-hover', selectedSet.has(o.value) && (sans ? 'font-medium' : popRowSelected))}
             >
               {@render o.icon?.()}
               <span class="min-w-0 flex-1">

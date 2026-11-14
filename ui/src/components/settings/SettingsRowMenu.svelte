@@ -3,6 +3,7 @@
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { sansFill } from '@/lib/ui-voice'
 
   // The kebab at the end of an entity row: every action that is not the row's
   // one visible button. Destructive items go last, marked `danger`.
@@ -28,7 +29,7 @@
   {#if typeof items === 'function' || items.length > 0}
     <DropdownMenu {items} {align} {up}>
       {#snippet trigger(open)}
-        <IconButton title={label} active={open}><Ellipsis size={16} /></IconButton>
+        <IconButton title={label} active={open} class={open ? sansFill : undefined}><Ellipsis size={16} /></IconButton>
       {/snippet}
     </DropdownMenu>
   {/if}

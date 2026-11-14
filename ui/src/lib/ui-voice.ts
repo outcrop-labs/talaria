@@ -22,6 +22,12 @@ export function useUiVoice(): UiVoice {
  *  page's attribute covers. Mono surfaces carry no attribute. */
 export const voiceScope = (voice: UiVoice): 'sans' | undefined => (voice === 'sans' ? 'sans' : undefined)
 
+/** The sans voice's fill for a thing with no border of its own: a neutral
+ *  chip, the picked row of a list, an open kebab. A raised tile is white on
+ *  cream in the light theme, so these take the scope's own fill, and fall
+ *  back to raised where no scope is set. */
+export const sansFill = 'bg-[var(--settings-fill,var(--theme-raised))]'
+
 let sansScreens = 0
 
 /** Declare the screen a sans area until the returned function runs. A host

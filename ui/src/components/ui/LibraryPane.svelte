@@ -95,7 +95,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
-  import { useUiVoice } from '@/lib/ui-voice'
+  import { sansFill, useUiVoice } from '@/lib/ui-voice'
 
   // A LIBRARY ON THE LEFT, THE THING YOU PICKED ON THE RIGHT.
   //
@@ -202,7 +202,7 @@
                       'min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left font-sans text-[13px] transition-colors',
                       sans
                         ? active
-                          ? 'bg-raised text-fg'
+                          ? cn(sansFill, 'text-fg')
                           : 'text-muted hover:bg-hover hover:text-fg'
                         : // Selected keeps the texture and GAINS the solid tile — the two states
                           // differ by whether the surface has arrived, not by whether there
