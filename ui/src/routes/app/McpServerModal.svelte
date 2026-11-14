@@ -44,9 +44,13 @@
     server: s,
     onClose,
     onRemove,
+    fix,
   }: {
     server: McpServerRow
     onClose: () => void
+    /** What the server's state asks of a person, under its own name ("Set
+     *  credentials"). The row shows no button for it, so it is offered here. */
+    fix?: { name: string; title?: string; run: () => void }
     /** Remove the server, for one that can be removed. The row owns the confirmation. */
     onRemove?: () => void
   } = $props()
@@ -117,7 +121,10 @@
     <dl class="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-4 gap-y-2">
       <dt class={quiet}>Status</dt>
       <dd class={fact}>
-        <span class="flex items-center gap-2"><StatusDot status={STATUS_DOT[status.tone]} />{status.label}</span>
+        <span class="flex items-center gap-3">
+          <span class="flex items-center gap-2"><StatusDot status={STATUS_DOT[status.tone]} />{status.label}</span>
+          {#if fix}<Button variant="link" size="xs" onclick={fix.run} title={fix.title}>{fix.name}</Button>{/if}
+        </span>
         <!-- The server's own words, so a 401 reads as the server's 401. -->
         {#if status.kind === 'app-off'}
           <p class={cn('mt-1', quiet)}>Off because {s.appOff?.replace(/\.$/, '')}. No agent can use it until the app is back, and every access rule is kept.</p>

@@ -71,9 +71,10 @@
     /** The whole row is a button. Put no other control in such a row. */
     onclick?: () => void
     /** Clicking the row opens the thing it is about, and the row can still
-     *  hold a status, a fix action and a kebab. The row stays a `div`: the hit
-     *  area is a button laid behind its content. The row ends in a chevron,
-     *  after the kebab. */
+     *  hold a status and a kebab. The row stays a `div`: the hit area is a
+     *  button laid behind its content. The row ends in a chevron, after the
+     *  kebab, and shows no action button: what its state needs is in the
+     *  kebab and behind the row. */
     onOpen?: () => void
     /** The same, when opening is going somewhere: the hit area is a link, so
      *  it opens in a new tab like any other. */
@@ -178,8 +179,6 @@
         stacked ? 'w-full' : 'shrink-0 justify-end',
         // Only real controls take the click back: a read-only value in this slot still opens the row.
         opens && cn('pointer-events-none relative', controlsTakeClicks),
-        // One chevron a row: where the row draws its own, its Fix is the word alone.
-        (pointsOnward || expanded !== undefined) && '[&_[data-row-fix]>svg]:hidden',
       )}
     >
       {#if status}
@@ -192,25 +191,42 @@
         <span class="relative -mr-3 w-0 self-stretch">{@render savedFlash('right-3')}</span>
       {/if}
       <!-- No space before the chevron's block: a text node there would keep an empty control slot from collapsing. -->
-      {@render children?.()}{#if expanded !== undefined}<span aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} class={cn('transition-transform duration-150', expanded && 'rotate-90')} /></span>{:else if pointsOnward}<span data-row-chevron aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} /></span>{/if}
+      {@render children?.()}{#if expanded !== undefined}<span data-row-expander aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} class={cn('transition-transform duration-150', expanded && 'rotate-90')} /></span>{:else if pointsOnward}<span data-row-chevron aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} /></span>{/if}
     </div>
   {/if}
 </svelte:element>
 
 <style>
-  /* One trailing control at rest: a row that opens shows its kebab when the
-     row is hovered, holds focus, or has its menu open. Opacity, not
-     visibility, so the kebab keeps its cell, its place in the tab order and
-     its name. A device that cannot hover always shows it. */
+  /* One thing at the end of a row at rest. A row that opens ends in its
+     chevron, and a row that names its action (`SettingsRowAction`) ends in
+     that button: either shows its kebab when the row is hovered, holds
+     focus, or has its menu open. Opacity, not visibility, so the kebab keeps
+     its cell, its place in the tab order and its name. A device that cannot
+     hover always shows it. */
   @media (hover: hover) {
-    :global([data-row-opens] > [data-row-controls] [data-row-menu]) {
-      opacity: 0;
-      transition: opacity 120ms;
+    :global {
+      :is([data-row-opens], [data-settings-row]:has(> [data-row-controls] [data-row-action])) {
+        > [data-row-controls] [data-row-menu] {
+          opacity: 0;
+          transition: opacity 120ms;
+        }
+        &:hover > [data-row-controls] [data-row-menu],
+        &:focus-within > [data-row-controls] [data-row-menu],
+        > [data-row-controls] [data-row-menu]:has([data-menu-open]) {
+          opacity: 1;
+        }
+      }
     }
-    :global([data-row-opens]:hover > [data-row-controls] [data-row-menu]),
-    :global([data-row-opens]:focus-within > [data-row-controls] [data-row-menu]),
-    :global([data-row-opens] > [data-row-controls] [data-row-menu]:has([data-menu-open])) {
-      opacity: 1;
+  }
+  /* A row that expands and names its action ends in the button alone: the
+     row still takes the click, and its menu says "Show details". The kebab
+     is then the last thing drawn, so it takes the inset a last cell has. */
+  :global([data-settings-row]:has(> [data-row-controls] [data-row-action]) > [data-row-controls]) {
+    > :global([data-row-expander]) {
+      display: none;
+    }
+    > :global([data-row-menu]:has(+ [data-row-expander])) {
+      margin-right: -0.5rem;
     }
   }
 </style>

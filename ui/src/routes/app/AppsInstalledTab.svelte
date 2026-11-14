@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -198,9 +198,9 @@
 
   const open = (a: InstalledApp) => void navigate('/x/:app', { params: { app: a.slug } })
 
-  /** The one action a row shows. A failed build needs a person, so it reads
-   *  Fix; an app that is off is a choice, so it offers Enable in the same
-   *  quiet treatment. Open is the row's click, and both are in its menu too. */
+  /** The one action a row's state asks for, under its own name in the menu.
+   *  A row that opens its app shows only its status and chevron; a row that
+   *  cannot open (the app is off) shows the action as its button. */
   const fixOf = (a: InstalledApp): 'rebuild' | 'enable' | null => {
     if (isAdmin && !a.broken && a.build?.status === 'failed') return 'rebuild'
     if (isAdmin && !a.broken && !a.enabled) return 'enable'
@@ -433,10 +433,12 @@
                 <StatusDot status={standing.dot} pulse={standing.pulse} />{standing.text}
               </span>
             {/snippet}
-            {#if fix === 'rebuild'}
-              <SettingsRowFix label={`Fix ${a.name}: rebuild`} disabled={busy === a.slug} onclick={() => void rebuild(a)} />
-            {:else if fix === 'enable'}
-              <SettingsRowFix text="Enable" label={`Enable ${a.name}`} disabled={busy === a.slug} onclick={() => void toggle(a)} />
+            {#if !canOpen(a)}
+              {#if fix === 'rebuild'}
+                <SettingsRowAction label={`Rebuild ${a.name}`} disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</SettingsRowAction>
+              {:else if fix === 'enable'}
+                <SettingsRowAction label={`Enable ${a.name}`} disabled={busy === a.slug} onclick={() => void toggle(a)}>Enable</SettingsRowAction>
+              {/if}
             {/if}
             <SettingsRowMenu label={`Actions for ${a.name}`} items={menu} />
           </SettingsRow>

@@ -3,7 +3,7 @@
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
@@ -83,8 +83,8 @@
   }
   // A collection search fails in is what an admin must see first.
   const brokenFirst = (list: RagCollection[]) => [...list.filter(isBroken), ...list.filter((c) => !isBroken(c))]
-  // A broken collection's row carries the fix. With none broken, a rebuild
-  // the server still asks for is offered once, on the notice.
+  // The notice holds the one Rebuild button. A broken collection's menu
+  // names it too, for someone who went to the row first.
   const rowsCarryFix = $derived(needsRebuild && (collectionsQuery.data ?? []).some(isBroken))
   const counts = (c: Record<string, number>) =>
     Object.entries(c)
@@ -112,9 +112,7 @@
             {rebuildReason} Rebuilding recreates every collection and refills it from your records, and knowledge search runs thin
             until that finishes.
             {#snippet action()}
-              {#if !rowsCarryFix}
-                <Button size="sm" variant="outline" onclick={() => void backfill('reindex')} disabled={!servicesUp}>Rebuild index</Button>
-              {/if}
+              <Button size="sm" variant="outline" onclick={() => void backfill('reindex')} disabled={!servicesUp}>Rebuild index</Button>
             {/snippet}
           </NoticeRow>
         </div>
@@ -127,7 +125,6 @@
           <SettingsHeaderRow label="Collection" menu>
             <span class={COLLECTION_COLS.entries}>Entries</span>
             <span class={COLLECTION_COLS.state}>Index</span>
-            {#if rowsCarryFix}<span class={COLLECTION_COLS.fix}></span>{/if}
           </SettingsHeaderRow>
           {#each brokenFirst(collections) as c (c.id)}
             <CollectionRow
@@ -198,10 +195,10 @@
               <RowStatus status="danger">Failed</RowStatus>
             {/if}
           {/snippet}
-          <!-- A failed run is the one state the row needs fixed. Running it
-               again is in the menu either way. -->
+          <!-- A failed run is the one state the row asks a person about.
+               Running it again is in the menu either way. -->
           {#if rag.backfill.state === 'error'}
-            <SettingsRowFix label="Fix the backfill: run it again" onclick={() => void backfill()} disabled={rebuilding || !servicesUp} />
+            <SettingsRowAction label="Run the backfill again" onclick={() => void backfill()} disabled={rebuilding || !servicesUp}>Run backfill</SettingsRowAction>
           {/if}
           <SettingsRowMenu
             label="Actions for the backfill"

@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { AlertTriangle, Plus } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -221,12 +221,14 @@
       <div class="line-clamp-2 font-sans text-[13px] leading-5 text-muted" title={about}>{about}</div>
     </div>
     {#if s.assignedToolsMissing.length && canManage && s.assigned}
-      <SettingsRowFix
-        label={`Fix ${s.label}: drop missing tools`}
+      <SettingsRowAction
+        label={`Drop missing tools from ${s.label}`}
         title={`Remove ${s.assignedToolsMissing.join(', ')} from this agent's tool subset`}
         disabled={busy}
         onclick={() => void dropMissing(s)}
-      />
+      >
+        Drop missing tools
+      </SettingsRowAction>
     {/if}
     {#if narrowable}
       <Combobox

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { KeyRound, SlidersHorizontal } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import type { MenuIcon } from '@/components/ui/context-menu.svelte'
@@ -29,8 +28,8 @@
   const showsUrl = $derived(!!ep.baseUrl && (ep.class === 'local' || ep.provider === 'custom'))
 </script>
 
-<!-- One provider as a row of the providers card. The row opens its dialog, and
-     Fix shows only when the provider cannot answer without a key. -->
+<!-- One provider as a row of the providers card. The row opens its dialog,
+     where the key is added, and "Add key" is in its menu. -->
 <div>
   <SettingsRow label={ep.name} onOpen={() => (managing = 'manage')} openLabel={`Manage ${ep.name}`}>
     {#snippet icon()}<ProviderMark provider={ep.provider} name={ep.name} class="border-0 bg-transparent" />{/snippet}
@@ -39,7 +38,6 @@
       {#if showsUrl}· <span class="font-mono text-xs">{ep.baseUrl}</span>{/if}
     {/snippet}
     {#snippet status()}<StatusDot status={key.status} />{key.text}{/snippet}
-    {#if needsKey}<SettingsRowFix label={`Fix ${ep.name}: add a key`} onclick={() => (managing = 'key')} />{/if}
     <SettingsRowMenu
       label={`Actions for ${ep.name}`}
       items={[

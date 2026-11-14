@@ -197,11 +197,12 @@ test('3 · a server that answers 401 asks for its key, and connects once it has 
   const creds = page.getByRole('dialog').filter({ hasText: `Credentials for ${STUB.key.title}` })
   if (!MARKETPLACE) {
     // No marketplace to open the editor on its own: the row says what the
-    // server needs, and its one action, Fix, is the way in. Fix is named for
-    // what it does; the row's menu holds the same action as "Set credentials".
+    // server needs and ends in its chevron, and its menu holds the way in
+    // under its own name.
     const card = registryCard(page, STUB.key.slug)
     await expect(card.getByText('Needs credentials', { exact: true })).toBeVisible()
-    await card.getByRole('button', { name: `Fix ${STUB.key.title}: set credentials`, exact: true }).click()
+    await card.getByRole('button', { name: `Actions for ${STUB.key.title}`, exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Set credentials', exact: true }).click()
   }
   // From the marketplace this is the drop-in moment: the editor opens itself.
   await expect(creds).toBeVisible()
@@ -228,12 +229,15 @@ test('4 · an OAuth server is detected, connects through the popup, and lists it
   expect(before.oauthEnabled).toBe(true)
   expect(before.orgConnected).toBeFalsy()
 
-  // Connect (the row's Fix) → /api/mcp/oauth/start → the stub's /authorize (302, no login
+  // Connect (in the row's menu) → /api/mcp/oauth/start → the stub's /authorize (302, no login
   // page) → Talaria's callback, which exchanges the code with PKCE and
   // closes the popup.
   const popupOpened = page.waitForEvent('popup')
   if (card) await card.getByRole('button', { name: 'Connect org account' }).click()
-  else await registryCard(page, STUB.oauth.slug).getByRole('button', { name: `Fix ${STUB.oauth.title}: connect org account`, exact: true }).click()
+  else {
+    await registryCard(page, STUB.oauth.slug).getByRole('button', { name: `Actions for ${STUB.oauth.title}`, exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Connect org account', exact: true }).click()
+  }
   const popup = await popupOpened
   await popup.waitForURL(/\/api\/mcp\/oauth\/callback/, { waitUntil: 'domcontentloaded' })
   // The page closes itself 1.2s after it renders; read it while it is there.

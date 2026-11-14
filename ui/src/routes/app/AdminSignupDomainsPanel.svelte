@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -100,7 +100,7 @@
                 {/if}
               {/snippet}
               {#if !d.verified}
-                <SettingsRowFix label={`Fix ${d.domain}: verify the domain`} disabled={verifying === d.id} onclick={() => void verify(d.id)} />
+                <SettingsRowAction label={`Verify ${d.domain}`} disabled={verifying === d.id} onclick={() => void verify(d.id)}>Verify</SettingsRowAction>
               {/if}
               <SettingsRowMenu
                 label={`Actions for ${d.domain}`}
@@ -117,7 +117,7 @@
                 <span>with the value</span>
                 <code class="min-w-0 truncate rounded {sansFill} px-1.5 py-0.5 font-mono text-xs text-fg">{d.verificationToken}</code>
                 <CopyButton value={d.verificationToken} title="Copy the TXT value" />
-                <span>then choose Fix to verify it.</span>
+                <span>then choose Verify.</span>
               </div>
             {/if}
           </div>

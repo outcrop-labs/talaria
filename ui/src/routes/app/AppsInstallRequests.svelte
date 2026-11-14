@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import FactsList from '@/components/admin/FactsList.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -88,9 +89,9 @@
           New app, requested by <span title="The agent that asked, and will maintain it">{r.agentName ?? r.agentModel}</span>{#if r.ownerName}{' '}for <span title="Who the app is for">{r.ownerName}</span>{/if}
         </div>
       {/snippet}
-      <Button size="sm" variant="outline" class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
+      <SettingsRowAction class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
         {busy === r.id ? 'Installing' : 'Install'}
-      </Button>
+      </SettingsRowAction>
       <SettingsRowMenu
         label={`Actions for ${nameOf(r)}`}
         items={[

@@ -71,7 +71,6 @@ export const useRagAdmin = () =>
 export const COLLECTION_COLS = {
   entries: 'w-14 shrink-0 text-right',
   state: 'w-[6.5rem] shrink-0',
-  fix: 'w-12 shrink-0',
 } as const
 
 /** What a collection's row says about its index. `broken` is a state search

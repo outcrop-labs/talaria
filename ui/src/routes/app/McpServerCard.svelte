@@ -2,7 +2,6 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { BookOpen, FileBox, LayoutGrid } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -87,9 +86,9 @@
 
   // The one thing the row asks for, when its status asks for something. A
   // server the health pass does not ask (the deployment's own, a stdio
-  // package) has no "check again" to offer. `name` is the action under its
-  // own name: the kebab's item, and what Fix's accessible label says it does.
-  type Fix = { name: string; title?: string; run: () => void }
+  // package) has no "check again" to offer. The row opens, so it shows no
+  // button for it: `name` is the kebab's item and the Manage dialog's action.
+  type Fix = { name: string; title?: string; run: () => void; inManage?: true }
   const fix = $derived.by((): Fix | null => {
     if (!s.enabled) return null
     if (verdict.action === 'connect') {
@@ -116,11 +115,11 @@
         name: 'Check now',
         title: 'Ask the server again now: the handshake, its tool list, and whether the credentials still work',
         run: () => ask({ refreshTools: true }),
+        inManage: true,
       }
     }
     return null
   })
-  const fixLabel = $derived(fix ? `Fix ${s.label}: ${fix.name.charAt(0).toLowerCase()}${fix.name.slice(1)}` : undefined)
 
   // Drops the org's OAuth tokens; the gateway answers for the server
   // in-house again and the carriers re-list on its notice, without a restart.
@@ -157,10 +156,24 @@
     await refresh()
   }
 
+  // The Manage dialog offers what the kebab does. Its own "Check now" already
+  // is that fix, and any other gives way to the dialog the fix opens.
+  const manageFix = $derived.by((): Fix | undefined => {
+    const fixing = fix
+    if (!fixing || fixing.inManage) return undefined
+    return {
+      ...fixing,
+      run: () => {
+        manageOpen = false
+        fixing.run()
+      },
+    }
+  })
+
   const external = $derived(!isInternalServer(s))
   // The deployment's own servers are governed, never edited: Manage is all
-  // their menu holds. What Fix does comes second, under its own name, and an
-  // item of the same name further down gives way to it.
+  // their menu holds. What the row's state needs comes second, under its own
+  // name, and an item of the same name further down gives way to it.
   const menu = (): ContextMenuEntry[] => {
     const fixing = fix
     const rest = s.builtin ? [] : settingsMenu()
@@ -246,12 +259,11 @@
       </span>
     {/snippet}
 
-    {#if fix}<SettingsRowFix label={fixLabel} title={fix.title} disabled={checking} onclick={fix.run} />{/if}
     <SettingsRowMenu label={`Actions for ${s.label}`} items={menu} />
   </SettingsRow>
   {#if error}<div class="px-5 pb-4 font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
 
-  {#if manageOpen}<McpServerModal server={s} onClose={() => (manageOpen = false)} onRemove={s.builtin ? undefined : () => void remove()} />{/if}
+  {#if manageOpen}<McpServerModal server={s} fix={manageFix} onClose={() => (manageOpen = false)} onRemove={s.builtin ? undefined : () => void remove()} />{/if}
   {#if credentialsOpen}<McpCredentialsModal server={s} onClose={() => (credentialsOpen = false)} />{/if}
   {#if oauthOpen && s.oauthMeta}
     <McpOauthAppSetup

@@ -2,7 +2,6 @@
   import { publicIconDomain } from '@/lib/icon-domain'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import FactsList from '@/components/admin/FactsList.svelte'
   import NoticeRow from '@/components/admin/NoticeRow.svelte'
@@ -177,11 +176,6 @@
       <span class="font-mono text-xs">{current.baseUrl}</span>{#if detail}{' · '}{detail}{/if}
     {/snippet}
     <span class={HOST_COLS.state}><RowStatus status={testing ? 'idle' : conn.status}>{testing ? 'Testing' : conn.word}</RowStatus></span>
-    {#if fix}
-      <SettingsRowFix label={`Fix ${current.name}: ${fix.toLowerCase()}`} onclick={openFix} />
-    {:else}
-      <span class={HOST_COLS.fix}></span>
-    {/if}
     <SettingsRowMenu label={`Actions for ${current.name}`} items={menu} />
   </SettingsRow>
   {#if tested}

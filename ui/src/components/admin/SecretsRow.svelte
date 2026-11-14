@@ -1,6 +1,6 @@
 <script lang="ts">
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import type { DotStatus } from '@/components/ui/chip'
@@ -79,6 +79,6 @@
       {row.setAt ? relativeTime(row.setAt) : '—'}
     </span>
   {/if}
-  {#if setUp}<SettingsRowFix href={row.href} label={`Fix ${row.label}: set it up in ${row.surface}`} />{/if}
+  {#if setUp}<SettingsRowAction href={row.href} label={`Set up ${row.label} in ${row.surface}`}>Set up</SettingsRowAction>{/if}
   <SettingsRowMenu label={`Actions for ${row.label}`} {items} />
 </SettingsRow>

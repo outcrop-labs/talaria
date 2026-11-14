@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -93,7 +93,7 @@
               {/if}
             {/snippet}
             {#if !data.verified}
-              <SettingsRowFix label={`Fix ${data.domain}: verify the address`} disabled={busy} onclick={() => void post({ verify: true })} />
+              <SettingsRowAction label={`Verify ${data.domain}`} disabled={busy} onclick={() => void post({ verify: true })}>Verify</SettingsRowAction>
             {/if}
             <SettingsRowMenu
               label={`Actions for ${data.domain}`}

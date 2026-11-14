@@ -2,7 +2,6 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -37,9 +36,9 @@
     /** The collection as the vector store holds it. Absent while that read is
      *  out or failed, and then the row claims nothing about its index. */
     index?: IndexedCollection
-    /** Set while the list holds a collection search fails in: every row then
-     *  keeps the fix cell, and one that `needed` it shows Fix. The fix is the
-     *  one rebuild of the whole index. */
+    /** Set while the list holds a collection search fails in: a row that
+     *  `needed` it names the rebuild in its menu. It is the one rebuild of
+     *  the whole index, and its button is on the list's notice. */
     rebuild?: { needed: boolean; disabled: boolean; run: () => void }
   } = $props()
 
@@ -142,11 +141,6 @@
       {entries}
     </span>
     <span class={COLLECTION_COLS.state}>{#if idx}<RowStatus status={idx.status} title={idx.title}>{idx.word}</RowStatus>{/if}</span>
-    {#if fix}
-      <SettingsRowFix label={`Fix ${col.name}: rebuild the index`} disabled={fix.disabled} onclick={fix.run} />
-    {:else if rebuild}
-      <span class={COLLECTION_COLS.fix}></span>
-    {/if}
     <SettingsRowMenu label={`Actions for ${col.name}`} items={menu} />
   </SettingsRow>
 {#if !col.auto}

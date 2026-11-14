@@ -2,6 +2,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import FactsList from '@/components/admin/FactsList.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -73,9 +74,9 @@
         <div>{ready(r)}</div>
         <div>Update{#if r.maintainer}, maintained by <span title="The agent that maintains it">{r.maintainer}</span>{/if}</div>
       {/snippet}
-      <Button size="sm" variant="outline" class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
+      <SettingsRowAction class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
         {busy === r.id ? 'Updating' : 'Update'}
-      </Button>
+      </SettingsRowAction>
       <SettingsRowMenu
         label={`Actions for the ${name} update`}
         items={[

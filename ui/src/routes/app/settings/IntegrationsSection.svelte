@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -127,8 +127,7 @@
               items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}
             />
           {:else}
-            <!-- Not connected is a choice, not a fault: the same quiet action a fix has, under its own word. -->
-            <SettingsRowFix text="Connect" label="Connect Google Workspace" href="/api/integrations/google/connect" />
+            <SettingsRowAction label="Connect Google Workspace" href="/api/integrations/google/connect">Connect</SettingsRowAction>
             <SettingsRowMenu label="Actions for Google Workspace" items={[]} />
           {/if}
         </SettingsRow>

@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
@@ -143,7 +143,7 @@
               ]}
             />
           {:else}
-            <SettingsRowFix href={CONNECT} label="Fix the shared Google account: connect it" />
+            <SettingsRowAction href={CONNECT} label="Connect the shared Google account">Connect</SettingsRowAction>
             <SettingsRowMenu
               label="Actions for the shared Google account"
               items={[{ label: 'Connect Google', onSelect: () => window.location.assign(CONNECT) }]}

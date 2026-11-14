@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -53,7 +53,7 @@
   }))
   // An account row carries a name and no address, so its mark comes from the
   // registry row of the same server. That list is an `agents.manage` read:
-  // anyone else sends no request and sees the neutral mark.
+  // anyone else sends no request and sees the server's monogram.
   const mayReadRegistry = useHasPerm('agents.manage')
   const registry = useMcpServers(() => mayReadRegistry.current)
   const markOf = (s: McpConnection): string[] => {
@@ -134,27 +134,27 @@
               items={[{ label: `Disconnect ${s.label}`, danger: true, onSelect: () => void put(s.id, null) }]}
             />
           {:else if s.authKind === 'oauth' && s.needsReconnect}
-            <SettingsRowFix
-              label={`Fix ${s.label}: sign in again`}
+            <SettingsRowAction
+              label={`Reconnect ${s.label}`}
               title="Your sign-in expired at the provider. Sign in again so your assistant can act as you here."
               onclick={() => signIn(s)}
-            />
-            <SettingsRowMenu label={`Actions for ${s.label}`} items={[{ label: 'Sign in again', onSelect: () => signIn(s) }]} />
+            >
+              Reconnect
+            </SettingsRowAction>
+            <SettingsRowMenu label={`Actions for ${s.label}`} items={[{ label: 'Reconnect', onSelect: () => signIn(s) }]} />
           {:else}
-            <!-- Not connected is a choice, not a fault: the same quiet action a fix has, under its own word. -->
             {#if s.authKind === 'oauth'}
-              <SettingsRowFix
-                text="Connect"
+              <SettingsRowAction
                 label={`Connect ${s.label}`}
                 title="Sign in with the provider. Your assistant then acts as you on this server."
                 onclick={() => signIn(s)}
-              />
+              >
+                Connect
+              </SettingsRowAction>
             {:else}
-              <SettingsRowFix
-                text={connecting === s.id ? 'Cancel' : 'Connect'}
-                label={connecting === s.id ? `Cancel connecting ${s.label}` : `Connect ${s.label}`}
-                onclick={() => toggle(s)}
-              />
+              <SettingsRowAction label={connecting === s.id ? `Cancel connecting ${s.label}` : `Connect ${s.label}`} onclick={() => toggle(s)}>
+                {connecting === s.id ? 'Cancel' : 'Connect'}
+              </SettingsRowAction>
             {/if}
             <SettingsRowMenu label={`Actions for ${s.label}`} items={[]} />
           {/if}

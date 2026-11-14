@@ -3,7 +3,7 @@
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
@@ -189,7 +189,7 @@
               {#if d.migrate?.failed}{files(d.migrate.failed)} failed to move.{/if}
               {files(d.stats.local)} {d.stats.local === 1 ? 'is' : 'are'} still on local disk.
               {#snippet action()}
-                <SettingsRowFix label="Fix files on local disk: move them to the bucket" onclick={() => void migrate()} disabled={busy} />
+                <SettingsRowAction label="Move local files to the bucket" onclick={() => void migrate()} disabled={busy}>Move files</SettingsRowAction>
               {/snippet}
             </NoticeRow>
           {:else if !migrating && d.migrate?.failed}
@@ -216,9 +216,6 @@
             {#snippet status()}
               {#if external && !saved.hasSecret}<RowStatus status="warn">Secret key not set</RowStatus>{/if}
             {/snippet}
-            {#if external && !saved.hasSecret}
-              <SettingsRowFix label="Fix the primary storage: enter its secret access key" onclick={() => edit('location')} />
-            {/if}
             <SettingsRowMenu
               label="Actions for file storage"
               items={[
@@ -253,11 +250,6 @@
                   <RowStatus status="danger">{files(d.sync.failed)} not copied</RowStatus>
                 {/if}
               {/snippet}
-              {#if !saved.replica.hasSecret}
-                <SettingsRowFix label="Fix the replica: enter its secret access key" onclick={() => edit('replica')} />
-              {:else if behind}
-                <SettingsRowFix label="Fix the replica: sync the files again" disabled={!canSync} onclick={() => void act('sync')} />
-              {/if}
               <SettingsRowMenu
                 label="Actions for the replica"
                 items={[

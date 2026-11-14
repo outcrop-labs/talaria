@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -107,7 +107,7 @@
             {/if}
           {/snippet}
           {#if last.ok === false}
-            <SettingsRowFix label={`Fix ${d.label}: send a test push`} disabled={r === 'busy'} onclick={() => void test(d.id)} />
+            <SettingsRowAction label={`Send a test push to ${d.label}`} disabled={r === 'busy'} onclick={() => void test(d.id)}>Send test</SettingsRowAction>
           {/if}
           <SettingsRowMenu
             label={`Actions for ${d.label}`}
