@@ -6,7 +6,7 @@ import type { AgentContainers, AgentDef } from '@/lib/fleet-defs'
 vi.mock('@tanstack/svelte-query', () => ({ useQueryClient: vi.fn() }))
 vi.mock('@/lib/session', () => ({ useSession: vi.fn() }))
 
-import { rosterCount, rosterLine } from './roster-count'
+import { rosterCount, rosterLine, rosterNote } from './roster-count'
 
 type Container = NonNullable<AgentContainers['managed']>
 
@@ -38,7 +38,8 @@ describe('rosterCount', () => {
     expect(count.counted).toBe(7)
     expect(count.exceptions).toEqual(['1 unhealthy', '1 starting'])
     expect(count.uncounted).toEqual(['1 draft', '1 retired'])
-    expect(rosterLine(count)).toEqual(['5 of 7 running', '1 unhealthy', '1 starting', '1 draft and 1 retired not counted'])
+    expect(rosterLine(count)).toEqual(['5 of 7 running', '1 unhealthy', '1 starting'])
+    expect(rosterNote(count, 6)).toBe('Drafts and retired agents are not counted. 6 were active today.')
   })
 
   it('counts a stopped agent, because it is meant to be up', () => {
@@ -56,10 +57,19 @@ describe('rosterCount', () => {
   })
 
   it('names who is left out when nobody is counted, and is empty for an empty roster', () => {
-    expect(rosterLine(rosterCount([def('draft'), def('gone', { enabled: false })], fleet({})))).toEqual([
-      'None running',
-      '1 draft and 1 retired not counted',
-    ])
+    const nobody = rosterCount([def('draft'), def('gone', { enabled: false })], fleet({}))
+    expect(rosterLine(nobody)).toEqual(['None running'])
+    expect(rosterNote(nobody)).toBe('Drafts and retired agents are not counted.')
     expect(rosterLine(rosterCount([], fleet({})))).toEqual([])
+  })
+
+  it('keeps the note to what it knows', () => {
+    const all = rosterCount([def('a'), def('b')], fleet({ a: {}, b: {} }))
+    expect(rosterNote(all)).toBeNull()
+    expect(rosterNote(all, 1)).toBe('1 was active today.')
+    expect(rosterNote(all, 0)).toBe('None were active today.')
+    expect(rosterNote(rosterCount([def('a'), def('gone', { enabled: false })], fleet({ a: {}, gone: {} })), 2)).toBe(
+      'Retired agents are not counted. 2 were active today.',
+    )
   })
 })

@@ -13,6 +13,7 @@
   import CloseButton from '@/components/ui/CloseButton.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -26,7 +27,7 @@
   import FederateModal from '@/components/fleet/FederateModal.svelte'
   import SealConfigsModal from '@/components/fleet/SealConfigsModal.svelte'
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
-  import { rosterCount, rosterLine } from '@/components/fleet/roster-count'
+  import { rosterCount, rosterLine, rosterNote } from '@/components/fleet/roster-count'
   import { useFleet } from '@/lib/fleet'
   import { errorMessage } from '@/lib/fetch-json'
   import { useSession } from '@/lib/session'
@@ -158,13 +159,20 @@
   // list, where an empty list is a harmless degradation.
   const defs = $derived(defsQuery.data?.defs ?? [])
   // The roster's own line: the overview's count of the same agents, from the
-  // same two reads, so the two pages say one thing. Who was active today is
-  // the fleet's: when that read fails the line says so beside the count.
-  const countLine = $derived.by(() => {
+  // same two reads, so the two pages say one thing. Who the count leaves out
+  // and who was active today sit behind the line's tip. Activity is the
+  // fleet's read: when that fails the line says so beside the count.
+  // `data` is read first, on every run: the query only reports changes to the
+  // fields something has read, so a run that looked at `isError` alone would
+  // never hear the totals arrive.
+  const activeToday = $derived(fleetQuery.data?.totals.activeToday)
+  const activityFailed = $derived(fleetQuery.data === undefined && fleetQuery.isError)
+  const count = $derived.by(() => {
+    const active = activeToday
     const all = defsQuery.data?.defs
     if (!all || !containersQuery.data) return null
-    const active = fleetQuery.data?.totals.activeToday
-    return [...rosterLine(rosterCount(all, byDept)), ...(active === undefined ? [] : [`${active} active today`])].join(' · ')
+    const c = rosterCount(all, byDept)
+    return { line: rosterLine(c).join(' · '), note: rosterNote(c, active) }
   })
 
   const modelName = useModelNames()
@@ -324,12 +332,12 @@
              min-h-8 holds the line while the totals load. -->
         <div class="flex min-h-8 flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <span class="flex flex-wrap items-center gap-x-4 gap-y-1 font-sans text-[13px] leading-5 text-muted tabular-nums">
-            {#if countLine !== null}
-              {countLine}
+            {#if count !== null}
+              <span class="flex items-center gap-2">{count.line}{#if count.note}<InfoTip text={count.note} />{/if}</span>
             {:else if rosterLoading}
               <Skeleton class="h-3 w-40" />
             {/if}
-            {#if fleetQuery.isError && fleetQuery.data === undefined}
+            {#if activityFailed}
               <span role="status" class="flex items-center gap-1.5" title={errorMessage(fleetQuery.error)}>
                 <CircleAlert size={14} aria-hidden="true" class="shrink-0 text-danger" />
                 Could not read today's activity

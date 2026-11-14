@@ -2,9 +2,9 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { anyError } from '@/components/ui/query-state'
   import Stat from '@/components/settings/Stat.svelte'
-  import { containersOf, useFleetContainers, useFleetDefs } from '@/lib/fleet-defs'
+  import { healthPhrases, rosterCount } from '@/components/fleet/roster-count'
+  import { useFleetContainers, useFleetDefs } from '@/lib/fleet-defs'
   import { useHasPerm } from '@/lib/session'
-  import { HEALTH_LABEL, healthOf, type Health } from '@/routes/app/agents.svelte'
   import { p } from '@/router'
 
   // The fleet in one number: how many of the agents you can see are up, and
@@ -17,31 +17,25 @@
   const wholeFleet = useHasPerm('agents.manage')
   const containersQuery = useFleetContainers(() => true)
 
-  const counts = $derived.by(() => {
+  const count = $derived.by(() => {
     const defs = defsQuery.data?.defs
     const containers = containersQuery.data
     if (!defs || !containers) return null
-    const byDept = new Map(containers.map((c) => [c.department, c]))
-    const tally: Record<Health, number> = { up: 0, warming: 0, degraded: 0, down: 0, draft: 0, retired: 0 }
-    for (const d of defs) tally[healthOf(d, containersOf(d, byDept)).health] += 1
-    return tally
+    return rosterCount(defs, new Map(containers.map((c) => [c.department, c])))
   })
-  const live = $derived(counts ? counts.up + counts.warming + counts.degraded + counts.down : 0)
   const sub = $derived.by(() => {
-    if (!counts) return containersQuery.isError ? 'Container status unavailable' : undefined
-    // The words the Agents page puts beside the same states.
-    const parts = (['down', 'degraded', 'warming', 'draft'] as const)
-      .filter((h) => counts[h] > 0)
-      .map((h) => `${counts[h]} ${HEALTH_LABEL[h].toLowerCase()}`)
+    if (!count) return containersQuery.isError ? 'Container status unavailable' : undefined
+    // The roster's own exceptions, then its drafts: a draft is a thing to finish, a retired agent is not.
+    const parts = [...count.exceptions, ...healthPhrases(count.tally, ['draft'])]
     if (parts.length > 0) return parts.join(' · ')
-    if (live > 0) return 'All running'
+    if (count.counted > 0) return 'All running'
     return wholeFleet.current ? 'No agents yet' : 'None you manage'
   })
 </script>
 
 <Stat label="Agents running" href={p('/agents')} {sub}>
   {#snippet value()}
-    {#if counts}{counts.up}<span class="text-muted">{' / '}{live}</span>
+    {#if count}{count.running}<span class="text-muted">{' / '}{count.counted}</span>
     {:else if anyError(defsQuery, containersQuery)}—
     {:else}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/if}
   {/snippet}

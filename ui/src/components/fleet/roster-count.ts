@@ -20,11 +20,12 @@ export interface RosterCount {
   uncounted: string[]
 }
 
-const phrases = (tally: Record<Health, number>, states: readonly Health[]): string[] =>
+/** Each state that has agents in it, as the roster says it: "1 unhealthy". */
+export const healthPhrases = (tally: Record<Health, number>, states: readonly Health[]): string[] =>
   states.filter((h) => tally[h] > 0).map((h) => `${tally[h]} ${HEALTH_LABEL[h].toLowerCase()}`)
 
 /** How much of a roster is running, from container reality. The one
- *  definition: the roster's line reads it, and the overview's tile can. */
+ *  definition: the roster's line and the overview's tile both read it. */
 export function rosterCount(defs: readonly AgentDef[], byDept: Map<string, AgentContainers>): RosterCount {
   const tally: Record<Health, number> = { up: 0, warming: 0, degraded: 0, down: 0, draft: 0, retired: 0 }
   for (const d of defs) tally[healthOf(d, containersOf(d, byDept)).health] += 1
@@ -32,15 +33,32 @@ export function rosterCount(defs: readonly AgentDef[], byDept: Map<string, Agent
     tally,
     running: tally.up,
     counted: COUNTED.reduce((n, h) => n + tally[h], 0),
-    exceptions: phrases(tally, EXCEPTIONS),
-    uncounted: phrases(tally, UNCOUNTED),
+    exceptions: healthPhrases(tally, EXCEPTIONS),
+    uncounted: healthPhrases(tally, UNCOUNTED),
   }
 }
 
-/** The count as the roster says it: "5 of 7 running", then each exception,
- *  then who the count leaves out. Empty for a roster with nobody on it. */
+/** The count as the roster says it: "5 of 7 running", then each exception.
+ *  Empty for a roster with nobody on it. */
 export function rosterLine(c: RosterCount): string[] {
-  const parts = c.counted > 0 ? [`${c.running} of ${c.counted} running`, ...c.exceptions] : c.uncounted.length > 0 ? ['None running'] : []
-  if (c.uncounted.length > 0) parts.push(`${c.uncounted.join(' and ')} not counted`)
-  return parts
+  if (c.counted > 0) return [`${c.running} of ${c.counted} running`, ...c.exceptions]
+  return c.uncounted.length > 0 ? ['None running'] : []
+}
+
+const LEFT_OUT: Partial<Record<Health, string>> = { draft: 'drafts', retired: 'retired agents' }
+
+/** What the line leaves for its tip, in sentences: who the count leaves out,
+ *  and how many agents were active today when that read has landed. Null
+ *  when there is nothing to add. */
+export function rosterNote(c: RosterCount, activeToday?: number): string | null {
+  const out = UNCOUNTED.filter((h) => c.tally[h] > 0).map((h) => LEFT_OUT[h] ?? h)
+  const sentences: string[] = []
+  if (out.length > 0) {
+    const who = out.join(' and ')
+    sentences.push(`${who.charAt(0).toUpperCase()}${who.slice(1)} are not counted.`)
+  }
+  if (activeToday !== undefined) {
+    sentences.push(activeToday === 0 ? 'None were active today.' : `${activeToday} ${activeToday === 1 ? 'was' : 'were'} active today.`)
+  }
+  return sentences.length > 0 ? sentences.join(' ') : null
 }
