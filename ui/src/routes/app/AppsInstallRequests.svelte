@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import FactsList from '@/components/admin/FactsList.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -28,7 +29,7 @@
   const qc = useQueryClient()
   /** The app's name as a person reads it. A request carries no name of its
    *  own before the install reads the manifest, so it is the repository's
-   *  last segment in words; the repository itself is the row's mono line. */
+   *  last segment in words; the repository itself is in the row's details. */
   const nameOf = (r: AppInstallRequest) => {
     const words = (r.repo.split('/').pop() || r.repo).replace(/[-_.]+/g, ' ').trim()
     return words ? words.charAt(0).toUpperCase() + words.slice(1) : r.repo
@@ -36,6 +37,14 @@
   let busy = $state<string | null>(null)
   let rejecting = $state<string | null>(null)
   let rejectNote = $state('')
+  /** The rows whose source is open: where the app comes from, by request id. */
+  let open = $state<Record<string, boolean>>({})
+  const sourceOf = (r: AppInstallRequest) => [
+    { label: 'Repository', value: r.url, mono: true },
+    { label: 'Branch', value: r.ref ?? 'Default branch', mono: r.ref !== null },
+    { label: 'Git host', value: r.hostId, mono: true },
+    ...(r.ticketRef ? [{ label: 'Ticket', value: r.boardName ? `${r.ticketRef} on ${r.boardName}` : r.ticketRef }] : []),
+  ]
   /** Kept data from another repository stands in the way: adopt or wipe. */
   let conflicts = $state<Record<string, KeptDataConflict>>({})
 
@@ -72,16 +81,12 @@
 {#each requests as r (r.id)}
   {@const conflict = conflicts[r.id]}
   <div data-install-request>
-    <SettingsRow label={nameOf(r)}>
+    <SettingsRow label={nameOf(r)} onOpen={() => (open[r.id] = !open[r.id])} expanded={open[r.id] === true} openLabel={`Details for ${nameOf(r)}`}>
       {#snippet hint()}
         {#if r.why}<div>{r.why}</div>{/if}
         <div>
-          New app, requested by <span title="The agent that asked, and will maintain it">{r.agentName ?? r.agentModel}</span>{#if r.ownerName}{' '}for <span title="Who the app is for">{r.ownerName}</span>{/if}{#if r.ticketRef}<span
-              class="ml-2 font-mono text-xs"
-              title={`The ticket it was built for, on ${r.boardName ?? 'its board'}. Maintenance tickets go there.`}>{r.ticketRef}</span
-            >{/if}
+          New app, requested by <span title="The agent that asked, and will maintain it">{r.agentName ?? r.agentModel}</span>{#if r.ownerName}{' '}for <span title="Who the app is for">{r.ownerName}</span>{/if}
         </div>
-        <div class="break-all font-mono text-xs leading-5" title={r.url}>{r.repo} @ {r.ref ?? 'default branch'} on {r.hostId}</div>
       {/snippet}
       <Button size="sm" variant="outline" class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
         {busy === r.id ? 'Installing' : 'Install'}
@@ -89,6 +94,7 @@
       <SettingsRowMenu
         label={`Actions for ${nameOf(r)}`}
         items={[
+          { label: open[r.id] ? 'Hide details' : 'Show details', onSelect: () => (open[r.id] = !open[r.id]) },
           {
             label: rejecting === r.id ? 'Cancel rejection' : 'Reject',
             disabled: busy === r.id,
@@ -100,6 +106,11 @@
         ]}
       />
     </SettingsRow>
+    {#if open[r.id]}
+      <div transition:slide={{ duration: 150 }} data-request-details>
+        <FactsList facts={sourceOf(r)} class="pt-0" />
+      </div>
+    {/if}
     {#if conflict}
       <div transition:slide={{ duration: 150 }}>
         <div class="flex flex-wrap items-center gap-3 border-t border-line-subtle px-5 py-4" data-install-conflict>
