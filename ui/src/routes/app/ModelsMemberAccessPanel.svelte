@@ -131,7 +131,7 @@
          with skeletons and the switch never flips after load. Both flags are
          read every time (anyPending, query-state.ts says why). -->
     <SettingsGroup>
-      <div class="flex min-h-[56px] items-center gap-6 px-5 py-3.5">
+      <div class="flex min-h-[52px] items-center gap-6 px-5 py-3">
         <Skeleton class="h-3 w-56 rounded-full" />
         <span class="ml-auto"></span>
         <Skeleton class="h-5 w-9 rounded-full" />

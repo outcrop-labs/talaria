@@ -191,7 +191,7 @@
       <QueryState {query} errorTitle="Could not load this agent's secrets" errorVariant="compact">
         {#snippet skeleton()}
           {#each [0, 1] as i (i)}
-            <div aria-hidden="true" class="flex min-h-[56px] items-center gap-3 px-5 py-3.5">
+            <div aria-hidden="true" class="flex min-h-[52px] items-center gap-3 px-5 py-3">
               <Skeleton class="h-3.5 w-40 rounded-full" />
               <Skeleton class="ml-auto h-3 w-24 rounded-full" />
             </div>

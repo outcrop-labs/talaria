@@ -186,7 +186,7 @@
   {@const toolOptions = s.tools.map((t) => ({ value: t.name, label: t.name }))}
   {@const narrowable = canManage && s.carried && (s.assigned || s.allAgents) && !s.workbench && s.tools.length > 0}
   {@const about = [s.description, narrowable ? null : toolCount(s)].filter(Boolean).join(' · ')}
-  <div class="flex min-h-[56px] items-center gap-3 px-5 py-3.5">
+  <div class="flex min-h-[52px] items-center gap-3 px-5 py-3">
     <McpServerMark title={s.label} domain={s.domain} size={32} />
     <div class="min-w-0 flex-1">
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -313,7 +313,7 @@
           >
             <SettingsGroup class="border-warning/40">
               {#each data.legacy as l (l.name)}
-                <div class="flex min-h-[56px] items-center gap-3 px-5 py-3.5">
+                <div class="flex min-h-[52px] items-center gap-3 px-5 py-3">
                   <AlertTriangle size={16} class="shrink-0 text-warning" />
                   <span class="w-40 shrink-0 truncate font-sans text-sm font-medium leading-5 text-fg">{l.name}</span>
                   <span class="min-w-0 flex-1 truncate font-mono text-xs text-muted">{l.url ?? ''}</span>

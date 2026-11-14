@@ -118,7 +118,7 @@
   data-settings-row={stacked ? 'stacked' : apart ? 'apart' : ''}
   data-row-opens={opens ? '' : undefined}
   class={cn(
-    compact ? 'flex min-h-11 px-5 py-1.5' : 'flex min-h-[56px] px-5 py-3.5',
+    compact ? 'flex min-h-11 px-5 py-1.5' : 'flex min-h-[52px] px-5 py-3',
     // Not stacked still wraps: on a phone a wide control drops under its label.
     stacked ? 'flex-col gap-3' : 'flex-wrap items-center gap-x-6 gap-y-3',
     // The ring is forced inside: the app's global focus rule is unlayered, so it beats a plain utility, and a ring

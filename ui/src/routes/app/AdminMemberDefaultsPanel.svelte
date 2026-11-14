@@ -42,7 +42,7 @@
       <div class="grid sm:grid-cols-2 [&>*+*]:border-t [&>*]:border-line-subtle sm:[&>*:nth-child(2)]:border-t-0 sm:[&>*:nth-child(odd)]:border-r sm:[&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child:nth-child(odd)]:border-r-0">
         {#each entries as p (p.id)}
           {@const effective = perms.orgDefaults[p.id] ?? p.memberDefault}
-          <div class="flex min-h-[56px] items-center gap-2 px-5 py-3.5">
+          <div class="flex min-h-[52px] items-center gap-2 px-5 py-3">
             <span class="min-w-0 truncate font-sans text-sm font-medium leading-5 text-fg">{p.label}</span>
             <InfoTip text={p.hint} />
             {#if perms.orgDefaults[p.id] !== undefined && perms.orgDefaults[p.id] !== p.memberDefault}

@@ -7,7 +7,7 @@
 
 <div aria-hidden="true" class="overflow-hidden rounded-lg border border-line bg-panel [&>*+*]:border-t [&>*+*]:border-line-subtle">
   {#each Array.from({ length: rows }) as _, i (i)}
-    <div class="flex min-h-[56px] items-center gap-4 px-5 py-3.5">
+    <div class="flex min-h-[52px] items-center gap-4 px-5 py-3">
       <!-- Fixed geometry, so nothing about it is uncertain: a flat dot, not a skeleton (UI-CONVENTIONS, Loading). -->
       <div class="h-1.5 w-1.5 shrink-0 rounded-full bg-line"></div>
       <Skeleton class={`h-3.5 rounded-full ${['w-44', 'w-36', 'w-52'][i % 3]}`} />

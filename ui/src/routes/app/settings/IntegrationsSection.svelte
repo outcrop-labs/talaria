@@ -92,7 +92,7 @@
       {#snippet skeleton()}
         <!-- Never show "Not connected" + Connect while the status is unknown:
              that is a false state. Hold the row's shape until the query resolves. -->
-        <div aria-hidden="true" class="flex min-h-[56px] items-center gap-3 px-5 py-3.5">
+        <div aria-hidden="true" class="flex min-h-[52px] items-center gap-3 px-5 py-3">
           <Skeleton class="h-8 w-8 shrink-0 rounded-md" />
           <div class="min-w-0 flex-1 space-y-2">
             <Skeleton class="h-3 w-40 rounded-full" />

@@ -51,7 +51,7 @@
   {#snippet skeleton()}
     <!-- Hold the row's shape until the status resolves: "Not connected" is a
          claim about the account, and an in-flight read can't make it. -->
-    <div aria-hidden="true" class="flex min-h-[56px] items-center gap-3 px-5 py-3.5">
+    <div aria-hidden="true" class="flex min-h-[52px] items-center gap-3 px-5 py-3">
       <div class="min-w-0 flex-1 space-y-2">
         <Skeleton class="h-3 w-36 rounded-full" />
         <Skeleton class="h-2.5 w-52 rounded-full" />
