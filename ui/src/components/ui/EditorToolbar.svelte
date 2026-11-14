@@ -145,7 +145,7 @@
 
 <!-- Compact labeled buttons for the table segment — text beats cryptic icons
      for structural ops. -->
-{#snippet tableBtn(label: string, title: string, action: () => void)}
+{#snippet tableBtn(label: string, sansLabel: string, title: string, action: () => void)}
   <button
     type="button"
     {title}
@@ -154,11 +154,13 @@
       action()
     }}
     class={cn(
-      'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg',
+      sans
+        ? 'flex h-7 items-center rounded-md px-2 font-sans text-xs font-medium text-muted transition-colors hover:bg-hover hover:text-fg'
+        : 'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg', // voice-ok: the mono branch, as it was
       focusGold,
     )}
   >
-    {label}
+    {sans ? sansLabel : label}
   </button>
 {/snippet}
 
@@ -223,11 +225,11 @@
     )}
     {#if s.table}
       <span class="mx-1 h-4 w-px bg-line-subtle"></span>
-      {@render tableBtn('+ row', 'Add row below', () => c().addRowAfter().run())}
-      {@render tableBtn('+ col', 'Add column right', () => c().addColumnAfter().run())}
-      {@render tableBtn('− row', 'Delete this row', () => c().deleteRow().run())}
-      {@render tableBtn('− col', 'Delete this column', () => c().deleteColumn().run())}
-      {@render tableBtn('header', 'Toggle header row', () => c().toggleHeaderRow().run())}
+      {@render tableBtn('+ row', 'Add row', 'Add row below', () => c().addRowAfter().run())}
+      {@render tableBtn('+ col', 'Add column', 'Add column right', () => c().addColumnAfter().run())}
+      {@render tableBtn('− row', 'Delete row', 'Delete this row', () => c().deleteRow().run())}
+      {@render tableBtn('− col', 'Delete column', 'Delete this column', () => c().deleteColumn().run())}
+      {@render tableBtn('header', 'Header row', 'Toggle header row', () => c().toggleHeaderRow().run())}
     {/if}
     {@render btn(ImageIcon, 'Insert image', false, () => {
       imgUrl = ''
@@ -247,7 +249,12 @@
         {/if}
       </span>
     {/if}
-    {#if onSubmit}
+    {#if onSubmit && sans}
+      <Button size="xs" class="ml-auto gap-1.5" title="Send (Ctrl+Enter)" onmousedown={(e) => e.preventDefault()} onclick={onSubmit}>
+        <SendHorizontal size={14} strokeWidth={2} />
+        Send
+      </Button>
+    {:else if onSubmit}
       <button
         type="button"
         title="Send (Ctrl+Enter)"
@@ -256,7 +263,7 @@
         class={cn(
           // Primary button (spec §8): gold fill, dark ground glyph/label, mono
           // uppercase, radius 6.
-          'ml-auto flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-surface transition-all hover:brightness-110',
+          'ml-auto flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-surface transition-all hover:brightness-110', // voice-ok: the mono branch, as it was
           focusGold,
         )}
       >

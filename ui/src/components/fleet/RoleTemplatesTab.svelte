@@ -151,7 +151,6 @@
   title="Roles"
   pending={list.pending}
   notice={list.notice}
-  listWidth="w-72"
   class="h-full min-h-[28rem]"
   onCreate={blank}
   createLabel="New role"

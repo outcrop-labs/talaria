@@ -35,7 +35,8 @@
      *  renders `<ContextMenu>` itself — this only forwards the event, so the
      *  menu implementation stays out of the component. */
     onRowMenu?: (e: MouseEvent, item: T) => void
-    /** Width of the picker column. */
+    /** Width of the picker column. Left out, it is 224px in the sans voice
+     *  and 256px in the mono voice. */
     listWidth?: string
     /** WHICH SURFACE THIS SITS ON, which is not decoration — Mercury's layers
      *  are what tell a reader one region is inside another.
@@ -131,7 +132,7 @@
     pending = false,
     notice = null,
     onRowMenu,
-    listWidth = 'w-64',
+    listWidth,
     surface = 'panel',
     class: className,
     onCreate,
@@ -156,7 +157,7 @@
      the two panes. -->
 {#snippet panes()}
   <!-- ── The picker ──────────────────────────────────────────────────────── -->
-  <div class={cn('flex shrink-0 flex-col border-r border-line', listWidth)}>
+  <div class={cn('flex shrink-0 flex-col border-r border-line', listWidth ?? (sans ? 'w-56' : 'w-64'))}>
     {#if title}
       <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
         <span class={sans ? 'font-sans text-[13px] font-medium leading-5 text-fg' : 'font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'}>{title}</span>

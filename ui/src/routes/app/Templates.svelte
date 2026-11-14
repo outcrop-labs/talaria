@@ -136,7 +136,6 @@
           onCreate={create}
           createLabel="New template"
           createPlaceholder={`Name of the ${tab} template`}
-          listWidth="w-56"
           class="h-full"
         >
           {#snippet row(t: Template)}

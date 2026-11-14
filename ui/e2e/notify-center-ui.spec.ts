@@ -300,7 +300,7 @@ test.describe('the matrix', () => {
       // and a kind's menu offers only the three channels beyond it.
       await expect(page.getByText('Everything is kept in your inbox')).toBeVisible()
       await page.locator('[data-matrix-row="dm"] [data-matrix-menu]').click()
-      await expect(page.getByRole('menuitem')).toHaveText([/Desktop/, /Push/, /Email/])
+      await expect(page.getByRole('menuitemcheckbox')).toHaveText([/Desktop/, /Push/, /Email/])
       await page.keyboard.press('Escape')
       await expect(page.getByRole('menu')).toHaveCount(0)
       await ctx.close()
@@ -321,7 +321,7 @@ test.describe('the matrix', () => {
     await expect(dm.locator('[data-matrix-menu]')).toContainText(/push/i)
     const saved = page.waitForResponse((r) => r.url().endsWith('/api/notifications') && r.request().method() === 'PATCH')
     await dm.locator('[data-matrix-menu]').click()
-    await page.getByRole('menuitem', { name: 'Push' }).click()
+    await page.getByRole('menuitemcheckbox', { name: 'Push' }).click()
     const res = await saved
     expect(res.status()).toBe(200)
     expect(JSON.parse(res.request().postData() ?? '{}')).toEqual({ channels: { dm: { push: false } } })
@@ -357,10 +357,10 @@ test.describe('the matrix', () => {
     expect(await rows.count()).toBe(payload.classes!.length)
     for (const row of await rows.all()) {
       await row.locator('[data-matrix-menu]').click()
-      const email = page.getByRole('menuitem', { name: 'Email' })
+      const email = page.getByRole('menuitemcheckbox', { name: 'Email' })
       await expect(email).toBeDisabled()
       await expect(email).toContainText('Off for this workspace')
-      await expect(page.getByRole('menuitem', { name: 'Push' })).toBeEnabled()
+      await expect(page.getByRole('menuitemcheckbox', { name: 'Push' })).toBeEnabled()
       await page.keyboard.press('Escape')
       await expect(page.getByRole('menu')).toHaveCount(0)
     }

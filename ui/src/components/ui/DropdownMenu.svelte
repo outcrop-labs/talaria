@@ -117,6 +117,9 @@
   }
 
   const entries = $derived(typeof items === 'function' ? (open ? items() : []) : items)
+  // In the sans voice a disabled item dims its label and marks, not the whole
+  // row: its hint says why it is off, so the hint stays at full strength.
+  const dimmed = (item: { disabled?: boolean }) => (sans && item.disabled ? 'opacity-50' : undefined)
 </script>
 
 {#snippet menuIcon(icon: MenuIcon)}
@@ -171,7 +174,8 @@
             {:else}
               <button
                 type="button"
-                role="menuitem"
+                role={sans && item.checked !== undefined ? 'menuitemcheckbox' : 'menuitem'}
+                aria-checked={sans ? item.checked : undefined}
                 disabled={item.disabled}
                 onclick={(e) => {
                   e.stopPropagation()
@@ -181,7 +185,7 @@
                 class={cn(
                   'flex w-full select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
                   item.disabled
-                    ? 'cursor-default text-muted opacity-50'
+                    ? cn('cursor-default text-muted', !sans && 'opacity-50')
                     : item.danger
                       ? 'text-danger hover:bg-danger/10'
                       : cn(sans ? 'hover:bg-hover' : 'dither-fill', item.checked === false ? 'text-muted' : 'text-fg'),
@@ -190,12 +194,12 @@
                 <!-- checked state: leading ✓ slot (kept when unchecked so rows
                     align); falls back to the icon slot otherwise. -->
                 {#if item.checked !== undefined}
-                  <span class="grid w-4 shrink-0 place-items-center text-accent">{item.checked ? '✓' : ''}</span>
+                  <span class={cn('grid w-4 shrink-0 place-items-center text-accent', dimmed(item))}>{item.checked ? '✓' : ''}</span>
                 {/if}
                 {#if item.icon}
-                  <span class="grid w-4 shrink-0 place-items-center text-muted">{@render menuIcon(item.icon)}</span>
+                  <span class={cn('grid w-4 shrink-0 place-items-center text-muted', dimmed(item))}>{@render menuIcon(item.icon)}</span>
                 {/if}
-                <span class="min-w-0 flex-1 truncate">{item.label}</span>
+                <span class={cn('min-w-0 flex-1 truncate', dimmed(item))}>{item.label}</span>
                 {#if item.hint}
                   <span class={sans ? 'shrink-0 font-sans text-xs text-muted' : 'shrink-0 font-mono text-[10px] text-ink-dim'}>{item.hint}</span>
                 {/if}
