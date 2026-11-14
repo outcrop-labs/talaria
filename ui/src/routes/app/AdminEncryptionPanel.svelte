@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import { useExplicitSave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -19,6 +20,10 @@
     algorithm: string
   }
 
+  // A new root key is typed and then committed with Rotate key, and the tool
+  // list under it has its own Save, so this tab's header never says every
+  // change saves by itself.
+  useExplicitSave()
   const qc = useQueryClient()
   const query = createQuery(() => ({
     queryKey: ['admin-encryption'],

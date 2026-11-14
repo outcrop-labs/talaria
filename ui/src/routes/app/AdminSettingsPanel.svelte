@@ -1,11 +1,11 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import SaveAction from '@/components/admin/SaveAction.svelte'
+  import NoticeRow from '@/components/admin/NoticeRow.svelte'
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSaveBar from '@/components/settings/SettingsSaveBar.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
@@ -34,7 +34,7 @@
       return
     }
     days = ''
-    autosave.flash()
+    autosave.flash('audit')
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }
 
@@ -69,11 +69,13 @@
         perUsdVal !== capVal(null, b.perAgent?.usd) ||
         Number(winVal) !== b.windowHours),
   )
-  const commitBudgets = async () => {
+  // The three rows go out in one write. The row that was left says it saved.
+  type BudgetRow = 'window' | 'org' | 'each'
+  const commitBudgets = async (row: BudgetRow) => {
     if (!budgetsValid || !budgetsDirty) return
-    await saveBudgets()
+    await saveBudgets(row)
   }
-  const saveBudgets = async () => {
+  const saveBudgets = async (row: BudgetRow) => {
     try {
       await putJson<{ ok: true }>('/api/admin/settings', {
         // The panel edits the two shared scopes; per-caller overrides live in
@@ -90,7 +92,7 @@
       return
     }
     win = orgTokens = orgUsd = perTokens = perUsd = null
-    autosave.flash()
+    autosave.flash(row)
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }
 
@@ -106,7 +108,7 @@
       return
     }
     floor = null
-    autosave.flash()
+    autosave.flash('schedule')
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
   }
 
@@ -178,7 +180,7 @@
         {/each}
       {/snippet}
       {#snippet children(data)}
-        <SettingsRow label="Spending window" hint="How many hours of spend each limit counts.">
+        <SettingsRow label="Spending window" hint="How many hours of spend each limit counts." saved={autosave.saved('window')}>
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -187,14 +189,14 @@
               aria-label="Spending window in hours"
               value={winVal}
               oninput={(e) => (win = e.currentTarget.value)}
-              onblur={() => void commitBudgets()}
+              onblur={() => void commitBudgets('window')}
               onkeydown={inlineEditKeys(() => (win = null))}
               class="w-[100px]"
             />
             {@render unit('hours')}
           </span>
         </SettingsRow>
-        <SettingsRow label="Whole organization" hint="In tokens, in dollars, or both, and empty means no limit.">
+        <SettingsRow label="Whole organization" hint="In tokens, in dollars, or both, and empty means no limit." saved={autosave.saved('org')}>
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -204,7 +206,7 @@
               placeholder="No limit"
               value={orgTokensVal}
               oninput={(e) => (orgTokens = e.currentTarget.value)}
-              onblur={() => void commitBudgets()}
+              onblur={() => void commitBudgets('org')}
               onkeydown={inlineEditKeys(() => (orgTokens = null))}
               class="w-[136px]"
             />
@@ -219,14 +221,14 @@
               placeholder="No limit"
               value={orgUsdVal}
               oninput={(e) => (orgUsd = e.currentTarget.value)}
-              onblur={() => void commitBudgets()}
+              onblur={() => void commitBudgets('org')}
               onkeydown={inlineEditKeys(() => (orgUsd = null))}
               class="w-[100px]"
             />
             {@render unit('dollars')}
           </span>
         </SettingsRow>
-        <SettingsRow label="Each agent or key" hint="The same limits, counted for one agent or API key at a time.">
+        <SettingsRow label="Each agent or key" hint="The same limits, counted for one agent or API key at a time." saved={autosave.saved('each')}>
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -236,7 +238,7 @@
               placeholder="No limit"
               value={perTokensVal}
               oninput={(e) => (perTokens = e.currentTarget.value)}
-              onblur={() => void commitBudgets()}
+              onblur={() => void commitBudgets('each')}
               onkeydown={inlineEditKeys(() => (perTokens = null))}
               class="w-[136px]"
             />
@@ -251,7 +253,7 @@
               placeholder="No limit"
               value={perUsdVal}
               oninput={(e) => (perUsd = e.currentTarget.value)}
-              onblur={() => void commitBudgets()}
+              onblur={() => void commitBudgets('each')}
               onkeydown={inlineEditKeys(() => (perUsd = null))}
               class="w-[100px]"
             />
@@ -261,6 +263,7 @@
         <SettingsRow
           label="Fastest schedule"
           hint="The shortest gap allowed between an agent's scheduled runs. 0 means no limit."
+          saved={autosave.saved('schedule')}
         >
           <span class="flex items-center gap-2">
             <Input
@@ -277,7 +280,7 @@
             {@render unit('minutes')}
           </span>
         </SettingsRow>
-        <SettingsRow label="Audit log" hint="How many days of history to keep. 0 keeps it forever.">
+        <SettingsRow label="Audit log" hint="How many days of history to keep. 0 keeps it forever." saved={autosave.saved('audit')}>
           <span class="flex items-center gap-2">
             <Input
               size="sm"
@@ -322,21 +325,20 @@
           />
         {/each}
       </div>
-      <div class="flex items-center gap-3 px-5 py-3">
-        <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
-          {#if toolsetFlash.saved}
-            <span class="text-success">Saved. Agents pick it up on their next turn.</span>
-          {:else if envClosed.length}
-            Kept off by the server environment: <span class="font-mono text-xs">{envClosed.join(', ')}</span>
-          {:else}
-            Saving changes what every agent can use, so the boxes save together.
-          {/if}
-        </span>
-        {#if floorDirty}
-          <Button size="sm" variant="ghost" disabled={floorSaving} onclick={() => (floorEdit = null)}>Reset</Button>
-        {/if}
-        <SaveAction dirty={floorDirty} busy={floorSaving} onclick={() => void saveToolsetFloor()}>Save tools</SaveAction>
-      </div>
+      {#if envClosed.length}
+        <NoticeRow status="idle">
+          Kept off by the server environment: <span class="font-mono text-xs text-fg">{envClosed.join(', ')}</span>
+        </NoticeRow>
+      {/if}
+      <SettingsSaveBar
+        label="Save tools"
+        reason="Saving changes what every agent can use from its next turn."
+        dirty={floorDirty}
+        saving={floorSaving}
+        saved={toolsetFlash.saved}
+        onSave={() => void saveToolsetFloor()}
+        onDiscard={() => (floorEdit = null)}
+      />
     </SettingsGroup>
   </SettingsSection>
 {/if}

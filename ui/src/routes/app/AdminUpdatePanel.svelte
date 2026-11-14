@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import RowStatus from '@/components/admin/RowStatus.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -50,6 +51,7 @@
   }
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   // `kicked` is local: it remembers that THIS browser pressed Update, so the
   // polling keeps going through the cutover itself — the edge keeps serving,
   // but the drain is a real (brief) window of failed requests, and the query
@@ -202,6 +204,7 @@
     error = null
     try {
       await putJson<{ autoUpdate: boolean }>('/api/admin/updates', { autoUpdate: on })
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     }
@@ -266,10 +269,14 @@
 <!-- Declared out here because the rows below sit where `status` is the update
      state, and a `status` snippet inside them would shadow it. -->
 {#snippet versionStatus()}
-  {#if status?.migrated && status.available && !upToDate}
+  {#if busy === 'check'}
+    <RowStatus status="idle">Checking</RowStatus>
+  {:else if status?.migrated && status.available && !upToDate}
     <RowStatus status="warn">Update available</RowStatus>
   {:else if status?.migrated && upToDate}
     <RowStatus status="ok">Up to date</RowStatus>
+  {:else if status?.migrated}
+    <RowStatus status="idle">Not checked</RowStatus>
   {/if}
 {/snippet}
 {#snippet deployKeyStatus()}
@@ -330,7 +337,7 @@
                        they always have until an admin adopts the update engine. -->
                   This install is still updated from the server. Take over to update it from here.
                 {:else if upToDate}
-                  You are up to date.
+                  Nothing newer is out.
                 {:else if status.available}
                   Version <span class="font-mono text-xs text-fg">{status.available.version}</span> is ready to install.
                 {:else}
@@ -348,16 +355,15 @@
                 </Button>
                 <SettingsRowMenu label="More update actions" items={[checkItem('Check again'), ...rollbackItems]} />
               {:else}
-                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void check()}>
-                  {busy === 'check' ? 'Checking' : upToDate ? 'Check again' : 'Check for updates'}
-                </Button>
-                {#if rollbackItems.length}<SettingsRowMenu label="More update actions" items={rollbackItems} />{/if}
+                <!-- Nothing to install, so checking is a menu item and the
+                     status says where things stand. -->
+                <SettingsRowMenu label="More update actions" items={[checkItem(upToDate ? 'Check again' : 'Check for updates'), ...rollbackItems]} />
               {/if}
             </SettingsRow>
           {/if}
 
           {#if status.mode === 'image' && status.migrated && !running}
-            <SettingsRow label="Update automatically" hint="Checks every few hours and installs updates on its own.">
+            <SettingsRow label="Update automatically" hint="Checks every few hours and installs updates on its own." saved={autosave.saved()}>
               <Toggle title="Update automatically" checked={status.autoUpdate} onChange={(v) => void setAuto(v)} />
             </SettingsRow>
           {/if}
@@ -369,18 +375,12 @@
               info="The script sends it in the x-talaria-key header. Only a hash is stored, so the key is shown once. Generate a new one if you lose it."
               status={deployKeyStatus}
             >
-              <!-- A key that is set needs nothing, so replacing it is a menu
-                   item. One that is not set is the row's one button. -->
-              {#if status.machineKeySet}
-                <SettingsRowMenu
-                  label="Actions for the deploy key"
-                  items={[{ label: 'Regenerate key', disabled: busy !== null, onSelect: () => void mint() }]}
-                />
-              {:else}
-                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void mint()}>
-                  {busy === 'mint' ? 'Generating' : 'Generate'}
-                </Button>
-              {/if}
+              <!-- A deploy key is optional, so making one is a menu item
+                   whether or not one is set. -->
+              <SettingsRowMenu
+                label="Actions for the deploy key"
+                items={[{ label: status.machineKeySet ? 'Regenerate key' : 'Generate key', disabled: busy !== null, onSelect: () => void mint() }]}
+              />
             </SettingsRow>
             {#if mintedKey}
               <SettingsRow label="Copy your deploy key now" hint="It will not be shown again." stacked>
