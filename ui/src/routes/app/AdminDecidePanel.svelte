@@ -8,6 +8,7 @@
   import { secretHint } from '@/components/admin/secret-hint'
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -393,17 +394,12 @@
     info="A decision that is off keeps running its existing code, and the model is asked the same question with nobody listening. Agreement is how often the two matched, so you can turn a decision on when its own numbers say so."
   >
     <SettingsGroup>
-      <div class="flex h-9 items-center gap-x-6 px-5 font-sans text-xs font-medium leading-4 text-muted">
-        <span class="min-w-0 flex-1">Decision</span>
-        <div class="flex items-center gap-3">
-          <span class={NUM}>Agreement</span>
-          <span class={NUM}>Threshold</span>
-          <span class={STATE}>Status</span>
-          <span class={SWITCH}></span>
-          <!-- The kebab cell under it is pulled out by its own inset, so this spacer is too. -->
-          <span class="-mr-2 w-8 shrink-0"></span>
-        </div>
-      </div>
+      <SettingsHeaderRow label="Decision" menu class="h-9">
+        <span class={NUM}>Agreement</span>
+        <span class={NUM}>Threshold</span>
+        <span class={STATE}>Status</span>
+        <span class={SWITCH}></span>
+      </SettingsHeaderRow>
       {#each allSites as s (s.id)}
         {@const m = shadowFor(s.id)}
         {@const st = siteStatus(s, m)}

@@ -3,6 +3,7 @@
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -106,8 +107,6 @@
   const ROLE = 'w-[7.5rem] shrink-0'
   const ACCESS = 'w-[15rem] shrink-0'
   const SEEN = 'w-[4.5rem] shrink-0'
-  // The kebab cell under it is pulled out by its own inset, so the caption row's spacer is too.
-  const MENU = '-mr-2 w-8 shrink-0'
 </script>
 
 <SettingsSection
@@ -115,15 +114,11 @@
   info="Admins can do everything. For a member, pick which agents and pages they can reach, and change any permission that should differ from the member defaults below."
 >
   <SettingsGroup>
-    <div class="flex h-10 items-center gap-x-6 px-5 font-sans text-xs font-medium leading-4 text-muted">
-      <span class="min-w-0 flex-1">Name</span>
-      <div class="flex items-center gap-3">
-        <span class={ROLE}>Role</span>
-        <span class={ACCESS}>Access</span>
-        <span class={SEEN}>Last seen</span>
-        <span class={MENU}></span>
-      </div>
-    </div>
+    <SettingsHeaderRow label="Name" menu>
+      <span class={ROLE}>Role</span>
+      <span class={ACCESS}>Access</span>
+      <span class={SEEN}>Last seen</span>
+    </SettingsHeaderRow>
     {#if error}
       <p transition:slide={{ duration: 150 }} class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{error}</p>
     {/if}
