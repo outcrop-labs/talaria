@@ -94,7 +94,7 @@
   aria-expanded={onclick ? expanded : undefined}
   data-settings-row={stacked ? 'stacked' : apart ? 'apart' : ''}
   class={cn(
-    'flex min-h-[60px] px-5 py-4',
+    'flex min-h-[56px] px-5 py-3.5',
     // Not stacked still wraps: on a phone a wide control drops under its label.
     stacked ? 'flex-col gap-3' : 'flex-wrap items-center gap-x-6 gap-y-3',
     // The ring is forced inside: the app's global focus rule is unlayered, so it beats a plain utility, and a ring
