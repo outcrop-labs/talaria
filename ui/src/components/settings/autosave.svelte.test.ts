@@ -23,10 +23,11 @@ async function page(order: string[], fields: Record<string, number>, first: stri
       $effect(() => {
         if (tab !== name) return
         // A root, like a component: its body runs once and tracks nothing for the block around it.
+        const count = fields[name] ?? 0
         return $effect.root(() => {
-          for (let i = 0; i < fields[name]; i++) cue.channel.register()
+          for (let i = 0; i < count; i++) cue.channel.register()
           return () => {
-            for (let i = 0; i < fields[name]; i++) cue.channel.release()
+            for (let i = 0; i < count; i++) cue.channel.release()
           }
         })
       })
