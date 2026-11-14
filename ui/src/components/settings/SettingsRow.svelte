@@ -218,14 +218,17 @@
       }
     }
   }
-  /* A row that expands and names its action ends in the button alone: the
-     row still takes the click, and its menu says "Show details". The kebab
-     is then the last thing drawn, so it takes the inset a last cell has. */
+  /* A row that names its action ends in the button alone, whether it also
+     expands or opens: the row still takes the click, and its menu says "Show
+     details" or "Manage". The kebab is then the last thing drawn before the
+     button, so it takes the inset a last cell has. */
   :global([data-settings-row]:has(> [data-row-controls] [data-row-action]) > [data-row-controls]) {
-    > :global([data-row-expander]) {
+    > :global([data-row-expander]),
+    > :global([data-row-chevron]) {
       display: none;
     }
-    > :global([data-row-menu]:has(+ [data-row-expander])) {
+    > :global([data-row-menu]:has(+ [data-row-expander])),
+    > :global([data-row-menu]:has(+ [data-row-chevron])) {
       margin-right: -0.5rem;
     }
     /* The named action is what the row ends in, so it sits at the row's edge

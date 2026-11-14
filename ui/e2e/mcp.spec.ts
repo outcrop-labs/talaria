@@ -197,8 +197,8 @@ test('3 · a server that answers 401 asks for its key, and connects once it has 
   const creds = page.getByRole('dialog').filter({ hasText: `Credentials for ${STUB.key.title}` })
   if (!MARKETPLACE) {
     // No marketplace to open the editor on its own: the row says what the
-    // server needs and ends in its chevron, and its menu holds the way in
-    // under its own name.
+    // server needs and ends in a button named for it, and its menu holds the
+    // same way in under the same name.
     const card = registryCard(page, STUB.key.slug)
     await expect(card.getByText('Needs credentials', { exact: true })).toBeVisible()
     await card.getByRole('button', { name: `Actions for ${STUB.key.title}`, exact: true }).click()

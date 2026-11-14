@@ -1,6 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -84,33 +85,37 @@
 
   // The one thing the row asks for, when its status asks for something. A
   // server the health pass does not ask (the deployment's own, a stdio
-  // package) has no "check again" to offer. The row opens, so it shows no
-  // button for it: `name` is the kebab's item and the Manage dialog's action.
-  type Fix = { name: string; title?: string; run: () => void; inManage?: true }
+  // package) has no "check again" to offer. `name` is the kebab's item and
+  // the Manage dialog's action, and `short` is the same action on the row's
+  // button, where the row's own title already says whose it is.
+  type Fix = { name: string; short: string; title?: string; run: () => void; inManage?: true }
   const fix = $derived.by((): Fix | null => {
     if (!s.enabled) return null
     if (verdict.action === 'connect') {
       return verdict.kind === 'reconnect'
         ? {
             name: 'Reconnect org account',
+            short: 'Reconnect',
             title: 'The provider refused to refresh the org account. Sign in again so agents can use it',
             run: () => void connectPopup(s.id, 'org'),
           }
         : {
             name: 'Connect org account',
+            short: 'Connect',
             title: 'This server signs in with OAuth. Connect the org account so agents can use it',
             run: () => void connectPopup(s.id, 'org'),
           }
     }
     if (verdict.action === 'set-credentials') {
-      return { name: 'Set credentials', title: verdict.detail ?? undefined, run: () => (credentialsOpen = true) }
+      return { name: 'Set credentials', short: 'Set credentials', title: verdict.detail ?? undefined, run: () => (credentialsOpen = true) }
     }
     if (verdict.action === 'setup-oauth-app' && s.oauthMeta) {
-      return { name: 'Set up OAuth app', title: verdict.detail ?? undefined, run: () => (oauthOpen = true) }
+      return { name: 'Set up OAuth app', short: 'Set up', title: verdict.detail ?? undefined, run: () => (oauthOpen = true) }
     }
     if (healthChecked(s) && (verdict.kind === 'unreachable' || verdict.kind === 'error' || verdict.kind === 'untested')) {
       return {
         name: 'Check now',
+        short: 'Check now',
         title: 'Ask the server again now: the handshake, its tool list, and whether the credentials still work',
         run: () => ask({ refreshTools: true }),
         inManage: true,
@@ -257,6 +262,9 @@
       </span>
     {/snippet}
 
+    {#if fix}
+      <SettingsRowAction label={`${fix.name}: ${s.label}`} title={fix.title} disabled={checking} onclick={fix.run}>{fix.short}</SettingsRowAction>
+    {/if}
     <SettingsRowMenu label={`Actions for ${s.label}`} items={menu} />
   </SettingsRow>
   {#if error}<div class="px-5 pb-4 font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
