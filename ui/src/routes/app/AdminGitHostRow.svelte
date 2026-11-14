@@ -9,7 +9,6 @@
   import RowStatus from '@/components/admin/RowStatus.svelte'
   import type { Fact } from '@/components/admin/facts'
   import Button from '@/components/ui/Button.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -127,6 +126,8 @@
   const using = $derived(inUseSummary(host))
   // The one thing worth a second clause on the row: why it is failing, or who
   // the connection acts as.
+  // The kind is a fact every host has, so it is quiet text, and left out where the name already says it.
+  const kindSays = $derived(current.kindLabel.toLowerCase() !== current.name.trim().toLowerCase())
   const detail = $derived(live.isError ? errorMessage(live.error) : (status?.error ?? status?.account ?? null))
   const conn = $derived(hostState(live.isPending ? 'pending' : live.isError ? 'failed' : 'ok', status))
   // A GitHub host is connected in its own dialog. A Forgejo host's token is
@@ -169,7 +170,9 @@
     {#snippet lead()}
       <McpServerMark title={current.name} domain={markDomain} />
     {/snippet}
-    {#snippet meta()}<Chip>{current.kindLabel}</Chip>{/snippet}
+    {#snippet meta()}
+      {#if kindSays}<span class="shrink-0 font-sans text-[13px] font-normal leading-5 text-muted">{current.kindLabel}</span>{/if}
+    {/snippet}
     {#snippet hint()}
       <span class="font-mono text-xs">{current.baseUrl}</span>{#if detail}{' · '}{detail}{/if}
     {/snippet}

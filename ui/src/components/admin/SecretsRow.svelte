@@ -64,7 +64,7 @@
   {/snippet}
   {#snippet meta()}
     {#if row.owner}<span class="min-w-0 truncate font-sans text-[13px] leading-5 text-muted">{row.owner}</span>{/if}
-    {#if showGroup}<Chip>{GROUP_LABELS[row.group]}</Chip>{/if}
+    {#if showGroup}<span class="shrink-0 font-sans text-[13px] font-normal leading-5 text-muted">{GROUP_LABELS[row.group]}</span>{/if}
     {#if row.expiresAt}
       <Chip tone="warn" title={when(row.expiresAt)}>
         {new Date(row.expiresAt).getTime() <= Date.now() ? 'Expired' : `Expires ${new Date(row.expiresAt).toLocaleDateString()}`}
