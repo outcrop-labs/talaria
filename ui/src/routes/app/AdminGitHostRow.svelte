@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { GitBranch } from '@lucide/svelte'
   import { publicIconDomain } from '@/lib/icon-domain'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
@@ -166,15 +165,7 @@
 <div data-testid="git-host">
   <SettingsRow label={current.name} onOpen={edit} openLabel={`Edit ${current.name}`}>
     {#snippet lead()}
-      {#if markDomain}
-        <!-- GitHub's mark is one black shape, which the dark theme's tile would
-             swallow. GitHub publishes the same mark in white, so it is inverted there. -->
-        <span class={current.kind === 'github' ? "[[data-theme='mercury']_&_img]:invert" : undefined}>
-          <McpServerMark title={current.name} domain={markDomain} />
-        </span>
-      {:else}
-        <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-raised text-muted"><GitBranch size={16} /></span>
-      {/if}
+      <McpServerMark title={current.name} domain={markDomain} />
     {/snippet}
     {#snippet meta()}<Chip>{current.kindLabel}</Chip>{/snippet}
     {#snippet hint()}

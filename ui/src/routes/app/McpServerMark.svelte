@@ -36,9 +36,6 @@
   const miss = () => {
     if (src) failed = [...failed, src]
   }
-  // The plate waits for the mark: a host that turns out to have none must not flash one.
-  let loaded = $state<string | null>(null)
-
   // The agent dialog draws this in comms too, where the voice is mono: that
   // branch is the mark as it was.
   const sans = useUiVoice() === 'sans'
@@ -47,13 +44,14 @@
 
 {#if sans}
   <!-- The settings area's entity tile, the one `SettingsRow` draws for an icon.
-       A server with no mark gets its initial in the primary ink, so the tile
-       reads as a letter someone set there and never as an image that failed. -->
-  <span class={['grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-raised', src && loaded === src && 'plate']}>
+       A mark and an initial share it, so a list that has both reads as one
+       set, and the initial reads as a letter someone set there and never as
+       an image that failed. -->
+  <span class="plate grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-raised text-fg">
     {#if src}
-      <img {src} alt="" width="20" height="20" loading="lazy" onload={() => (loaded = src)} onerror={miss} class="h-5 w-5 object-contain" />
+      <img {src} alt="" width="20" height="20" loading="lazy" onerror={miss} class="h-5 w-5 object-contain" />
     {:else}
-      <span aria-hidden="true" class="font-sans text-sm font-medium leading-none text-fg">{monogram}</span>
+      <span aria-hidden="true" class="font-sans text-sm font-medium leading-none">{monogram}</span>
     {/if}
   </span>
 {:else if !src}
@@ -81,9 +79,11 @@
 
 <style>
   /* Service marks are drawn for a light page: GitHub's is black on nothing.
-     In the dark theme a mark sits on a light plate so it can be seen. */
+     In the dark theme the tile is a light plate so a mark can be seen, and an
+     initial takes the same plate in the ground's ink. */
   :global([data-theme='mercury']) .plate {
     border-color: transparent;
     background: color-mix(in srgb, var(--theme-text) 90%, var(--theme-panel));
+    color: var(--theme-bg);
   }
 </style>
