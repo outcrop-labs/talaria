@@ -161,9 +161,10 @@
 
   {#snippet detail()}
     {#if draft}
-      <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-6">
-        <span class="min-w-0 truncate font-sans text-[15px] font-semibold leading-5 text-fg">{draft.name || 'New role'}</span>
-        <Chip>{stored ? 'Your organization' : selected ? 'Common role' : 'Not saved yet'}</Chip>
+      <div class="flex min-h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-2">
+        <span class="line-clamp-2 min-w-0 font-sans text-[15px] font-semibold leading-5 text-fg" title={draft.name || undefined}>{draft.name || 'New role'}</span>
+        <!-- The list already says whose a stored role is. Only a role that is nowhere yet is marked. -->
+        {#if !selected}<Chip class="shrink-0">Not saved yet</Chip>{/if}
         {#if stored}
           <DangerLink onClick={() => void remove(stored.slug)} disabled={busy} class="ml-auto shrink-0">Delete role</DangerLink>
         {/if}
