@@ -99,20 +99,27 @@ instead of styling its own panels:
   with nothing in its menu passes `items={[]}` and keeps the cell, so the
   column holds down the list.
 - A row that opens the thing it is about takes `onOpen`. The whole row lights
-  on hover and takes the click, and it can still hold a status, one fix action
-  and the kebab. Tab reaches the row first, then its controls. The row ends
-  in a chevron, after the kebab. In a group where only some rows open, the
-  rest hold the chevron's cell empty, so the kebabs stay in one column.
-- A row that opens shows one trailing control at rest, its chevron. Its kebab
-  appears when the row is hovered, when focus is anywhere inside the row and
-  while its menu is open. It keeps its cell, its tab stop and its name, and a
-  device that cannot hover always shows it. A row that does not open keeps
-  its kebab visible, and so does an agent card, which has no chevron.
-- A row whose state needs a person shows one `SettingsRowFix` before its
-  kebab: the word "Fix" and a chevron, never a boxed button. The row's status
-  says what is wrong, `label` names what Fix does ("Fix QuickBooks Online: set
-  credentials"), and the kebab holds the same action under its own name. The
-  alert rows on the overview and in Observability use the same control.
+  on hover and takes the click, and it can still hold a status and the kebab.
+  Tab reaches the row first, then its controls. The row ends in a chevron,
+  after the kebab. In a group where only some rows open, the rest hold the
+  chevron's cell empty, so the kebabs stay in one column.
+- A row ends in one thing at rest, besides its own value control (a switch, a
+  select, a field). A row that opens ends in its chevron: it shows its status
+  and no action, and what its state needs is in its kebab and behind the row.
+  A row that does not open and needs one action shows it as a
+  `SettingsRowAction`, a small secondary button named for what it does
+  ("Connect", "Reconnect", "Verify", "Set up"), the name its menu or dialog
+  uses. No row says "Fix". The row's status says what is wrong.
+- The kebab of a row that opens, or that holds a `SettingsRowAction`, appears
+  when the row is hovered, when focus is anywhere inside the row and while its
+  menu is open. It keeps its cell, its tab stop and its name, and a device
+  that cannot hover always shows it. A row whose only control is its kebab
+  keeps it visible, and so does an agent card, which has no chevron.
+- A row that expands and names its action (an app waiting for approval) ends
+  in the button alone. `SettingsRow` leaves the disclosure chevron out, the
+  row still takes the click, and its menu says "Show details".
+- The alert rows on the overview and in Observability end in `SettingsRowFix`:
+  "Fix" or "Review" and a chevron, read as one link. The row is the button.
 - A group lines its rows up: the right side is one column, as wide as the
   widest row needs. Put the state of a thing in `status`, not among the
   controls, and down a list every status starts at the same place and every
@@ -131,14 +138,16 @@ instead of styling its own panels:
   "Saved" in the same box. On a phone the cue takes its own line under the
   blurb. A component that only sometimes shows such controls passes a
   condition: `useAutosave(() => canEdit)`.
-- A group that saves with a button ends in `SettingsSaveBar`: one sentence on
-  why it needs a Save, and no button while nothing changed. When a field
-  changes, the gold button named for what it saves ("Save identity") appears
-  with Discard beside it, and the bar keeps its height. A record editor's
-  footer does the same, and a key field's `SaveAction` waits in a cell ahead
-  of the field. No Save is ever a disabled outline. A dialog's footer keeps
-  its primary visible and disabled until valid. While a save bar is mounted
-  the header shows no cue, so the two are never on screen together. A control on that page that still
+- A group that saves with a button ends in `SettingsSaveBar`, which is not
+  there while nothing changed. When a field changes it slides in as the
+  group's footer: one sentence on why the group needs a Save, Discard, and
+  the gold button named for what it saves ("Save identity"). When the save
+  lands it says "Saved" for a moment and goes. A record editor's footer keeps
+  its sentence and shows no button while clean, and a key field's
+  `SaveAction` waits in a cell ahead of the field. No Save is ever a disabled
+  outline. A dialog's footer keeps its primary visible and disabled until
+  valid. While a `SettingsSaveBar` is mounted, shown or not, the header shows
+  no cue, so the two are never on screen together. A control on that page that still
   saves on change passes `saved={autosave.saved(key)}` to its `SettingsRow`,
   which shows a check and "Saved" beside the control for two seconds. The
   same holds in a dialog, where the header is out of sight.
@@ -162,6 +171,9 @@ instead of styling its own panels:
 - A dialog step that shows something once (a new key) is `dismissible={false}`
   on `Modal`: Escape, a click outside and the close button do nothing, and it
   leaves by its own gold Done.
+- In the sans voice `Modal`'s scrim is 75% and takes the colour out of the
+  page behind it, so the page's gold primary does not read through beside a
+  wide dialog.
 - A dialog's footer holds its buttons: Cancel then the one primary on the
   right, a `DangerLink` on the left. A dialog that only shows or saves as it
   goes ends in an outline Done. A page's primary is a label with no icon.
@@ -201,8 +213,9 @@ knob. Off is a neutral track with a muted knob.
 
 A brand mark and the fallback share one tile: 32px, `rounded-md`, the same
 border, and in dark the same light plate (`McpServerMark`). A server with no
-brand mark shows the `Server` glyph, the same for every such server, never
-its initial. The rich-text
+brand mark shows two letters of its name on that plate (`serverMonogram`), set
+as an avatar's initials are, never one letter and never a shared glyph. A
+brand is never guessed from a name. The rich-text
 toolbar is short in the sans voice: bold, italic, the two lists, link, a
 "Text style" menu and "More" for everything else.
 
