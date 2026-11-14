@@ -35,6 +35,13 @@ describe('iconDomains', () => {
     expect(iconDomains({})).toEqual([])
   })
 
+  it('reads a bare host as it reads an address', () => {
+    expect(iconDomains({ host: 'api.githubcopilot.com' })).toEqual(iconDomains({ url: 'https://api.githubcopilot.com/mcp/' }))
+    expect(iconDomains({ host: 'mcp.notion.com' })).toEqual(['notion.com'])
+    expect(iconDomains({ host: 'samsara-mcp.internal.larkspurfreight.co' })).toEqual(['samsara-mcp.internal.larkspurfreight.co', 'larkspurfreight.co'])
+    expect(iconDomains({ host: null })).toEqual([])
+  })
+
   it('still asks for a publisher when the address has no host', () => {
     expect(iconDomains({ publisher: 'postgresql.org', url: 'talaria-pkg://warehouse' })).toEqual(['postgresql.org'])
   })

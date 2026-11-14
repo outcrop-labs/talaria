@@ -7,6 +7,8 @@ export interface IconSource {
   publisher?: string | null
   /** The server's address. A pseudo-scheme (`talaria-pkg://x`) has no host. */
   url?: string | null
+  /** The address's host, for a row that carries that and not the address. */
+  host?: string | null
 }
 
 /** API hosts whose mark lives on the brand's own domain. The api keeps the
@@ -46,7 +48,7 @@ export function addressHost(url: string | null | undefined): string | null {
 export function iconDomains(source: IconSource): string[] {
   // `mcp.` names the protocol, not the product: mcp.hubspot.com serves a 16px
   // favicon where hubspot.com serves the brand's full mark.
-  const host = publicIconDomain(addressHost(source.url))?.replace(/^mcp\./, '') ?? null
+  const host = publicIconDomain(source.host ?? addressHost(source.url))?.replace(/^mcp\./, '') ?? null
   const parent = host ? registrableDomain(host) : null
   const publisher = publicIconDomain(source.publisher) ?? (parent ? (BRAND_HOME[parent] ?? null) : null)
   return [...new Set([publisher, host, parent].filter((d): d is string => !!d))]

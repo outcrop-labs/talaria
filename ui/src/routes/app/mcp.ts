@@ -1,6 +1,7 @@
 // Shared types + helpers for the MCP page (Mcp.svelte + its cards/modals) and
 // the agent settings MCP tab, which browses and assigns the same registry.
 import { createQuery } from '@tanstack/svelte-query'
+import { BookOpen, FileBox, LayoutGrid } from '@lucide/svelte'
 import { errorMessage, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
 import { iconDomains } from '@/lib/mcp-icon'
 export { isInternalServer } from '@/lib/mcp-servers'
@@ -144,6 +145,13 @@ export function useMcpServers(enabled: () => boolean = () => true) {
  *  for the Tools page and for the same server's row on Connections. */
 export const serverMarkDomains = (s: Pick<McpServerRow, 'url' | 'oauthMeta'>): string[] =>
   iconDomains({ publisher: s.oauthMeta?.guide?.domain, url: s.url })
+
+const OWN_MARKS = { boards: LayoutGrid, knowledge: BookOpen, files: FileBox } as const
+
+/** A built-in server is a part of Talaria, so its mark is that part's own
+ *  icon from the app's navigation. Null for any other server. */
+export const ownMark = (s: { builtin: boolean; name: string }) =>
+  s.builtin && s.name in OWN_MARKS ? OWN_MARKS[s.name as keyof typeof OWN_MARKS] : null
 
 export async function patchServer(id: string, body: unknown): Promise<string | null> {
   try {

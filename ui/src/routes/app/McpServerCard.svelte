@@ -1,6 +1,5 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { BookOpen, FileBox, LayoutGrid } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -22,6 +21,7 @@
     isInternalServer,
     patchServer,
     serverDomain,
+    ownMark,
     serverMarkDomains,
     serverStatus,
     staleAssignments,
@@ -60,9 +60,7 @@
   const domain = $derived(serverDomain(s.url))
   // The provider an OAuth server signs in with is the one publisher domain a
   // registry row carries (the marketplace entry's own is not stored).
-  // A built-in server is a part of Talaria, so its mark is that part's own icon from the app's navigation.
-  const OWN_MARKS = { boards: LayoutGrid, knowledge: BookOpen, files: FileBox } as const
-  const OwnMark = $derived(s.builtin && s.name in OWN_MARKS ? OWN_MARKS[s.name as keyof typeof OWN_MARKS] : null)
+  const OwnMark = $derived(ownMark(s))
   const markDomains = $derived(serverMarkDomains(s))
   // The Workbench is granted by each agent's Developer Agent switch, not from
   // here. The api refuses assignment and access rows for it.

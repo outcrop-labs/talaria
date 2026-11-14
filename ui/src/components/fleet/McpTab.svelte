@@ -17,15 +17,17 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
   import { getJson, postJson } from '@/lib/fetch-json'
+  import { iconDomains } from '@/lib/mcp-icon'
   import type { AgentDef } from '@/lib/fleet-defs'
   import { listStagger } from '@/lib/motion'
   import { pushToast, toastError } from '@/lib/toast.svelte'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { noteStillApplying } from '@/routes/app/agents.svelte'
   import { p } from '@/router'
   import McpAddServerModal from '@/routes/app/McpAddServerModal.svelte'
   import McpMarketplaceModal from '@/routes/app/McpMarketplaceModal.svelte'
   import McpServerMark from '@/routes/app/McpServerMark.svelte'
-  import { ALL_TOOLS, withoutMissing, type ProbeRow } from '@/routes/app/mcp'
+  import { ALL_TOOLS, ownMark, withoutMissing, type ProbeRow } from '@/routes/app/mcp'
   import ToolsetsControl from './ToolsetsControl.svelte'
 
   /** THIS AGENT'S MCP SERVERS — a view of the org registry scoped to one
@@ -173,6 +175,11 @@
     s.authMode === 'per-user' ? 'Owner must connect' : s.probe?.state === 'reconnect' ? 'Reconnect needed' : 'Not connected'
   const probeLabel = (state: string) =>
     state === 'auth-required' ? 'Needs credentials' : state === 'reconnect' ? 'Reconnect needed' : state.charAt(0).toUpperCase() + state.slice(1)
+  // Where a server's mark lives, by the Tools page's rule, from the address
+  // host this row carries. Comms draws this list in the mono voice, which
+  // asks for the host as it always has.
+  const sans = useUiVoice() === 'sans'
+  const markDomains = (s: AgentServer) => (sans ? iconDomains({ host: s.domain }) : s.domain)
   const toolCount = (s: AgentServer) =>
     s.tools.length === 0
       ? 'No tools discovered yet'
@@ -183,11 +190,16 @@
 
 {#snippet serverRow(s: AgentServer)}
   {@const via = s.via && !alwaysOn(s) ? VIA[s.via] : undefined}
+  {@const OwnMark = ownMark(s)}
   {@const toolOptions = s.tools.map((t) => ({ value: t.name, label: t.name }))}
   {@const narrowable = canManage && s.carried && (s.assigned || s.allAgents) && !s.workbench && s.tools.length > 0}
   {@const about = [s.description, narrowable ? null : toolCount(s)].filter(Boolean).join(' · ')}
   <div class="flex min-h-[52px] items-center gap-3 px-5 py-3">
-    <McpServerMark title={s.label} domain={s.domain} size={32} />
+    {#if OwnMark}
+      <McpServerMark title={s.label} size={32}><OwnMark size={16} /></McpServerMark>
+    {:else}
+      <McpServerMark title={s.label} domain={markDomains(s)} size={32} />
+    {/if}
     <div class="min-w-0 flex-1">
       <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span class="line-clamp-2 min-w-0 font-sans text-sm font-medium leading-5 text-fg">{s.label}</span>
