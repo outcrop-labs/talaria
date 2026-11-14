@@ -57,8 +57,9 @@ from the frame.
 
 ## Settings area
 
-Every page behind the dock's gear and the user menu's Settings and Admin
-(`/manage`, the manage views, `/settings/*`, `/admin/*`) follows seven rules.
+Every page behind the dock's gear and the user menu's Settings and Instance
+settings (`/manage`, the manage views, `/settings/*`, `/admin/*`) follows seven
+rules.
 
 1. **One shell.** The same sidebar and the same page header on every page.
 2. **A page says what it is.** A title and one sentence, then the content.
@@ -86,6 +87,14 @@ instead of styling its own panels:
   an installed app contributes (its settings tab, its manage surface) sits
   under App settings with the app's own glyph, and search results keep the
   groups. The Apps page itself is a row of Workspace.
+- Instance holds three pages, for admins only: Organization (General, People),
+  Agent policy (Oversight, Git hosts, Web search, Knowledge search) and Data &
+  security (Storage, Secrets, Security). They are one route, and every tab
+  keeps the address it had as one of nine under `/admin`. `INSTANCE_PAGES` in
+  `lib/settings-nav.ts` says which page holds which tab, and the page and the
+  sidebar's lit row both read it through `instanceAt`. "Admin" is not a page
+  name: copy names the page and the tab, and search still finds the three
+  pages under "admin".
 - The page at `/mcp` is called Tools wherever a person reads its name: the
   label comes from `NAV` and `MANAGE_VIEWS` in `lib/nav.ts`. Its blurb names
   the protocol once, and search still finds it under "mcp".
