@@ -178,7 +178,7 @@
              never reaches any of this — "No accounts yet." decides whether the login
              screen offers the password form at all (the invites panel keeps the same
              rule), so QueryState's error branch owns that verdict. -->
-        <SettingsHeaderRow label="Account" menu class="h-9">
+        <SettingsHeaderRow label="Account" menu>
           <span class={ROLE}>Role</span>
           <span class={USED}>Last used</span>
         </SettingsHeaderRow>

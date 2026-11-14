@@ -406,7 +406,7 @@
     info="A decision that is off keeps running its existing code, and the model is asked the same question with nobody listening. Agreement is how often the two matched, so you can turn a decision on when its own numbers say so."
   >
     <SettingsGroup>
-      <SettingsHeaderRow label="Decision" menu class="h-9">
+      <SettingsHeaderRow label="Decision" menu>
         <span class={NUM}>Agreement</span>
         <span class={NUM}>Threshold</span>
         <span class={STATE}>Status</span>

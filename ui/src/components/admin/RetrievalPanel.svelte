@@ -124,7 +124,7 @@
           <div class="px-5 py-4"><SkeletonRows rows={3} avatar /></div>
         {/snippet}
         {#snippet children(collections)}
-          <SettingsHeaderRow label="Collection" menu class="h-9">
+          <SettingsHeaderRow label="Collection" menu>
             <span class={COLLECTION_COLS.entries}>Entries</span>
             <span class={COLLECTION_COLS.state}>Index</span>
             {#if rowsCarryFix}<span class={COLLECTION_COLS.fix}></span>{/if}

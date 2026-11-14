@@ -91,7 +91,7 @@
 </script>
 
 {#snippet columns()}
-  <SettingsHeaderRow label="Secret" menu class="h-9">
+  <SettingsHeaderRow label="Secret" menu>
     <span class={SECRET_COLS.state}>Status</span>
     <span class={SECRET_COLS.set}>Set</span>
   </SettingsHeaderRow>

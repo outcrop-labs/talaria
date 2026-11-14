@@ -111,7 +111,7 @@
           {#if d.services.length === 0 && !d.rosterError}
             <NoticeRow status="idle">No services available.</NoticeRow>
           {:else if d.services.length > 0}
-            <SettingsHeaderRow label="Service" class="h-9">
+            <SettingsHeaderRow label="Service">
               <span class={FLOW}>Sign-in</span>
               <span class={SWITCH}></span>
             </SettingsHeaderRow>

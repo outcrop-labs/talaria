@@ -121,7 +121,7 @@
         >
           <Toggle checked={cfg?.coach ?? false} disabled={off} onChange={(checked) => void save('coach', { coach: checked })} title="Coach agents from findings" />
         </SettingsRow>
-        <SettingsHeaderRow label="Check" class="h-9">
+        <SettingsHeaderRow label="Check">
           <span class={CATCHES}>Catches</span>
           <span class={NUM}>Findings</span>
           <span class={SWITCH}></span>

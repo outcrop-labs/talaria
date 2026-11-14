@@ -105,7 +105,7 @@
         <SettingsRow label="No invites yet" hint="Use Invite people at the top of the page." />
       {/snippet}
       {#snippet children(data)}
-        <SettingsHeaderRow label="Email" menu class="h-9">
+        <SettingsHeaderRow label="Email" menu>
           <span class={SENT}>Sent</span>
           <span class={STATE}>Status</span>
         </SettingsHeaderRow>

@@ -37,7 +37,7 @@
 <div
   data-settings-row=""
   data-header-row
-  class={cn('flex h-10 items-center gap-x-6 px-5 font-sans text-xs font-medium leading-4 text-muted', className)}
+  class={cn('flex h-9 items-center gap-x-6 px-5 font-sans text-xs font-medium leading-4 text-muted', className)}
 >
   {#if lead}
     <span class="flex min-w-0 flex-1 basis-48 items-center gap-3">

@@ -105,7 +105,7 @@
           <span class={unit}>a day</span>
         </SettingsRow>
         {#if agents.length > 0}
-          <SettingsHeaderRow label="Agent" class="h-9">
+          <SettingsHeaderRow label="Agent">
             <span class="{SWITCH} whitespace-nowrap">Checks in</span>
           </SettingsHeaderRow>
           {#each agents as a (a.model)}
