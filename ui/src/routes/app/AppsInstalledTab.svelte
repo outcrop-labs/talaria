@@ -2,6 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -18,9 +19,8 @@
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import { fetchAdminApps, fetchAppUpdates, post, requestChange, shortSha, type AppPlugin, type AppTriggerInfo, type AppUpdateResult, type InstalledApp } from './apps'
-  import AppsInstallRequests from './AppsInstallRequests.svelte'
+  import AppsApprovals from './AppsApprovals.svelte'
   import AppsMark from './AppsMark.svelte'
-  import AppsUpdateRequests from './AppsUpdateRequests.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
@@ -111,7 +111,7 @@
   const uninstall = async (a: InstalledApp) => {
     const ok = await confirm({
       title: `Uninstall ${a.name}?`,
-      message: 'Removes the app codebase and its build from this deployment and stops its database. Agents lose its MCP server and every grant on it.',
+      message: 'Removes the app codebase and its build from this deployment and stops its database. Agents lose its tools and every grant on it.',
       confirmLabel: 'Uninstall',
       danger: true,
     })
@@ -178,14 +178,14 @@
 
   const apps = $derived(query.data?.apps ?? [])
 
-  /** The rows whose details (maintainer, triggers) are open. */
+  /** The rows whose details (source, maintainer, triggers) are open. */
   let detailsOpen = $state<Record<string, boolean>>({})
 
   const POLICY_LABEL: Record<AppPlugin['updatePolicy'], string> = { approve: 'Need approval', auto: 'Automatic' }
 
   const triggersOf = (a: InstalledApp): AppTriggerInfo[] => (a.broken ? [] : (a.triggers ?? []))
   const failedRuns = (t: AppTriggerInfo) => t.runs.filter((r) => r.state === 'failed')
-  const hasDetails = (a: InstalledApp) => !!a.plugin || triggersOf(a).length > 0
+  const hasDetails = (a: InstalledApp) => !!a.git || !!a.plugin || triggersOf(a).length > 0
   const canOpen = (a: InstalledApp) => a.enabled && !!a.surfaces.work
 
   const statusOf = (a: InstalledApp): { dot: DotStatus; text: string; title?: string; pulse?: boolean } => {
@@ -198,8 +198,9 @@
 
   const open = (a: InstalledApp) => void navigate('/x/:app', { params: { app: a.slug } })
 
-  /** The button a row shows: only the action that fixes its state. Open is
-   *  the row's click, and everything else is in its menu. */
+  /** The one action a row shows. A failed build needs a person, so it reads
+   *  Fix; an app that is off is a choice, so it offers Enable in the same
+   *  quiet treatment. Open is the row's click, and both are in its menu too. */
   const fixOf = (a: InstalledApp): 'rebuild' | 'enable' | null => {
     if (isAdmin && !a.broken && a.build?.status === 'failed') return 'rebuild'
     if (isAdmin && !a.broken && !a.enabled) return 'enable'
@@ -236,39 +237,61 @@
           onSelect: () => void setPolicy(a, policy),
         })),
       })
-    if (!a.broken && fix !== 'enable') items.push({ label: a.enabled ? 'Disable' : 'Enable', disabled: working, onSelect: () => void toggle(a) })
+    if (fix === 'rebuild') items.push({ label: 'Rebuild', disabled: working, onSelect: () => void rebuild(a) })
+    if (!a.broken) items.push({ label: a.enabled ? 'Disable' : 'Enable', disabled: working, onSelect: () => void toggle(a) })
     if (items.length) items.push('sep')
     items.push({ label: 'Uninstall', danger: true, disabled: working, onSelect: () => void uninstall(a) })
     return items
+  }
+
+  const addsOf = (a: InstalledApp): Array<{ text: string; title: string }> => {
+    const parts: Array<{ text: string; title: string }> = []
+    if (a.surfaces.work) parts.push({ text: 'Work view', title: `Work view: ${a.surfaces.work}` })
+    if (a.surfaces.manage) parts.push({ text: 'Manage view', title: `Manage view: ${a.surfaces.manage}` })
+    if (a.surfaces.settings) parts.push({ text: 'Settings panel', title: `Settings panel: ${a.surfaces.settings}` })
+    if (a.mcp) parts.push({ text: 'Agent tools', title: 'Gives agents tools through its own tool server. Choose who may use them under Tools.' })
+    const registered = a.build?.harnesses?.registered ?? []
+    if (registered.length > 0) {
+      const n = `${registered.length} harness${registered.length === 1 ? '' : 'es'}`
+      parts.push(
+        a.enabled
+          ? { text: n, title: `Activity harnesses scored in Models, under Fitness:\n${registered.join('\n')}` }
+          : {
+              text: `${n}, not registered`,
+              title: `Not registered while ${a.name} is disabled: enable it to score them in Models, under Fitness.\n${registered.join('\n')}`,
+            },
+      )
+    }
+    return parts
   }
 
   const note = 'font-sans text-[13px] leading-5'
   const identifier = 'font-mono text-xs text-muted'
 </script>
 
-{#if isAdmin}<AppsInstallRequests /><AppsUpdateRequests {apps} />{/if}
+{#if isAdmin}<AppsApprovals {apps} />{/if}
 
-{#snippet kindChips(a: InstalledApp)}
-  {#if a.surfaces.work}<Chip title={`Work view: ${a.surfaces.work}`}>Work view</Chip>{/if}
-  {#if a.surfaces.manage}<Chip title={`Manage view: ${a.surfaces.manage}`}>Manage view</Chip>{/if}
-  {#if a.surfaces.settings}<Chip title={`Settings panel: ${a.surfaces.settings}`}>Settings</Chip>{/if}
-  {#if a.mcp}<Chip title="Gives agents tools through its own MCP server. Choose who may use them under MCP.">Agent tools</Chip>{/if}
+<!-- The app's version and what it adds, as one quiet line under its purpose:
+     every app has these, so they are words and not chips, and the title line
+     is the name alone. The activity harnesses it ships (harnesses/*.ts) end
+     the line, as the host last checked them against the enabled apps. A
+     disabled app registers none: its count is what it would register once
+     enabled. -->
+{#snippet adds(a: InstalledApp)}
+  {@const parts = addsOf(a)}
+  {#if a.version || parts.length > 0}
+    <div class="font-sans text-xs leading-5 text-muted">
+      {#if a.version}<span class="font-mono">v{a.version}</span>{parts.length > 0 ? ' · ' : ''}{/if}{#each parts as part, i (part.text)}{i > 0 ? ' · ' : ''}<span title={part.title}>{part.text}</span>{/each}
+    </div>
+  {/if}
 {/snippet}
 
-<!-- The activity harnesses the app ships (harnesses/*.ts), as the host last
-     checked them against the enabled apps: the ones registered for model
-     fitness, and the ones skipped. A disabled app registers none — its count
-     is what it would register once enabled. -->
-{#snippet harnessChips(a: InstalledApp)}
-  {@const registered = a.build?.harnesses?.registered ?? []}
+<!-- A chip only for what is unusual about this row. -->
+{#snippet exceptions(a: InstalledApp)}
   {@const skipped = a.build?.harnesses?.problems ?? []}
-  {@const n = `${registered.length} harness${registered.length === 1 ? '' : 'es'}`}
-  {#if registered.length > 0 && a.enabled}
-    <Chip title={`Activity harnesses scored in Models → Fitness:\n${registered.join('\n')}`}>{n}</Chip>
-  {:else if registered.length > 0}
-    <Chip title={`Not registered while ${a.name} is disabled: enable it to score them in Models → Fitness.\n${registered.join('\n')}`}>
-      {n}, not registered
-    </Chip>
+  {@const check = a.git ? updates.data?.[a.slug] : undefined}
+  {#if check?.available}
+    <Chip tone="accent" title={`The source now points at ${shortSha(check.latest)}`}>Update available</Chip>
   {/if}
   {#if skipped.length > 0 && a.build?.status !== 'failed'}
     <Chip tone="warn" title={skipped.join('\n')}>{skipped.length} harness{skipped.length === 1 ? '' : 'es'} skipped</Chip>
@@ -308,6 +331,9 @@
       </div>
     {/if}
   {/each}
+  {#if a.git && updates.data?.[a.slug]?.error}
+    <div class={`${note} text-danger`} title={updates.data[a.slug]?.error}>Update check failed</div>
+  {/if}
   {#if results[a.slug]}
     <div class={`${note} wrap-anywhere ${results[a.slug]!.ok ? 'text-fg' : 'text-danger'}`} data-app-update-result>
       {results[a.slug]!.text}
@@ -321,11 +347,22 @@
   {/if}
 {/snippet}
 
-<!-- One level down: who maintains a plugin and how its updates land, and each
-     trigger with its last run. The lines WRAP rather than truncate: on a phone
-     the run's sentence is most of what there is to read. -->
+<!-- One level down: where the code came from, who maintains a plugin and how
+     its updates land, and each trigger with its last run. The lines WRAP
+     rather than truncate: on a phone the run's sentence is most of what
+     there is to read. -->
 {#snippet details(a: InstalledApp)}
   <dl class={`grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 border-t border-line-subtle px-5 py-4 ${note}`}>
+    {#if a.git}
+      {@const check = updates.data?.[a.slug]}
+      <dt class="text-muted">Source</dt>
+      <dd class={`flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 ${identifier}`} data-app-source>
+        <span class="min-w-0 break-all" title={a.git.url}>{a.git.repo}</span>
+        <span class="shrink-0 whitespace-nowrap">@ {a.git.ref ?? 'default branch'}</span>
+        <span class="shrink-0" title={a.git.sha ?? 'installed before commits were recorded'}>{shortSha(a.git.sha)}</span>
+        {#if check?.notChecked}<span class="shrink-0 font-sans text-[13px]" title={check.notChecked}>Update not checked</span>{/if}
+      </dd>
+    {/if}
     {#if a.plugin}
       {@const pl = a.plugin}
       <dt class="text-muted">Maintained by</dt>
@@ -385,28 +422,10 @@
         <div>
           <SettingsRow label={a.name} openHref={canOpen(a) ? p('/x/:app', { params: { app: a.slug } }) : undefined} openLabel={`Open ${a.name}`}>
             {#snippet icon()}<AppsMark icon={a.icon} />{/snippet}
-            {#snippet meta()}
-              {#if a.version}<span class={`shrink-0 ${identifier}`}>v{a.version}</span>{/if}
-              {@render kindChips(a)}
-              {@render harnessChips(a)}
-            {/snippet}
+            {#snippet meta()}{@render exceptions(a)}{/snippet}
             {#snippet hint()}
               <div>{a.description}</div>
-              {#if a.git}
-                {@const check = updates.data?.[a.slug]}
-                <div class={`mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 ${identifier}`} data-app-source>
-                  <span class="min-w-0 truncate" title={a.git.url}>{a.git.repo}</span>
-                  <span class="shrink-0 whitespace-nowrap">@ {a.git.ref ?? 'default branch'}</span>
-                  <span class="shrink-0" title={a.git.sha ?? 'installed before commits were recorded'}>{shortSha(a.git.sha)}</span>
-                  {#if check?.available}
-                    <Chip tone="accent" title={`The source now points at ${shortSha(check.latest)}`}>Update available</Chip>
-                  {:else if check?.notChecked}
-                    <span class="shrink-0 font-sans" title={check.notChecked}>Update not checked</span>
-                  {:else if check?.error}
-                    <span class="shrink-0 font-sans text-danger" title={check.error}>Update check failed</span>
-                  {/if}
-                </div>
-              {/if}
+              {@render adds(a)}
               {@render attention(a)}
             {/snippet}
             {#snippet status()}
@@ -415,11 +434,11 @@
               </span>
             {/snippet}
             {#if fix === 'rebuild'}
-              <Button size="sm" variant="outline" class="w-24" disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</Button>
+              <SettingsRowFix label={`Fix ${a.name}: rebuild`} disabled={busy === a.slug} onclick={() => void rebuild(a)} />
             {:else if fix === 'enable'}
-              <Button size="sm" variant="outline" class="w-24" disabled={busy === a.slug} onclick={() => void toggle(a)}>Enable</Button>
+              <SettingsRowFix text="Enable" label={`Enable ${a.name}`} disabled={busy === a.slug} onclick={() => void toggle(a)} />
             {/if}
-            {#if menu.length}<SettingsRowMenu label={`Actions for ${a.name}`} items={menu} />{/if}
+            <SettingsRowMenu label={`Actions for ${a.name}`} items={menu} />
           </SettingsRow>
           {#if detailsOpen[a.slug] && hasDetails(a)}
             <div transition:slide={{ duration: 150 }}>{@render details(a)}</div>

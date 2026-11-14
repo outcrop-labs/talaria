@@ -1,37 +1,41 @@
 <script lang="ts">
-  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { decideInstallRequest, fetchInstallRequests, type AppInstallRequest, type KeptDataConflict } from './apps'
+  import { decideInstallRequest, type AppInstallRequest, type KeptDataConflict } from './apps'
 
-  // Agents' requests to install the app they built (`request_app_install`).
+  // Agents' requests to install the app they built (`request_app_install`),
+  // as rows of the approvals card (`AppsApprovals`, which reads the list).
   // THIS is where an admin decides: Install runs the same credentialed
   // install as Install from Git and records the plugin (the agent maintains
   // it, the ticket's person owns it, the ticket's board takes its
   // maintenance tickets). The app lands disabled — enabling it and granting
   // its surfaces stay here, on its card. Every outcome is a line on the
   // requesting ticket.
+  let {
+    requests,
+    outcome = $bindable(null),
+  }: {
+    requests: AppInstallRequest[]
+    /** The last decision's outcome, as it was written on the ticket. */
+    outcome?: { ok: boolean; text: string } | null
+  } = $props()
+
   const qc = useQueryClient()
-  // A failed poll must never read as "nothing waiting on you".
-  const query = createQuery(() => ({
-    queryKey: ['app-install-requests'],
-    queryFn: fetchInstallRequests,
-    refetchInterval: 60_000,
-  }))
-  const requests = $derived(query.data ?? [])
-  /** The app's short name: the last segment of its repository path. */
-  const nameOf = (r: AppInstallRequest) => r.repo.split('/').pop() || r.repo
+  /** The app's name as a person reads it. A request carries no name of its
+   *  own before the install reads the manifest, so it is the repository's
+   *  last segment in words; the repository itself is the row's mono line. */
+  const nameOf = (r: AppInstallRequest) => {
+    const words = (r.repo.split('/').pop() || r.repo).replace(/[-_.]+/g, ' ').trim()
+    return words ? words.charAt(0).toUpperCase() + words.slice(1) : r.repo
+  }
   let busy = $state<string | null>(null)
   let rejecting = $state<string | null>(null)
   let rejectNote = $state('')
-  /** The last decision's outcome, per request, as it was written on the ticket. */
-  let outcome = $state<{ ok: boolean; text: string } | null>(null)
   /** Kept data from another repository stands in the way: adopt or wipe. */
   let conflicts = $state<Record<string, KeptDataConflict>>({})
 
@@ -65,86 +69,55 @@
   }
 </script>
 
-{#if query.isError && query.data === undefined}
-  <QueryError
-    variant="inline"
-    error={query.error}
-    title="Could not load install requests"
-    onRetry={() => void query.refetch()}
-  />
-{/if}
-{#if requests.length > 0 || outcome}
-  <div data-install-requests>
-    <SettingsSection title="Install requests" description="Apps your agents built and want installed. An approved app starts disabled.">
-      {#if requests.length > 0}
-        <SettingsGroup>
-          {#each requests as r (r.id)}
-            {@const conflict = conflicts[r.id]}
-            <div data-install-request>
-              <SettingsRow label={nameOf(r)}>
-                {#snippet meta()}
-                  <span class="min-w-0 truncate font-mono text-xs text-muted" title={r.url}>{r.repo} @ {r.ref ?? 'default branch'} on {r.hostId}</span>
-                {/snippet}
-                {#snippet hint()}
-                  {#if r.why}<div>{r.why}</div>{/if}
-                  <div>
-                    Requested by <span title="The agent that asked, and will maintain it">{r.agentName ?? r.agentModel}</span>{#if r.ownerName}{' '}for <span title="Who the app is for">{r.ownerName}</span>{/if}{#if r.ticketRef}<span
-                        class="ml-2 font-mono text-xs"
-                        title={`The ticket it was built for, on ${r.boardName ?? 'its board'}. Maintenance tickets go there.`}>{r.ticketRef}</span
-                      >{/if}
-                  </div>
-                {/snippet}
-                <Button size="sm" variant="outline" class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
-                  {busy === r.id ? 'Installing' : 'Install'}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={busy === r.id}
-                  onclick={() => {
-                    rejecting = rejecting === r.id ? null : r.id
-                    rejectNote = ''
-                  }}>Reject</Button
-                >
-              </SettingsRow>
-              {#if conflict}
-                <div transition:slide={{ duration: 150 }}>
-                  <div class="flex flex-wrap items-center gap-3 border-t border-line-subtle px-5 py-4" data-install-conflict>
-                    <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-warning">
-                      The name "{conflict.slug}" still holds data from {conflict.keptFrom ?? 'an earlier install that did not record its repository'}.
-                    </span>
-                    <Button size="sm" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'approve', 'adopt')}>Keep that data</Button>
-                    <Button size="sm" variant="ghost" disabled={busy === r.id} onclick={() => void decide(r, 'approve', 'wipe')}>Delete it first</Button>
-                  </div>
-                </div>
-              {/if}
-              {#if rejecting === r.id}
-                <div transition:slide={{ duration: 150 }}>
-                  <div class="flex items-center gap-3 border-t border-line-subtle px-5 py-4">
-                    <Input
-                      size="sm"
-                      bind:value={rejectNote}
-                      maxlength={500}
-                      placeholder="Reason, posted on the ticket (optional)"
-                      class="min-w-0 flex-1"
-                    />
-                    <Button size="md" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'reject')}>Reject request</Button>
-                  </div>
-                </div>
-              {/if}
-            </div>
-          {/each}
-        </SettingsGroup>
-      {/if}
-      {#if outcome}
-        <div
-          transition:slide={{ duration: 150 }}
-          class={`font-sans text-[13px] leading-5 ${requests.length > 0 ? 'mt-2' : ''} ${outcome.ok ? 'text-muted' : 'text-danger'}`}
-          data-install-outcome
-        >
-          {outcome.text}
+{#each requests as r (r.id)}
+  {@const conflict = conflicts[r.id]}
+  <div data-install-request>
+    <SettingsRow label={nameOf(r)}>
+      {#snippet hint()}
+        {#if r.why}<div>{r.why}</div>{/if}
+        <div>
+          New app, requested by <span title="The agent that asked, and will maintain it">{r.agentName ?? r.agentModel}</span>{#if r.ownerName}{' '}for <span title="Who the app is for">{r.ownerName}</span>{/if}{#if r.ticketRef}<span
+              class="ml-2 font-mono text-xs"
+              title={`The ticket it was built for, on ${r.boardName ?? 'its board'}. Maintenance tickets go there.`}>{r.ticketRef}</span
+            >{/if}
         </div>
-      {/if}
-    </SettingsSection>
+        <div class="break-all font-mono text-xs leading-5" title={r.url}>{r.repo} @ {r.ref ?? 'default branch'} on {r.hostId}</div>
+      {/snippet}
+      <Button size="sm" variant="outline" class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
+        {busy === r.id ? 'Installing' : 'Install'}
+      </Button>
+      <SettingsRowMenu
+        label={`Actions for ${nameOf(r)}`}
+        items={[
+          {
+            label: rejecting === r.id ? 'Cancel rejection' : 'Reject',
+            disabled: busy === r.id,
+            onSelect: () => {
+              rejecting = rejecting === r.id ? null : r.id
+              rejectNote = ''
+            },
+          },
+        ]}
+      />
+    </SettingsRow>
+    {#if conflict}
+      <div transition:slide={{ duration: 150 }}>
+        <div class="flex flex-wrap items-center gap-3 border-t border-line-subtle px-5 py-4" data-install-conflict>
+          <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-warning">
+            The name "{conflict.slug}" still holds data from {conflict.keptFrom ?? 'an earlier install that did not record its repository'}.
+          </span>
+          <Button size="sm" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'approve', 'adopt')}>Keep that data</Button>
+          <Button size="sm" variant="ghost" disabled={busy === r.id} onclick={() => void decide(r, 'approve', 'wipe')}>Delete it first</Button>
+        </div>
+      </div>
+    {/if}
+    {#if rejecting === r.id}
+      <div transition:slide={{ duration: 150 }}>
+        <div class="flex items-center gap-3 border-t border-line-subtle px-5 py-4">
+          <Input size="sm" bind:value={rejectNote} maxlength={500} placeholder="Reason, posted on the ticket (optional)" class="min-w-0 flex-1" />
+          <Button size="md" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'reject')}>Reject request</Button>
+        </div>
+      </div>
+    {/if}
   </div>
-{/if}
+{/each}

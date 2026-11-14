@@ -117,11 +117,11 @@
 </script>
 
 {#if notice}
-  <SettingsGroup>
-    <SettingsRow label="App installed" hint={notice}>
-      {#snippet lead()}<StatusDot status="ok" />{/snippet}
-    </SettingsRow>
-  </SettingsGroup>
+  <!-- A line, not a card of one row. -->
+  <p role="status" class="flex items-baseline gap-2 font-sans text-[13px] leading-5 text-muted">
+    <StatusDot status="ok" class="shrink-0 translate-y-[-1px]" />
+    <span><span class="font-medium text-fg">App installed.</span> {notice}</span>
+  </p>
 {/if}
 {#if keptConflict}
   <!-- Kept data from another repository: never adopted silently. -->
