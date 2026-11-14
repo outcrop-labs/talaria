@@ -50,7 +50,7 @@
   } = $props()
 
   setUiVoice('sans')
-  const cue = provideAutosave(() => autosave)
+  const cue = provideAutosave({ declared: () => autosave, page: true })
   // svelte-ignore state_referenced_locally -- reason: called during render, so it re-runs with fresh props on every render
   claimViewTitle(title)
 </script>

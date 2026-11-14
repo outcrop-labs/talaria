@@ -10,6 +10,8 @@ import { getContext, onDestroy, setContext } from 'svelte'
 const KEY = Symbol('settings-autosave')
 
 interface AutosaveChannel {
+  /** The cue is a page's header, which a dialog opened over the page covers. */
+  page: boolean
   register: () => void
   release: () => void
   hold: () => void
@@ -51,6 +53,7 @@ export function createAutosave(ms = 1800, declared: () => boolean = () => false)
       return saved
     },
     channel: {
+      page: false,
       register: () => {
         fields += 1
         asked = true
@@ -81,18 +84,24 @@ export function createAutosave(ms = 1800, declared: () => boolean = () => false)
   }
 }
 
-/** Call in `SettingsPage`. Read `active` and `saved` off the returned object. */
-export function provideAutosave(declared?: () => boolean, ms = 1800): { readonly active: boolean; readonly saved: boolean } {
-  const cue = createAutosave(ms, declared)
+/** Call in the component that draws the cue, and read `active` and `saved`
+ *  off the returned object. `SettingsPage` passes `page`; a dialog that draws
+ *  a cue of its own passes nothing. */
+export function provideAutosave(opts: { declared?: () => boolean; page?: boolean; ms?: number } = {}): {
+  readonly active: boolean
+  readonly saved: boolean
+} {
+  const cue = createAutosave(opts.ms, opts.declared)
   onDestroy(cue.dispose)
-  setContext<AutosaveChannel | undefined>(KEY, cue.channel)
+  setContext<AutosaveChannel | undefined>(KEY, { ...cue.channel, page: opts.page ?? false })
   return cue
 }
 
-/** Call in a surface that covers the page (a dialog). The header behind it is
- *  out of sight, so a control inside flashes its own row. */
+/** `Modal` calls this. A page's header is out of sight behind a dialog, so a
+ *  control inside flashes its own row. A cue the dialog's owner provides for
+ *  the dialog itself is left alone. */
 export function isolateAutosave(): void {
-  setContext<AutosaveChannel | undefined>(KEY, undefined)
+  if (getContext<AutosaveChannel | undefined>(KEY)?.page) setContext<AutosaveChannel | undefined>(KEY, undefined)
 }
 
 const ONLY = Symbol('row')
