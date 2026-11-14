@@ -16,12 +16,15 @@
     searchSettings,
     SETTINGS_HOME,
     settingsNav,
+    type SettingsNavGroup,
+    type SettingsNavMatch,
     type SettingsNavRow,
     type SettingsPageTabs,
   } from '@/lib/settings-nav'
   import { revealCurrent } from '@/lib/tab-strip'
   import { holdSansScreen, setUiVoice } from '@/lib/ui-voice'
   import { ADMIN_TABS } from '@/routes/app/admin'
+  import AppsMark from '@/routes/app/AppsMark.svelte'
   import { MODEL_TABS } from '@/routes/app/models'
   import { OBS_TABS } from '@/routes/app/observability/observability'
   import { navigate, route } from '@/router'
@@ -66,10 +69,10 @@
     [MANAGE_HOME]: LayoutDashboard,
     [ADMIN_HOME]: Shield,
   }
-  // An app's manifest icon is a glyph character, which reads as a second icon
-  // set beside the drawn ones, so every app row takes the same drawn mark.
-  const iconOf = (to: string, icon: NavItem['icon'] | undefined): LucideIcon =>
-    icon === undefined || typeof icon === 'string' ? (ICONS[to] ?? Blocks) : icon
+  // An app's row wears the app's own glyph, so the rows of the Apps group
+  // tell apart. It is drawn in the 16px box the drawn icons fill, in the
+  // row's own ink.
+  const iconOf = (to: string, icon: NavItem['icon'] | undefined): NavItem['icon'] => icon ?? ICONS[to] ?? Blocks
 
   const PAGE_TABS: SettingsPageTabs = {
     ...OWN_PAGE_TABS,
@@ -81,6 +84,13 @@
   let query = $state('')
   const searching = $derived(query.trim().length > 0)
   const matches = $derived(searchSettings(nav.groups, PAGE_TABS, query))
+  // Results keep the sidebar's groups, so a match says where it lives.
+  const matchGroups = $derived(
+    nav.groups.flatMap((g): { group: SettingsNavGroup; matches: SettingsNavMatch[] }[] => {
+      const found = matches.filter((m) => m.group === g.id)
+      return found.length > 0 ? [{ group: g, matches: found }] : []
+    }),
+  )
 
   function onSearchKey(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -94,9 +104,16 @@
 
   const [sendMark, receiveMark] = markCrossfade()
 
+  const groupLabel = 'flex h-7 items-center px-2 font-sans text-xs leading-4 text-muted'
   const rowClass =
     'relative flex h-8 items-center gap-2.5 rounded-md px-2 font-sans text-[13.5px] leading-5 text-muted transition-colors duration-[120ms] hover:bg-[var(--settings-selected)]/50 hover:text-fg focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent'
 </script>
+
+{#snippet mark(icon: NavItem['icon'])}
+  <span class="relative grid h-4 w-4 shrink-0 place-items-center">
+    {#if typeof icon === 'string'}<AppsMark {icon} class="text-sm text-current" />{:else}<NavIcon {icon} />{/if}
+  </span>
+{/snippet}
 
 {#snippet navRow(row: SettingsNavRow)}
   {@const active = row.to === nav.activePath}
@@ -112,7 +129,7 @@
         <span class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-accent"></span>
       </span>
     {/if}
-    <span class="relative grid h-4 w-4 shrink-0 place-items-center"><NavIcon icon={iconOf(row.to, row.icon)} /></span>
+    {@render mark(iconOf(row.to, row.icon))}
     <span class="relative min-w-0 flex-1 truncate">{row.label}</span>
     {#if badge !== undefined && (badge === null || badge > 0)}
       <span
@@ -146,24 +163,31 @@
         {#if matches.length === 0}
           <p class="px-2 py-1.5 font-sans text-[13px] leading-5 text-muted">No settings match</p>
         {:else}
-          <ul class="space-y-0.5">
-            {#each matches as m (m.to + (m.parent ?? ''))}
-              <li>
-                <a href={m.to} onclick={() => (query = '')} class={rowClass}>
-                  <span class="grid h-4 w-4 shrink-0 place-items-center"><NavIcon icon={iconOf(m.rowTo, m.icon)} /></span>
-                  <span class="min-w-0 flex-1 truncate">
-                    {#if m.parent}{m.parent} <span aria-hidden="true">›</span> <span class="text-fg">{m.label}</span>{:else}{m.label}{/if}
-                  </span>
-                </a>
-              </li>
+          <div class="space-y-5">
+            {#each matchGroups as { group, matches: found } (group.id)}
+              <section aria-label={group.label}>
+                <h2 class={groupLabel}>{group.label}</h2>
+                <ul class="space-y-0.5">
+                  {#each found as m (m.to + (m.parent ?? ''))}
+                    <li>
+                      <a href={m.to} onclick={() => (query = '')} class={rowClass}>
+                        {@render mark(iconOf(m.rowTo, m.icon))}
+                        <span class="min-w-0 flex-1 truncate">
+                          {#if m.parent}{m.parent} <span aria-hidden="true">›</span> <span class="text-fg">{m.label}</span>{:else}{m.label}{/if}
+                        </span>
+                      </a>
+                    </li>
+                  {/each}
+                </ul>
+              </section>
             {/each}
-          </ul>
+          </div>
         {/if}
       {:else}
         <div class="space-y-5">
           {#each nav.groups as group (group.id)}
             <section aria-label={group.label}>
-              <h2 class="flex h-7 items-center px-2 font-sans text-xs leading-4 text-muted">{group.label}</h2>
+              <h2 class={groupLabel}>{group.label}</h2>
               <ul class="space-y-0.5">
                 {#each group.rows as row (row.to)}
                   <li>{@render navRow(row)}</li>
@@ -200,7 +224,7 @@
           )}
         >
           {#if active}<span aria-hidden="true" class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-accent"></span>{/if}
-          <span class="grid h-4 w-4 shrink-0 place-items-center"><NavIcon icon={iconOf(row.to, row.icon)} /></span>
+          {@render mark(iconOf(row.to, row.icon))}
           <span>{row.label}</span>
         </a>
       {/each}

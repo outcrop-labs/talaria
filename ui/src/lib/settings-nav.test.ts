@@ -37,7 +37,7 @@ const labels = (nav: ReturnType<typeof settingsNav>) =>
   Object.fromEntries(nav.groups.map((g) => [g.id, g.rows.map((r) => r.label)]))
 
 describe('settingsNav groups', () => {
-  it('gives an admin Personal, Workspace and Instance, in that order', () => {
+  it('gives an admin Personal, Workspace and Instance, in that order, and no Apps group with no app', () => {
     const nav = settingsNav(CORE, [], admin, '/manage')
     expect(nav.groups.map((g) => g.label)).toEqual(['Personal', 'Workspace', 'Instance'])
     expect(labels(nav)).toEqual({
@@ -47,10 +47,22 @@ describe('settingsNav groups', () => {
     })
   })
 
-  it("lists an app's settings tab under Personal and its manage surface under Workspace", () => {
+  it('puts every page an app contributes under Apps, between Workspace and Instance, with the app glyph', () => {
     const nav = settingsNav(CORE, [crm], admin, '/settings')
-    expect(nav.groups[0]!.rows.at(-1)).toMatchObject({ to: '/settings/app:crm', label: 'CRM' })
-    expect(nav.groups[1]!.rows.at(-1)).toMatchObject({ to: '/x/crm/manage', label: 'CRM setup' })
+    expect(nav.groups.map((g) => g.label)).toEqual(['Personal', 'Workspace', 'Apps', 'Instance'])
+    expect(nav.groups[2]!.rows).toEqual([
+      { to: '/settings/app:crm', label: 'CRM', icon: 'c' },
+      { to: '/x/crm/manage', label: 'CRM setup', icon: 'c', badge: undefined },
+    ])
+    expect(labels(nav).personal).toEqual(['Profile', 'Notifications', 'Assistant', 'Connections', 'API keys'])
+    expect(labels(nav).workspace).toEqual(['Overview', 'Agents', 'Models', 'Observability'])
+  })
+
+  it("keeps each app's rows together, in the order the apps come", () => {
+    const tms: SettingsNavApp = { slug: 'tms', icon: 't', surfaces: { manage: 'Load rules' } }
+    const rates: SettingsNavApp = { slug: 'rates', icon: '$', surfaces: { settings: 'Rate Desk' } }
+    const nav = settingsNav(CORE, [crm, tms, rates], admin, '/manage')
+    expect(labels(nav).apps).toEqual(['CRM', 'CRM setup', 'Load rules', 'Rate Desk'])
   })
 })
 
@@ -59,7 +71,6 @@ describe('settingsNav grants', () => {
     const member = { isAdmin: false, denied: ['/agents', '/models', '/observability'], appGrants: [] }
     const nav = settingsNav(CORE, [crm], member, '/settings')
     expect(nav.groups.map((g) => g.id)).toEqual(['personal'])
-    expect(nav.groups[0]!.rows.map((r) => r.to)).not.toContain('/settings/app:crm')
   })
 
   it('drops a denied manage view and never shows Admin to a member', () => {
@@ -72,9 +83,10 @@ describe('settingsNav grants', () => {
 
   it("shows an app's settings tab on its manage grant, and only then", () => {
     const granted = { isAdmin: false, denied: ['/agents', '/models', '/observability'], appGrants: ['/x/crm/manage'] }
-    expect(settingsNav(CORE, [crm], granted, '/settings').groups[0]!.rows.map((r) => r.to)).toContain('/settings/app:crm')
+    const theirs = settingsNav(CORE, [crm], granted, '/settings')
+    expect(labels(theirs)).toMatchObject({ workspace: ['Overview'], apps: ['CRM', 'CRM setup'] })
     const workOnly = { ...granted, appGrants: ['/x/crm'] }
-    expect(settingsNav(CORE, [crm], workOnly, '/settings').groups[0]!.rows.map((r) => r.to)).not.toContain('/settings/app:crm')
+    expect(settingsNav(CORE, [crm], workOnly, '/settings').groups.map((g) => g.id)).toEqual(['personal'])
   })
 
   it('holds no app row when the grants could not be read', () => {
@@ -90,6 +102,7 @@ describe('settingsNav active row', () => {
     expect(settingsNav(CORE, [], admin, '/settings')).toMatchObject({ inside: true, activePath: '/settings' })
     expect(settingsNav(CORE, [], admin, '/settings/keys')).toMatchObject({ inside: true, activePath: '/settings/keys' })
     expect(settingsNav(CORE, [crm], admin, '/settings/app:crm').activePath).toBe('/settings/app:crm')
+    expect(settingsNav(CORE, [crm], admin, '/x/crm/manage')).toMatchObject({ inside: true, activePath: '/x/crm/manage' })
   })
 
   it('falls back to Profile on a settings address that names no row, as the page does', () => {
@@ -137,8 +150,8 @@ describe('searchSettings', () => {
 
   it('matches a page tab and links to it', () => {
     expect(searchSettings(groups, TABS, 'roles')).toEqual([
-      { to: '/agents', label: 'Agents', icon: 'agents', rowTo: '/agents' },
-      { to: '/models/roles', label: 'Roles', parent: 'Models', icon: 'models', rowTo: '/models' },
+      { to: '/agents', label: 'Agents', icon: 'agents', rowTo: '/agents', group: 'workspace' },
+      { to: '/models/roles', label: 'Roles', parent: 'Models', icon: 'models', rowTo: '/models', group: 'workspace' },
     ])
     expect(found('people')).toEqual(['Admin', 'Admin › People'])
   })
@@ -150,6 +163,13 @@ describe('searchSettings', () => {
   it('lists rows before tabs and does not repeat a page as its own tab', () => {
     expect(found('cost')).toEqual(['Observability', 'Observability › Cost'])
     expect(found('models')).toEqual(['Models'])
+  })
+
+  it('says which group each match is in, and lists them in the order of the groups', () => {
+    const where = (q: string) => searchSettings(groups, TABS, q).map((m) => `${m.group}: ${m.label}`)
+    expect(where('crm')).toEqual(['apps: CRM', 'apps: CRM setup'])
+    expect(where('model')).toEqual(['personal: Profile', 'workspace: Models'])
+    expect(where('setup')).toEqual(['apps: CRM setup'])
   })
 
   it('never finds a tab of a page the viewer cannot open', () => {
