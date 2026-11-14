@@ -2,7 +2,6 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { CalendarClock } from '@lucide/svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
-  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -17,6 +16,7 @@
   import CronForm from './CronForm.svelte'
   import CronListSkeleton from './CronListSkeleton.svelte'
   import CronRow from './CronRow.svelte'
+  import CronTable from './CronTable.svelte'
 
   interface FleetCronAgent {
     id: string
@@ -101,7 +101,7 @@
     {#snippet empty()}<EmptyState icon={calendarIcon} title="Nothing scheduled" hint="Add the first one with New schedule." />{/snippet}
     {#snippet children(_agents)}
       <div use:listStagger>
-        <SettingsGroup>
+        <CronTable agents>
           {#each withJobs as { agent, job } (`${agent.id}-${job.id}`)}
             <CronRow
               {job}
@@ -110,7 +110,7 @@
               onEdit={(patch) => edit(agent.id, job.id, patch)}
             />
           {/each}
-        </SettingsGroup>
+        </CronTable>
       </div>
     {/snippet}
   </QueryState>

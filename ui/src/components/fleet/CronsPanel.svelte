@@ -1,7 +1,6 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { CalendarClock } from '@lucide/svelte'
-  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -12,6 +11,7 @@
   import CronForm from './CronForm.svelte'
   import CronListSkeleton from './CronListSkeleton.svelte'
   import CronRow from './CronRow.svelte'
+  import CronTable from './CronTable.svelte'
 
   // One agent's cron jobs: list + create + edit/pause/run/delete. Reading is
   // open to anyone who can see the agent; every write belongs to its managers
@@ -70,11 +70,11 @@
       />
     {/snippet}
     {#snippet children(jobs)}
-      <SettingsGroup>
+      <CronTable>
         {#each jobs as j (j.id)}
           <CronRow job={j} busy={ui.busy || !canManage} onAction={(a) => void act(agentId, j.id, a)} onEdit={(patch) => edit(agentId, j.id, patch)} />
         {/each}
-      </SettingsGroup>
+      </CronTable>
     {/snippet}
   </QueryState>
   {#if ui.err && !composing}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{ui.err}</p>{/if}

@@ -1,6 +1,17 @@
+<script lang="ts" module>
+  // The table's captions (CronTable) and each row's cells share these widths.
+  // The table is the container: a narrow one drops the agent, then the
+  // frequency, which the row then says under its name.
+  export const CRON_AGENT = 'hidden w-28 shrink-0 @4xl:block'
+  export const CRON_FREQUENCY = 'hidden w-48 shrink-0 @3xl:block'
+  export const CRON_NEXT = 'w-28 shrink-0 text-right'
+  export const CRON_ON = 'w-9 shrink-0'
+</script>
+
 <script lang="ts">
   import { Pencil, Trash2, Zap } from '@lucide/svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
@@ -66,61 +77,54 @@
   }
 
   const menu = (): ContextMenuEntry[] => [
-    ...(onEdit ? [{ label: 'Edit', icon: [Pencil, { size: 14 }], onSelect: startEdit } as ContextMenuEntry] : []),
+    ...(onEdit ? [{ label: 'Edit', icon: [Pencil, { size: 14 }], disabled: busy, onSelect: startEdit } as ContextMenuEntry] : []),
     // A paused job cannot be run now: Hermes's run would resume it for good,
     // so the api refuses it. Resume first.
-    { label: paused ? 'Run now (resume it first)' : 'Run now', icon: [Zap, { size: 14 }], disabled: paused, onSelect: () => onAction?.('run') },
+    { label: paused ? 'Run now (resume it first)' : 'Run now', icon: [Zap, { size: 14 }], disabled: busy || paused, onSelect: () => onAction?.('run') },
     'sep',
-    { label: 'Delete', icon: [Trash2, { size: 14 }], danger: true, onSelect: () => onAction?.('remove') },
+    { label: 'Delete', icon: [Trash2, { size: 14 }], danger: true, disabled: busy, onSelect: () => onAction?.('remove') },
   ]
+
+  const cell = 'font-sans text-[13px] leading-5 text-muted'
+  const cadence = $derived(describeSchedule(job.schedule))
 </script>
+
+{#snippet frequency(className: string)}
+  <span class={cn(className, 'truncate text-muted', rawCron ? 'font-mono text-xs leading-5' : 'font-sans text-[13px] leading-5')} title={job.schedule}>
+    {cadence}
+  </span>
+{/snippet}
 
 <!-- A div, not an li: the schedules lists render these straight into a card
      that draws the dividers. -->
 <div>
-  <div class="relative flex min-h-[52px] items-center gap-4 px-5 py-3 transition-colors hover:bg-hover">
-    <StatusDot status={jobDot(job)} class="shrink-0" />
-    <!-- The row opens its details: the button's ::after covers it, and the
-         switch and the menu sit above that. -->
-    <button
-      type="button"
-      aria-expanded={expanded}
-      onclick={() => (expanded = !expanded)}
-      class="min-w-0 flex-1 truncate text-left font-sans text-sm font-medium leading-5 text-fg after:absolute after:inset-0 focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-accent"
-    >
-      {job.name}
-    </button>
-    {#if agentLabel}
-      <span class="hidden w-28 shrink-0 truncate font-sans text-[13px] leading-5 text-muted md:block">{agentLabel}</span>
-    {/if}
-    <span
-      class={cn('w-52 shrink-0 truncate text-muted', rawCron ? 'font-mono text-xs' : 'font-sans text-[13px] leading-5')}
-      title={job.schedule}
-    >
-      {describeSchedule(job.schedule)}
-    </span>
-    <span class={cn('w-36 shrink-0 text-right font-sans text-[13px] leading-5 tabular-nums', failed ? 'text-danger' : 'text-muted')}>
-      {paused ? 'Paused' : failed ? 'Last run failed' : job.nextRunAt ? `Next ${fmtNext(job.nextRunAt)}` : ''}
-    </span>
+  <SettingsRow onOpen={() => (expanded = !expanded)} {expanded} openLabel={job.name}>
+    {#snippet lead()}<StatusDot status={jobDot(job)} />{/snippet}
+    {#snippet label()}<span class="line-clamp-2 whitespace-normal">{job.name}</span>{/snippet}
+    {#snippet hint()}
+      <!-- The failure is beside the name it is about, so the next run keeps its own column. -->
+      {@render frequency('block @3xl:hidden')}
+      {#if failed}<span class="block text-danger" title={job.lastError ?? undefined}>Last run failed</span>{/if}
+    {/snippet}
+    {#if agentLabel}<span class={cn(CRON_AGENT, cell, 'truncate')} title={agentLabel}>{agentLabel}</span>{/if}
+    {@render frequency(CRON_FREQUENCY)}
+    <span class={cn(CRON_NEXT, cell, 'tabular-nums')}>{paused ? 'Paused' : job.nextRunAt ? fmtNext(job.nextRunAt) : ''}</span>
     {#if onAction}
-      <span class={cn('relative z-10 flex shrink-0 items-center gap-2', busy && 'pointer-events-none opacity-40')}>
-        <Toggle checked={!paused} onChange={() => onAction(paused ? 'resume' : 'pause')} title={paused ? `Resume ${job.name}` : `Pause ${job.name}`} />
-        <SettingsRowMenu label={`Actions for ${job.name}`} items={menu} />
-      </span>
+      <Toggle checked={!paused} disabled={busy} onChange={() => onAction(paused ? 'resume' : 'pause')} title={paused ? `Resume ${job.name}` : `Pause ${job.name}`} />
+      <SettingsRowMenu label={`Actions for ${job.name}`} items={menu} />
     {/if}
-  </div>
+  </SettingsRow>
   {#if expanded && !editing}
-    <div class="space-y-2 pb-4 pl-[42px] pr-5" transition:slide={{ duration: 150 }}>
+    <div class="space-y-2 pb-4 pl-[38px] pr-5" transition:slide={{ duration: 150 }}>
       <p class="max-w-[72ch] whitespace-pre-wrap font-sans text-[13px] leading-5 text-muted">{job.prompt}</p>
       <p class="font-sans text-xs leading-4 text-muted">
         {job.lastRunAt ? `Last ran ${relativeTime(job.lastRunAt)}${job.lastStatus ? ` · ${job.lastStatus}` : ''}` : 'Never ran'}
-        {#if !paused && failed && job.nextRunAt}· Next {fmtNext(job.nextRunAt)}{/if}
         {#if job.lastError}<span class="text-danger"> · {job.lastError}</span>{/if}
       </p>
     </div>
   {/if}
   {#if editing}
-    <div class="space-y-5 pb-5 pl-[42px] pr-5 pt-1" transition:slide={{ duration: 150 }}>
+    <div class="space-y-5 pb-5 pl-[38px] pr-5 pt-1" transition:slide={{ duration: 150 }}>
       <SettingsField label="Name">
         <Input size="sm" bind:value={name} maxlength={80} class="w-[280px]" />
       </SettingsField>
