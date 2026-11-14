@@ -20,7 +20,7 @@
      *  the Cost tab that owns it. */
     href?: string
   } = $props()
-  const plot = $derived(href ? 'h-24' : 'h-40')
+  const plot = $derived(href ? 'h-24' : 'h-32')
 
   // `local` and `cloud` count cache tokens and `prompt + completion` does not,
   // so a day's height is whichever reading is larger. The stack never
@@ -64,7 +64,7 @@
     `${date(r.day, true)}: ${formatTokens(r.total)} tokens, ${shown.map((k) => `${formatTokens(r[k])} ${SERIES[k].label.toLowerCase()}`).join(', ')}, ${r.generations.toLocaleString('en-US')} generations`
 </script>
 
-<SettingsSection title="Tokens per day" description={`${range}, stacked by where the tokens were served.`}>
+<SettingsSection title="Tokens per day">
   {#snippet action()}
     {#if href}<a {href} class={sectionLink}>Cost details<ChevronRight size={14} /></a>{/if}
   {/snippet}
@@ -72,7 +72,7 @@
     <figure class="px-5 pb-4 pt-4">
       <figcaption class="flex flex-wrap items-center gap-x-5 gap-y-1 font-sans text-[13px] leading-5">
         <span class="mr-auto font-medium text-fg">
-          {focus ? date(focus.day, true) : `${rows.length} days`}
+          {focus ? date(focus.day, true) : range}
           <span class="font-normal tabular-nums text-muted">· {formatTokens(focus ? focus.total : sum('total'))} tokens</span>
         </span>
         {#each shown as k (k)}

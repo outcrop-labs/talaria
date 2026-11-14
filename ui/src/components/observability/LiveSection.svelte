@@ -46,7 +46,7 @@
 </StatStrip>
 
 {#if live.lastHour.length > 0}
-  <SettingsSection title="Active this hour" description="Agents that generated in the last 60 minutes.">
+  <SettingsSection title="Active this hour">
     <SettingsGroup>
       <ActiveAgents {live} />
     </SettingsGroup>

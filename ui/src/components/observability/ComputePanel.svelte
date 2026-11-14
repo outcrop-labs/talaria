@@ -45,12 +45,7 @@
 
   <!-- The failure already took the surface above, so it says nothing twice. -->
   {#if !failed}
-    <SettingsSection
-      title="Self-hosted backends"
-      description={data && backends.length > 0
-        ? `${formatTokens(data.usage.today)} tokens today, ${formatTokens(data.usage.month)} in the last 30 days, across ${data.usage.generations.toLocaleString('en-US')} generations.`
-        : undefined}
-    >
+    <SettingsSection title="Self-hosted backends">
       {#snippet action()}
         {#if session.data?.role === 'admin'}
           <a href={p('/models')} class={sectionLink}>Configure in Models<ChevronRight size={14} /></a>
@@ -96,8 +91,11 @@
       {/if}
     </SettingsSection>
 
-    {#if backends.length > 0 && perModel.length > 0}
-      <SettingsSection title="Self-hosted models" description="Tokens each model served on your own hardware in the last 30 days.">
+    {#if data && backends.length > 0 && perModel.length > 0}
+      <SettingsSection
+        title="Self-hosted models"
+        description={`${formatTokens(data.usage.month)} tokens served on your own hardware in the last 30 days, ${formatTokens(data.usage.today)} of them today, across ${data.usage.generations.toLocaleString('en-US')} generations.`}
+      >
         <SettingsGroup>
           <div class="overflow-x-auto">
             <table class={table.root}>
