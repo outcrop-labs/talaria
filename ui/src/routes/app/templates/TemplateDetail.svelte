@@ -3,7 +3,6 @@
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import RecordEditor from '@/components/editor/RecordEditor.svelte'
-  import { relativeTime } from '@/lib/fleet'
   import { draftTemplateForm } from '@/lib/muse.svelte'
   import { updateTemplate, type Template } from '@/lib/templates'
 
@@ -98,7 +97,7 @@
 >
   {#snippet fields(_)}
     <div class="mb-1.5 space-y-5">
-      <p class="font-sans text-[13px] leading-5 text-muted">{blurb} Edited {relativeTime(template.updatedAt)}.</p>
+      <p class="font-sans text-[13px] leading-5 text-muted">{blurb}</p>
       <SettingsField label="Name" for="template-name">
         <Input id="template-name" size="sm" bind:value={name} class="max-w-sm font-sans" />
       </SettingsField>

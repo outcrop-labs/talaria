@@ -328,7 +328,7 @@
         {/if}
 
         {#if data.models.length === 0}
-          <EmptyState icon="▤" title="No models registered yet" hint="Add a provider on the Models tab, then come back and test one." />
+          <EmptyState icon="▤" title="No models registered yet" hint="Add a provider on the Providers tab, then come back and test one." />
         {:else}
           <!-- Every view reads one run, so the switch sits above all of them. -->
           <div class="flex flex-wrap items-center gap-x-6 gap-y-3">

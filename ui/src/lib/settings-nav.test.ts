@@ -18,7 +18,7 @@ const CORE: NavSection[] = [
 ]
 const TABS: SettingsPageTabs = {
   '/models': [
-    { id: 'models', label: 'Models' },
+    { id: 'models', label: 'Providers' },
     { id: 'roles', label: 'Roles' },
   ],
   '/observability': [
@@ -158,6 +158,12 @@ describe('searchSettings', () => {
 
   it("links a page's home tab to the page itself", () => {
     expect(searchSettings(groups, TABS, 'organization').at(-1)).toMatchObject({ to: '/admin', parent: 'Admin' })
+  })
+
+  it('finds the Models page by its first tab, once, at the page', () => {
+    expect(searchSettings(groups, TABS, 'providers')).toEqual([
+      { to: '/models', label: 'Providers', parent: 'Models', icon: 'models', rowTo: '/models', group: 'workspace' },
+    ])
   })
 
   it('lists rows before tabs and does not repeat a page as its own tab', () => {

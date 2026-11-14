@@ -150,7 +150,8 @@ const KEYWORDS: Readonly<Record<string, readonly string[]>> = {
   [MANAGE_HOME]: ['dashboard', 'attention', 'activity', 'restart', 'fleet'],
   '/agents': ['fleet', 'roster', 'roles', 'schedules'],
   '/teams': ['groups', 'members', 'access'],
-  '/models': ['providers', 'llm', 'endpoints', 'keys', 'pricing'],
+  // "providers" is the page's first tab, which search finds by its label.
+  '/models': ['llm', 'endpoints', 'keys', 'pricing'],
   // The page is called Tools. The protocol's name is how people who know it look for it.
   '/mcp': ['mcp', 'model context protocol', 'servers', 'connectors', 'integrations'],
   '/templates': ['tickets', 'plans'],
