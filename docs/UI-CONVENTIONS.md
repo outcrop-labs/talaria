@@ -81,7 +81,13 @@ instead of styling its own panels:
   in the area renders exactly one. `fill` gives a `LibraryPane` the window
   height left under the header.
 - `SettingsSidebar` is the area's navigation. Its rows, active row and search
-  come from the pure `lib/settings-nav.ts`. A new page adds its row there.
+  come from the pure `lib/settings-nav.ts`. A new page adds its row there. It
+  has four groups: Personal, Workspace, Apps and Instance. Every page an
+  installed app contributes (its settings tab, its manage surface) sits under
+  Apps with the app's own glyph, and search results keep the groups.
+- The page at `/mcp` is called Tools wherever a person reads its name: the
+  label comes from `NAV` and `MANAGE_VIEWS` in `lib/nav.ts`. Its blurb names
+  the protocol once, and search still finds it under "mcp".
 - `SettingsSection` is a titled block. `SettingsGroup` is the card.
   `SettingsRow` is one row: `label`, `hint`, an `icon` tile or a bare `lead`
   mark, inline `meta`, a `status` (a `StatusDot` and a word), and the control
@@ -92,8 +98,15 @@ instead of styling its own panels:
   with nothing in its menu passes `items={[]}` and keeps the cell, so the
   column holds down the list.
 - A row that opens the thing it is about takes `onOpen`. The whole row lights
-  on hover and takes the click, and it can still hold a status, one fix button
-  and the kebab. Tab reaches the row first, then its controls.
+  on hover and takes the click, and it can still hold a status, one fix action
+  and the kebab. Tab reaches the row first, then its controls. The row ends
+  in a chevron, after the kebab. In a group where only some rows open, the
+  rest hold the chevron's cell empty, so the kebabs stay in one column.
+- A row whose state needs a person shows one `SettingsRowFix` before its
+  kebab: the word "Fix" and a chevron, never a boxed button. The row's status
+  says what is wrong, `label` names what Fix does ("Fix QuickBooks Online: set
+  credentials"), and the kebab holds the same action under its own name. The
+  alert rows on the overview and in Observability use the same control.
 - A group lines its rows up: the right side is one column, as wide as the
   widest row needs. Put the state of a thing in `status`, not among the
   controls, and down a list every status starts at the same place and every
@@ -106,11 +119,20 @@ instead of styling its own panels:
   spans what is left. A `Stat` with `href` draws an arrow at its top right that
   brightens on hover. `SettingsField` is a stacked field for a dialog, and
   `required` marks its label.
-- A page whose fields save on change passes `autosave` to `SettingsPage`, or
-  calls `useAutosave()` inside it. The header says "Changes save
-  automatically" in one fixed place and flashes "Saved" in the same box. On a
-  phone the cue takes its own line under the blurb. A component that only
-  sometimes shows such fields passes a condition: `useAutosave(() => canEdit)`.
+- Saving says the truth. A page (or tab) where every control saves on change
+  passes `autosave` to `SettingsPage`, or its components call `useAutosave()`.
+  The header says "Changes save automatically" in one fixed place and flashes
+  "Saved" in the same box. On a phone the cue takes its own line under the
+  blurb. A component that only sometimes shows such controls passes a
+  condition: `useAutosave(() => canEdit)`.
+- A group that saves with a button ends in `SettingsSaveBar`: one sentence on
+  why it needs a Save, then the button named for what it saves ("Save
+  identity"), gold when dirty and a disabled outline when clean, with Discard
+  beside it while dirty. While a save bar is mounted the header shows no cue,
+  so the two are never on screen together. A control on that page that still
+  saves on change passes `saved={autosave.saved(key)}` to its `SettingsRow`,
+  which shows a check and "Saved" beside the control for two seconds. The
+  same holds in a dialog, where the header is out of sight.
 - A focus ring on something that fills a card (a row, a stat) is drawn inside
   it with `focus-visible:-outline-offset-2!`. The `!` is needed: the global
   `:focus-visible` rule in `styles.css` is unlayered, so it beats a plain
@@ -155,7 +177,9 @@ each portaled surface (`Modal`, `DropdownMenu`, `ContextMenu`, `Popover`, the
 `Combobox` panel, `InfoTip`). `voiceScope(voice)` gives the value. Under that
 attribute `styles.css` re-derives Mercury's tokens with `color-mix`, per
 theme: a lighter card and field and a brighter hairline in dark, a stronger
-hairline in light, and `text-muted` at about 7:1 in both. A new portaled
+hairline in light, and `text-muted` at about 7:1 in both. In dark a card's
+own edge (`rounded-lg border border-line bg-panel`) is one step past the
+hairline, `--settings-card-line`; a state border on the card still wins. A new portaled
 primitive that is voice-aware sets the attribute, or it renders with the
 app's tokens inside a settings page. Two fills exist only in the scope:
 `--settings-selected` for the sidebar's selected row, and `--settings-fill`
@@ -165,6 +189,11 @@ cream in the light theme, so it is not a selected state there.
 
 In the sans voice a `Toggle` that is on is a solid gold track with a ground
 knob. Off is a neutral track with a muted knob.
+
+A brand mark and an initial share one tile: 32px, `rounded-md`, the same
+border, and in dark the same light plate (`McpServerMark`). The rich-text
+toolbar is short in the sans voice: bold, italic, the two lists, link, a
+"Text style" menu and "More" for everything else.
 
 `ConfirmHost` mounts at the app root, above every context. It asks
 `screenVoice()` when it opens, which is `sans` while the sidebar holds the
