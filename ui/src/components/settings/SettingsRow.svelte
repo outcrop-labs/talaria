@@ -228,5 +228,10 @@
     > :global([data-row-menu]:has(+ [data-row-expander])) {
       margin-right: -0.5rem;
     }
+    /* The named action is what the row ends in, so it sits at the row's edge
+       as a chevron does, and the kebab's cell is held on its inner side. */
+    > :global([data-row-action]) {
+      order: 1;
+    }
   }
 </style>
