@@ -8,6 +8,7 @@
 
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -62,6 +63,8 @@
   const session = $derived(sessionQuery.data)
   const isAdmin = $derived(session?.role === 'admin')
   const canManage = $derived(team.role === 'owner')
+  // The name, the description and the access switches save on change, for someone who may change them.
+  const autosave = useAutosave(() => canManage)
 
   // svelte-ignore state_referenced_locally -- reason: per-team drafts; the view remounts per team selection
   let name = $state(team.name)
@@ -145,6 +148,7 @@
       description = team.description ?? ''
       return
     }
+    autosave.flash()
     onChanged()
   }
 
@@ -179,6 +183,7 @@
       toastError('Could not save access', e)
       return
     }
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['team-access', team.id] })
   }
 

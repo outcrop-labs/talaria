@@ -2,6 +2,7 @@
   import { untrack } from 'svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Sparkles } from '@lucide/svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -38,6 +39,8 @@
   const qc = useQueryClient()
   const query = useAssistant()
   const assistant = $derived(query.data)
+  // The model and the direct-message reach save on change. They exist once the assistant does.
+  const autosave = useAutosave(() => Boolean(assistant))
   let wizard = $state(false)
   let personaEditor = $state(false)
   let handle = $state('')
@@ -68,6 +71,7 @@
     error = null
     const r = await updateAssistant({ dmAccess })
     if (!r.assistant) error = r.error ?? 'Could not save'
+    else autosave.flash()
     await qc.invalidateQueries({ queryKey: ['my-assistant'] })
   }
 
@@ -76,7 +80,8 @@
   const activeTier = $derived(assistant?.tiers.find((t) => t.active)?.name ?? '')
   const setTier = async (tier: string) => {
     if (busy) return
-    await updateAssistant({ model: tier })
+    const r = await updateAssistant({ model: tier })
+    if (r.assistant) autosave.flash()
     await qc.invalidateQueries({ queryKey: ['my-assistant'] })
   }
 

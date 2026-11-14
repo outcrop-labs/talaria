@@ -2,6 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { anyFailed, anyPending } from '@/components/ui/query-state'
   import { toastError } from '@/lib/toast.svelte'
@@ -133,6 +134,7 @@
   // alone", so a model save and an effort save are the same PUT either way.
   // The refetch is what surfaces the unfit warning for a pick just made —
   // nothing blocks or reverts; the admin is told and the choice stands.
+  const autosave = useAutosave()
   const save = async (slot: Slot, patch: { model?: string | null; effort?: string | null }) => {
     try {
       await putJson<{ ok: true }>(
@@ -143,6 +145,7 @@
       toastError('Could not save that setting', e)
       return
     }
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['model-roles'] })
     await qc.invalidateQueries({ queryKey: ['platform-agents'] })
   }

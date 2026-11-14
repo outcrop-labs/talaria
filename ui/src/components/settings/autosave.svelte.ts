@@ -67,10 +67,20 @@ export function provideAutosave(ms = 1800): { readonly active: boolean; readonly
 }
 
 /** Call during init in a component whose fields save on change or blur.
- *  Outside a `SettingsPage` it does nothing. */
-export function useAutosave(): { flash: () => void } {
+ *  Outside a `SettingsPage` it does nothing. `when` is for a component that
+ *  only sometimes shows such fields (nothing set up yet, a viewer who cannot
+ *  edit): the cue is on while it returns true. */
+export function useAutosave(when?: () => boolean): { flash: () => void } {
   const channel = getContext<AutosaveChannel | undefined>(KEY)
-  channel?.register()
-  onDestroy(() => channel?.release())
+  if (when) {
+    $effect(() => {
+      if (!when()) return
+      channel?.register()
+      return () => channel?.release()
+    })
+  } else {
+    channel?.register()
+    onDestroy(() => channel?.release())
+  }
   return { flash: () => channel?.flash() }
 }

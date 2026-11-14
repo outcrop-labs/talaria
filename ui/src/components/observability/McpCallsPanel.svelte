@@ -1,6 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import { searchParams } from 'sv-router'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -94,10 +95,13 @@
   const qc = useQueryClient()
   const retentionQuery = useMcpCallsRetention(() => isAdmin)
   let savingRetention = $state(false)
+  // The one field on this tab, and only an admin has it.
+  const autosave = useAutosave(() => Boolean(retentionQuery.data))
   const setRetention = async (days: number) => {
     savingRetention = true
     try {
       await putJson(RETENTION_URL, { days })
+      autosave.flash()
       await qc.invalidateQueries({ queryKey: ['mcp-calls-retention'] })
     } catch (e) {
       toastError('Could not change how long MCP calls are kept', e)
