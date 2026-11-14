@@ -1,8 +1,9 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { tableCell, tableHead, tableNum, tableRow } from '@/components/admin/table'
+  import { tableCell, tableHead, tableRow } from '@/components/admin/table'
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
@@ -34,7 +35,7 @@
   }))
   const data = $derived(query.data)
   const cfg = $derived(data?.config)
-  const save = async (patch: Partial<GuardData['config']>) => {
+  const save = async (row: string, patch: Partial<GuardData['config']>) => {
     if (!cfg) return
     const body = { ...cfg, ...patch }
     try {
@@ -44,11 +45,17 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['guardrails'] })
-    autosave.flash()
+    autosave.flash(row)
   }
   const rules = $derived(data?.rules ?? [])
   const off = $derived(cfg?.mode === 'off')
   let showFindings = $state(false)
+
+  // The header's captions and each row's cells share these widths.
+  const CATCHES = 'w-[19rem] shrink-0 truncate'
+  const NUM = 'w-[4.5rem] shrink-0 text-right'
+  const SWITCH = 'flex w-14 shrink-0 justify-end'
+  const cell = 'font-sans text-[13px] leading-5'
 
   const MODE_HINT: Record<string, string> = {
     off: 'No replies are checked.',
@@ -88,20 +95,20 @@
              invents when the read failed — over a failure that reads as a
              guard quietly running and finding nothing. QueryState's error
              branch holds it. -->
-        <SettingsRow label="Mode" hint={MODE_HINT[cfg?.mode ?? 'observe']} as="label">
-          <Select size="sm" value={cfg?.mode ?? 'observe'} onchange={(e) => void save({ mode: e.currentTarget.value })} class="w-[280px]">
+        <SettingsRow label="Mode" hint={MODE_HINT[cfg?.mode ?? 'observe']} as="label" saved={autosave.saved('mode')}>
+          <Select size="sm" value={cfg?.mode ?? 'observe'} onchange={(e) => void save('mode', { mode: e.currentTarget.value })} class="w-[280px]">
             <option value="off">Off</option>
             <option value="observe">Observe</option>
             <option value="annotate">Annotate</option>
             <option value="strict">Strict</option>
           </Select>
         </SettingsRow>
-        <SettingsRow label="Minimum confidence" hint="Findings the check is less sure of than this are dropped." as="label">
+        <SettingsRow label="Minimum confidence" hint="Findings the check is less sure of than this are dropped." as="label" saved={autosave.saved('confidence')}>
           <input
             type="range" min={0} max={1} step={0.05}
             value={cfg?.minConfidence ?? 0.5}
             disabled={off}
-            onchange={(e) => void save({ minConfidence: Number(e.currentTarget.value) })}
+            onchange={(e) => void save('confidence', { minConfidence: Number(e.currentTarget.value) })}
             class="w-40 accent-accent disabled:opacity-50"
           />
           <span class="w-10 text-right font-sans text-[13px] leading-5 tabular-nums text-fg">{((cfg?.minConfidence ?? 0.5) * 100).toFixed(0)}%</span>
@@ -110,44 +117,33 @@
           label="Coach agents"
           hint="Repeated findings become advice in the agent's instructions."
           info="Only counts and advice are added, never the flagged content. It applies the next time your agents are restarted."
+          saved={autosave.saved('coach')}
         >
-          <Toggle checked={cfg?.coach ?? false} disabled={off} onChange={(checked) => void save({ coach: checked })} title="Coach agents from findings" />
+          <Toggle checked={cfg?.coach ?? false} disabled={off} onChange={(checked) => void save('coach', { coach: checked })} title="Coach agents from findings" />
         </SettingsRow>
-        <table class="w-full table-fixed">
-          <colgroup>
-            <col class="w-64" />
-            <col />
-            <col class="w-28" />
-            <col class="w-[4.5rem]" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th class={tableHead}>Check</th>
-              <th class={tableHead}>Catches</th>
-              <th class={cn(tableHead, 'text-right')}>Findings</th>
-              <th class={tableHead}><span class="sr-only">On</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each rules as c (c.id)}
-              {@const r = ruleParts(c.label)}
-              <tr class={tableRow}>
-                <td class={cn(tableCell, 'truncate font-medium')}>{r.name}</td>
-                <td class={cn(tableCell, 'truncate text-muted')}>{r.catches}</td>
-                <td class={cn(tableCell, tableNum, !d.stats.byCheck[c.id] && 'text-muted')}>{(d.stats.byCheck[c.id] ?? 0).toLocaleString()}</td>
-                <td class={tableCell}>
-                  <Toggle
-                    class="justify-end"
-                    checked={cfg?.checks[c.id] ?? c.defaultOn}
-                    disabled={off}
-                    onChange={(checked) => cfg && void save({ checks: { ...cfg.checks, [c.id]: checked } })}
-                    title={`Run the ${r.name} check`}
-                  />
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <SettingsHeaderRow label="Check" class="h-9">
+          <span class={CATCHES}>Catches</span>
+          <span class={NUM}>Findings</span>
+          <span class={SWITCH}></span>
+        </SettingsHeaderRow>
+        {#each rules as c (c.id)}
+          {@const r = ruleParts(c.label)}
+          <SettingsRow saved={autosave.saved(c.id)} class="min-h-11 py-1.5">
+            {#snippet label()}<span class="text-[13px]">{r.name}</span>{/snippet}
+            <span class="{CATCHES} {cell} text-muted" title={r.catches}>{r.catches}</span>
+            <span class={cn(NUM, cell, 'tabular-nums', d.stats.byCheck[c.id] ? 'text-fg' : 'text-muted')}>
+              {(d.stats.byCheck[c.id] ?? 0).toLocaleString()}
+            </span>
+            <span class={SWITCH}>
+              <Toggle
+                checked={cfg?.checks[c.id] ?? c.defaultOn}
+                disabled={off}
+                onChange={(checked) => cfg && void save(c.id, { checks: { ...cfg.checks, [c.id]: checked } })}
+                title={`Run the ${r.name} check`}
+              />
+            </span>
+          </SettingsRow>
+        {/each}
         {#if d.findings.length > 0}
           <SettingsRow
             label="Recent findings"

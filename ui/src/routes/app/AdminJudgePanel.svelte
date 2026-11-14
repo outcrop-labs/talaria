@@ -36,7 +36,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['judge-config'] })
-    autosave.flash()
+    autosave.flash(Object.keys(patch)[0])
   }
 </script>
 
@@ -57,13 +57,14 @@
              render them: it would show the judge as OFF, and the first click
              would then save it off for real. QueryState's error branch holds
              that. -->
-        <SettingsRow label="Run the judge" hint="Review every ticket handed to quality review.">
+        <SettingsRow label="Run the judge" hint="Review every ticket handed to quality review." saved={autosave.saved('enabled')}>
           <Toggle checked={enabled} onChange={(checked) => void save({ enabled: checked })} title="Run the judge on quality review" />
         </SettingsRow>
         <SettingsRow
           label="When work needs changes"
           hint={mode === 'enforcing' ? 'The ticket goes straight back to the agent with the issues.' : 'The verdict is posted and a person decides.'}
           info="Enforcing sends work back to the agent a limited number of times, then a person takes over. Each board can override this, and boards set to inherit follow it."
+          saved={autosave.saved('mode')}
         >
           <Segmented
             options={[
@@ -74,7 +75,7 @@
             onChange={(m) => void save({ mode: m })}
           />
         </SettingsRow>
-        <SettingsRow label="Judge model" hint="The model that writes the verdict." as="label">
+        <SettingsRow label="Judge model" hint="The model that writes the verdict." as="label" saved={autosave.saved('model')}>
           <Select size="sm" value={model} onchange={(e) => void save({ model: e.currentTarget.value || null })} class="w-[280px]" disabled={!enabled}>
             <option value="">Default (self-hosted)</option>
             {#each data?.models ?? [] as m (m)}<option value={m}>{m}</option>{/each}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import FactsList from '@/components/admin/FactsList.svelte'
   import NoticeRow from '@/components/admin/NoticeRow.svelte'
+  import SavedMark from '@/components/admin/SavedMark.svelte'
   import { tableCell, tableHead, tableRow } from '@/components/admin/table'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -20,6 +21,7 @@
     shadow: m,
     configured,
     speechRooms,
+    floorSaved,
     onFloor,
     onClose,
   }: {
@@ -27,6 +29,8 @@
     shadow: SiteShadow | undefined
     configured: boolean
     speechRooms: DecideData['speechRooms']
+    /** The threshold saves when its field is left, and a save just landed. */
+    floorSaved: boolean
     onFloor: (floor: number) => void
     onClose: () => void
   } = $props()
@@ -104,6 +108,7 @@
           {#if s.on && s.floor !== s.defaultFloor}
             <Button size="md" variant="ghost" onclick={() => onFloor(s.defaultFloor)}>Reset to {s.defaultFloor}</Button>
           {/if}
+          <SavedMark on={floorSaved} />
         </div>
       </SettingsField>
     {/if}

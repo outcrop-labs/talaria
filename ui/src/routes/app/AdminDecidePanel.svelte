@@ -6,7 +6,7 @@
   import type { Fact } from '@/components/admin/facts'
   import SaveAction from '@/components/admin/SaveAction.svelte'
   import { secretHint } from '@/components/admin/secret-hint'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useAutosave, useExplicitSave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
@@ -19,6 +19,7 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { submitOnEnter } from '@/components/ui/control'
+  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { cn } from '@/lib/cn'
   import { getJson, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
@@ -65,22 +66,30 @@
   let openSiteId = $state<string | null>(null)
   const openSite = $derived(allSites.find((s) => s.id === openSiteId))
   const shadowFor = (id: string) => shadow.find((s) => s.site === id)
-  const setFloor = (floor: number) => {
-    if (openSiteId) void applySite(openSiteId, { floor })
+  const autosave = useAutosave()
+  // Whether a provider needs a key is not known until the read lands, and a
+  // key field has its own Save. Until then the header says nothing.
+  useExplicitSave(() => query.isPending)
+  // The threshold is edited in the dialog, which covers the page's own cue.
+  const floorSaved = useSavedFlash()
+  const setFloor = async (floor: number) => {
+    if (openSiteId && (await applySite(openSiteId, { floor }))) floorSaved.flash()
   }
   // Writing a site's switch or floor goes through the same PUT, under its own
   // key, so it gets its own audit entry rather than riding a provider change.
-  const applySite = async (id: string, patch: { on?: boolean; floor?: number }) => {
+  const applySite = async (id: string, patch: { on?: boolean; floor?: number }): Promise<boolean> => {
     try {
       await putJson('/api/admin/decide', { site: { id, ...patch } })
     } catch (e) {
       toastError('Could not change that site', e)
-      return
+      return false
     }
     await qc.invalidateQueries({ queryKey: ['decide-config'] })
-    autosave.flash()
+    return true
   }
-  const autosave = useAutosave()
+  const setSite = async (id: string, on: boolean) => {
+    if (await applySite(id, { on })) autosave.flash(`site:${id}`)
+  }
 
   let key = $state('')
   let savingKey = $state(false)
@@ -149,7 +158,8 @@
 
   // Autosave: provider / url / wire / model / timeout apply on change. Only
   // the API key — a secret being committed — keeps an explicit save.
-  const apply = async (patch: Record<string, unknown>) => {
+  type Row = 'provider' | 'wire' | 'url' | 'key' | 'model' | 'timeout'
+  const apply = async (row: Row, patch: Record<string, unknown>) => {
     try {
       await putJson('/api/admin/decide', patch)
     } catch (e) {
@@ -158,12 +168,12 @@
     }
     result = null
     await qc.invalidateQueries({ queryKey: ['decide-config'] })
-    autosave.flash()
+    autosave.flash(row)
   }
   const saveKey = async () => {
     savingKey = true
     try {
-      await apply({ apiKey: key })
+      await apply('key', { apiKey: key })
       key = ''
     } finally {
       savingKey = false
@@ -230,11 +240,12 @@
           label="Provider"
           hint={meta && meta.id !== 'off' ? `Where it runs: ${meta.country}.` : 'Every decision keeps the behavior it has today.'}
           as="label"
+          saved={autosave.saved('provider')}
         >
           <Select
             size="sm"
             value={cfg?.provider ?? 'off'}
-            onchange={(e) => void apply({ provider: e.currentTarget.value, model: null, url: null, wire: null })}
+            onchange={(e) => void apply('provider', { provider: e.currentTarget.value, model: null, url: null, wire: null })}
             class="w-[280px]"
           >
             {#each data?.providers ?? [] as p (p.id)}
@@ -244,8 +255,8 @@
         </SettingsRow>
 
         {#if meta?.needsWire}
-          <SettingsRow label="Protocol" hint="The request format your endpoint speaks." as="label">
-            <Select size="sm" value={cfg?.wire ?? ''} onchange={(e) => void apply({ wire: e.currentTarget.value || null })} class="w-[280px]">
+          <SettingsRow label="Protocol" hint="The request format your endpoint speaks." as="label" saved={autosave.saved('wire')}>
+            <Select size="sm" value={cfg?.wire ?? ''} onchange={(e) => void apply('wire', { wire: e.currentTarget.value || null })} class="w-[280px]">
               <option value="">Choose a protocol</option>
               {#each data?.wires ?? [] as w (w)}<option value={w}>{w}</option>{/each}
             </Select>
@@ -253,11 +264,11 @@
         {/if}
 
         {#if meta?.needsUrl}
-          <SettingsRow label="Endpoint URL" as="label">
+          <SettingsRow label="Endpoint URL" as="label" saved={autosave.saved('url')}>
             <Input
               size="sm"
               value={cfg?.url ?? ''}
-              onblur={(e) => e.currentTarget.value !== (cfg?.url ?? '') && void apply({ url: e.currentTarget.value || null })}
+              onblur={(e) => e.currentTarget.value !== (cfg?.url ?? '') && void apply('url', { url: e.currentTarget.value || null })}
               placeholder="http://tei.internal:80"
               class="w-[280px] font-mono"
             />
@@ -265,7 +276,7 @@
         {/if}
 
         {#if meta?.needsKey}
-          <SettingsRow label="API key" hint={secretHint(!!cfg?.hasKey)}>
+          <SettingsRow label="API key" hint={secretHint(!!cfg?.hasKey)} saved={autosave.saved('key')}>
             <Input
               size="sm"
               type="password"
@@ -291,6 +302,7 @@
             info={detected && detected.length > 0
               ? `This endpoint accepts: ${detected.map((m) => (m.released ? `${m.name} (${m.released})` : m.name)).join(', ')}`
               : undefined}
+            saved={autosave.saved('model')}
           >
             {#snippet hint()}
               {#if detectError}
@@ -308,7 +320,7 @@
               size="sm"
               aria-label="Decision model id"
               value={cfg?.model ?? ''}
-              onblur={(e) => e.currentTarget.value !== (cfg?.model ?? '') && void apply({ model: e.currentTarget.value || null })}
+              onblur={(e) => e.currentTarget.value !== (cfg?.model ?? '') && void apply('model', { model: e.currentTarget.value || null })}
               placeholder={modelOptions[0] ?? 'endpoint:model'}
               list={`decide-models-${meta.id}`}
               class="w-[280px] font-mono"
@@ -337,12 +349,12 @@
         {/if}
 
         {#if meta}
-          <SettingsRow label="Timeout" hint="Past this, the caller uses its own path instead of waiting." as="label">
+          <SettingsRow label="Timeout" hint="Past this, the caller uses its own path instead of waiting." as="label" saved={autosave.saved('timeout')}>
             <Input
               size="sm"
               type="number"
               value={String(cfg?.timeoutMs ?? 4000)}
-              onblur={(e) => Number(e.currentTarget.value) !== (cfg?.timeoutMs ?? 4000) && void apply({ timeoutMs: Number(e.currentTarget.value) })}
+              onblur={(e) => Number(e.currentTarget.value) !== (cfg?.timeoutMs ?? 4000) && void apply('timeout', { timeoutMs: Number(e.currentTarget.value) })}
               class="w-28 tabular-nums"
             />
             <span class="font-sans text-[13px] leading-5 text-muted">ms</span>
@@ -404,7 +416,12 @@
         {@const m = shadowFor(s.id)}
         {@const st = siteStatus(s, m)}
         {@const acts = s.on && !s.switchLivesAt}
-        <SettingsRow onOpen={() => (openSiteId = s.id)} openLabel={`Details for ${s.label}`} class="min-h-11 py-1.5">
+        <SettingsRow
+          onOpen={() => (openSiteId = s.id)}
+          openLabel={`Details for ${s.label}`}
+          saved={autosave.saved(`site:${s.id}`)}
+          class="min-h-11 py-1.5"
+        >
           <!-- The size of a table cell, so this list reads like the tables under it. -->
           {#snippet label()}<span class="text-[13px]">{s.label}</span>{/snippet}
           <span class={cn(NUM, cell, !(m && m.answered > 0) && 'text-muted')} aria-label="Agreement">{m ? pct(m.agreed, m.answered) : '—'}</span>
@@ -412,7 +429,7 @@
           <span class={STATE}><RowStatus status={st.status} title={s.switchLivesAt ?? undefined}>{st.word}</RowStatus></span>
           <span class={SWITCH}>
             {#if !s.switchLivesAt}
-              <Toggle checked={s.on} onChange={(on) => void applySite(s.id, { on })} title={`Use the decision model for ${s.label}`} />
+              <Toggle checked={s.on} onChange={(on) => void setSite(s.id, on)} title={`Use the decision model for ${s.label}`} />
             {/if}
           </span>
           <SettingsRowMenu label={`Actions for ${s.label}`} items={[{ label: 'Details', onSelect: () => (openSiteId = s.id) }]} />
@@ -428,7 +445,8 @@
     shadow={shadowFor(openSite.id)}
     configured={data?.configured ?? false}
     {speechRooms}
-    onFloor={setFloor}
+    floorSaved={floorSaved.saved}
+    onFloor={(floor) => void setFloor(floor)}
     onClose={() => (openSiteId = null)}
   />
 {/if}

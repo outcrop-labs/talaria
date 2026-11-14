@@ -3,6 +3,7 @@
   import { tableCell, tableHead, tableRow } from '@/components/admin/table'
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -34,7 +35,7 @@
   const data = $derived(query.data)
   const cfg = $derived(data?.config)
   const agents = $derived(data?.agents ?? [])
-  const save = async (patch: Partial<OutreachData['config']>, proactiveAgents?: string[]) => {
+  const save = async (row: string, patch: Partial<OutreachData['config']>, proactiveAgents?: string[]) => {
     if (!cfg) return
     const body = {
       ...cfg,
@@ -43,7 +44,7 @@
     }
     try {
       await putJson<{ ok: true }>('/api/admin/outreach', body)
-      autosave.flash()
+      autosave.flash(row)
     } catch (e) {
       toastError('Save failed', e)
     }
@@ -53,6 +54,8 @@
   }
   let showEvents = $state(false)
   const unit = 'w-14 font-sans text-[13px] leading-5 text-muted'
+  // The header's caption and each row's switch share this width.
+  const SWITCH = 'flex w-[4.5rem] shrink-0 justify-end'
   const KIND_LABEL: Record<string, string> = { dm: 'Message', sweep: 'Check-in' }
   const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1)
 </script>
@@ -73,71 +76,54 @@
         <!-- QueryState's error branch holds a failed read: a toggle that is off
              and an empty agent list are this component's defaults, not the
              org's actual policy. -->
-        <SettingsRow label="Scheduled check-ins" hint="The agents turned on below check in on their own.">
-          <Toggle checked={cfg?.enabled ?? false} onChange={(checked) => void save({ enabled: checked })} title="Enable scheduled check-ins" />
+        <SettingsRow label="Scheduled check-ins" hint="The agents turned on below check in on their own." saved={autosave.saved('enabled')}>
+          <Toggle checked={cfg?.enabled ?? false} onChange={(checked) => void save('enabled', { enabled: checked })} title="Enable scheduled check-ins" />
         </SettingsRow>
-        <SettingsRow label="Time between check-ins" hint="The shortest gap between one agent's check-ins." as="label">
+        <SettingsRow label="Time between check-ins" hint="The shortest gap between one agent's check-ins." as="label" saved={autosave.saved('interval')}>
           <Input
             size="sm" type="number" min={15} max={1440} class="w-24 tabular-nums"
             value={cfg?.intervalMinutes ?? 240}
             disabled={!cfg?.enabled}
-            oninput={(e) => void save({ intervalMinutes: Math.max(15, Math.min(1440, Number(e.currentTarget.value) || 240)) })}
+            oninput={(e) => void save('interval', { intervalMinutes: Math.max(15, Math.min(1440, Number(e.currentTarget.value) || 240)) })}
           />
           <span class={unit}>minutes</span>
         </SettingsRow>
-        <SettingsRow label="Messages per person" hint="Direct messages an agent may start with one person each day." as="label">
+        <SettingsRow label="Messages per person" hint="Direct messages an agent may start with one person each day." as="label" saved={autosave.saved('perPerson')}>
           <Input
             size="sm" type="number" min={1} max={20} class="w-24 tabular-nums"
             value={cfg?.dailyDmCap ?? 3}
-            oninput={(e) => void save({ dailyDmCap: Math.max(1, Math.min(20, Number(e.currentTarget.value) || 3)) })}
+            oninput={(e) => void save('perPerson', { dailyDmCap: Math.max(1, Math.min(20, Number(e.currentTarget.value) || 3)) })}
           />
           <span class={unit}>a day</span>
         </SettingsRow>
-        <SettingsRow label="Messages per agent" hint="Direct messages one agent may start each day, everyone counted." as="label">
+        <SettingsRow label="Messages per agent" hint="Direct messages one agent may start each day, everyone counted." as="label" saved={autosave.saved('perAgent')}>
           <Input
             size="sm" type="number" min={1} max={500} class="w-24 tabular-nums"
             value={cfg?.dailyDmTotalCap ?? 20}
-            oninput={(e) => void save({ dailyDmTotalCap: Math.max(1, Math.min(500, Number(e.currentTarget.value) || 20)) })}
+            oninput={(e) => void save('perAgent', { dailyDmTotalCap: Math.max(1, Math.min(500, Number(e.currentTarget.value) || 20)) })}
           />
           <span class={unit}>a day</span>
         </SettingsRow>
         {#if agents.length > 0}
-          <table class="w-full table-fixed">
-            <colgroup>
-              <col />
-              <col class="w-28" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th class={tableHead}>Agent</th>
-                <th class={cn(tableHead, 'text-right')}>Checks in</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each agents as a (a.model)}
-                <tr class={tableRow}>
-                  <td class={tableCell}>
-                    <span class="flex items-center gap-2">
-                      <span class="truncate font-medium">{a.displayName}</span>
-                      {#if a.personal}<Chip>Personal</Chip>{/if}
-                    </span>
-                  </td>
-                  <td class={tableCell}>
-                    <span class="flex justify-end">
-                      <Toggle
-                        checked={a.proactive}
-                        title={`Let ${a.displayName} check in`}
-                        onChange={(checked) => {
-                          const next = agents.filter((x) => (x.model === a.model ? checked : x.proactive)).map((x) => x.model)
-                          void save({}, next)
-                        }}
-                      />
-                    </span>
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+          <SettingsHeaderRow label="Agent" class="h-9">
+            <span class="{SWITCH} whitespace-nowrap">Checks in</span>
+          </SettingsHeaderRow>
+          {#each agents as a (a.model)}
+            <SettingsRow saved={autosave.saved(a.model)} class="min-h-11 py-1.5">
+              {#snippet label()}<span class="text-[13px]">{a.displayName}</span>{/snippet}
+              {#snippet meta()}{#if a.personal}<Chip>Personal</Chip>{/if}{/snippet}
+              <span class={SWITCH}>
+                <Toggle
+                  checked={a.proactive}
+                  title={`Let ${a.displayName} check in`}
+                  onChange={(checked) => {
+                    const next = agents.filter((x) => (x.model === a.model ? checked : x.proactive)).map((x) => x.model)
+                    void save(a.model, {}, next)
+                  }}
+                />
+              </span>
+            </SettingsRow>
+          {/each}
         {/if}
         {#if d.events.length > 0}
           <SettingsRow
