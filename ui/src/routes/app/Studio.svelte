@@ -2,7 +2,7 @@
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ChevronDown, ChevronRight, Users } from '@lucide/svelte'
+  import { ChevronDown, Users } from '@lucide/svelte'
   import { navigate, p } from '@/router'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
@@ -10,17 +10,15 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
-  import Modal from '@/components/ui/Modal.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { toastError } from '@/lib/toast.svelte'
-  import WorkflowDetail from '@/components/workflows/WorkflowDetail.svelte'
+  import WorkflowDialog from '@/components/workflows/WorkflowDialog.svelte'
   import SkillEditor from '@/components/skills/SkillEditor.svelte'
   import { skillTitle } from '@/components/skills/skill-title'
   import StudioGuide, { type GuidePrefill } from '@/components/workflows/StudioGuide.svelte'
@@ -45,7 +43,8 @@
   // The Studio — build your agents, one at a time. The rail picks who you're
   // building for ("Every agent" = shared know-how, or one agent); the dashboard
   // is that agent's whole working world:
-  //   Asked for help   what IT asked for (capability gaps, ranked by recurrence)
+  //   Asked for help   what IT asked for (capability gaps, ranked by recurrence),
+  //                    first when there is any and absent when there is none
   //   Skills           what it knows — own + inherited shared know-how
   //   Routed work      the workflows that steer ticket work onto it
   // "Teach" runs the guided flow (name → recognize → Muse-drafted skill → done)
@@ -178,8 +177,7 @@
   }
 </script>
 
-<!-- A section with nothing in it is its title and one line: an empty card in
-     the page's first position only pushes the skills down. -->
+<!-- A section with nothing in it is its title and one line, not an empty card. -->
 {#snippet quiet(title: string, line: string)}
   <section>
     <h2 class="font-sans text-[15px] font-semibold leading-5 text-fg">{title}</h2>
@@ -263,12 +261,12 @@
                   {#each requests as g (g.id)}
                     {@const kind = skillTitle(g.kind)}
                     <SettingsRow label={kind} info={g.needs ? `What it says it needs: ${g.needs}` : undefined}>
-                      {#snippet hint()}
-                        <span class="block">{g.missing}</span>
-                        <span class="mt-1 block">
+                      {#snippet meta()}
+                        <span class="min-w-0 truncate font-sans text-[13px] leading-5 text-muted">
                           {everyone ? `${askerOf(g)} asked` : 'Asked'} {times(g.seenCount)}, last {relativeTime(g.lastSeen)}
                         </span>
                       {/snippet}
+                      {#snippet hint()}<span class="line-clamp-2" title={g.missing}>{g.missing}</span>{/snippet}
                       {#if selected.canEdit}
                         <Button size="sm" variant="outline" onclick={() => selected && build(selected, g)}>Build it</Button>
                       {/if}
@@ -277,8 +275,6 @@
                   {/each}
                 </SettingsGroup>
               </SettingsSection>
-            {:else}
-              {@render quiet('Asked for help', 'No open requests')}
             {/if}
 
             <SettingsSection
@@ -342,9 +338,8 @@
               >
                 <SettingsGroup>
                   {#each routed as w (w.id)}
-                    <SettingsRow label={w.name} hint={describe(w)} href={studioHref({ a: selectedKey, w: w.id })}>
+                    <SettingsRow label={w.name} hint={describe(w)} openHref={studioHref({ a: selectedKey, w: w.id })} openLabel={`Edit ${w.name}`}>
                       {#snippet status()}{#if !w.enabled}<StatusDot status="idle" />Off{/if}{/snippet}
-                      <ChevronRight size={16} class="text-muted" />
                     </SettingsRow>
                   {/each}
                 </SettingsGroup>
@@ -379,18 +374,12 @@
       />
     {/if}
     {#if openWorkflow}
-      <Modal open onClose={closeOverlay} width="max-w-2xl" title={openWorkflow.name}>
-        {#key openWorkflow.id}
-          <WorkflowDetail workflow={openWorkflow} onChanged={() => void qc.invalidateQueries({ queryKey: ['workflows'] })} />
-        {/key}
-        {#snippet footer()}
-          <div class="flex items-center gap-2">
-            <DangerLink onClick={() => openWorkflow && void removeWorkflow(openWorkflow)}>Delete workflow</DangerLink>
-            <span class="ml-auto"></span>
-            <Button variant="outline" size="sm" onclick={closeOverlay}>Done</Button>
-          </div>
-        {/snippet}
-      </Modal>
+      <WorkflowDialog
+        workflow={openWorkflow}
+        onClose={closeOverlay}
+        onChanged={() => void qc.invalidateQueries({ queryKey: ['workflows'] })}
+        onDelete={() => openWorkflow && void removeWorkflow(openWorkflow)}
+      />
     {/if}
     {#if market && selected?.canEdit}
       <SkillMarketplaceModal owner={selected.owner} owners={rawOwners} onClose={() => (market = false)} />

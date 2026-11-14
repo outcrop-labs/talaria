@@ -1,8 +1,9 @@
 <script lang="ts">
   // The body of the dialog a Studio "Routed work" row opens. A workflow
   // classifies tickets by match rules (boards / labels / keywords) and delivers
-  // skills and declared toolkits with the dispatched work. The dialog's footer,
-  // with Delete, is the caller's.
+  // skills and declared toolkits with the dispatched work. The frame and its
+  // footer are `WorkflowDialog`.
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
@@ -45,8 +46,10 @@
     workflow.toolkits.map((t) => (t.tools?.length ? `${t.server}: ${t.tools.join(', ')}` : t.server)).join('\n'),
   )
 
+  const autosave = useAutosave()
   const save = async (patch: Parameters<typeof updateWorkflow>[1]) => {
     await updateWorkflow(workflow.id, patch)
+    autosave.flash()
     onChanged()
   }
   const saveMatch = (m: Partial<TaskWorkflow['match']>) => void save({ match: { ...workflow.match, ...m } })
@@ -171,7 +174,7 @@
   <section class="space-y-3">
     <div class="flex items-center gap-2">
       <h3 class={heading}>Tools</h3>
-      <InfoTip text="MCP servers this work expects, one per line, with tools after a colon if only some are needed. This only declares them. Access is still granted on the MCP page." />
+      <InfoTip text="Tool servers this work expects, one per line, with tools after a colon if only some are needed. This only declares them. Access is still granted on the Tools page." />
     </div>
     <Textarea autoGrow rows={2} bind:value={toolkitsText} onblur={saveToolkits} class="max-h-40 font-mono text-xs" placeholder={'github: create_pr, get_diff\nsandbox'} />
   </section>
