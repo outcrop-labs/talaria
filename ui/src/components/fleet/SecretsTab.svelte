@@ -6,7 +6,6 @@
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
-  import EmptyState from '@/components/ui/EmptyState.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -135,8 +134,6 @@
   }
 </script>
 
-{#snippet keyIcon()}<KeyRound size={22} />{/snippet}
-
 <div class="space-y-8">
   <!-- ── SAFE: spends without seeing ────────────────────────────────────────── -->
   <SettingsSection
@@ -179,9 +176,7 @@
         </SettingsGroup>
       </div>
     {:else}
-      <SettingsGroup>
-        <p class="px-5 py-4 font-sans text-[13px] leading-5 text-muted">None yet.</p>
-      </SettingsGroup>
+      <p class="font-sans text-[13px] leading-5 text-muted">None granted yet.</p>
     {/if}
   </SettingsSection>
 
@@ -191,75 +186,72 @@
     description={`Written into its container as plain text. ${agentLabel} can read them.`}
     info="Anything running in the container, including the shell its harness uses, can print these. Use one only when a process in the container reads the variable itself. A CONFIG_ entry is the exception: a credential sealed out of its own config, which Hermes reads and keeps out of every command it runs."
   >
-    <QueryState {query} errorTitle="Could not load this agent's secrets" errorVariant="compact">
-      {#snippet skeleton()}
-        <SettingsGroup aria-hidden="true">
+    <!-- One card: the variables it has, then the row that adds one. -->
+    <SettingsGroup>
+      <QueryState {query} errorTitle="Could not load this agent's secrets" errorVariant="compact">
+        {#snippet skeleton()}
           {#each [0, 1] as i (i)}
-            <div class="flex min-h-[60px] items-center gap-3 px-5 py-4">
+            <div aria-hidden="true" class="flex min-h-[56px] items-center gap-3 px-5 py-3.5">
               <Skeleton class="h-3.5 w-40 rounded-full" />
               <Skeleton class="ml-auto h-3 w-24 rounded-full" />
             </div>
           {/each}
-        </SettingsGroup>
-      {/snippet}
-      {#snippet empty()}
-        <EmptyState icon={keyIcon} title="No variables" hint="Everything it needs comes from the shared platform environment." />
-      {/snippet}
-      {#snippet children(secrets)}
-        <div use:listStagger>
-          <SettingsGroup>
-            {#each secrets as s (s.name)}
-              <SettingsRow>
-                {#snippet label()}<code class="font-mono text-[13px] font-normal">{s.name}</code>{/snippet}
-                {#snippet hint()}
-                  {#if s.refused}
-                    <!-- Saved before the rule that refuses this name. The render
-                         leaves it out of the container, so say why, beside the remove. -->
-                    <span class="flex items-start gap-1.5 text-warning">
-                      <AlertTriangle size={14} class="mt-0.5 shrink-0" aria-hidden="true" />
-                      Not loaded: {s.refused}.
-                    </span>
-                  {:else if sealed(s)}
-                    {#if s.usedAt?.length}
-                      A config credential, used at <span class="font-mono text-xs text-fg">{s.usedAt.join(', ')}</span>. The agent's commands do not see it.
-                    {:else}
-                      A config credential its current config does not use.
-                    {/if}
+        {/snippet}
+        {#snippet empty()}
+          <p class="px-5 py-4 font-sans text-[13px] leading-5 text-muted">None yet. Everything it needs comes from the shared platform environment.</p>
+        {/snippet}
+        {#snippet children(secrets)}
+          {#each secrets as s (s.name)}
+            <SettingsRow>
+              {#snippet label()}<code class="font-mono text-[13px] font-normal">{s.name}</code>{/snippet}
+              {#snippet hint()}
+                {#if s.refused}
+                  <!-- Saved before the rule that refuses this name. The render
+                       leaves it out of the container, so say why, beside the remove. -->
+                  <span class="flex items-start gap-1.5 text-warning">
+                    <AlertTriangle size={14} class="mt-0.5 shrink-0" aria-hidden="true" />
+                    Not loaded: {s.refused}.
+                  </span>
+                {:else if sealed(s)}
+                  {#if s.usedAt?.length}
+                    A config credential, used at <span class="font-mono text-xs text-fg">{s.usedAt.join(', ')}</span>. The agent's commands do not see it.
                   {:else}
-                    Set by {s.updatedBy ?? 'someone'}, {relativeTime(s.updatedAt)}
+                    A config credential its current config does not use.
                   {/if}
-                {/snippet}
-                <DangerLink onClick={() => void remove(s)}>Remove</DangerLink>
-              </SettingsRow>
-            {/each}
-          </SettingsGroup>
-        </div>
-      {/snippet}
-    </QueryState>
-    <div class="mt-4 flex flex-wrap items-center gap-2">
-      <Input
-        size="sm"
-        value={name}
-        oninput={(e) => (name = e.currentTarget.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'))}
-        onkeydown={submitOnEnter(() => !busy && nameOk && value && void save())}
-        placeholder="FIGMA_TOKEN"
-        aria-label="Variable name"
-        class="w-[280px] font-mono"
-      />
-      <Input
-        size="sm"
-        bind:value
-        onkeydown={submitOnEnter(() => !busy && nameOk && value && void save())}
-        placeholder="Value, never shown again"
-        aria-label="Variable value"
-        type="password"
-        class="min-w-0 flex-1"
-      />
-      <Button size="md" class="shrink-0" onclick={() => void save()} disabled={busy || !nameOk || !value}>
-        {busy ? 'Saving' : 'Set variable'}
-      </Button>
-    </div>
-    {#if name && !nameOk}<p class="mt-2 font-sans text-[13px] leading-5 text-muted">Capital letters, digits and underscores, 2 to 64 characters, starting with a letter.</p>{/if}
+                {:else}
+                  Set by {s.updatedBy ?? 'someone'}, {relativeTime(s.updatedAt)}
+                {/if}
+              {/snippet}
+              <DangerLink onClick={() => void remove(s)}>Remove</DangerLink>
+            </SettingsRow>
+          {/each}
+        {/snippet}
+      </QueryState>
+      <SettingsRow label="New variable" hint="The value is never shown again." apart>
+        <Input
+          size="sm"
+          value={name}
+          oninput={(e) => (name = e.currentTarget.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'))}
+          onkeydown={submitOnEnter(() => !busy && nameOk && value && void save())}
+          placeholder="FIGMA_TOKEN"
+          aria-label="Variable name"
+          class="w-48 font-mono"
+        />
+        <Input
+          size="sm"
+          bind:value
+          onkeydown={submitOnEnter(() => !busy && nameOk && value && void save())}
+          placeholder="Value"
+          aria-label="Variable value"
+          type="password"
+          class="w-48"
+        />
+        <Button size="md" variant="outline" class="shrink-0" onclick={() => void save()} disabled={busy || !nameOk || !value}>
+          {busy ? 'Saving' : 'Set variable'}
+        </Button>
+      </SettingsRow>
+    </SettingsGroup>
+    {#if name && !nameOk}<p class="mt-3 font-sans text-[13px] leading-5 text-muted">Capital letters, digits and underscores, 2 to 64 characters, starting with a letter.</p>{/if}
     {#if err}<p transition:slide={{ duration: 150 }} class="mt-2 font-sans text-[13px] leading-5 text-danger" role="alert">{err}</p>{/if}
   </SettingsSection>
 </div>

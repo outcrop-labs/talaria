@@ -26,7 +26,7 @@
     id === null ? null : (list.rows.find((t) => t.id === id)?.name ?? (list.failed ? id : 'A template that no longer exists'))
   const bind = async (patch: { ticketTemplateId?: string | null; planTemplateId?: string | null }) => {
     const res = await patchAgentMeta(def.id, patch)
-    if (!res.error) autosave.flash()
+    if (!res.error) autosave.flash('ticketTemplateId' in patch ? 'ticket' : 'plan')
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 </script>
@@ -48,10 +48,15 @@
   {/if}
 {/snippet}
 
-<SettingsRow label="Ticket template" hint="Used wherever this agent writes tickets. It wins over the board's default." as={canManage ? 'label' : 'div'}>
+<SettingsRow
+  label="Ticket template"
+  hint="Used wherever this agent writes tickets. It wins over the board's default."
+  as={canManage ? 'label' : 'div'}
+  saved={autosave.saved('ticket')}
+>
   {@render pick('ticket', def.ticketTemplateId, (v) => void bind({ ticketTemplateId: v }))}
 </SettingsRow>
-<SettingsRow label="Plan template" hint="Shapes the plan documents this agent writes." as={canManage ? 'label' : 'div'}>
+<SettingsRow label="Plan template" hint="Shapes the plan documents this agent writes." as={canManage ? 'label' : 'div'} saved={autosave.saved('plan')}>
   {@render pick('plan', def.planTemplateId, (v) => void bind({ planTemplateId: v }))}
 </SettingsRow>
 {#if list.notice}<div class="px-5 py-3"><QueryError {...list.notice} /></div>{/if}

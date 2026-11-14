@@ -103,7 +103,7 @@
   <SettingsSection
     title="Built-in tools"
     description="A change reaches the running agent on its next turn, without a restart."
-    info="The Hermes toolsets the agent's own harness carries, before any MCP server. A checked box is the toolset being on for this agent. Talaria's own todo and clarify tools replace Hermes' for every agent, so those two stay closed."
+    info="The Hermes toolsets the agent's own harness carries, before any tool server. A checked box is the toolset being on for this agent. Talaria's own todo and clarify tools replace Hermes' for every agent, so those two stay closed."
   >
     {#snippet action()}
       {#if canManage && dirty}

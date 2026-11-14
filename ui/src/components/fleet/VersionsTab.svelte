@@ -83,9 +83,15 @@
     {#snippet children(versions)}
       <div use:listStagger>
         <SettingsGroup>
+          <div class="flex h-10 items-center gap-4 px-5 font-sans text-xs font-medium leading-4 text-muted">
+            <span class="w-14 shrink-0">Version</span>
+            <span class="min-w-0 flex-1">Note</span>
+            <span class="shrink-0">Saved</span>
+            <span class="w-8 shrink-0"></span>
+          </div>
           {#each versions as v (v.version)}
             <div class="flex min-h-11 items-center gap-4 px-5 py-1.5">
-              <span class="w-10 shrink-0 font-mono text-xs text-muted">v{v.version}</span>
+              <span class="w-14 shrink-0 font-mono text-xs text-muted">v{v.version}</span>
               <span class="flex min-w-0 flex-1 items-center gap-2">
                 <span class={cn('min-w-0 truncate font-sans text-[13px] leading-5', v.note ? 'text-fg' : 'text-muted')} title={v.note ?? undefined}>
                   {v.note ?? 'No note'}

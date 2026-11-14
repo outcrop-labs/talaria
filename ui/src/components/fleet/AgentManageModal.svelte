@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { Check } from '@lucide/svelte'
-  import { provideAutosave } from '@/components/settings/autosave.svelte'
+  import { MediaQuery } from 'svelte/reactivity'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -9,8 +8,6 @@
   import Chip from '@/components/ui/Chip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import Modal from '@/components/ui/Modal.svelte'
-  import Tabs from '@/components/ui/Tabs.svelte'
-  import type { TabItem } from '@/components/ui/tabs'
   import AgentConfigForm from '@/components/fleet/AgentConfigForm.svelte'
   import CronsPanel from '@/components/fleet/CronsPanel.svelte'
   import McpTab from '@/components/fleet/McpTab.svelte'
@@ -23,24 +20,42 @@
   import SummaryTab from '@/components/fleet/SummaryTab.svelte'
   import VersionsTab from '@/components/fleet/VersionsTab.svelte'
   import { rotateAgentKey, type AgentDef, type LlmEndpoint } from '@/lib/fleet-defs'
-  import { fly, slide } from '@/lib/motion'
+  import { fly, markCrossfade, slide } from '@/lib/motion'
   import { cn } from '@/lib/cn'
-  import { setUiVoice } from '@/lib/ui-voice'
+  import { sansFill, setUiVoice } from '@/lib/ui-voice'
 
   type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'versions' | 'managers'
-  const TABS: TabItem<Tab>[] = [
-    { id: 'summary', label: 'Overview' },
-    { id: 'config', label: 'Configuration' },
-    { id: 'skills', label: 'Skills' },
-    { id: 'memory', label: 'Memory' },
-    { id: 'crons', label: 'Schedules' },
-    { id: 'secrets', label: 'Secrets' },
-    { id: 'mcp', label: 'MCP' },
-    { id: 'versions', label: 'Versions' },
-    // Last on purpose: who owns the agent is read far less often than what
-    // it is, and it is the one tab that changes who can open the rest.
-    { id: 'managers', label: 'Managers' },
+  // Nine sections are a list, not a strip: what the agent is, what it has
+  // been given, and who answers for it. Managers is last on purpose: who owns
+  // the agent is read far less often than what it is, and it is the one
+  // section that changes who can open the rest.
+  const SECTIONS: ReadonlyArray<{ label: string; items: ReadonlyArray<{ id: Tab; label: string }> }> = [
+    {
+      label: 'Agent',
+      items: [
+        { id: 'summary', label: 'Overview' },
+        { id: 'config', label: 'Configuration' },
+      ],
+    },
+    {
+      label: 'Capabilities',
+      items: [
+        { id: 'skills', label: 'Skills' },
+        { id: 'memory', label: 'Memory' },
+        { id: 'crons', label: 'Schedules' },
+        { id: 'secrets', label: 'Secrets' },
+        { id: 'mcp', label: 'Tools' },
+      ],
+    },
+    {
+      label: 'Oversight',
+      items: [
+        { id: 'versions', label: 'Versions' },
+        { id: 'managers', label: 'Managers' },
+      ],
+    },
   ]
+  const ORDER = SECTIONS.flatMap((g) => g.items.map((t) => t.id))
 
   // The whole of an agent's internal stack in one modal: model config, skills,
   // memory, MCP servers, version history, and who owns it — no more hopping
@@ -65,15 +80,36 @@
   // from: the roster, or an agent's row in the chat sidebar.
   setUiVoice('sans')
 
-  // The Overview tab's fields save as they change. The dialog is its own
-  // surface (it also opens from the chat sidebar, where no page header
-  // exists), so it carries the cue a settings page keeps in its header.
-  const cue = provideAutosave()
-
   let tab = $state<Tab>('summary')
-  // The library tabs are editors that own their scroll; every other tab is a
-  // form or a report that scrolls in the frame.
+  // The library sections are editors that own their scroll; every other
+  // section is a form or a report that scrolls in the frame.
   const fills = $derived(tab === 'skills' || tab === 'memory')
+
+  // The list stands beside the section from `md` up and lies across the top
+  // as a strip below it, and says which to a screen reader.
+  const beside = new MediaQuery('min-width: 768px')
+  const [sendMark, receiveMark] = markCrossfade()
+  let list = $state<HTMLElement>()
+  // One stop in the tab order: the arrows move along the list and select as
+  // they go, whichever way it lies.
+  const onListKey = (e: KeyboardEvent) => {
+    const at = ORDER.indexOf(tab)
+    const to =
+      e.key === 'ArrowDown' || e.key === 'ArrowRight'
+        ? (at + 1) % ORDER.length
+        : e.key === 'ArrowUp' || e.key === 'ArrowLeft'
+          ? (at - 1 + ORDER.length) % ORDER.length
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? ORDER.length - 1
+              : -1
+    const next = ORDER[to]
+    if (next === undefined) return
+    e.preventDefault()
+    tab = next
+    list?.querySelector<HTMLElement>(`#agent-section-${next}`)?.focus()
+  }
 
   // ── Rotate credential ──────────────────────────────────────────────────────
   // The agent's `tak_` key, the one its container presents to Talaria. The
@@ -111,35 +147,71 @@
     <Avatar name={def.displayName} class="h-9 w-9" />
     <div class="min-w-0">
       <div class="flex min-w-0 items-center gap-2">
-        <span class="truncate font-sans text-[15px] font-semibold leading-5 text-fg">{def.displayName}</span>
-        <Chip title={`Version ${def.currentVersion}`}>v{def.currentVersion}</Chip>
+        <span class="line-clamp-2 font-sans text-[15px] font-semibold leading-5 text-fg" title={def.displayName}>{def.displayName}</span>
+        <Chip title={`Version ${def.currentVersion}`} class="shrink-0">v{def.currentVersion}</Chip>
       </div>
       <div class="truncate font-sans text-[13px] font-normal leading-5 text-muted">{def.role ?? 'No role yet'}</div>
     </div>
   </div>
 {/snippet}
 
-<Modal {open} {onClose} {title} width="max-w-5xl" height="h-[88vh]" padded={false}>
-  <!-- The frame owns the height, so every tab renders at the SAME size: the
-       tab strip is pinned on a full-width hairline and only the pane under
-       it scrolls. -->
-  <div class="flex h-full min-h-0 flex-col">
-    <div class="flex shrink-0 items-center gap-6 border-b border-line px-7 pt-1">
-      <Tabs items={TABS} value={tab} onChange={(t) => (tab = t)} class="-mb-px min-w-0 flex-1" />
-      {#if tab === 'summary' && canManage && cue.active}
-        <span role="status" class="hidden shrink-0 items-center gap-1.5 whitespace-nowrap font-sans text-[13px] leading-5 text-muted lg:flex">
-          {#if cue.saved}<Check size={14} aria-hidden="true" class="text-success" />Saved{:else}Changes save automatically{/if}
-        </span>
-      {/if}
+<!-- Wide enough that the pane beside the list is the settings page's own column, so a section reads the same in both. -->
+<Modal {open} {onClose} {title} width="max-w-6xl" height="h-[88vh]" padded={false}>
+  <!-- The frame owns the height, so every section renders at the SAME size:
+       the list stays put and only the pane beside it scrolls. -->
+  <div class="flex h-full min-h-0 flex-col md:flex-row">
+    <div
+      bind:this={list}
+      role="tablist"
+      tabindex="-1"
+      aria-label={`${def.displayName} settings`}
+      aria-orientation={beside.current ? 'vertical' : 'horizontal'}
+      onkeydown={onListKey}
+      class="flex shrink-0 gap-1 overflow-x-auto border-b border-line px-5 py-2 md:w-[180px] md:flex-col md:gap-4 md:overflow-y-auto md:overflow-x-visible md:border-b-0 md:border-r md:py-4 md:pl-5 md:pr-3"
+    >
+      {#each SECTIONS as group (group.label)}
+        <div role="presentation" class="flex shrink-0 gap-1 md:flex-col md:gap-0.5">
+          <!-- A reading aid for the eye: a tablist holds only its tabs. -->
+          <span aria-hidden="true" class="hidden h-7 items-center px-2 font-sans text-xs leading-4 text-muted md:flex">{group.label}</span>
+          {#each group.items as t (t.id)}
+            {@const active = tab === t.id}
+            <button
+              type="button"
+              role="tab"
+              id={`agent-section-${t.id}`}
+              aria-selected={active}
+              aria-controls="agent-section-pane"
+              tabindex={active ? 0 : -1}
+              onclick={() => (tab = t.id)}
+              class={cn(
+                'relative flex h-8 shrink-0 cursor-pointer items-center whitespace-nowrap rounded-md px-2.5 text-left font-sans text-[13.5px] leading-5 transition-colors duration-[120ms] focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent md:px-2',
+                active ? 'font-medium text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+              )}
+            >
+              {#if active}
+                <span
+                  aria-hidden="true"
+                  in:receiveMark={{ key: 'agent-section' }}
+                  out:sendMark={{ key: 'agent-section' }}
+                  class={cn('absolute inset-0 rounded-md', sansFill)}
+                >
+                  <span class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-accent"></span>
+                </span>
+              {/if}
+              <span class="relative">{t.label}</span>
+            </button>
+          {/each}
+        </div>
+      {/each}
     </div>
 
-    <!-- THE LIBRARY TABS FILL THE FRAME when it fits: their panes take the
-         whole tab height, controls pinned, only the document body scrolling.
-         Below the surfaces' floor — a short window — this same region scrolls
+    <!-- THE LIBRARY SECTIONS FILL THE FRAME when it fits: their panes take
+         the whole height, controls pinned, only the document body scrolling.
+         Below the surfaces' floor (a short window) this same region scrolls
          the whole surface, controls reachable at the bottom. -->
-    <div class="min-h-0 flex-1 overflow-y-auto px-7 py-6">
-      <!-- Tab-pane grammar: the incoming pane rises in, the old one is simply
-           replaced (no exit). No stagger — several panes are dense data lists. -->
+    <div id="agent-section-pane" role="tabpanel" aria-labelledby={`agent-section-${tab}`} class="min-h-0 min-w-0 flex-1 overflow-y-auto px-7 py-6">
+      <!-- Pane grammar: the incoming pane rises in, the old one is simply
+           replaced (no exit). No stagger: several panes are dense data lists. -->
       {#key tab}
         <div in:fly={{ y: 6, duration: 200 }} class={cn(fills && 'h-full')}>
           {#if tab === 'summary'}

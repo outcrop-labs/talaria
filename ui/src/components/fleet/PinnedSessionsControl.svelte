@@ -34,6 +34,7 @@
   label="Pinned sessions"
   hint="Each conversation stays one session, so the agent's memory covers the whole thread."
   info="Applies to conversations started after it is on. Older ones keep working the way they did."
+  saved={autosave.saved()}
 >
   {#if canManage}
     <Toggle checked={def.pinnedSessions} disabled={saving} onChange={(on) => void set(on)} title="Pinned sessions" />

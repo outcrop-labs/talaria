@@ -67,6 +67,7 @@
   label="Subagents"
   hint={`How many helpers it may run at once, from ${MIN} to ${MAX}.`}
   info="0 means it delegates to nobody and does every job in its own turn. An applied change reaches the running agent on its next turn, without a restart."
+  saved={autosave.saved()}
 >
   {#if canManage}
     {#if pending !== null}

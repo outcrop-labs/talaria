@@ -3,7 +3,7 @@
   import Chip from '@/components/ui/Chip.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
+  import Select from '@/components/ui/Select.svelte'
   import ModelPicker from '@/components/fleet/ModelPicker.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
   import type { LlmEndpoint, ModelTarget } from '@/lib/fleet-defs'
@@ -54,13 +54,9 @@
     if (allowEffort && modelEfforts.answered && value.effort && !efforts.includes(value.effort)) onChange({ ...value, effort: null })
   })
 
-  // The effort chip's shape: its rows, the rung the saved level sits on ('' is
-  // the model's own default — no rung at all), and the ingress row that clears
-  // the setting.
+  // '' is the model's own default: no level saved.
   const effort = $derived(value.effort ?? '')
-  const effortOptions = $derived(efforts.map((level) => ({ value: level, label: level })))
-  const effortMeter = $derived({ total: efforts.length, lit: Math.max(0, efforts.indexOf(effort) + 1) })
-  const effortAuto = { value: '', label: 'auto', sub: 'model default' }
+  const named = (level: string) => `${level.charAt(0).toUpperCase()}${level.slice(1)} effort`
 </script>
 
 <div class="flex items-center gap-2">
@@ -69,23 +65,19 @@
   {/if}
   <ModelPicker {endpoints} {value} {onChange} size="sm" class="min-w-0 flex-1" />
   {#if allowEffort && efforts.length > 0}
-    <!-- The default effort for THIS target's model — the pick conversations
-         with the agent (base or this tier) start from when nobody chose one.
-         Same chip + ladder the composers use, so the setting and the thing it
-         sets look like one feature. -->
-    <ComposerPicker
-      chipVariant="primary"
+    <!-- The default effort for THIS target's model: the pick conversations
+         with the agent (base or this tier) start from when nobody chose one. -->
+    <Select
+      size="sm"
       value={effort}
-      label={effort || 'auto'}
-      options={effortOptions}
-      autoOption={effortAuto}
-      meter={effortMeter}
-      searchable={false}
-      menuClass="min-w-48"
-      title="Reasoning effort for this reply"
-      menuLabel="Reasoning effort"
-      onChange={(v) => onChange({ ...value, effort: v || null })}
-    />
+      aria-label="Reasoning effort"
+      title="The reasoning effort a conversation starts from"
+      onchange={(e) => onChange({ ...value, effort: e.currentTarget.value || null })}
+      class="w-36 shrink-0"
+    >
+      <option value="">Default effort</option>
+      {#each efforts as level (level)}<option value={level}>{named(level)}</option>{/each}
+    </Select>
   {/if}
   <span class="flex w-[88px] shrink-0 justify-end"><Chip>{epClass === 'local' ? 'Self-hosted' : 'Cloud'}</Chip></span>
   {#if onRemove}

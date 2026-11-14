@@ -36,6 +36,7 @@
     label="Developer agent"
     hint={def.developer ? 'On. It does coding work from tickets with Oh My Pi.' : 'Lets it do coding work from tickets.'}
     info="A sandbox, Oh My Pi as its coding harness, and the Workbench tools that open branches and pull requests. Turning it on or off restarts the agent. It can only touch the repositories you pick."
+    saved={autosave.saved()}
   >
     {#if canManage}
       <Toggle checked={def.developer} disabled={saving} onChange={(on) => void set(on)} title="Developer agent" />

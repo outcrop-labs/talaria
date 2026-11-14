@@ -37,7 +37,7 @@
   const saveRole = async () => {
     if (role.trim() === (def.role ?? '')) return
     const res = await patchAgentMeta(def.id, { role: role.trim() || null })
-    if (!res.error) autosave.flash()
+    if (!res.error) autosave.flash('role')
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
   // Send address for ORG agents only — a personal assistant sends as its
@@ -50,7 +50,7 @@
   const saveAlias = async () => {
     if (alias.trim() === (def.emailAlias ?? '')) return
     const res = await patchAgentMeta(def.id, { emailAlias: alias.trim() || null })
-    if (!res.error) autosave.flash()
+    if (!res.error) autosave.flash('alias')
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 
@@ -89,7 +89,7 @@
       kind = saved.principalKind
       principalUserId = saved.principalUserId ?? ''
       await qc.invalidateQueries({ queryKey: ['agent-google', def.id] })
-      autosave.flash()
+      autosave.flash('google')
     } catch (e) {
       googleError = errorMessage(e)
     } finally {
@@ -111,7 +111,9 @@
       return g.connected ? `Connected as ${g.email ?? 'a Google account'}.` : 'Not connected. It cannot write until an admin connects its account.'
     if (g.principalKind === 'owner')
       return g.connected
-        ? `That person's Google is connected${g.email ? ` (${g.email})` : ''}.`
+        ? g.email
+          ? `Connected as ${g.email}.`
+          : "That person's Google is connected."
         : 'That person has not connected Google. The agent does not fall back to the org account.'
     return 'The shared org account. An admin approves outbound writes.'
   })
@@ -180,7 +182,7 @@
 
   <SettingsSection title="Identity">
     <SettingsGroup>
-      <SettingsRow label="Role" hint="The title shown on the roster." as={canManage ? 'label' : 'div'}>
+      <SettingsRow label="Role" hint="The title shown on the roster." as={canManage ? 'label' : 'div'} saved={autosave.saved('role')}>
         {#if canManage}
           <Input size="sm" bind:value={role} onblur={() => void saveRole()} placeholder="Support lead" class="w-[280px]" />
         {:else}
@@ -194,6 +196,7 @@
           hint="Leave empty to send from the org address for this agent."
           info="An address set here must be a verified send-as on the org Google account."
           as={canManage ? 'label' : 'div'}
+          saved={autosave.saved('alias')}
         >
           {#if canManage}
             <Input size="sm" bind:value={alias} onblur={() => void saveAlias()} placeholder={`org+${def.slug}`} class="w-[280px]" />
@@ -203,32 +206,17 @@
         </SettingsRow>
       {/if}
       {#if canManage}
-        <SettingsRow label="Google account">
+        <!-- apart: a person's account is two fields wide, and must not size the column the rows above and below share. -->
+        <SettingsRow label="Google account" apart saved={autosave.saved('google')}>
           {#snippet hint()}
-            {#if googleError}<span class="text-danger">{googleError}</span>{:else if googleDirty}Save to apply this change.{:else}{googleStatus}{/if}
+            {#if googleError}<span class="text-danger">{googleError}</span>{:else if googleDirty}Not saved yet.{:else}{googleStatus}{/if}
           {/snippet}
           {#if googleQuery.isLoading}
             <Skeleton class="h-8 w-[280px]" />
           {:else if googleQuery.isError}
             <span class="font-sans text-[13px] leading-5 text-danger">{errorMessage(googleQuery.error)}</span>
           {:else}
-            {#if kind === 'agent' && !googleDirty}
-              {#if googleQuery.data?.connected}
-                <DangerLink onClick={() => void disconnectGoogle()} disabled={googleBusy}>Disconnect Google</DangerLink>
-              {/if}
-              <a href={`/api/fleet/defs/${def.id}/google/connect`} class={buttonClasses({ variant: 'outline', size: 'sm', voice: 'sans' })}>Connect Google</a>
-            {/if}
-            {#if kind === 'owner'}
-              <Input
-                size="sm"
-                bind:value={principalUserId}
-                onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && googleDirty && void savePrincipal()}
-                placeholder="User id"
-                aria-label="The person's user id"
-                disabled={googleBusy}
-                class="w-36 font-mono"
-              />
-            {/if}
+            <!-- Whose account first, then which one, then the action on it. -->
             <Select
               size="sm"
               bind:value={kind}
@@ -240,8 +228,25 @@
               <option value="owner">A person's account</option>
               <option value="agent">This agent's own account</option>
             </Select>
+            {#if kind === 'owner'}
+              <Input
+                size="sm"
+                bind:value={principalUserId}
+                onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && googleDirty && void savePrincipal()}
+                placeholder="User id"
+                aria-label="The person's user id"
+                disabled={googleBusy}
+                class="w-36 font-mono"
+              />
+            {/if}
+            {#if kind === 'agent' && !googleDirty}
+              {#if googleQuery.data?.connected}
+                <DangerLink onClick={() => void disconnectGoogle()} disabled={googleBusy}>Disconnect Google</DangerLink>
+              {/if}
+              <a href={`/api/fleet/defs/${def.id}/google/connect`} class={buttonClasses({ variant: 'outline', size: 'sm', voice: 'sans' })}>Connect Google</a>
+            {/if}
             {#if googleDirty}
-              <Button size="md" disabled={googleBusy} onclick={() => void savePrincipal()}>Save</Button>
+              <Button size="md" disabled={googleBusy} onclick={() => void savePrincipal()}>Save account</Button>
             {/if}
           {/if}
         </SettingsRow>
@@ -296,9 +301,9 @@
           <dd class="min-w-0 font-sans text-[13px] leading-5 text-fg">{cfg.fallbacks.map((f) => modelName(f.model) ?? f.model).join(', then ')}</dd>
         {/if}
         {#if cfg?.mcpServers?.length}
-          <dt class="font-sans text-[13px] leading-5 text-muted">MCP servers</dt>
+          <dt class="font-sans text-[13px] leading-5 text-muted">Tool servers</dt>
           <dd class="min-w-0 font-sans text-[13px] leading-5 text-fg" title={cfg.mcpServers.join(', ')}>
-            {cfg.mcpServers.length} server{cfg.mcpServers.length === 1 ? '' : 's'}, listed on the MCP tab
+            {cfg.mcpServers.length} server{cfg.mcpServers.length === 1 ? '' : 's'}, listed under Tools
           </dd>
         {/if}
       </dl>
