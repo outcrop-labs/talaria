@@ -235,7 +235,12 @@
                 <Trash2 size={14} />
               </IconButton>
             {/if}
-            {#if doc.history}
+            {#if doc.history && sans}
+              <!-- In the settings area a control in content says what it is. -->
+              <Button variant="ghost" size="sm" class={cn('-mr-3 gap-1.5', showHistory && 'text-fg')} aria-pressed={showHistory} onclick={() => (showHistory = !showHistory)}>
+                <History size={14} />History
+              </Button>
+            {:else if doc.history}
               <IconButton title="Version history" active={showHistory} onclick={() => (showHistory = !showHistory)}>
                 <History size={14} />
               </IconButton>

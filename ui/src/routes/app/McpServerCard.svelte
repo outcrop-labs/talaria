@@ -1,5 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { BookOpen, FileBox, LayoutGrid } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -60,6 +61,9 @@
   const domain = $derived(serverDomain(s.url))
   // The provider an OAuth server signs in with is the one publisher domain a
   // registry row carries (the marketplace entry's own is not stored).
+  // A built-in server is a part of Talaria, so its mark is that part's own icon from the app's navigation.
+  const OWN_MARKS = { boards: LayoutGrid, knowledge: BookOpen, files: FileBox } as const
+  const OwnMark = $derived(s.builtin && s.name in OWN_MARKS ? OWN_MARKS[s.name as keyof typeof OWN_MARKS] : null)
   const markDomains = $derived(iconDomains({ publisher: s.oauthMeta?.guide?.domain, url: s.url }))
   // The Workbench is granted by each agent's Developer Agent switch, not from
   // here. The api refuses assignment and access rows for it.
@@ -196,7 +200,13 @@
     openLabel={`Manage ${s.label}`}
     class={cn((!s.enabled || s.appOff) && 'opacity-60')}
   >
-    {#snippet lead()}<McpServerMark title={s.label} domain={markDomains} />{/snippet}
+    {#snippet lead()}
+      {#if OwnMark}
+        <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-raised text-fg"><OwnMark size={16} /></span>
+      {:else}
+        <McpServerMark title={s.label} domain={markDomains} />
+      {/if}
+    {/snippet}
     {#snippet meta()}
       <!-- -my-px: a 22px chip must not make its row 2px taller than a row without one. -->
       {#if s.appSlug}

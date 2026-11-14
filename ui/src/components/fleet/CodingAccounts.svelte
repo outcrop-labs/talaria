@@ -3,6 +3,7 @@
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -135,9 +136,14 @@
                 <span class="min-w-0 truncate font-sans text-[13px] leading-5 text-fg">{plan.label}</span>
                 <Chip class="font-mono">{plan.provider}</Chip>
                 {#if isDefault}<Chip>Default</Chip>{/if}
-                {#if plan.account?.disabledAt}<Chip tone="danger">Needs sign-in</Chip>{/if}
-                {#if plan.account && !plan.account.permitted}<Chip tone="warn">Not permitted</Chip>{/if}
                 <span class="flex-1"></span>
+                <!-- A state is a dot and a word, in the colour it has on every other page. -->
+                {#if plan.account?.disabledAt}
+                  <span class="flex shrink-0 items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="warn" />Needs sign-in</span>
+                {/if}
+                {#if plan.account && !plan.account.permitted}
+                  <span class="flex shrink-0 items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not permitted</span>
+                {/if}
                 <SettingsRowMenu
                   label={`Actions for ${plan.label}`}
                   items={[
