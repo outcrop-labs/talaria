@@ -530,15 +530,16 @@
       {#if history && withActions}
         <!-- Standalone: no title line above to carry it, so the toggle lives
              here, right-aligned. Embedded surfaces own it themselves. -->
+        <!-- In the settings area a control in content says what it is. -->
         <Button
           variant={showHistory ? 'outline' : 'ghost'}
           size="sm"
-          class="ml-auto shrink-0"
+          class={cn('ml-auto shrink-0', sans && 'gap-1.5')}
           onclick={() => (showHistory = !showHistory)}
           title="Version history"
           aria-pressed={showHistory}
         >
-          <History size={14} />
+          <History size={14} />{#if sans}History{/if}
         </Button>
       {/if}
       {#if withActions}

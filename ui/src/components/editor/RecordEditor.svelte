@@ -48,7 +48,9 @@
     deleteLabel,
     class: className,
   }: {
-    /** The record's kind, as a chip: 'skill', 'template', 'memory' … */
+    /** The record's kind: 'Skill', 'Ticket template'. A chip ahead of the title
+     *  outside the settings area. Inside it the tab or the dialog's title has
+     *  already said the kind, so it only words the delete link. */
     kind: string
     /** The record's name/title, shown in the header row. */
     title: string
@@ -218,28 +220,44 @@
   <div class="relative min-h-0 flex-1">
     <div class="h-full overflow-y-auto px-4 py-4">
       <div class="mb-3 flex items-center gap-2">
-        <Chip class="shrink-0">{kind}</Chip>
-        <div class={sans ? 'min-w-0 truncate font-sans text-[15px] font-semibold leading-5 text-fg' : 'min-w-0 truncate text-sm font-semibold text-fg'}>{title}</div>
+        {#if !sans}<Chip class="shrink-0">{kind}</Chip>{/if}
+        <div class={sans ? 'min-w-0 break-words font-sans text-[15px] font-semibold leading-5 text-fg' : 'min-w-0 truncate text-sm font-semibold text-fg'}>{title}</div>
         {#if meta}<span class={sans ? 'shrink-0 font-sans text-xs leading-4 text-muted' : 'shrink-0 font-mono text-[11px] text-muted'}>{meta}</span>{/if}<!-- voice-ok -->
         <!-- The record's icon cluster, right-aligned on its own title line —
              within the editor view, not on any sidebar. Delete is a trash icon
              (the typed challenge says exactly what is going); history opens the
              workbench's rail. -->
-        {#if (onDelete && !sans) || doc.history}
+        {#if (onDelete && !sans) || doc.history || (sans && formMuse && editable)}
           <!-- Icon TILES, not padded buttons: two icon controls side by side
                read as one cluster only when their glyphs are near each other.
-               In the settings area Delete is the footer's link, at its left. -->
+               In the settings area Delete is the footer's link, at its left,
+               and the record's tools (Muse, history) sit here, apart from the
+               footer's Save. -->
           <div class="ml-auto flex shrink-0 items-center">
             {#if onDelete && !sans}
               <IconButton title={`Delete ${title}`} danger onclick={onDelete}>
                 <Trash2 size={14} />
               </IconButton>
             {/if}
-            {#if doc.history && sans}
-              <!-- In the settings area a control in content says what it is. -->
-              <Button variant="ghost" size="sm" class={cn('-mr-3 gap-1.5', showHistory && 'text-fg')} aria-pressed={showHistory} onclick={() => (showHistory = !showHistory)}>
-                <History size={14} />History
-              </Button>
+            {#if sans}
+              {#if formMuse && editable}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class={cn('gap-1.5', !doc.history && '-mr-3', museOpen && 'text-fg')}
+                  aria-expanded={museOpen}
+                  onclick={() => (museOpen = !museOpen)}
+                  title={`Describe the ${formMuse.label} you want and Muse, the writing assistant, drafts every field. Nothing is saved until you save.`}
+                >
+                  <Sparkles size={14} />Draft with Muse
+                </Button>
+              {/if}
+              {#if doc.history}
+                <!-- In the settings area a control in content says what it is. -->
+                <Button variant="ghost" size="sm" class={cn('-mr-3 gap-1.5', showHistory && 'text-fg')} aria-pressed={showHistory} onclick={() => (showHistory = !showHistory)}>
+                  <History size={14} />History
+                </Button>
+              {/if}
             {:else if doc.history}
               <IconButton title="Version history" active={showHistory} onclick={() => (showHistory = !showHistory)}>
                 <History size={14} />
@@ -369,17 +387,6 @@
         <DangerLink onClick={onDelete}>{deleteLabel ?? `Delete ${kind.toLowerCase()}`}</DangerLink>
       {/if}
       <span class="ml-auto"></span>
-      {#if formMuse && editable}
-        <Button
-          variant={museOpen ? 'outline' : 'ghost'}
-          size="sm"
-          aria-expanded={museOpen}
-          onclick={() => (museOpen = !museOpen)}
-          title={`Describe the ${formMuse.label} you want and Muse, the writing assistant, drafts every field. Nothing is saved until you save.`}
-        >
-          <Sparkles size={14} /> Draft with Muse
-        </Button>
-      {/if}
       {#if onCancel && dirty}
         <Button variant="ghost" size="sm" onclick={cancel}>Discard changes</Button>
       {/if}
