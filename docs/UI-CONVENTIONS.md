@@ -82,9 +82,10 @@ instead of styling its own panels:
   height left under the header.
 - `SettingsSidebar` is the area's navigation. Its rows, active row and search
   come from the pure `lib/settings-nav.ts`. A new page adds its row there. It
-  has four groups: Personal, Workspace, Apps and Instance. Every page an
-  installed app contributes (its settings tab, its manage surface) sits under
-  Apps with the app's own glyph, and search results keep the groups.
+  has four groups: Personal, Workspace, App settings and Instance. Every page
+  an installed app contributes (its settings tab, its manage surface) sits
+  under App settings with the app's own glyph, and search results keep the
+  groups. The Apps page itself is a row of Workspace.
 - The page at `/mcp` is called Tools wherever a person reads its name: the
   label comes from `NAV` and `MANAGE_VIEWS` in `lib/nav.ts`. Its blurb names
   the protocol once, and search still finds it under "mcp".
@@ -102,6 +103,11 @@ instead of styling its own panels:
   and the kebab. Tab reaches the row first, then its controls. The row ends
   in a chevron, after the kebab. In a group where only some rows open, the
   rest hold the chevron's cell empty, so the kebabs stay in one column.
+- A row that opens shows one trailing control at rest, its chevron. Its kebab
+  appears when the row is hovered, when focus is anywhere inside the row and
+  while its menu is open. It keeps its cell, its tab stop and its name, and a
+  device that cannot hover always shows it. A row that does not open keeps
+  its kebab visible, and so does an agent card, which has no chevron.
 - A row whose state needs a person shows one `SettingsRowFix` before its
   kebab: the word "Fix" and a chevron, never a boxed button. The row's status
   says what is wrong, `label` names what Fix does ("Fix QuickBooks Online: set
@@ -126,10 +132,13 @@ instead of styling its own panels:
   blurb. A component that only sometimes shows such controls passes a
   condition: `useAutosave(() => canEdit)`.
 - A group that saves with a button ends in `SettingsSaveBar`: one sentence on
-  why it needs a Save, then the button named for what it saves ("Save
-  identity"), gold when dirty and a disabled outline when clean, with Discard
-  beside it while dirty. While a save bar is mounted the header shows no cue,
-  so the two are never on screen together. A control on that page that still
+  why it needs a Save, and no button while nothing changed. When a field
+  changes, the gold button named for what it saves ("Save identity") appears
+  with Discard beside it, and the bar keeps its height. A record editor's
+  footer does the same, and a key field's `SaveAction` waits in a cell ahead
+  of the field. No Save is ever a disabled outline. A dialog's footer keeps
+  its primary visible and disabled until valid. While a save bar is mounted
+  the header shows no cue, so the two are never on screen together. A control on that page that still
   saves on change passes `saved={autosave.saved(key)}` to its `SettingsRow`,
   which shows a check and "Saved" beside the control for two seconds. The
   same holds in a dialog, where the header is out of sight.
@@ -190,8 +199,10 @@ cream in the light theme, so it is not a selected state there.
 In the sans voice a `Toggle` that is on is a solid gold track with a ground
 knob. Off is a neutral track with a muted knob.
 
-A brand mark and an initial share one tile: 32px, `rounded-md`, the same
-border, and in dark the same light plate (`McpServerMark`). The rich-text
+A brand mark and the fallback share one tile: 32px, `rounded-md`, the same
+border, and in dark the same light plate (`McpServerMark`). A server with no
+brand mark shows the `Server` glyph, the same for every such server, never
+its initial. The rich-text
 toolbar is short in the sans voice: bold, italic, the two lists, link, a
 "Text style" menu and "More" for everything else.
 
