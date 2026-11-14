@@ -233,7 +233,7 @@
   {#if classes || (legacy && Object.keys(legacy).length > 0)}
     <SettingsSection
       title="What reaches you"
-      description="Everything is kept in your inbox. Choose where else each kind reaches you."
+      description="Everything is kept in your inbox, so choose where else each kind reaches you."
       info={classes ? CHANNEL_INFO : undefined}
     >
       {#if classes && !pushRegistered}
@@ -309,7 +309,7 @@
        the page. It is an admin's and applies to everyone, so it sits apart
        from them, after everything that is this person's own. -->
   {#if data?.canSetDelivery && emailOn !== null}
-    <SettingsSection title="Workspace email" description="Only admins see this. It applies to everyone in the workspace.">
+    <SettingsSection title="Workspace email" description="Only admins see this, and it applies to everyone in the workspace.">
       <SettingsGroup>
         <div data-email-switch={emailOn ? 'on' : 'off'}>
           <SettingsRow

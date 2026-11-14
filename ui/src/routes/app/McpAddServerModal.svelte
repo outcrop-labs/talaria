@@ -123,7 +123,7 @@
       label="Server URL"
       for="mcp-server-url"
       info={sans
-        ? 'The server\'s MCP address. Agents never see it. They go through Talaria, which applies the access rules you set.'
+        ? 'The tool server\'s address. Agents never see it. They go through Talaria, which applies the access rules you set.'
         : "The MCP endpoint (streamable HTTP). Agents never see this address; they go through Talaria's gateway, which enforces the access rules you set here."}
     >
       <Input id="mcp-server-url" size={sans ? 'sm' : 'md'} bind:value={url} onkeydown={onEnter} placeholder="https://mcp.example.com/mcp" class={sans ? 'font-mono' : undefined} />

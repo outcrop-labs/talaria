@@ -110,8 +110,8 @@
           <div class="space-y-3">
             <p class="font-sans text-[13px] leading-5 text-muted">
               {tab === 'internal'
-                ? 'Tools that come with Talaria. Every agent has them, and you choose who may use each one.'
-                : 'Tool servers from other companies, or your own. Open one to choose which agents and people use it.'}
+                ? 'Tools that come with Talaria, where every agent has them and you choose who may use each one.'
+                : 'Tool servers from other companies or your own, each opening to the agents and people who use it.'}
             </p>
             <SettingsGroup>
               {#each servers.filter((s) => isInternalServer(s) === (tab === 'internal')) as s (s.id)}

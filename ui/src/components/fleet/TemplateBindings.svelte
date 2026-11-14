@@ -50,7 +50,7 @@
 
 <SettingsRow
   label="Ticket template"
-  hint="Used wherever this agent writes tickets. It wins over the board's default."
+  hint="Used wherever this agent writes tickets, ahead of the board's default."
   as={canManage ? 'label' : 'div'}
   saved={autosave.saved('ticket')}
 >

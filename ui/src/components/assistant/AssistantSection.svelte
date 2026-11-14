@@ -293,7 +293,7 @@
           <!-- An assistant can run a model that is neither tier. The select names it and offers the two. -->
           <SettingsRow
             label="Model"
-            hint={activeTier ? undefined : 'Not one of the two tiers. Pick one to switch.'}
+            hint={activeTier ? undefined : 'Not one of the two tiers, so pick one to switch.'}
             as="label"
             saved={autosave.saved('model')}
           >

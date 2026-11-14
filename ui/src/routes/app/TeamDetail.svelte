@@ -360,7 +360,7 @@
       {#if memberError}<div class="mt-2 font-sans text-[13px] leading-5 text-danger">{memberError}</div>{/if}
     </SettingsSection>
 
-    <SettingsSection title="Agents" description="Agents on a team act as its members. They never own it.">
+    <SettingsSection title="Agents" description="Agents on a team act as its members and never own it.">
       {#if agentsList.notice}<div class="mb-3"><QueryError {...agentsList.notice} /></div>{/if}
       <SettingsGroup bare>
         {#each agents as a (a.agentModel)}
@@ -406,7 +406,7 @@
     </SettingsSection>
 
     {#if isAdmin}
-      <SettingsSection title="Access" description="What everyone on this team can open and do. A person's own settings still win.">
+      <SettingsSection title="Access" description="What everyone on this team can open and do, unless a person's own settings say otherwise.">
         {#if accessQuery.isError && accessQuery.data === undefined}
           <QueryError
             variant="compact"

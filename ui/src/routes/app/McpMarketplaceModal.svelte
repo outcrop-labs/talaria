@@ -237,7 +237,7 @@
           <span class="font-sans text-xs leading-4 text-muted" title={catalog.error ?? (live || undefined)}>{catalogLine(catalog, relativeTime).replace(' — ', ': ')}</span>
           {@render syncButton()}
         {/if}
-        <InfoTip text="The official MCP registry, copied into this instance and refreshed every half hour. Hosted servers are checked every few hours, and the ones that do not answer are hidden until you ask for them." />
+        <InfoTip text="The official registry of tool servers, copied into this instance and refreshed every half hour. Hosted servers are checked every few hours, and the ones that do not answer are hidden until you ask for them." />
       </div>
       {#if error}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
     {:else}

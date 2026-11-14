@@ -205,7 +205,7 @@
 {#if isAdmin}
   <SettingsSection
     title="Install from Git"
-    description="Any repository with a talaria.json file at its root. Its code runs fully trusted."
+    description="Any repository with a talaria.json file at its root, whose code runs fully trusted."
     info="A private repository on one of this instance's Git hosts (Admin, Git hosts) is read with that host's login, read-only where the host can scope one. A private repository anywhere else needs a workspace secret that holds a token and lists that host."
   >
     <SettingsGroup>

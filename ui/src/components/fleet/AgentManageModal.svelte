@@ -222,7 +222,7 @@
                      must not compete with the agent's identity above it. -->
                 <SettingsSection title="Credential">
                   <SettingsGroup>
-                    <SettingsRow label="Agent key" hint="What this agent presents to Talaria. Rotate it if it may have leaked.">
+                    <SettingsRow label="Agent key" hint="What this agent presents to Talaria, to rotate if it may have leaked.">
                       {#if !rotateOpen}
                         <DangerLink onClick={() => ((rotateOpen = true), (rotated = null))} disabled={rotating}>Rotate key</DangerLink>
                       {/if}

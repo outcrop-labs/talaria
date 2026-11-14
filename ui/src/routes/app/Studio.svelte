@@ -279,7 +279,7 @@
 
             <SettingsSection
               title="Skills"
-              description={everyone ? 'What every agent knows. Edits apply on their next run.' : `What ${who} knows. Edits apply on its next run.`}
+              description={everyone ? 'What every agent knows, with edits applied on their next run.' : `What ${who} knows, with edits applied on its next run.`}
             >
               {#snippet action()}
                 {#if selected?.canEdit}

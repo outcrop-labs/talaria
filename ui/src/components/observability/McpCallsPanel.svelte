@@ -176,7 +176,7 @@
     </div>
 
     {#if !server && (summaryQuery.data?.servers.length ?? 0) > 0}
-      <SettingsSection title="By server" description={`How each server answered in the ${windowLabel}. Pick one to see its calls.`}>
+      <SettingsSection title="By server" description={`How each server answered in the ${windowLabel}; pick one to see its calls.`}>
         <SettingsGroup>
           <div class="overflow-x-auto">
             <table class={table.root}>

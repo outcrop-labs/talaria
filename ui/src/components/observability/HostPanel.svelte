@@ -100,7 +100,7 @@
 
     <SettingsSection
       title="Disks"
-      description="Fullest first. Refreshes every 5 seconds."
+      description="Fullest first, refreshed every 5 seconds."
       info="The bar is df's percent: 80% is a warning, 90% is critical. Bind mounts of the same disk are one row."
     >
       {#if host.note}
