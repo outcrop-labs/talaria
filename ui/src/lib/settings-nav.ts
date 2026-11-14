@@ -151,7 +151,8 @@ const KEYWORDS: Readonly<Record<string, readonly string[]>> = {
   '/agents': ['fleet', 'roster', 'roles', 'schedules'],
   '/teams': ['groups', 'members', 'access'],
   '/models': ['providers', 'llm', 'endpoints', 'keys', 'pricing'],
-  '/mcp': ['tools', 'servers', 'connectors', 'integrations'],
+  // The page is called Tools. The protocol's name is how people who know it look for it.
+  '/mcp': ['mcp', 'model context protocol', 'servers', 'connectors', 'integrations'],
   '/templates': ['tickets', 'plans'],
   '/studio': ['skills', 'memory', 'teach'],
   '/observability': ['health', 'cost', 'spend', 'logs', 'usage'],

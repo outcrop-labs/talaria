@@ -185,7 +185,12 @@ describe('the tabs of pages with no table of their own', () => {
     {
       id: 'manage',
       title: 'Manage',
-      items: ['/agents', '/mcp', '/templates', '/apps'].map((to) => ({ to, label: to.slice(1), icon: to })),
+      items: [
+        { to: '/agents', label: 'Agents', icon: 'agents' },
+        { to: '/mcp', label: 'Tools', icon: 'tools' },
+        { to: '/templates', label: 'Templates', icon: 'templates' },
+        { to: '/apps', label: 'Apps', icon: 'apps' },
+      ],
     },
   ]
   const groups = settingsNav(core, [], admin, '/manage').groups
@@ -194,7 +199,7 @@ describe('the tabs of pages with no table of their own', () => {
       .filter((m) => m.parent)
       .map((m) => m.to)
 
-  it('finds every tab of Agents, MCP, Templates and Apps at its own address', () => {
+  it('finds every tab of Agents, Tools, Templates and Apps at its own address', () => {
     expect(tabLinks('role templates')).toEqual(['/agents/templates'])
     expect(tabLinks('schedules')).toEqual(['/agents/schedules'])
     expect(tabLinks('built-in')).toEqual(['/mcp'])
@@ -205,4 +210,13 @@ describe('the tabs of pages with no table of their own', () => {
     expect(tabLinks('discover')).toEqual(['/apps/discover'])
   })
 
+  it('finds Tools by its own name and by the protocol it is served over', () => {
+    const rows = (q: string) =>
+      searchSettings(groups, OWN_PAGE_TABS, q)
+        .filter((m) => !m.parent)
+        .map((m) => `${m.label} ${m.to}`)
+    for (const q of ['tools', 'mcp', 'MCP', 'model context protocol', 'servers', 'integrations']) {
+      expect(rows(q), q).toContain('Tools /mcp')
+    }
+  })
 })

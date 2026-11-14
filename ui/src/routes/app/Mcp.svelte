@@ -53,8 +53,8 @@
 />
 
 <SettingsPage
-  title="MCP"
-  blurb="Tools your agents can call, served by Model Context Protocol (MCP) servers."
+  title="Tools"
+  blurb="What your agents can call, served by Model Context Protocol (MCP) servers."
   tabs={MCP_TABS}
   {tab}
   onTab={goTab}
