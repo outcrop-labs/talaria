@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte'
   import { publicIconDomain } from '@/lib/icon-domain'
   import { useUiVoice } from '@/lib/ui-voice'
 
@@ -10,12 +11,16 @@
     domain,
     icon,
     size = 32,
+    children,
   }: {
     title: string
     /** The host to ask the icon proxy for, or several to try in order. */
     domain?: string | readonly string[] | null
     icon?: string | null
     size?: number
+    /** A glyph of the app's own, for a server that is a part of Talaria: it
+     *  takes the plate a brand mark sits on. Settings voice only. */
+    children?: Snippet
   } = $props()
 
   // Internal hosts have no favicon — don't ask the proxy (it can only 404);
@@ -48,7 +53,9 @@
        set, and the initial reads as a letter someone set there and never as
        an image that failed. -->
   <span class="plate grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-raised text-fg">
-    {#if src}
+    {#if children}
+      {@render children()}
+    {:else if src}
       <img {src} alt="" width="20" height="20" loading="lazy" onerror={miss} class="h-5 w-5 object-contain" />
     {:else}
       <span aria-hidden="true" class="font-sans text-sm font-medium leading-none">{monogram}</span>

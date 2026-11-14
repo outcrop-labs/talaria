@@ -100,9 +100,9 @@ describe('serverStatus', () => {
 describe('serverStatus — the health pass verdicts', () => {
   const reconnect = { state: 'reconnect' as const, detail: 'the provider rejected the refresh of the connected account', at: '' }
 
-  it('an org OAuth grant the provider refused reads reconnect, danger, with Connect as the action', () => {
+  it('an org OAuth grant the provider refused reads needs sign-in, in the attention colour, with Connect as the action', () => {
     const s = serverStatus(row({ oauthEnabled: true, orgConnected: false, probe: reconnect }))
-    expect(s).toMatchObject({ kind: 'reconnect', tone: 'danger', action: 'connect' })
+    expect(s).toMatchObject({ kind: 'reconnect', label: 'Needs sign-in', tone: 'warning', action: 'connect' })
     expect(s.detail).toContain('rejected the refresh')
   })
 

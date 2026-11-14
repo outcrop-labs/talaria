@@ -316,25 +316,21 @@ export async function installLibraryServer(l: LibraryServerRow, opts: InstallOpt
   }
 }
 
-/** A catalog tier's chip. `word` and `tone` are the settings area's; `label`
- *  and `cls` are the mono chip the agent dialog still draws in comms. */
-export const TIER_BADGE: Record<
-  LibraryServerRow['tier'],
-  { label: string; cls: string; word: string; tone: 'accent' | 'neutral'; hint: string }
-> = {
+/** A catalog tier's name. `word` is the settings area's, a quiet word on the
+ *  publisher's line; `label` and `cls` are the mono chip the agent dialog
+ *  still draws in comms. */
+export const TIER_BADGE: Record<LibraryServerRow['tier'], { label: string; cls: string; word: string; hint: string }> = {
   'first-party': {
     label: 'official',
     cls: 'border-accent/50 text-accent',
     word: 'Official',
-    tone: 'accent',
     hint: 'Published by the company itself, hosted on its own verified domain',
   },
-  verified: { label: 'verified', cls: 'border-line text-muted', word: 'Verified', tone: 'neutral', hint: 'Domain-verified publisher, hosted elsewhere' },
+  verified: { label: 'verified', cls: 'border-line text-muted', word: 'Verified', hint: 'Domain-verified publisher, hosted elsewhere' },
   community: {
     label: 'community',
     cls: 'border-line-subtle text-ink-dim', // voice-ok: the mono chip, for the agent dialog in comms
     word: 'Community',
-    tone: 'neutral',
     hint: 'Community-built (io.github namespace)',
   },
 }

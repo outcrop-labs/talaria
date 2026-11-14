@@ -1,7 +1,6 @@
 <script lang="ts">
   import { Check, Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { cn } from '@/lib/cn'
   import { iconDomains } from '@/lib/mcp-icon'
@@ -57,8 +56,16 @@
     <div class="flex items-center gap-3">
       <McpServerMark title={l.title} domain={iconDomains({ publisher: l.domain, url: l.url })} icon={l.icon} />
       <div class="min-w-0 flex-1">
-        <div class="truncate font-sans text-sm font-medium leading-5 text-fg">{l.title}</div>
-        {#if l.domain}<div class="truncate font-mono text-xs leading-5 text-muted">{l.domain}</div>{/if}
+        <div class="line-clamp-2 font-sans text-sm font-medium leading-5 text-fg">{l.title}</div>
+        <!-- Who publishes it and what adding it takes, as words on one line:
+             every entry has a tier, and a chip row under some cards and not
+             others made the grid's rows uneven. -->
+        <div class="flex min-w-0 items-baseline gap-1.5 font-sans text-xs leading-5 text-muted">
+          {#if l.domain}<span class="truncate font-mono">{l.domain}</span><span aria-hidden="true">·</span>{/if}
+          <span class="shrink-0" title={badge.hint}>{badge.word}</span>
+          {#if l.package}<span aria-hidden="true">·</span><span class="shrink-0" title={pkgHint}>Package</span>{/if}
+          {#if wantsKey}<span aria-hidden="true">·</span><span class="shrink-0" title={keyHint}>Needs a key</span>{/if}
+        </div>
       </div>
       {#if installed && onPick && !onAgent && serverId}
         <Button size="xs" variant="outline" onclick={() => onPick(serverId)} title="Already in the org registry. Add it to this agent">Use</Button>
@@ -77,11 +84,6 @@
       {/if}
     </div>
     <p class="mt-3 line-clamp-2 min-h-10 font-sans text-[13px] leading-5 text-muted">{l.description ?? 'No description.'}</p>
-    <div class="mt-3 flex flex-wrap items-center gap-1.5">
-      <Chip tone={badge.tone} title={badge.hint}>{badge.word}</Chip>
-      {#if l.package}<Chip title={pkgHint}>Package</Chip>{/if}
-      {#if wantsKey}<Chip title={keyHint}>Needs a key</Chip>{/if}
-    </div>
     {#if dead}<p class="mt-2 font-sans text-xs leading-4 text-muted" title={l.live?.detail ?? undefined}>{dead}</p>{/if}
     {#if added && added.state !== 'ok'}
       <div class="mt-3 flex flex-wrap items-center gap-2 font-sans text-[13px] leading-5">
@@ -89,7 +91,7 @@
           <span class="text-muted">Added. It signs in with OAuth.</span>
           <Button size="xs" variant="outline" onclick={() => void connectPopup(added.serverId, 'org')}>Connect org account</Button>
         {:else if added.state === 'needs-app'}
-          <span class="text-warning">Added. Set up its OAuth app on the MCP page before anyone can connect.</span>
+          <span class="text-warning">Added. Set up its OAuth app on the Tools page before anyone can connect.</span>
         {:else if added.state === 'needs-key'}
           <span class="text-warning">Added. It needs credentials.</span>
           <Button size="xs" variant="outline" onclick={() => onSetCredentials(added.serverId)}>Set credentials</Button>
@@ -140,7 +142,7 @@
           <span class="text-muted">Added. It uses OAuth —</span>
           <Button size="xs" variant="accent-soft" onclick={() => void connectPopup(added.serverId, 'org')}>Connect org account</Button>
         {:else if added.state === 'needs-app'}
-          <span class="text-warning">Added. Needs a one-time OAuth app setup on the MCP page before anyone can connect.</span>
+          <span class="text-warning">Added. Needs a one-time OAuth app setup on the Tools page before anyone can connect.</span>
         {:else if added.state === 'needs-key'}
           <span class="text-warning">Added. It wants credentials —</span>
           <Button size="xs" variant="accent-soft" onclick={() => onSetCredentials(added.serverId)}>Set credentials</Button>

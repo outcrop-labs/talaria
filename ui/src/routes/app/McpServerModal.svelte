@@ -185,7 +185,7 @@
       {#if stale.length && s.enabled}
         <p class="mt-2 font-sans text-[13px] leading-5 text-warning" title={stale.map((a) => `${a.agentModel}: ${a.missing.join(', ')}`).join('\n')}>
           {stale.length} agent{stale.length === 1 ? '' : 's'} name{stale.length === 1 ? 's' : ''} tools this server no longer offers
-          ({[...new Set(stale.flatMap((a) => a.missing))].join(', ')}). Drop them on each agent's MCP tab.
+          ({[...new Set(stale.flatMap((a) => a.missing))].join(', ')}). Drop them in each agent's Tools section.
         </p>
       {/if}
     </section>

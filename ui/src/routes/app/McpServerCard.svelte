@@ -2,8 +2,8 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { BookOpen, FileBox, LayoutGrid } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
@@ -32,7 +32,7 @@
   /** One registered server as a row of the list: what it is, what it is for,
    *  how much it is used and its status. Clicking the row opens Manage: the
    *  tool list, the last check, the calls and the access table are one level
-   *  down, in that dialog. A button shows only when the status names something
+   *  down, in that dialog. Fix shows only when the status names something
    *  to fix (sign in, set credentials, check again). The status is
    *  `serverStatus`'s verdict over the row: lifecycle, then auth, then what
    *  the last discovery found. */
@@ -70,7 +70,7 @@
   const isWorkbench = $derived(s.name === 'workbench')
   const verdict = $derived(serverStatus(s))
   // Assignments whose tool subset names a tool the catalog no longer offers;
-  // each agent's MCP tab offers the one-click fix.
+  // each agent's Tools section offers the one-click fix.
   const stale = $derived(staleAssignments(s.assignments, s.tools))
 
   const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
@@ -87,38 +87,40 @@
 
   // The one thing the row asks for, when its status asks for something. A
   // server the health pass does not ask (the deployment's own, a stdio
-  // package) has no "check again" to offer.
-  type Fix = { label: string; title?: string; run: () => void }
+  // package) has no "check again" to offer. `name` is the action under its
+  // own name: the kebab's item, and what Fix's accessible label says it does.
+  type Fix = { name: string; title?: string; run: () => void }
   const fix = $derived.by((): Fix | null => {
     if (!s.enabled) return null
     if (verdict.action === 'connect') {
       return verdict.kind === 'reconnect'
         ? {
-            label: 'Reconnect',
+            name: 'Reconnect org account',
             title: 'The provider refused to refresh the org account. Sign in again so agents can use it',
             run: () => void connectPopup(s.id, 'org'),
           }
         : {
-            label: 'Connect',
+            name: 'Connect org account',
             title: 'This server signs in with OAuth. Connect the org account so agents can use it',
             run: () => void connectPopup(s.id, 'org'),
           }
     }
     if (verdict.action === 'set-credentials') {
-      return { label: 'Set credentials', title: verdict.detail ?? undefined, run: () => (credentialsOpen = true) }
+      return { name: 'Set credentials', title: verdict.detail ?? undefined, run: () => (credentialsOpen = true) }
     }
     if (verdict.action === 'setup-oauth-app' && s.oauthMeta) {
-      return { label: 'Set up', title: verdict.detail ?? undefined, run: () => (oauthOpen = true) }
+      return { name: 'Set up OAuth app', title: verdict.detail ?? undefined, run: () => (oauthOpen = true) }
     }
     if (healthChecked(s) && (verdict.kind === 'unreachable' || verdict.kind === 'error' || verdict.kind === 'untested')) {
       return {
-        label: 'Check now',
+        name: 'Check now',
         title: 'Ask the server again now: the handshake, its tool list, and whether the credentials still work',
         run: () => ask({ refreshTools: true }),
       }
     }
     return null
   })
+  const fixLabel = $derived(fix ? `Fix ${s.label}: ${fix.name.charAt(0).toLowerCase()}${fix.name.slice(1)}` : undefined)
 
   // Drops the org's OAuth tokens; the gateway answers for the server
   // in-house again and the carriers re-list on its notice, without a restart.
@@ -141,7 +143,7 @@
 
   const remove = async () => {
     const ok = await confirm({
-      title: 'Remove MCP server',
+      title: 'Remove tool server',
       message: `Remove "${s.label}" org-wide? Every agent that carries it loses it within about a minute, without a restart.`,
       confirmLabel: 'Remove',
     })
@@ -157,11 +159,17 @@
 
   const external = $derived(!isInternalServer(s))
   // The deployment's own servers are governed, never edited: Manage is all
-  // their menu holds.
-  const menu = (): ContextMenuEntry[] => [
-    { label: 'Manage', onSelect: () => (manageOpen = true) },
-    ...(s.builtin ? [] : settingsMenu()),
-  ]
+  // their menu holds. What Fix does comes second, under its own name, and an
+  // item of the same name further down gives way to it.
+  const menu = (): ContextMenuEntry[] => {
+    const fixing = fix
+    const rest = s.builtin ? [] : settingsMenu()
+    return [
+      { label: 'Manage', onSelect: () => (manageOpen = true) },
+      ...(fixing ? [{ label: fixing.name, disabled: checking, onSelect: fixing.run }] : []),
+      ...rest.filter((item) => typeof item === 'string' || item.label !== fixing?.name),
+    ]
+  }
   const settingsMenu = (): ContextMenuEntry[] => [
     ...(external && !s.package && s.authMode === 'org'
       ? [{ label: s.headerKeys?.length ? 'Edit credentials' : 'Set credentials', onSelect: () => (credentialsOpen = true) }]
@@ -202,7 +210,8 @@
   >
     {#snippet lead()}
       {#if OwnMark}
-        <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-line bg-raised text-fg"><OwnMark size={16} /></span>
+        {@const Mark = OwnMark}
+        <McpServerMark title={s.label}><Mark size={16} /></McpServerMark>
       {:else}
         <McpServerMark title={s.label} domain={markDomains} />
       {/if}
@@ -216,7 +225,8 @@
           Package
         </Chip>
       {/if}
-      {#if s.authMode === 'per-user' && !s.builtin}
+      <!-- Where the status already reads "Each person signs in", the chip would say it twice. -->
+      {#if s.authMode === 'per-user' && !s.builtin && verdict.kind !== 'per-user'}
         <Chip class="-my-px" title="Each person connects their own account. Until they do, their assistant is told where to connect.">Per user</Chip>
       {/if}
       {#if stale.length && s.enabled}
@@ -235,8 +245,7 @@
       </span>
     {/snippet}
 
-    <!-- One width for every fix, so the buttons and the kebabs after them end on one line down the list. -->
-    {#if fix}<Button variant="outline" size="sm" class="w-32" title={fix.title} disabled={checking} onclick={fix.run}>{fix.label}</Button>{/if}
+    {#if fix}<SettingsRowFix label={fixLabel} title={fix.title} disabled={checking} onclick={fix.run} />{/if}
     <SettingsRowMenu label={`Actions for ${s.label}`} items={menu} />
   </SettingsRow>
   {#if error}<div class="px-5 pb-4 font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}

@@ -1,5 +1,5 @@
 // The MCP surface end to end — catalog, install, credentials, OAuth, an
-// agent's MCP tab, the gateway, and the custom form — against a real stack
+// agent's Tools section, the gateway, and the custom form — against a real stack
 // and the stub world in scripts/e2e/mcp-stubs.mjs. docs/E2E.md says how to
 // run it; docs/MCP.md is the behaviour it holds the product to.
 //
@@ -67,7 +67,7 @@ test.afterAll(async () => {
 /** Install one stub server the way this run can: from the marketplace when
  *  the mirror carries the stub registry, else by URL with the marketplace's
  *  own request body (support.ts `installByUrl`). Answers the marketplace card
- *  (null on the URL path) and leaves the page on Manage → MCP. */
+ *  (null on the URL path) and leaves the page on Manage → Tools. */
 async function install(page: Page, entry: { title: string; slug: string; url: string }) {
   if (MARKETPLACE) {
     const dialog = await openMarketplace(page)
@@ -196,11 +196,12 @@ test('3 · a server that answers 401 asks for its key, and connects once it has 
   await expect.poll(async () => (await api.server(id)).probe?.state, { message: 'discovery never recorded the 401' }).toBe('auth-required')
   const creds = page.getByRole('dialog').filter({ hasText: `Credentials for ${STUB.key.title}` })
   if (!MARKETPLACE) {
-    // No marketplace to open the editor on its own: the card says what the
-    // server needs, and its one button is the way in.
+    // No marketplace to open the editor on its own: the row says what the
+    // server needs, and its one action, Fix, is the way in. Fix is named for
+    // what it does; the row's menu holds the same action as "Set credentials".
     const card = registryCard(page, STUB.key.slug)
     await expect(card.getByText('Needs credentials', { exact: true })).toBeVisible()
-    await card.getByRole('button', { name: 'Set credentials' }).click()
+    await card.getByRole('button', { name: `Fix ${STUB.key.title}: set credentials`, exact: true }).click()
   }
   // From the marketplace this is the drop-in moment: the editor opens itself.
   await expect(creds).toBeVisible()
@@ -227,12 +228,12 @@ test('4 · an OAuth server is detected, connects through the popup, and lists it
   expect(before.oauthEnabled).toBe(true)
   expect(before.orgConnected).toBeFalsy()
 
-  // Connect → /api/mcp/oauth/start → the stub's /authorize (302, no login
+  // Connect (the row's Fix) → /api/mcp/oauth/start → the stub's /authorize (302, no login
   // page) → Talaria's callback, which exchanges the code with PKCE and
   // closes the popup.
   const popupOpened = page.waitForEvent('popup')
   if (card) await card.getByRole('button', { name: 'Connect org account' }).click()
-  else await registryCard(page, STUB.oauth.slug).getByRole('button', { name: 'Connect', exact: true }).click()
+  else await registryCard(page, STUB.oauth.slug).getByRole('button', { name: `Fix ${STUB.oauth.title}: connect org account`, exact: true }).click()
   const popup = await popupOpened
   await popup.waitForURL(/\/api\/mcp\/oauth\/callback/, { waitUntil: 'domcontentloaded' })
   // The page closes itself 1.2s after it renders; read it while it is there.
@@ -256,7 +257,7 @@ test('4 · an OAuth server is detected, connects through the popup, and lists it
   expect((await api.server(id)).tools).toHaveLength(STUB_TOOLS.length)
 })
 
-test("5 · an agent's MCP tab assigns a server with a tool subset, and takes it away again", async ({ page }) => {
+test("5 · an agent's Tools section assigns a server with a tool subset, and takes it away again", async ({ page }) => {
   const openId = await ensureOpenServer()
   const agent = await ensureAgent()
   const agentId = agent.id
@@ -285,7 +286,7 @@ test("5 · an agent's MCP tab assigns a server with a tool subset, and takes it 
   await page.goto('/agents')
   await page.getByRole('button', { name: new RegExp(AGENT.displayName) }).first().click()
   const modal = page.getByRole('dialog').filter({ hasText: AGENT.displayName })
-  await modal.getByRole('tab', { name: 'MCP', exact: true }).click()
+  await modal.getByRole('tab', { name: 'Tools', exact: true }).click()
   // The heading, by role: the Available section's sentence also says "on this agent".
   const onThisAgent = modal.getByRole('heading', { name: 'On this agent', exact: true })
   await expect(onThisAgent).toBeVisible()

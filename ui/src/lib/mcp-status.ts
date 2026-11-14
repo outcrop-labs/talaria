@@ -83,11 +83,11 @@ export function serverStatus(s: StatusInput): ServerStatus {
   if (s.pkgStatus === 'error') return chip('image-failed', 'Could not start', 'danger', s.probe?.detail ?? null)
   const internal = s.builtin || !!s.appSlug
   if (s.oauthEnabled && s.authMode === 'org' && !s.orgConnected) {
-    // Connected once, refused since: the same Connect button, but the chip
-    // says the grant was lost — a first-time "connect" would read as if
-    // nobody had ever set it up.
+    // Connected once, refused since. The word and the colour are the ones a
+    // person's own lost sign-in has under Settings, Connections; the detail
+    // says the grant was lost, so it does not read as never set up.
     if (s.probe?.state === 'reconnect') {
-      return chip('reconnect', 'Signed out', 'danger', s.probe.detail, 'connect')
+      return chip('reconnect', 'Needs sign-in', 'warning', s.probe.detail, 'connect')
     }
     const manual = !!s.oauthMeta && !s.oauthMeta.clientSet && (!s.oauthMeta.dcr || !!s.oauthMeta.dcrRejected)
     return manual
