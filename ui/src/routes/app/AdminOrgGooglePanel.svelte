@@ -2,9 +2,9 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
-  import { buttonClasses } from '@/components/ui/button'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -78,6 +78,8 @@
     }
   }
 
+  const CONNECT = '/api/integrations/google/org/connect'
+
   const msg: Record<string, string> = {
     connected: 'Shared Google account connected.',
     denied: 'Connection canceled.',
@@ -141,7 +143,11 @@
               ]}
             />
           {:else}
-            <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Connect</a>
+            <SettingsRowFix href={CONNECT} label="Fix the shared Google account: connect it" />
+            <SettingsRowMenu
+              label="Actions for the shared Google account"
+              items={[{ label: 'Connect Google', onSelect: () => window.location.assign(CONNECT) }]}
+            />
           {/if}
         </SettingsRow>
         {#if data?.connected && (probeError || apiResults)}

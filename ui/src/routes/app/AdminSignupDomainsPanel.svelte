@@ -2,6 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -90,20 +91,23 @@
             <SettingsRow>
               {#snippet label()}<span class="font-mono text-[13px] font-normal">{d.domain}</span>{/snippet}
               {#snippet status()}
-                {#if d.verified}
+                {#if verifying === d.id}
+                  <RowStatus status="idle">Checking</RowStatus>
+                {:else if d.verified}
                   <RowStatus status="ok" title="People on this domain can join on their own">Verified</RowStatus>
                 {:else}
                   <RowStatus status="warn">Waiting for DNS</RowStatus>
                 {/if}
               {/snippet}
               {#if !d.verified}
-                <Button size="sm" variant="outline" disabled={verifying === d.id} onclick={() => void verify(d.id)}>
-                  {verifying === d.id ? 'Checking' : 'Verify'}
-                </Button>
+                <SettingsRowFix label={`Fix ${d.domain}: verify the domain`} disabled={verifying === d.id} onclick={() => void verify(d.id)} />
               {/if}
               <SettingsRowMenu
                 label={`Actions for ${d.domain}`}
-                items={[{ label: 'Remove domain', danger: true, onSelect: () => void remove(d) }]}
+                items={[
+                  ...(d.verified ? [] : [{ label: 'Verify domain', disabled: verifying === d.id, onSelect: () => void verify(d.id) }, 'sep' as const]),
+                  { label: 'Remove domain', danger: true, onSelect: () => void remove(d) },
+                ]}
               />
             </SettingsRow>
             {#if !d.verified}
@@ -113,7 +117,7 @@
                 <span>with the value</span>
                 <code class="min-w-0 truncate rounded {sansFill} px-1.5 py-0.5 font-mono text-xs text-fg">{d.verificationToken}</code>
                 <CopyButton value={d.verificationToken} title="Copy the TXT value" />
-                <span>then press Verify.</span>
+                <span>then choose Fix to verify it.</span>
               </div>
             {/if}
           </div>

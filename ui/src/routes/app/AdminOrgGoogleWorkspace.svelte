@@ -3,7 +3,6 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
@@ -82,14 +81,13 @@
   {/if}
 {/snippet}
 
-<!-- Setting one up is the row's one button. Checking a resource that is
-     already there is a menu item. Both run the same pass. -->
+<!-- Neither resource is required, so setting one up is a menu item, and so
+     is checking one that is already there. Both run the same pass. -->
 {#snippet action(what: 'calendar' | 'drive', ready: boolean, menuLabel: string)}
-  {#if ready}
-    <SettingsRowMenu label={menuLabel} items={[{ label: 'Check again', disabled: working !== null, onSelect: () => void run(what) }]} />
-  {:else}
-    <Button variant="outline" size="sm" onclick={() => void run(what)} disabled={working !== null}>Set up</Button>
-  {/if}
+  <SettingsRowMenu
+    label={menuLabel}
+    items={[{ label: ready ? 'Check again' : 'Set up', disabled: working !== null, onSelect: () => void run(what) }]}
+  />
 {/snippet}
 
 {#if query.isPending}

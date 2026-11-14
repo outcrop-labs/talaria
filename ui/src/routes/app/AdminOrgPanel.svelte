@@ -1,7 +1,8 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useExplicitSave } from '@/components/settings/autosave.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SaveAction from '@/components/admin/SaveAction.svelte'
+  import SettingsSaveBar from '@/components/settings/SettingsSaveBar.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -15,6 +16,8 @@
   // rewrites each agent's identity in place, so the two fields share one
   // explicit Save: a typo must not reach the whole fleet when a field loses
   // focus.
+  // Held from the first paint, before the save bar mounts with the data.
+  useExplicitSave()
   const qc = useQueryClient()
   const query = useAdminSettings()
   const data = $derived(query.data)
@@ -84,11 +87,17 @@
         class="w-full text-sm"
       />
     </SettingsRow>
-    <div class="flex min-h-[60px] items-center gap-3 px-5 py-3">
-      <span class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
-        {#if savedFlash.saved}<span class="text-success">Saved.</span>{:else}Saving rewrites every agent's identity, so these two save together.{/if}
-      </span>
-      <SaveAction {dirty} {busy} onclick={() => void save()}>Save</SaveAction>
-    </div>
+    <SettingsSaveBar
+      label="Save identity"
+      reason="Saving rewrites every agent's identity."
+      {dirty}
+      saving={busy}
+      saved={savedFlash.saved}
+      onSave={() => void save()}
+      onDiscard={() => {
+        name = null
+        about = null
+      }}
+    />
   {/snippet}
 </QueryState>

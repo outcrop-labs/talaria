@@ -24,7 +24,7 @@
   let sendAs = $state(targets.sendAs ?? '')
   const autosave = useAutosave()
   const dirty = $derived(drive !== (targets.driveFolderId ?? '') || cal !== (targets.calendarId ?? '') || sendAs !== (targets.sendAs ?? ''))
-  const save = async () => {
+  const save = async (key: 'drive' | 'cal' | 'sendAs') => {
     if (!dirty) return
     try {
       await putJson<{ ok: true }>('/api/integrations/google/org', { driveFolderId: drive, calendarId: cal, sendAs })
@@ -33,7 +33,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['org-google'] })
-    autosave.flash()
+    autosave.flash(key)
   }
 </script>
 
@@ -42,32 +42,33 @@
   hint="A shared drive or folder ID, or blank for the account's My Drive."
   info="Files agents create are saved here, so the team owns them. The shared account must be a member of the shared drive."
   as="label"
+  saved={autosave.saved('drive')}
 >
   <Input
     size="sm"
     class="w-[280px] font-mono"
     bind:value={drive}
-    onblur={() => void save()}
+    onblur={() => void save('drive')}
     onkeydown={inlineEditKeys(() => (drive = targets.driveFolderId ?? ''))}
     placeholder="Shared drive or folder ID"
   />
 </SettingsRow>
-<SettingsRow label="Add events to" hint="A calendar ID, or blank for the account's main calendar." as="label">
+<SettingsRow label="Add events to" hint="A calendar ID, or blank for the account's main calendar." as="label" saved={autosave.saved('cal')}>
   <Input
     size="sm"
     class="w-[280px] font-mono"
     bind:value={cal}
-    onblur={() => void save()}
+    onblur={() => void save('cal')}
     onkeydown={inlineEditKeys(() => (cal = targets.calendarId ?? ''))}
     placeholder="team@group.calendar.google.com"
   />
 </SettingsRow>
-<SettingsRow label="Send mail as" hint="A verified alias on the account, or blank for its own address." as="label">
+<SettingsRow label="Send mail as" hint="A verified alias on the account, or blank for its own address." as="label" saved={autosave.saved('sendAs')}>
   <Input
     size="sm"
     class="w-[280px]"
     bind:value={sendAs}
-    onblur={() => void save()}
+    onblur={() => void save('sendAs')}
     onkeydown={inlineEditKeys(() => (sendAs = targets.sendAs ?? ''))}
     placeholder="support@yourdomain.com"
   />

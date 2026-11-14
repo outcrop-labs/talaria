@@ -2,6 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -11,8 +12,10 @@
   import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import RowStatus from '@/components/admin/RowStatus.svelte'
+  import AdminCompanyNamePanel from './AdminCompanyNamePanel.svelte'
 
-  /** The HOSTING domain — where this deployment lives. Verified by a self-
+  /** The instance itself: the name its browser tabs show, and the HOSTING
+   *  domain — where this deployment lives. The domain is verified by a self-
    *  fetch round trip (DNS + routing + TLS must land on this instance), and
    *  then used as the canonical base URL (stable OAuth callbacks, links). */
   const qc = useQueryClient()
@@ -48,20 +51,17 @@
   }
 </script>
 
-<SettingsSection
-  title="Web address"
-  description="Where this Talaria is hosted."
-  info="Checking the address confirms it reaches this exact instance. Once verified, links and sign-in callbacks all use it, so a Google or GitHub app needs only one callback address. This is separate from the email domains people sign up with."
->
+<SettingsSection title="Instance" description="This Talaria's own name and address.">
   <SettingsGroup>
+    <AdminCompanyNamePanel />
     <QueryState query={query} errorTitle="Could not load the web address" errorVariant="compact">
       {#snippet skeleton()}
-        <SettingsRow label="Address"><Skeleton class="h-8 w-40" /></SettingsRow>
+        <SettingsRow label="Web address"><Skeleton class="h-8 w-40" /></SettingsRow>
       {/snippet}
       {#snippet empty()}
         <!-- `null` is the server's own answer — no hosting domain configured yet
              — and this row invites you to set one. -->
-        <SettingsRow label="Address" hint="The domain people open Talaria on." as="label">
+        <SettingsRow label="Web address" hint="The domain people open Talaria on." as="label">
           <Input
             size="sm"
             bind:value={draft}
@@ -78,23 +78,29 @@
         <!-- `empty` owns the server's `null`, so children only ever sees a real
              domain. This is the narrowing the compiler needs. -->
         {#if data}
-          <SettingsRow>
-            {#snippet label()}<span class="font-mono text-[13px] font-normal">{data.domain}</span>{/snippet}
+          <SettingsRow
+            label="Web address"
+            info="Verifying confirms the address reaches this exact instance. Once verified, links and sign-in callbacks all use it, so a Google or GitHub app needs only one callback address. This is separate from the email domains people sign up with."
+          >
+            {#snippet hint()}<span class="break-all font-mono text-xs">{data.domain}</span>{/snippet}
             {#snippet status()}
-              {#if data.verified}
+              {#if busy}
+                <RowStatus status="idle">Checking</RowStatus>
+              {:else if data.verified}
                 <RowStatus status="ok" title="Requests to this address reach this instance">Verified</RowStatus>
               {:else}
                 <RowStatus status="warn">Not verified</RowStatus>
               {/if}
             {/snippet}
             {#if !data.verified}
-              <Button size="sm" variant="outline" disabled={busy} onclick={() => void post({ verify: true })}>
-                {busy ? 'Checking' : 'Verify'}
-              </Button>
+              <SettingsRowFix label={`Fix ${data.domain}: verify the address`} disabled={busy} onclick={() => void post({ verify: true })} />
             {/if}
             <SettingsRowMenu
               label={`Actions for ${data.domain}`}
-              items={[{ label: 'Remove address', danger: true, onSelect: () => void post({ domain: null }) }]}
+              items={[
+                ...(data.verified ? [] : [{ label: 'Verify address', disabled: busy, onSelect: () => void post({ verify: true }) }, 'sep' as const]),
+                { label: 'Remove address', danger: true, onSelect: () => void post({ domain: null }) },
+              ]}
             />
           </SettingsRow>
         {/if}

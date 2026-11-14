@@ -1,21 +1,21 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import SaveAction from '@/components/admin/SaveAction.svelte'
   import { secretHint } from '@/components/admin/secret-hint'
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSaveBar from '@/components/settings/SettingsSaveBar.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
-  import { buttonClasses } from '@/components/ui/button'
   import CopyButton from '@/components/ui/CopyButton.svelte'
-  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { GOOGLE_API_LIBRARY as GOOGLE_APIS } from '@/lib/google-apis'
@@ -66,6 +66,13 @@
   let loginError = $state<string | null>(null)
   let notice = $state<string | null>(null)
   let busy = $state(false)
+  const clientSaved = useSavedFlash()
+  // Back to what is stored, with the half-typed secret dropped.
+  const discard = () => {
+    clientId = data?.status.clientId ?? ''
+    hd = data?.status.hd ?? ''
+    secret = ''
+  }
   // Nothing is stored here while the client comes from the server
   // environment, so a filled form is itself something to save.
   const dirty = $derived(
@@ -90,8 +97,10 @@
         ...(secret.trim() ? { clientSecret: secret.trim() } : {}),
         hd: hd.trim() || null,
       })
-      notice = 'Client saved. Connect the shared account below.'
+      // The next step, said once: the first time a client is stored.
+      if (!data?.status.configured) notice = 'Client saved. Connect the shared account below.'
       secret = ''
+      clientSaved.flash()
     } catch (e) {
       error = errorMessage(e)
     }
@@ -140,7 +149,6 @@
 <SettingsSection
   title="Google"
   description="One Google Cloud client runs Google sign-in and every Google connection."
-  info="Create an OAuth client in Google Cloud Console, add the redirect addresses listed under Client setup, and paste its ID and secret there. The secret is stored encrypted and never shown again."
 >
   <!-- A failed read must not render as "not set up" — that verdict sends an
        admin to re-enter a client that is already stored. QueryState's error
@@ -155,7 +163,7 @@
     {#snippet children(data)}
       <div class="space-y-3">
         <SettingsGroup>
-          <SettingsRow label="Google Cloud client">
+          <SettingsRow label="Google Cloud client" info="Create an OAuth client in Google Cloud Console, add the redirect addresses listed under Client setup, and paste its ID and secret there.">
             {#snippet hint()}
               {#if data.status.configured}
                 <span class="break-all font-mono text-xs">{data.status.clientId}</span>
@@ -172,11 +180,18 @@
                 <RowStatus status="idle">Not set</RowStatus>
               {/if}
             {/snippet}
+            <!-- Only a client stored here can be removed here. -->
+            {#if data.status.source === 'admin'}
+              <SettingsRowMenu
+                label="Actions for the Google Cloud client"
+                items={[{ label: 'Remove client', danger: true, disabled: busy, onSelect: () => void clear() }]}
+              />
+            {/if}
           </SettingsRow>
           <!-- Policy, not credential: offering "Continue with Google" on the
                sign-in screen is a deliberate admin act, so it is a toggle saved
                on flip, never a side effect of saving a client. -->
-          <SettingsRow label="Sign in with Google">
+          <SettingsRow label="Sign in with Google" saved={autosave.saved()}>
             {#snippet hint()}
               {#if !data.status.configured}
                 Set up a client first.
@@ -206,7 +221,10 @@
                 <RowStatus status={data.personalConnected ? 'ok' : 'idle'}>{data.personalConnected ? 'Connected' : 'Not connected'}</RowStatus>
               {/snippet}
               {#if !data.personalConnected}
-                <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans' })}>Connect</a>
+                <SettingsRowMenu
+                  label="Actions for your Google account"
+                  items={[{ label: 'Connect Google', onSelect: () => window.location.assign('/api/integrations/google/connect') }]}
+                />
               {/if}
             </SettingsRow>
           {/if}
@@ -273,15 +291,17 @@
               </ul>
             </SettingsField>
             {#if error}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
-            <div class="flex items-center gap-4">
-              {#if data.status.source === 'admin'}
-                <DangerLink onClick={() => void clear()} disabled={busy}>Remove client</DangerLink>
-              {/if}
-              <span class="flex-1"></span>
-              <SaveAction {dirty} {busy} onclick={() => void save()}>
-                {data.status.configured ? 'Save changes' : 'Save client'}
-              </SaveAction>
-            </div>
+            <!-- The foot of the card the disclosure draws: out to its edges, under a hairline. -->
+            <SettingsSaveBar
+              class="-mx-5 -mb-4 border-t border-line-subtle"
+              label="Save client"
+              reason="The secret is stored encrypted and never shown again."
+              {dirty}
+              saving={busy}
+              saved={clientSaved.saved}
+              onSave={() => void save()}
+              onDiscard={data.status.source === 'env' ? undefined : discard}
+            />
           </div>
         </Disclosure>
       </div>

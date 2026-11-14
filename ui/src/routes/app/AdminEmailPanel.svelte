@@ -35,18 +35,18 @@
   let busy = $state(false)
   let secret = $state('') // smtp password / resend key draft
 
-  const post = async (body: unknown, okNotice?: string) => {
+  // PUT patches the config; POST sends the test email. A field that saved on
+  // change or with its own Save flashes its row (`key`). The test email
+  // answers beside its button (`notice`).
+  const post = async (body: unknown, done: { key: string } | { notice: string }) => {
     busy = true
     error = null
     notice = null
     try {
-      // PUT patches the config; POST sends the test email.
       const send = typeof body === 'object' && body !== null && 'test' in body ? postJson : putJson
       await send<{ ok: true }>('/api/admin/email', body)
-      // A field that saved on change flashes the header's cue. A secret and the
-      // test email answer beside their own button.
-      if (okNotice) notice = okNotice
-      else autosave.flash()
+      if ('notice' in done) notice = done.notice
+      else autosave.flash(done.key)
     } catch (e) {
       error = errorMessage(e)
     }
@@ -70,11 +70,11 @@
         <SettingsRow label="From address"><Skeleton class="h-9 w-[280px]" /></SettingsRow>
       {/snippet}
       {#snippet children(data)}
-        <SettingsRow label="Provider" hint="The service that delivers the mail." as="label">
+        <SettingsRow label="Provider" hint="The service that delivers the mail." as="label" saved={autosave.saved('provider')}>
           <Select
             size="sm"
             value={data.provider ?? ''}
-            onchange={(e) => void post({ provider: (e.currentTarget.value || null) as 'smtp' | 'resend' | null })}
+            onchange={(e) => void post({ provider: (e.currentTarget.value || null) as 'smtp' | 'resend' | null }, { key: 'provider' })}
             class="w-[280px]"
           >
             <option value="">Not set up</option>
@@ -83,23 +83,23 @@
           </Select>
         </SettingsRow>
         {#if data.provider}
-          <SettingsRow label="From address" hint="The sender people see." as="label">
+          <SettingsRow label="From address" hint="The sender people see." as="label" saved={autosave.saved('from')}>
             <Input
               size="sm"
               value={data.from}
-              onblur={(e) => e.currentTarget.value !== data.from && void post({ from: e.currentTarget.value })}
+              onblur={(e) => e.currentTarget.value !== data.from && void post({ from: e.currentTarget.value }, { key: 'from' })}
               placeholder="Talaria <talaria@yourcompany.com>"
               class="w-[280px]"
             />
           </SettingsRow>
         {/if}
         {#if data.provider === 'smtp'}
-          <SettingsRow label="Server" hint="Host name and port.">
+          <SettingsRow label="Server" hint="Host name and port." saved={autosave.saved('server')}>
             <Input
               size="sm"
               aria-label="Mail server host"
               value={data.smtp.host}
-              onblur={(e) => e.currentTarget.value !== data.smtp.host && void post({ smtp: { host: e.currentTarget.value } })}
+              onblur={(e) => e.currentTarget.value !== data.smtp.host && void post({ smtp: { host: e.currentTarget.value } }, { key: 'server' })}
               placeholder="smtp.gmail.com"
               class="w-[196px] font-mono"
             />
@@ -107,22 +107,22 @@
               size="sm"
               aria-label="Mail server port"
               value={String(data.smtp.port)}
-              onblur={(e) => (Number(e.currentTarget.value) || 587) !== data.smtp.port && void post({ smtp: { port: Number(e.currentTarget.value) || 587 } })}
+              onblur={(e) => (Number(e.currentTarget.value) || 587) !== data.smtp.port && void post({ smtp: { port: Number(e.currentTarget.value) || 587 } }, { key: 'server' })}
               class="w-[72px] font-mono"
             />
           </SettingsRow>
-          <SettingsRow label="Encrypt from the first byte" hint="On for port 465, off for STARTTLS on port 587.">
+          <SettingsRow label="Encrypt from the first byte" hint="On for port 465, off for STARTTLS on port 587." saved={autosave.saved('secure')}>
             <Toggle
               title="Encrypt from the first byte"
               checked={data.smtp.secure}
-              onChange={(checked) => void post({ smtp: { secure: checked } })}
+              onChange={(checked) => void post({ smtp: { secure: checked } }, { key: 'secure' })}
             />
           </SettingsRow>
-          <SettingsRow label="Username" as="label">
+          <SettingsRow label="Username" as="label" saved={autosave.saved('user')}>
             <Input
               size="sm"
               value={data.smtp.user}
-              onblur={(e) => e.currentTarget.value !== data.smtp.user && void post({ smtp: { user: e.currentTarget.value } })}
+              onblur={(e) => e.currentTarget.value !== data.smtp.user && void post({ smtp: { user: e.currentTarget.value } }, { key: 'user' })}
               placeholder="talaria@yourcompany.com"
               class="w-[280px]"
             />
@@ -130,6 +130,7 @@
           <SettingsRow
             label="Password"
             hint={secretHint(data.smtp.passSet, 'password')}
+            saved={autosave.saved('secret')}
           >
             <Input
               size="sm"
@@ -145,7 +146,7 @@
               dirty={!!secret.trim()}
               {busy}
               onclick={() => {
-                void post({ smtp: { pass: secret } }, 'Password saved.')
+                void post({ smtp: { pass: secret } }, { key: 'secret' })
                 secret = ''
               }}
             >
@@ -157,6 +158,7 @@
           <SettingsRow
             label="API key"
             hint={secretHint(data.resend.apiKeySet)}
+            saved={autosave.saved('secret')}
           >
             <Input
               size="sm"
@@ -172,7 +174,7 @@
               dirty={!!secret.trim()}
               {busy}
               onclick={() => {
-                void post({ resend: { apiKey: secret } }, 'Key saved.')
+                void post({ resend: { apiKey: secret } }, { key: 'secret' })
                 secret = ''
               }}
             >
@@ -183,7 +185,7 @@
         {#if data.provider}
           <SettingsRow label="Test email" hint="Sends one message to your own address.">
             {#if notice}<span class="font-sans text-[13px] leading-5 text-success">{notice}</span>{/if}
-            <Button size="sm" variant="outline" disabled={busy} onclick={() => void post({ test: true }, 'Sent. Check your inbox.')}>
+            <Button size="sm" variant="outline" disabled={busy} onclick={() => void post({ test: true }, { notice: 'Sent. Check your inbox.' })}>
               {busy ? 'Working' : 'Send test'}
             </Button>
           </SettingsRow>

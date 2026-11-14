@@ -15,7 +15,6 @@
   import WorkspaceSecretsPanel from '@/components/admin/WorkspaceSecretsPanel.svelte'
   import { useSession } from '@/lib/session'
   import { fly, staggerIn } from '@/lib/motion'
-  import AdminCompanyNamePanel from './AdminCompanyNamePanel.svelte'
   import AdminEmailPanel from './AdminEmailPanel.svelte'
   import AdminEncryptionPanel from './AdminEncryptionPanel.svelte'
   import AdminGitHostsPanel from './AdminGitHostsPanel.svelte'
@@ -84,14 +83,11 @@
       {#key tab}
       <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-8">
       {#if tab === 'org'}
-        <!-- Two stored names under one title: what agents are told, and what a
-             browser tab shows. The first card has its own Save, because saving
-             it rewrites every agent. The second saves as it is edited. -->
-        <SettingsSection title="Identity">
-          <div class="space-y-3">
-            <SettingsGroup><AdminOrgPanel /></SettingsGroup>
-            <SettingsGroup><AdminCompanyNamePanel /></SettingsGroup>
-          </div>
+        <!-- The business agents are told about saves with a button, because
+             saving it rewrites every agent. The instance's own name and
+             address are the card under it. -->
+        <SettingsSection title="Identity" description="The business your agents work for.">
+          <SettingsGroup><AdminOrgPanel /></SettingsGroup>
         </SettingsSection>
         <AdminInstanceDomainPanel />
         <AdminSignupDomainsPanel />

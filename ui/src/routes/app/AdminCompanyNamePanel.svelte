@@ -10,7 +10,7 @@
 
   /** The instance's DISPLAY name — the second half of every browser tab
    *  ("Talaria - <name>"). Purely cosmetic; nothing else derives from it. A row
-   *  of the Identity card, beside the business name agents are told. */
+   *  of the Instance card, above the address this instance is hosted at. */
   const qc = useQueryClient()
   // `null` is a real answer (no name configured); undefined means the read
   // failed, and a failed read must not render as "no name" the way a save
@@ -66,6 +66,7 @@
   label="Browser tab name"
   info="People's browser tabs read 'Talaria' until you set a name, then 'Talaria - your name'. Nothing else uses it. Empty the field to clear it."
   as="label"
+  saved={autosave.saved()}
 >
   {#snippet hint()}
     {#if error}<span class="text-danger">{error}</span>{:else}Shown in everyone's browser tab, after Talaria.{/if}
