@@ -251,6 +251,19 @@
   --theme-border-subtle: color-mix(in srgb, var(--theme-text) 3%, var(--base-border));
   /* Secondary text was 5.2:1 on a card. This is about 7:1, still a clear step under the readout. */
   --theme-muted: color-mix(in srgb, var(--theme-text) 38%, var(--base-muted));
+  /* The edge of a card: one step past the hairline, so a group reads as a
+     group without a lighter fill. Fields and dividers keep the hairline. */
+  --settings-card-line: color-mix(in srgb, var(--theme-text) 15%, var(--base-border));
+}
+
+/* A card is `rounded-lg border border-line bg-panel`: `Panel`, and every table
+   and list that writes the same recipe. In the utilities layer and at one
+   class of weight, so it replaces `border-line` and still loses to a hover or
+   state border on the same card. */
+@layer utilities {
+  :where([data-theme='mercury'] [data-voice='sans']) .border-line:where(.rounded-lg.border.bg-panel) {
+    border-color: var(--settings-card-line);
+  }
 }
 
 [data-theme='mercury-light'] [data-voice='sans'] {
