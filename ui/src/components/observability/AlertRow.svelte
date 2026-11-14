@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { ChevronRight } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { navigateHref } from '@/router'
   import { SEVERITY, type Alert } from './alerts'
@@ -35,6 +35,6 @@
     {/if}
   {/snippet}
   {#if alert.href}
-    <span class="flex items-center gap-1 font-sans text-[13px] font-medium leading-5 text-muted">{severity.action}<ChevronRight size={14} /></span>
+    <SettingsRowFix text={severity.action} />
   {/if}
 </SettingsRow>
