@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SaveAction from '@/components/admin/SaveAction.svelte'
   import { secretHint } from '@/components/admin/secret-hint'
-  import { useSavedCue } from '@/components/admin/saved-cue'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
@@ -42,7 +42,7 @@
   }
 
   const qc = useQueryClient()
-  const autosave = useSavedCue()
+  const autosave = useAutosave()
   const query = createQuery(() => ({
     queryKey: ['google-client'],
     queryFn: (): Promise<Payload> => getJson<Payload>('/api/admin/google-client'),

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { useSavedCue } from '@/components/admin/saved-cue'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -23,7 +23,7 @@
   // would run both probes (an agent exec among them) a second time.
   // SEARXNG_URL in the api's environment wins.
   const qc = useQueryClient()
-  const autosave = useSavedCue()
+  const autosave = useAutosave()
   const query = useSearchEndpoint()
   let busy = $state(false)
 

@@ -38,6 +38,7 @@
     height = '',
     padded = true,
     takeover = false,
+    dismissible = true,
     voice,
   }: {
     open: boolean
@@ -54,6 +55,10 @@
      *  two knobs instead of hand-rolling their own shell. */
     padded?: boolean
     takeover?: boolean
+    /** false: Escape, a click outside and the header's close button do nothing,
+     *  so the dialog leaves only by a button in its own content or footer. For
+     *  a step that shows something once (a new secret). */
+    dismissible?: boolean
     /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
     voice?: UiVoice
   } = $props()
@@ -64,7 +69,7 @@
 
 <svelte:document
   onkeydown={(e) => {
-    if (open && e.key === 'Escape') onClose()
+    if (open && dismissible && e.key === 'Escape') onClose()
   }}
 />
 
@@ -90,7 +95,7 @@
         {:else}
           <div class="min-w-0 text-sm font-semibold text-fg">{@render title()}</div>
         {/if}
-        <CloseButton onClick={onClose} class="-mr-2" />
+        {#if dismissible}<CloseButton onClick={onClose} class="-mr-2" />{/if}
       </div>
     {/if}
     <!-- The scrolling region, in EVERY shape. The panel is a flex column capped
@@ -119,7 +124,7 @@
       class="absolute inset-0 bg-black/50"
       in:fade|global={{ duration: 220 }}
       out:fade|global={QUICK}
-      onclick={onClose}
+      onclick={dismissible ? onClose : undefined}
       aria-hidden="true"
     ></div>
     {@render panel()}

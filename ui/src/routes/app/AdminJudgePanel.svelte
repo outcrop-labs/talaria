@@ -8,7 +8,7 @@
   import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
-  import { useSavedCue } from '@/components/admin/saved-cue'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
 
@@ -22,7 +22,7 @@
     queryFn: (): Promise<JudgeData> => getJson<JudgeData>('/api/admin/judge'),
   }))
   const data = $derived(query.data)
-  const autosave = useSavedCue()
+  const autosave = useAutosave()
   const enabled = $derived(data?.config.enabled ?? false)
   const model = $derived(data?.config.model ?? '')
   const mode = $derived(data?.config.mode ?? 'enforcing')

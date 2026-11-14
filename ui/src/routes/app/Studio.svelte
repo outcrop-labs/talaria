@@ -3,7 +3,7 @@
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronDown, ChevronRight, Users } from '@lucide/svelte'
-  import { navigate } from '@/router'
+  import { navigate, p } from '@/router'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -101,6 +101,8 @@
   const selectedKey = $derived(sp('a') ?? agents.find((o) => o.canEdit)?.owner ?? agents[0]?.owner ?? 'shared')
   const selected = $derived(owners.find((o) => o.owner === selectedKey) ?? shared ?? null)
   const select = (a: string) => void navigate('/studio', { search: { a } })
+  // A row that opens a skill or a route is a link, so it opens in a new tab like any other.
+  const studioHref = (search: Record<string, string>) => `${p('/studio')}?${new URLSearchParams(search)}`
 
   const sharedSkills = $derived(new Set(shared?.skills.map((s) => s.name) ?? []))
   const boardName = (id: string) => boards.find((b) => b.id === id)?.name ?? 'a board'
@@ -314,7 +316,7 @@
                       skill={s}
                       {owners}
                       canEdit={(selected.canEdit ?? false) && (!s.platform || isAdmin)}
-                      onOpen={() => selected && void navigate('/studio', { search: { a: selectedKey, sk: `${selected.owner}/${s.name}` } })}
+                      href={studioHref({ a: selectedKey, sk: `${selected.owner}/${s.name}` })}
                     />
                   {/each}
                   {#if !everyone}
@@ -325,7 +327,7 @@
                         {owners}
                         sharedBadge
                         canEdit={(shared?.canEdit ?? false) && (!s.platform || isAdmin)}
-                        onOpen={() => void navigate('/studio', { search: { a: selectedKey, sk: `shared/${s.name}` } })}
+                        href={studioHref({ a: selectedKey, sk: `shared/${s.name}` })}
                       />
                     {/each}
                   {/if}
@@ -340,7 +342,7 @@
               >
                 <SettingsGroup>
                   {#each routed as w (w.id)}
-                    <SettingsRow label={w.name} hint={describe(w)} onclick={() => void navigate('/studio', { search: { a: selectedKey, w: w.id } })}>
+                    <SettingsRow label={w.name} hint={describe(w)} href={studioHref({ a: selectedKey, w: w.id })}>
                       {#snippet status()}{#if !w.enabled}<StatusDot status="idle" />Off{/if}{/snippet}
                       <ChevronRight size={16} class="text-muted" />
                     </SettingsRow>

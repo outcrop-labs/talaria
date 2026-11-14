@@ -8,7 +8,7 @@
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { useSavedCue } from '@/components/admin/saved-cue'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { repoKey, type HostRepo } from './git-hosts'
@@ -28,7 +28,7 @@
     queryFn: (): Promise<FlowData> => getJson<FlowData>('/api/workbench/flow'),
   }))
   const data = $derived(query.data)
-  const autosave = useSavedCue()
+  const autosave = useAutosave()
 
   const save = async (r: HostRepo, baseBranch: string | null) => {
     try {

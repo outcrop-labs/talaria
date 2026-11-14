@@ -13,7 +13,7 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { navigate } from '@/router'
+  import { navigate, p } from '@/router'
   import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
@@ -383,7 +383,7 @@
         {@const fix = fixOf(a)}
         {@const menu = menuOf(a)}
         <div>
-          <SettingsRow label={a.name} onOpen={canOpen(a) ? () => open(a) : undefined} openLabel={`Open ${a.name}`}>
+          <SettingsRow label={a.name} openHref={canOpen(a) ? p('/x/:app', { params: { app: a.slug } }) : undefined} openLabel={`Open ${a.name}`}>
             {#snippet icon()}<AppsMark icon={a.icon} />{/snippet}
             {#snippet meta()}
               {#if a.version}<span class={`shrink-0 ${identifier}`}>v{a.version}</span>{/if}

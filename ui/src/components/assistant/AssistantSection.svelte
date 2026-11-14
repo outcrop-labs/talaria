@@ -23,7 +23,7 @@
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { HANDLE_RE, updateAssistant, useAssistant, type AssistantDmAccess } from '@/lib/assistant'
   import { useModels } from '@/lib/muse.svelte'
-  import { navigate } from '@/router'
+  import { navigate, p } from '@/router'
 
   // Settings › Assistant — the WHOLE of a member's personal agent in one place:
   // identity (name, @handle), personality, which model powers it, on/off, and
@@ -173,7 +173,7 @@
     <SettingsGroup>
       <SettingsRow
         label={assistant.displayName}
-        onOpen={() => void navigate('/chat')}
+        openHref={p('/chat')}
         openLabel={`Open chat with ${assistant.displayName}`}
       >
         {#snippet lead()}<Avatar name={assistant.displayName} class="h-10 w-10" />{/snippet}

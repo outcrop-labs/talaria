@@ -208,10 +208,11 @@
 </SettingsSection>
 
 {#if creating}
-  <Modal open onClose={closeCreate} title={minted ? 'Copy your new key' : 'Create key'} width="max-w-md">
+  <!-- The secret exists only in this dialog, so the step that shows it leaves by Done alone. -->
+  <Modal open onClose={closeCreate} dismissible={!minted} title={minted ? 'Copy your new key' : 'Create key'} width="max-w-md">
     {#if minted}
       <div class="space-y-3">
-        <p class="font-sans text-[13px] leading-5 text-muted">Copy it now. It will not be shown again.</p>
+        <p class="font-sans text-[13px] leading-5 text-muted">This is the only time the key is shown, so copy it before you close.</p>
         <div class="flex items-center gap-2">
           <code class="min-w-0 flex-1 break-all rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs leading-5 text-fg">{minted}</code>
           <CopyButton value={minted} label="Copy" title="Copy the key" class="shrink-0" />
@@ -235,7 +236,7 @@
     {#snippet footer()}
       <div class="flex justify-end gap-2">
         {#if minted}
-          <Button size="sm" variant="outline" onclick={closeCreate}>Done</Button>
+          <Button size="sm" onclick={closeCreate}>Done</Button>
         {:else}
           <Button size="sm" variant="ghost" onclick={closeCreate}>Cancel</Button>
           <Button size="sm" disabled={minting} onclick={() => void mint()}>{minting ? 'Creating' : 'Create key'}</Button>

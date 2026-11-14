@@ -13,8 +13,6 @@
   import StoragePanel from '@/components/admin/StoragePanel.svelte'
   import SecretsPanel from '@/components/admin/SecretsPanel.svelte'
   import WorkspaceSecretsPanel from '@/components/admin/WorkspaceSecretsPanel.svelte'
-  import { provideSavedCue } from '@/components/admin/saved-cue'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { useSession } from '@/lib/session'
   import { fly, staggerIn } from '@/lib/motion'
   import AdminCompanyNamePanel from './AdminCompanyNamePanel.svelte'
@@ -54,11 +52,6 @@
   // /admin/security deep-links a concern.
   // THE URL IS THE TAB — /admin and /admin/<tab>.
   const tab = $derived(tabFromPath(route.pathname, '/admin', ADMIN_TABS.map((t) => t.id), 'org'))
-  // The header says "Changes save automatically" on the tabs that do, and
-  // their panels flash "Saved" there through this.
-  const savedFlash = useSavedFlash()
-  provideSavedCue(() => savedFlash.flash())
-  const autosaves = $derived(ADMIN_TABS.find((t) => t.id === tab)?.autosave ?? false)
   const setTab = (t: AdminTab) => {
     if (t === 'org') void navigate('/admin')
     else void navigate('/admin/:tab', { params: { tab: t } })
@@ -75,8 +68,6 @@
     tabs={ADMIN_TABS}
     {tab}
     onTab={setTab}
-    autosave={autosaves}
-    saved={savedFlash.saved}
   >
       {#snippet actions()}
         {#if tab === 'people'}

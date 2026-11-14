@@ -6,7 +6,7 @@
   import type { Fact } from '@/components/admin/facts'
   import SaveAction from '@/components/admin/SaveAction.svelte'
   import { secretHint } from '@/components/admin/secret-hint'
-  import { useSavedCue } from '@/components/admin/saved-cue'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
@@ -79,7 +79,7 @@
     await qc.invalidateQueries({ queryKey: ['decide-config'] })
     autosave.flash()
   }
-  const autosave = useSavedCue()
+  const autosave = useAutosave()
 
   let key = $state('')
   let savingKey = $state(false)
@@ -194,8 +194,7 @@
   const NUM = 'w-[5.5rem] shrink-0 text-right'
   const STATE = 'w-[8.5rem] shrink-0 pl-3'
   const SWITCH = 'flex w-9 shrink-0 justify-end'
-  // A reading, not a control: a click on it opens the row like the label does.
-  const cell = '!pointer-events-none font-sans text-[13px] leading-5 tabular-nums text-fg'
+  const cell = 'font-sans text-[13px] leading-5 tabular-nums text-fg'
 
   const capabilities = $derived.by((): Fact[] =>
     meta

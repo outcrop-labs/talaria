@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SaveAction from '@/components/admin/SaveAction.svelte'
   import { secretHint } from '@/components/admin/secret-hint'
-  import { useSavedCue } from '@/components/admin/saved-cue'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -25,7 +25,7 @@
   }
 
   const qc = useQueryClient()
-  const autosave = useSavedCue()
+  const autosave = useAutosave()
   const query = createQuery(() => ({
     queryKey: ['email-config'],
     queryFn: async (): Promise<EmailCfg> => (await getJson<{ config: EmailCfg }>('/api/admin/email')).config,

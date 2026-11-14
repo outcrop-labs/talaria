@@ -10,6 +10,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
@@ -23,6 +24,8 @@
   // who-can-search bindings and the KB spaces that feed each), service health
   // and backfill, and the reranker provider.
   const qc = useQueryClient()
+  // The rows that save on change mount once their data is in. The page's cue is there from the start.
+  useAutosave()
   const collectionsQuery = useCollections()
   const ragQuery = useRagAdmin()
   const rag = $derived(ragQuery.data)
