@@ -8,6 +8,7 @@
   import type { LucideIcon } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
+  import { useUiVoice } from '@/lib/ui-voice'
 
   /** The accent submit tile: 36×36, radius 6, dark up-arrow on gold. Disabled
    *  stays in the accent family — a soft gold tile, never the grey raised
@@ -27,6 +28,10 @@
     icon?: LucideIcon
     class?: string
   } = $props()
+
+  // A settings page keeps its gold for the one primary (the record's Save), so
+  // a composer's submit there is a neutral tile.
+  const sans = useUiVoice() === 'sans'
 </script>
 
 <button
@@ -37,9 +42,11 @@
   onclick={onClick}
   class={cn(
     'grid h-9 w-9 shrink-0 place-items-center rounded-md transition-colors',
-    enabled
-      ? 'bg-accent text-[color:var(--theme-bg)] hover:bg-[color:var(--theme-accent-secondary)]'
-      : 'border border-accent/40 bg-accent-soft text-accent',
+    sans
+      ? cn('border border-line bg-raised', enabled ? 'text-fg hover:bg-hover' : 'text-muted opacity-60')
+      : enabled
+        ? 'bg-accent text-[color:var(--theme-bg)] hover:bg-[color:var(--theme-accent-secondary)]'
+        : 'border border-accent/40 bg-accent-soft text-accent',
     focusGold,
     className,
   )}

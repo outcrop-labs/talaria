@@ -10,7 +10,8 @@
   import Segmented from '@/components/ui/Segmented.svelte'
   import type { SegmentedOption } from '@/components/ui/segmented'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import InternalEditor from '@/components/editor/InternalEditor.svelte'
+  import EditorTools from '@/components/editor/EditorTools.svelte'
+  import InternalEditor, { DOC_MUSE_TITLE } from '@/components/editor/InternalEditor.svelte'
   import type { InternalEditorHandle } from '@/components/editor/internal-editor'
   import MemoryEntries from '@/components/memory/MemoryEntries.svelte'
   import { appendMemoryNote, memoryKey, saveMemory, useMemory } from '@/lib/memory'
@@ -88,6 +89,7 @@
   // History is one icon on the title line, right-aligned — same decision as
   // the record surface.
   let historyOpen = $state(false)
+  let museOpen = $state(false)
 
   const refresh = () => qc.invalidateQueries({ queryKey: memoryKey(id) })
 
@@ -166,10 +168,11 @@
           </Button>
           <InfoTip text={tip} />
           <span class="ml-auto shrink-0 font-mono text-xs text-muted">MEMORY.md</span>
-          <!-- In the settings area a control in content says what it is. -->
-          <Button variant="ghost" size="sm" class={cn('-mr-3 gap-1.5', historyOpen && 'text-fg')} aria-pressed={historyOpen} onclick={() => (historyOpen = !historyOpen)}>
-            <History size={14} />History
-          </Button>
+          <EditorTools
+            class="ml-0"
+            muse={canEdit ? { open: museOpen, onToggle: () => (museOpen = !museOpen), title: DOC_MUSE_TITLE } : undefined}
+            history={{ open: historyOpen, onToggle: () => (historyOpen = !historyOpen) }}
+          />
         </div>
       {/if}
     {:else}
@@ -235,6 +238,7 @@
           bind:this={handle}
           bind:dirty
           bind:showHistory={historyOpen}
+          bind:museOpen
           value={query.data.content}
           editable={canEdit}
           onSave={save}

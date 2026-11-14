@@ -1,3 +1,9 @@
+<script lang="ts" module>
+  /** The Muse toggle's tooltip for a bare document, wherever its title line is drawn. */
+  export const DOC_MUSE_TITLE =
+    'Describe what you want and Muse, the writing assistant, drafts it from the current text. Nothing is saved until you save.'
+</script>
+
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { createQuery } from '@tanstack/svelte-query'
@@ -11,6 +17,7 @@
   import { getJson, getList } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { streamMuse, type MuseKind } from '@/lib/muse.svelte'
+  import EditorTools from './EditorTools.svelte'
   import { fly, listStagger, slide, GROW_X } from '@/lib/motion'
   import { cn } from '@/lib/cn'
   import { sansFill, useUiVoice } from '@/lib/ui-voice'
@@ -47,6 +54,7 @@
     onSave,
     dirty = $bindable(false),
     showHistory = $bindable(false),
+    museOpen = $bindable(false),
     history,
     footerExtra,
     mode = 'rich',
@@ -71,6 +79,11 @@
      *  by default: the rail is a reference surface you summon while editing,
      *  not a column the document starts beside. */
     showHistory?: boolean
+    /** The Muse composer's open state. In the settings area the toggle sits
+     *  on the title line beside History: standalone this editor draws that
+     *  line, embedded (`withActions={false}`) the surface that owns the title
+     *  draws it and binds this. */
+    museOpen?: boolean
     /** Query params for /api/history (kind + owner/name or id). Omit to hide history. */
     history?: Record<string, string>
     /** Extra control on the left of the footer (e.g. a delete button). */
@@ -131,7 +144,6 @@
   })
 
   // ── Muse: prompt → streamed proposal → review/accept, iteratively ───────
-  let museOpen = $state(false)
   let instruction = $state('')
   let generating = $state(false)
   let proposal = $state<string | null>(null)
@@ -277,7 +289,15 @@
     }
   }}
 >
-  {#if subtitle}<p class={sans ? 'shrink-0 font-sans text-[13px] leading-5 text-muted' : 'shrink-0 text-xs text-muted'}>{subtitle}</p>{/if}
+  {#if sans && withActions && ((muse && editable) || history)}
+    <div class="flex shrink-0 items-center gap-4">
+      {#if subtitle}<p class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">{subtitle}</p>{/if}
+      <EditorTools
+        muse={muse && editable ? { open: museOpen, onToggle: () => (museOpen = !museOpen), title: DOC_MUSE_TITLE } : undefined}
+        history={history ? { open: showHistory, onToggle: () => (showHistory = !showHistory) } : undefined}
+      />
+    </div>
+  {:else if subtitle}<p class={sans ? 'shrink-0 font-sans text-[13px] leading-5 text-muted' : 'shrink-0 text-xs text-muted'}>{subtitle}</p>{/if}
   <div class="flex min-h-0 flex-1 gap-3">
     <div class="flex min-w-0 flex-1 flex-col">
       {#if proposal !== null}
@@ -473,7 +493,7 @@
   </div>
   {#if museOpen && muse && editable}
       <div transition:slide={{ duration: 150 }} class="flex shrink-0 items-end gap-2.5">
-      <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
+      <Sparkles size={14} class={cn('mb-3 shrink-0', sans ? 'text-muted' : 'text-accent')} />
       <Textarea
         autoGrow
         rows={1}
@@ -490,60 +510,48 @@
         class="max-h-40 text-sm"
         autofocus
       />
-      <Button class="shrink-0" onclick={() => void generate()} disabled={generating || !instruction.trim()}>
+      <Button variant={sans ? 'outline' : 'primary'} class="shrink-0" onclick={() => void generate()} disabled={generating || !instruction.trim()}>
         {generating ? 'Drafting' : proposal !== null ? 'Refine' : 'Draft'}
       </Button>
     </div>
   {/if}
   {#if museError}<p transition:slide={{ duration: 150 }} class="shrink-0 text-xs text-danger">{museError}</p>{/if}
 
-  {#if (muse && editable) || footerExtra || history || withActions}
+  {#if sans ? footerExtra || withActions : (muse && editable) || footerExtra || history || withActions}
     <!-- THE EDITOR MENU — the workbench's own controls, tied to the editor it
          belongs to: it carries NO top border under the document, so the only
          line at the bottom of a surface belongs to the pinned menu below. In a
          standalone modal (`withActions`) this row IS the pinned menu, and it
-         takes the border there. -->
+         takes the border there. In the settings area Muse and History are on
+         the title line, so this row is the footer's link and Save alone. -->
     <div class={cn('flex shrink-0 items-center gap-2 pt-3', withActions && 'border-t border-line')}>
-      {#if muse && editable}
-        {#if sans}
-          <Button
-            variant={museOpen ? 'outline' : 'ghost'}
-            size="sm"
-            aria-expanded={museOpen}
-            onclick={() => (museOpen = !museOpen)}
-            title="Describe what you want and Muse, the writing assistant, drafts it from the current text. Nothing is saved until you save."
-          >
-            <Sparkles size={14} /> Draft with Muse
-          </Button>
-        {:else}
-          <Button
-            variant={museOpen ? 'outline' : 'ghost'}
-            size="sm"
-            onclick={() => (museOpen = !museOpen)}
-            title="Draft with AI. Uses your preferred model (Settings)"
-          >
-            <Sparkles size={14} class="mr-1.5" /> Muse
-          </Button>
-        {/if}
+      {#if muse && editable && !sans}
+        <Button
+          variant={museOpen ? 'outline' : 'ghost'}
+          size="sm"
+          onclick={() => (museOpen = !museOpen)}
+          title="Draft with AI. Uses your preferred model (Settings)"
+        >
+          <Sparkles size={14} class="mr-1.5" /> Muse
+        </Button>
       {/if}
       {@render footerExtra?.()}
-      {#if history && withActions}
+      {#if history && withActions && !sans}
         <!-- Standalone: no title line above to carry it, so the toggle lives
              here, right-aligned. Embedded surfaces own it themselves. -->
-        <!-- In the settings area a control in content says what it is. -->
         <Button
           variant={showHistory ? 'outline' : 'ghost'}
           size="sm"
-          class={cn('ml-auto shrink-0', sans && 'gap-1.5')}
+          class="ml-auto shrink-0"
           onclick={() => (showHistory = !showHistory)}
           title="Version history"
           aria-pressed={showHistory}
         >
-          <History size={14} />{#if sans}History{/if}
+          <History size={14} />
         </Button>
       {/if}
       {#if withActions}
-        <span class={cn(sans ? 'font-sans text-xs leading-4 text-muted' : 'font-mono text-[10px] uppercase tracking-[0.05em] text-muted', !history && 'ml-auto')}><!-- voice-ok -->
+        <span class={cn(sans ? 'font-sans text-xs leading-4 text-muted' : 'font-mono text-[10px] uppercase tracking-[0.05em] text-muted', (sans || !history) && 'ml-auto')}><!-- voice-ok -->
           {editable && dirty ? 'Unsaved changes · ⌘S to save' : ''}
         </span>
         <Button variant="ghost" size="sm" onclick={onClose}>

@@ -136,7 +136,7 @@
           <SettingsRow label="Name"><Skeleton class="h-9 w-[280px]" /></SettingsRow>
         {:else}
           <ProfilePhotoField {user} />
-          <SettingsRow label="Name" hint="How teammates and agents see you." as="label">
+          <SettingsRow label="Name" as="label">
             <Input
               size="sm"
               class="w-[280px]"

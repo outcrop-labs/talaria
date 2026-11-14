@@ -178,6 +178,8 @@
         stacked ? 'w-full' : 'shrink-0 justify-end',
         // Only real controls take the click back: a read-only value in this slot still opens the row.
         opens && cn('pointer-events-none relative', controlsTakeClicks),
+        // One chevron a row: where the row draws its own, its Fix is the word alone.
+        (pointsOnward || expanded !== undefined) && '[&_[data-row-fix]>svg]:hidden',
       )}
     >
       {#if status}

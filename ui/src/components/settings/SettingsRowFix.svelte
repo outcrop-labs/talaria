@@ -4,7 +4,9 @@
 
   // The one action a row shows when its state needs a person: the word and a
   // chevron, never a boxed button. The row's status says what is wrong, and
-  // the kebab holds the same action under its own name.
+  // the kebab holds the same action under its own name. In a row that ends in
+  // its own chevron (it opens, or it expands) `SettingsRow` hides this one, so
+  // two never sit side by side.
   let {
     onclick,
     href,

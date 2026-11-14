@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { Check, History, Sparkles, Trash2, X } from '@lucide/svelte'
+  import { Check, History, Trash2, X } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
@@ -8,7 +8,8 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import SendButton from '@/components/chat/SendButton.svelte'
   import StopButton from '@/components/chat/StopButton.svelte'
-  import InternalEditor from './InternalEditor.svelte'
+  import EditorTools from './EditorTools.svelte'
+  import InternalEditor, { DOC_MUSE_TITLE } from './InternalEditor.svelte'
   import type { InternalEditorHandle } from './internal-editor'
   import DiffView from '@/components/fleet/DiffView.svelte'
   import { diffLines, type DiffLine } from '@/components/fleet/line-diff'
@@ -122,6 +123,8 @@
 
   // ── whole-form Muse: instruction → complete record proposal → fields ─────
   let museOpen = $state(false)
+  // The bare document's own Muse (`doc.muse`), whose toggle this title line carries.
+  let docMuseOpen = $state(false)
   let instruction = $state('')
   let generating = $state(false)
   let proposal = $state<any | null>(null)
@@ -227,38 +230,31 @@
              within the editor view, not on any sidebar. Delete is a trash icon
              (the typed challenge says exactly what is going); history opens the
              workbench's rail. -->
-        {#if (onDelete && !sans) || doc.history || (sans && formMuse && editable)}
+        {#if sans}
+          <!-- In the settings area Delete is the footer's link, at its left,
+               and the record's tools sit here, apart from the footer's Save. -->
+          <EditorTools
+            muse={formMuse && editable
+              ? {
+                  open: museOpen,
+                  onToggle: () => (museOpen = !museOpen),
+                  title: `Describe the ${formMuse.label} you want and Muse, the writing assistant, drafts every field. Nothing is saved until you save.`,
+                }
+              : doc.muse && doc.editable !== false
+                ? { open: docMuseOpen, onToggle: () => (docMuseOpen = !docMuseOpen), title: DOC_MUSE_TITLE }
+                : undefined}
+            history={doc.history ? { open: showHistory, onToggle: () => (showHistory = !showHistory) } : undefined}
+          />
+        {:else if onDelete || doc.history}
           <!-- Icon TILES, not padded buttons: two icon controls side by side
-               read as one cluster only when their glyphs are near each other.
-               In the settings area Delete is the footer's link, at its left,
-               and the record's tools (Muse, history) sit here, apart from the
-               footer's Save. -->
+               read as one cluster only when their glyphs are near each other. -->
           <div class="ml-auto flex shrink-0 items-center">
-            {#if onDelete && !sans}
+            {#if onDelete}
               <IconButton title={`Delete ${title}`} danger onclick={onDelete}>
                 <Trash2 size={14} />
               </IconButton>
             {/if}
-            {#if sans}
-              {#if formMuse && editable}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class={cn('gap-1.5', !doc.history && '-mr-3', museOpen && 'text-fg')}
-                  aria-expanded={museOpen}
-                  onclick={() => (museOpen = !museOpen)}
-                  title={`Describe the ${formMuse.label} you want and Muse, the writing assistant, drafts every field. Nothing is saved until you save.`}
-                >
-                  <Sparkles size={14} />Draft with Muse
-                </Button>
-              {/if}
-              {#if doc.history}
-                <!-- In the settings area a control in content says what it is. -->
-                <Button variant="ghost" size="sm" class={cn('-mr-3 gap-1.5', showHistory && 'text-fg')} aria-pressed={showHistory} onclick={() => (showHistory = !showHistory)}>
-                  <History size={14} />History
-                </Button>
-              {/if}
-            {:else if doc.history}
+            {#if doc.history}
               <IconButton title="Version history" active={showHistory} onclick={() => (showHistory = !showHistory)}>
                 <History size={14} />
               </IconButton>
@@ -275,6 +271,7 @@
           bind:this={handle}
           bind:dirty={docDirty}
           bind:showHistory
+          bind:museOpen={docMuseOpen}
           value={doc.value}
           editable={doc.editable}
           saving={doc.saving ?? busy}

@@ -165,9 +165,6 @@
         <span class="line-clamp-2 min-w-0 font-sans text-[15px] font-semibold leading-5 text-fg" title={draft.name || undefined}>{draft.name || 'New role'}</span>
         <!-- The list already says whose a stored role is. Only a role that is nowhere yet is marked. -->
         {#if !selected}<Chip class="shrink-0">Not saved yet</Chip>{/if}
-        {#if stored}
-          <DangerLink onClick={() => void remove(stored.slug)} disabled={busy} class="ml-auto shrink-0">Delete role</DangerLink>
-        {/if}
       </div>
       <div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-6">
         <div class="grid shrink-0 grid-cols-2 gap-x-4 gap-y-5">
@@ -195,7 +192,12 @@
           <p class="font-sans text-[13px] leading-5 text-muted">Markdown. Keep the three section headings, the agent designer expects them.</p>
         </div>
       </div>
-      <div class="flex shrink-0 items-center gap-4 border-t border-line px-6 py-3">
+      <!-- The foot the other pick-and-edit pages have: Delete at its left, Save at its right, as tall as the
+           picker's own foot so the two hairlines meet. -->
+      <div class="flex h-[53px] shrink-0 items-center gap-4 border-t border-line px-6">
+        {#if stored}
+          <DangerLink onClick={() => void remove(stored.slug)} disabled={busy} class="shrink-0">Delete role</DangerLink>
+        {/if}
         <span class={['min-w-0 flex-1 truncate text-right font-sans text-[13px] leading-5', err ? 'text-danger' : 'text-muted']}>
           {#if err}{err}{:else if isNew && selected}Saves as your organization’s version of “{draft.name}”.{/if}
         </span>
