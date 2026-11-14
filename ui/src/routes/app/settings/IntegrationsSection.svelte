@@ -2,9 +2,9 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
-  import { buttonClasses } from '@/components/ui/button'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -14,7 +14,7 @@
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
-  import McpServerMark from '@/routes/app/McpServerMark.svelte'
+  import McpConnectionsSection from './McpConnectionsSection.svelte'
 
   interface GoogleStatus {
     available: boolean
@@ -24,10 +24,17 @@
     connectedAt: string | null
   }
 
-  // Connected accounts. Per-user OAuth: connecting grants Talaria (and the
-  // agents working for you) offline access to YOUR Google Workspace — mail,
-  // calendar, and Drive. Your assistant acts strictly as you; outbound mail
-  // and invites it drafts wait for your approval (confirm-sends).
+  // Connected accounts, one list: Google Workspace, then the tool accounts
+  // (`McpConnectionsSection`, rows of the same card). Per-user OAuth:
+  // connecting grants Talaria (and the agents working for you) offline access
+  // to YOUR Google Workspace — mail, calendar, and Drive. Your assistant acts
+  // strictly as you; outbound mail and invites it drafts wait for your
+  // approval (confirm-sends).
+  //
+  // No row has a mark. A tool account's row carries a name and a slug and no
+  // address, so its mark could only be guessed, and one real mark above a
+  // column of blanks would set that row's name apart from the rest.
+  const GOOGLE_INFO = 'Your assistant acts as you. Mail and invites it drafts wait for your approval in the Inbox.'
   const qc = useQueryClient()
   const query = createQuery(() => ({
     queryKey: ['integration-google'],
@@ -68,12 +75,9 @@
   }
 </script>
 
-<!-- Google's own mark, from the same icon proxy the tool servers use. -->
-{#snippet google()}<McpServerMark title="Google" domain="google.com" />{/snippet}
-
 <SettingsSection
   title="Accounts"
-  description="Your assistant acts as you. Every send waits for your approval in the Inbox."
+  info="Your sign-ins are stored encrypted. Disconnect an account any time, and a tool drops off your assistant on its next restart."
 >
   <SettingsGroup>
     <QueryState
@@ -85,31 +89,28 @@
       {#snippet skeleton()}
         <!-- Never show "Not connected" + Connect while the status is unknown:
              that is a false state. Hold the row's shape until the query resolves. -->
-        <div aria-hidden="true" class="flex min-h-[72px] items-center gap-3 px-5 py-4">
-          <Skeleton class="h-8 w-8 shrink-0 rounded-md" />
+        <div aria-hidden="true" class="flex min-h-[56px] items-center gap-3 px-5 py-3.5">
           <div class="min-w-0 flex-1 space-y-2">
             <Skeleton class="h-3 w-40 rounded-full" />
             <Skeleton class="h-2.5 w-56 rounded-full" />
           </div>
-          <Skeleton class="h-8 w-24 rounded-md" />
+          <Skeleton class="h-3 w-24 rounded-full" />
         </div>
       {/snippet}
       {#snippet empty()}
         <!-- An unregistered client is the ADMIN's gap to close. -->
-        <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin.">
-          {#snippet lead()}{@render google()}{/snippet}
-        </SettingsRow>
+        <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin." />
       {/snippet}
       {#snippet children(_data)}
         <!-- "Not connected" is a claim about the account, and a failed status
              read cannot make it. QueryState's error branch owns that. -->
         <SettingsRow
           label="Google Workspace"
+          info={GOOGLE_INFO}
           hint={data?.connected
             ? `${data.email ?? 'Connected'}${data.connectedAt ? ` · connected ${relativeTime(data.connectedAt)}` : ''}`
             : 'Mail, Calendar and Drive.'}
         >
-          {#snippet lead()}{@render google()}{/snippet}
           {#snippet status()}
             <StatusDot status={data?.connected ? 'ok' : 'idle'} />{data?.connected ? 'Connected' : 'Not connected'}
           {/snippet}
@@ -119,14 +120,14 @@
               items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}
             />
           {:else}
-            <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm', variant: 'outline', voice: 'sans', className: 'w-24' })}>
-              Connect
-            </a>
+            <!-- Not connected is a choice, not a fault: the same quiet action a fix has, under its own word. -->
+            <SettingsRowFix text="Connect" label="Connect Google Workspace" href="/api/integrations/google/connect" />
             <SettingsRowMenu label="Actions for Google Workspace" items={[]} />
           {/if}
         </SettingsRow>
       {/snippet}
     </QueryState>
+    <McpConnectionsSection />
   </SettingsGroup>
   {#if flash}
     <div

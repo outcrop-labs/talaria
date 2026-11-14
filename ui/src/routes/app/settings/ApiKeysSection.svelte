@@ -196,15 +196,13 @@
       {/snippet}
     </QueryState>
   </SettingsGroup>
-</SettingsSection>
-
-<SettingsSection title="Use a key">
-  <SettingsGroup>
-    <SettingsRow label="Base URL" hint="Point any OpenAI-compatible tool here. Use a model id from Models.">
-      <code class="font-mono text-xs text-muted">{baseUrl}</code>
-      <CopyButton value={baseUrl} />
-    </SettingsRow>
-  </SettingsGroup>
+  <!-- Where every key is used: a line under the list, not a card of one row. -->
+  <p class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[13px] leading-5 text-muted">
+    <span class="font-medium text-fg">Base URL</span>
+    <code class="font-mono text-xs text-fg">{baseUrl}</code>
+    <CopyButton value={baseUrl} title="Copy the base URL" />
+    <span class="basis-full">Point any OpenAI-compatible tool here, with one of your keys and a model id from Models.</span>
+  </p>
 </SettingsSection>
 
 {#if creating}

@@ -26,7 +26,6 @@
   import ProfilePhotoField from './settings/ProfilePhotoField.svelte'
   import TitleField from './settings/TitleField.svelte'
   import NotificationsSection from './settings/NotificationsSection.svelte'
-  import McpConnectionsSection from './settings/McpConnectionsSection.svelte'
   import IntegrationsSection from './settings/IntegrationsSection.svelte'
   import ApiKeysSection, { useApiKeys } from './settings/ApiKeysSection.svelte'
   import DesktopSection from './settings/DesktopSection.svelte'
@@ -165,10 +164,7 @@
 
     {#if tab === 'notifications'}<NotificationsSection />{/if}
     {#if tab === 'assistant'}<div class="space-y-6"><AssistantSection /></div>{/if}
-    {#if tab === 'connections'}
-      <IntegrationsSection />
-      <McpConnectionsSection />
-    {/if}
+    {#if tab === 'connections'}<IntegrationsSection />{/if}
     {#if tab === 'keys'}<ApiKeysSection bind:creating={creatingKey} />{/if}
     <!-- Only a tab this person was granted mounts its surface: the URL alone
          (/settings/app:<slug>) is not a grant. -->
