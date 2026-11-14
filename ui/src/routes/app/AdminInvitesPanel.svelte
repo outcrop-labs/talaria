@@ -2,6 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -82,6 +83,10 @@
     expired: { dot: 'idle', word: 'Expired' },
     revoked: { dot: 'idle', word: 'Revoked' },
   }
+  // The header's captions and each row's cells share these widths.
+  const SENT = 'w-[5.5rem] shrink-0'
+  const STATE = 'w-[6.5rem] shrink-0'
+
   const closeDialog = () => {
     inviting = false
     error = null
@@ -100,10 +105,18 @@
         <SettingsRow label="No invites yet" hint="Use Invite people at the top of the page." />
       {/snippet}
       {#snippet children(data)}
+        <SettingsHeaderRow label="Email" menu class="h-9">
+          <span class={SENT}>Sent</span>
+          <span class={STATE}>Status</span>
+        </SettingsHeaderRow>
         {#each data as i (i.id)}
           {@const st = inviteState(i)}
-          <SettingsRow label={i.email} hint={`Sent ${relativeTime(i.createdAt)}`}>
-            {#snippet status()}<RowStatus status={STATUS[st].dot}>{STATUS[st].word}</RowStatus>{/snippet}
+          <SettingsRow class="min-h-11 py-1.5">
+            {#snippet label()}<span class="text-[13px]">{i.email}</span>{/snippet}
+            <span class="{SENT} font-sans text-[13px] leading-5 tabular-nums text-muted" title={new Date(i.createdAt).toLocaleString()}>
+              {relativeTime(i.createdAt)}
+            </span>
+            <span class={STATE}><RowStatus status={STATUS[st].dot}>{STATUS[st].word}</RowStatus></span>
             <SettingsRowMenu
               label={`Actions for the invite to ${i.email}`}
               items={st === 'pending' ? [{ label: 'Revoke invite', danger: true, onSelect: () => void revoke(i.id) }] : []}

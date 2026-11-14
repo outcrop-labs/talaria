@@ -1,11 +1,13 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import SaveAction from '@/components/admin/SaveAction.svelte'
+  import { useExplicitSave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -29,6 +31,9 @@
     lastUsedAt: string | null
   }
 
+  // A password is typed and then committed with a button, so this tab's
+  // header never says every change saves by itself.
+  useExplicitSave()
   const qc = useQueryClient()
   const session = useSession()
   const me = $derived(session.data)
@@ -132,6 +137,11 @@
     busy = false
     await refresh()
   }
+
+  // The header's captions and each row's cells share these widths.
+  const ROLE = 'w-[5.5rem] shrink-0'
+  const USED = 'w-[5.5rem] shrink-0'
+  const cell = 'font-sans text-[13px] leading-5 text-muted'
 </script>
 
 {#snippet setForm(userId: string, key: string)}
@@ -147,9 +157,7 @@
         class="w-[280px]"
         onkeydown={(e) => e.key === 'Enter' && void submitSet(userId)}
       />
-      <Button size="md" variant="outline" disabled={busy || newPassword.length < 8} onclick={() => void submitSet(userId)}>
-        Save password
-      </Button>
+      <SaveAction size="md" dirty={newPassword.length >= 8} {busy} onclick={() => void submitSet(userId)}>Save password</SaveAction>
       <Button size="md" variant="ghost" onclick={() => openSet(key)}>Cancel</Button>
     </div>
   </div>
@@ -170,13 +178,24 @@
              never reaches any of this — "No accounts yet." decides whether the login
              screen offers the password form at all (the invites panel keeps the same
              rule), so QueryState's error branch owns that verdict. -->
+        <SettingsHeaderRow label="Account" menu class="h-9">
+          <span class={ROLE}>Role</span>
+          <span class={USED}>Last used</span>
+        </SettingsHeaderRow>
+        <!-- A second way in is a choice, not a fault, so the row opens the
+             form and shows no button. -->
         {#if !mine}
           <div>
-            <SettingsRow label="Your account" hint="You sign in with Google, and a password gives you a second way in.">
-              <Button size="sm" variant="outline" onclick={() => openSet('me')} disabled={busy} aria-expanded={open === 'me'}>
-                {open === 'me' ? 'Close' : 'Set a password'}
-              </Button>
-              <SettingsRowMenu label="Actions for your account" items={[]} />
+            <SettingsRow
+              label="Your account"
+              hint="You sign in with Google, and a password gives you a second way in."
+              onOpen={() => openSet('me')}
+              openLabel="Set a password for your account"
+            >
+              <SettingsRowMenu
+                label="Actions for your account"
+                items={[{ label: open === 'me' ? 'Keep it without a password' : 'Set a password', disabled: busy, onSelect: () => openSet('me') }]}
+              />
             </SettingsRow>
             {#if open === 'me' && me}{@render setForm(me.id, 'me')}{/if}
           </div>
@@ -185,11 +204,14 @@
           <div>
             <SettingsRow
               label={row.email}
-              hint={`${row.name && row.name !== row.email ? `${row.name} · ` : ''}${row.lastUsedAt ? `Used ${relativeTime(row.lastUsedAt)}` : 'Never used'}`}
+              hint={row.name && row.name !== row.email ? row.name : undefined}
               onOpen={() => openSet(row.userId)}
               openLabel={`Set a password for ${row.email}`}
             >
-              {#snippet meta()}<Chip>{row.role === 'admin' ? 'Admin' : 'Member'}</Chip>{/snippet}
+              <span class="{ROLE} {cell}">{row.role === 'admin' ? 'Admin' : 'Member'}</span>
+              <span class="{USED} {cell} tabular-nums" title={row.lastUsedAt ? new Date(row.lastUsedAt).toLocaleString() : undefined}>
+                {row.lastUsedAt ? relativeTime(row.lastUsedAt) : 'Never'}
+              </span>
               <SettingsRowMenu
                 label={`Actions for ${row.email}`}
                 items={[

@@ -69,7 +69,8 @@
     error = null
     try {
       await putJson<{ ok: true }>('/api/admin/users', { userId, ...patch })
-      autosave.flash()
+      // Whatever changed for a person, their own row says so.
+      autosave.flash(userId)
     } catch (e) {
       error = errorMessage(e)
     }
@@ -143,7 +144,8 @@
             hint={u.name && u.email ? u.email : undefined}
             onOpen={editable(u) ? () => toggle(u.id) : undefined}
             openLabel={`Edit access for ${nameOf(u)}`}
-            class="py-3"
+            saved={autosave.saved(u.id)}
+            class="min-h-[52px] py-2"
           >
             {#snippet lead()}<Avatar name={u.name ?? u.email} class="h-8 w-8" />{/snippet}
             {#snippet label()}{nameOf(u)}{/snippet}
@@ -231,7 +233,7 @@
                   {#if appsList.notice}<QueryError {...appsList.notice} />{/if}
                   {#if perms}
                     <SettingsField label="Permissions" hint="A dot marks a change from the member defaults, and selecting it again goes back.">
-                      <AdminUserPermChips userId={u.id} {perms} />
+                      <AdminUserPermChips userId={u.id} {perms} onSaved={() => autosave.flash(u.id)} />
                     </SettingsField>
                   {/if}
                 {/if}
