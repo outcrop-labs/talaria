@@ -80,14 +80,13 @@
     </span>
   </button>
   {#if keepMounted}
+    <!-- The footer follows with no space between: a text node there would be new markup for every caller. -->
     <div hidden={!open} class={card ? 'border-t border-line-subtle px-5 py-4' : 'border-t border-line px-3 py-2'}>
       {@render children()}
-    </div>
-    {#if footer}<div hidden={!open} class={foot}>{@render footer()}</div>{/if}
+    </div>{#if footer}<div hidden={!open} class={foot}>{@render footer()}</div>{/if}
   {:else if open}
     <div transition:slide={{ duration: 150 }}>
-      <div class={card ? 'border-t border-line-subtle px-5 py-4' : 'border-t border-line px-3 py-2'}>{@render children()}</div>
-      {#if footer}<div class={foot}>{@render footer()}</div>{/if}
+      <div class={card ? 'border-t border-line-subtle px-5 py-4' : 'border-t border-line px-3 py-2'}>{@render children()}</div>{#if footer}<div class={foot}>{@render footer()}</div>{/if}
     </div>
   {/if}
 </div>

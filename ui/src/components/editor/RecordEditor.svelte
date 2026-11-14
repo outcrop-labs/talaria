@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { Check, History, Trash2, X } from '@lucide/svelte'
+  import { Check, History, Sparkles, Trash2, X } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'

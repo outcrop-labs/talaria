@@ -117,8 +117,7 @@
   aria-expanded={onclick ? expanded : undefined}
   data-settings-row={stacked ? 'stacked' : apart ? 'apart' : ''}
   class={cn(
-    'flex px-5',
-    compact ? 'min-h-11 py-1.5' : 'min-h-[56px] py-3.5',
+    compact ? 'flex min-h-11 px-5 py-1.5' : 'flex min-h-[56px] px-5 py-3.5',
     // Not stacked still wraps: on a phone a wide control drops under its label.
     stacked ? 'flex-col gap-3' : 'flex-wrap items-center gap-x-6 gap-y-3',
     // The ring is forced inside: the app's global focus rule is unlayered, so it beats a plain utility, and a ring
@@ -152,7 +151,7 @@
     <div class="min-w-0 flex-1">
       <div class="flex min-w-0 items-center gap-2">
         <span
-          class={cn('min-w-0 font-sans text-sm font-medium leading-5 text-fg', wrap ? 'line-clamp-2 break-words' : 'truncate')}
+          class={wrap ? 'line-clamp-2 min-w-0 break-words font-sans text-sm font-medium leading-5 text-fg' : 'min-w-0 truncate font-sans text-sm font-medium leading-5 text-fg'}
           title={wrap && typeof label === 'string' ? label : undefined}
         >
           {#if typeof label === 'string'}{label}{:else}{@render label()}{/if}
