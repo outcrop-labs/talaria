@@ -276,6 +276,27 @@
   --settings-fill: color-mix(in srgb, var(--theme-text) 9%, var(--theme-panel));
 }
 
+/* Rendered markdown is static HTML with the mono chrome's classes on its
+   code-block header and table headers. Inside the settings area those speak
+   the area's voice: 12px, no forced capitals, the secondary text colour. */
+.md-sans [data-code-block] > div:first-child > span,
+.md-sans [data-copy-code],
+.md-sans th {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--theme-muted);
+}
+.md-sans [data-copy-code],
+.md-sans th {
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+.md-sans [data-copy-code]::first-letter {
+  text-transform: uppercase;
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    Tailwind semantic colours — bound to the Mercury tokens so utilities like
    `bg-surface`, `text-fg`, `border-line`, `text-accent` track the active mode
