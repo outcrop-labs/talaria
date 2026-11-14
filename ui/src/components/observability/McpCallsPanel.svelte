@@ -104,7 +104,7 @@
       autosave.flash()
       await qc.invalidateQueries({ queryKey: ['mcp-calls-retention'] })
     } catch (e) {
-      toastError('Could not change how long MCP calls are kept', e)
+      toastError('Could not change how long tool calls are kept', e)
     } finally {
       savingRetention = false
     }
@@ -119,7 +119,7 @@
   <EmptyState
     icon="⛨"
     title="Admins only"
-    hint="The MCP call record names which agent called which tool on which server. An admin reads it here."
+    hint="The tool call record names which agent called which tool on which server. An admin reads it here."
   />
 {:else}
   <div class="space-y-8">
@@ -160,7 +160,7 @@
       </div>
 
       <!-- The window's counts, or one server's when the page is filtered to it. -->
-      <QueryState query={summaryQuery} errorTitle="Could not load the MCP call summary" errorVariant="compact">
+      <QueryState query={summaryQuery} errorTitle="Could not load the tool call summary" errorVariant="compact">
         {#snippet skeleton()}
           <StatStripSkeleton />
         {/snippet}
@@ -246,17 +246,17 @@
       description={callsQuery.data?.length ? `${number(callsQuery.data.length)} in the ${windowLabel}, newest first.` : undefined}
       info="Newest first, up to 200. A row never carries the call's arguments or its result."
     >
-      <QueryState query={callsQuery} errorTitle="Could not load MCP calls">
+      <QueryState query={callsQuery} errorTitle="Could not load tool calls">
         {#snippet skeleton()}
           <div aria-hidden="true" class="rounded-lg border border-line bg-panel px-5 py-4"><SkeletonRows rows={6} /></div>
         {/snippet}
         {#snippet empty()}
           <EmptyState
             icon="⇄"
-            title={filtered ? 'No calls match' : 'No MCP calls yet'}
+            title={filtered ? 'No calls match' : 'No tool calls yet'}
             hint={filtered
               ? `Nothing in the ${windowLabel} matches these filters.`
-              : `Every tool call an agent makes through the MCP gateway in the ${windowLabel} lands here. Arguments and results are never kept.`}
+              : `Every call an agent makes to a tool server in the ${windowLabel} lands here. Arguments and results are never kept.`}
           />
         {/snippet}
         {#snippet children(calls)}
@@ -317,7 +317,7 @@
             <Select
               size="sm"
               class="w-[280px]"
-              aria-label="Keep MCP calls for"
+              aria-label="Keep tool calls for"
               value={String(retentionQuery.data.days)}
               disabled={savingRetention}
               onchange={(e) => void setRetention(Number(e.currentTarget.value))}
