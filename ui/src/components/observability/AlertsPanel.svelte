@@ -34,6 +34,11 @@
       </StatStrip>
       <SettingsSection title="Open alerts" description="Each alert opens the page where it is fixed.">
         <SettingsGroup>
+          <!-- `SettingsHeaderRow` names the label column and the controls; this list's first column is the row's lead. -->
+          <div class="flex h-10 items-center gap-3 px-5 font-sans text-xs font-medium leading-4 text-muted">
+            <span class="w-[5.5rem] shrink-0">Severity</span>
+            <span>Alert</span>
+          </div>
           {#each alerts as a, i (i)}
             <AlertRow alert={a} named />
           {/each}
