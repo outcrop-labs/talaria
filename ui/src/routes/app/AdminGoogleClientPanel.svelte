@@ -291,9 +291,9 @@
               </ul>
             </SettingsField>
             {#if error}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
-            <!-- The foot of the card the disclosure draws: out to its edges, under a hairline. -->
+          </div>
+          {#snippet footer()}
             <SettingsSaveBar
-              class="-mx-5 -mb-4 border-t border-line-subtle"
               label="Save client"
               reason="The secret is stored encrypted and never shown again."
               {dirty}
@@ -302,7 +302,7 @@
               onSave={() => void save()}
               onDiscard={data.status.source === 'env' ? undefined : discard}
             />
-          </div>
+          {/snippet}
         </Disclosure>
       </div>
     {/snippet}

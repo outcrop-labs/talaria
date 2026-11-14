@@ -1,4 +1,10 @@
+<script lang="ts" module>
+  // The severity column: the list's caption row and each named row's lead share this width.
+  export const ALERT_SEVERITY = 'w-[5.5rem]'
+</script>
+
 <script lang="ts">
+  import { cn } from '@/lib/cn'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -37,11 +43,11 @@
   hint={compact ? undefined : alert.detail}
   disabled={!alert.href}
   onclick={() => alert.href && void navigateHref(alert.href)}
-  class={compact ? 'min-h-11 py-1.5' : undefined}
+  {compact}
 >
   {#snippet lead()}
     {#if named}
-      <span class="flex w-[5.5rem] items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+      <span class={cn(ALERT_SEVERITY, 'flex items-center gap-2 font-sans text-[13px] leading-5 text-muted')}>
         <StatusDot status={severity.dot} class="h-2 w-2" />{severity.label}
       </span>
     {:else}

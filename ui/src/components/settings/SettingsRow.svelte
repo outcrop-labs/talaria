@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { Check, ChevronRight } from '@lucide/svelte'
+  import { ChevronRight } from '@lucide/svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import { cn } from '@/lib/cn'
+  import SavedMark from './SavedMark.svelte'
 
   // One row of a `SettingsGroup`: what it is on the left, its control on the
   // right. Also the row of an entity list, with `icon`, `meta` and `status`.
@@ -19,6 +20,8 @@
     saved,
     stacked = false,
     apart = false,
+    wrap = false,
+    compact = false,
     as = 'div',
     href,
     onclick,
@@ -54,6 +57,12 @@
     /** The control keeps its own width instead of sizing the column the
      *  group's rows share: the add row at the foot of an entity list. */
     apart?: boolean
+    /** The label is a name (an agent, a key, a person): it wraps to a second
+     *  line before it is cut, and a string label is its own tooltip. */
+    wrap?: boolean
+    /** One line at a table row's height, for a list that is read down its
+     *  columns: an alert summary, an invite, a per-agent switch. */
+    compact?: boolean
     /** `label` makes the whole row the control's label. Only for a row whose
      *  control is one native input, select or textarea. */
     as?: 'div' | 'label'
@@ -95,15 +104,8 @@
 </script>
 
 {#snippet savedFlash(at: string)}
-  <!-- Always in the tree, so a screen reader hears the word arrive. The fill covers a long hint for the moment. -->
-  <span
-    role="status"
-    data-row-saved
-    class={cn(
-      'pointer-events-none absolute top-1/2 flex -translate-y-1/2 items-center gap-1.5 whitespace-nowrap bg-panel pl-2 font-sans text-[13px] leading-5 text-muted',
-      at,
-    )}
-  >{#if saved}<Check size={14} aria-hidden="true" class="text-success" />Saved{/if}</span>
+  <!-- The fill covers a long hint for the moment. -->
+  <SavedMark on={saved === true} class={cn('pointer-events-none absolute top-1/2 -translate-y-1/2 bg-panel pl-2', at)} />
 {/snippet}
 
 <svelte:element
@@ -115,7 +117,8 @@
   aria-expanded={onclick ? expanded : undefined}
   data-settings-row={stacked ? 'stacked' : apart ? 'apart' : ''}
   class={cn(
-    'flex min-h-[56px] px-5 py-3.5',
+    'flex px-5',
+    compact ? 'min-h-11 py-1.5' : 'min-h-[56px] py-3.5',
     // Not stacked still wraps: on a phone a wide control drops under its label.
     stacked ? 'flex-col gap-3' : 'flex-wrap items-center gap-x-6 gap-y-3',
     // The ring is forced inside: the app's global focus rule is unlayered, so it beats a plain utility, and a ring
@@ -148,7 +151,10 @@
     {/if}
     <div class="min-w-0 flex-1">
       <div class="flex min-w-0 items-center gap-2">
-        <span class="min-w-0 truncate font-sans text-sm font-medium leading-5 text-fg">
+        <span
+          class={cn('min-w-0 font-sans text-sm font-medium leading-5 text-fg', wrap ? 'line-clamp-2 break-words' : 'truncate')}
+          title={wrap && typeof label === 'string' ? label : undefined}
+        >
           {#if typeof label === 'string'}{label}{:else}{@render label()}{/if}
         </span>
         {#if info}<InfoTip text={info} />{/if}

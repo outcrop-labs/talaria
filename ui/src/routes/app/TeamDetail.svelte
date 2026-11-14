@@ -285,8 +285,6 @@
   const ROLE_LABEL: Record<TeamRole, string> = { owner: 'Owner', member: 'Member' }
   // The People list's role column: the caption and every cell take this width.
   const ROLE = 'w-20 shrink-0'
-  // A name wraps to a second line before it is cut.
-  const NAME = 'line-clamp-2 whitespace-normal break-words'
   const subtitle = $derived(
     team.role ? `${teamCounts(team)} · You are ${team.role === 'owner' ? 'an owner' : 'a member'}` : teamCounts(team),
   )
@@ -330,8 +328,7 @@
         {/if}
         {#each members as m (m.userId)}
           {@const person = m.name ?? m.email ?? m.userId}
-          <SettingsRow hint={m.name && m.email ? m.email : undefined}>
-            {#snippet label()}<span class={NAME} title={person}>{person}</span>{/snippet}
+          <SettingsRow label={person} wrap hint={m.name && m.email ? m.email : undefined}>
             {#snippet lead()}<Avatar name={m.name ?? m.email} />{/snippet}
             <span class="{ROLE} font-sans text-[13px] leading-5 text-muted">{ROLE_LABEL[m.role]}</span>
             <SettingsRowMenu
@@ -367,8 +364,7 @@
       {#if agentsList.notice}<div class="mb-3"><QueryError {...agentsList.notice} /></div>{/if}
       <SettingsGroup bare>
         {#each agents as a (a.agentModel)}
-          <SettingsRow>
-            {#snippet label()}<span class={NAME} title={a.label ?? a.agentModel}>{a.label ?? a.agentModel}</span>{/snippet}
+          <SettingsRow label={a.label ?? a.agentModel} wrap>
             {#snippet lead()}<Avatar name={a.label ?? a.agentModel} />{/snippet}
             {#if canManage}
               <SettingsRowMenu

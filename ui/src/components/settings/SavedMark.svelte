@@ -2,9 +2,9 @@
   import { Check } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
 
-  // "Saved" beside a control that saves on change and is not in a
-  // `SettingsRow`: a switch in a grid, a field of a dialog. The same mark a
-  // row draws for its `saved` prop. Pass `autosave.saved(key)`, which is only
+  // "Saved" beside a control that saves on change: `SettingsRow` draws it for
+  // its `saved` prop, and a control outside a row (a switch in a grid, a field
+  // of a dialog) places it itself. Pass `autosave.saved(key)`, which is only
   // ever true where the page's header shows no autosave cue.
   let { on, class: className }: { on: boolean; class?: string } = $props()
 </script>

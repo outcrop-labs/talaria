@@ -19,14 +19,11 @@
 
 <div class="@container">
   <SettingsGroup>
-    <SettingsHeaderRow label="Schedule" class="hidden @3xl:flex">
+    <SettingsHeaderRow label="Schedule" menu expands class="hidden @3xl:flex">
       {#if agents}<span class={CRON_AGENT}>Agent</span>{/if}
       <span class={CRON_FREQUENCY}>Frequency</span>
       <span class={CRON_NEXT}>Next run</span>
       <span class={CRON_ON}>On</span>
-      <!-- The cells a row ends in: its menu and the chevron that opens it. -->
-      <span class="w-8 shrink-0"></span>
-      <span class="w-4 shrink-0"></span>
     </SettingsHeaderRow>
     {@render children()}
   </SettingsGroup>

@@ -269,13 +269,14 @@
               {#if editing === i}
                 {@render editor(draft, opened, 'Entry text', undefined, (v) => (draft = v), () => void saveEdit())}
               {:else}
+                <!-- The whole first line, wrapped: the row has the width, so
+                     the title is not cut to a character budget here. -->
                 <SettingsRow
+                  label={entryTitle(entry, Infinity)}
+                  wrap
                   onOpen={canEdit ? () => !busy && startEdit(i) : undefined}
                   openLabel={`Edit ${entryTitle(entry)}`}
                 >
-                  <!-- The whole first line, wrapped: the row has the width, so
-                       the title is not cut to a character budget here. -->
-                  {#snippet label()}<span class="line-clamp-2 whitespace-normal">{entryTitle(entry, Infinity)}</span>{/snippet}
                   {#snippet hint()}
                     {#if entry.includes('\n')}
                       <p class="line-clamp-2 whitespace-pre-wrap">{entry.slice(entry.indexOf('\n') + 1).trim()}</p>

@@ -109,7 +109,7 @@
             <span class="{SWITCH} whitespace-nowrap">Checks in</span>
           </SettingsHeaderRow>
           {#each agents as a (a.model)}
-            <SettingsRow saved={autosave.saved(a.model)} class="min-h-11 py-1.5">
+            <SettingsRow compact saved={autosave.saved(a.model)}>
               {#snippet label()}<span class="text-[13px]">{a.displayName}</span>{/snippet}
               {#snippet meta()}{#if a.personal}<Chip>Personal</Chip>{/if}{/snippet}
               <span class={SWITCH}>

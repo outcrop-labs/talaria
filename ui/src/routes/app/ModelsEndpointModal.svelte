@@ -219,7 +219,7 @@
       <p class="mb-2 font-sans text-[13px] leading-5 text-muted">What your agents can use from this provider.</p>
       <SettingsGroup>
         {#each ep.models as m (m)}
-          <SettingsRow class="min-h-[52px] py-3">
+          <SettingsRow>
             {#snippet label()}{@render model(m)}{/snippet}
             <DangerLink onClick={() => removeModel(m)}>Remove</DangerLink>
           </SettingsRow>
@@ -308,7 +308,7 @@
           {#if manualPrices.length > 0}
             <SettingsGroup data-testid="endpoint-admin-prices">
               {#each manualPrices as row (row.model)}
-                <SettingsRow class="min-h-[52px] py-3">
+                <SettingsRow>
                   {#snippet label()}{@render model(row.model)}{/snippet}
                   {#snippet meta()}<Chip>Manual</Chip>{/snippet}
                   <span class="font-sans text-[13px] leading-5 tabular-nums text-muted">{settingLabel(row)}</span>
@@ -324,7 +324,7 @@
               </div>
               <SettingsGroup>
                 {#each ep.models as m (m)}
-                  <SettingsRow class="min-h-[52px] py-3">
+                  <SettingsRow>
                     {#snippet label()}{@render model(m)}{/snippet}
                     <Toggle
                       checked={included.has(m)}

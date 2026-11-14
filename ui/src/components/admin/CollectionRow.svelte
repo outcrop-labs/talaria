@@ -22,7 +22,7 @@
   import { delJsonGone, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import RowStatus from './RowStatus.svelte'
-  import SavedMark from './SavedMark.svelte'
+  import SavedMark from '@/components/settings/SavedMark.svelte'
   import ToggleField from './ToggleField.svelte'
   import { COLLECTION_COLS, indexState, type Binding, type IndexedCollection, type RagCollection } from './retrieval'
 

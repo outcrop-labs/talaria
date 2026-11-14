@@ -98,9 +98,8 @@
 <!-- A div, not an li: the schedules lists render these straight into a card
      that draws the dividers. -->
 <div>
-  <SettingsRow onOpen={() => (expanded = !expanded)} {expanded} openLabel={job.name}>
+  <SettingsRow label={job.name} wrap onOpen={() => (expanded = !expanded)} {expanded}>
     {#snippet lead()}<StatusDot status={jobDot(job)} />{/snippet}
-    {#snippet label()}<span class="line-clamp-2 whitespace-normal">{job.name}</span>{/snippet}
     {#snippet hint()}
       <!-- The failure is beside the name it is about, so the next run keeps its own column. -->
       {@render frequency('block @3xl:hidden')}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
-  import SavedMark from '@/components/admin/SavedMark.svelte'
+  import SavedMark from '@/components/settings/SavedMark.svelte'
   import { secretHint } from '@/components/admin/secret-hint'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'

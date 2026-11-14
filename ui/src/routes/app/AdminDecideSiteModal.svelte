@@ -1,7 +1,7 @@
 <script lang="ts">
   import FactsList from '@/components/admin/FactsList.svelte'
   import NoticeRow from '@/components/admin/NoticeRow.svelte'
-  import SavedMark from '@/components/admin/SavedMark.svelte'
+  import SavedMark from '@/components/settings/SavedMark.svelte'
   import { tableCell, tableHead, tableRow } from '@/components/admin/table'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'

@@ -56,7 +56,7 @@
   }
 </script>
 
-<SettingsRow class="min-h-[52px] py-3">
+<SettingsRow>
   {#snippet label()}<ModelName id={model} name={modelName} />{/snippet}
   <!-- The provider's word, or its silence: the reason this row exists. -->
   {#snippet hint()}

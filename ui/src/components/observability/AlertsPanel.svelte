@@ -1,11 +1,12 @@
 <script lang="ts">
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Stat from '@/components/settings/Stat.svelte'
   import StatStrip from '@/components/settings/StatStrip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import AlertRow from './AlertRow.svelte'
+  import AlertRow, { ALERT_SEVERITY } from './AlertRow.svelte'
   import { useAlerts, type Alert, type AlertSeverity } from './alerts'
   import StatStripSkeleton from './StatStripSkeleton.svelte'
 
@@ -34,11 +35,7 @@
       </StatStrip>
       <SettingsSection title="Open alerts" description="Each alert opens the page where it is fixed.">
         <SettingsGroup>
-          <!-- `SettingsHeaderRow` names the label column and the controls; this list's first column is the row's lead. -->
-          <div class="flex h-10 items-center gap-3 px-5 font-sans text-xs font-medium leading-4 text-muted">
-            <span class="w-[5.5rem] shrink-0">Severity</span>
-            <span>Alert</span>
-          </div>
+          <SettingsHeaderRow label="Alert" lead="Severity" leadClass={ALERT_SEVERITY} />
           {#each alerts as a, i (i)}
             <AlertRow alert={a} named />
           {/each}

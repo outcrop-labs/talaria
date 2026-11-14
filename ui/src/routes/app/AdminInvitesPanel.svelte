@@ -111,7 +111,7 @@
         </SettingsHeaderRow>
         {#each data as i (i.id)}
           {@const st = inviteState(i)}
-          <SettingsRow class="min-h-11 py-1.5">
+          <SettingsRow compact>
             {#snippet label()}<span class="text-[13px]">{i.email}</span>{/snippet}
             <span class="{SENT} font-sans text-[13px] leading-5 tabular-nums text-muted" title={new Date(i.createdAt).toLocaleString()}>
               {relativeTime(i.createdAt)}

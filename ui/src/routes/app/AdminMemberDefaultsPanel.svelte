@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import SavedMark from '@/components/admin/SavedMark.svelte'
+  import SavedMark from '@/components/settings/SavedMark.svelte'
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'

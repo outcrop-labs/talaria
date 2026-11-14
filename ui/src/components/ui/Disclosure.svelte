@@ -16,6 +16,7 @@
     keepMounted = false,
     voice,
     class: className,
+    footer,
     children,
   }: {
     title: string | Snippet
@@ -30,6 +31,9 @@
     /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
     voice?: UiVoice
     class?: string
+    /** The foot of the open section, out to its edges under a hairline: a
+     *  `SettingsSaveBar`, which brings its own padding. */
+    footer?: Snippet
     children: Snippet
   } = $props()
 
@@ -39,6 +43,7 @@
   const areaVoice = useUiVoice()
   const sans = $derived((voice ?? areaVoice) === 'sans')
   const card = $derived(sans && variant === 'card')
+  const foot = $derived(card ? 'border-t border-line-subtle' : 'border-t border-line')
 </script>
 
 <div
@@ -78,9 +83,11 @@
     <div hidden={!open} class={card ? 'border-t border-line-subtle px-5 py-4' : 'border-t border-line px-3 py-2'}>
       {@render children()}
     </div>
+    {#if footer}<div hidden={!open} class={foot}>{@render footer()}</div>{/if}
   {:else if open}
     <div transition:slide={{ duration: 150 }}>
       <div class={card ? 'border-t border-line-subtle px-5 py-4' : 'border-t border-line px-3 py-2'}>{@render children()}</div>
+      {#if footer}<div class={foot}>{@render footer()}</div>{/if}
     </div>
   {/if}
 </div>

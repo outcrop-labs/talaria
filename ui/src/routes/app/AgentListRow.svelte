@@ -43,9 +43,9 @@
 <AgentItem def={d} {containers} {endpoints} {onDuplicate} {roll}>
   {#snippet frame({ running, openManage, onContextMenu, menuItems, act, pending }: AgentFrame)}
     <div role="presentation" oncontextmenu={onContextMenu} class={cn(!d.enabled && 'opacity-60')}>
-      <SettingsRow hint={d.role ?? 'No role yet'} onOpen={openManage} openLabel={`${d.displayName} ${d.role ?? 'No role yet'}`} class="py-3">
+      <!-- py-3: at this height the nine rows of a full roster end on the first screen. -->
+      <SettingsRow label={d.displayName} wrap hint={d.role ?? 'No role yet'} onOpen={openManage} openLabel={`${d.displayName} ${d.role ?? 'No role yet'}`} class="py-3">
         {#snippet lead()}<Avatar name={d.displayName} class="h-8 w-8" />{/snippet}
-        {#snippet label()}<span class="line-clamp-2 whitespace-normal">{d.displayName}</span>{/snippet}
         <!-- The row has the width for the failure sentence beside the chip. -->
         {#snippet meta()}<AgentRollChip {roll} sentence class="pointer-events-auto" />{/snippet}
         <span class={cn(LIST_MODEL, 'truncate font-sans text-[13px] leading-5 text-muted')} title={brainDown ? undefined : (model ?? undefined)}>
