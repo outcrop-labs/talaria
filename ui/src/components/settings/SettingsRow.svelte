@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { ChevronRight } from '@lucide/svelte'
+  import { Check, ChevronRight } from '@lucide/svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import { cn } from '@/lib/cn'
 
@@ -16,6 +16,7 @@
     lead,
     meta,
     status,
+    saved,
     stacked = false,
     apart = false,
     as = 'div',
@@ -43,6 +44,11 @@
     meta?: Snippet
     /** The state of the thing, ahead of the control: a `StatusDot` and a word. */
     status?: Snippet
+    /** The row's control saves on change, and a save just landed: a check and
+     *  "Saved" show in the status position for as long as this is true. Pass
+     *  `autosave.saved(key)` from `useAutosave()`, which is only ever true on
+     *  a page whose header shows no autosave cue. */
+    saved?: boolean
     /** The control takes the full width under the label (textareas, editors). */
     stacked?: boolean
     /** The control keeps its own width instead of sizing the column the
@@ -88,6 +94,18 @@
     '[&_a]:pointer-events-auto [&_button]:pointer-events-auto [&_input]:pointer-events-auto [&_select]:pointer-events-auto [&_textarea]:pointer-events-auto [&_label]:pointer-events-auto [&_[role=switch]]:pointer-events-auto'
 </script>
 
+{#snippet savedFlash(at: string)}
+  <!-- Always in the tree, so a screen reader hears the word arrive. The fill covers a long hint for the moment. -->
+  <span
+    role="status"
+    data-row-saved
+    class={cn(
+      'pointer-events-none absolute top-1/2 flex -translate-y-1/2 items-center gap-1.5 whitespace-nowrap bg-panel pl-2 font-sans text-[13px] leading-5 text-muted',
+      at,
+    )}
+  >{#if saved}<Check size={14} aria-hidden="true" class="text-success" />Saved{/if}</span>
+{/snippet}
+
 <svelte:element
   this={href ? 'a' : onclick ? 'button' : as}
   {href}
@@ -116,7 +134,7 @@
   <div
     class={cn(
       'flex min-w-0 flex-1 items-center gap-3',
-      !stacked && 'basis-48',
+      stacked ? 'relative' : 'basis-48',
       // The hit area sits behind: the label lets clicks through, and anything interactive inside it takes them back.
       opens && 'pointer-events-none relative [&_a]:pointer-events-auto [&_button]:pointer-events-auto',
     )}
@@ -142,8 +160,10 @@
         </div>
       {/if}
     </div>
+    <!-- A stacked control fills the row, so its flash sits on the label's line. -->
+    {#if stacked && saved !== undefined}{@render savedFlash('right-0')}{/if}
   </div>
-  {#if children || status || expanded !== undefined || pointsOnward}
+  {#if children || status || saved !== undefined || expanded !== undefined || pointsOnward}
     <!-- empty:hidden: a control only some viewers get must not hold the row's gap open for the rest. -->
     <div
       data-row-controls
@@ -155,7 +175,13 @@
       )}
     >
       {#if status}
-        <span data-row-status class="mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">{@render status()}</span>
+        <span data-row-status class="relative mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+          <span class={cn('flex items-center gap-2', saved && 'invisible')}>{@render status()}</span>
+          {#if saved !== undefined}{@render savedFlash('right-0')}{/if}
+        </span>
+      {:else if saved !== undefined && !stacked}
+        <!-- Takes no room, so the flash moves nothing: it hangs to the left of the control, over the row's gap. -->
+        <span class="relative -mr-3 w-0 self-stretch">{@render savedFlash('right-3')}</span>
       {/if}
       <!-- No space before the chevron's block: a text node there would keep an empty control slot from collapsing. -->
       {@render children?.()}{#if expanded !== undefined}<ChevronRight size={16} aria-hidden="true" class={cn('text-muted transition-transform duration-150', expanded && 'rotate-90')} />{:else if pointsOnward}<span data-row-chevron aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} /></span>{/if}

@@ -33,10 +33,12 @@
     onTab?: (id: T) => void
     /** Right of the title. At most one primary button. */
     actions?: Snippet
-    /** The page's fields save on change, so the header says so. A field inside
-     *  the page can ask for the same cue with `useAutosave()`. */
+    /** Every control on the page (or on the tab showing) saves on change, so
+     *  the header says so. A component inside can ask for the same cue with
+     *  `useAutosave()`. A group with its own Save button (`SettingsSaveBar`)
+     *  turns the cue off while it is mounted, whatever this says. */
     autosave?: boolean
-    /** Flash "Saved" in the cue, for a page that owns its own save. */
+    /** Flash "Saved" in the cue, for a page that runs its own save on change. */
     saved?: boolean
     /** The content takes the window height left under the header, for a pane
      *  that owns its own scroll (a `LibraryPane`). */
@@ -48,7 +50,7 @@
   } = $props()
 
   setUiVoice('sans')
-  const cue = provideAutosave()
+  const cue = provideAutosave(() => autosave)
   // svelte-ignore state_referenced_locally -- reason: called during render, so it re-runs with fresh props on every render
   claimViewTitle(title)
 </script>
@@ -60,7 +62,7 @@
         <h1 class="font-sans text-[22px] font-semibold leading-7 tracking-[-0.01em] text-fg">{title}</h1>
         {#if blurb}<p class="mt-1 max-w-[72ch] font-sans text-sm leading-5 text-muted">{blurb}</p>{/if}
       </div>
-      {#if autosave || cue.active || actions}
+      {#if cue.active || actions}
         <!-- The cue is a box the height of a button, with its text in the middle: that is the line of a button's
              label when one sits beside it and the title's line when none does, so it holds one position on every
              page. A page can pass `actions` and render nothing on some tabs, so the position cannot hang on that. -->
@@ -68,10 +70,10 @@
         <div
           class={cn(
             'flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2',
-            (autosave || cue.active) && 'max-sm:basis-full max-sm:justify-between',
+            cue.active && 'max-sm:basis-full max-sm:justify-between',
           )}
         >
-          {#if autosave || cue.active}
+          {#if cue.active}
             <span role="status" class="grid h-8 content-center font-sans text-[13px] leading-5 text-muted">
               <!-- Holds the width of the longer line, so the flip to Saved moves nothing. -->
               <span aria-hidden="true" class="invisible col-start-1 row-start-1 whitespace-nowrap">Changes save automatically</span>

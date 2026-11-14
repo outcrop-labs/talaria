@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { isolateAutosave } from '@/components/settings/autosave.svelte'
   import { fade, pop, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
   import { useUiVoice, voiceScope, type UiVoice } from '@/lib/ui-voice'
@@ -65,6 +66,8 @@
 
   const areaVoice = useUiVoice()
   const sans = $derived((voice ?? areaVoice) === 'sans')
+  // A settings page's "Saved" cue is in its header, which a dialog covers.
+  isolateAutosave()
 </script>
 
 <svelte:document
