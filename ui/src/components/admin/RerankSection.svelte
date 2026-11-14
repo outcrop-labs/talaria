@@ -28,7 +28,7 @@
 
   // Autosave: provider / url / model apply on change. Only the API key (a
   // secret being committed) keeps an explicit save affordance.
-  const apply = async (patch: Record<string, unknown>) => {
+  const apply = async (row: 'provider' | 'url' | 'key' | 'model', patch: Record<string, unknown>) => {
     try {
       await putJson('/api/admin/rag', { reranker: patch })
     } catch (e) {
@@ -36,7 +36,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
-    if (!('apiKey' in patch)) autosave.flash()
+    autosave.flash(row)
   }
   const loadModels = async () => {
     // The candidate key goes in the body — never a query string (logs).
@@ -49,7 +49,7 @@
   const saveKey = async () => {
     savingKey = true
     try {
-      await apply({ apiKey: key })
+      await apply('key', { apiKey: key })
       key = ''
     } finally {
       savingKey = false
@@ -67,13 +67,14 @@
       label="Provider"
       hint={cfg.provider === 'off' ? 'Results stay in vector order.' : `Rescores the top ${cfg.candidates ?? 30} results.`}
       as="label"
+      saved={autosave.saved('provider')}
     >
       <Select
         size="sm"
         value={cfg.provider}
         onchange={(e) => {
           models = null
-          void apply({ provider: e.currentTarget.value, model: null })
+          void apply('provider', { provider: e.currentTarget.value, model: null })
         }}
         class="w-[280px]"
       >
@@ -84,11 +85,11 @@
       </Select>
     </SettingsRow>
     {#if meta?.needsUrl}
-      <SettingsRow label="Endpoint URL" hint="A TEI server's rerank endpoint." as="label">
+      <SettingsRow label="Endpoint URL" hint="A TEI server's rerank endpoint." as="label" saved={autosave.saved('url')}>
         <Input
           size="sm"
           value={cfg.url ?? ''}
-          onblur={(e) => e.currentTarget.value !== (cfg.url ?? '') && void apply({ url: e.currentTarget.value || null })}
+          onblur={(e) => e.currentTarget.value !== (cfg.url ?? '') && void apply('url', { url: e.currentTarget.value || null })}
           placeholder="http://localhost:8056"
           class="w-[280px] font-mono"
         />
@@ -98,6 +99,7 @@
       <SettingsRow
         label="API key"
         hint={secretHint(cfg.hasKey)}
+        saved={autosave.saved('key')}
       >
         <Input
           size="sm"
@@ -118,12 +120,12 @@
          provider delegates to talaria-decide's own config, so neither has a
          model of its own to choose here. -->
     {#if meta && (meta.liveCatalog || meta.fallbackModels.length > 0)}
-      <SettingsRow label="Model">
+      <SettingsRow label="Model" saved={autosave.saved('model')}>
         {#snippet hint()}
           {#if cfg.model}<span class="font-mono text-xs">{cfg.model}</span>{:else}The provider's default model.{/if}
         {/snippet}
         {#if models}
-          <ModelIdPicker {models} value={cfg.model ?? null} onChange={(model) => void apply({ model })} emptyLabel="Default model" class="w-[280px]" />
+          <ModelIdPicker {models} value={cfg.model ?? null} onChange={(model) => void apply('model', { model })} emptyLabel="Default model" class="w-[280px]" />
         {:else}
           <Button size="sm" variant="outline" onclick={() => void loadModels()}>Change model</Button>
         {/if}

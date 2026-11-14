@@ -67,17 +67,28 @@ export const useRagAdmin = () =>
       q.state.data?.backfill.state === 'running' || q.state.data?.reindex.state === 'running' ? 3_000 : false,
   }))
 
+/** The widths the collection list's header captions and each row's cells share. */
+export const COLLECTION_COLS = {
+  entries: 'w-14 shrink-0 text-right',
+  state: 'w-[6.5rem] shrink-0',
+  fix: 'w-12 shrink-0',
+} as const
+
 /** What a collection's row says about its index. `broken` is a state search
  *  fails in, and a rebuild is the one fix for all of them. */
 export interface IndexState {
   status: 'ok' | 'warn' | 'danger'
+  /** One or two words, to fit the list's column. `title` says the rest. */
   word: string
+  title?: string
   broken: boolean
 }
 
 export function indexState(c: IndexedCollection): IndexState {
-  if (c.missing) return { status: 'danger', word: 'Missing', broken: true }
-  if (c.dimMismatch) return { status: 'danger', word: 'Wrong embedding size', broken: true }
-  if (!c.hybrid) return { status: 'warn', word: 'No keyword search', broken: false }
+  if (c.missing) return { status: 'danger', word: 'Missing', title: 'Not in the vector store, so search here is failing', broken: true }
+  if (c.dimMismatch)
+    return { status: 'danger', word: 'Wrong size', title: 'Its vectors no longer match the embedding model, so search here is failing', broken: true }
+  if (!c.hybrid)
+    return { status: 'warn', word: 'No keywords', title: 'Indexed for meaning only. A rebuild adds keyword search, so exact names rank too.', broken: false }
   return { status: 'ok', word: 'Indexed', broken: false }
 }

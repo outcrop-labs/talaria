@@ -1,8 +1,8 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
@@ -12,6 +12,7 @@
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { firstNotice, listQuery } from '@/components/ui/query-state'
+  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { slide } from '@/lib/motion'
@@ -21,23 +22,31 @@
   import { delJsonGone, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import RowStatus from './RowStatus.svelte'
+  import SavedMark from './SavedMark.svelte'
   import ToggleField from './ToggleField.svelte'
-  import { indexState, type Binding, type IndexedCollection, type RagCollection } from './retrieval'
+  import { COLLECTION_COLS, indexState, type Binding, type IndexedCollection, type RagCollection } from './retrieval'
 
   let {
     col,
     spaces,
     index,
+    rebuild,
   }: {
     col: RagCollection
     spaces: Array<{ id: string; name: string; collectionId: string | null }>
     /** The collection as the vector store holds it. Absent while that read is
      *  out or failed, and then the row claims nothing about its index. */
     index?: IndexedCollection
+    /** Set while the list holds a collection search fails in: every row then
+     *  keeps the fix cell, and one that `needed` it shows Fix. The fix is the
+     *  one rebuild of the whole index. */
+    rebuild?: { needed: boolean; disabled: boolean; run: () => void }
   } = $props()
 
   const qc = useQueryClient()
-  const autosave = useAutosave()
+  // Everything this row saves on change is in its dialog, which covers the
+  // page's own cue, so the dialog says "Saved" itself.
+  const dialogSaved = useSavedFlash()
   const agentsQuery = useAgents()
   const fleet = $derived(agentsQuery.data)
   // These two feed the pickers that decide WHO CAN RETRIEVE this collection.
@@ -70,7 +79,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
-    autosave.flash()
+    dialogSaved.flash()
   }
   const del = async () => {
     if (!(await confirm({ title: 'Delete collection', message: `Delete the "${col.name}" collection and its index?`, confirmLabel: 'Delete', danger: true }))) return
@@ -99,7 +108,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
-    autosave.flash()
+    dialogSaved.flash()
   }
 
   const applyBindings = (opts: { all?: boolean; users?: string[]; agents?: string[]; teams?: string[] }) => {
@@ -114,26 +123,31 @@
 
   let managing = $state(false)
   const idx = $derived(index ? indexState(index) : null)
-  const entries = $derived(
-    index && !index.missing ? `${index.pointsCount.toLocaleString()} ${index.pointsCount === 1 ? 'entry' : 'entries'}` : null,
-  )
+  const entries = $derived(index && !index.missing ? index.pointsCount.toLocaleString() : '—')
+  const fix = $derived(rebuild?.needed ? rebuild : undefined)
   // Auto collections have fixed access (activity = your own scope; org-kb =
   // everyone). Custom collections are bound and curated in the dialog.
-  const menu: ContextMenuEntry[] = [
-    { label: 'Manage', onSelect: () => (managing = true) },
-    'sep',
-    { label: 'Delete collection', danger: true, onSelect: () => void del() },
-  ]
+  const menu = $derived.by((): ContextMenuEntry[] => [
+    ...(col.auto ? [] : [{ label: 'Manage', onSelect: () => (managing = true) }]),
+    ...(fix ? [{ label: 'Rebuild index', disabled: fix.disabled, onSelect: fix.run }] : []),
+    ...(col.auto ? [] : ['sep' as const, { label: 'Delete collection', danger: true, onSelect: () => void del() }]),
+  ])
 </script>
 
 <div>
   <SettingsRow label={col.name} onOpen={col.auto ? undefined : () => (managing = true)} openLabel={`Manage ${col.name}`}>
     {#snippet meta()}{#if col.auto}<Chip>Built-in</Chip>{/if}{/snippet}
-    {#snippet hint()}
-      {#if entries}<span class="tabular-nums">{entries}</span>{#if col.description}{' · '}{/if}{/if}{col.description ?? ''}
-    {/snippet}
-    {#snippet status()}{#if idx}<RowStatus status={idx.status}>{idx.word}</RowStatus>{/if}{/snippet}
-    <SettingsRowMenu label={`Actions for ${col.name}`} items={col.auto ? [] : menu} />
+    {#snippet hint()}{col.description ?? ''}{/snippet}
+    <span class="{COLLECTION_COLS.entries} font-sans text-[13px] leading-5 tabular-nums {index && !index.missing ? 'text-fg' : 'text-muted'}">
+      {entries}
+    </span>
+    <span class={COLLECTION_COLS.state}>{#if idx}<RowStatus status={idx.status} title={idx.title}>{idx.word}</RowStatus>{/if}</span>
+    {#if fix}
+      <SettingsRowFix label={`Fix ${col.name}: rebuild the index`} disabled={fix.disabled} onclick={fix.run} />
+    {:else if rebuild}
+      <span class={COLLECTION_COLS.fix}></span>
+    {/if}
+    <SettingsRowMenu label={`Actions for ${col.name}`} items={menu} />
   </SettingsRow>
 {#if !col.auto}
   <Modal open={managing} onClose={() => (managing = false)} title={col.name} width="max-w-lg">
@@ -211,6 +225,7 @@
           Delete collection
         </DangerLink>
         <span class="flex-1"></span>
+        <SavedMark on={dialogSaved.saved} class="pr-2" />
         <Button size="sm" variant="outline" onclick={() => (managing = false)}>Done</Button>
       </div>
     {/snippet}

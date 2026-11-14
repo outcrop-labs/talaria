@@ -1,7 +1,9 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
@@ -10,7 +12,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import { useExplicitSave } from '@/components/settings/autosave.svelte'
   import { postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
@@ -18,14 +20,15 @@
   import NoticeRow from './NoticeRow.svelte'
   import RerankSection from './RerankSection.svelte'
   import RowStatus from './RowStatus.svelte'
-  import { indexState, useCollections, useRagAdmin, type RagCollection } from './retrieval'
+  import { COLLECTION_COLS, indexState, useCollections, useRagAdmin, type RagCollection } from './retrieval'
 
   // Admin governance of the RAG plane: the collections (auto + custom, with
   // who-can-search bindings and the KB spaces that feed each), service health
   // and backfill, and the reranker provider.
   const qc = useQueryClient()
-  // The rows that save on change mount once their data is in. The page's cue is there from the start.
-  useAutosave()
+  // A new collection is named and then created with a button, so this tab's
+  // header never says every change saves by itself.
+  useExplicitSave()
   const collectionsQuery = useCollections()
   const ragQuery = useRagAdmin()
   const rag = $derived(ragQuery.data)
@@ -80,6 +83,9 @@
   }
   // A collection search fails in is what an admin must see first.
   const brokenFirst = (list: RagCollection[]) => [...list.filter(isBroken), ...list.filter((c) => !isBroken(c))]
+  // A broken collection's row carries the fix. With none broken, a rebuild
+  // the server still asks for is offered once, on the notice.
+  const rowsCarryFix = $derived(needsRebuild && (collectionsQuery.data ?? []).some(isBroken))
   const counts = (c: Record<string, number>) =>
     Object.entries(c)
       .map(([k, v]) => `${v.toLocaleString()} ${k}`)
@@ -106,7 +112,9 @@
             {rebuildReason} Rebuilding recreates every collection and refills it from your records, and knowledge search runs thin
             until that finishes.
             {#snippet action()}
-              <Button size="sm" variant="outline" onclick={() => void backfill('reindex')} disabled={!servicesUp}>Rebuild index</Button>
+              {#if !rowsCarryFix}
+                <Button size="sm" variant="outline" onclick={() => void backfill('reindex')} disabled={!servicesUp}>Rebuild index</Button>
+              {/if}
             {/snippet}
           </NoticeRow>
         </div>
@@ -116,8 +124,18 @@
           <div class="px-5 py-4"><SkeletonRows rows={3} avatar /></div>
         {/snippet}
         {#snippet children(collections)}
+          <SettingsHeaderRow label="Collection" menu class="h-9">
+            <span class={COLLECTION_COLS.entries}>Entries</span>
+            <span class={COLLECTION_COLS.state}>Index</span>
+            {#if rowsCarryFix}<span class={COLLECTION_COLS.fix}></span>{/if}
+          </SettingsHeaderRow>
           {#each brokenFirst(collections) as c (c.id)}
-            <CollectionRow col={c} spaces={rag?.spaces ?? []} index={indexOf(c.id)} />
+            <CollectionRow
+              col={c}
+              spaces={rag?.spaces ?? []}
+              index={indexOf(c.id)}
+              rebuild={rowsCarryFix ? { needed: isBroken(c), disabled: !servicesUp, run: () => void backfill('reindex') } : undefined}
+            />
           {/each}
         {/snippet}
       </QueryState>
@@ -180,16 +198,15 @@
               <RowStatus status="danger">Failed</RowStatus>
             {/if}
           {/snippet}
-          <!-- A failed run is the one state the row needs fixed. Any other
-               time, running it again is a menu item. -->
+          <!-- A failed run is the one state the row needs fixed. Running it
+               again is in the menu either way. -->
           {#if rag.backfill.state === 'error'}
-            <Button size="sm" variant="outline" onclick={() => void backfill()} disabled={rebuilding || !servicesUp}>Run again</Button>
-          {:else}
-            <SettingsRowMenu
-              label="Actions for the backfill"
-              items={[{ label: 'Run backfill', disabled: rebuilding || rag.backfill.state === 'running' || !servicesUp, onSelect: () => void backfill() }]}
-            />
+            <SettingsRowFix label="Fix the backfill: run it again" onclick={() => void backfill()} disabled={rebuilding || !servicesUp} />
           {/if}
+          <SettingsRowMenu
+            label="Actions for the backfill"
+            items={[{ label: 'Run backfill', disabled: rebuilding || rag.backfill.state === 'running' || !servicesUp, onSelect: () => void backfill() }]}
+          />
         </SettingsRow>
       {/if}
     </SettingsGroup>
