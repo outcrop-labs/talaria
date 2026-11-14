@@ -30,9 +30,9 @@ export interface InferenceData {
 export const fleetTrouble = (fleet: InferenceLive['fleet']): string[] =>
   (
     [
-      ['warming', fleet.warming],
-      ['degraded', fleet.unhealthy],
       ['down', fleet.down],
+      ['degraded', fleet.unhealthy],
+      ['warming', fleet.warming],
     ] as const
   )
     .filter(([, count]) => count > 0)
